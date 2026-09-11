@@ -18,8 +18,9 @@ import type {
 	PRCardPresentation,
 	PRSummaryMetadata,
 } from "./pull-request-models";
+import { scmUserAvatarUrl } from "./scm-avatar";
 import { cn } from "./utils";
-import { GithubAvatar } from "./GithubAvatar";
+import { UserAvatar } from "./UserAvatar";
 
 export type InspectorView = "summary" | "reviews" | "browser" | "files";
 
@@ -973,7 +974,11 @@ function ExternalReviewCard({
 	const collapsible = bodyOverflows || hasNestedContent;
 	const headerContent = (
 		<>
-			<GithubAvatar className="size-6 shrink-0" login={entry.reviewerId} />
+			<UserAvatar
+				className="size-6 shrink-0"
+				imageUrl={scmUserAvatarUrl("github", entry.pullRequestUrl, entry.reviewerId)}
+				name={entry.reviewerId}
+			/>
 			<span className="flex min-w-0 flex-col gap-0.5">
 				<span className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-foreground">
 					<span className="min-w-0 break-words">{entry.reviewerId}</span>

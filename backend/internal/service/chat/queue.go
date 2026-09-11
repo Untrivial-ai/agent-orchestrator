@@ -2,15 +2,33 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // ErrQueuedTurnTextRequired refuses an empty rewrite of a queued prompt.
 var ErrQueuedTurnTextRequired = errors.New("queued message text is required")
+
+// ErrQueuedContentInvalid refuses invalid retained indices or oversized content.
+var ErrQueuedContentInvalid = errors.New("queued message attachments are invalid")
+
+// ErrQueuedEditConflict refuses an edit based on an outdated message revision.
+var ErrQueuedEditConflict = errors.New("queued message changed during editing")
+
+// QueuedMessageEdit retains server-owned content by public summary index and
+// appends newly uploaded blocks. Nil RetainedContent preserves existing content.
+type QueuedMessageEdit struct {
+	Text             string
+	Content          []ports.ChatContent
+	RetainedContent  *[]int
+	ExpectedRevision *int64
+}
 
 // ErrInvalidQueuedTurnOrder refuses a queue reorder that does not match the
 // current undispatched queue exactly.
@@ -38,11 +56,9 @@ func (s *Service) CancelQueuedTurn(
 func (s *Service) EditQueuedTurn(
 	ctx context.Context,
 	id domain.SessionID,
-	turnID, text string,
+	turnID string,
+	edit QueuedMessageEdit,
 ) error {
-	if strings.TrimSpace(text) == "" {
-		return ErrQueuedTurnTextRequired
-	}
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return err
 	}
@@ -50,7 +66,7 @@ func (s *Service) EditQueuedTurn(
 	if err != nil {
 		return err
 	}
-	return controller.EditQueuedTurn(ctx, turnID, text)
+	return controller.EditQueuedTurn(ctx, turnID, edit)
 }
 
 // ReorderQueuedTurns rewrites the durable queue order for undispatched turns.
@@ -80,13 +96,80 @@ func (c *Controller) CancelQueuedTurn(ctx context.Context, turnID string) error 
 }
 
 // EditQueuedTurn rewrites the durable human prompt for a queued turn.
-func (c *Controller) EditQueuedTurn(ctx context.Context, turnID, text string) error {
+func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit QueuedMessageEdit) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if c.handoffActive() {
 		return ErrControllerHandoff
 	}
-	return c.store.UpdateQueuedTurnMessage(ctx, c.conversation.ID, turnID, text, c.now())
+	message, err := c.store.QueuedTurnMessage(ctx, c.conversation.ID, turnID)
+	if err != nil {
+		return err
+	}
+	if edit.ExpectedRevision != nil && *edit.ExpectedRevision != message.Revision {
+		return ErrQueuedEditConflict
+	}
+	var content []ports.ChatContent
+	if message.DeliveryContentJSON != "" {
+		if err := json.Unmarshal([]byte(message.DeliveryContentJSON), &content); err != nil {
+			return ErrQueuedContentInvalid
+		}
+	}
+	if edit.RetainedContent != nil {
+		if edit.ExpectedRevision == nil {
+			return ErrQueuedContentInvalid
+		}
+		// Match conversationContentSummary: text and internal replay context are
+		// not exposed as user attachments and must survive attachment removal.
+		retained := *edit.RetainedContent
+		selected := make([]ports.ChatContent, 0, len(content))
+		index, next := 0, 0
+		for _, block := range content {
+			if block.Type == "text" || ports.IsInternalReplayContent(block) {
+				selected = append(selected, block)
+				continue
+			}
+			if next < len(retained) && retained[next] == index {
+				selected = append(selected, block)
+				next++
+			}
+			index++
+		}
+		if next != len(retained) {
+			return ErrQueuedContentInvalid
+		}
+		content = selected
+	}
+	content = append(content, edit.Content...)
+	// Match the upload limits across repeated edits as well as a single request.
+	images, imageBytes := 0, 0
+	for _, block := range content {
+		if block.Type != "image" {
+			continue
+		}
+		images++
+		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(block.Data))
+		if err != nil {
+			return ErrQueuedContentInvalid
+		}
+		imageBytes += len(data)
+	}
+	if images > 8 || imageBytes > 25*1024*1024 {
+		return ErrQueuedContentInvalid
+	}
+	if strings.TrimSpace(edit.Text) == "" && len(content) == 0 {
+		return ErrQueuedTurnTextRequired
+	}
+	encoded := ""
+	if len(content) > 0 {
+		data, err := json.Marshal(content)
+		if err != nil {
+			return err
+		}
+		encoded = string(data)
+	}
+	return c.store.UpdateQueuedTurnMessage(ctx, c.conversation.ID, turnID,
+		edit.Text, encoded, message.Revision, c.now())
 }
 
 // ReorderQueuedTurns permutes undispatched queue rows without changing their text.

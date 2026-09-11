@@ -642,6 +642,35 @@ func TestOpenShellTerminalRejectsUnavailableWindowsShell(t *testing.T) {
 	}
 }
 
+func TestOpenShellTerminalPinsPATHToDaemonBinary(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	daemonExe := filepath.Join(t.TempDir(), "ao")
+
+	cases := []struct {
+		name       string
+		executable func() (string, error)
+		want       string
+	}{
+		{"pins daemon directory", func() (string, error) { return daemonExe, nil }, filepath.Dir(daemonExe) + string(os.PathListSeparator) + "/usr/bin"},
+		{"keeps inherited environment when binary is not ao", func() (string, error) { return "/opt/aod/ao-daemon", nil }, ""},
+		{"keeps inherited environment when executable is unavailable", func() (string, error) { return "", errors.New("no executable") }, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := newFakeShellRuntime()
+			svc := newTestService(rt, &fakeShellTerminalStore{}, &fakeProjectRootLocator{})
+			svc.executable = tc.executable
+
+			if _, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{}); err != nil {
+				t.Fatalf("OpenShellTerminal: %v", err)
+			}
+			if got := rt.created[0].Env["PATH"]; got != tc.want {
+				t.Fatalf("PATH = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOpenShellTerminalFallsBackToDataDirWhenNoProjectGiven(t *testing.T) {
 	rt := newFakeShellRuntime()
 	svc := newTestService(rt, &fakeShellTerminalStore{}, &fakeProjectRootLocator{})

@@ -86,19 +86,13 @@ function TestProjectSettings({
 	section?: ProjectSettingsSection;
 }) {
 	const [saveState, setSaveState] = useState<ProjectSettingsSaveState>({
-		isPending: false,
-		showSaving: false,
-		validationError: null,
-		mutationError: null,
-		saved: false,
-		replacementError: null,
+		phase: "idle",
 	});
 	return (
 		<>
 			<ProjectSettingsForm projectId={projectId} section={section} onSaveState={setSaveState} />
-			{saveState.validationError && <span>{saveState.validationError}</span>}
-			{saveState.mutationError && <span>{saveState.mutationError}</span>}
-			{saveState.saved && <span>{"Saved"}</span>}
+			{saveState.error && <span>{saveState.error}</span>}
+			{saveState.phase === "saved" && <span>{"Saved"}</span>}
 			{saveState.replacementError && <span>{`Orchestrator restart failed: ${saveState.replacementError}`}</span>}
 		</>
 	);
@@ -1138,7 +1132,6 @@ describe("ProjectSettingsForm", () => {
 			"Cursor",
 			"OpenCode",
 			"GitHub Copilot",
-			"Goose",
 			"Kilo Code",
 			"Pi",
 			"KiroAuth unknown",
@@ -1153,9 +1146,8 @@ describe("ProjectSettingsForm", () => {
 			path: "/repo/project-one",
 			repo: "",
 			defaultBranch: "main",
-			config: { worker: { agent: "qwen" }, orchestrator: { agent: "claude-code" } },
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
 		};
-		const qwen = agentReadiness("qwen", "Qwen Code");
 		const devin = agentReadiness("devin", "Devin");
 		const droid = agentReadiness("droid", "Droid");
 		const kimi = agentReadiness("kimi", "Kimi");
@@ -1166,16 +1158,14 @@ describe("ProjectSettingsForm", () => {
 			agentReadiness("auggie", "Auggie"),
 			agentReadiness("autohand", "Autohand"),
 			agentReadiness("cline", "Cline"),
-			agentReadiness("continue", "Continue"),
 			agentReadiness("crush", "Crush"),
 			agentReadiness("grok", "Grok"),
-			agentReadiness("vibe", "Vibe"),
 		];
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
 					data: {
-						agents: [...agentCatalogResponse.data.agents, qwen, devin, droid, kimi, aider, amp, ...experimental],
+						agents: [...agentCatalogResponse.data.agents, devin, droid, kimi, aider, amp, ...experimental],
 					},
 					error: undefined,
 				};
@@ -1189,11 +1179,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(reviewer);
 		const options = await screen.findAllByRole("menuitem");
 		const labels = options.map((option) => option.textContent);
-		expect(labels).toContain("Qwen Code");
 		expect(labels).toContain("Agy");
-		expect(labels).toContain("Continue");
-		expect(labels).toContain("Goose");
-		expect(labels).toContain("Vibe");
 		expect(labels).toContain("Devin");
 		expect(labels).toContain("Droid");
 		expect(labels).toContain("Kimi");

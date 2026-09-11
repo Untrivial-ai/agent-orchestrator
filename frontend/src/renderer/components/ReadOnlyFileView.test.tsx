@@ -30,8 +30,9 @@ function baseDetail(overrides: Partial<WorkspaceFileDetail> = {}): WorkspaceFile
 
 describe("ReadOnlyFileView", () => {
 	it("renders plain content through the shared syntax renderer", () => {
-		render(<ReadOnlyFileView detail={baseDetail()} sessionId="sess-1" />);
+		const { container } = render(<ReadOnlyFileView detail={baseDetail()} sessionId="sess-1" />);
 		expect(screen.getByText("hello world")).toBeInTheDocument();
+		expect(container.querySelector(".chat-code")).toHaveClass("select-text");
 	});
 
 	it("selects the JSON grammar from the opened file path", () => {

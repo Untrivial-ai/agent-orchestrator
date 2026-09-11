@@ -837,7 +837,18 @@ func (e *Engine) restoreReviewerLocked(
 		PreviousRuns:         previousRuns,
 	})
 	if err != nil {
-		return RestoreReviewerResult{}, fmt.Errorf("restore reviewer: %w", err)
+		restoreErr := fmt.Errorf("restore reviewer: %w", err)
+		if failErr := e.failRunningRestoredRuns(ctx, previousRuns, restoreErr.Error()); failErr != nil {
+			return RestoreReviewerResult{}, errors.Join(restoreErr, failErr)
+		}
+		return RestoreReviewerResult{}, restoreErr
+	}
+	if !launch.NativeResumed {
+		const reason = "reviewer native conversation was unavailable during restore; retry the review"
+		if err := e.failRunningRestoredRuns(ctx, previousRuns, reason); err != nil {
+			_ = e.launcher.Destroy(ctx, launch.HandleID)
+			return RestoreReviewerResult{}, err
+		}
 	}
 	if launch.AgentSessionID != "" {
 		agentSessionID = launch.AgentSessionID
@@ -847,6 +858,18 @@ func (e *Engine) restoreReviewerLocked(
 		return RestoreReviewerResult{}, err
 	}
 	return RestoreReviewerResult{ReviewerHandleID: launch.HandleID, Restored: true}, nil
+}
+
+func (e *Engine) failRunningRestoredRuns(ctx stdctx.Context, runs []domain.ReviewRun, body string) error {
+	for _, run := range runs {
+		if run.Status != domain.ReviewRunRunning {
+			continue
+		}
+		if _, err := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, body, "", run.AutoInjectReview); err != nil {
+			return fmt.Errorf("fail review run %q after reviewer restore: %w", run.ID, err)
+		}
+	}
+	return nil
 }
 
 // TeardownReviewerTerminal destroys reviewer panes before shutdown removes the

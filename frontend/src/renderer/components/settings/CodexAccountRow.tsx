@@ -1,5 +1,6 @@
 import { ChevronDown, CircleAlert, CircleCheck, LoaderCircle, LogOut, Trash2, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { codexAccountAuthorized, codexAccountSignedOut } from "../../hooks/codex-accounts-state";
 import type { CodexAccount, CodexActiveLogin } from "../../hooks/useCodexAccountsQuery";
 import { Button } from "../ui/button";
 import { CodexAccountDetails, formatAuthMethod, formatPercentage, formatPlanName } from "./CodexAccountDetails";
@@ -25,11 +26,11 @@ export function CodexAccountRow({ account, expanded, resetCreditSupported, mutat
 	onRetryLogin: () => void;
 }) {
 	const { t } = useTranslation();
-	const authorized = account.authentication.state === "authorized" || account.authentication.state === "not_applicable";
+	const authorized = codexAccountAuthorized(account);
 	const remaining = account.capacity.remainingPercent;
 	const authenticationLabel = authorized
 		? account.accountEmail && account.accountEmail !== account.label ? account.accountEmail : t("settings.codexAccounts.signedIn")
-		: account.authentication.state === "unauthorized" || account.status === "signed_out" ? t("settings.codexAccounts.signedOut") : t("settings.codexAccounts.unknown");
+		: codexAccountSignedOut(account) ? t("settings.codexAccounts.signedOut") : t("settings.codexAccounts.unknown");
 	const summary = [formatAuthMethod(account.authMethod), formatPlanName(account.capacity.plan), remaining == null ? null : `${formatPercentage(remaining)} ${t("settings.codexAccounts.remaining")}`].filter(Boolean).join(" · ");
 	return (
 		<div id={`codex-account-${account.id}`} data-account-id={account.id} tabIndex={-1} className="px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">

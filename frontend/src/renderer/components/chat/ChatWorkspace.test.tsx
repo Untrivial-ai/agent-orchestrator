@@ -338,6 +338,8 @@ describe("ChatWorkspace timeline", () => {
 		const user = userEvent.setup();
 		const onDecide = vi.fn();
 		const view = render(<ChatWorkspace snapshot={idleSnapshot()} newWorkDisabled />);
+		expect(screen.queryByText("Switching to terminal UI…")).not.toBeInTheDocument();
+		expect(screen.queryByText("The controller is not connected")).not.toBeInTheDocument();
 
 		expect(screen.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert");
 		expect(screen.getByLabelText("Message the agent")).toHaveAttribute("aria-disabled", "true");
@@ -989,14 +991,15 @@ describe("ChatWorkspace timeline", () => {
 		);
 
 		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
+		expect(screen.getByText("The controller is not connected")).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Resume agent" }));
 		await user.click(screen.getByRole("button", { name: "Open shell" }));
 		expect(resume).toHaveBeenCalledOnce();
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
-	it("does not report the intentional controller gap during an interface handoff as a crash", () => {
-		render(
+	it("shows connecting during the controller gap, then restores the composer when ready", () => {
+		const { rerender } = render(
 			<ChatWorkspace
 				snapshot={{
 					...chatFixtureSettled,
@@ -1010,6 +1013,15 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		// Progress is the topbar spinner; the composer stays empty rather than
+		// painting a second "Connecting…" / "Switching…" label over the editor.
+		expect(screen.queryByText("Connecting to the agent…")).not.toBeInTheDocument();
+		expect(screen.queryByText("The controller is not connected")).not.toBeInTheDocument();
+		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "false");
+
+		rerender(<ChatWorkspace snapshot={chatFixtureEmpty} />);
+		expect(screen.queryByText("Connecting to the agent…")).not.toBeInTheDocument();
+		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "true");
 	});
 
 	it("announces thread and tool-server failures", () => {
@@ -2400,5 +2412,27 @@ describe("ChatWorkspace shell tabs", () => {
 			/>,
 		);
 		expect(closeShellTerminalShortcutStates.at(-1)).toBe(false);
+	});
+
+	it("enables the close shortcut and closes the active workspace file tab", () => {
+		const onClose = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button role="tab">README.md</button>,
+						onSelect: vi.fn(),
+						onClose,
+					},
+				]}
+			/>,
+		);
+
+		expect(closeShellTerminalShortcutStates.at(-1)).toBe(true);
+		act(() => [...closeShellTerminalListeners][0]?.());
+		expect(onClose).toHaveBeenCalledOnce();
 	});
 });

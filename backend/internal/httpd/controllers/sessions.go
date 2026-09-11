@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	maxPromptLen      = 4096
+	maxPromptLen      = 16 << 10
 	maxMessageLen     = 4096
 	maxModelLen       = 256
 	maxDisplayNameLen = 20
@@ -256,7 +256,7 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Mode = mode
 	if len(in.Prompt) > maxPromptLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "prompt is too long", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "Prompt must be 16 KiB or fewer", nil)
 		return
 	}
 	// displayName is optional at the API (the desktop new-task dialog omits it
@@ -1333,7 +1333,9 @@ func (c *SessionsController) cleanup(w http.ResponseWriter, r *http.Request) {
 	for _, skip := range out.Skipped {
 		skipped = append(skipped, CleanupSkippedSession{SessionID: skip.SessionID, Reason: skip.Reason})
 	}
-	envelope.WriteJSON(w, http.StatusOK, CleanupSessionsResponse{OK: true, Cleaned: out.Cleaned, Skipped: skipped})
+	envelope.WriteJSON(w, http.StatusOK, CleanupSessionsResponse{
+		OK: true, Cleaned: out.Cleaned, AlreadyGone: out.AlreadyGone, Skipped: skipped,
+	})
 }
 
 func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
@@ -1388,7 +1390,7 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(in.Brief) > maxPromptLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TASK_TOO_LONG", "Task is too long", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TASK_TOO_LONG", "Task must be 16 KiB or fewer", nil)
 		return
 	}
 	if utf8.RuneCountInString(strings.TrimSpace(in.Model)) > maxModelLen {

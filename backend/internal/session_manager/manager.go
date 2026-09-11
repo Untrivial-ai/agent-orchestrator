@@ -1236,8 +1236,16 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		return ports.WorkspaceInfo{}, nil, err
 	}
 	childRepos := make([]ports.WorkspaceProjectRepoConfig, 0, len(repos))
+	assets := make([]ports.WorkspaceProjectAssetConfig, 0, len(repos))
 	for _, repo := range repos {
 		if repo.GitStatus == domain.GitStatusNeedsInit {
+			sourcePath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
+			if _, err := os.Lstat(filepath.Join(sourcePath, ".git")); errors.Is(err, os.ErrNotExist) {
+				assets = append(assets, ports.WorkspaceProjectAssetConfig{
+					RelativePath: repo.RelativePath,
+					SourcePath:   sourcePath,
+				})
+			}
 			continue
 		}
 		repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
@@ -1262,6 +1270,7 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		BaseBranch:    project.Config.WorktreeBaseBranch(),
 		BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		Repos:         childRepos,
+		Assets:        assets,
 	})
 	if err != nil {
 		return ports.WorkspaceInfo{}, nil, err
@@ -1719,7 +1728,7 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	}
 	freed := false
 	if workspaceProject {
-		cleaned, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
+		_, cleaned, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
 		if err != nil {
 			if workspacePreserved(err) {
 				if err := m.lcm.MarkTerminated(ctx, id); err != nil {
@@ -2551,10 +2560,19 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 			}
 		}
 	}
-	if projectKind == domain.ProjectKindScratch {
+	if projectKind == domain.ProjectKindScratch && !isChat {
 		return m.lcm.MarkTerminated(ctx, rec.ID)
 	}
-	ws, restoreErr := m.restoreSessionWorkspace(ctx, project, rec)
+	var ws ports.WorkspaceInfo
+	var restoreErr error
+	if projectKind == domain.ProjectKindScratch {
+		// Scratch workspaces are durable directories, not disposable git
+		// worktrees. A persistent Chat provider can therefore be reattached in
+		// place without asking the workspace adapter to restore anything.
+		ws = workspaceInfo(rec)
+	} else {
+		ws, restoreErr = m.restoreSessionWorkspace(ctx, project, rec)
+	}
 	if restoreErr == nil {
 		_, relaunchErr := m.relaunchRestoredSession(ctx, rec, project, ws)
 		if relaunchErr == nil {
@@ -3187,7 +3205,22 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 	return nil
 }
 
-func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.WorkspaceRepoInfo) (bool, error) {
+// destroyWorkspaceProjectRows tears down every repo of a multi-repo workspace,
+// children before root. It reports two different things, because they answer
+// two different questions and only coincide when every repo still had a
+// directory on disk:
+//
+//   - reclaim aggregates the per-repo outcomes. A session released disk if any
+//     one of its repos did, so a single removed repo makes the whole session
+//     WorkspaceReclaimRemoved; only when no repo had anything left to release
+//     is it WorkspaceReclaimAlreadyAbsent. Callers that count reclaimed
+//     workspaces need this.
+//   - cleaned reports whether at least one repo tore down without an error,
+//     which is what the kill path uses to decide that the session's registration
+//     is reconciled. A repo whose directory was already gone still tears down,
+//     so cleaned stays true there while reclaim does not.
+func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.WorkspaceRepoInfo) (ports.WorkspaceReclaim, bool, error) {
+	reclaim := ports.WorkspaceReclaimAlreadyAbsent
 	cleaned := false
 	var firstErr error
 	for i := len(rows) - 1; i >= 0; i-- {
@@ -3195,9 +3228,10 @@ func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.
 			continue
 		}
 		info := workspaceInfoFromRepoInfo(rows[i])
-		if err := m.workspace.Destroy(ctx, info); err != nil {
+		rowReclaim, err := m.destroyWorkspace(ctx, info)
+		if err != nil {
 			if errors.Is(err, ports.ErrWorkspaceDirty) {
-				return cleaned, err
+				return reclaim, cleaned, err
 			}
 			if stateErr := m.upsertWorkspaceProjectRowState(ctx, rows[i], "retry_remove"); stateErr != nil && firstErr == nil {
 				firstErr = stateErr
@@ -3207,12 +3241,15 @@ func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.
 			}
 			continue
 		}
+		if rowReclaim == ports.WorkspaceReclaimRemoved {
+			reclaim = ports.WorkspaceReclaimRemoved
+		}
 		if err := m.upsertWorkspaceProjectRowState(ctx, rows[i], "unavailable"); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		cleaned = true
 	}
-	return cleaned, firstErr
+	return reclaim, cleaned, firstErr
 }
 
 func (m *Manager) upsertWorkspaceProjectRowState(ctx context.Context, row ports.WorkspaceRepoInfo, state string) error {
@@ -3614,8 +3651,15 @@ type CleanupSkip struct {
 
 // CleanupResult reports what Cleanup reclaimed and what it preserved.
 type CleanupResult struct {
+	// Cleaned lists sessions whose workspace was present and has been released
+	// by this run. It is the only bucket that corresponds to reclaimed disk.
 	Cleaned []domain.SessionID
-	Skipped []CleanupSkip
+	// AlreadyGone lists sessions whose workspace directory was missing before
+	// this run started. Their teardown completes (any stale registration is
+	// reconciled) but reclaims nothing, so counting them as Cleaned reports
+	// space that was never freed.
+	AlreadyGone []domain.SessionID
+	Skipped     []CleanupSkip
 }
 
 // Cleanup reclaims the workspaces of terminal sessions in a project. A workspace
@@ -3626,7 +3670,11 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	if err != nil {
 		return CleanupResult{}, fmt.Errorf("cleanup %s: %w", project, err)
 	}
-	result := CleanupResult{Cleaned: make([]domain.SessionID, 0, len(recs)), Skipped: []CleanupSkip{}}
+	result := CleanupResult{
+		Cleaned:     make([]domain.SessionID, 0, len(recs)),
+		AlreadyGone: []domain.SessionID{},
+		Skipped:     []CleanupSkip{},
+	}
 	for _, rec := range recs {
 		if !rec.IsTerminated {
 			continue
@@ -3640,61 +3688,85 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		if h := runtimeHandle(rec.Metadata); h.ID != "" {
 			_ = m.runtime.Destroy(ctx, h) // best effort; usually already gone
 		}
-		if reason := m.cleanupOne(ctx, rec, ws); reason != "" {
+		reclaim, reason := m.cleanupOne(ctx, rec, ws)
+		if reason != "" {
 			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: reason})
 			continue
 		}
 		m.cleanupSystemPromptDir(rec.ID)
+		if reclaim == ports.WorkspaceReclaimAlreadyAbsent {
+			result.AlreadyGone = append(result.AlreadyGone, rec.ID)
+			continue
+		}
 		result.Cleaned = append(result.Cleaned, rec.ID)
 	}
 	return result, nil
+}
+
+// destroyWorkspace tears down one workspace and reports whether the call
+// actually released anything. Workspace adapters are not required to report
+// that, so a plain Destroy keeps its existing meaning: a nil error is a
+// completed removal.
+func (m *Manager) destroyWorkspace(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
+	if reclaimer, ok := m.workspace.(ports.WorkspaceReclaimer); ok {
+		return reclaimer.DestroyReclaim(ctx, info)
+	}
+	return ports.WorkspaceReclaimRemoved, m.workspace.Destroy(ctx, info)
 }
 
 // cleanupOne reclaims one terminated session's workspace, gating shut any
 // shell terminal scoped to it first (same ordering as Kill). Split out of
 // Cleanup's loop so the release function's defer is scoped to one session's
 // call, not deferred across every iteration until Cleanup itself returns.
-// Returns "" when the workspace was reclaimed; a non-empty reason means it was
-// left alone this run (Cleanup records it in Skipped and can retry on a later
-// call) — most commonly because a scoped shell terminal could not be
-// confirmed closed, so reclaiming would pull the ground out from under it.
-func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) (skipReason string) {
+// Returns an empty reason when the workspace was reclaimed; a non-empty reason
+// means it was left alone this run (Cleanup records it in Skipped and can retry
+// on a later call) — most commonly because a scoped shell terminal could not be
+// confirmed closed, so reclaiming would pull the ground out from under it. The
+// reclaim outcome says whether anything was actually released and is only
+// meaningful when the reason is empty.
+func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) (reclaim ports.WorkspaceReclaim, skipReason string) {
 	release, closeErr := m.beginShellTerminalTeardown(ctx, rec.ID)
 	if closeErr != nil {
 		m.logger.Warn("cleanup: shell terminal still open", "sessionID", rec.ID, "error", closeErr)
-		return "shell terminal still open"
+		return ports.WorkspaceReclaimRemoved, "shell terminal still open"
 	}
 	if release != nil {
 		defer release()
 	}
 	if err := m.importAttachments(ctx, rec); err != nil {
 		m.logger.Warn("cleanup: attachment preservation failed", "sessionID", rec.ID, "error", err)
-		return "attachment preservation failed"
+		return ports.WorkspaceReclaimRemoved, "attachment preservation failed"
 	}
 
 	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
 		m.logger.Warn("cleanup: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
-		return "workspace teardown failed"
+		return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
 	} else if ok {
-		if _, err := m.destroyWorkspaceProjectRows(ctx, rows); err != nil {
+		// A workspace project spans several repos, so its reclaim outcome is the
+		// aggregate of theirs rather than one directory's: reporting a fixed
+		// "removed" here would put a multi-repo session back on the same false
+		// count this whole change exists to remove.
+		projectReclaim, _, err := m.destroyWorkspaceProjectRows(ctx, rows)
+		if err != nil {
 			if !workspacePreserved(err) {
 				m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
 			}
-			return cleanupSkipReason(err)
+			return ports.WorkspaceReclaimRemoved, cleanupSkipReason(err)
 		}
 		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-		return ""
+		return projectReclaim, ""
 	}
-	if err := m.workspace.Destroy(ctx, ws); err != nil {
+	reclaim, err := m.destroyWorkspace(ctx, ws)
+	if err != nil {
 		if !workspacePreserved(err) {
 			// The public reason stays a fixed string (the raw error carries
 			// internal filesystem paths); the full cause lands here.
 			m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
 		}
-		return cleanupSkipReason(err)
+		return reclaim, cleanupSkipReason(err)
 	}
 	m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-	return ""
+	return reclaim, ""
 }
 
 // cleanupSkipReason renders a workspace teardown refusal as a short
@@ -4131,14 +4203,28 @@ func workspaceRepoList(repos []domain.WorkspaceRepoRecord) string {
 // the AO-internal vars last so they always win (a project cannot override
 // AO_SESSION_ID and friends).
 func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string) map[string]string {
+	return spawnEnvForOS(id, project, issue, dataDir, projectEnv, runtime.GOOS == "windows")
+}
+
+func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, caseInsensitive bool) map[string]string {
 	env := make(map[string]string, len(projectEnv)+4)
 	for k, v := range projectEnv {
 		env[k] = v
 	}
-	env[EnvSessionID] = string(id)
-	env[EnvProjectID] = string(project)
-	env[EnvIssueID] = string(issue)
-	env[EnvDataDir] = dataDir
+	setProtected := func(key, value string) {
+		if caseInsensitive {
+			for existing := range env {
+				if strings.EqualFold(existing, key) {
+					delete(env, existing)
+				}
+			}
+		}
+		env[key] = value
+	}
+	setProtected(EnvSessionID, string(id))
+	setProtected(EnvProjectID, string(project))
+	setProtected(EnvIssueID, string(issue))
+	setProtected(EnvDataDir, dataDir)
 	return env
 }
 
@@ -4165,7 +4251,14 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	env[EnvBrowserCapability] = ""
 	env[EnvBrowserRuntimeToken] = ""
 	env[EnvBrowserRuntimeTokenStdin] = ""
-	path, err := HookPATH(m.executable, os.Getenv, projectEnv)
+	if runtime.GOOS == "windows" {
+		for key := range env {
+			if key != "PATH" && strings.EqualFold(key, "PATH") {
+				delete(env, key)
+			}
+		}
+	}
+	path, err := HookPATH(m.executable, os.Getenv, projectEnv, m.dataDir)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
 			"session", id, "error", err)
@@ -4291,27 +4384,14 @@ func chatControllerOwner(
 // applied: the executable is unresolvable, or is not named "ao", in which case
 // prepending its directory would not change what `ao` resolves to. Exported so
 // the reviewer launcher can pin its pane's PATH the same way.
-func HookPATH(executable func() (string, error), getenv func(string) string, projectEnv map[string]string) (string, error) {
-	exe, err := executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve daemon executable: %w", err)
-	}
-	name := filepath.Base(exe)
-	if runtime.GOOS == "windows" {
-		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
-	}
-	if name != hookBinaryName {
-		return "", fmt.Errorf("daemon executable %s is not named %q", exe, hookBinaryName)
-	}
-	base := projectEnv["PATH"]
-	if base == "" {
-		base = getenv("PATH")
-	}
-	dir := filepath.Dir(exe)
-	if base == "" {
-		return dir, nil
-	}
-	return dir + string(os.PathListSeparator) + base, nil
+func HookPATH(executable func() (string, error), getenv func(string) string, projectEnv map[string]string, dataDir string) (string, error) {
+	return agentlaunch.PinnedPATH(executable, getenv, projectEnv, dataDir)
+}
+
+// PinnedHookDir returns the directory HookPATH places first, or an empty
+// string when the executable cannot provide an ao PATH pin.
+func PinnedHookDir(executable func() (string, error), dataDir string) string {
+	return agentlaunch.PinnedDir(executable, dataDir)
 }
 
 // provisionWorkspace applies the project's per-workspace setup after the
@@ -4755,14 +4835,14 @@ func launchBinary(argv []string) (string, bool) {
 }
 
 func (m *Manager) augmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string) {
-	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath)
+	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath, PinnedHookDir(m.executable, m.dataDir))
 }
 
 // AugmentRuntimePATHForLaunchBinary is retained at the session-manager boundary
 // for reviewer launches; all agent child-process paths share agentlaunch's
 // executable-environment augmentation.
-func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error)) {
-	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath)
+func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error), pinnedDir string) {
+	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath, pinnedDir)
 }
 
 func (m *Manager) validateRuntimePrerequisites() error {

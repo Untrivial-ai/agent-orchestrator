@@ -73,8 +73,10 @@ export function useFileAttachments() {
 	const [error, setError] = useState<string | null>(null);
 	const attachmentsRef = useRef<FileAttachment[]>([]);
 	const pendingReadsRef = useRef<Set<Promise<unknown>>>(new Set());
+	const generationRef = useRef(0);
 
 	const addFiles = useCallback(async (files: Iterable<File>) => {
+		const generation = generationRef.current;
 		// Filter out directories - they have type "" and size 0 in most browsers
 		const validFiles = Array.from(files).filter((file) => {
 			// Exclude directories (they typically have no type and size 0)
@@ -116,6 +118,7 @@ export function useFileAttachments() {
 		pendingReadsRef.current.add(pendingReads);
 		const results = await pendingReads;
 		pendingReadsRef.current.delete(pendingReads);
+		if (generation !== generationRef.current) return;
 
 		const fresh: FileAttachment[] = [];
 		for (const { file, result } of results) {
@@ -169,6 +172,8 @@ export function useFileAttachments() {
 	}, []);
 
 	const clear = useCallback(() => {
+		generationRef.current++;
+		pendingReadsRef.current.clear();
 		attachmentsRef.current = [];
 		setAttachments([]);
 		setError(null);

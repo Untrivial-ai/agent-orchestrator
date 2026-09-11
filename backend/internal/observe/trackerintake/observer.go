@@ -25,7 +25,7 @@ const (
 	DefaultFailureBackoff = 5 * time.Minute
 	// maxIntakePromptLen mirrors the session HTTP prompt limit. Intake uses the
 	// session service directly, so it must enforce the same boundary itself.
-	maxIntakePromptLen = 4096
+	maxIntakePromptLen = 16 << 10
 
 	intakePromptTruncationNotice = "\n\n[Issue content truncated to fit the session prompt limit. Open the linked issue for the full details.]\n"
 	intakePromptFooter           = "\nImplement the requested change in this repository, run the relevant checks, and open or update a pull request when ready."

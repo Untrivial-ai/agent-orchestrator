@@ -15,10 +15,24 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) >= 6 && os.Args[1] == "chat-host" && os.Args[5] == "--" {
+	if len(os.Args) >= 6 && os.Args[1] == "chat-host" {
+		protocol := ProtocolRaw
+		fingerprint := ""
+		separator := 5
+		if len(os.Args) > 5 && os.Args[5] == string(ProtocolACP) {
+			protocol = ProtocolACP
+			if len(os.Args) > 6 {
+				fingerprint = os.Args[6]
+			}
+			separator = 7
+		}
+		if len(os.Args) <= separator || os.Args[separator] != "--" {
+			os.Exit(2)
+		}
 		err := Run(context.Background(), Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
-			Env: os.Environ(), Argv: os.Args[6:],
+			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
+			OwnershipFingerprint: fingerprint,
 		})
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
@@ -31,6 +45,10 @@ func TestMain(m *testing.M) {
 
 func TestProviderHelper(t *testing.T) {
 	if os.Getenv("AO_CHAT_HOST_PROVIDER_HELPER") != "1" {
+		return
+	}
+	if os.Getenv("AO_CHAT_HOST_ACP_HELPER") == "1" {
+		runACPProviderHelper()
 		return
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -58,6 +76,199 @@ func TestProviderHelper(t *testing.T) {
 		_, _ = fmt.Fprintf(os.Stdout, `{"id":%d,"result":{"pid":%d}}`+"\n", frame.ID, os.Getpid())
 	}
 	os.Exit(0)
+}
+
+func runACPProviderHelper() {
+	scanner := bufio.NewScanner(os.Stdin)
+	var parkedPromptID json.RawMessage
+	for scanner.Scan() {
+		var frame struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &frame) != nil {
+			continue
+		}
+		if frame.Method == "" && string(frame.ID) == `"permission-ledger"` && len(parkedPromptID) > 0 {
+			_, _ = fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session-live","update":{"agent_message_chunk":{"content":{"type":"text","text":"approved"}}}}}`)
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`+"\n", parkedPromptID)
+			parkedPromptID = nil
+			continue
+		}
+		switch frame.Method {
+		case "initialize":
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"resume":{}}},"authMethods":[]}}`+"\n", frame.ID)
+		case "session/new":
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"acp-session-live"}}`+"\n", frame.ID)
+		case "session/prompt":
+			_, _ = fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session-live","update":{"agent_message_chunk":{"content":{"type":"text","text":"before restart"}}}}}`)
+			if os.Getenv("AO_CHAT_HOST_ACP_PERMISSION") == "1" {
+				parkedPromptID = append(json.RawMessage(nil), frame.ID...)
+				_, _ = fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","id":"permission-ledger","method":"session/request_permission","params":{"sessionId":"acp-session-live","options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}`)
+				continue
+			}
+			time.Sleep(100 * time.Millisecond)
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn","providerPid":%d}}`+"\n", frame.ID, os.Getpid())
+		case "pid":
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"pid":%d}}`+"\n", frame.ID, os.Getpid())
+		}
+	}
+}
+
+func TestACPHostReplaysAcceptedInteractionAfterAttachmentDies(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := Config{
+		SessionID: "acp-command-ledger", DataDir: dataDir, Workdir: t.TempDir(), Protocol: ProtocolACP,
+		Env: append(os.Environ(),
+			"AO_CHAT_HOST_PROVIDER_HELPER=1",
+			"AO_CHAT_HOST_ACP_HELPER=1",
+			"AO_CHAT_HOST_ACP_PERMISSION=1",
+		),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"},
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), cfg) }()
+	d := awaitDescriptor(t, dataDir, cfg.SessionID)
+	t.Cleanup(func() {
+		_ = Shutdown(context.Background(), dataDir, cfg.SessionID)
+		<-done
+	})
+
+	first := awaitAttach(t, d)
+	reader := bufio.NewReader(first.Stdout)
+	sendFrame(t, first, `{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"acp-session-live","prompt":[]}}`)
+	_ = readFrame(t, reader) // prompt update
+	permission := readFrame(t, reader)
+	requestID := frameMetaString(t, permission, ACPRequestIDMetaKey)
+	if requestID == "" {
+		t.Fatalf("permission has no stable request id: %s", permission)
+	}
+
+	conn := first.Stdin.(net.Conn)
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	sendFrame(t, first, fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":99,"method":"_ao/persistent_interaction_command","params":{"requestId":%q,"kind":"approval","decision":{"id":"allow"}}}`,
+		requestID,
+	))
+	accepted := readFrame(t, reader)
+	if !bytes.Contains(accepted, []byte(`"id":99`)) || !bytes.Contains(accepted, []byte(`"eventId"`)) {
+		t.Fatalf("command acceptance = %s", accepted)
+	}
+	_ = first.Stdin.Close() // daemon dies before its SDK answers the provider request
+
+	second := awaitAttach(t, d)
+	secondReader := bufio.NewReader(second.Stdout)
+	replayedUpdate := readFrame(t, secondReader)
+	if !bytes.Contains(replayedUpdate, []byte(`"session/update"`)) {
+		t.Fatalf("first replay = %s, want prompt update", replayedUpdate)
+	}
+	replayedPermission := readFrame(t, secondReader)
+	if !bytes.Contains(replayedPermission, []byte(`"session/request_permission"`)) {
+		t.Fatalf("second replay = %s, want pending permission", replayedPermission)
+	}
+	replayedCommand := readFrame(t, secondReader)
+	if !bytes.Contains(replayedCommand, []byte(`"_ao/persistent_interaction_command"`)) ||
+		!bytes.Contains(replayedCommand, []byte(requestID)) {
+		t.Fatalf("third replay = %s, want accepted command", replayedCommand)
+	}
+	_ = second.Stdin.Close()
+}
+
+func TestACPHostPreservesPromptCorrelationAndJournal(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := Config{
+		SessionID: "acp-live", DataDir: dataDir, Workdir: t.TempDir(), Protocol: ProtocolACP,
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1", "AO_CHAT_HOST_ACP_HELPER=1"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"},
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), cfg) }()
+	d := awaitDescriptor(t, dataDir, cfg.SessionID)
+	if d.Protocol != ProtocolACP {
+		t.Fatalf("descriptor protocol = %q", d.Protocol)
+	}
+	first, err := attach(context.Background(), d, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(first.Stdout)
+	sendFrame(t, first, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readFrame(t, reader)
+	sendFrame(t, first, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}`)
+	_ = readFrame(t, reader)
+	pid := requestProviderPID(t, first, 3, "pid")
+	sendFrame(t, first, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"acp-session-live","prompt":[]}}`)
+	update := readFrame(t, reader)
+	if !bytes.Contains(update, []byte(`"session/update"`)) || !bytes.Contains(update, []byte(ACPEventIDMetaKey)) {
+		t.Fatalf("live update = %s", update)
+	}
+	_ = first.Stdin.Close()
+
+	second := awaitAttach(t, d)
+	if second.ACPState == nil || second.ACPState.SessionID != "acp-session-live" ||
+		len(second.ACPState.InitializeResult) == 0 ||
+		(!second.ACPState.ActivePrompt && second.ACPState.PendingResultEventID == "") {
+		t.Fatalf("reconnect state = %+v", second.ACPState)
+	}
+	secondReader := bufio.NewReader(second.Stdout)
+	replayedUpdate := readFrame(t, secondReader)
+	if !bytes.Contains(replayedUpdate, []byte(`"session/update"`)) {
+		t.Fatalf("replayed update = %s", replayedUpdate)
+	}
+	completion := readFrame(t, secondReader)
+	if !bytes.Contains(completion, []byte(ACPPromptResultMethod)) ||
+		!bytes.Contains(completion, []byte(fmt.Sprintf(`"providerPid":%d`, pid))) {
+		t.Fatalf("replayed completion = %s", completion)
+	}
+	var completed struct {
+		Params struct {
+			EventID string `json:"eventId"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(completion, &completed); err != nil || completed.Params.EventID == "" {
+		t.Fatalf("completion event identity: %q: %v", completion, err)
+	}
+	sendFrame(t, second, fmt.Sprintf(
+		`{"jsonrpc":"2.0","method":"_ao/persistent_prompt_ack","params":{"eventId":%q}}`,
+		completed.Params.EventID,
+	))
+	if got := requestProviderPID(t, second, 1, "pid"); got != pid {
+		t.Fatalf("provider pid changed across daemon attachment: %d -> %d", pid, got)
+	}
+	_ = second.Stdin.Close()
+
+	third := awaitAttach(t, d)
+	if third.ACPState == nil || third.ACPState.PendingResultEventID != "" || third.ACPState.ActivePrompt {
+		t.Fatalf("acknowledged state = %+v", third.ACPState)
+	}
+	if got := requestProviderPID(t, third, 1, "pid"); got != pid {
+		t.Fatalf("provider pid changed after acknowledged replay: %d -> %d", pid, got)
+	}
+	_ = third.Stdin.Close()
+	if err := Shutdown(context.Background(), dataDir, cfg.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sendFrame(t *testing.T, transport *Transport, frame string) {
+	t.Helper()
+	if _, err := fmt.Fprintln(transport.Stdin, frame); err != nil {
+		t.Fatalf("send frame: %v", err)
+	}
+}
+
+func readFrame(t *testing.T, reader *bufio.Reader) []byte {
+	t.Helper()
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	return line
 }
 
 func TestHostReconnectsSameProviderAndReplaysDetachedOutput(t *testing.T) {
@@ -278,25 +489,23 @@ func TestConnectOrStartTimesOutSilentLiveHost(t *testing.T) {
 	address, accepted := silentHandshakePeer(t)
 	dataDir := t.TempDir()
 	const sessionID = "silent-connect"
-	if err := writeDescriptor(dataDir, Descriptor{
-		Version:   ProtocolVersion,
+	workdir := t.TempDir()
+	cfg := Config{
 		SessionID: sessionID,
-		Address:   address,
-		Token:     "token",
-		PID:       os.Getpid(),
+		DataDir:   dataDir,
+		Workdir:   workdir,
+		Argv:      []string{os.Args[0], "-test.run=TestProviderHelper"},
+	}
+	if err := writeDescriptor(dataDir, Descriptor{
+		Version: ProtocolVersion, SessionID: sessionID, OwnershipFingerprint: cfg.OwnershipFingerprint,
+		Address: address, Token: "token", PID: os.Getpid(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	workdir := t.TempDir()
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := ConnectOrStart(context.Background(), Config{
-			SessionID: sessionID,
-			DataDir:   dataDir,
-			Workdir:   workdir,
-			Argv:      []string{os.Args[0], "-test.run=TestProviderHelper"},
-		})
+		_, err := ConnectOrStart(context.Background(), cfg)
 		result <- err
 	}()
 
@@ -311,6 +520,92 @@ func TestConnectOrStartTimesOutSilentLiveHost(t *testing.T) {
 		_ = serverConn.Close()
 		<-result
 		t.Fatal("connect to silent live host exceeded the handshake limit")
+	}
+}
+
+func TestConnectOrStartRejectsChangedProviderOwner(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := Config{SessionID: "launch-fingerprint", DataDir: dataDir, Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}, Protocol: ProtocolACP, OwnershipFingerprint: "owner"}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), cfg) }()
+	_ = awaitDescriptor(t, dataDir, cfg.SessionID)
+	t.Cleanup(func() {
+		_ = Shutdown(context.Background(), dataDir, cfg.SessionID)
+		<-done
+	})
+
+	changed := cfg
+	changed.OwnershipFingerprint = "different-owner"
+	if _, err := ConnectOrStart(context.Background(), changed); !errors.Is(err, ErrIncompatible) {
+		t.Fatalf("changed launch error = %v, want ErrIncompatible", err)
+	}
+}
+
+func TestConnectOrStartPreparesOnlyWhenLaunchingProvider(t *testing.T) {
+	t.Run("live host", func(t *testing.T) {
+		dataDir := t.TempDir()
+		cfg := Config{
+			SessionID: "prepare-live", DataDir: dataDir, Workdir: t.TempDir(),
+			Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1"),
+			Argv: []string{os.Args[0], "-test.run=TestProviderHelper"},
+		}
+		done := make(chan error, 1)
+		go func() { done <- Run(context.Background(), cfg) }()
+		_ = awaitDescriptor(t, dataDir, cfg.SessionID)
+		t.Cleanup(func() {
+			_ = Shutdown(context.Background(), dataDir, cfg.SessionID)
+			<-done
+		})
+		prepareCalls := 0
+		cfg.Prepare = func(context.Context) (PreparedProvider, error) {
+			prepareCalls++
+			return PreparedProvider{}, errors.New("must not prepare a live host")
+		}
+		transport, err := ConnectOrStart(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("ConnectOrStart: %v", err)
+		}
+		_ = transport.Stdin.Close()
+		if prepareCalls != 0 {
+			t.Fatalf("live host preparation calls = %d", prepareCalls)
+		}
+	})
+
+	t.Run("new host", func(t *testing.T) {
+		dataDir := t.TempDir()
+		cfg := Config{
+			SessionID: "prepare-new", DataDir: dataDir, Workdir: t.TempDir(),
+			Env: os.Environ(), Argv: []string{os.Args[0], "-test.run=TestProviderHelper"},
+		}
+		prepareCalls := 0
+		cfg.Prepare = func(context.Context) (PreparedProvider, error) {
+			prepareCalls++
+			return PreparedProvider{
+				Env: append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1"), Argv: cfg.Argv,
+			}, nil
+		}
+		transport, err := ConnectOrStart(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("ConnectOrStart: %v", err)
+		}
+		_ = transport.Stdin.Close()
+		t.Cleanup(func() { _ = Shutdown(context.Background(), dataDir, cfg.SessionID) })
+		if prepareCalls != 1 {
+			t.Fatalf("new host preparation calls = %d, want 1", prepareCalls)
+		}
+	})
+}
+
+func TestValidateDescriptorAllowsLegacyRawHostOnly(t *testing.T) {
+	cfg := Config{Workdir: t.TempDir(), Argv: []string{"provider"}}
+	if err := validateDescriptor(cfg, Descriptor{Protocol: ProtocolRaw}); err != nil {
+		t.Fatalf("legacy raw descriptor: %v", err)
+	}
+	cfg.Protocol = ProtocolACP
+	if err := validateDescriptor(cfg, Descriptor{Protocol: ProtocolACP, OwnershipFingerprint: "owner"}); !errors.Is(err, ErrIncompatible) {
+		t.Fatalf("legacy ACP descriptor error = %v, want ErrIncompatible", err)
 	}
 }
 
@@ -344,6 +639,39 @@ func TestShutdownHonorsContextAfterDial(t *testing.T) {
 		_ = serverConn.Close()
 		<-result
 		t.Fatal("shutdown ignored its context after connecting")
+	}
+}
+
+func TestShutdownPreservesUnknownOwnerButAcceptsConclusiveDeath(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := Shutdown(context.Background(), dataDir, "missing"); err != nil {
+		t.Fatalf("missing host: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	for _, tc := range []struct {
+		name    string
+		version int
+		pid     int
+		want    error
+	}{
+		{"dead", ProtocolVersion, 2147483647, nil},
+		{"incompatible", ProtocolVersion + 1, os.Getpid(), ErrIncompatible},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := writeDescriptor(dataDir, Descriptor{
+				Version: tc.version, SessionID: tc.name, Address: address, PID: tc.pid, Token: "test",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := Shutdown(context.Background(), dataDir, tc.name); !errors.Is(err, tc.want) {
+				t.Fatalf("shutdown = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }
 

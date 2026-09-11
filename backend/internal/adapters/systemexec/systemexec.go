@@ -53,7 +53,10 @@ func (Adapter) LookPath(file string) (string, error) {
 // stdin. The small Env list augments the daemon environment rather than
 // replacing PATH and the user's package-manager configuration.
 func (Adapter) RunInstall(ctx context.Context, command ports.InstallCommand, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...) //nolint:gosec // G204: argv is selected from systeminstall's fixed recipes.
+	cmd, err := commandContext(ctx, command.Argv[0], command.Argv[1:]...)
+	if err != nil {
+		return err
+	}
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second
@@ -61,7 +64,14 @@ func (Adapter) RunInstall(ctx context.Context, command ports.InstallCommand, std
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Env = append(os.Environ(), command.Env...)
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	// Windows installers persist PATH changes outside the already-running
+	// daemon's process environment. Refresh it before adapter-backed
+	// verification tries to resolve the newly installed executable.
+	refreshExecutablePath()
+	return nil
 }
 
 // Probe takes one cancellation-aware snapshot of the package-manager facts
@@ -110,7 +120,10 @@ func (Adapter) Probe(ctx context.Context) (ports.InstallCapabilities, error) {
 func capabilityOutput(parent context.Context, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // fixed read-only argv from Probe.
+	cmd, err := commandContext(ctx, name, args...)
+	if err != nil {
+		return "", err
+	}
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second
@@ -165,7 +178,10 @@ func pathWritable(ctx context.Context, path string) (bool, error) {
 
 // Run executes argv with ctx and connects its output to the supplied writers.
 func (Adapter) Run(ctx context.Context, argv []string, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // G204: argv is built from fixed system service commands.
+	cmd, err := commandContext(ctx, argv[0], argv[1:]...)
+	if err != nil {
+		return err
+	}
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second

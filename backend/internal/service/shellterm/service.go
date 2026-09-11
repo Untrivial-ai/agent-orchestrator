@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -66,6 +67,7 @@ type Service struct {
 	// timestamps without a clock or entropy dependency.
 	now         func() time.Time
 	newHandleID func() (string, error)
+	executable  func() (string, error)
 
 	// gatesMu guards gates itself (the map), not the individual gate mutexes it
 	// holds.
@@ -164,8 +166,18 @@ func NewService(runtime ShellRuntime, store Store, projects ProjectRootLocator, 
 		log:         log,
 		now:         time.Now,
 		newHandleID: newShellTerminalHandleID,
+		executable:  os.Executable,
 		gates:       map[domain.SessionID]*sessionGate{},
 	}
+}
+
+func (s *Service) pinnedEnv() map[string]string {
+	path, err := agentlaunch.PinnedPATH(s.executable, os.Getenv, nil, s.dataDir)
+	if err != nil {
+		s.log.Warn("shell terminal PATH not pinned to the daemon binary; a bare `ao` may resolve to a different install", "err", err)
+		return nil
+	}
+	return map[string]string{"PATH": path}
 }
 
 // sessionGateFor returns the gate for id, creating it on first use.
@@ -242,6 +254,7 @@ func (s *Service) OpenShellTerminal(ctx context.Context, in OpenShellTerminalInp
 	}
 	return s.openTerminal(ctx, openTerminalConfig{
 		argv:       argv,
+		env:        s.pinnedEnv(),
 		projectID:  projectID,
 		sessionID:  in.SessionID,
 		workingDir: workingDir,

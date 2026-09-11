@@ -22,7 +22,6 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-	AlertTriangle,
 	ChevronRight,
 	Download,
 	Folder,
@@ -85,7 +84,8 @@ import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
 import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { useShellMaybe } from "../lib/shell-context";
 import { useSidebarUpdateDismissal } from "../hooks/useSidebarUpdateDismissal";
-import { useUpdateStatus } from "../hooks/useUpdateStatus";
+import { useRequestUpdateInstall } from "../hooks/useRequestUpdateInstall";
+import { useUpdateStatus, requestUpdateDownload } from "../hooks/useUpdateStatus";
 import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
 import { effectiveShortcutBindings, shortcutBindingKeys } from "../../shared/shortcuts";
 import {
@@ -426,7 +426,7 @@ export function Sidebar({
 	const updateStatus = useUpdateStatus();
 	const availableUpdateVersion = updateStatus.state === "available" ? updateStatus.version : undefined;
 	const updateDismissal = useSidebarUpdateDismissal(availableUpdateVersion);
-	const openUpdateInstallPrompt = useUiStore((state) => state.openUpdateInstallPrompt);
+	const requestUpdateInstall = useRequestUpdateInstall();
 	// Daemon status for the smoke suite's sr-only mirror in the footer. Null when
 	// rendered outside the shell (unit tests) — the mirror simply doesn't render.
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
@@ -504,6 +504,13 @@ export function Sidebar({
 	const orderedWorkspaces = useMemo(
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
+	);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find((candidate) => candidate.path === path);
+			if (workspace) selection.goProject(workspace.id);
+		},
+		[selection, workspaces],
 	);
 	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
 	const reorderSensors = useReorderSensors();
@@ -747,6 +754,9 @@ export function Sidebar({
 								onCloneProject={onCloneProject}
 								onCreateProject={onCreateProject}
 								onInitializeProject={onInitializeProject}
+								onOpenExistingProject={openExistingProject}
+								existingProjectPaths={workspaces.map((workspace) => workspace.path)}
+								existingProjectNames={workspaces.map((workspace) => workspace.name)}
 							/>
 						}
 					/>
@@ -833,7 +843,7 @@ export function Sidebar({
 					<UpdateStatusRow
 						availableDismissed={updateDismissal.dismissed}
 						onDismissAvailable={updateDismissal.dismiss}
-						onRequestInstall={openUpdateInstallPrompt}
+						onRequestInstall={requestUpdateInstall}
 						status={updateStatus}
 						tabIndex={isCollapsed ? -1 : 0}
 					/>
@@ -872,7 +882,7 @@ export function Sidebar({
 				>
 					<UpdateStatusRail
 						availableDismissed={updateDismissal.dismissed}
-						onRequestInstall={openUpdateInstallPrompt}
+						onRequestInstall={requestUpdateInstall}
 						status={updateStatus}
 						tabIndex={isCollapsed ? 0 : -1}
 					/>
@@ -1035,6 +1045,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		return () => cancelAnimationFrame(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
+	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const projectIsDragging = draggingProjectId === workspace.id;
 	// Keep completed PR sessions reachable while their runtime still exists.
@@ -1111,7 +1122,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting) return;
+		if (isProjectRestarting || isProvisioning) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1355,8 +1366,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																name: workspace.name,
 															})
 												}
-												className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-												disabled={isSpawning || isProjectRestarting}
+											className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
+											disabled={isSpawning || isProjectRestarting || isProvisioning}
 												onClick={() => void openOrchestrator()}
 												type="button"
 											>
@@ -1396,7 +1407,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										</TooltipContent>
 									</Tooltip>
 									<DropdownMenuContent side="right" align="start" className="min-w-44">
-										<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+										<DropdownMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
 											<Plus aria-hidden="true" />
 											{t("shell.newSession")}
 										</DropdownMenuItem>
@@ -1521,7 +1532,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				</motion.li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
-				<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+				<ContextMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
 					<Plus aria-hidden="true" />
 					{t("shell.newSession")}
 				</ContextMenuItem>
@@ -1697,17 +1708,9 @@ function SessionRow({
 	const [sessionPressed, setSessionPressed] = useState(false);
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
-	const pendingOpenRef = useRef<number | null>(null);
-	const cancelPendingOpen = useCallback(() => {
-		if (pendingOpenRef.current === null) return;
-		window.clearTimeout(pendingOpenRef.current);
-		pendingOpenRef.current = null;
-	}, []);
-	useEffect(() => cancelPendingOpen, [cancelPendingOpen]);
 	const beginRename = useCallback(() => {
-		cancelPendingOpen();
 		rename.begin();
-	}, [cancelPendingOpen, rename.begin]);
+	}, [rename.begin]);
 
 	if (rename.isEditing) {
 		return (
@@ -1795,26 +1798,12 @@ function SessionRow({
 							)}
 							{...(reorder?.listeners ?? {})}
 							onClick={(event) => {
-								if (event.detail === 0) {
-									cancelPendingOpen();
-									onOpen();
-									return;
-								}
-								if (event.detail > 1) {
-									cancelPendingOpen();
-									return;
-								}
+								if (event.detail > 1) return;
 								if (suppressTouchOpenRef.current) {
 									suppressTouchOpenRef.current = false;
 									return;
 								}
-								// Wait for the native double-click window before navigating. A
-								// second click cancels this so inline rename has no route side effect.
-								cancelPendingOpen();
-								pendingOpenRef.current = window.setTimeout(() => {
-									pendingOpenRef.current = null;
-									onOpen();
-								}, 500);
+								onOpen();
 							}}
 							onKeyDown={(event) => {
 								if (event.key !== "F2") return;
@@ -2086,15 +2075,17 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
  * this reason, so the staged build is read from there rather than from `state`.
  */
 type SidebarUpdateAction =
-	| { kind: "downloading"; percent: number }
+	| { kind: "downloading"; percent?: number; preparing: boolean }
 	| { kind: "download"; version?: string }
 	| { kind: "install"; version?: string; escalated: boolean }
-	| { kind: "retry" }
 	| null;
 
 function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean): SidebarUpdateAction {
-	if (status.state === "downloading") {
-		return { kind: "downloading", percent: Math.min(100, Math.max(0, status.percent ?? 0)) };
+	// Update failures belong in Settings, where the full message and recovery
+	// action have room. The sidebar stays focused on update progress and actions.
+	if (status.state === "error" && (status.staged === undefined || status.staged.ready === false)) return null;
+	if (status.state === "downloading" || status.state === "preparing" || status.staged?.ready === false) {
+		return { kind: "downloading", percent: status.percent, preparing: status.state === "preparing" || status.staged?.ready === false };
 	}
 	// `staged` is the stamp the main process puts on every status; the
 	// `downloaded` fallback keeps this correct for any status that predates it
@@ -2115,11 +2106,6 @@ function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean):
 		return { kind: "download", version: status.version };
 	}
 	if (staged) return { kind: "install", version: staged.version, escalated: staged.escalated };
-	// Ranked below a staged build on purpose: an update ready to install is more
-	// actionable than "checks are failing". Only when there is nothing better to
-	// show does the failure take the row — it used to render nothing at all,
-	// which reads as "up to date" rather than "checks are not getting through".
-	if (status.checksFailing === true) return { kind: "retry" };
 	return null;
 }
 
@@ -2181,13 +2167,13 @@ function UpdateStatusRow({
 							: t("shell.downloadUpdate")
 					}
 					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-					onClick={() => void aoBridge.updates.download()}
+					onClick={() => void requestUpdateDownload()}
 					tabIndex={tabIndex}
 					type="button"
 				>
 					<Download aria-hidden="true" className="size-icon-lg shrink-0" />
 					<span className="min-w-0 flex-1">
-						<span className="block truncate tracking-tight">{t("shell.updateAvailable")}</span>
+						<span className="block truncate tracking-tight">{t("shell.downloadUpdate")}</span>
 						{versionLabel && (
 							<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
 						)}
@@ -2218,30 +2204,10 @@ function UpdateStatusRow({
 			>
 				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
 				<span className="min-w-0 flex-1 truncate tabular-nums">
-					{t("settings.updates.downloading", { percent: action.percent })}
+					{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
+					{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
 				</span>
 			</div>
-		);
-	}
-
-	if (action.kind === "retry") {
-		return (
-			<button
-				aria-label={t("shell.retryUpdateCheck")}
-				className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning transition-colors hover:bg-warning/18 [&_svg]:text-warning"
-				data-testid="sidebar-update-failed"
-				onClick={() => void aoBridge.updates.check()}
-				tabIndex={tabIndex}
-				type="button"
-			>
-				<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1">
-					<span className="block truncate tracking-tight">{t("shell.updateCheckFailed")}</span>
-					<span className="block truncate text-caption font-normal text-warning">
-						{t("shell.retryUpdateCheck")}
-					</span>
-				</span>
-			</button>
 		);
 	}
 
@@ -2254,9 +2220,7 @@ function UpdateStatusRow({
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"flex w-full items-center gap-2.5 rounded-lg border border-primary/35 bg-primary/12 p-2.5 text-left text-control font-medium text-primary transition-colors hover:bg-primary/18 [&_svg]:text-primary",
-				action.escalated &&
-					"border-working/35 bg-working/12 text-working hover:bg-working/18 [&_svg]:text-working",
+				"flex w-full items-center gap-2.5 rounded-lg border border-success/35 bg-success/12 p-2.5 text-left text-control font-medium text-success transition-colors hover:bg-success/18 [&_svg]:text-success",
 			)}
 			data-testid="sidebar-update-ready"
 			onClick={onRequestInstall}
@@ -2303,7 +2267,7 @@ function UpdateStatusRail({
 								: t("shell.downloadUpdate")
 						}
 						className="grid size-9 place-items-center rounded-lg text-passive transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
-						onClick={() => void aoBridge.updates.download()}
+						onClick={() => void requestUpdateDownload()}
 						tabIndex={tabIndex}
 						type="button"
 					>
@@ -2316,7 +2280,7 @@ function UpdateStatusRail({
 	}
 
 	if (action.kind === "downloading") {
-		const label = t("settings.updates.downloading", { percent: action.percent });
+		const label = action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent });
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -2334,27 +2298,6 @@ function UpdateStatusRail({
 		);
 	}
 
-	if (action.kind === "retry") {
-		return (
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						aria-label={t("shell.retryUpdateCheck")}
-						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning transition-colors hover:bg-warning/18 [&_svg]:size-4"
-						onClick={() => void aoBridge.updates.check()}
-						tabIndex={tabIndex}
-						type="button"
-					>
-						<AlertTriangle aria-hidden="true" />
-					</button>
-				</TooltipTrigger>
-				<TooltipContent side="right">
-					{t("shell.updateCheckFailed")} · {t("shell.retryUpdateCheck")}
-				</TooltipContent>
-			</Tooltip>
-		);
-	}
-
 	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<Tooltip>
@@ -2367,9 +2310,7 @@ function UpdateStatusRail({
 					}
 					className={cn(
 						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						action.escalated
-							? "bg-working/12 text-working hover:bg-working/18"
-							: "text-passive hover:bg-interactive-hover hover:text-foreground",
+						"bg-success/12 text-success hover:bg-success/18",
 					)}
 					onClick={onRequestInstall}
 					tabIndex={tabIndex}
@@ -2501,11 +2442,19 @@ function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
 }
 
 function CreateProjectButton({
+	existingProjectPaths,
+	existingProjectNames,
 	hideTrigger = false,
 	onCloneProject,
 	onCreateProject,
 	onInitializeProject,
-}: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & { hideTrigger?: boolean }) {
+	onOpenExistingProject,
+}: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & {
+	existingProjectPaths: readonly string[];
+	existingProjectNames: readonly string[];
+	hideTrigger?: boolean;
+	onOpenExistingProject: (path: string) => void;
+}) {
 	const { t } = useTranslation();
 	// Single CreateProjectFlow owner for the sidebar: the header "+" stays mounted
 	// (CSS-hidden when collapsed or on the empty start page) so it can own
@@ -2520,7 +2469,10 @@ function CreateProjectButton({
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
 			onInitializeProject={onInitializeProject}
+			onOpenExistingProject={onOpenExistingProject}
 			openSignal={createProjectNonce}
+			existingProjectPaths={existingProjectPaths}
+			existingProjectNames={existingProjectNames}
 		>
 			{({ disabled, choosePath, label }) => (
 				<Tooltip>

@@ -61,6 +61,19 @@ func TestSpawnEnvProjectVarsCannotOverrideInternal(t *testing.T) {
 	}
 }
 
+func TestSpawnEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) {
+	env := spawnEnvForOS("mer-1", "mer", "issue-9", `C:\ao`, map[string]string{
+		"ao_session_id": "hacked",
+		"buildMode":     "production",
+	}, true)
+	if _, ok := env["ao_session_id"]; ok {
+		t.Fatal("case variant of protected AO_SESSION_ID survived")
+	}
+	if env[EnvSessionID] != "mer-1" || env["buildMode"] != "production" {
+		t.Fatalf("environment = %v, want protected ID and untouched project variable spelling", env)
+	}
+}
+
 func TestRuntimeEnvInjectsBrowserCapability(t *testing.T) {
 	manager := &Manager{
 		dataDir:             "/data",
@@ -167,7 +180,7 @@ func TestHookPATH(t *testing.T) {
 				}
 				return ""
 			}
-			got, err := HookPATH(tc.executable, getenv, tc.projectEnv)
+			got, err := HookPATH(tc.executable, getenv, tc.projectEnv, "/data")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("HookPATH = %q, want error", got)

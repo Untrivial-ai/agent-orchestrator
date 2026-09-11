@@ -34,7 +34,7 @@ export function buildWhenToUseSection(
 ): string[] {
 	const documentationDirection = referenceDocumentationSection
 		? "To learn the product, use the Documentation section below."
-		: "To learn the product, start with the docs index at https://aoagents.dev/docs/.";
+		: "To learn the product, start with the docs index at https://useao.dev/docs/.";
 
 	return [
 		"## When to use Agent Orchestrator",

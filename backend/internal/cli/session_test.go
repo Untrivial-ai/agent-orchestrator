@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type sessionRequestLog struct {
@@ -220,6 +221,144 @@ func TestSessionList_JSONOutputDecodes(t *testing.T) {
 	}
 }
 
+func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var detailsMu sync.Mutex
+	detailRequests := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/sessions":
+			if r.URL.Query().Get("active") == "false" {
+				_, _ = io.WriteString(w, `{"sessions":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"sessions":[
+				{"id":"demo-1","projectId":"demo","kind":"worker","branch":"feat/INT-1327","activity":{"state":"working","lastActivityAt":"2026-06-02T12:00:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"working","prs":[{"number":3,"ci":"passing","review":"approved"}]},
+				{"id":"demo-2","projectId":"demo","kind":"worker","branch":"feat/INT-1328","activity":{"state":"idle","lastActivityAt":"2026-06-02T11:55:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"idle","prs":[{"number":2,"ci":"failing","review":"changes_requested"}]}
+			]}`)
+		case "/api/v1/sessions/demo-1/pr":
+			detailsMu.Lock()
+			detailRequests["demo-1"]++
+			detailsMu.Unlock()
+			_, _ = io.WriteString(w, `{"sessionId":"demo-1","prs":[{"number":3,"ci":{"state":"passing"},"review":{"decision":"approved","unresolvedThreadCount":2}}]}`)
+		case "/api/v1/sessions/demo-2/pr":
+			detailsMu.Lock()
+			detailRequests["demo-2"]++
+			detailsMu.Unlock()
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"message":"SCM temporarily unavailable"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	now := time.Date(2026, 6, 2, 12, 5, 0, 0, time.UTC)
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return now },
+	}, "session", "ls", "--project", "demo")
+	if err != nil {
+		t.Fatalf("session ls failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{"SESSION", "BRANCH", "THREADS", "demo-1", "feat/INT-1327", "#3", "passing", "approved", "2", "working", "5m ago", "demo-2", "#2", "failing", "changes_requested"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	detailsMu.Lock()
+	gotRequests := map[string]int{"demo-1": detailRequests["demo-1"], "demo-2": detailRequests["demo-2"]}
+	detailsMu.Unlock()
+	if !reflect.DeepEqual(gotRequests, map[string]int{"demo-1": 1, "demo-2": 1}) {
+		t.Fatalf("PR summary requests = %#v, want one per session", gotRequests)
+	}
+
+	out, errOut, err = executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return now },
+	}, "session", "ls", "--project", "demo", "--json")
+	if err != nil {
+		t.Fatalf("session ls --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got sessionListOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode enriched JSON: %v\noutput=%s", err, out)
+	}
+	if len(got.Data) != 2 || got.Data[0].Branch != "feat/INT-1327" || got.Data[0].Activity != "working" || got.Data[0].PRs[0].Threads == nil || *got.Data[0].PRs[0].Threads != 2 {
+		t.Fatalf("first enriched entry = %#v, want branch, activity, and 2 threads", got.Data)
+	}
+	if got.Data[1].PRs[0].Threads != nil || got.Data[1].PRs[0].CI != "failing" || got.Data[1].PRs[0].Review != "changes_requested" {
+		t.Fatalf("fallback entry = %#v, want basic facts and unknown thread count", got.Data[1])
+	}
+}
+
+func TestSessionList_ThreadCountUnknownVersusObservedZero(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/sessions":
+			if r.URL.Query().Get("active") == "false" {
+				_, _ = io.WriteString(w, `{"sessions":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"sessions":[
+				{"id":"old-1","projectId":"demo","kind":"worker","activity":{"state":"idle","lastActivityAt":"2026-06-02T11:55:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"idle","prs":[{"number":1,"ci":"passing","review":"approved"}]},
+				{"id":"zero-1","projectId":"demo","kind":"worker","activity":{"state":"idle","lastActivityAt":"2026-06-02T11:55:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"idle","prs":[{"number":2,"ci":"passing","review":"approved"}]}
+			]}`)
+		case "/api/v1/sessions/old-1/pr":
+			// A pre-change daemon: the summary endpoint succeeds but does not
+			// carry unresolvedThreadCount. That must read as unknown, not zero.
+			_, _ = io.WriteString(w, `{"sessionId":"old-1","prs":[{"number":1,"ci":{"state":"passing"},"review":{"decision":"approved"}}]}`)
+		case "/api/v1/sessions/zero-1/pr":
+			_, _ = io.WriteString(w, `{"sessionId":"zero-1","prs":[{"number":2,"ci":{"state":"passing"},"review":{"decision":"approved","unresolvedThreadCount":0}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return time.Date(2026, 6, 2, 12, 5, 0, 0, time.UTC) },
+	}, "session", "ls", "--project", "demo", "--json")
+	if err != nil {
+		t.Fatalf("session ls --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got sessionListOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode JSON: %v\noutput=%s", err, out)
+	}
+	if len(got.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2; data=%#v", len(got.Data), got.Data)
+	}
+	if got.Data[0].PRs[0].Threads != nil {
+		t.Fatalf("older-daemon entry threads = %#v, want unknown (nil)", got.Data[0].PRs[0].Threads)
+	}
+	if got.Data[1].PRs[0].Threads == nil || *got.Data[1].PRs[0].Threads != 0 {
+		t.Fatalf("observed-zero entry threads = %#v, want explicit 0", got.Data[1].PRs[0].Threads)
+	}
+
+	out, errOut, err = executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return time.Date(2026, 6, 2, 12, 5, 0, 0, time.UTC) },
+	}, "session", "ls", "--project", "demo")
+	if err != nil {
+		t.Fatalf("session ls failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, row := range []string{"old-1", "zero-1"} {
+		if !strings.Contains(out, row) {
+			t.Fatalf("output missing %q:\n%s", row, out)
+		}
+	}
+	if !strings.Contains(out, "-") {
+		t.Fatalf("table output missing unknown-count dash:\n%s", out)
+	}
+}
+
 func TestSessionList_AllIncludesOrchestratorsWithoutHiddenHint(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, _ := sessionCommandServer(t)
@@ -404,6 +543,49 @@ func TestSessionCleanup_YesSkipsPrompt(t *testing.T) {
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+// TestSessionCleanup_ReportsAlreadyGoneWorkspacesSeparately: a workspace whose
+// directory was already missing tears down without error but reclaims nothing.
+// Folding it into the cleaned count is what lets a batch run report hundreds of
+// sessions cleaned while disk usage does not move, so the summary has to keep
+// the two apart.
+func TestSessionCleanup_ReportsAlreadyGoneWorkspacesSeparately(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
+			_, _ = io.WriteString(w, `{"sessions":[`+
+				sessionJSON("demo-old", "demo", "worker", "terminated", true)+`,`+
+				sessionJSON("demo-orch", "demo", "orchestrator", "terminated", true)+`]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/cleanup":
+			_, _ = io.WriteString(w, `{"ok":true,"cleaned":["demo-old"],"alreadyGone":["demo-orch"],"skipped":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "cleanup", "--project", "demo", "--yes")
+	if err != nil {
+		t.Fatalf("session cleanup failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{
+		"Cleaned: demo-old",
+		"Already gone: demo-orch (workspace was missing; nothing reclaimed)",
+		"Cleanup complete. 1 session cleaned, 1 already gone.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("cleanup output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Cleaned: demo-orch") {
+		t.Fatalf("a workspace that was already gone must not be reported as cleaned:\n%s", out)
 	}
 }
 
