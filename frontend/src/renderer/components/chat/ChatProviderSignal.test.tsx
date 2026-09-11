@@ -345,8 +345,8 @@ describe("provider error", () => {
 					status: "failed",
 					summary: "Reconnecting... [1/5]",
 					detail: {
-						message: "Reconnecting... [1/5]",
-						error:
+						error: "Reconnecting... [1/5]",
+						details:
 							"stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing",
 					},
 				})}

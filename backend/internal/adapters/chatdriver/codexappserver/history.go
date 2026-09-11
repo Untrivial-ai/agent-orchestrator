@@ -186,8 +186,8 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 			ProviderTurnID:  turn.ID,
 			TurnState:       state,
 		}
-		if turn.Error != nil && turn.Error.Message != "" {
-			completed.Err = errors.New(turn.Error.Message)
+		if turn.Error != nil {
+			completed.Err = codexProviderFailure(turn.Error)
 		}
 		events = append(events, completed)
 	}

@@ -48,9 +48,8 @@ export const ReauthBanner = memo(function ReauthBanner({
 					Sign in again to keep going
 				</strong>
 				<p className="text-[11px] leading-relaxed text-foreground">
-					{account.reauthReason ??
-						"The provider rejected this session's credentials."}{" "}
-					Nothing will run until it is fixed, and the worktree is untouched.
+					The provider rejected this session&rsquo;s credentials. Nothing will run until it is
+					fixed, and the worktree is untouched.
 				</p>
 				<p className="text-[11px] leading-relaxed text-muted-foreground">
 					{command ? (

@@ -8,7 +8,7 @@ import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBa
 // that teaches readers to ignore the row.
 
 describe("ReauthBanner", () => {
-	it("names the command, because re-authenticating is not something AO can do", () => {
+	it("names the command without repeating the provider's turn failure", () => {
 		render(
 			<ReauthBanner
 				account={{
@@ -20,7 +20,8 @@ describe("ReauthBanner", () => {
 		);
 		expect(screen.getByRole("alert")).toBeInTheDocument();
 		expect(screen.getByText("codex login")).toBeInTheDocument();
-		expect(screen.getByText(/The stored session expired/)).toBeInTheDocument();
+		expect(screen.queryByText(/The stored session expired/)).not.toBeInTheDocument();
+		expect(screen.getByText(/rejected this session’s credentials/)).toBeInTheDocument();
 	});
 
 	it("says the worktree is untouched, since nothing else about the session works", () => {

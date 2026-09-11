@@ -2272,7 +2272,7 @@ func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 
 /* ---- tests ------------------------------------------------------------- */
 
-func TestProviderPromptFailurePersistsOriginalTextOnce(t *testing.T) {
+func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
 	h := newHarness(t)
 	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
 		Text: "hello", ClientMessageID: "failure-prompt", Origin: domain.MessageOriginHuman,
@@ -2281,39 +2281,62 @@ func TestProviderPromptFailurePersistsOriginalTextOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	message := "Provider rejected this request\n\nOriginal details with https://example.com/help"
-	failure := ports.ChatEvent{
-		Kind: ports.ChatEventError, ProviderTurnID: turn.ProviderTurnID,
-		ProviderEventID: "host:1:failure", Err: errors.New(message),
+	completion := ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+		ProviderEventID: "host:1", TurnState: domain.TurnStateCompleted,
+		Err: ports.NewChatProviderFailure(
+			"Provider rejected this request",
+			"Original details with https://example.com/help",
+			ports.ChatProviderRecoveryReauthenticate,
+		),
 	}
 	h.conv.emit(
 		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
-		failure,
-		// A daemon restart before the terminal ACK can replay the error.
-		failure,
-		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
-			ProviderEventID: "host:1", TurnState: domain.TurnStateFailed},
+		completion,
+		// A daemon restart can replay the terminal event with the same identity.
+		completion,
 	)
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed &&
+			s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil
 	})
-	var failures int
+	if snapshot.Turns[0].ErrorMessage != message {
+		t.Fatalf("turn error = %q", snapshot.Turns[0].ErrorMessage)
+	}
+	if snapshot.Conversation.Account.ReauthReason != message {
+		t.Fatalf("reauth reason = %q", snapshot.Conversation.Account.ReauthReason)
+	}
 	for _, activity := range snapshot.Activities {
-		if activity.Kind == domain.ActivityKindError {
-			failures++
-			if activity.Summary != message || activity.Status != domain.ActivityStatusFailed {
-				t.Fatalf("failure = %#v", activity)
-			}
-			var detail map[string]string
-			if err := json.Unmarshal(activity.Detail, &detail); err != nil {
-				t.Fatal(err)
-			}
-			if detail["error"] != message {
-				t.Fatalf("detail = %#v", detail)
-			}
+		if activity.Kind == domain.ActivityKindError || strings.Contains(activity.ProviderItemID, "ao-reauth-") {
+			t.Fatalf("terminal failure was duplicated as an activity: %#v", activity)
 		}
 	}
-	if failures != 1 {
-		t.Fatalf("error rows = %d, want one durable row", failures)
+}
+
+func TestStandaloneProviderFailurePersistsStructuredCopy(t *testing.T) {
+	h := newHarness(t)
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventError, ProviderEventID: "provider-error-1",
+		Err: ports.NewChatProviderFailure(
+			"Connection interrupted",
+			"Inspect https://example.com/status",
+			"",
+		),
+	})
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Activities) == 1 && s.Activities[0].Kind == domain.ActivityKindError
+	})
+	activity := snapshot.Activities[0]
+	if activity.Summary != "Connection interrupted" {
+		t.Fatalf("summary = %q", activity.Summary)
+	}
+	var detail map[string]string
+	if err := json.Unmarshal(activity.Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["error"] != "Connection interrupted" || detail["details"] != "Inspect https://example.com/status" {
+		t.Fatalf("detail = %#v", detail)
 	}
 }
 

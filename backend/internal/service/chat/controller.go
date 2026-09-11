@@ -2363,14 +2363,19 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if event.Err != nil {
 			message = event.Err.Error()
 		}
-		state := event.TurnState
-		if state == "" {
-			// A completion with no status is not evidence of success.
-			state = domain.TurnStateFailed
-		}
+		state := settledTurnState(event)
 		if err := c.store.SettleTurn(
 			ctx, c.conversation.ID, event.ProviderTurnID, state, message, now); err != nil {
 			return err
+		}
+		var failure *ports.ChatProviderFailure
+		if errors.As(event.Err, &failure) && failure != nil && failure.Recovery == ports.ChatProviderRecoveryReauthenticate {
+			if err := c.recordAccount(ctx, ports.ChatAccount{
+				ReauthRequired: true,
+				ReauthReason:   failure.Error(),
+			}, now); err != nil {
+				return err
+			}
 		}
 		return nil
 
@@ -2687,13 +2692,31 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if event.Err != nil {
 			message = event.Err.Error()
 		}
-		detail, _ := json.Marshal(map[string]string{"error": message})
+		summary := message
+		detailFields := map[string]string{"error": message}
+		var failure *ports.ChatProviderFailure
+		if errors.As(event.Err, &failure) && failure != nil {
+			summary = failure.Title
+			detailFields["error"] = failure.Title
+			if failure.Detail != "" {
+				detailFields["details"] = failure.Detail
+			}
+			if failure.Recovery == ports.ChatProviderRecoveryReauthenticate {
+				if err := c.recordAccount(ctx, ports.ChatAccount{
+					ReauthRequired: true,
+					ReauthReason:   failure.Error(),
+				}, now); err != nil {
+					return err
+				}
+			}
+		}
+		detail, _ := json.Marshal(detailFields)
 		return c.store.UpsertActivity(ctx, c.conversation.ID, event.ProviderTurnID,
 			domain.ConversationActivity{
 				ID:      c.newID(),
 				Kind:    domain.ActivityKindError,
 				Status:  domain.ActivityStatusFailed,
-				Summary: message,
+				Summary: summary,
 				Detail:  detail,
 			}, now)
 
@@ -2715,13 +2738,24 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)
 		}
 	case ports.ChatEventTurnCompleted:
+		var failure *ports.ChatProviderFailure
+		reauthRequired := errors.As(event.Err, &failure) && failure != nil && failure.Recovery == ports.ChatProviderRecoveryReauthenticate
+		if reauthRequired && c.onAccountChanged != nil {
+			c.onAccountChanged(c.sessionID, c.generation, c.harness)
+		}
 		if !primaryTurn {
 			return
 		}
-		c.reportActivity(ctx, domain.ActivityIdle, "chat.turn.completed", now)
+		activityState := domain.ActivityIdle
+		activityEvent := "chat.turn.completed"
+		if reauthRequired {
+			activityState = domain.ActivityWaitingInput
+			activityEvent = "chat.account.reauth"
+		}
+		c.reportActivity(ctx, activityState, activityEvent, now)
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
-		c.drainLocked(ctx, event.TurnState == domain.TurnStateCompleted)
+		c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted)
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
 	case ports.ChatEventApprovalResolved:
@@ -2745,7 +2779,28 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if event.Account != nil && event.Account.ReauthRequired {
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
 		}
+	case ports.ChatEventError:
+		var failure *ports.ChatProviderFailure
+		if errors.As(event.Err, &failure) && failure != nil && failure.Recovery == ports.ChatProviderRecoveryReauthenticate {
+			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
+			if c.onAccountChanged != nil {
+				c.onAccountChanged(c.sessionID, c.generation, c.harness)
+			}
+		}
 	}
+}
+
+// settledTurnState resolves the only ambiguous terminal combination once. An
+// attached error is authoritative failure unless the provider explicitly says
+// the user interrupted the turn; an absent state is never evidence of success.
+func settledTurnState(event ports.ChatEvent) domain.TurnState {
+	if event.TurnState == domain.TurnStateInterrupted {
+		return domain.TurnStateInterrupted
+	}
+	if event.Err != nil || event.TurnState == "" {
+		return domain.TurnStateFailed
+	}
+	return event.TurnState
 }
 
 func (c *Controller) reportInteractionResolved(ctx context.Context, event string, now time.Time) {
@@ -2812,22 +2867,7 @@ func (c *Controller) applyAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
-	c.mu.Lock()
-	if update.AuthMode != "" {
-		c.account.AuthMode = update.AuthMode
-	}
-	if update.PlanLabel != "" {
-		c.account.PlanLabel = update.PlanLabel
-	}
-	if update.ReauthRequired {
-		at := now
-		c.account.ReauthRequiredAt = &at
-		c.account.ReauthReason = update.ReauthReason
-	}
-	account := c.account
-	c.mu.Unlock()
-
-	if err := c.store.RecordAccount(ctx, c.conversation.ID, account, now); err != nil {
+	if err := c.recordAccount(ctx, update, now); err != nil {
 		return err
 	}
 	if !update.ReauthRequired {
@@ -2848,6 +2888,33 @@ func (c *Controller) applyAccount(
 			// instead of filling the timeline with the same notice.
 			ProviderItemID: "ao-reauth-" + firstNonEmpty(update.ReauthReason, "unknown"),
 		}, now)
+}
+
+// recordAccount updates the latest account projection without creating a
+// timeline row. A terminal provider failure already occupies the turn's outcome;
+// recording recovery state here lets persistent UI explain what to do next
+// without duplicating the same provider prose as another event.
+func (c *Controller) recordAccount(
+	ctx context.Context,
+	update ports.ChatAccount,
+	now time.Time,
+) error {
+	c.mu.Lock()
+	if update.AuthMode != "" {
+		c.account.AuthMode = update.AuthMode
+	}
+	if update.PlanLabel != "" {
+		c.account.PlanLabel = update.PlanLabel
+	}
+	if update.ReauthRequired {
+		at := now
+		c.account.ReauthRequiredAt = &at
+		c.account.ReauthReason = update.ReauthReason
+	}
+	account := c.account
+	c.mu.Unlock()
+
+	return c.store.RecordAccount(ctx, c.conversation.ID, account, now)
 }
 
 // applyThreadState folds a thread report into what AO already knows.

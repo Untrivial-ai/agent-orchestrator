@@ -957,25 +957,25 @@ func sessionFailure(meta map[string]any) map[string]any {
 }
 
 // Claude puts negotiated terminal failures on the prompt response, which still
-// has stopReason=end_turn. Use the protocol's severity and actions, never match
-// provider prose or maintain a list of subscription/limit error messages.
-func promptResponseFailure(meta map[string]any) (message string, reauth bool) {
+// has stopReason=end_turn. Translate the protocol's severity and actions into the
+// shared provider-failure contract; never match provider prose or maintain a list
+// of subscription/limit error messages.
+func promptResponseFailure(meta map[string]any) *ports.ChatProviderFailure {
 	failure := sessionFailure(meta)
 	if failure["severity"] != "error" {
-		return "", false
+		return nil
 	}
-	message, _ = failure["title"].(string)
-	if details, ok := failure["details"].(string); ok && strings.TrimSpace(details) != "" && details != message {
-		message += "\n\n" + details
-	}
+	title, _ := failure["title"].(string)
+	details, _ := failure["details"].(string)
+	var recovery ports.ChatProviderRecovery
 	if actions, ok := failure["actions"].([]any); ok {
 		for _, action := range actions {
 			if action == "login" {
-				reauth = true
+				recovery = ports.ChatProviderRecoveryReauthenticate
 			}
 		}
 	}
-	return message, reauth
+	return ports.NewChatProviderFailure(title, details, recovery)
 }
 
 // completeProviderFailure removes a stale retry warning as soon as the provider

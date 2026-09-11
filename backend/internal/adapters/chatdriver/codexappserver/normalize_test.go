@@ -2,6 +2,7 @@ package codexappserver
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,6 +47,41 @@ func TestNormalizeTurnLifecycle(t *testing.T) {
 	if done.Kind != ports.ChatEventTurnCompleted || done.TurnState != domain.TurnStateCompleted ||
 		done.ProviderConversationID != "th1" {
 		t.Fatalf("turn/completed -> %+v", done)
+	}
+}
+
+func TestNormalizeCodexFailuresUseSharedProviderCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, params string
+		wantKind             ports.ChatEventKind
+	}{
+		{
+			name:     "terminal turn",
+			method:   "turn/completed",
+			params:   `{"threadId":"th1","turn":{"id":"tu1","status":"failed","items":[],"error":{"message":"Request failed","additionalDetails":"See https://example.com/help","codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":500}}}}}`,
+			wantKind: ports.ChatEventTurnCompleted,
+		},
+		{
+			name:     "standalone notification",
+			method:   "error",
+			params:   `{"threadId":"th1","turnId":"tu1","willRetry":false,"error":{"message":"Request failed","additionalDetails":"See https://example.com/help"}}`,
+			wantKind: ports.ChatEventError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := normalizeOne(t, tc.method, tc.params)
+			if event.Kind != tc.wantKind || event.ProviderConversationID != "th1" || event.ProviderTurnID != "tu1" {
+				t.Fatalf("event = %#v", event)
+			}
+			var failure *ports.ChatProviderFailure
+			if !errors.As(event.Err, &failure) {
+				t.Fatalf("error = %#v", event.Err)
+			}
+			if failure.Title != "Request failed" || failure.Detail != "See https://example.com/help" ||
+				failure.Error() != "Request failed\n\nSee https://example.com/help" {
+				t.Fatalf("failure = %#v", failure)
+			}
+		})
 	}
 }
 

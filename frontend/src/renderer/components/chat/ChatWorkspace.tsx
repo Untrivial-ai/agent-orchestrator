@@ -842,14 +842,6 @@ export function ChatWorkspace({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
-	const reauthErrorInChat = snapshot.account?.reauthReason
-		? snapshot.items.some(
-				(item) =>
-					item.kind === "activity" &&
-					item.activityKind === "error" &&
-					item.summary === snapshot.account?.reauthReason,
-			)
-		: false;
 	const editHumanMessage = onEditMessage;
 	const pendingApproval = useMemo(
 		() =>
@@ -1120,7 +1112,7 @@ export function ChatWorkspace({
 					{/* Ordered by what blocks what. A session that needs credentials cannot make
 				    progress at all, so it is stated first; the controller's own health next;
 				    then the two that degrade a session rather than stopping it. */}
-					{snapshot.account && !reauthErrorInChat ? (
+					{snapshot.account ? (
 						<ReauthBanner account={snapshot.account} harness={snapshot.harness} />
 					) : null}
 					<ControllerBanner
@@ -2488,14 +2480,21 @@ const TurnGroup = memo(function TurnGroup({
 	queued: boolean;
 	newHumanMessageIds: ReadonlySet<string>;
 }) {
+	const terminalFailureSupersedesProviderStatus =
+		group.outcome?.state === "failed" && Boolean(group.outcome.error);
 	const runs = useMemo(
 		() =>
 			runsOf(
-				group.liveProviderFailure
-					? group.items.filter((item) => item.id !== group.liveProviderFailure?.id)
-					: group.items,
+				group.items.filter((item) => {
+					if (item.id === group.liveProviderFailure?.id) return false;
+					return !(
+						terminalFailureSupersedesProviderStatus &&
+						item.kind === "activity" &&
+						item.detail?.event === "provider.failure"
+					);
+				}),
 			),
-		[group.items, group.liveProviderFailure],
+		[group.items, group.liveProviderFailure, terminalFailureSupersedesProviderStatus],
 	);
 	const copyableMessageId = group.outcome
 		? [...group.items]

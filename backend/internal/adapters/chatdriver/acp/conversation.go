@@ -560,34 +560,29 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	var state domain.TurnState
+	var turnErr error
 	if err != nil {
 		if interruptedLocally || errors.Is(err, context.Canceled) {
 			state = domain.TurnStateInterrupted
 		} else {
 			state = domain.TurnStateFailed
 			if isACPAuthRequired(err) {
-				c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{
-					ReauthRequired: true, ReauthReason: "Provider authentication expired",
-				}})
-				err = normalizeACPError("ACP session/prompt", err)
+				normalized := normalizeACPError("ACP session/prompt", err)
+				turnErr = ports.NewChatProviderFailure(
+					normalized.Error(),
+					"",
+					ports.ChatProviderRecoveryReauthenticate,
+				)
+			} else {
+				turnErr = err
 			}
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderTurnID: turnID, Err: err})
 		}
 	} else {
 		state = turnState(resp.StopReason)
-		if message, reauth := promptResponseFailure(resp.Meta); message != "" &&
+		if failure := promptResponseFailure(resp.Meta); failure != nil &&
 			state != domain.TurnStateInterrupted && !interruptedLocally {
 			state = domain.TurnStateFailed
-			failureEventID, accountEventID := "", ""
-			if eventID != "" {
-				failureEventID, accountEventID = eventID+":failure", eventID+":account"
-			}
-			if reauth {
-				c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, ProviderEventID: accountEventID, Account: &ports.ChatAccount{
-					ReauthRequired: true, ReauthReason: message,
-				}})
-			}
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderEventID: failureEventID, ProviderTurnID: turnID, Err: errors.New(message)})
+			turnErr = failure
 		}
 		if resp.Usage != nil {
 			cached := 0
@@ -609,7 +604,7 @@ func (c *conversation) finishPrompt(
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state,
+		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
 	})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 

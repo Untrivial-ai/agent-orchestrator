@@ -82,6 +82,25 @@ func TestReadHistoryReconstructsNativeTurnsForTheChatTimeline(t *testing.T) {
 	}
 }
 
+func TestReadHistoryPreservesStructuredProviderFailure(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"failed","items":[],"error":{"message":"Usage limit reached","additionalDetails":"Resets tomorrow."}}`+
+		`]}}`)
+
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(events) != 2 || events[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %#v", events)
+	}
+	var failure *ports.ChatProviderFailure
+	if !errors.As(events[1].Err, &failure) || failure.Title != "Usage limit reached" || failure.Detail != "Resets tomorrow." {
+		t.Fatalf("completion error = %#v", events[1].Err)
+	}
+}
+
 func TestReadHistoryMakesMissingItemIDsUniqueAcrossTurns(t *testing.T) {
 	conv, srv := openConversation(t)
 	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+

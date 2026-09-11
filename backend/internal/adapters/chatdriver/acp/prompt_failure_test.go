@@ -3,9 +3,9 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 
 	acpsdk "github.com/coder/acp-go-sdk"
@@ -62,27 +62,14 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 				if err := opened.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 					t.Fatal(err)
 				}
-				var errorsSeen, accountsSeen, usagesSeen, completionsSeen int
+				var usagesSeen, completionsSeen int
 				for {
 					event := nextEvent(t, opened.Events())
 					switch event.Kind {
 					case ports.ChatEventError:
-						errorsSeen++
-						if event.ProviderEventID != "terminal-event-1:failure" {
-							t.Fatalf("unstable error event: %#v", event)
-						}
-						want := tc.title
-						if tc.details != "" && tc.details != tc.title {
-							want += "\n\n" + tc.details
-						}
-						if event.Err == nil || event.Err.Error() != want || event.ProviderTurnID != ref.ProviderTurnID {
-							t.Fatalf("error = %#v; want %q", event, want)
-						}
+						t.Fatalf("terminal failure emitted a second timeline event: %#v", event)
 					case ports.ChatEventAccountChanged:
-						accountsSeen++
-						if !tc.reauth || event.Account == nil || !event.Account.ReauthRequired || !strings.Contains(event.Account.ReauthReason, tc.title) {
-							t.Fatalf("account = %#v", event)
-						}
+						t.Fatalf("terminal failure emitted a second account event: %#v", event)
 					case ports.ChatEventUsage:
 						usagesSeen++
 						if event.Usage == nil || event.Usage.TotalTokens != 15 {
@@ -100,20 +87,39 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 						if attempt == 0 && event.ProviderEventID != "terminal-event-1" {
 							t.Fatalf("lost host event ID: %#v", event)
 						}
+						if attempt == 0 {
+							var failure *ports.ChatProviderFailure
+							if !errors.As(event.Err, &failure) {
+								t.Fatalf("completion error = %#v", event.Err)
+							}
+							wantDetail := tc.details
+							if wantDetail == tc.title {
+								wantDetail = ""
+							}
+							if failure.Title != tc.title || failure.Detail != wantDetail {
+								t.Fatalf("failure = %#v", failure)
+							}
+							wantRecovery := ports.ChatProviderRecovery("")
+							if tc.reauth {
+								wantRecovery = ports.ChatProviderRecoveryReauthenticate
+							}
+							if failure.Recovery != wantRecovery {
+								t.Fatalf("recovery = %q; want %q", failure.Recovery, wantRecovery)
+							}
+						} else if event.Err != nil {
+							t.Fatalf("successful completion retained prior failure: %#v", event.Err)
+						}
 					}
 					if event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady {
 						break
 					}
 				}
-				wantErrors, wantAccounts, wantUsage := 1, 0, 1
-				if tc.reauth {
-					wantAccounts = 1
-				}
+				wantUsage := 1
 				if attempt == 1 {
-					wantErrors, wantAccounts, wantUsage = 0, 0, 0
+					wantUsage = 0
 				}
-				if errorsSeen != wantErrors || accountsSeen != wantAccounts || usagesSeen != wantUsage || completionsSeen != 1 {
-					t.Fatalf("events: errors=%d accounts=%d usage=%d completions=%d", errorsSeen, accountsSeen, usagesSeen, completionsSeen)
+				if usagesSeen != wantUsage || completionsSeen != 1 {
+					t.Fatalf("events: usage=%d completions=%d", usagesSeen, completionsSeen)
 				}
 				// A successful follow-up must not inherit the preceding error.
 				agent.mu.Lock()
@@ -146,8 +152,8 @@ func TestPromptResponseFailureIgnoresNonErrors(t *testing.T) {
 		{"invalid title", testPromptFailureMeta(map[string]any{"id": "1", "title": []any{"error"}, "severity": "error"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if message, reauth := promptResponseFailure(tc.meta); message != "" || reauth {
-				t.Fatalf("message=%q reauth=%v", message, reauth)
+			if failure := promptResponseFailure(tc.meta); failure != nil {
+				t.Fatalf("failure=%#v", failure)
 			}
 		})
 	}
@@ -179,16 +185,10 @@ func TestACPReplayedPromptFailure(t *testing.T) {
 				conv.finishPrompt("durable-turn", response, nil)
 			}
 			close(conv.events)
-			var failures, completions int
+			var completions int
 			for event := range conv.events {
 				if event.Kind == ports.ChatEventError {
-					failures++
-					if event.Err.Error() != "Provider rejected this request\n\nOriginal provider details" {
-						t.Fatalf("lost detail: %#v", event)
-					}
-					if replay && event.ProviderEventID != "host:1:failure" {
-						t.Fatalf("lost replay identity: %#v", event)
-					}
+					t.Fatalf("terminal failure emitted a second timeline event: %#v", event)
 				}
 				if event.Kind == ports.ChatEventTurnCompleted {
 					completions++
@@ -199,14 +199,23 @@ func TestACPReplayedPromptFailure(t *testing.T) {
 					if event.TurnState != want {
 						t.Fatalf("cancelled=%v replay=%v: completion=%#v", cancelled, replay, event)
 					}
+					if replay && event.ProviderEventID != "host:1" {
+						t.Fatalf("lost replay identity: %#v", event)
+					}
+					if cancelled {
+						if event.Err != nil {
+							t.Fatalf("cancelled completion has error: %#v", event)
+						}
+					} else {
+						var failure *ports.ChatProviderFailure
+						if !errors.As(event.Err, &failure) || failure.Error() != "Provider rejected this request\n\nOriginal provider details" {
+							t.Fatalf("lost failure detail: %#v", event)
+						}
+					}
 				}
 			}
-			wantFailures := 1
-			if cancelled {
-				wantFailures = 0
-			}
-			if failures != wantFailures || completions != 1 {
-				t.Fatalf("cancelled=%v replay=%v: failures=%d completions=%d", cancelled, replay, failures, completions)
+			if completions != 1 {
+				t.Fatalf("cancelled=%v replay=%v: completions=%d", cancelled, replay, completions)
 			}
 		}
 	}

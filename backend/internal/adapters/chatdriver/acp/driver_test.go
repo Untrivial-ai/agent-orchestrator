@@ -2343,21 +2343,21 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	if err := opened.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 		t.Fatalf("StartDeferredTurn: %v", err)
 	}
-	foundAccount := false
 	for {
 		event := nextEvent(t, opened.Events())
-		if event.Kind == ports.ChatEventAccountChanged {
-			foundAccount = event.Account != nil && event.Account.ReauthRequired
+		if event.Kind == ports.ChatEventAccountChanged || event.Kind == ports.ChatEventError {
+			t.Fatalf("terminal auth failure emitted a second event: %#v", event)
 		}
 		if event.Kind == ports.ChatEventTurnCompleted {
 			if event.TurnState != domain.TurnStateFailed {
 				t.Fatalf("turn state = %q", event.TurnState)
 			}
+			var failure *ports.ChatProviderFailure
+			if !errors.As(event.Err, &failure) || failure.Recovery != ports.ChatProviderRecoveryReauthenticate {
+				t.Fatalf("completion error = %#v", event.Err)
+			}
 			break
 		}
-	}
-	if !foundAccount {
-		t.Fatal("authentication failure did not emit an account recovery event")
 	}
 }
 

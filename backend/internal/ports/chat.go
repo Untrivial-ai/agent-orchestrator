@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -805,6 +806,60 @@ const (
 	ChatControllerStopped    ChatControllerState = "stopped"
 )
 
+// ChatProviderRecovery is the provider-neutral recovery AO can perform or
+// explain after a provider failure. Provider-native action names stay inside the
+// adapter that understands them.
+type ChatProviderRecovery string
+
+const (
+	// ChatProviderRecoveryReauthenticate means the provider rejected credentials
+	// and no further work can succeed until the user signs in again.
+	ChatProviderRecoveryReauthenticate ChatProviderRecovery = "reauthenticate"
+)
+
+// ChatProviderFailure is the user-readable part of a failure reported by a
+// provider. It implements error so existing ChatEvent error handling can carry
+// the richer value without a parallel event path.
+//
+// Title and Detail are provider prose. Recovery is AO's normalized meaning,
+// derived only by an adapter that still has the provider's typed metadata.
+type ChatProviderFailure struct {
+	Title    string
+	Detail   string
+	Recovery ChatProviderRecovery
+}
+
+// NewChatProviderFailure normalizes provider prose once at the chat-driver seam.
+// A repeated detail is omitted so every projection renders the explanation once.
+func NewChatProviderFailure(
+	title string,
+	detail string,
+	recovery ChatProviderRecovery,
+) *ChatProviderFailure {
+	title = strings.TrimSpace(title)
+	detail = strings.TrimSpace(detail)
+	if title == "" {
+		title, detail = detail, ""
+	}
+	if title == "" {
+		title = "Provider error"
+	}
+	if detail == title {
+		detail = ""
+	}
+	return &ChatProviderFailure{Title: title, Detail: detail, Recovery: recovery}
+}
+
+func (f *ChatProviderFailure) Error() string {
+	if f == nil {
+		return "Provider error"
+	}
+	if f.Detail == "" {
+		return f.Title
+	}
+	return f.Title + "\n\n" + f.Detail
+}
+
 // ChatEvent is one normalized observation from the provider.
 //
 // Deltas are the high-frequency case, so they carry only what changed. A
@@ -888,8 +943,9 @@ type ChatEvent struct {
 	// rather than replacing its whole list.
 	MCPServers []ChatMCPServer
 
-	// Err carries a structured failure. Its presence does not imply the
-	// conversation is over; check ControllerState for that.
+	// Err carries a failure. Provider-declared failures use ChatProviderFailure;
+	// adapter/runtime failures may use an ordinary error. Its presence does not
+	// imply the conversation is over; check Kind and ControllerState.
 	Err error
 }
 

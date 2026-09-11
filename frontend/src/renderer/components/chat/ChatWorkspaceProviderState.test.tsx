@@ -140,46 +140,49 @@ describe("plan", () => {
 });
 
 describe("provider state chrome", () => {
-	it("keeps a provider error in chat without repeating it in the sign-in banner", () => {
+	it("keeps a terminal provider failure on its turn and recovery in the banner", () => {
 		const reason = "Provider access denied.\n\nContact your administrator.";
 		const snapshot: ConversationSnapshot = {
 			...chatFixtureReauth,
 			account: { ...chatFixtureReauth.account, reauthReason: reason },
+			turns: chatFixtureReauth.turns.map((turn) =>
+				turn.id === "turn-2" ? { ...turn, state: "failed", errorMessage: reason } : turn,
+			),
 			items: [
-				...chatFixtureReauth.items,
+				...chatFixtureReauth.items.filter(
+					(item) => !(item.kind === "activity" && item.detail?.event === "auth.reauth_required"),
+				),
 				{
 					kind: "activity",
-					id: "provider-error",
-					turnId: chatFixtureReauth.turns[0].id,
+					id: "transient-provider-failure",
+					turnId: "turn-2",
 					sequence: chatFixtureReauth.latestSequence + 1,
-					revision: 0,
-					activityKind: "error",
+					revision: 1,
+					activityKind: "system",
 					status: "failed",
-					summary: reason,
+					summary: "Provider access denied.",
+					detail: { event: "provider.failure", text: "Contact your administrator." },
 					createdAt: "2026-08-03T00:00:00Z",
 				},
 			],
+			latestSequence: chatFixtureReauth.latestSequence + 1,
 		};
 		const { rerender } = render(<ChatWorkspace snapshot={snapshot} />);
-		expect(screen.queryByText(/Sign in again to keep going/)).not.toBeInTheDocument();
+		expect(screen.getByText(/Sign in again to keep going/)).toBeInTheDocument();
 		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+		expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
 
 		rerender(<ChatWorkspace snapshot={structuredClone(snapshot)} />);
-		expect(screen.queryByText(/Sign in again to keep going/)).not.toBeInTheDocument();
+		expect(screen.getByText(/Sign in again to keep going/)).toBeInTheDocument();
 		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
-
-		rerender(<ChatWorkspace snapshot={{ ...snapshot, items: chatFixtureReauth.items }} />);
-		expect(screen.getByRole("alert")).toHaveTextContent("Provider access denied.");
-
-		rerender(<ChatWorkspace snapshot={snapshot} />);
-		expect(screen.queryByText(/Sign in again to keep going/)).not.toBeInTheDocument();
 
 		rerender(
 			<ChatWorkspace
 				snapshot={{ ...snapshot, account: { ...snapshot.account, reauthReason: "Session expired." } }}
 			/>,
 		);
-		expect(screen.getByRole("alert")).toHaveTextContent("Session expired.");
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+		expect(screen.queryByText("Session expired.")).not.toBeInTheDocument();
 	});
 
 	it("puts the credential demand above everything else that is wrong", () => {

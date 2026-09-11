@@ -206,6 +206,8 @@ export interface ApprovalDetail {
 export interface ProviderErrorDetail {
 	/** Optional provider destination; the renderer shows web URLs literally. */
 	actionUrl?: string;
+	/** Provider diagnostic copy kept separate from the short activity summary. */
+	details?: string;
 }
 
 export interface CommandDetail {
