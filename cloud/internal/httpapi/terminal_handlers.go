@@ -32,6 +32,12 @@ const (
 	terminalInteractionRefresh = 30 * time.Second
 	terminalPingInterval       = 20 * time.Second
 	terminalPingTimeout        = 5 * time.Second
+	// terminalPingMaxFailures is how many consecutive keepalive pings may miss
+	// (e.g. because a large output Write is holding the connection's write mutex
+	// across a flush stall) before the socket is treated as dead. Tolerating a
+	// few misses prevents a reconnect storm during heavy replays while still
+	// closing a genuinely unresponsive socket within a bounded window.
+	terminalPingMaxFailures = 3
 )
 
 var errTerminalProcessUnavailable = errors.New("terminal process unavailable")
@@ -185,12 +191,21 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 // keepTerminalAlive sends protocol-level pings often enough to keep idle
 // terminal connections active through the public load balancer. Browsers
 // answer WebSocket pings automatically while readTerminalInput continuously
-// reads the corresponding pong control frames. Ping serializes with Write on
-// the coder/websocket connection's internal writeFrameMu, so it is safe to call
-// here without the writeMu that guards writeTerminalOutput.
+// reads the corresponding pong control frames.
+//
+// Ping and the output writer both serialize on the coder/websocket connection's
+// internal writeFrameMu. When the renderer is slow to drain a large replay, a
+// single output Write can hold that mutex across a multi-second flush stall, so
+// the ping cannot acquire it within terminalPingTimeout and reports a spurious
+// deadline error even though the socket is healthy. Closing on that first miss
+// tore the socket down mid-replay, the client reconnected and replayed from the
+// start, and the cycle repeated (a reconnect storm that garbles the terminal).
+// Tolerate a few consecutive misses so a transient write-stall does not kill a
+// live connection; a genuinely dead socket still closes after a few intervals.
 func keepTerminalAlive(ctx context.Context, connection *websocket.Conn) error {
 	ticker := time.NewTicker(terminalPingInterval)
 	defer ticker.Stop()
+	consecutiveFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -200,8 +215,16 @@ func keepTerminalAlive(ctx context.Context, connection *websocket.Conn) error {
 			err := connection.Ping(pingCtx)
 			cancel()
 			if err != nil {
-				return err
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				consecutiveFailures++
+				if consecutiveFailures >= terminalPingMaxFailures {
+					return err
+				}
+				continue
 			}
+			consecutiveFailures = 0
 		}
 	}
 }
