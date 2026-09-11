@@ -160,7 +160,9 @@ function releaseConversationLocalEcho(
 		const echoes = current[targetSessionId];
 		if (!echoes) return current;
 		const nextEchoes = echoes.filter(
-			(echo) => echo.clientMessageId !== clientMessageId && echo.turnId !== turnId,
+			(echo) =>
+				(clientMessageId === undefined || echo.clientMessageId !== clientMessageId) &&
+				(turnId === undefined || echo.turnId !== turnId),
 		);
 		if (nextEchoes.length === echoes.length) return current;
 		const next = { ...current };

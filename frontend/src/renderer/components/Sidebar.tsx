@@ -481,7 +481,6 @@ export function Sidebar({
 	});
 
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
-	const [, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
@@ -506,10 +505,6 @@ export function Sidebar({
 	// "after A" and "before B" resolve to the same spot (no shift across the
 	// boundary). Its top animates so the line slides between projects.
 	const [dropLine, setDropLine] = useState<{ top: number; visible: boolean }>({ top: 0, visible: false });
-
-	const recordSessionOrder = useCallback((projectId: string, order: string[]) => {
-		setSessionOrderByProject((previous) => ({ ...previous, [projectId]: order }));
-	}, []);
 
 	const clearProjectDropIndicator = useCallback(() => {
 		projectDropTargetRef.current = null;
@@ -728,7 +723,6 @@ export function Sidebar({
 										suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
 										selection={selection}
 										isDragged={draggingProjectId === workspace.id}
-										onSessionOrderChange={recordSessionOrder}
 										onToggle={toggleProjectDisclosure}
 										onRemoveProject={onRemoveProject}
 										onProjectDragStart={handleProjectDragStart}
@@ -872,7 +866,6 @@ type ProjectItemProps = {
 	expanded: boolean;
 	selection: Selection;
 	isDragged: boolean;
-	onSessionOrderChange: (projectId: string, order: string[]) => void;
 	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
@@ -887,7 +880,6 @@ const ProjectItem = memo(function ProjectItem({
 	expanded,
 	selection,
 	isDragged,
-	onSessionOrderChange,
 	onToggle,
 	onRemoveProject,
 	suppressInitialExpandAnimation,
@@ -948,8 +940,7 @@ const ProjectItem = memo(function ProjectItem({
 	const commitSessionOrder = useCallback((next: string[] | null) => {
 		if (!next) return;
 		setSessionOrder(next);
-		onSessionOrderChange(workspace.id, next);
-	}, [onSessionOrderChange, workspace.id]);
+	}, []);
 
 	const onSessionDragEnd = useCallback(({ active, over }: DragEndEvent) => {
 		const sessionId = String(active.id);
