@@ -943,6 +943,7 @@
 	"settings.models.custom": "モデル ID を入力…",
 	"settings.models.cantFind": "モデルが見つかりませんか？",
 	"settings.models.configureThenRefresh": "{{agent}} でモデルを設定してから更新してください。",
+	"settings.models.notListedYetRefresh": "まだ表示されませんか？ 一覧はキャッシュされています。更新すると新しいモデルが反映されます。",
 	"settings.models.default": "デフォルト",
 	"settings.models.currentDefaults": "現在とデフォルト",
 	"settings.models.recent": "最近使用",

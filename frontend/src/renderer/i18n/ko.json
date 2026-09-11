@@ -943,6 +943,7 @@
 	"settings.models.custom": "모델 ID 입력…",
 	"settings.models.cantFind": "모델을 찾을 수 없나요?",
 	"settings.models.configureThenRefresh": "{{agent}}에서 모델을 구성한 다음 새로 고치세요.",
+	"settings.models.notListedYetRefresh": "아직 목록에 없나요? 목록은 캐시되어 있습니다 — 새로 고쳐 새 모델을 가져오세요.",
 	"settings.models.default": "기본값",
 	"settings.models.currentDefaults": "현재 및 기본값",
 	"settings.models.recent": "최근 사용",

@@ -962,6 +962,7 @@
 	"settings.models.custom": "Saisir l’identifiant du modèle…",
 	"settings.models.cantFind": "Vous ne trouvez pas votre modèle ?",
 	"settings.models.configureThenRefresh": "Configurez le modèle dans {{agent}}, puis actualisez.",
+	"settings.models.notListedYetRefresh": "Pas encore listé ? La liste est en cache — actualisez pour récupérer un nouveau modèle.",
 	"settings.models.default": "Par défaut",
 	"settings.models.currentDefaults": "Actuels et valeurs par défaut",
 	"settings.models.recent": "Récents",

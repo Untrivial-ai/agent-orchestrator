@@ -962,6 +962,7 @@
 	"settings.models.custom": "Inserir ID do modelo…",
 	"settings.models.cantFind": "Não encontrou seu modelo?",
 	"settings.models.configureThenRefresh": "Configure o modelo no {{agent}} e atualize.",
+	"settings.models.notListedYetRefresh": "Ainda não aparece? A lista está em cache — atualize para obter um novo modelo.",
 	"settings.models.default": "Padrão",
 	"settings.models.currentDefaults": "Atuais e padrões",
 	"settings.models.recent": "Recentes",

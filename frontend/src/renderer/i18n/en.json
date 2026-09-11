@@ -1058,6 +1058,7 @@
 	"settings.models.custom": "Enter model ID…",
 	"settings.models.cantFind": "Can’t find your model?",
 	"settings.models.configureThenRefresh": "Configure the model in {{agent}}, then refresh.",
+	"settings.models.notListedYetRefresh": "Not listed yet? The list is cached — refresh to pick up a new model.",
 	"settings.models.default": "Default",
 	"settings.models.currentDefaults": "Current & defaults",
 	"settings.models.recent": "Recent",
