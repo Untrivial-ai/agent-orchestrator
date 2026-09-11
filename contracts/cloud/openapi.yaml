@@ -483,6 +483,44 @@ paths:
                 $ref: "#/components/schemas/SessionReviewState"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews/trigger:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: triggerSessionReviews
+      tags: [Reviews]
+      responses:
+        "200":
+          description: The current commit was already reviewed or is ineligible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        "201":
+          description: A reviewer terminal was started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews/cancel:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: cancelSessionReviews
+      tags: [Reviews]
+      responses:
+        "200":
+          description: Review state after cancellation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/messages:
     parameters:
       - $ref: "#/components/parameters/OrgId"
