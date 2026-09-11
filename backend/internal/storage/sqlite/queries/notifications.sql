@@ -128,3 +128,8 @@ UPDATE notifications
 SET dismissed_at = CURRENT_TIMESTAMP,
     status = 'read'
 WHERE dismissed_at IS NULL;
+
+-- name: DeleteNotification :one
+DELETE FROM notifications
+WHERE id = ?
+RETURNING *;
