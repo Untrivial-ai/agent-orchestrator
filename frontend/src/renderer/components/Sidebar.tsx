@@ -2238,7 +2238,7 @@ function UpdateStatusRow({
 
 /**
  * Alert-style install cue above Connect mobile / Settings. Muted fill + shadow so
- * it reads apart from nav rows; wraps onto two lines so nightly copy is not clipped.
+ * it reads apart from nav rows; label only — version details live in the restart dialog.
  */
 function UpdateInstallSlide({
 	availableDismissed,
@@ -2251,12 +2251,10 @@ function UpdateInstallSlide({
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
-	const { t, i18n } = useTranslation();
-	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const { t } = useTranslation();
 	const action = sidebarUpdateAction(status, availableDismissed);
 	if (action?.kind !== "install") return null;
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<button
 			aria-label={
@@ -2265,7 +2263,7 @@ function UpdateInstallSlide({
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"mb-1 flex w-full items-center gap-2.5 rounded-xl bg-muted px-3 py-2.5 text-left text-sm font-normal text-foreground shadow-md",
+				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-xl bg-muted px-3 text-left text-sm font-normal text-foreground shadow-md",
 				"transition-colors hover:bg-interactive-hover",
 				"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200",
 			)}
@@ -2275,14 +2273,7 @@ function UpdateInstallSlide({
 			type="button"
 		>
 			<RefreshCw aria-hidden="true" className="size-icon-sm shrink-0 text-muted-foreground" />
-			<span className="min-w-0 flex-1">
-				<span className="block tracking-tight">{t("shell.restartToUpdate")}</span>
-				{versionLabel ? (
-					<span className="mt-0.5 block break-words text-caption font-normal text-muted-foreground">
-						{versionLabel}
-					</span>
-				) : null}
-			</span>
+			<span className="min-w-0 flex-1 truncate tracking-tight">{t("shell.restartToUpdate")}</span>
 		</button>
 	);
 }
@@ -2301,8 +2292,7 @@ function UpdateStatusRail({
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
-	const { t, i18n } = useTranslation();
-	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const { t } = useTranslation();
 	const action = sidebarUpdateAction(status, availableDismissed);
 	if (action === null) return null;
 
@@ -2349,7 +2339,6 @@ function UpdateStatusRail({
 		);
 	}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -2369,10 +2358,7 @@ function UpdateStatusRail({
 					<RefreshCw aria-hidden="true" />
 				</button>
 			</TooltipTrigger>
-			<TooltipContent side="right">
-				{t("shell.restartToUpdate")}
-				{versionLabel ? ` · ${versionLabel}` : ""}
-			</TooltipContent>
+			<TooltipContent side="right">{t("shell.restartToUpdate")}</TooltipContent>
 		</Tooltip>
 	);
 }
