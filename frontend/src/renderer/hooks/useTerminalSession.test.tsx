@@ -986,38 +986,37 @@ describe("useTerminalSession", () => {
 		expect(view.result.current.state).toBe("attached");
 	});
 
-	it("does not storm a slow cloud pane within its generous open budget", () => {
-		// A cloud agent mux opens no socket from mux.open(): it holds for the
-		// worker's agent.ready SSE, then mints a ticket and dials the sandbox, and
-		// the control plane may take up to its own ready deadline (~20s) to ack.
-		// That chain routinely exceeds the local OPEN_TIMEOUT_MS, so a 3s timeout
-		// tore the pane down mid-attach and rebuilt the mux (a fresh SSE + a from-0
-		// replay) before it could ever open — a self-sustaining storm. A cloud pane
-		// instead gets a far more generous budget, so a normal slow open keeps its
-		// single mux and stays "connecting" until the worker checks in.
+	it("has no client open timeout for a cloud pane: a slow open never storms", () => {
+		// A cloud pane opens its socket directly; readiness is server-driven (the
+		// CP holds it in "starting" until the terminal opens). There is NO client
+		// open timeout — the 3s/30s band-aids only ever tore a healthy slow open
+		// down mid-attach and rebuilt the mux, a self-sustaining storm. So however
+		// long the CP takes, the pane keeps its single mux and stays "connecting".
 		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
 		const { view, muxes } = setup({ attachedSession: cloudSession });
 		expect(view.result.current.state).toBe("connecting");
-		// Well past the local 3s timeout but under the cloud budget: no reconnect.
-		act(() => void vi.advanceTimersByTime(25_000));
+		// Far past any old timeout: no teardown, no rebuild, no storm.
+		act(() => void vi.advanceTimersByTime(120_000));
 		expect(muxes).toHaveLength(1);
 		expect(muxes[0].disposed).toBe(false);
 		expect(view.result.current.state).toBe("connecting");
-		// The worker finally acks: one clean attach, no rebuild.
+		// The server finally acks: one clean attach, no rebuild.
 		act(() => muxes[0].emitOpened("handle-1"));
 		expect(view.result.current.state).toBe("attached");
 		expect(muxes).toHaveLength(1);
 	});
 
-	it("recovers a stalled cloud pane after the generous budget with a single reattach", () => {
-		// If agent.ready never arrives (a stalled SSE subscription) the socket is
-		// never even attempted, so the CP-close and mint-409 bounds cannot apply.
-		// The generous open timeout is the only thing that recovers such a pane —
-		// once, not as a 3s storm.
+	it("recovers a stalled cloud pane only when the socket closes (server-driven)", () => {
+		// With no client timer, a stalled cloud pane is recovered by the transport,
+		// not a clock: the CP closes the socket at its own ready deadline, which
+		// reaches onConnectionChange("closed") and schedules exactly one flat
+		// reattach. No client-side timeout ever fires to rebuild the mux.
 		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
 		const { view, muxes } = setup({ attachedSession: cloudSession });
-		act(() => void vi.advanceTimersByTime(30_000)); // cloud budget elapses
-		act(() => void vi.advanceTimersByTime(1_000)); // reattach backoff
+		act(() => void vi.advanceTimersByTime(120_000));
+		expect(muxes).toHaveLength(1); // no client teardown while the socket lives
+		act(() => muxes[0].emitConnection("closed")); // CP ready deadline closes it
+		act(() => void vi.advanceTimersByTime(1_000)); // flat cloud reconnect
 		expect(muxes).toHaveLength(2); // exactly one rebuild, not a storm
 		expect(view.result.current.state).not.toBe("attached");
 	});

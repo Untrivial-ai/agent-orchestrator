@@ -113,13 +113,14 @@ const CLOUD_CONNECT_RETRY_MS = 1_000;
 // reported by the mux as "waiting") never trips this, so a slow cold start does
 // not false-fire a "check your firewall" error. ~8 socket failures ≈ 8s.
 const CLOUD_CONNECT_MAX_FAILURES = 8;
+// Local daemon panes only: the daemon runs a liveness probe and spawns the
+// runtime client between mux.open() and the pane opening, so a stalled spawn
+// must recover. A CLOUD pane gets NO client open timeout — readiness is
+// server-driven: the CP holds the socket in "starting" until the terminal opens
+// or its own 20s ready deadline closes the socket, which the client already
+// handles as onConnectionChange("closed") -> scheduleReattach. A client-side
+// cloud open timeout only manufactured reconnect storms (the 3s/30s band-aids).
 const OPEN_TIMEOUT_MS = 3_000;
-// A cloud agent pane's open chain (agent.ready SSE -> mint ticket -> dial the
-// sandbox -> CP ready ack) routinely runs 5-20s, so its open budget is far more
-// generous than a local pane's daemon-spawn budget. Long enough that a normal
-// slow open never trips it (the timer is cleared on open), but short enough that
-// a genuinely stalled attach recovers instead of hanging on "Connecting…".
-const CLOUD_OPEN_TIMEOUT_MS = 30_000;
 // Trailing debounce on grid changes: a pane drag emits a burst of intermediate
 // sizes; the attached program should get one SIGWINCH when the drag settles,
 // not dozens (yyork's terminal-panel does the same at its socket layer).
@@ -800,8 +801,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// would then land frame-by-frame with the bug fully intact, behind a
 		// pointless blank cover. `opened` fires from setPTY immediately before
 		// copyOut, so anchoring there means the cap only ever measures the burst.
-		// If `opened` never arrives, openTimer tears down and teardownMux lifts
-		// the cover.
+		// If `opened` never arrives, the cover is lifted by the recovery path for
+		// that transport: a LOCAL pane's openTimer tears down (teardownMux lifts
+		// it); a CLOUD pane's socket closing or mint-409 reaches
+		// onConnectionChange, whose flushReplay lifts it.
 
 		// A retained pane may reconnect while parked. It still needs the output
 		// stream, but its stale off-screen grid must not resize the shared PTY.
@@ -814,36 +817,30 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		mux.open(handle, openCols, openRows);
 		r.lastPublishedGrid =
 			openCols > 0 && openRows > 0 ? { cols: openCols, rows: openRows } : null;
-		// The open timeout budgets the time between mux.open() and the pane
-		// actually opening. For a LOCAL pane that is the daemon's liveness probe +
-		// runtime spawn, so 3s is right. A CLOUD agent mux opens no socket from
-		// mux.open() at all — waitForAgentReady holds it until the worker's
-		// agent.ready SSE arrives, then it mints a ticket and dials the sandbox,
-		// and the control plane may itself take up to its own ready deadline (~20s)
-		// to ack. That whole chain routinely exceeds 3s, so a 3s teardown tore the
-		// pane down mid-attach and rebuilt the mux (fresh SSE + a from-0 replay)
-		// before it could ever open, restarting the same slow chain: a
-		// self-sustaining reconnect storm. But dropping the timeout entirely is
-		// worse — if agent.ready never arrives (a stalled SSE subscription), the
-		// pane sits on "Connecting…" forever with nothing to recover it, since the
-		// CP-close and mint-409 bounds only apply once a socket/mint is attempted.
-		// So a cloud pane gets a GENEROUS timeout: long enough that the normal slow
-		// open completes without a storm (the timer is cleared on open), but a
-		// truly stalled attach still recovers by rebuilding the mux and re-arming
-		// the agent.ready subscription.
-		const openBudget = sessionRef.current?.cloud ? CLOUD_OPEN_TIMEOUT_MS : OPEN_TIMEOUT_MS;
-		r.openTimer = setTimeout(() => {
-			if (!isCurrentAttachment(generation, handle, mux)) return;
-			r.openTimer = null;
-			// Only the first timeout of a reattach sequence is reported; the
-			// backoff loop retrying against a restarting daemon is not news.
-			if (r.attempts === 0) {
-				void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
-			}
-			transition("reattaching");
-			teardownMux();
-			scheduleReattach();
-		}, openBudget);
+		// Client open timeout for LOCAL panes only. It budgets the time between
+		// mux.open() and the pane opening — the daemon's liveness probe + runtime
+		// spawn — so a stalled spawn recovers. A CLOUD pane gets NO client open
+		// timeout: readiness is server-driven (the mux opens its socket directly,
+		// the CP holds it in "starting" until the terminal opens or its own ~20s
+		// deadline closes it, and a closed socket already reaches
+		// onConnectionChange("closed") -> scheduleReattach). A client timeout here
+		// only ever tore a healthy slow open down mid-attach and rebuilt the mux —
+		// the reconnect storm the 3s/30s band-aids chased. The mint-409 "waiting"
+		// poll and the CP-close bound already cover every cloud stall.
+		if (!sessionRef.current?.cloud) {
+			r.openTimer = setTimeout(() => {
+				if (!isCurrentAttachment(generation, handle, mux)) return;
+				r.openTimer = null;
+				// Only the first timeout of a reattach sequence is reported; the
+				// backoff loop retrying against a restarting daemon is not news.
+				if (r.attempts === 0) {
+					void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
+				}
+				transition("reattaching");
+				teardownMux();
+				scheduleReattach();
+			}, OPEN_TIMEOUT_MS);
+		}
 	}, [
 		clearOpenTimer,
 		clearReplayTimers,

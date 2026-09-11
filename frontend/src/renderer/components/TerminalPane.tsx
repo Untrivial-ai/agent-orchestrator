@@ -37,7 +37,6 @@ import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { createCloudTerminalMux } from "../lib/cloud-terminal-mux";
-import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -334,34 +333,18 @@ export function TerminalCacheProvider({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
 					kind,
 					cursor,
-					// #4960: hold the agent pane in "connecting" until the worker's
-					// agent.ready arrives (do not flash the temporary workspace shell).
-					// A workspace/shell terminal attaches to its own kind immediately
-					// and must never be upgraded to the agent terminal, so gate both
-					// the wait and the agent-ready subscription on the agent pane.
-					waitForAgentReady: kind === "agent",
+					// Both kinds open their socket directly; the CP's find-or-create
+					// OpenTerminal + starting/ready messages drive readiness. There is
+					// no agent-ready SSE wait (#4960 flashed the workspace shell only
+					// because it opened that shell first — we now open the agent
+					// terminal itself, so there is nothing to flash), and no client
+					// open timeout (readiness is server-driven).
 					mintTicket: async (ticketKind) => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
 							kind: ticketKind,
 						});
 						return response.ticket;
 					},
-					subscribeAgentReady:
-						kind === "agent"
-							? (onReady) => {
-									const controller = new AbortController();
-									void subscribeSessionEventsBridged({
-										baseUrl: cloudCpRef.current.baseUrl,
-										orgId,
-										sessionId,
-										signal: controller.signal,
-										onEvent: (event) => {
-											if (event.type === "agent.ready") onReady();
-										},
-									});
-									return () => controller.abort();
-								}
-							: undefined,
 				});
 			cloudMuxFactoriesRef.current.set(factoryKey, factory);
 			return factory;
