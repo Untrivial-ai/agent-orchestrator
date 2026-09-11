@@ -1,5 +1,5 @@
 import { AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED, type RendererTelemetryCapture, type TelemetryPolicySnapshot, type TelemetryPolicyView } from "../shared/telemetry-policy";
-import type { DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-policy-client";
+import { DaemonTelemetryControlUnavailableError, type DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-policy-client";
 
 const RETRY_BACKOFF_INIT_MS = 2_000;
 const RETRY_BACKOFF_MAX_MS = 60_000;
@@ -99,9 +99,11 @@ export class DesktopTelemetryController {
 				this.view = this.toView(snapshot, "applied", this.baseReason());
 				if (this.captureEnabled(this.view) && !this.transport) this.transport = await this.options.transportFactory();
 				this.resetRetryBackoff();
-			} catch {
-				this.retryFailures += 1;
-				this.nextRetryAtMs = this.clock() + telemetryRetryDelayMs(this.retryFailures);
+			} catch (error) {
+				if (!(error instanceof DaemonTelemetryControlUnavailableError)) {
+					this.retryFailures += 1;
+					this.nextRetryAtMs = this.clock() + telemetryRetryDelayMs(this.retryFailures);
+				}
 				this.view = {
 					...this.view,
 					state: authorityVerified ? "cleanup_pending" : "cleanup_failed",

@@ -8,6 +8,10 @@ export type DaemonTelemetryPolicyAcknowledgement = {
 
 type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
+export class DaemonTelemetryControlUnavailableError extends Error {
+	constructor() { super("daemon telemetry control is unavailable"); }
+}
+
 export class DaemonTelemetryPolicyClient {
 	constructor(private readonly origin: () => string | null, private readonly fetcher: Fetcher = fetch) {}
 
@@ -27,7 +31,7 @@ export class DaemonTelemetryPolicyClient {
 
 	private async request(pathname: string, body?: object, expectedGeneration?: string): Promise<DaemonTelemetryPolicyAcknowledgement> {
 		const base = this.origin();
-		if (!base) throw new Error("daemon telemetry control is unavailable");
+		if (!base) throw new DaemonTelemetryControlUnavailableError();
 		const parsed = new URL(base);
 		if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
 			throw new Error("daemon telemetry control origin must be exact loopback HTTP");
