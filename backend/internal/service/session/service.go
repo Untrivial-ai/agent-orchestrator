@@ -59,38 +59,36 @@ type ListFilter struct {
 }
 
 // commander is the command-side surface Service delegates to: the
-// *sessionmanager.Manager in production, a fake in tests.
+// *sessionmanager.Manager in production, a fake in tests. It lists exactly
+// the methods Service calls, grouped by owning saga (see
+// sessionmanager/sagas.go). It deliberately does NOT embed the whole saga
+// interfaces: input-lease gating (AcquireSessionInput,
+// SessionMutationInProgress) belongs to lifecycle/terminal paths and async
+// switch waiting (WaitAgentSwitchWorkers) is never called here, so requiring
+// them would force every focused fake to stub uncalled methods. Transition
+// coordination stays optional (asserted per call) so fakes without handoffs
+// keep working. The production Manager's full saga conformance is guarded in
+// sessionmanager itself.
 type commander interface {
+	// Spawn saga (sessionmanager.Spawner).
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
+	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
+	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
+	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
+	// Terminate saga (sessionmanager.Terminator).
+	Kill(ctx context.Context, id domain.SessionID) (bool, error)
+	RetireForReplacement(ctx context.Context, id domain.SessionID) error
+	Cleanup(ctx context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error)
+	ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
+	// Switch saga (sessionmanager.SwitchEngine).
 	SwitchAgent(ctx context.Context, id domain.SessionID, cfg sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error)
 	RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error)
 	ListAgentSwitches(ctx context.Context, id domain.SessionID) ([]domain.AgentSwitch, error)
 	SubmitAgentHandoff(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID, sourceGenerationID domain.AgentGenerationID, handoff json.RawMessage) (domain.AgentSwitch, error)
-	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
-	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
-	Kill(ctx context.Context, id domain.SessionID) (bool, error)
-	RetireForReplacement(ctx context.Context, id domain.SessionID) error
+	// Messaging saga (sessionmanager.MessengerFacade).
 	WaitForMessageDeliveryReady(ctx context.Context, id domain.SessionID) error
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
-	Cleanup(ctx context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error)
-	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
-	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
-}
-
-// interfaceTransitionCommander is an optional command capability. Keeping it
-// separate avoids widening every focused session-service fake while production
-// can expose the feature through the concrete Session Manager.
-type interfaceTransitionCommander interface {
-	InterfaceTransitionStatus(context.Context, domain.SessionID) (sessionmanager.InterfaceTransitionStatus, error)
-	StartInterfaceTransition(context.Context, domain.SessionID, domain.SessionMode, domain.SessionInterfaceTransitionPolicy) (domain.SessionInterfaceTransition, error)
-	CancelInterfaceTransition(context.Context, domain.SessionID) error
-	AcknowledgeInterfaceTransitionNotice(context.Context, domain.SessionID, string) (domain.SessionInterfaceTransition, error)
-}
-
-// exitAgentCommander keeps the process-only lifecycle optional for focused
-// service fakes while production delegates to Session Manager.
-type exitAgentCommander interface {
-	ExitAgent(context.Context, domain.SessionID) (domain.SessionRecord, error)
 }
 
 // RollbackOutcome reports what happened in a rollback: either the seed row was
@@ -591,12 +589,7 @@ func (s *Service) Restore(ctx context.Context, id domain.SessionID) (RestoreOutc
 // ExitAgent stops only the agent controller while preserving the AO session,
 // worktree, terminal identity, and provider-native conversation.
 func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgentOutcome, error) {
-	manager, ok := s.manager.(exitAgentCommander)
-	if !ok {
-		return ExitAgentOutcome{}, apierr.Conflict(
-			"AGENT_EXIT_UNSUPPORTED", "This build cannot exit an agent independently", nil)
-	}
-	rec, err := manager.ExitAgent(ctx, id)
+	rec, err := s.manager.ExitAgent(ctx, id)
 	if err != nil {
 		return ExitAgentOutcome{}, toAPIError(err)
 	}
@@ -624,7 +617,7 @@ func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeA
 // InterfaceTransitionStatus returns capability and progress without launching
 // a provider process or mutating the session.
 func (s *Service) InterfaceTransitionStatus(ctx context.Context, id domain.SessionID) (InterfaceTransitionStatus, error) {
-	manager, ok := s.manager.(interfaceTransitionCommander)
+	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
 	if !ok {
 		return InterfaceTransitionStatus{}, apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
@@ -655,7 +648,7 @@ func (s *Service) StartInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, apierr.Invalid(
 			"INVALID_TRANSITION_POLICY", "Policy must be drain or interrupt", nil)
 	}
-	manager, ok := s.manager.(interfaceTransitionCommander)
+	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
 	if !ok {
 		return domain.SessionInterfaceTransition{}, apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
@@ -667,7 +660,7 @@ func (s *Service) StartInterfaceTransition(
 // CancelInterfaceTransition cancels a handoff while its source controller is
 // still safe to reopen.
 func (s *Service) CancelInterfaceTransition(ctx context.Context, id domain.SessionID) error {
-	manager, ok := s.manager.(interfaceTransitionCommander)
+	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
 	if !ok {
 		return apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
@@ -682,7 +675,7 @@ func (s *Service) AcknowledgeInterfaceTransitionNotice(
 	id domain.SessionID,
 	transitionID string,
 ) (domain.SessionInterfaceTransition, error) {
-	manager, ok := s.manager.(interfaceTransitionCommander)
+	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
 	if !ok {
 		return domain.SessionInterfaceTransition{}, apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/session_manager/switchengine"
 )
 
 // executeChatAgentSwitch replaces a structured controller without manufacturing
@@ -60,8 +61,15 @@ func (m *Manager) executeChatAgentSwitch(
 			// reconciliation; treating this as pre-stop would reopen a dead source.
 			skipTerminalization = true
 		}
-		rollbackSafe := retErr != nil && sourceStopped && !targetOwnerCommitted && !targetOwnershipAmbiguous
-		if retErr != nil && targetWorkspacePrepared && !targetOwnerCommitted && !targetOwnershipAmbiguous {
+		// Settlement decisions are shared policy (switchengine.Outcome). The
+		// closure rebuilds the Outcome on every call so each branch observes
+		// the current saga facts — result mutates as markers and failures
+		// persist — exactly as the sequential inlined conditions did.
+		settlement := func() switchengine.Outcome {
+			return switchOutcomePolicy(retErr != nil, sourceStopped, targetOwnerCommitted, targetOwnershipAmbiguous, targetWorkspacePrepared, result.State.Terminal(), result.RequiresRecovery(), skipTerminalization)
+		}
+		rollbackSafe := settlement().RollbackSafe()
+		if settlement().NeedsWorkspaceCleanup() {
 			recorder.boundary(domain.AgentSwitchFailureTargetWorkspaceCleanup)
 			cleanupCtx, cancel := switchDurableContext(workerCtx)
 			cleanupErr := m.cleanupPreparedAgentWorkspaceStrict(
@@ -101,7 +109,7 @@ func (m *Manager) executeChatAgentSwitch(
 					"sessionID", id, "switchID", result.ID, "harness", result.FromHarness)
 			}
 		}
-		if retErr != nil && !result.State.Terminal() && skipTerminalization && !result.RequiresRecovery() {
+		if settlement().NeedsRetainedMarker() {
 			recorder.retain(targetOwnershipAmbiguous)
 			markerCtx, cancel := switchDurableContext(workerCtx)
 			if panicCause != nil {
@@ -115,7 +123,7 @@ func (m *Manager) executeChatAgentSwitch(
 				result = marked
 			}
 		}
-		if retErr != nil && !result.State.Terminal() && !skipTerminalization {
+		if settlement().NeedsTerminalFailure() {
 			settleCtx, cancel := switchDurableContext(workerCtx)
 			if panicCause != nil {
 				settleCtx = withAgentSwitchPanicCause(settleCtx, *panicCause)
@@ -133,7 +141,7 @@ func (m *Manager) executeChatAgentSwitch(
 					"sessionID", id, "switchID", result.ID, "state", result.State, "error", failErr)
 			}
 		}
-		if targetWorkspacePrepared && !targetOwnerCommitted && !targetOwnershipAmbiguous {
+		if settlement().NeedsDeferredWorkspaceCleanup() {
 			cleanupCtx, cancel := switchDurableContext(workerCtx)
 			m.cleanupPreparedAgentWorkspace(
 				cleanupCtx, targetAgent, id, rec.Metadata.WorkspacePath, targetSetupEnv)
@@ -291,10 +299,7 @@ func (m *Manager) executeChatAgentSwitch(
 		return result, fmt.Errorf("switch Chat agent %s: reload stopped session: %w", id, ErrNotFound)
 	}
 
-	postStopWait := m.switchPostStopWait
-	if postStopWait <= 0 {
-		postStopWait = switchPostStopWait
-	}
+	postStopWait := switchengine.ResolvePostStopWait(m.switchPostStopWait, switchPostStopWait)
 	postStopCtx, cancelPostStop := context.WithTimeout(workerCtx, postStopWait)
 	defer cancelPostStop()
 	ctx = postStopCtx

@@ -10,13 +10,8 @@ import (
 )
 
 func newInputLeaseTestManager() *Manager {
-	return &Manager{
-		agentOperations:     make(map[domain.SessionID]agentOperationKind),
-		switchDecisionInput: make(map[domain.SessionID]domain.AgentSwitchID),
-		retainedSwitches:    make(map[domain.SessionID]struct{}),
-		inputLeases:         make(map[domain.SessionID]int),
-		inputDrained:        make(map[domain.SessionID]chan struct{}),
-	}
+	m := &Manager{sagaOperationState: newSagaOperationState()}
+	return m
 }
 
 func TestAgentOperationClosesAdmissionThenDrainsExistingInput(t *testing.T) {

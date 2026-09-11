@@ -1,4 +1,4 @@
-package sessionmanager
+package prompt
 
 import (
 	"os"
@@ -8,8 +8,8 @@ import (
 )
 
 func TestBuildTaskPrompt_IssueContextStaysInTaskPrompt(t *testing.T) {
-	got := buildTaskPrompt(taskPromptConfig{
-		Role:         sessionPromptRoleWorker,
+	got := BuildTaskPrompt(TaskConfig{
+		Role:         RoleWorker,
 		IssueID:      "2272",
 		IssueContext: "Title: Enrich prompts\nBody: Include issue context.",
 	})
@@ -30,9 +30,9 @@ func TestBuildTaskPrompt_IssueContextStaysInTaskPrompt(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_WorkerIncludesRulesAndOrchestrator(t *testing.T) {
-	got := buildSystemPromptText(systemPromptConfig{
-		Role: sessionPromptRoleWorker,
-		Project: promptProject{
+	got := BuildSystemPromptText(SystemConfig{
+		Role: RoleWorker,
+		Project: Project{
 			ID:            "mer",
 			Name:          "Mercury",
 			Repo:          "https://github.com/acme/mercury",
@@ -77,9 +77,9 @@ func TestSystemPromptGuardAllowsHighLevelRoleAndBehaviorSummary(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_OrchestratorRequiresConfirmationAndAOOnlyDelegation(t *testing.T) {
-	got := buildSystemPromptText(systemPromptConfig{
-		Role:    sessionPromptRoleOrchestrator,
-		Project: promptProject{ID: "mer", Name: "Mercury"},
+	got := BuildSystemPromptText(SystemConfig{
+		Role:    RoleOrchestrator,
+		Project: Project{ID: "mer", Name: "Mercury"},
 	})
 	for _, want := range []string{
 		"Never ever make code changes directly in the orchestrator session",
@@ -100,9 +100,9 @@ func TestBuildSystemPrompt_OrchestratorRequiresConfirmationAndAOOnlyDelegation(t
 }
 
 func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing.T) {
-	got := buildSystemPromptText(systemPromptConfig{
-		Role: sessionPromptRoleWorker,
-		Project: promptProject{
+	got := BuildSystemPromptText(SystemConfig{
+		Role: RoleWorker,
+		Project: Project{
 			ID:   "mer",
 			Name: "Mercury",
 			Repo: "https://github.com/acme/mercury",
@@ -132,9 +132,9 @@ func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing
 }
 
 func TestBuildSystemPrompt_WorkerWithOrchestratorUsesOrchestratorParallelHandoff(t *testing.T) {
-	got := buildSystemPromptText(systemPromptConfig{
-		Role:                  sessionPromptRoleWorker,
-		Project:               promptProject{ID: "mer", Name: "Mercury", Repo: "https://github.com/acme/mercury"},
+	got := BuildSystemPromptText(SystemConfig{
+		Role:                  RoleWorker,
+		Project:               Project{ID: "mer", Name: "Mercury", Repo: "https://github.com/acme/mercury"},
 		OrchestratorSessionID: "mer-orchestrator",
 	})
 	if !strings.Contains(got, "ask the orchestrator to spawn additional AO worker sessions") {
@@ -156,7 +156,7 @@ func TestBuildProjectRules_ReadsInlineAndFileRules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("File rule.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildProjectRules(projectRulesConfig{
+	got, err := BuildProjectRules(ProjectRulesConfig{
 		ProjectPath:    dir,
 		AgentRules:     "Inline rule.",
 		AgentRulesFile: "rules.md",
@@ -178,10 +178,10 @@ func TestProjectRelativeFileRejectsTraversal(t *testing.T) {
 }
 
 func TestBuildSystemPromptPreservesPublishingScope(t *testing.T) {
-	for _, role := range []sessionPromptRole{sessionPromptRoleWorker, sessionPromptRoleOrchestrator} {
+	for _, role := range []Role{RoleWorker, RoleOrchestrator} {
 		for _, repo := range []string{"", "https://github.com/acme/repo"} {
 			t.Run(string(role)+"/"+repo, func(t *testing.T) {
-				got := buildSystemPromptText(systemPromptConfig{Role: role, Project: promptProject{Repo: repo}})
+				got := BuildSystemPromptText(SystemConfig{Role: role, Project: Project{Repo: repo}})
 				for _, want := range []string{
 					"Do not request fresh approval for each push or PR/MR update within an already authorized workflow",
 					"Available credentials, a configured remote, auto/bypass tool permissions, or an associated PR/MR alone do not authorize publishing",
@@ -202,7 +202,7 @@ func TestBuildSystemPromptPreservesPublishingScope(t *testing.T) {
 
 func TestBuildTaskPromptPreservesExplicitPublishingScope(t *testing.T) {
 	for _, prompt := range []string{"Fix the issue, push the branch, and open a PR.", "Fix the issue locally. Do not push or open a PR."} {
-		got := buildTaskPrompt(taskPromptConfig{Role: sessionPromptRoleWorker, Prompt: prompt, IssueID: "42"})
+		got := BuildTaskPrompt(TaskConfig{Role: RoleWorker, Prompt: prompt, IssueID: "42"})
 		if got != prompt {
 			t.Fatalf("explicit user scope changed: %q", got)
 		}
