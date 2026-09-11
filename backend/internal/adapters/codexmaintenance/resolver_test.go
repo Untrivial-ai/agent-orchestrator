@@ -400,10 +400,11 @@ func TestToolLookupHonorsCancellation(t *testing.T) {
 				return name, nil
 			}}
 			wantCalls := 1
-			if when == "before" {
+			switch when {
+			case "before":
 				cancel()
 				wantCalls = 0
-			} else if when == "path_success" {
+			case "path_success":
 				wantCalls = 2
 			}
 			if got := r.tool(ctx, "npm", "/owning/bin/npm"); got != "" || calls != wantCalls {
