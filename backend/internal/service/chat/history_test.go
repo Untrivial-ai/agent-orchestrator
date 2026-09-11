@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
@@ -1299,6 +1303,49 @@ func TestEditMessageAmbiguousApproximateFailureRemainsNavigableAcrossRestart(t *
 
 type failEditCompletionStore struct{ chatsvc.Store }
 
+type loseEditReservationReplyStore struct{ chatsvc.Store }
+
+func (s *loseEditReservationReplyStore) ReserveEditDelivery(ctx context.Context, conversationID, clientID, request string, now time.Time) (domain.ConversationEditDelivery, bool, error) {
+	delivery, created, err := s.Store.ReserveEditDelivery(ctx, conversationID, clientID, request, now)
+	if err == nil && created {
+		return delivery, false, context.Canceled
+	}
+	return delivery, created, err
+}
+
+func TestReservedEditRecoversAfterControllerStopAndResume(t *testing.T) {
+	h, _, driver := newEditHarnessWithStore(t, false, func(st *store.Store) chatsvc.Store {
+		return &loseEditReservationReplyStore{Store: st}
+	})
+	first := completeTurn(t, h, "original", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	msg := ports.ChatUserMessage{Text: "replacement", ClientMessageID: "edit-stop-resume", Origin: domain.MessageOriginHuman}
+	_, err := h.svc.EditMessage(context.Background(), testSession, first, msg)
+	if !errors.Is(err, chatsvc.ErrEditDeliveryUncertain) {
+		t.Fatalf("interrupted reservation = %v, want uncertain", err)
+	}
+	if driver.fresh.sendCallCount() != 0 {
+		t.Fatal("replacement reached provider before interrupted reservation returned")
+	}
+	if err := h.svc.Stop(context.Background(), testSession); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.svc.EditMessage(context.Background(), testSession, first, msg)
+	if err != nil || result.Turn.ID == "" {
+		t.Fatalf("retry after controller resume = %+v, %v; want one accepted replacement", result, err)
+	}
+	replay, err := h.svc.EditMessage(context.Background(), testSession, first, msg)
+	if err != nil || replay != result || driver.fresh.sendCallCount() != 1 {
+		t.Fatalf("receipt replay = %+v, %v; provider sends=%d", replay, err, driver.fresh.sendCallCount())
+	}
+}
+
 func (s *failEditCompletionStore) CompleteEditDelivery(
 	context.Context,
 	string,
@@ -2291,6 +2338,62 @@ func TestEditCompletionGapStaysUncertainAcrossRetryAndControllerRestart(t *testi
 	}
 	if sent := restartedProvider.sentTexts(); len(sent) != 0 {
 		t.Fatalf("restarted provider received uncertain edit replay: %v", sent)
+	}
+}
+
+func TestCompletedEditRepairsReceiptAfterControllerRestart(t *testing.T) {
+	h, _, driver := newEditHarnessWithStore(t, false, func(st *store.Store) chatsvc.Store {
+		return &failEditCompletionStore{Store: st}
+	})
+	first := completeTurn(t, h, "original", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	msg := ports.ChatUserMessage{Text: "replacement", ClientMessageID: "edit-completion-recovery", Origin: domain.MessageOriginHuman}
+	result, err := h.svc.EditMessage(context.Background(), testSession, first, msg)
+	if !errors.Is(err, chatsvc.ErrEditDeliveryUncertain) {
+		t.Fatalf("lost completion = %v", err)
+	}
+	driver.fresh.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted,
+		ProviderTurnID: result.Turn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		for _, turn := range s.Turns {
+			if turn.ID == result.Turn.ID {
+				return turn.State == domain.TurnStateCompleted
+			}
+		}
+		return false
+	})
+	restarted, provider := restartEditService(t, h)
+	recovered, err := restarted.EditMessage(context.Background(), testSession, first, msg)
+	if err != nil || recovered.Turn.ID != result.Turn.ID || recovered.ActiveBranchID != result.ActiveBranchID {
+		t.Fatalf("completed edit recovery = %+v, %v; want original turn %s", recovered, err, result.Turn.ID)
+	}
+	if driver.fresh.sendCallCount() != 1 || provider.sendCallCount() != 0 {
+		t.Fatal("receipt recovery dispatched a second replacement")
+	}
+}
+
+func TestMissingEditTurnReplaysOriginalHTTPStatusAfterRestart(t *testing.T) {
+	h, _, _ := newEditHarness(t, false)
+	check := func(svc *chatsvc.Service) {
+		t.Helper()
+		router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.DiscardHandler), nil,
+			httpd.APIDeps{Conversations: svc}, httpd.ControlDeps{})
+		request := httptest.NewRequest(http.MethodPost,
+			"/api/v1/sessions/"+string(testSession)+"/conversation/turns/missing/edit",
+			strings.NewReader(`{"text":"replacement","clientMessageId":"missing-turn-replay"}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"CHAT_EDIT_TURN_INVALID"`) {
+			t.Errorf("missing edit response = %d %s, want 404 CHAT_EDIT_TURN_INVALID", response.Code, response.Body.String())
+		}
+	}
+	check(h.svc)
+	check(h.svc)
+	restarted, provider := restartEditService(t, h)
+	check(restarted)
+	if calls := provider.sendCallCount(); calls != 0 {
+		t.Fatalf("missing edit dispatched %d provider requests", calls)
 	}
 }
 

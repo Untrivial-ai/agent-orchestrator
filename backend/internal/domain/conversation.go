@@ -683,21 +683,22 @@ type ConversationQueuedEditDelivery struct {
 }
 
 // ConversationEditDelivery is AO's durable answer to one caller-owned inline
-// edit handle. Reserved means provider delivery may have happened and therefore
-// cannot be attempted automatically again. Accepted and rejected are replayable
-// across active-lineage changes and daemon restarts.
+// edit handle. A reservation with ProviderWorkStarted set cannot be dispatched
+// again without proof of its outcome. Earlier reservations can resume safely.
+// Accepted and rejected results replay across branch changes and daemon restarts.
 type ConversationEditDelivery struct {
-	ConversationID   string
-	ClientMessageID  string
-	RequestJSON      string
-	State            ConversationEditDeliveryState
-	SourceBranchID   string
-	ActiveBranchID   string
-	Turn             ConversationTurn
-	RejectionKind    ConversationEditRejectionKind
-	RejectionMessage string
-	CreatedAt        time.Time
-	SettledAt        *time.Time
+	ConversationID      string
+	ClientMessageID     string
+	RequestJSON         string
+	ProviderWorkStarted bool
+	State               ConversationEditDeliveryState
+	SourceBranchID      string
+	ActiveBranchID      string
+	Turn                ConversationTurn
+	RejectionKind       ConversationEditRejectionKind
+	RejectionMessage    string
+	CreatedAt           time.Time
+	SettledAt           *time.Time
 }
 
 // ConversationEditDeliveryState records whether a reserved edit was accepted
@@ -718,6 +719,7 @@ type ConversationEditRejectionKind string
 // Conversation edit rejection kinds.
 const (
 	ConversationEditRejectedInvalid             ConversationEditRejectionKind = "invalid_turn"
+	ConversationEditRejectedMissingTurn         ConversationEditRejectionKind = "missing_turn"
 	ConversationEditRejectedUnsupported         ConversationEditRejectionKind = "unsupported"
 	ConversationEditRejectedBusy                ConversationEditRejectionKind = "busy"
 	ConversationEditRejectedInterfaceTransition ConversationEditRejectionKind = "interface_transition"

@@ -184,7 +184,16 @@ func (s *Service) EditMessage(
 		if loadErr != nil {
 			return EditMessageResult{}, fmt.Errorf("%w: load prior result: %w", ErrEditDeliveryUncertain, loadErr)
 		}
-		if found {
+		if found && (delivery.RequestJSON != requestJSON || delivery.State != domain.ConversationEditReserved || delivery.ProviderWorkStarted) {
+			if delivery.RequestJSON == requestJSON && delivery.State == domain.ConversationEditReserved {
+				if err := s.store.RecoverCompletedEditDelivery(ctx, conversation.ID, msg.ClientMessageID, s.now()); err != nil {
+					return EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditDeliveryUncertain, err)
+				}
+				delivery, _, loadErr = s.store.EditDelivery(ctx, conversation.ID, msg.ClientMessageID)
+				if loadErr != nil {
+					return EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditDeliveryUncertain, loadErr)
+				}
+			}
 			return replayEditDelivery(delivery, requestJSON)
 		}
 	}
@@ -202,7 +211,7 @@ func (s *Service) EditMessage(
 			return EditMessageResult{}, fmt.Errorf("%w: reserve delivery: %w",
 				ErrEditDeliveryUncertain, reserveErr)
 		}
-		if !created {
+		if !created && (delivery.RequestJSON != requestJSON || delivery.State != domain.ConversationEditReserved || delivery.ProviderWorkStarted) {
 			return replayEditDelivery(delivery, requestJSON)
 		}
 	}
@@ -213,6 +222,9 @@ func (s *Service) EditMessage(
 	canReplay := supportsApproximateReplay(source.conv)
 	anchor, err := s.store.ConversationEditAnchor(ctx, source.conversation.ID, turnID)
 	if err != nil {
+		if !errors.Is(err, domain.ErrNoConversationTurn) {
+			return EditMessageResult{}, fmt.Errorf("%w: load edit anchor: %w", ErrEditDeliveryUncertain, err)
+		}
 		return reject(EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditTurnInvalid, err))
 	}
 	var content []ports.ChatContent
@@ -223,6 +235,11 @@ func (s *Service) EditMessage(
 	}
 	msg.Content = withoutInternalReplayContent(content)
 	if anchor.RetryActiveBranch {
+		if msg.ClientMessageID != "" {
+			if err := s.store.BeginEditProviderWork(ctx, source.conversation.ID, msg.ClientMessageID, source.generation); err != nil {
+				return EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditDeliveryUncertain, err)
+			}
+		}
 		branch, err := s.store.ConversationBranch(ctx, source.conversation.ID, anchor.SourceBranchID)
 		if err != nil {
 			return reject(EditMessageResult{}, fmt.Errorf("load pending edited conversation: %w", err))
@@ -275,6 +292,11 @@ func (s *Service) EditMessage(
 	var providerScopeID string
 	operationCtx := ctx
 	sourceStopInitiated := false
+	if msg.ClientMessageID != "" {
+		if err := s.store.BeginEditProviderWork(ctx, source.conversation.ID, msg.ClientMessageID, source.generation); err != nil {
+			return EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditDeliveryUncertain, err)
+		}
+	}
 	if canNativeFork {
 		forkAnchor := anchor.PreviousProviderTurnID
 		providerConversationID, err = forker.Fork(ctx, &forkAnchor)
@@ -694,6 +716,8 @@ func (e storedEditRejection) Unwrap() error { return e.cause }
 func replayEditRejection(delivery domain.ConversationEditDelivery) error {
 	var cause error
 	switch delivery.RejectionKind {
+	case domain.ConversationEditRejectedMissingTurn:
+		cause = errors.Join(ErrEditTurnInvalid, domain.ErrNoConversationTurn)
 	case domain.ConversationEditRejectedInvalid:
 		cause = ErrEditTurnInvalid
 	case domain.ConversationEditRejectedUnsupported:
@@ -721,7 +745,9 @@ func classifyEditRejection(
 ) (domain.ConversationEditRejectionKind, bool, error) {
 	err = classify(err)
 	switch {
-	case errors.Is(err, ErrEditTurnInvalid), errors.Is(err, domain.ErrNoConversationTurn):
+	case errors.Is(err, domain.ErrNoConversationTurn):
+		return domain.ConversationEditRejectedMissingTurn, true, err
+	case errors.Is(err, ErrEditTurnInvalid):
 		return domain.ConversationEditRejectedInvalid, true, err
 	case errors.Is(err, ErrForkUnsupported):
 		return domain.ConversationEditRejectedUnsupported, true, err

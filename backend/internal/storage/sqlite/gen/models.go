@@ -276,21 +276,22 @@ type ConversationBranch struct {
 }
 
 type ConversationEditDelivery struct {
-	ConversationID     string
-	ClientMessageID    string
-	RequestJson        string
-	State              string
-	SourceBranchID     string
-	ActiveBranchID     string
-	TurnID             string
-	HandledBySessionID string
-	ProviderTurnID     string
-	TurnState          string
-	TurnRequestedAt    sql.NullTime
-	RejectionKind      string
-	RejectionMessage   string
-	CreatedAt          time.Time
-	SettledAt          sql.NullTime
+	ConversationID      string
+	ClientMessageID     string
+	RequestJson         string
+	State               string
+	SourceBranchID      string
+	ActiveBranchID      string
+	TurnID              string
+	HandledBySessionID  string
+	ProviderTurnID      string
+	TurnState           string
+	TurnRequestedAt     sql.NullTime
+	RejectionKind       string
+	RejectionMessage    string
+	CreatedAt           time.Time
+	SettledAt           sql.NullTime
+	ProviderWorkStarted int64
 }
 
 type ConversationMessage struct {

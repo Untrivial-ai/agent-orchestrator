@@ -3322,6 +3322,38 @@ func (s *Store) ReserveEditDelivery(
 	)
 }
 
+// RecoverCompletedEditDelivery uses provider completion as proof of acceptance.
+// A queued, bound, or failed turn alone does not prove provider execution.
+func (s *Store) RecoverCompletedEditDelivery(ctx context.Context, conversationID, clientMessageID string, now time.Time) error {
+	row, err := s.conversationReader(ctx).SelectCompletedEditReplacement(ctx, gen.SelectCompletedEditReplacementParams{
+		ConversationID: conversationID, ClientMessageID: clientMessageID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load completed edit replacement: %w", err)
+	}
+	turn := turnToDomain(row.ConversationTurn)
+	return s.CompleteEditDelivery(ctx, conversationID, clientMessageID, row.ParentBranchID.String, turn.BranchID, turn, now)
+}
+
+// BeginEditProviderWork fences retries before any provider operation can occur.
+func (s *Store) BeginEditProviderWork(ctx context.Context, conversationID, clientMessageID, generation string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.BeginConversationEditProviderWork(ctx, gen.BeginConversationEditProviderWorkParams{
+		ConversationID: conversationID, ClientMessageID: clientMessageID, Generation: generation,
+	})
+	if err != nil {
+		return fmt.Errorf("begin edit provider work: %w", err)
+	}
+	if rows != 1 {
+		return errors.New("edit provider work already started or controller replaced")
+	}
+	return nil
+}
+
 // CompleteEditDelivery attaches the replacement turn to its branch and records
 // the replayable accepted result in one transaction. A crash cannot publish one
 // fact without the other.
@@ -3393,7 +3425,8 @@ func editDeliveryToDomain(row gen.ConversationEditDelivery) domain.ConversationE
 	delivery := domain.ConversationEditDelivery{
 		ConversationID: row.ConversationID, ClientMessageID: row.ClientMessageID,
 		RequestJSON: row.RequestJson, State: domain.ConversationEditDeliveryState(row.State),
-		SourceBranchID: row.SourceBranchID, ActiveBranchID: row.ActiveBranchID,
+		ProviderWorkStarted: row.ProviderWorkStarted != 0,
+		SourceBranchID:      row.SourceBranchID, ActiveBranchID: row.ActiveBranchID,
 		Turn: domain.ConversationTurn{
 			ID: row.TurnID, ConversationID: row.ConversationID,
 			HandledBySessionID: domain.SessionID(row.HandledBySessionID),

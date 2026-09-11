@@ -1398,8 +1398,21 @@ LIMIT 1;
 
 -- name: InsertConversationEditDeliveryReservation :execrows
 INSERT OR IGNORE INTO conversation_edit_deliveries (
-    conversation_id, client_message_id, request_json, state, created_at
-) VALUES (?, ?, ?, 'reserved', ?);
+    conversation_id, client_message_id, request_json, state, created_at, provider_work_started
+) VALUES (?, ?, ?, 'reserved', ?, 0);
+
+-- name: BeginConversationEditProviderWork :execrows
+UPDATE conversation_edit_deliveries
+SET provider_work_started = 1
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND client_message_id = sqlc.arg(client_message_id)
+  AND state = 'reserved' AND provider_work_started = 0
+  AND EXISTS (
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.session_id
+    WHERE c.id = conversation_edit_deliveries.conversation_id
+      AND s.controller_generation = sqlc.arg(generation)
+      AND s.session_mode = 'chat' AND s.is_terminated = 0
+  );
 
 
 -- name: AcceptConversationEditDelivery :execrows
@@ -1418,6 +1431,19 @@ SET state = 'accepted',
 WHERE conversation_id = ?
   AND client_message_id = ?
   AND state = 'reserved';
+
+-- name: SelectCompletedEditReplacement :one
+SELECT sqlc.embed(t), b.parent_branch_id
+FROM conversation_messages m
+JOIN conversation_turns t ON t.id = m.turn_id
+JOIN conversation_branches b ON b.id = m.branch_id
+JOIN conversation_edit_deliveries d ON d.conversation_id = m.conversation_id
+  AND d.client_message_id = m.client_message_id
+WHERE d.conversation_id = ? AND d.client_message_id = ?
+  AND d.state = 'reserved' AND t.state = 'completed'
+  AND b.replaced_turn_id = json_extract(d.request_json, '$.sourceTurnId')
+  AND m.role = 'user'
+LIMIT 1;
 
 
 -- name: RejectConversationEditDelivery :execrows
