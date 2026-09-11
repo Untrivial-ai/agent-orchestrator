@@ -121,7 +121,15 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 // tracked files are moved in. This removes the ordering dependency between
 // agent startup and repository checkout.
 func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace string, grant CheckoutGrantResponse, expected string) error {
-	staging, err := os.MkdirTemp(filepath.Dir(workspace), ".ao-checkout-")
+	// Stage inside the workspace itself, not its parent. The parent is the
+	// provider's durable root (e.g. Coder's /home/coder), which is owned by the
+	// provider's own user and is not writable by the AO worker user, so a
+	// staging dir there fails with "permission denied". The workspace, by
+	// contrast, is always writable by the worker (the agent just wrote into it,
+	// which is why this non-empty path runs) and is on the same filesystem, so
+	// the entry moves below stay a same-filesystem rename. The hidden staging
+	// dir is removed before the checkout returns.
+	staging, err := os.MkdirTemp(workspace, ".ao-checkout-")
 	if err != nil {
 		return fmt.Errorf("create checkout staging directory: %w", err)
 	}
