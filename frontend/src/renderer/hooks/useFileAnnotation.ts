@@ -12,7 +12,7 @@ function isSameAnnotationTarget(current: ActiveFileAnnotationTarget | null, next
 		&& current.surface === next.surface;
 }
 
-export function useFileAnnotation(sessionId: string): FileAnnotationModel {
+export function useFileAnnotation(sessionId: string, source?: string): FileAnnotationModel {
 	const { t } = useTranslation();
 	const [target, setTarget] = useState<ActiveFileAnnotationTarget | null>(null);
 	const [draft, setDraft] = useState("");
@@ -47,7 +47,7 @@ export function useFileAnnotation(sessionId: string): FileAnnotationModel {
 		generationRef.current += 1;
 		if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
 		sentTimerRef.current = null;
-		setTarget(nextTarget);
+		setTarget({ ...nextTarget, source });
 		setDraft("");
 		setStatus("idle");
 		setError("");

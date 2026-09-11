@@ -111,6 +111,8 @@ type SessionService interface {
 	GetWorkspaceFile(ctx context.Context, id domain.SessionID, path string, section sessionsvc.WorkspaceFileSection) (sessionsvc.WorkspaceFileDetail, error)
 	GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, path, commitSHA string) (sessionsvc.WorkspaceFileDetail, error)
 	UpdateWorkspaceFile(ctx context.Context, id domain.SessionID, input sessionsvc.UpdateWorkspaceFileInput) (sessionsvc.WorkspaceFileDetail, error)
+	ListPRFiles(ctx context.Context, id domain.SessionID, number int) (sessionsvc.PRFiles, error)
+	GetPRFile(ctx context.Context, id domain.SessionID, number int, path string) (sessionsvc.WorkspaceFileDetail, error)
 	GetWorkspaceFileBlob(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileBlob, error)
 	GetWorkspaceDiffs(ctx context.Context, id domain.SessionID, input sessionsvc.WorkspaceDiffInput) (sessionsvc.WorkspaceDiffs, error)
 	GetWorkspaceFileRevision(ctx context.Context, id domain.SessionID, path string, scope sessionsvc.WorkspaceDiffScope, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision string) (sessionsvc.WorkspaceFileRevision, error)
@@ -184,6 +186,8 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Get("/sessions/{sessionId}/workspace/file/revision", c.getWorkspaceFileRevision)
 	r.Get("/sessions/{sessionId}/workspace/search", c.searchWorkspaceFiles)
 	r.Get("/sessions/{sessionId}/workspace/tree", c.listWorkspaceTree)
+	r.Get("/sessions/{sessionId}/pr/{prNumber}/files", c.listPRFiles)
+	r.Get("/sessions/{sessionId}/pr/{prNumber}/file", c.getPRFile)
 	r.Get("/sessions/{sessionId}/pr", c.listPRs)
 	r.Post("/sessions/{sessionId}/pr/claim", c.claimPR)
 	r.Patch("/sessions/{sessionId}", c.rename)
@@ -612,6 +616,47 @@ func (c *SessionsController) updateWorkspaceFile(w http.ResponseWriter, r *http.
 		Content:                 in.Content,
 		ExpectedFileFingerprint: strings.TrimSpace(in.ExpectedFileFingerprint),
 	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, workspaceFileResponse(file))
+}
+
+func (c *SessionsController) listPRFiles(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/pr/{prNumber}/files")
+		return
+	}
+	number, err := strconv.Atoi(chi.URLParam(r, "prNumber"))
+	if err != nil || number <= 0 {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR_NUMBER", "prNumber must be a positive integer", nil)
+		return
+	}
+	files, err := c.Svc.ListPRFiles(r.Context(), sessionID(r), number)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, prFilesResponse(files))
+}
+
+func (c *SessionsController) getPRFile(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/pr/{prNumber}/file")
+		return
+	}
+	number, err := strconv.Atoi(chi.URLParam(r, "prNumber"))
+	if err != nil || number <= 0 {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR_NUMBER", "prNumber must be a positive integer", nil)
+		return
+	}
+	relPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if relPath == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "WORKSPACE_PATH_REQUIRED", "path is required", nil)
+		return
+	}
+	file, err := c.Svc.GetPRFile(r.Context(), sessionID(r), number, relPath)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -2053,6 +2098,16 @@ func workspaceFilesResponse(files sessionsvc.WorkspaceFiles) ListWorkspaceFilesR
 		Summary:          WorkspaceSummary(files.Summary),
 		Ahead:            files.Ahead,
 		Behind:           files.Behind,
+	}
+}
+
+func prFilesResponse(files sessionsvc.PRFiles) ListPRFilesResponse {
+	return ListPRFilesResponse{
+		SessionID: files.SessionID,
+		Source:    PRFileSourceResponse(files.Source),
+		Files:     workspaceFileSummariesResponse(files.Files),
+		Truncated: files.Truncated,
+		Summary:   WorkspaceSummary(files.Summary),
 	}
 }
 

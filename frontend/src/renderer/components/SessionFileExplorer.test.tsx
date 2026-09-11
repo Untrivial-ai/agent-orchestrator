@@ -23,16 +23,18 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("./FileTree", () => ({
 	FileTree: ({
 		changedOnly,
+		forceChangedOnly = false,
 		filterText,
 		onSelectPath,
 	}: {
 		changedOnly: boolean;
+		forceChangedOnly?: boolean;
 		filterText: string;
 		onSelectPath: (node: { path: string; type: "file" }) => void;
 	}) => {
 		const [expanded, setExpanded] = useState(false);
 		return <div>
-			<span data-testid="tree-changed-only">{String(changedOnly)}</span>
+			<span data-testid="tree-changed-only">{String(changedOnly || forceChangedOnly)}</span>
 			<span data-testid="tree-filter">{filterText}</span>
 			<button onClick={() => setExpanded((current) => !current)} type="button">expand src</button>
 			{expanded ? <span>src directory expanded</span> : null}
@@ -193,6 +195,32 @@ describe("SessionFileExplorer", () => {
 		expect(screen.queryByTestId("review-pane")).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Changes" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
+	});
+
+	it("switches to an associated PR without changing the workspace", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId: "sess-pr", prs: [{ number: 42, url: "https://example.test/pr/42", sourceBranch: "feature/files", title: "Files" }] } };
+			}
+			return {
+				data: {
+					sessionId: "sess-pr",
+					files: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false }],
+					truncated: false,
+				},
+			};
+		});
+		renderWithQuery(<SessionFileExplorer sessionId="sess-pr" />);
+
+		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · feature/files" }));
+
+		expect(screen.getByText("PR #42 · feature/files", { selector: "div" })).toBeInTheDocument();
+		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
+		expect(getMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
+			expect.objectContaining({ params: { path: { sessionId: "sess-pr", prNumber: 42 } } }),
+		);
 	});
 
 	it("keeps the continuous right-side diff visible when opening the full file in center", async () => {

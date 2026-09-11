@@ -4813,6 +4813,123 @@ paths:
       summary: List pull requests owned by a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/pr/{prNumber}/file:
+    get:
+      operationId: getSessionPRFile
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Associated pull request number.
+        in: path
+        name: prNumber
+        required: true
+        schema:
+          description: Associated pull request number.
+          minimum: 1
+          type: integer
+      - description: Session-worktree-relative file path.
+        in: query
+        name: path
+        schema:
+          description: Session-worktree-relative file path.
+          type: string
+      - description: Git-state section the file was opened from (see WorkspaceFileSections).
+          staged diffs the index against HEAD; unstaged diffs the worktree against
+          the index; omitted/committed/untracked diff the worktree against the compare
+          base.
+        in: query
+        name: section
+        schema:
+          description: Git-state section the file was opened from (see WorkspaceFileSections).
+            staged diffs the index against HEAD; unstaged diffs the worktree against
+            the index; omitted/committed/untracked diff the worktree against the compare
+            base.
+          enum:
+          - committed
+          - staged
+          - unstaged
+          - untracked
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read one file from an associated pull request base-to-head diff
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/pr/{prNumber}/files:
+    get:
+      operationId: listSessionPRFiles
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Associated pull request number.
+        in: path
+        name: prNumber
+        required: true
+        schema:
+          description: Associated pull request number.
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPRFilesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List the exact base-to-head changed files for an associated pull request
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/pr/claim:
     post:
       operationId: claimSessionPR
@@ -9846,6 +9963,27 @@ components:
       - unreadCount
       - unresolvedCount
       type: object
+    ListPRFilesResponse:
+      properties:
+        files:
+          items:
+            $ref: '#/components/schemas/WorkspaceFileSummary'
+          type: array
+        sessionId:
+          type: string
+        source:
+          $ref: '#/components/schemas/PRFileSourceResponse'
+        summary:
+          $ref: '#/components/schemas/WorkspaceSummary'
+        truncated:
+          type: boolean
+      required:
+      - sessionId
+      - source
+      - files
+      - truncated
+      - summary
+      type: object
     ListProjectsResponse:
       properties:
         projects:
@@ -10271,6 +10409,27 @@ components:
       required:
       - id
       - projectId
+      type: object
+    PRFileSourceResponse:
+      properties:
+        baseSha:
+          type: string
+        headSha:
+          type: string
+        label:
+          type: string
+        number:
+          type: integer
+        sourceBranch:
+          type: string
+        url:
+          type: string
+      required:
+      - number
+      - url
+      - label
+      - baseSha
+      - headSha
       type: object
     PRReviewState:
       properties:

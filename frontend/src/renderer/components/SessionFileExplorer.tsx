@@ -9,16 +9,19 @@ import {
 	Search,
 } from "lucide-react";
 import {
-	sessionWorkspaceFilesQueryOptions,
+	sessionSourceFilesQueryOptions,
+	type FilesSource,
 	useWorkspaceFileConnectionState,
 	workspaceFilesRefetchInterval,
 } from "../hooks/useSessionWorkspaceFiles";
+import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
 import { FileTree } from "./FileTree";
@@ -50,7 +53,10 @@ export function SessionFileExplorer({
 	const [internalSplit, setInternalSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const split = controlledSplit ?? internalSplit;
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
-	const annotation = useFileAnnotation(sessionId);
+	const [source, setSource] = useState<FilesSource>({ kind: "workspace" });
+	const [sourceNotice, setSourceNotice] = useState("");
+	const scmQuery = useSessionScmSummary(sessionId);
+	const annotation = useFileAnnotation(sessionId, source.kind === "workspace" ? "Workspace" : source.label);
 	const queryClient = useQueryClient();
 	const connectionState = useWorkspaceFileConnectionState(sessionId);
 
@@ -58,7 +64,7 @@ export function SessionFileExplorer({
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
 
 	const filesQuery = useQuery({
-		...sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace")),
+		...sessionSourceFilesQueryOptions(sessionId, source, t("files.error.loadWorkspace")),
 		refetchInterval: workspaceFilesRefetchInterval(connectionState),
 	});
 	const changedOnlyData = useMemo(
@@ -66,12 +72,29 @@ export function SessionFileExplorer({
 		[filesQuery.data],
 	);
 	const hasChanges = filesQuery.data?.files.some((file) => file.status !== "unmodified") ?? false;
-	const showChanges = changedOnly && (!filesQuery.data || hasChanges);
+	const showChanges = source.kind === "workspace" && changedOnly && (!filesQuery.data || hasChanges);
 
 	useEffect(() => {
 		setSelectedPath(null);
 		setFilter("");
+		setSource({ kind: "workspace" });
+		setSourceNotice("");
 	}, [sessionId]);
+
+	useEffect(() => {
+		if (source.kind !== "pull_request" || !scmQuery.data) return;
+		if (scmQuery.data.some((pr) => pr.number === source.number)) return;
+		setSource({ kind: "workspace" });
+		setSelectedPath(null);
+		setSourceNotice(t("files.explorer.sourceUnavailable"));
+	}, [scmQuery.data, source, t]);
+
+	useEffect(() => {
+		if (source.kind !== "pull_request" || !filesQuery.isError) return;
+		setSource({ kind: "workspace" });
+		setSelectedPath(null);
+		setSourceNotice(t("files.explorer.sourceUnavailable"));
+	}, [filesQuery.isError, source.kind, t]);
 
 	useEffect(() => subscribeWorkspaceFileChanges(sessionId, queryClient), [queryClient, sessionId]);
 	useEffect(() => {
@@ -86,17 +109,40 @@ export function SessionFileExplorer({
 
 	const handleSelectPath = (node: TreeNode) => {
 		setSelectedPath(node.path);
-		if (!isMaximized) onOpenFile?.(node.path, { mode: "file" });
+		if (!isMaximized && source.kind === "workspace") onOpenFile?.(node.path, { mode: "file" });
 	};
 	const handleViewChange = (next: boolean) => {
 		setSelectedPath(null);
 		setFilesChangedOnly(sessionId, next);
 	};
 	const treeSelectedPath = selectedPath;
+	const sourceValue = source.kind === "workspace" ? "workspace" : `pr:${source.number}`;
+	const selectSource = (value: string) => {
+		setSourceNotice("");
+		setSelectedPath(null);
+		if (value === "workspace") {
+			setSource({ kind: "workspace" });
+			return;
+		}
+		const number = Number(value.slice(3));
+		const pr = scmQuery.data?.find((candidate) => candidate.number === number);
+		if (pr) setSource({ kind: "pull_request", number, label: `PR #${number} · ${pr.sourceBranch || pr.title}` });
+	};
 
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
-			<header className="flex h-10 shrink-0 items-center gap-0.5 border-b border-border bg-surface px-2">
+			<header className="flex min-h-10 shrink-0 flex-wrap items-center gap-0.5 border-b border-border bg-surface px-2 py-1">
+				<Select onValueChange={selectSource} value={sourceValue}>
+					<SelectTrigger aria-label={t("files.explorer.source")} className="h-8 max-w-56 min-w-32 text-xs">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="workspace">{t("files.explorer.workspaceSource")}</SelectItem>
+						{scmQuery.data?.map((pr) => (
+							<SelectItem key={pr.url} value={`pr:${pr.number}`}>{`PR #${pr.number} · ${pr.sourceBranch || pr.title}`}</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
 				<label className="relative mr-1 min-w-0 flex-1">
 					<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
 					<Input
@@ -183,6 +229,10 @@ export function SessionFileExplorer({
 					</Tooltip>
 				) : null}
 			</header>
+			<div className="shrink-0 border-b border-border px-3 py-1 text-2xs text-muted-foreground">
+				{source.kind === "workspace" ? t("files.explorer.workspaceSource") : source.label}
+				{sourceNotice ? ` — ${sourceNotice}` : ""}
+			</div>
 			{showChanges ? (
 				filesQuery.isPending ? (
 					<PanelMessage>{t("files.loading")}</PanelMessage>
@@ -195,13 +245,13 @@ export function SessionFileExplorer({
 						annotation={annotation}
 						data={filesQuery.data}
 						filter={filter}
-						onBrowseAll={() => handleViewChange(false)}
+						onBrowseAll={() => source.kind === "workspace" && handleViewChange(false)}
 						onOpenFile={onOpenFile}
 						sessionId={sessionId}
 						split={split}
 					/>
 				) : null
-			) : isMaximized ? (
+			) : isMaximized || source.kind === "pull_request" ? (
 				// Maximized gives the explorer the full window — plenty of room for
 				// the tree and the content side by side, like a real editor.
 				<ResizablePanelGroup className="min-h-0 flex-1">
@@ -213,12 +263,13 @@ export function SessionFileExplorer({
 							onSelectPath={handleSelectPath}
 							selectedPath={treeSelectedPath}
 							sessionId={sessionId}
+							forceChangedOnly={source.kind === "pull_request"}
 						/>
 					</ResizablePanel>
 					<ResizableHandle />
 					<ResizablePanel defaultSize="74%" minSize="40%">
 						<ContentScrollArea>
-							<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} />
+							<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} source={source} split={split} />
 						</ContentScrollArea>
 					</ResizablePanel>
 				</ResizablePanelGroup>
