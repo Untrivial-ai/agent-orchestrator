@@ -561,6 +561,7 @@
 	"mobile.tailscale.step2Trail": "ici pour obtenir votre adresse 100.x.",
 	"mobile.tailscale.step3": "Scannez le code ci-dessous — votre adresse Tailscale et le mot de passe se remplissent automatiquement.",
 	"newTask.agent": "Agent",
+	"newTask.agentUnauthorized": "{{agent}} n'est pas autorisé. Vérifiez les paramètres pour l'authentification.",
 	"newTask.addFile": "Ajouter un fichier",
 	"newTask.addImage": "Ajouter une image",
 	"newTask.branch": "Branche",

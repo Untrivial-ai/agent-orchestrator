@@ -341,6 +341,15 @@ export function TaskComposer({
 				? cleanModel || cleanMode || undefined
 				: undefined;
 
+		// Validate agent readiness before submission
+		if (selectedAgent) {
+			const agentReadiness = agentCatalog?.agents.find((a) => a.id === selectedAgent);
+			if (agentReadiness?.authentication.state === "unauthorized") {
+				setError(t("newTask.agentUnauthorized", { agent: agentReadiness.label || selectedAgent }));
+				return;
+			}
+		}
+
 		setIsSubmitting(true);
 		setError(undefined);
 		setFallbackAction(undefined);
@@ -383,10 +392,13 @@ export function TaskComposer({
 		}
 	};
 
+	const selectedAgentReadiness = selectedAgent ? agentCatalog?.agents.find((a) => a.id === selectedAgent) : undefined;
+	const isAgentUnauthorized = selectedAgentReadiness?.authentication.state === "unauthorized";
+
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId)}
+			canSubmit={Boolean(projectId) && !isAgentUnauthorized}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),

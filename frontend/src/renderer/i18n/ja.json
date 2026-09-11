@@ -559,6 +559,7 @@
 	"mobile.tailscale.step2Trail": "して 100.x アドレスを取得します。",
 	"mobile.tailscale.step3": "下のコードをスキャンすると、Tailscale アドレスとパスワードが自動入力されます。",
 	"newTask.agent": "エージェント",
+	"newTask.agentUnauthorized": "{{agent}} は許可されていません。設定を確認して認証してください。",
 	"newTask.addFile": "ファイルを追加",
 	"newTask.addImage": "画像を追加",
 	"newTask.branch": "ブランチ",

@@ -559,6 +559,7 @@
 	"mobile.tailscale.step2Trail": "하여 100.x 주소를 확인하세요.",
 	"mobile.tailscale.step3": "아래 코드를 스캔하면 Tailscale 주소와 비밀번호가 자동으로 입력됩니다.",
 	"newTask.agent": "에이전트",
+	"newTask.agentUnauthorized": "{{agent}}이(가) 승인되지 않았습니다. 설정을 확인하여 인증하세요.",
 	"newTask.addFile": "파일 추가",
 	"newTask.addImage": "이미지 추가",
 	"newTask.branch": "브랜치",
