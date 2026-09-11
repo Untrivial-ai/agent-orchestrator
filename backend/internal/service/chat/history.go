@@ -983,15 +983,10 @@ func (s *Service) restoreClosedSourceController(
 	recoveryCtx, cancel := context.WithTimeout(
 		context.WithoutCancel(ctx), nativeEditHandoffLimit)
 	defer cancel()
-	if source.State() != ports.ChatControllerStopped {
-		closeErr := source.closeForBranchHandoff(recoveryCtx)
-		if source.State() != ports.ChatControllerStopped {
-			if closeErr == nil {
-				closeErr = errors.New("source controller did not stop")
-			}
-			return fmt.Errorf(
-				"confirm source stopped before failed native edit recovery: %w", closeErr)
-		}
+	// A closed event stream can project "stopped" before host termination
+	// succeeds. Preserve any termination error before rotating its credentials.
+	if err := source.closeForBranchHandoff(recoveryCtx); err != nil {
+		return fmt.Errorf("confirm source stopped before failed native edit recovery: %w", err)
 	}
 	providerConversationID := source.ProviderConversationID()
 	launchEnv, err := s.prepareBranchControllerEnv(recoveryCtx, cfg)
