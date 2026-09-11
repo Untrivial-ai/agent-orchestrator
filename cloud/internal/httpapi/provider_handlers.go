@@ -14,6 +14,8 @@ import (
 
 const defaultAgentConnectionLabel = "default"
 
+var validAgentsList = []string{"claude-code", "codex", "cursor"}
+
 type providerConnectionStore interface {
 	ListProviderConnections(
 		context.Context,
@@ -140,7 +142,7 @@ func (s *Server) listAvailableAgents(w http.ResponseWriter, r *http.Request) {
 		ValidationState string `json:"validationState"`
 	}
 	availableAgents := []agent{}
-	for _, provider := range []string{"claude-code", "codex", "cursor"} {
+	for _, provider := range validAgentsList {
 		hasValid := agentConnectionAvailable(connections, provider)
 		state := "not_configured"
 		for _, conn := range connections {
@@ -543,7 +545,12 @@ func (s *Server) promoteAgentConnection(w http.ResponseWriter, r *http.Request) 
 }
 
 func validAgentProvider(agent string) bool {
-	return agent == "claude-code" || agent == "codex" || agent == "cursor"
+	for _, valid := range validAgentsList {
+		if agent == valid {
+			return true
+		}
+	}
+	return false
 }
 
 func validAgentCredentialType(agent, credentialType string) bool {
