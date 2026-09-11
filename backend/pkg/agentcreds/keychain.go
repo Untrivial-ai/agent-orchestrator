@@ -2,8 +2,6 @@ package agentcreds
 
 import (
 	"context"
-	"errors"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -17,16 +15,6 @@ import (
 // clicks it. The design must not depend on the fast path, so the call is
 // capped and a timeout resolves to "no credential", never to a hang.
 const keychainTimeout = 3 * time.Second
-
-// Keychain exit codes, measured.
-const (
-	// keychainExitNotFound is `security`'s "item could not be found". The
-	// user has no subscription login stored; fall through to the file.
-	keychainExitNotFound = 44
-	// keychainExitDenied covers a locked keychain or a denied ACL. It returns
-	// immediately rather than hanging, and means "cannot tell", not "absent".
-	keychainExitDenied = 128
-)
 
 // Keychain service names Claude Code has used to store its credential.
 const (
@@ -101,12 +89,4 @@ func kindForToken(token string) Kind {
 		return KindOAuthToken
 	}
 	return KindAPIKey
-}
-
-func keychainExitCode(err error) int {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode()
-	}
-	return -1
 }

@@ -215,5 +215,3 @@ func hmacSHA256(key []byte, data string) []byte {
 	mac.Write([]byte(data))
 	return mac.Sum(nil)
 }
-
-var _ = context.Background

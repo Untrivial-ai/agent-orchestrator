@@ -243,5 +243,3 @@ func base64URL(data []byte) string {
 func readLimited(response *http.Response) ([]byte, error) {
 	return readAllLimited(response, maxBodyBytes)
 }
-
-var _ = context.Background
