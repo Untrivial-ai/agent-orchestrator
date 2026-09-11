@@ -416,7 +416,6 @@ type PR struct {
 	ProviderID               string
 	AuthorAvatarURL          string
 	ReviewPartial            bool
-	AttachmentSource         string
 }
 
 type PRCheck struct {
