@@ -397,6 +397,7 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	modeFor := c.modeFor
 	optionsFor := c.optionsFor
 	initialPermission := c.initialPermission
+	currentPermission := c.permissionMode
 	validateSettings := c.validateSettings
 	legacyModel := c.legacyModel
 	legacyMode := c.legacyMode
@@ -436,8 +437,17 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 		}
 		c.applyAcceptedConfigOption("model", ports.ChatConfigOptionValue{Select: model})
 	}
-	if modeFor != nil {
+	if modeFor != nil && ports.NormalizePermissionMode(settings.Approval) != currentPermission {
 		if mode := modeFor(settings.Approval); mode != "" {
+			// A model-dependent mode (e.g. Claude's "auto" classifier, unsupported
+			// by some models such as Haiku) may not be in the agent's advertised
+			// choices even though modeFor's static AO-vocabulary mapping offers it.
+			// Treat that the same as an unimplemented setter: Start/Resume already
+			// tolerate ErrACPSetterUnsupported because the initial mode may have
+			// reached the agent via launch-time flags instead.
+			if legacyMode && !modeOffered(configOptions, mode) {
+				return fmt.Errorf("%w: session/set_mode %q not offered by this session", ErrACPSetterUnsupported, mode)
+			}
 			if _, err := c.conn.SetSessionMode(ctx, acpsdk.SetSessionModeRequest{
 				SessionId: acpsdk.SessionId(sessionID), ModeId: acpsdk.SessionModeId(mode),
 			}); err != nil {
