@@ -7,8 +7,12 @@
 package codex
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -232,21 +236,98 @@ func (p *Plugin) NativeConversationExists(
 	if !valid {
 		return false, nil
 	}
+	codexHome, err := codexRolloutHome(env)
+	if err != nil {
+		return false, err
+	}
+	path, err := findCodexRollout(ctx, codexHome, id)
+	if err != nil {
+		return false, err
+	}
+	return path != "", nil
+}
+
+// NativeConversationSucceeds proves that Codex carried one conversation into a
+// new thread id. Resuming a thread in the Codex TUI does not write to it in
+// place: Codex forks it, so the session's native id after a Chat -> TUI switch
+// is a descendant of the id the conversation branch recorded. Each rollout's
+// leading session_meta names its immediate parent, so following that chain from
+// the candidate is the durable proof that the two ids are the same work.
+//
+// Fails closed. A missing, archived, compressed, or malformed rollout yields
+// false rather than an error, because none of them establish succession and an
+// unproven handle must keep failing the caller's consistency check.
+func (p *Plugin) NativeConversationSucceeds(
+	ctx context.Context,
+	_ ports.SessionRef,
+	candidateID string,
+	predecessorID string,
+	env map[string]string,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	candidate, candidateValid := canonicalCodexThreadID(candidateID)
+	predecessor, predecessorValid := canonicalCodexThreadID(predecessorID)
+	if !candidateValid || !predecessorValid || candidate == predecessor {
+		return false, nil
+	}
+	codexHome, err := codexRolloutHome(env)
+	if err != nil {
+		return false, err
+	}
+	// A fork chain is short in practice; the bound only stops a corrupted
+	// rollout set from walking forever. Visited ids make a cycle terminate too.
+	visited := map[string]bool{candidate: true}
+	for depth := 0; depth < codexForkChainLimit; depth++ {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		parent, err := codexRolloutForkParent(ctx, codexHome, candidate)
+		if err != nil {
+			return false, err
+		}
+		if parent == "" {
+			return false, nil
+		}
+		if parent == predecessor {
+			return true, nil
+		}
+		if visited[parent] {
+			return false, nil
+		}
+		visited[parent] = true
+		candidate = parent
+	}
+	return false, nil
+}
+
+// codexForkChainLimit bounds how many fork ancestors a succession probe reads.
+const codexForkChainLimit = 32
+
+// codexRolloutHome resolves CODEX_HOME the way the launched agent will see it:
+// the session's own environment first, then the daemon's, then the default.
+func codexRolloutHome(env map[string]string) (string, error) {
 	codexHome := strings.TrimSpace(env["CODEX_HOME"])
 	if codexHome == "" {
 		codexHome = strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	}
-	if codexHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, fmt.Errorf("codex: resolve rollout root: %w", err)
-		}
-		codexHome = filepath.Join(home, ".codex")
+	if codexHome != "" {
+		return codexHome, nil
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("codex: resolve rollout root: %w", err)
+	}
+	return filepath.Join(home, ".codex"), nil
+}
 
-	found := false
+// findCodexRollout returns the path of the non-empty active rollout for a
+// canonical thread id, or "" when there is none.
+func findCodexRollout(ctx context.Context, codexHome, id string) (string, error) {
+	found := ""
 	sessionsDir := filepath.Join(codexHome, "sessions")
-	err := filepath.WalkDir(sessionsDir, func(_ string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(sessionsDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -261,19 +342,69 @@ func (p *Plugin) NativeConversationExists(
 			return err
 		}
 		if info.Mode().IsRegular() && info.Size() > 0 {
-			found = true
+			found = path
 			return fs.SkipAll
 		}
 		return nil
 	})
 	if os.IsNotExist(err) {
-		return false, nil
+		return "", nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("codex: inspect rollout root %s: %w", sessionsDir, err)
+		return "", fmt.Errorf("codex: inspect rollout root %s: %w", sessionsDir, err)
 	}
 	return found, nil
 }
+
+// codexRolloutSessionMeta is the subset of a rollout's leading record AO reads.
+type codexRolloutSessionMeta struct {
+	Type    string `json:"type"`
+	Payload struct {
+		ForkedFromID string `json:"forked_from_id"`
+	} `json:"payload"`
+}
+
+// codexRolloutForkParent reads the thread a rollout was forked from. An absent
+// or unreadable parent is reported as "" rather than an error: only a parent AO
+// can actually read proves anything.
+func codexRolloutForkParent(ctx context.Context, codexHome, id string) (string, error) {
+	path, err := findCodexRollout(ctx, codexHome, id)
+	if err != nil || path == "" {
+		return "", err
+	}
+	// Compressed rollouts are excluded here for the same reason
+	// NativeConversationExists excludes archived ones: AO does not parse them.
+	if !strings.HasSuffix(path, ".jsonl") {
+		return "", nil
+	}
+	file, err := os.Open(path) //nolint:gosec // path comes from AO's own rollout walk.
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("codex: open rollout %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	reader := bufio.NewReader(io.LimitReader(file, codexSessionMetaLimit))
+	line, err := reader.ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("codex: read rollout %s: %w", path, err)
+	}
+	var meta codexRolloutSessionMeta
+	if err := json.Unmarshal(line, &meta); err != nil || meta.Type != "session_meta" {
+		return "", nil
+	}
+	parent, ok := canonicalCodexThreadID(meta.Payload.ForkedFromID)
+	if !ok {
+		return "", nil
+	}
+	return parent, nil
+}
+
+// codexSessionMetaLimit caps the leading record read. Codex writes session_meta
+// first; a rollout whose first line is larger than this is not one AO can read.
+const codexSessionMetaLimit = 1 << 20
 
 func canonicalCodexThreadID(value string) (string, bool) {
 	parsed, err := uuid.Parse(strings.TrimSpace(value))

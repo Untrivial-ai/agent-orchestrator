@@ -397,6 +397,12 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
+	if providerScopeID == "" {
+		providerScopeID, err = m.forkedNativeProviderScopeID(ctx, rec, env)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
+		}
+	}
 	var completionErr error
 	_, err = m.chat.StartChat(ctx, ChatStart{
 		SessionID:               rec.ID,
@@ -536,6 +542,107 @@ func (m *Manager) historicalChatProviderScopeID(
 		return "", nil
 	}
 	return interfaceTransitionProviderBoundaryID(transition.ID), nil
+}
+
+// forkedNativeProviderScopeID reserves a provider boundary when the harness
+// itself rotated this session's native conversation id while it was in Terminal.
+// Codex forks a thread rather than writing to it in place when its TUI resumes
+// one, so a session that switched Chat -> Terminal and worked there comes back
+// carrying a descendant id. The conversation branch still owns the ancestor, and
+// Chat Service's ordinary-resume consistency check correctly refuses to resume a
+// handle the branch never recorded — which stranded Chat for the whole session.
+//
+// Reserving a boundary keeps that check intact and answers it instead: the
+// adapter must prove the new id continues the branch's id, and only then does
+// Chat Service append a new branch for the successor, parented to the current
+// head. The old branch and every row under it are left exactly as they are; no
+// recorded handle is ever overwritten.
+//
+// Returns "" whenever succession is not proven, which restores the hard error.
+func (m *Manager) forkedNativeProviderScopeID(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	env map[string]string,
+) (string, error) {
+	providerConversationID := rec.Metadata.ProviderConversationID
+	if providerConversationID == "" {
+		return "", nil
+	}
+	if m.agents == nil {
+		return "", nil
+	}
+	agent, ok := m.agents.Agent(rec.Harness)
+	if !ok {
+		return "", nil
+	}
+	succession, ok := agent.(ports.AgentInterfaceHandoffSuccession)
+	if !ok {
+		return "", nil
+	}
+	store, ok := m.store.(historicalChatProviderOwnershipStore)
+	if !ok {
+		return "", nil
+	}
+	transition, found, err := store.GetLatestSessionInterfaceTransition(ctx, rec.ID)
+	if err != nil {
+		return "", err
+	}
+	// Only a live TUI -> Chat handoff for this exact id may reserve a boundary.
+	// A failed, cancelled, or abandoned attempt is not authority to move the
+	// conversation's provider ownership anywhere.
+	if !found || transition.SourceMode != domain.SessionModeTUI ||
+		transition.TargetMode != domain.SessionModeChat ||
+		transition.NativeConversationID != providerConversationID ||
+		!interfaceTransitionMayReserveBoundary(transition.Phase) {
+		return "", nil
+	}
+	conversation, err := store.ConversationForSession(ctx, rec.ID)
+	if errors.Is(err, domain.ErrNoConversation) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if conversation.SessionID != rec.ID || conversation.ActiveBranchID == "" {
+		return "", nil
+	}
+	activeBranch, err := store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
+	if err != nil {
+		return "", err
+	}
+	// Nothing to migrate for a branch that owns no handle, or already owns this
+	// one. Both are ordinary resumes and must keep taking the ordinary path.
+	if activeBranch.ProviderConversationID == "" ||
+		activeBranch.ProviderConversationID == providerConversationID {
+		return "", nil
+	}
+	succeeds, err := succession.NativeConversationSucceeds(ctx, ports.SessionRef{
+		ID:            string(rec.ID),
+		WorkspacePath: rec.Metadata.WorkspacePath,
+		Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: rec.Metadata.AgentSessionID},
+	}, providerConversationID, activeBranch.ProviderConversationID, env)
+	if err != nil {
+		return "", fmt.Errorf("prove native conversation succession: %w", err)
+	}
+	if !succeeds {
+		return "", nil
+	}
+	return interfaceTransitionProviderBoundaryID(transition.ID), nil
+}
+
+// interfaceTransitionMayReserveBoundary limits boundary reservation to the
+// window where a target Chat controller is legitimately being started, plus the
+// completed phase so a daemon restart between provider connect and the durable
+// commit reserves the same deterministic id rather than a second one.
+func interfaceTransitionMayReserveBoundary(phase domain.SessionInterfaceTransitionPhase) bool {
+	switch phase {
+	case domain.SessionInterfaceTransitionTargetStarting,
+		domain.SessionInterfaceTransitionActivating,
+		domain.SessionInterfaceTransitionCompleted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) markChatControllerSpawned(

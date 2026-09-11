@@ -125,6 +125,31 @@ type AgentInterfaceHandoffHistoryProbe interface {
 	) (bool, error)
 }
 
+// AgentInterfaceHandoffSuccession is an OPTIONAL refinement for adapters whose
+// harness can rotate a session's native conversation id on the terminal side.
+// Codex forks a thread when its TUI resumes one, so the id a later TUI -> Chat
+// handoff presents is a descendant the durable conversation branch has never
+// seen, not the handle it recorded.
+//
+// Proving succession lets AO open a new provider boundary that keeps the old
+// branch's history instead of refusing the handoff. Without this capability, or
+// when succession cannot be proven, a handle the active branch does not own
+// stays a hard error: silently adopting an unrelated thread would present
+// someone else's history as this conversation's.
+type AgentInterfaceHandoffSuccession interface {
+	// NativeConversationSucceeds reports whether candidateID continues
+	// predecessorID — the same conversation carried into a new native id.
+	// Implementations must fail closed: an unknown, unreadable, or unrelated
+	// candidate returns false, not an error-free true.
+	NativeConversationSucceeds(
+		ctx context.Context,
+		session SessionRef,
+		candidateID string,
+		predecessorID string,
+		env map[string]string,
+	) (bool, error)
+}
+
 // ModelSelectionMode tells clients how to render an agent's model control.
 type ModelSelectionMode string
 

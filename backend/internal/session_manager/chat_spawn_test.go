@@ -1298,3 +1298,338 @@ func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 		t.Errorf("a terminated session still received %v", launcher.relayed)
 	}
 }
+
+// successionAgent answers the optional native-succession probe with a scripted
+// verdict, so the reservation gates can be tested without a real harness.
+type successionAgent struct {
+	fakeAgent
+	succeeds map[string]bool
+	err      error
+	calls    int
+}
+
+func (a *successionAgent) NativeConversationSucceeds(
+	_ context.Context,
+	_ ports.SessionRef,
+	candidateID, predecessorID string,
+	_ map[string]string,
+) (bool, error) {
+	a.calls++
+	if a.err != nil {
+		return false, a.err
+	}
+	return a.succeeds[candidateID+"->"+predecessorID], nil
+}
+
+type successionAgents struct{ agent ports.Agent }
+
+func (a successionAgents) Agent(domain.AgentHarness) (ports.Agent, bool) {
+	if a.agent == nil {
+		return nil, false
+	}
+	return a.agent, true
+}
+
+// Codex forks a thread when its TUI resumes one, so a session that spent time in
+// Terminal comes back to Chat carrying a descendant of the id its conversation
+// branch recorded. Reserving a provider boundary is what lets that handoff
+// succeed without overwriting the handle the branch already owns.
+func TestForkedNativeProviderScopeRequiresProvenSuccession(t *testing.T) {
+	const (
+		sessionID = domain.SessionID("mer-309")
+		ancestor  = "01a077dc-1de6-7c81-af05-c88acfb7f1d5"
+		successor = "01a08d27-878b-7db0-9e84-9a921099f4a8"
+	)
+	now := time.Date(2026, 9, 11, 4, 41, 0, 0, time.UTC)
+	newStore := func() *historicalChatRestoreStore {
+		return &historicalChatRestoreStore{
+			transitionStore: newTransitionStore(),
+			conversation: domain.ConversationRecord{
+				ID: "project-conversation", Scope: domain.ConversationScopeProject,
+				ProjectID: chatTestProject, SessionID: sessionID, ActiveBranchID: "branch-ancestor",
+			},
+			activeBranch: domain.ConversationBranch{
+				ID: "branch-ancestor", ConversationID: "project-conversation",
+				SessionID: sessionID, ProviderConversationID: ancestor, Active: true,
+			},
+		}
+	}
+	record := domain.SessionRecord{
+		ID: sessionID, ProjectID: chatTestProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{ProviderConversationID: successor},
+	}
+	liveHandoff := func(phase domain.SessionInterfaceTransitionPhase, native string) domain.SessionInterfaceTransition {
+		return domain.SessionInterfaceTransition{
+			ID: "handoff-309", SessionID: sessionID,
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Phase: phase, NativeConversationID: native, CreatedAt: now,
+		}
+	}
+	provenAgent := func() *successionAgent {
+		return &successionAgent{succeeds: map[string]bool{successor + "->" + ancestor: true}}
+	}
+
+	t.Run("proven successor reserves the handoff boundary", func(t *testing.T) {
+		st := newStore()
+		st.transitions["handoff-309"] = liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		agent := provenAgent()
+		m := New(Deps{Store: st, Agents: successionAgents{agent: agent}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil {
+			t.Fatalf("forkedNativeProviderScopeID: %v", err)
+		}
+		if got != "handoff-309:provider" {
+			t.Fatalf("provider scope = %q, want deterministic handoff boundary", got)
+		}
+		if agent.calls != 1 {
+			t.Fatalf("succession probes = %d, want exactly one", agent.calls)
+		}
+	})
+
+	t.Run("unproven handle keeps the consistency refusal", func(t *testing.T) {
+		st := newStore()
+		st.transitions["handoff-309"] = liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		// The adapter recognizes no relationship: this is an unrelated thread.
+		m := New(Deps{Store: st, Agents: successionAgents{agent: &successionAgent{}}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil {
+			t.Fatalf("forkedNativeProviderScopeID: %v", err)
+		}
+		if got != "" {
+			t.Fatalf("provider scope = %q, want no reservation for an unrelated handle", got)
+		}
+	})
+
+	t.Run("a failed attempt is not authority to move ownership", func(t *testing.T) {
+		for _, phase := range []domain.SessionInterfaceTransitionPhase{
+			domain.SessionInterfaceTransitionFailed,
+			domain.SessionInterfaceTransitionCancelled,
+			domain.SessionInterfaceTransitionRecovery,
+			domain.SessionInterfaceTransitionRequested,
+		} {
+			st := newStore()
+			st.transitions["handoff-309"] = liveHandoff(phase, successor)
+			m := New(Deps{Store: st, Agents: successionAgents{agent: provenAgent()}})
+
+			got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+			if err != nil || got != "" {
+				t.Fatalf("phase %q: scope=%q err=%v, want no reservation", phase, got, err)
+			}
+		}
+	})
+
+	t.Run("boundary is scoped to this exact handoff handle", func(t *testing.T) {
+		st := newStore()
+		st.transitions["handoff-309"] = liveHandoff(
+			domain.SessionInterfaceTransitionTargetStarting, "01a0ffff-6666-7777-8888-999900001111")
+		agent := provenAgent()
+		m := New(Deps{Store: st, Agents: successionAgents{agent: agent}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil || got != "" {
+			t.Fatalf("scope=%q err=%v, want no reservation when the handoff names another id", got, err)
+		}
+		if agent.calls != 0 {
+			t.Fatalf("succession probes = %d, want none before the handoff matches", agent.calls)
+		}
+	})
+
+	t.Run("a chat to terminal handoff never reserves a boundary", func(t *testing.T) {
+		st := newStore()
+		reversed := liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		reversed.SourceMode, reversed.TargetMode = domain.SessionModeChat, domain.SessionModeTUI
+		st.transitions["handoff-309"] = reversed
+		m := New(Deps{Store: st, Agents: successionAgents{agent: provenAgent()}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil || got != "" {
+			t.Fatalf("scope=%q err=%v, want no reservation for a reversed handoff", got, err)
+		}
+	})
+
+	t.Run("an ordinary resume stays on the ordinary path", func(t *testing.T) {
+		st := newStore()
+		st.activeBranch.ProviderConversationID = successor
+		st.transitions["handoff-309"] = liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		agent := provenAgent()
+		m := New(Deps{Store: st, Agents: successionAgents{agent: agent}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil || got != "" {
+			t.Fatalf("scope=%q err=%v, want no reservation when the branch already owns the handle", got, err)
+		}
+		if agent.calls != 0 {
+			t.Fatalf("succession probes = %d, want none for a handle the branch owns", agent.calls)
+		}
+	})
+
+	t.Run("an adapter without the capability keeps the refusal", func(t *testing.T) {
+		st := newStore()
+		st.transitions["handoff-309"] = liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		m := New(Deps{Store: st, Agents: fakeAgents{}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil || got != "" {
+			t.Fatalf("scope=%q err=%v, want no reservation without a succession probe", got, err)
+		}
+	})
+
+	t.Run("an inconclusive probe fails the handoff rather than guessing", func(t *testing.T) {
+		st := newStore()
+		st.transitions["handoff-309"] = liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		m := New(Deps{Store: st, Agents: successionAgents{
+			agent: &successionAgent{err: errors.New("rollout root unreadable")},
+		}})
+
+		if _, err := m.forkedNativeProviderScopeID(context.Background(), record, nil); err == nil ||
+			!strings.Contains(err.Error(), "prove native conversation succession") {
+			t.Fatalf("error = %v, want the succession failure surfaced", err)
+		}
+	})
+
+	t.Run("repeated attempts each reserve their own boundary", func(t *testing.T) {
+		st := newStore()
+		st.transitions["handoff-309"] = liveHandoff(domain.SessionInterfaceTransitionFailed, successor)
+		retry := liveHandoff(domain.SessionInterfaceTransitionTargetStarting, successor)
+		retry.ID = "handoff-309-retry"
+		retry.CreatedAt = now.Add(time.Minute)
+		st.transitions[retry.ID] = retry
+		m := New(Deps{Store: st, Agents: successionAgents{agent: provenAgent()}})
+
+		got, err := m.forkedNativeProviderScopeID(context.Background(), record, nil)
+		if err != nil {
+			t.Fatalf("forkedNativeProviderScopeID: %v", err)
+		}
+		if got != "handoff-309-retry:provider" {
+			t.Fatalf("provider scope = %q, want the newest attempt's boundary", got)
+		}
+	})
+}
+
+// End-to-end regression for the reported failure: session 309 switched Chat ->
+// Terminal, Codex forked its thread while the user worked there, and every
+// Terminal -> Chat switch afterwards died with "active conversation branch
+// provider handle ... does not match session handle". The restore must hand Chat
+// Service a reserved boundary so the successor resumes instead of being refused.
+// Driven here through restore, which is also how a daemon restarted between the
+// handoff and its durable commit re-reaches this decision.
+func TestChatRestoreReservesBoundaryForForkedTerminalThread(t *testing.T) {
+	const (
+		sessionID = domain.SessionID("mer-309")
+		ancestor  = "01a077dc-1de6-7c81-af05-c88acfb7f1d5"
+		successor = "01a08d27-878b-7db0-9e84-9a921099f4a8"
+	)
+	launcher := &recordingLauncher{}
+	st := &historicalChatRestoreStore{
+		transitionStore: newTransitionStore(),
+		conversation: domain.ConversationRecord{
+			ID: "project-conversation", Scope: domain.ConversationScopeProject,
+			ProjectID: chatTestProject, SessionID: sessionID, ActiveBranchID: "branch-ancestor",
+		},
+		activeBranch: domain.ConversationBranch{
+			ID: "branch-ancestor", ConversationID: "project-conversation",
+			SessionID: sessionID, ProviderConversationID: ancestor, Active: true,
+		},
+	}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	st.transitions["handoff-309"] = domain.SessionInterfaceTransition{
+		ID: "handoff-309", SessionID: sessionID,
+		SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Phase: domain.SessionInterfaceTransitionCompleted, NativeConversationID: successor,
+		CreatedAt: time.Date(2026, 9, 11, 4, 41, 0, 0, time.UTC),
+	}
+	rec := domain.SessionRecord{
+		ID: sessionID, ProjectID: chatTestProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		IsTerminated: true, Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: "main", WorkspacePath: "/ws/mer-309",
+			ProviderConversationID: successor, AgentSessionID: successor,
+		},
+	}
+	st.sessions[rec.ID] = rec
+	agent := &successionAgent{succeeds: map[string]bool{successor + "->" + ancestor: true}}
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: successionAgents{agent: agent},
+		Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{},
+		Chat: launcher, Lifecycle: &fakeLCM{store: st.fakeStore},
+		DataDir: "/ao-test-data", LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if _, err := m.RestoreWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatalf("RestoreWithMode: %v", err)
+	}
+	if len(launcher.started) == 0 {
+		t.Fatal("restore did not start a chat controller")
+	}
+	started := launcher.started[len(launcher.started)-1]
+	if started.ProviderConversationID != successor {
+		t.Fatalf("resumed handle = %q, want the session's current native thread", started.ProviderConversationID)
+	}
+	if started.ProviderScopeID != "handoff-309:provider" {
+		t.Fatalf("provider scope = %q, want the handoff boundary that lets the successor resume",
+			started.ProviderScopeID)
+	}
+	// The recorded handle is evidence, never a target to rewrite.
+	if st.activeBranch.ProviderConversationID != ancestor {
+		t.Fatalf("active branch handle = %q, want the ancestor left untouched",
+			st.activeBranch.ProviderConversationID)
+	}
+}
+
+// The same restore must still refuse a handle nothing connects to the branch.
+func TestChatRestoreRefusesUnrelatedTerminalThread(t *testing.T) {
+	const (
+		sessionID = domain.SessionID("mer-310")
+		ancestor  = "01a077dc-1de6-7c81-af05-c88acfb7f1d5"
+		unrelated = "01a0aaaa-2222-7333-8444-555566667777"
+	)
+	launcher := &recordingLauncher{}
+	st := &historicalChatRestoreStore{
+		transitionStore: newTransitionStore(),
+		conversation: domain.ConversationRecord{
+			ID: "project-conversation", Scope: domain.ConversationScopeProject,
+			ProjectID: chatTestProject, SessionID: sessionID, ActiveBranchID: "branch-ancestor",
+		},
+		activeBranch: domain.ConversationBranch{
+			ID: "branch-ancestor", ConversationID: "project-conversation",
+			SessionID: sessionID, ProviderConversationID: ancestor, Active: true,
+		},
+	}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	st.transitions["handoff-310"] = domain.SessionInterfaceTransition{
+		ID: "handoff-310", SessionID: sessionID,
+		SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Phase: domain.SessionInterfaceTransitionCompleted, NativeConversationID: unrelated,
+		CreatedAt: time.Date(2026, 9, 11, 4, 41, 0, 0, time.UTC),
+	}
+	rec := domain.SessionRecord{
+		ID: sessionID, ProjectID: chatTestProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		IsTerminated: true, Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: "main", WorkspacePath: "/ws/mer-310",
+			ProviderConversationID: unrelated, AgentSessionID: unrelated,
+		},
+	}
+	st.sessions[rec.ID] = rec
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: successionAgents{agent: &successionAgent{}},
+		Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{},
+		Chat: launcher, Lifecycle: &fakeLCM{store: st.fakeStore},
+		DataDir: "/ao-test-data", LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if _, err := m.RestoreWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatalf("RestoreWithMode: %v", err)
+	}
+	if len(launcher.started) == 0 {
+		t.Fatal("restore did not start a chat controller")
+	}
+	if scope := launcher.started[len(launcher.started)-1].ProviderScopeID; scope != "" {
+		t.Fatalf("provider scope = %q, want no boundary so Chat Service still refuses the handle", scope)
+	}
+}
