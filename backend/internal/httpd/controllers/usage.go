@@ -47,7 +47,8 @@ func (c *UsageController) listSessions(w http.ResponseWriter, r *http.Request) {
 		out = append(out, CompactSessionUsageResponse{
 			SessionID: item.SessionID, ProcessedTokens: item.ProcessedTokens,
 			TotalTokens: totalTokens, Incomplete: item.Incomplete,
-			EstimatedCost: estimatedCostResponse(item.EstimatedCost),
+			EstimatedCost:  estimatedCostResponse(item.EstimatedCost),
+			UnpricedReason: unpricedReasonResponse(item.UnpricedReason),
 		})
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListCompactSessionUsageResponse{Sessions: out})
@@ -92,7 +93,18 @@ func usageTotalsResponse(totals domain.UsageMetricTotals) UsageTotalsResponse {
 		OutputTokens:        totals.OutputTokens, ProcessedTokens: totals.ProcessedTokens,
 		CacheReadTokens: totals.CachedInputTokens,
 		EstimatedCost:   estimatedCostResponse(totals.EstimatedCost),
+		UnpricedReason:  unpricedReasonResponse(totals.UnpricedReason),
 	}
+}
+
+// unpricedReasonResponse omits the field entirely when a scope is priced or has
+// no usage, so a present value always carries meaning.
+func unpricedReasonResponse(reason domain.UnpricedReason) *string {
+	if reason == "" {
+		return nil
+	}
+	value := string(reason)
+	return &value
 }
 
 func estimatedCostResponse(cost *domain.EstimatedCost) *EstimatedCostResponse {

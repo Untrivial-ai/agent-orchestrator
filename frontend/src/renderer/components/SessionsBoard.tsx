@@ -107,6 +107,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						session.id,
 						liveUsageBySession.get(session.id) ?? {
 							estimatedCost: null,
+							unpricedReason: null,
 							sessionId: session.id,
 							processedTokens: [18_400, 46_700, 12_900, 81_200, 3_100][index % 5],
 							totalTokens: 100_000,
