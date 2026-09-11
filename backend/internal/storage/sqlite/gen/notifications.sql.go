@@ -13,6 +13,18 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const clearAllNotifications = `-- name: ClearAllNotifications :execrows
+DELETE FROM notifications
+`
+
+func (q *Queries) ClearAllNotifications(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearAllNotifications)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countUnreadNotifications = `-- name: CountUnreadNotifications :one
 SELECT COUNT(*)
 FROM notifications

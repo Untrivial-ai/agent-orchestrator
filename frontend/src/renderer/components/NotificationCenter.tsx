@@ -16,7 +16,11 @@ import {
 	RotateCcw,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useMarkAllNotificationsReadMutation, useNotificationsQuery } from "../hooks/useNotificationsQuery";
+import {
+	useClearAllNotificationsMutation,
+	useMarkAllNotificationsReadMutation,
+	useNotificationsQuery,
+} from "../hooks/useNotificationsQuery";
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import type { WorkspaceSummary } from "../types/workspace";
@@ -204,6 +208,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const unreadQuery = useNotificationsQuery("unread");
 	const allQuery = useNotificationsQuery("all", open);
 	const markAllRead = useMarkAllNotificationsReadMutation();
+	const clearAll = useClearAllNotificationsMutation();
 	const restoreSession = useRestoreSession();
 	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
 	const unreadCount = getCachedUnreadCount(unreadQuery.data);
@@ -299,6 +304,13 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 		}
 	}, [openSession, restoreSession, restoringSessionId, setPanelOpen, t]);
 
+	const handleClearAll = useCallback(() => {
+		setActionError(null);
+		void clearAll.mutateAsync().catch((error: unknown) => {
+			setActionError(error instanceof Error ? error.message : t("notify.couldNotClearAll"));
+		});
+	}, [clearAll, t]);
+
 	const loadEarlierOnScroll = (event: React.UIEvent<HTMLDivElement>) => {
 		const list = event.currentTarget;
 		const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
@@ -335,8 +347,16 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 				className="w-notification-width max-w-[calc(100vw-1rem)] overflow-hidden rounded-panel border-border-strong p-0 shadow-xl"
 				sideOffset={8}
 			>
-				<div className="border-b border-border bg-[var(--color-overlay-subtle)] px-4 py-3.5">
+				<div className="flex items-center justify-between gap-2 border-b border-border bg-[var(--color-overlay-subtle)] px-4 py-3.5">
 					<p className="text-subtitle font-semibold tracking-tight text-foreground">{t("notify.title")}</p>
+					<button
+						className="shrink-0 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+						disabled={isEmpty || clearAll.isPending}
+						onClick={handleClearAll}
+						type="button"
+					>
+						{t("notify.clearAll")}
+					</button>
 				</div>
 				<NotificationWorkspaceState>
 					{({ retryWorkspace, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
@@ -449,13 +469,11 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 
 function NotificationEmpty({ icon: Icon, message }: { icon: typeof Bell; message: string }) {
 	return (
-		<div className="grid min-h-40 place-items-center px-4 py-10 text-center">
-			<div>
-				<div className="mx-auto grid size-control-xl place-items-center rounded-full border border-border bg-surface text-passive">
-					<Icon className={cn("size-icon-base", Icon === LoaderCircle && "animate-spin")} aria-hidden="true" />
-				</div>
-				<p className="mt-2.5 text-control text-muted-foreground">{message}</p>
+		<div className="flex flex-col items-center gap-2.5 px-4 py-5 text-center">
+			<div className="grid size-control-xl place-items-center rounded-full border border-border bg-surface text-passive">
+				<Icon className={cn("size-icon-base", Icon === LoaderCircle && "animate-spin")} aria-hidden="true" />
 			</div>
+			<p className="text-control text-muted-foreground">{message}</p>
 		</div>
 	);
 }

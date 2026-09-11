@@ -1555,6 +1555,12 @@ type MarkAllNotificationsReadResponse struct {
 	UpdatedCount  int64                  `json:"updatedCount" description:"Number of notifications changed from unread to read."`
 }
 
+// ClearNotificationsResponse is the body of DELETE /api/v1/notifications.
+type ClearNotificationsResponse struct {
+	ClearedCount int64  `json:"clearedCount" description:"Number of notifications deleted."`
+	ClearID      string `json:"clearId" description:"Identifier shared with the ordered notification_cleared stream event."`
+}
+
 // ImportStatusResponse is the body of GET /api/v1/import: whether a legacy AO
 // install is available to import, and the root the daemon would read from.
 type ImportStatusResponse struct {

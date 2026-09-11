@@ -607,6 +607,8 @@
 	"newTask.unableToStart": "No se pudo iniciar la tarea",
 	"notify.all": "Todas",
 	"notify.bell": "Notificaciones",
+	"notify.clearAll": "Borrar todo",
+	"notify.couldNotClearAll": "No se pudieron borrar las notificaciones",
 	"notify.couldNotMarkAllRead": "No se pudieron marcar las notificaciones como leídas",
 	"notify.couldNotMarkRead": "No se pudo marcar la notificación como leída",
 	"notify.earlierLoadFailed": "No se pudieron cargar las notificaciones anteriores.",

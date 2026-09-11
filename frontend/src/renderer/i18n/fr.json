@@ -607,6 +607,8 @@
 	"newTask.unableToStart": "Impossible de démarrer la tâche",
 	"notify.all": "Toutes",
 	"notify.bell": "Notifications",
+	"notify.clearAll": "Tout effacer",
+	"notify.couldNotClearAll": "Impossible d'effacer les notifications",
 	"notify.couldNotMarkAllRead": "Impossible de marquer les notifications comme lues",
 	"notify.couldNotMarkRead": "Impossible de marquer la notification comme lue",
 	"notify.earlierLoadFailed": "Impossible de charger les notifications antérieures.",

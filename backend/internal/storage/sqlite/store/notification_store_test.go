@@ -206,6 +206,29 @@ func TestNotificationStore_MarkAllRead(t *testing.T) {
 	}
 }
 
+func TestNotificationStore_ClearAll(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	for _, id := range []string{"ntf_1", "ntf_2"} {
+		rec := domain.NotificationRecord{ID: id, SessionID: sess.ID, ProjectID: sess.ProjectID, Type: domain.NotificationNeedsInput, Title: id, Status: domain.NotificationUnread, CreatedAt: time.Now()}
+		if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+			t.Fatalf("CreateNotification %s inserted=%v err=%v", id, inserted, err)
+		}
+		_, _ = s.ResolveSessionNotifications(ctx, sess.ID, domain.NotificationNeedsInput, time.Now())
+		_, _, _ = s.MarkNotificationRead(ctx, id)
+	}
+	count, err := s.ClearAllNotifications(ctx)
+	if err != nil || count != 2 {
+		t.Fatalf("ClearAllNotifications count=%d err=%v", count, err)
+	}
+	rows, err := s.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}
+
 func TestNotificationStore_ListUnreadNewestFirstAcrossProjects(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

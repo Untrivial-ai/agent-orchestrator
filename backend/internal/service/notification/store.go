@@ -21,4 +21,5 @@ type Store interface {
 	MarkNotificationRead(ctx context.Context, id string) (domain.NotificationRecord, bool, error)
 	MarkAllNotificationsRead(ctx context.Context) (int64, error)
 	MarkNotificationsRead(ctx context.Context, ids []string) (int64, error)
+	ClearAllNotifications(ctx context.Context) (int64, error)
 }

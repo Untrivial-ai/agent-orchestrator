@@ -8,6 +8,7 @@ export type NotificationDTO = components["schemas"]["NotificationResponse"];
 export type NotificationsPage = components["schemas"]["ListNotificationsResponse"];
 export type NotificationsCache = InfiniteData<NotificationsPage>;
 export type NotificationListStatus = "unread" | "all";
+export type ClearNotificationsResult = components["schemas"]["ClearNotificationsResponse"];
 
 export const unreadNotificationsQueryKey = ["notifications", "history", "unread"] as const;
 export const recentNotificationsQueryKey = ["notifications", "history", "all"] as const;
@@ -24,6 +25,13 @@ const EVENTSOURCE_CLOSED = 2;
 const UNRESOLVABLE_TYPES = new Set(["needs_input", "ready_to_merge"]);
 
 type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentNotificationsQueryKey;
+
+type LiveNotificationEvent =
+	| { kind: "created"; notification: NotificationDTO }
+	| { kind: "resolved"; notification: NotificationDTO }
+	| { kind: "cleared"; clearId: string };
+
+const appliedClearIds = new WeakMap<QueryClient, Set<string>>();
 
 export function notificationsQueryKey(status: NotificationListStatus): NotificationsQueryKey {
 	return status === "unread" ? unreadNotificationsQueryKey : recentNotificationsQueryKey;
@@ -68,6 +76,12 @@ export async function markAllNotificationsRead(ids: string[]): Promise<number> {
 	return data?.updatedCount ?? 0;
 }
 
+export async function clearAllNotifications(): Promise<ClearNotificationsResult> {
+	const { data, error } = await apiClient.DELETE("/api/v1/notifications");
+	if (error || !data) throw new Error(apiErrorMessage(error, "Could not clear notifications"));
+	return data;
+}
+
 export function mergeUnreadNotification(queryClient: QueryClient, notification: NotificationDTO): boolean {
 	if (notification.status !== "unread") return false;
 	const inserted = mergeNotificationIntoCache(queryClient, unreadNotificationsQueryKey, notification);
@@ -89,12 +103,15 @@ export function applyResolvedNotification(queryClient: QueryClient, notification
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
 			if (!current) return current;
+			const existing = getCachedNotifications(current).find((item) => item.id === notification.id);
+			if (!existing) return current;
+			const unresolvedDelta = Number(isUnresolved(notification)) - Number(isUnresolved(existing));
 			return {
 				...current,
 				pages: current.pages.map((page) => ({
 					...page,
 					notifications: page.notifications.map((item) => (item.id === notification.id ? notification : item)),
-					unresolvedCount: Math.max(0, page.unresolvedCount - 1),
+					unresolvedCount: Math.max(0, page.unresolvedCount + unresolvedDelta),
 				})),
 			};
 		});
@@ -224,6 +241,23 @@ export function markAllCachedNotificationsRead(
 	}
 }
 
+// The DELETE response and SSE event share a clear id. Applying each id once
+// prevents a late mutation response from erasing a notification delivered
+// after that clear event.
+export function applyNotificationsCleared(queryClient: QueryClient, clearId: string): boolean {
+	const seen = appliedClearIds.get(queryClient) ?? new Set<string>();
+	if (seen.has(clearId)) return false;
+	seen.add(clearId);
+	appliedClearIds.set(queryClient, seen);
+	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+		queryClient.setQueryData<NotificationsCache>(queryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+		});
+	}
+	return true;
+}
+
 export function getCachedNotifications(cache: NotificationsCache | undefined): NotificationDTO[] {
 	if (!cache) return [];
 	const byID = new Map<string, NotificationDTO>();
@@ -290,10 +324,54 @@ export function createNotificationsTransport(
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
+			let snapshotRefresh: { dirty: boolean; events: LiveNotificationEvent[] } | undefined;
+
+			const applyLiveNotificationEvent = (event: LiveNotificationEvent) => {
+				if (event.kind === "cleared") {
+					applyNotificationsCleared(queryClient, event.clearId);
+					return;
+				}
+				if (event.kind === "resolved") {
+					applyResolvedNotification(queryClient, event.notification);
+					return;
+				}
+				const inserted = mergeUnreadNotification(queryClient, event.notification);
+				mergeRecentNotification(queryClient, event.notification);
+				if (inserted && !suppressToastForWatchedSession(event.notification, getVisibleAgentSessionId())) {
+					void aoBridge.notifications.show({
+						id: event.notification.id,
+						title: event.notification.title,
+						body: event.notification.body || undefined,
+						type: event.notification.type,
+					});
+				}
+			};
+
+			const receiveLiveNotificationEvent = (event: LiveNotificationEvent) => {
+				if (snapshotRefresh) {
+					snapshotRefresh.events.push(event);
+					return;
+				}
+				applyLiveNotificationEvent(event);
+			};
 
 			const invalidateNotifications = () => {
-				void queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey });
-				void queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey });
+				if (snapshotRefresh) {
+					snapshotRefresh.dirty = true;
+					return;
+				}
+				const refresh = { dirty: false, events: [] as LiveNotificationEvent[] };
+				snapshotRefresh = refresh;
+				const finish = () => {
+					if (snapshotRefresh !== refresh) return;
+					snapshotRefresh = undefined;
+					for (const event of refresh.events) applyLiveNotificationEvent(event);
+					if (refresh.dirty) invalidateNotifications();
+				};
+				void Promise.all([
+					queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey }),
+					queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
+				]).then(finish, finish);
 			};
 
 			// Consecutive scheduled rebuilds since the stream last opened; paces
@@ -331,16 +409,7 @@ export function createNotificationsTransport(
 					source.addEventListener("notification_created", (event) => {
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
-						const inserted = mergeUnreadNotification(queryClient, notification);
-						mergeRecentNotification(queryClient, notification);
-						if (inserted && !suppressToastForWatchedSession(notification, getVisibleAgentSessionId())) {
-							void aoBridge.notifications.show({
-								id: notification.id,
-								title: notification.title,
-								body: notification.body || undefined,
-								type: notification.type,
-							});
-						}
+						receiveLiveNotificationEvent({ kind: "created", notification });
 					});
 					// AO closed the underlying issue (the session got its input, the
 					// PR stopped waiting on a merge). Patch the row live so an open
@@ -348,7 +417,11 @@ export function createNotificationsTransport(
 					source.addEventListener("notification_resolved", (event) => {
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
-						applyResolvedNotification(queryClient, notification);
+						receiveLiveNotificationEvent({ kind: "resolved", notification });
+					});
+					source.addEventListener("notification_cleared", (event) => {
+						const clearId = parseNotificationClearEvent(event);
+						if (clearId) receiveLiveNotificationEvent({ kind: "cleared", clearId });
 					});
 				} catch {
 					source = undefined;
@@ -373,6 +446,17 @@ export function createNotificationsTransport(
 			};
 		},
 	};
+}
+
+function parseNotificationClearEvent(event: Event): string | null {
+	const data = (event as MessageEvent<string>).data;
+	if (typeof data !== "string" || data === "") return null;
+	try {
+		const decoded = JSON.parse(data) as { clearId?: unknown };
+		return typeof decoded.clearId === "string" && decoded.clearId ? decoded.clearId : null;
+	} catch {
+		return null;
+	}
 }
 
 function parseNotificationEvent(event: Event): NotificationDTO | null {

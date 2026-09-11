@@ -111,12 +111,15 @@ const (
 	// NotificationResolved announces that a stored notification's underlying
 	// issue went away, so open dashboards can drop it from the unresolved list.
 	NotificationResolved NotificationEventKind = "resolved"
+	// NotificationCleared announces that notification history was deleted.
+	NotificationCleared NotificationEventKind = "cleared"
 )
 
 // NotificationEvent is one live notification-stream message.
 type NotificationEvent struct {
-	Kind   NotificationEventKind
-	Record NotificationRecord
+	Kind    NotificationEventKind
+	Record  NotificationRecord
+	ClearID string
 }
 
 var (

@@ -114,3 +114,6 @@ WHERE session_id = ?
   AND pr_url = ?
   AND (status = 'unread' OR resolved_at IS NULL)
 LIMIT 1;
+
+-- name: ClearAllNotifications :execrows
+DELETE FROM notifications;
