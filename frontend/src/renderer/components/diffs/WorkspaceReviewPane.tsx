@@ -164,7 +164,6 @@ export function WorkspaceReviewPane({
 		&& !data.compareBaseRef
 		&& combinedWorkingCount > 0;
 	const workingSourceOptions: WorkspaceDiffScope[] = showCombinedWorkingSource ? ["combined"] : [...visibleWorkingScopes];
-	const hasWorkingChangeChoices = workingSourceOptions.length > 0;
 	useEffect(() => {
 		if (scope === "committed" && selectedCommit) return;
 		if (scope === "combined" && showCombinedWorkingSource) return;
