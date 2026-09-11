@@ -839,8 +839,7 @@ func TestPRCRUD(t *testing.T) {
 	pr := domain.PullRequest{
 		URL: "https://gh/pr/1", SessionID: r.ID, Number: 1,
 		Review: domain.ReviewRequired, CI: domain.CIFailing, Mergeability: domain.MergeBlocked, UpdatedAt: now, StateChangedAt: now,
-		AutoInjectCI:     true,
-		AttachmentSource: domain.PRAttachmentLegacy,
+		AutoInjectCI: true,
 	}
 	if err := s.WritePR(ctx, pr, nil, nil); err != nil {
 		t.Fatal(err)
