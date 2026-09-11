@@ -148,6 +148,61 @@ func TestKeychainSuccessIsSourceFive(t *testing.T) {
 	}
 }
 
+// Claude Code v2.1.268+ stores the /login managed API key under the "Claude
+// Code" keychain service. AO must read it and classify it as an API key so
+// the probe sends x-api-key, not Bearer.
+func TestKeychainManagedKeyResolvesAsAPIKey(t *testing.T) {
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: t.TempDir(), GOOS: "darwin", AllowKeychain: true,
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 3 && args[2] == "Claude Code" {
+				return []byte("sk-ant-api03-managed-key"), nil
+			}
+			return nil, errors.New("security: item not found")
+		},
+	})
+	if !ok {
+		t.Fatal("expected the managed key to resolve")
+	}
+	if cred.Kind != KindAPIKey {
+		t.Fatalf("kind = %q, want %q", cred.Kind, KindAPIKey)
+	}
+	if cred.Source != "keychain" {
+		t.Fatalf("source = %q, want keychain", cred.Source)
+	}
+	if cred.Secret != "sk-ant-api03-managed-key" {
+		t.Fatalf("secret = %q, want the managed key", cred.Secret)
+	}
+}
+
+// When the older "Claude Code-credentials" entry is present but empty ({}) —
+// as happens after a v2.1.268 /login — the resolver must fall through to the
+// "Claude Code" managed-key service rather than report no credential.
+func TestKeychainEmptyCredentialsFallsThroughToManagedKey(t *testing.T) {
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: t.TempDir(), GOOS: "darwin", AllowKeychain: true,
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch {
+			case len(args) >= 3 && args[2] == "Claude Code-credentials":
+				return []byte("{}"), nil
+			case len(args) >= 3 && args[2] == "Claude Code":
+				return []byte("sk-ant-api03-fallback"), nil
+			default:
+				return nil, errors.New("security: item not found")
+			}
+		},
+	})
+	if !ok {
+		t.Fatal("expected the managed-key fallback to resolve")
+	}
+	if cred.Kind != KindAPIKey {
+		t.Fatalf("kind = %q, want %q", cred.Kind, KindAPIKey)
+	}
+	if cred.Secret != "sk-ant-api03-fallback" {
+		t.Fatalf("secret = %q, want the fallback key", cred.Secret)
+	}
+}
+
 // Non-Mac platforms must never invoke the keychain helper at all.
 func TestKeychainIsMacOnly(t *testing.T) {
 	for _, goos := range []string{"linux", "windows"} {

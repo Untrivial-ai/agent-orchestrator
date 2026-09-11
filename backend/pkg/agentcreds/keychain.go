@@ -28,6 +28,16 @@ const (
 	keychainExitDenied = 128
 )
 
+// Keychain service names Claude Code has used to store its credential.
+const (
+	// keychainServiceCredentials is the older service. It stores a JSON
+	// document with an OAuth access token, or occasionally a bare token.
+	keychainServiceCredentials = "Claude Code-credentials"
+	// keychainServiceManagedKey is the service Claude Code v2.1.268+ uses
+	// for the /login managed key. The value is a raw sk-ant-api* key.
+	keychainServiceManagedKey = "Claude Code"
+)
+
 // readKeychain reads the Claude Code subscription token from the macOS
 // keychain via the `security` helper.
 //
@@ -36,7 +46,7 @@ const (
 // That is deliberate: a locked keychain must never be reported as a missing
 // or invalid credential, because the user is very likely signed in perfectly
 // well and simply has the keychain locked.
-func readKeychain(ctx context.Context, opts ResolveOptions) (string, bool) {
+func readKeychain(ctx context.Context, opts ResolveOptions) (string, Kind, bool) {
 	runner := opts.Runner
 	if runner == nil {
 		runner = execCommand
@@ -44,30 +54,40 @@ func readKeychain(ctx context.Context, opts ResolveOptions) (string, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, keychainTimeout)
 	defer cancel()
 
+	// Try the older "Claude Code-credentials" service first. It stores a JSON
+	// document with an OAuth access token, or occasionally a bare token.
 	out, err := runner(probeCtx, "security",
-		"find-generic-password", "-s", "Claude Code-credentials", "-w")
+		"find-generic-password", "-s", keychainServiceCredentials, "-w")
 	if probeCtx.Err() != nil {
-		// A GUI unlock dialog is blocking. Give up rather than wait on a
-		// person who may not be at the machine.
-		return "", false
+		return "", "", false
 	}
-	if err != nil {
-		switch keychainExitCode(err) {
-		case keychainExitNotFound, keychainExitDenied:
-			return "", false
-		default:
-			return "", false
+	if err == nil {
+		if token, ok := oauthTokenFromCredentialsJSON([]byte(out)); ok {
+			return token, KindOAuthToken, true
+		}
+		// Older entries store the bare token rather than a JSON document.
+		if raw := strings.TrimSpace(lastNonEmptyLine(string(out))); raw != "" && !strings.HasPrefix(raw, "{") {
+			return raw, KindOAuthToken, true
 		}
 	}
-	token, ok := oauthTokenFromCredentialsJSON([]byte(out))
-	if ok {
-		return token, true
+
+	// Fall through to "Claude Code", the service Claude Code v2.1.268+ uses
+	// for the /login managed key. The value is a raw sk-ant-api* key.
+	apiKeyOut, apiKeyErr := runner(probeCtx, "security",
+		"find-generic-password", "-s", keychainServiceManagedKey, "-w")
+	if probeCtx.Err() != nil {
+		return "", "", false
 	}
-	// Older entries store the bare token rather than a JSON document.
-	if raw := strings.TrimSpace(lastNonEmptyLine(string(out))); raw != "" && !strings.HasPrefix(raw, "{") {
-		return raw, true
+	if apiKeyErr != nil {
+		return "", "", false
 	}
-	return "", false
+	if raw := strings.TrimSpace(lastNonEmptyLine(string(apiKeyOut))); raw != "" && !strings.HasPrefix(raw, "{") {
+		return raw, KindAPIKey, true
+	}
+	if token, ok := oauthTokenFromCredentialsJSON([]byte(apiKeyOut)); ok {
+		return token, KindOAuthToken, true
+	}
+	return "", "", false
 }
 
 func keychainExitCode(err error) int {

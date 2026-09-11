@@ -141,9 +141,9 @@ func resolveFirstParty(ctx context.Context, opts ResolveOptions) (Credential, bo
 	}
 	// Source 5: the subscription login, stored in the keychain on macOS and in
 	// a plain file everywhere else.
-	if secret, source, ok := loadOAuth(ctx, opts); ok {
+	if secret, source, kind, ok := loadOAuth(ctx, opts); ok {
 		return Credential{
-			Kind: KindOAuthToken, Secret: secret, Source: source, Provider: ProviderFirstParty,
+			Kind: kind, Secret: secret, Source: source, Provider: ProviderFirstParty,
 		}, true
 	}
 	return Credential{}, false
@@ -157,14 +157,18 @@ func resolveFirstParty(ctx context.Context, opts ResolveOptions) (Credential, bo
 // third storage backend to implement. The macOS path falls through to the file
 // on any failure, which is the path the other two platforms always take, so
 // non-Mac platforms exercise strictly less code rather than different code.
-func loadOAuth(ctx context.Context, opts ResolveOptions) (secret, source string, ok bool) {
+func loadOAuth(ctx context.Context, opts ResolveOptions) (secret, source string, kind Kind, ok bool) {
 	if opts.goos() == "darwin" && opts.AllowKeychain {
-		if secret, ok := readKeychain(ctx, opts); ok {
-			return secret, "keychain", true
+		if secret, kind, ok := readKeychain(ctx, opts); ok {
+			return secret, "keychain", kind, true
 		}
 		// Absent, locked, or denied. Fall through to the file.
 	}
-	return readCredentialsFile(opts)
+	s, src, ok := readCredentialsFile(opts)
+	if !ok {
+		return "", "", "", false
+	}
+	return s, src, KindOAuthToken, true
 }
 
 // readCredentialsFile reads ~/.claude/.credentials.json.
