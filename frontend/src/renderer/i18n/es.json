@@ -808,7 +808,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "Falta el directorio de credenciales de esta cuenta.",
 	"settings.codexAccounts.reason.accountUnsafePath": "Esta cuenta usa una ruta de credenciales insegura.",
 	"settings.codexAccounts.reason.authAuthorized": "La sesión de Codex está iniciada.",
-	"settings.codexAccounts.reason.authUnauthorized": "Codex indica que esta cuenta tiene la sesión cerrada.",
+	"settings.codexAccounts.reason.authUnauthorized": "Tu sesión de Codex ha caducado. Vuelve a iniciar sesión.",
 	"settings.codexAccounts.reason.authNotApplicable": "Esta cuenta no requiere autenticación.",
 	"settings.codexAccounts.reason.authNotChecked": "La autenticación aún no se ha comprobado.",
 	"settings.codexAccounts.reason.authCheckFailed": "No se pudo comprobar la autenticación.",

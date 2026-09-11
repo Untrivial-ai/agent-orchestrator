@@ -654,6 +654,8 @@ it("deletes a signed-out account after confirmation", async () => {
 	const { container } = renderSection();
 	await screen.findByText("other@example.com");
 	fireEvent.click(container.querySelector(`[data-account-id="${signedOutAccount.id}"] button`) as HTMLButtonElement);
+	expect(screen.queryByText("Your Codex sign-in has expired. Sign in again.")).not.toBeInTheDocument();
+	expect(screen.queryByText("Usage details are not available for this account.")).not.toBeInTheDocument();
 	expect(await screen.findByRole("button", { name: "Delete account" })).toBeEnabled();
 	fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
 	const dialog = await screen.findByRole("dialog");
@@ -666,6 +668,51 @@ it("deletes a signed-out account after confirmation", async () => {
 	));
 	await waitFor(() => expect(screen.queryByText("other@example.com")).not.toBeInTheDocument());
 	expect(screen.getByText("active@example.com")).toBeInTheDocument();
+});
+
+it("explains an invalid sign-in and deletes it after local logout", async () => {
+	const invalidAuthentication = { ...authentication, state: "unauthorized", reasonCode: "unauthorized", reason: "Codex needs authentication." };
+	const invalidAccount = {
+		...activeAccount,
+		authentication: invalidAuthentication,
+		capacity: { ...capacity, state: "unknown", plan: null, usedPercent: null, remainingPercent: null, overall: null },
+	};
+	const invalidResponse = { ...accountResponse, accounts: [invalidAccount, inactiveAccount] };
+	const signedOutAccount = {
+		...invalidAccount,
+		active: false,
+		status: "signed_out",
+		reasonCode: "account_signed_out",
+		reason: "This Codex account is signed out.",
+	};
+	const signedOutResponse = { ...accountResponse, activeAccountId: undefined, accountRevision: 4, accounts: [signedOutAccount, inactiveAccount] };
+	const deletedResponse = { ...signedOutResponse, accounts: [inactiveAccount] };
+	getMock.mockResolvedValue({ data: invalidResponse });
+	postMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: invalidResponse });
+		if (path === "/api/v1/agents/codex/accounts/{accountId}/logout") return Promise.resolve({ data: signedOutResponse });
+		return Promise.resolve({ data: {} });
+	});
+	deleteMock.mockResolvedValue({ data: deletedResponse });
+
+	const { container } = renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(container.querySelector(`[data-account-id="${invalidAccount.id}"] button`) as HTMLButtonElement);
+	expect(await screen.findByText("Your Codex sign-in has expired. Sign in again.")).toBeInTheDocument();
+	expect(screen.queryByText("Codex reports this account as signed out.")).not.toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
+	const dialog = await screen.findByRole("dialog");
+	fireEvent.click(within(dialog).getByRole("button", { name: "Delete account" }));
+
+	await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+		"/api/v1/agents/codex/accounts/{accountId}/logout",
+		{ params: { path: { accountId: invalidAccount.id } } },
+	));
+	await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(
+		"/api/v1/agents/codex/accounts/{accountId}",
+		{ params: { path: { accountId: invalidAccount.id } } },
+	));
+	await waitFor(() => expect(screen.queryByText("active@example.com")).not.toBeInTheDocument());
 });
 
 it("starts a global switch with the displayed account revision", async () => {

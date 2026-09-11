@@ -178,7 +178,12 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 
 	const deleteAccount = useCallback(async (account: CodexAccount) => {
 		setError(null);
-		try { writeCodexAccounts(queryClient, await deleteCodexAccount(account.id), "replace"); }
+		try {
+			if (account.status !== "signed_out") {
+				writeCodexAccounts(queryClient, await logoutCodexAccount(account.id), "replace");
+			}
+			writeCodexAccounts(queryClient, await deleteCodexAccount(account.id), "replace");
+		}
 		catch (cause) { setError(errorMessage(cause, t("settings.codexAccounts.deleteFailed"))); throw cause; }
 	}, [queryClient, t]);
 

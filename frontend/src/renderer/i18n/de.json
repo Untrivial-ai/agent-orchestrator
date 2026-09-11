@@ -790,7 +790,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "Das Anmeldedatenverzeichnis dieses Kontos fehlt.",
 	"settings.codexAccounts.reason.accountUnsafePath": "Dieses Konto verwendet einen unsicheren Anmeldedatenpfad.",
 	"settings.codexAccounts.reason.authAuthorized": "Codex ist angemeldet.",
-	"settings.codexAccounts.reason.authUnauthorized": "Codex meldet dieses Konto als abgemeldet.",
+	"settings.codexAccounts.reason.authUnauthorized": "Deine Codex-Anmeldung ist abgelaufen. Melde dich erneut an.",
 	"settings.codexAccounts.reason.authNotApplicable": "Für dieses Konto ist keine Authentifizierung erforderlich.",
 	"settings.codexAccounts.reason.authNotChecked": "Die Authentifizierung wurde noch nicht geprüft.",
 	"settings.codexAccounts.reason.authCheckFailed": "Die Authentifizierung konnte nicht geprüft werden.",
