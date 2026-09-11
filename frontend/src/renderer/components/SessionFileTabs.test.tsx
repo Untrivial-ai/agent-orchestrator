@@ -42,4 +42,23 @@ describe("SessionFileTabs", () => {
 		await userEvent.click(closeButton);
 		expect(onCloseFile).toHaveBeenCalledWith("src/App.tsx");
 	});
+
+	it("replaces the file icon with a visible dirty dot until the file is saved", () => {
+		render(
+			<TooltipProvider>
+				<div role="tablist">
+					<SessionFileTabs
+						dirtyPaths={new Set(["src/App.tsx"])}
+						state={{ openPaths: ["src/App.tsx"], activePath: "src/App.tsx" }}
+						onAddFeedback={vi.fn()}
+						onActivateFile={vi.fn()}
+						onCloseFile={vi.fn()}
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		expect(screen.getByTestId("unsaved-tab-indicator")).toHaveClass("rounded-full", "bg-foreground");
+		expect(screen.getByRole("button", { name: "Close App.tsx" })).toHaveClass("opacity-100");
+	});
 });

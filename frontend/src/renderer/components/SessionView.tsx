@@ -411,6 +411,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	>({});
 	const [fileTabsBySession, setFileTabsBySession] = useState<Record<string, SessionFileTabState>>({});
 	const fileTabs = fileTabsBySession[sessionId] ?? EMPTY_SESSION_FILE_TABS;
+	const [dirtyFilesBySession, setDirtyFilesBySession] = useState<Record<string, Record<string, true>>>({});
+	const dirtyFiles = dirtyFilesBySession[sessionId] ?? {};
 	const [centerFileRequestsBySession, setCenterFileRequestsBySession] = useState<
 		Record<string, Record<string, CenterFileOpenRequest>>
 	>({});
@@ -795,6 +797,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const markCenterFileEditingConsumed = useCallback((path: string, requestKey: number) => {
 		consumedCenterEditingRequestsRef.current.add(`${sessionId}:${path}:${requestKey}`);
 	}, [sessionId]);
+	const setCenterFileDirty = useCallback((path: string, dirty: boolean) => {
+		setDirtyFilesBySession((current) => {
+			const sessionFiles = current[sessionId] ?? {};
+			if (dirty) {
+				if (sessionFiles[path]) return current;
+				return { ...current, [sessionId]: { ...sessionFiles, [path]: true } };
+			}
+			if (!sessionFiles[path]) return current;
+			const nextSessionFiles = { ...sessionFiles };
+			delete nextSessionFiles[path];
+			return { ...current, [sessionId]: nextSessionFiles };
+		});
+	}, [sessionId]);
 	const activateCenterFile = useCallback((path: string) => {
 		setFileTabsBySession((current) => ({
 			...current,
@@ -1051,6 +1066,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				content: (
 					<SessionFileTab
 						active={fileTabs.activePath === path}
+						dirty={Boolean(dirtyFiles[path])}
 						onActivate={() => activateCenterFile(path)}
 						onAddFeedback={() => fileAnnotation.begin({ path, side: "file" })}
 						onClose={() => closeCenterFile(path)}
@@ -1060,7 +1076,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				onSelect: () => activateCenterFile(path),
 				onClose: () => closeCenterFile(path),
 			})),
-		[activateCenterFile, closeCenterFile, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
+		[activateCenterFile, closeCenterFile, dirtyFiles, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
 	);
 	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
@@ -1651,18 +1667,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							</div>
 							{fileTabs.activePath ? (
 								<div className="absolute inset-0">
-				<SessionFileWorkspace
-					annotation={fileAnnotation}
-					commitSha={activeCenterFileRequest?.commitSha}
-									initialEditing={activeCenterFileInitialEditing}
-									initialMode={activeCenterFileRequest?.mode ?? "file"}
-									initialRequestKey={activeCenterFileRequest?.key ?? 0}
-									onInitialEditingConsumed={markCenterFileEditingConsumed}
-									path={fileTabs.activePath}
-									sessionId={sessionId}
-					split={filesSplit}
-					scope={activeCenterFileRequest?.scope}
-								/>
+									<SessionFileWorkspace
+										annotation={fileAnnotation}
+										commitSha={activeCenterFileRequest?.commitSha}
+										initialEditing={activeCenterFileInitialEditing}
+										initialMode={activeCenterFileRequest?.mode ?? "file"}
+										initialRequestKey={activeCenterFileRequest?.key ?? 0}
+										onDirtyChange={setCenterFileDirty}
+										onInitialEditingConsumed={markCenterFileEditingConsumed}
+										path={fileTabs.activePath}
+										sessionId={sessionId}
+										split={filesSplit}
+										scope={activeCenterFileRequest?.scope}
+									/>
 								</div>
 							) : null}
 							{interfaceSwitch.startError && !interfaceSwitchDialogOpen ? (

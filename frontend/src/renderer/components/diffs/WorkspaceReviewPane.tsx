@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useQueries } from "@tanstack/react-query";
 import { parsePatchFiles, type CodeViewItem, type FileDiffMetadata } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
-import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
 	fetchWorkspaceFileRevision,
@@ -15,12 +15,12 @@ import {
 import { cn } from "../../lib/utils";
 import { statusLabel, statusTone } from "../../lib/workspace-file-status";
 import { useUiStore } from "../../stores/ui-store";
-import type { FileOpenOptions } from "../FileContentPane";
+import { FileContentPane, type FileOpenOptions } from "../FileContentPane";
 import { PanelMessage, RetryButton, FileAnnotationComposer, LineFeedbackButtonControl, type FileAnnotationModel } from "../WorkspaceDiffView";
+import { WorkspaceEntryIcon } from "../WorkspaceEntryIcon";
 import { VscodeGoToFileIcon } from "../icons/VscodeGoToFileIcon";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatTimeTerse } from "../../lib/format-time";
 import { AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
@@ -29,7 +29,7 @@ import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 const PATCH_BATCH_SIZE = 100;
 const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
-const workingScopeOrder = ["unstaged", "staged", "untracked"] as const;
+const workingScopeOrder = ["unstaged", "staged"] as const;
 
 function chunked<T>(items: readonly T[], size: number): T[][] {
 	const chunks: T[][] = [];
@@ -60,7 +60,10 @@ function parseGroupPatch(workspaceVersion: string | undefined, scope: WorkspaceD
 }
 
 function sectionFiles(data: WorkspaceFilesResponse, scope: WorkspaceDiffScope): WorkspaceFileSummary[] {
-	if (scope === "combined") return data.files.filter((file) => file.status !== "unmodified");
+	if (scope === "combined") {
+		const untrackedPaths = new Set(data.sections.untracked.map((file) => file.path));
+		return data.files.filter((file) => file.status !== "unmodified" && !untrackedPaths.has(file.path));
+	}
 	return data.sections[scope];
 }
 
@@ -140,6 +143,10 @@ export function WorkspaceReviewPane({
 	const [scope, setScope] = useState<WorkspaceDiffScope>(() => initialSelection.scope);
 	const [selectedCommitSha, setSelectedCommitSha] = useState<string | undefined>(() => initialSelection.commitSha);
 	const [commitBrowserOpen, setCommitBrowserOpen] = useState(false);
+	const [expandedWorkingScopes, setExpandedWorkingScopes] = useState<Set<WorkspaceDiffScope>>(
+		() => new Set(["unstaged", "staged"]),
+	);
+	const [selectedWorkingFile, setSelectedWorkingFile] = useState<{ path: string; scope: WorkspaceDiffScope } | null>(null);
 	const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
 	const [loadedDeferredPaths, setLoadedDeferredPaths] = useState<Set<string>>(() => new Set());
 	const [activeBatchCount, setActiveBatchCount] = useState(4);
@@ -154,7 +161,7 @@ export function WorkspaceReviewPane({
 		() => workingScopeOrder.filter((entry) => data.sections[entry].length > 0),
 		[data.sections],
 	);
-	const combinedWorkingCount = data.files.filter((file) => file.status !== "unmodified").length;
+	const combinedWorkingCount = sectionFiles(data, "combined").length;
 	const showCombinedWorkingSource = visibleWorkingScopes.length === 0
 		&& data.sections.committed.length === 0
 		&& data.commits.length === 0
@@ -162,11 +169,8 @@ export function WorkspaceReviewPane({
 		&& !data.compareBaseRef
 		&& combinedWorkingCount > 0;
 	const workingSourceOptions: WorkspaceDiffScope[] = showCombinedWorkingSource ? ["combined"] : [...visibleWorkingScopes];
-	const singleWorkingSource = workingSourceOptions.length === 1 ? workingSourceOptions[0] : undefined;
 	const hasWorkingChangeChoices = workingSourceOptions.length > 0;
-	const alternativeWorkingSources = scope === "committed"
-		? workingSourceOptions
-		: workingSourceOptions.filter((entry) => entry !== scope);
+	const workingSourceBrowserActive = scope !== "committed" && hasWorkingChangeChoices;
 	useEffect(() => {
 		if (scope === "committed" && selectedCommit) return;
 		if (scope === "combined" && showCombinedWorkingSource) return;
@@ -209,7 +213,7 @@ export function WorkspaceReviewPane({
 				workspaceVersion: data.workspaceVersion,
 				commitSha: selectedCommit?.sha,
 			}),
-			enabled: !commitBrowserOpen && paths.length > 0 && index < activeBatchCount,
+			enabled: !commitBrowserOpen && !workingSourceBrowserActive && paths.length > 0 && index < activeBatchCount,
 			staleTime: Infinity,
 		})),
 	});
@@ -320,18 +324,20 @@ export function WorkspaceReviewPane({
 		if (annotation.target?.surface === "review") annotation.cancel();
 		setCollapsedPaths(new Set(files.map((file) => file.path)));
 	}, [annotation, files]);
-	const selectScope = useCallback((nextScope: WorkspaceDiffScope) => {
-		if (nextScope !== scope && annotation.target?.surface === "review") annotation.cancel();
-		setSelectedCommitSha(undefined);
-		setCommitBrowserOpen(false);
-		setScope(nextScope);
-	}, [annotation, scope]);
 	const selectCommit = useCallback((commit: WorkspaceCommitSummary) => {
 		if ((scope !== "committed" || selectedCommitSha !== commit.sha) && annotation.target?.surface === "review") annotation.cancel();
 		setSelectedCommitSha(commit.sha);
 		setScope("committed");
 		setCommitBrowserOpen(false);
 	}, [annotation, scope, selectedCommitSha]);
+	const toggleWorkingScope = useCallback((nextScope: WorkspaceDiffScope) => {
+		setExpandedWorkingScopes((current) => {
+			const next = new Set(current);
+			if (next.has(nextScope)) next.delete(nextScope);
+			else next.add(nextScope);
+			return next;
+		});
+	}, []);
 
 	const retryAll = () => patchQueries.forEach((query) => void query.refetch());
 	const firstError = patchQueries.find((query) => query.error)?.error;
@@ -340,11 +346,41 @@ export function WorkspaceReviewPane({
 	const viewedCount = allFiles.filter((file) => viewed.has(file.path)).length;
 	const fileOpenContext = selectedCommit ? { commitSha: selectedCommit.sha, scope } : { scope };
 	const workingSourceLabel = (entry: WorkspaceDiffScope) => entry === "combined" ? t("files.reviewChanges") : t(`files.section.${entry}`);
-	const workingSourceCount = (entry: WorkspaceDiffScope) => entry === "combined" ? combinedWorkingCount : sectionFiles(data, entry).length;
-	const workingChangeCount = visibleWorkingScopes.reduce((total, entry) => total + data.sections[entry].length, 0);
 	const hasAnyReviewFiles = data.files.some((file) => file.status !== "unmodified")
 		|| workingScopeOrder.some((entry) => data.sections[entry].length > 0)
 		|| data.commits.some((commit) => commit.files.length > 0);
+	if (selectedWorkingFile) {
+		return (
+			<div className="flex h-full min-h-0 flex-col bg-background">
+				<div className="flex h-9 shrink-0 items-center border-b border-border bg-surface px-1.5">
+					<Button
+						aria-label={t("files.backToChanges")}
+						className="gap-1.5"
+						onClick={() => {
+							annotation.cancel();
+							setSelectedWorkingFile(null);
+						}}
+						size="sm"
+						type="button"
+						variant="ghost"
+					>
+						<ArrowLeft aria-hidden="true" className="size-icon-sm" />
+						{t("files.backToChanges")}
+					</Button>
+				</div>
+				<div className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+					<FileContentPane
+						annotation={annotation}
+						initialMode="diff"
+						path={selectedWorkingFile.path}
+						scope={selectedWorkingFile.scope}
+						sessionId={sessionId}
+						split={split}
+					/>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		<div
@@ -354,50 +390,12 @@ export function WorkspaceReviewPane({
 			ref={reviewRef}
 		>
 			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
-				{singleWorkingSource ? (
-					<Button
-						aria-label={t("files.changeSource")}
-						aria-pressed={scope === singleWorkingSource}
-						className="max-w-[12rem] gap-1.5"
-						onClick={() => selectScope(singleWorkingSource)}
-						size="sm"
-						type="button"
-						variant={scope === singleWorkingSource ? "secondary" : "outline"}
-					>
-						<span className="truncate">{workingSourceLabel(singleWorkingSource)}</span>
-						<span className="text-caption text-passive">{workingSourceCount(singleWorkingSource)}</span>
-					</Button>
-				) : hasWorkingChangeChoices ? (
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<Button
-								aria-label={t("files.changeSource")}
-								className="max-w-[12rem] gap-1.5 data-[state=open]:rounded-b-none data-[state=open]:border-border data-[state=open]:border-b-transparent"
-								size="sm"
-								type="button"
-								variant={scope !== "committed" ? "secondary" : "outline"}
-							>
-								<span className="truncate">{scope === "committed" ? t("files.workingChanges") : workingSourceLabel(scope)}</span>
-								<span className="text-caption text-passive">{scope === "committed" ? workingChangeCount : workingSourceCount(scope)}</span>
-								<ChevronDown aria-hidden="true" className="size-icon-sm" />
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-0 rounded-t-none border-t-0" sideOffset={0}>
-							{alternativeWorkingSources.map((entry) => (
-								<DropdownMenuItem className="text-xs font-normal" key={entry} onSelect={() => selectScope(entry)}>
-									<span className="truncate">{workingSourceLabel(entry)}</span>
-									<span className="ml-auto text-caption text-passive">{workingSourceCount(entry)}</span>
-								</DropdownMenuItem>
-							))}
-						</DropdownMenuContent>
-					</DropdownMenu>
-				) : null}
 				<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} className="gap-1.5" disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" type="button" variant={scope === "committed" ? "secondary" : "ghost"}>
 					<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
 					<span>{t("files.commits")}</span>
 					<span className="text-caption text-passive">{selectedCommit ? selectedCommit.sha.slice(0, 7) : data.commits.length}</span>
 				</Button>
-				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
+				{!commitBrowserOpen && !workingSourceBrowserActive ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
 					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
 					<HeaderActionTooltip label={t("files.collapseAll")}>
 						<Button aria-label={t("files.collapseAll")} onClick={collapseAll} size="icon-sm" type="button" variant="ghost"><ChevronsDownUp aria-hidden="true" /></Button>
@@ -408,7 +406,7 @@ export function WorkspaceReviewPane({
 							setCollapsedPaths(new Set());
 						}} size="icon-sm" type="button" variant="ghost"><ChevronsUpDown aria-hidden="true" /></Button>
 					</HeaderActionTooltip>
-				</div> : <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
+				</div> : commitBrowserOpen ? <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span> : null}
 			</div>
 			{commitBrowserOpen ? (
 				<CommitBrowser
@@ -418,6 +416,65 @@ export function WorkspaceReviewPane({
 					selectedSha={selectedCommit?.sha}
 				/>
 			) : (
+				<>
+			{hasWorkingChangeChoices ? (
+				<div
+					aria-label={t("files.changeSource")}
+					className={cn(
+						"board-scrollbar overflow-y-auto bg-surface",
+						workingSourceBrowserActive ? "min-h-0 flex-1" : "max-h-64 shrink-0 border-b border-border",
+					)}
+					role="region"
+				>
+					{workingSourceOptions.map((entry) => {
+						const expanded = expandedWorkingScopes.has(entry);
+						const groupFiles = sectionFiles(data, entry);
+						return (
+							<section key={entry}>
+								<button
+									aria-expanded={expanded}
+									aria-label={t(expanded ? "files.collapseFile" : "files.expandFile", { file: `${workingSourceLabel(entry)} (${groupFiles.length})` })}
+									className="flex h-7 w-full items-center gap-1 px-2 text-left text-xs font-medium text-foreground hover:bg-interactive-hover"
+									onClick={() => toggleWorkingScope(entry)}
+									type="button"
+								>
+									{expanded ? <ChevronDown aria-hidden="true" className="size-icon-sm shrink-0" /> : <ChevronRight aria-hidden="true" className="size-icon-sm shrink-0" />}
+									<span className="truncate">{workingSourceLabel(entry)}</span>
+									<span className="ml-auto text-caption tabular-nums text-passive">{groupFiles.length}</span>
+								</button>
+								{expanded ? (
+									<div aria-label={workingSourceLabel(entry)} role="tree">
+										{groupFiles.map((file) => {
+											const name = file.path.split("/").pop() || file.path;
+											const parent = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+											return (
+												<button
+													aria-label={file.path}
+													className="group flex h-7 w-full items-center gap-1.5 pl-7 pr-2 text-left text-xs text-foreground hover:bg-interactive-hover"
+													key={file.path}
+													onClick={() => {
+														if (annotation.target?.surface === "review") annotation.cancel();
+														setSelectedWorkingFile({ path: file.path, scope: entry });
+													}}
+													role="treeitem"
+													title={file.path}
+													type="button"
+												>
+													<WorkspaceEntryIcon className="size-icon-sm shrink-0" kind="file" name={name} />
+													<span className="min-w-0 truncate">{name}</span>
+													{parent ? <span className="min-w-0 truncate text-caption text-passive">{parent}</span> : null}
+													<span className={cn("ml-auto shrink-0 font-mono text-caption font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
+												</button>
+											);
+										})}
+									</div>
+								) : null}
+							</section>
+						);
+					})}
+				</div>
+			) : null}
+			{!workingSourceBrowserActive ? (
 				<>
 			{firstError ? <PanelMessage action={<RetryButton onClick={retryAll} />}>{firstError.message}</PanelMessage> : null}
 			{groupError ? <PanelMessage action={<RetryButton onClick={retryAll} />}>{groupError.message}</PanelMessage> : null}
@@ -541,6 +598,8 @@ export function WorkspaceReviewPane({
 					);
 				})}
 			</div>
+				</>
+			) : null}
 				</>
 			)}
 		</div>

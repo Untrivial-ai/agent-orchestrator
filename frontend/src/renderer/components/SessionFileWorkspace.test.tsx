@@ -4,7 +4,7 @@ import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ initialEditing, initialMode, initialRequestKey, split }: { initialEditing?: boolean; initialMode?: string; initialRequestKey?: number; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-request-key={initialRequestKey} data-split={String(split)} data-testid="file-content" />,
+	FileContentPane: ({ initialEditing, initialMode, initialRequestKey, onDirtyChange, split }: { initialEditing?: boolean; initialMode?: string; initialRequestKey?: number; onDirtyChange?: (dirty: boolean) => void; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-request-key={initialRequestKey} data-split={String(split)} data-testid="file-content"><button onClick={() => onDirtyChange?.(true)} type="button">mark dirty</button></div>,
 }));
 
 const annotation: FileAnnotationModel = {
@@ -25,6 +25,14 @@ describe("SessionFileWorkspace", () => {
 		expect(screen.getByTestId("session-file-workspace").querySelector("header")).not.toBeInTheDocument();
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-split", "true");
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-mode", "file");
+	});
+
+	it("reports center-editor dirty state with the opened path", () => {
+		const onDirtyChange = vi.fn();
+		render(<SessionFileWorkspace annotation={annotation} onDirtyChange={onDirtyChange} path="src/App.tsx" sessionId="sess-1" split={false} />);
+
+		screen.getByRole("button", { name: "mark dirty" }).click();
+		expect(onDirtyChange).toHaveBeenCalledWith("src/App.tsx", true);
 	});
 
 	it("forwards an explicit center mode and consumes one-shot edit requests on exit", () => {

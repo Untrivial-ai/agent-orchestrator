@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { FileContentPane } from "./FileContentPane";
 import { FileAnnotationComposer, type FileAnnotationModel } from "./WorkspaceDiffView";
 import type { FileViewMode } from "./FileContentPane";
@@ -10,6 +10,7 @@ export function SessionFileWorkspace({
 	initialEditing = false,
 	initialMode = "file",
 	initialRequestKey = 0,
+	onDirtyChange,
 	onInitialEditingConsumed,
 	path,
 	sessionId,
@@ -21,6 +22,7 @@ export function SessionFileWorkspace({
 	initialEditing?: boolean;
 	initialMode?: FileViewMode;
 	initialRequestKey?: number;
+	onDirtyChange?: (path: string, dirty: boolean) => void;
 	onInitialEditingConsumed?: (path: string, requestKey: number) => void;
 	path: string;
 	sessionId: string;
@@ -28,6 +30,10 @@ export function SessionFileWorkspace({
 	scope?: WorkspaceDiffScope;
 }) {
 	const fileFeedbackActive = annotation.target?.path === path && annotation.target.side === "file";
+	const handleDirtyChange = useCallback(
+		(dirty: boolean) => onDirtyChange?.(path, dirty),
+		[onDirtyChange, path],
+	);
 	useEffect(
 		() => () => {
 			if (initialEditing) onInitialEditingConsumed?.(path, initialRequestKey);
@@ -50,6 +56,7 @@ export function SessionFileWorkspace({
 					initialEditing={initialEditing}
 					initialMode={initialMode}
 					initialRequestKey={initialRequestKey}
+					onDirtyChange={handleDirtyChange}
 					path={path}
 					sessionId={sessionId}
 					split={split}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, MessageSquarePlus, Pencil, Save, X } from "lucide-react";
@@ -12,6 +12,9 @@ import {
 	type WorkspaceDiffScope,
 	type WorkspaceFileDetail,
 } from "../hooks/useSessionWorkspaceFiles";
+import { usePierreFileHighlightReady } from "../hooks/usePierreFileHighlight";
+import { cn } from "../lib/utils";
+import { statusLabel, statusTone } from "../lib/workspace-file-status";
 import {
 	canSplitCompare,
 	FileAnnotationComposer,
@@ -25,8 +28,6 @@ import { AoDiffFile } from "./diffs/AoDiffFile";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { MarkdownFileView } from "./markdown/MarkdownFileView";
-import { statusLabel, statusTone } from "../lib/workspace-file-status";
-import { cn } from "../lib/utils";
 
 export type FileViewMode = "diff" | "file" | "rendered";
 export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
@@ -44,6 +45,7 @@ export function FileContentPane({
 	initialMode = "diff",
 	initialRequestKey = 0,
 	commitSha,
+	onDirtyChange,
 	path,
 	sessionId,
 	split,
@@ -54,6 +56,7 @@ export function FileContentPane({
 	initialMode?: FileViewMode;
 	initialRequestKey?: number;
 	commitSha?: string;
+	onDirtyChange?: (dirty: boolean) => void;
 	path: string | null;
 	sessionId: string;
 	split: boolean;
@@ -66,6 +69,7 @@ export function FileContentPane({
 	const [draft, setDraft] = useState("");
 	const [saving, setSaving] = useState(false);
 	const [saveError, setSaveError] = useState("");
+	const sourceHighlightReady = usePierreFileHighlightReady(path);
 	// A background refetch mid-selection would re-render the pane out from under
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
@@ -73,6 +77,7 @@ export function FileContentPane({
 		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
+	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);
 	useEffect(() => {
 		setMode(initialMode);
 		setEditing(initialEditing);
@@ -82,6 +87,55 @@ export function FileContentPane({
 	useEffect(() => {
 		if (initialEditing && query.data) setDraft(query.data.content);
 	}, [initialEditing, initialRequestKey, path, query.data]);
+	useEffect(() => {
+		onDirtyChange?.(hasUnsavedChanges);
+	}, [hasUnsavedChanges, onDirtyChange]);
+	useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+	const saveEditing = useCallback(async () => {
+		const detail = query.data;
+		if (!path || !detail?.fileFingerprint || saving) return;
+		setSaving(true);
+		setSaveError("");
+		try {
+			const saved = await updateSessionWorkspaceFile({
+				content: draft,
+				expectedFileFingerprint: detail.fileFingerprint,
+				path,
+				sessionId,
+			});
+			queryClient.setQueryData(sessionWorkspaceFileQueryKey(sessionId, path, scope, commitSha), saved);
+			await queryClient.invalidateQueries({
+				predicate: ({ queryKey }) => [
+					"session-workspace-files",
+					"session-workspace-tree",
+					"session-workspace-search",
+					"session-workspace-file-revision",
+					"session-workspace-diffs",
+				].includes(String(queryKey[0])),
+			});
+			setEditing(false);
+			setDraft("");
+		} catch (error) {
+			setSaveError(error instanceof Error ? error.message : t("files.saveError"));
+		} finally {
+			setSaving(false);
+		}
+	}, [commitSha, draft, path, query.data, queryClient, saving, scope, sessionId, t]);
+	useEffect(() => {
+		if (!editing) return;
+		const onSaveShortcut = (event: KeyboardEvent) => {
+			if (
+				event.key.toLowerCase() !== "s"
+				|| (!event.metaKey && !event.ctrlKey)
+				|| event.altKey
+				|| event.shiftKey
+			) return;
+			event.preventDefault();
+			if (!saving && hasUnsavedChanges) void saveEditing();
+		};
+		window.addEventListener("keydown", onSaveShortcut, true);
+		return () => window.removeEventListener("keydown", onSaveShortcut, true);
+	}, [editing, hasUnsavedChanges, saveEditing, saving]);
 	const refetch = query.refetch;
 
 	if (!path) {
@@ -114,7 +168,7 @@ export function FileContentPane({
 		(detail.status === "unmodified" && mode === "diff") || (mode === "rendered" && !renderedAvailable)
 			? "file"
 			: mode;
-	const fileView = (
+	const fileView = sourceHighlightReady ? (
 		<CompleteFileView
 			annotation={annotation}
 			detail={detail}
@@ -124,7 +178,7 @@ export function FileContentPane({
 			sessionId={sessionId}
 			commitSha={commitSha}
 		/>
-	);
+	) : <PanelMessage>{t("files.loading")}</PanelMessage>;
 	const beginEditing = () => {
 		setMode("file");
 		annotation.cancel();
@@ -137,35 +191,13 @@ export function FileContentPane({
 		setDraft("");
 		setSaveError("");
 	};
-	const saveEditing = async () => {
-		if (!detail.fileFingerprint) return;
-		setSaving(true);
-		setSaveError("");
-		try {
-			const saved = await updateSessionWorkspaceFile({
-				content: draft,
-				expectedFileFingerprint: detail.fileFingerprint,
-				path,
-				sessionId,
-			});
-			queryClient.setQueryData(sessionWorkspaceFileQueryKey(sessionId, path, scope, commitSha), saved);
-			await queryClient.invalidateQueries({
-				predicate: ({ queryKey }) => [
-					"session-workspace-files",
-					"session-workspace-tree",
-					"session-workspace-search",
-					"session-workspace-file-revision",
-					"session-workspace-diffs",
-				].includes(String(queryKey[0])),
-			});
-			setEditing(false);
-			setDraft("");
-		} catch (error) {
-			setSaveError(error instanceof Error ? error.message : t("files.saveError"));
-		} finally {
-			setSaving(false);
-		}
-	};
+	const unsavedIndicator = hasUnsavedChanges && !onDirtyChange ? (
+		<span
+			aria-hidden="true"
+			className="size-2 shrink-0 rounded-full bg-foreground"
+			data-testid="unsaved-file-indicator"
+		/>
+	) : null;
 	const wholeFileAnnotationActive = annotation.target?.surface !== "review"
 		&& annotation.target?.path === detail.path
 		&& annotation.target.side === "file"
@@ -184,7 +216,7 @@ export function FileContentPane({
 					</Button>
 				) : null}
 				<Button aria-selected={effectiveMode === "file"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("file")} role="tab" size="sm" type="button" variant={effectiveMode === "file" ? "secondary" : "ghost"}>
-					{t("files.fileView")}
+					{t("files.fileView")}{unsavedIndicator}
 				</Button>
 				{renderedAvailable ? (
 					<Button aria-selected={effectiveMode === "rendered"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("rendered")} role="tab" size="sm" type="button" variant={effectiveMode === "rendered" ? "secondary" : "ghost"}>
@@ -192,12 +224,14 @@ export function FileContentPane({
 					</Button>
 				) : null}
 			</div> : (
-				<span className="min-w-0 truncate px-2 text-xs text-foreground" title={path}>{fileName}</span>
+				<span className="flex min-w-0 items-center gap-1.5 px-2 text-xs text-foreground" title={path}>
+					<span className="truncate">{fileName}</span>{unsavedIndicator}
+				</span>
 			)}
 			{editing ? (
 				<div className="ml-auto flex items-center gap-1">
 					<Button aria-label={t("files.cancelEditing")} disabled={saving} onClick={cancelEditing} size="sm" type="button" variant="ghost"><X aria-hidden="true" />{t("files.cancelEditing")}</Button>
-					<Button aria-label={t("files.saveFile")} disabled={saving} onClick={() => void saveEditing()} size="sm" type="button" variant="primary">{saving ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : <Save aria-hidden="true" />}{t("files.saveFile")}</Button>
+					<Button aria-label={t("files.saveFile")} disabled={saving || !hasUnsavedChanges} onClick={() => void saveEditing()} size="sm" type="button" variant="primary">{saving ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : <Save aria-hidden="true" />}{t("files.saveFile")}</Button>
 				</div>
 			) : (
 				<>

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,10 @@ import type { FileAnnotationModel } from "./WorkspaceDiffView";
 import { TooltipProvider } from "./ui/tooltip";
 
 const { getMock, putMock } = vi.hoisted(() => ({ getMock: vi.fn(), putMock: vi.fn() }));
+
+vi.mock("../hooks/usePierreFileHighlight", () => ({
+	usePierreFileHighlightReady: () => true,
+}));
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, PUT: putMock },
@@ -119,7 +123,7 @@ describe("FileContentPane", () => {
 
 		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/config.ts" sessionId="sess-1" split={false} />);
 
-		expect(await screen.findByText("config.ts")).toHaveAttribute("title", "src/config.ts");
+		expect((await screen.findByText("config.ts")).closest("[title]"))?.toHaveAttribute("title", "src/config.ts");
 		expect(screen.queryByRole("tab", { name: "File" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("tablist", { name: "File display mode" })).not.toBeInTheDocument();
 	});
@@ -249,9 +253,11 @@ describe("FileContentPane", () => {
 		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/App.tsx" sessionId="sess-1" split={false} />);
 		await userEvent.click(await screen.findByRole("tab", { name: "File" }));
 		await userEvent.click(await screen.findByRole("button", { name: "Edit file" }));
+		expect(screen.queryByTestId("unsaved-file-indicator")).not.toBeInTheDocument();
 		const editor = screen.getByRole("textbox", { name: "Edit src/App.tsx" });
 		await userEvent.clear(editor);
 		await userEvent.type(editor, "export const x = 2;\n");
+		expect(screen.getByTestId("unsaved-file-indicator")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
 		await waitFor(() => expect(putMock).toHaveBeenCalledWith(
@@ -264,6 +270,61 @@ describe("FileContentPane", () => {
 				},
 			}),
 		));
+		expect(screen.queryByRole("textbox", { name: "Edit src/App.tsx" })).not.toBeInTheDocument();
+		expect(screen.queryByTestId("unsaved-file-indicator")).not.toBeInTheDocument();
+	});
+
+	it.each([
+		["Command+S", { metaKey: true }],
+		["Control+S", { ctrlKey: true }],
+	] as const)("saves a dirty editor with %s", async (_label, modifier) => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "src/App.tsx",
+				status: "unmodified",
+				additions: 0,
+				deletions: 0,
+				size: 18,
+				binary: false,
+				deleted: false,
+				editable: true,
+				content: "export const x = 1;\n",
+				contentTruncated: false,
+				diff: "",
+				diffTruncated: false,
+				workspaceVersion: "workspace-1",
+				fileFingerprint: "file-1",
+			},
+		});
+		putMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "src/App.tsx",
+				status: "modified",
+				additions: 1,
+				deletions: 1,
+				size: 18,
+				binary: false,
+				deleted: false,
+				editable: true,
+				content: "export const x = 2;\n",
+				contentTruncated: false,
+				diff: "@@ -1 +1 @@\n-export const x = 1;\n+export const x = 2;\n",
+				diffTruncated: false,
+				workspaceVersion: "workspace-2",
+				fileFingerprint: "file-2",
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/App.tsx" sessionId="sess-1" split={false} />);
+		await userEvent.click(await screen.findByRole("button", { name: "Edit file" }));
+		const editor = screen.getByRole("textbox", { name: "Edit src/App.tsx" });
+		await userEvent.clear(editor);
+		await userEvent.type(editor, "export const x = 2;\n");
+		fireEvent.keyDown(window, { key: "s", ...modifier });
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
 		expect(screen.queryByRole("textbox", { name: "Edit src/App.tsx" })).not.toBeInTheDocument();
 	});
 
