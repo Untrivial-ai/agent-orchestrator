@@ -88,6 +88,7 @@ it("keeps account mutations fenced while recovery is required", () => {
 	expect(display.busy).toBe(false);
 	expect(display.mutationBlocked).toBe(true);
 	expect(display.canRecover).toBe(true);
+	expect(display.recoveryKind).toBe("account");
 });
 
 it("shows active rollback as progress and exposes interrupted rollback recovery", () => {
@@ -113,20 +114,40 @@ it("shows active rollback as progress and exposes interrupted rollback recovery"
 	expect(interrupted.canRecover).toBe(true);
 });
 
-it("never describes leave-running credential progress as stopping or restarting sessions", () => {
-	for (const phase of ["requested", "checkpointing_source", "activating_target", "verifying_target", "completed"] as const) {
-		const display = codexSwitchDisplay({
-			id: "switch-credential-only", sourceAccountId: "account-a", targetAccountId: "account-b",
-			restartRunningSessions: false, phase, canRecover: false, sessions: [],
-			createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
-		} satisfies CodexAccountSwitch);
-		expect(display.key).not.toMatch(/stopping_sessions|restarting_sessions/);
+it("presents every normal phase as the same switch progress with either session policy", () => {
+	for (const restartRunningSessions of [false, true]) {
+		for (const phase of ["requested", "stopping_sessions", "sessions_stopped", "checkpointing_source", "activating_target", "verifying_target", "restarting_sessions"] as const) {
+			const display = codexSwitchDisplay({
+				id: "switch-in-progress", sourceAccountId: "account-a", targetAccountId: "account-b",
+				restartRunningSessions, phase, canRecover: false, sessions: [],
+				createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
+			} satisfies CodexAccountSwitch);
+			expect(display.key).toBe("settings.codexAccounts.switch.requested");
+		}
 	}
+});
+
+it("shows a simple reconnect recovery only when restarted sessions need attention", () => {
+	const sessions = codexSwitchDisplay({
+		id: "switch-sessions", sourceAccountId: "account-a", targetAccountId: "account-b",
+		restartRunningSessions: true, phase: "recovery_required", failureCode: "restart_unconfirmed", canRecover: true,
+		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
+	} satisfies CodexAccountSwitch);
+	const account = codexSwitchDisplay({
+		id: "switch-account", sourceAccountId: "account-a", targetAccountId: "account-b",
+		restartRunningSessions: true, phase: "recovery_required", failureCode: "activation_unconfirmed", canRecover: true,
+		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
+	} satisfies CodexAccountSwitch);
+
+	expect(sessions.key).toBe("settings.codexAccounts.switch.sessions_recovery_required");
+	expect(sessions.recoveryKind).toBe("sessions");
+	expect(account.key).toBe("settings.codexAccounts.switch.recovery_required");
+	expect(account.recoveryKind).toBe("account");
 });
 
 it("maps every account reason to complete native locale copy with a safe unknown fallback", () => {
 	const locales: AppLocale[] = ["en", "de", "es", "fr", "ja", "ko", "pt-BR", "zh-CN"];
-	const switchKeys = ["requested", "stopping_sessions", "sessions_stopped", "checkpointing_source", "activating_target", "verifying_target", "restarting_sessions", "rollback_required", "recovery_required", "completed", "failed", "unknown"].map((phase) => `settings.codexAccounts.switch.${phase}`);
+	const switchKeys = ["requested", "stopping_sessions", "sessions_stopped", "checkpointing_source", "activating_target", "verifying_target", "restarting_sessions", "rollback_required", "recovery_required", "sessions_recovery_required", "completed", "failed", "unknown"].map((phase) => `settings.codexAccounts.switch.${phase}`);
 	const keys = [
 		...codexAccountReasonCodes.map(codexAccountReasonKey),
 		...switchKeys,
@@ -140,6 +161,7 @@ it("maps every account reason to complete native locale copy with a safe unknown
 		"settings.codexAccounts.tryAgain",
 		"settings.codexAccounts.switch.restored",
 		"settings.codexAccounts.retryRecovery",
+		"settings.codexAccounts.reconnectSessions",
 		"settings.codexAccounts.switchAndRestart",
 		"settings.codexAccounts.restartRunningSessions",
 		"settings.codexAccounts.restartRunningSessionsInfo",

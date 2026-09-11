@@ -224,6 +224,7 @@ it("shows recovery as an action instead of indefinite switch progress", async ()
 		...accountResponse,
 		currentSwitch: {
 			id: "33333333-3333-4333-8333-333333333333",
+			restartRunningSessions: true,
 			phase: "recovery_required",
 			failureCode: "restart_unconfirmed",
 			canRecover: true,
@@ -234,10 +235,10 @@ it("shows recovery as an action instead of indefinite switch progress", async ()
 	postMock.mockResolvedValue({ data: recoveryResponse });
 
 	renderSection();
-	expect(await screen.findByRole("button", { name: "Retry recovery" })).toBeInTheDocument();
+	expect(await screen.findByRole("button", { name: "Reconnect sessions" })).toBeInTheDocument();
 	expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
 	expect(screen.getByRole("button", { name: "Switch account" })).toBeDisabled();
-	expect(screen.getAllByText("AO could not confirm that every session restarted.").length).toBeGreaterThan(0);
+	expect(screen.getAllByText("Account switched. Some sessions couldn't reconnect.").length).toBeGreaterThan(0);
 	expect(screen.queryByText("restart_unconfirmed")).not.toBeInTheDocument();
 });
 
@@ -246,6 +247,7 @@ it("keeps a visible live success outcome when an observed switch disappears on i
 		...accountResponse,
 		currentSwitch: {
 			id: "33333333-3333-4333-8333-333333333333",
+			restartRunningSessions: true,
 			phase: "verifying_target",
 			failureCode: undefined,
 			canRecover: false,
@@ -259,7 +261,7 @@ it("keeps a visible live success outcome when an observed switch disappears on i
 	getMock.mockResolvedValue({ data: switchingResponse });
 	postMock.mockResolvedValue({ data: switchingResponse });
 	const { queryClient } = renderSection();
-	await screen.findByLabelText("Verifying the selected account…");
+	await screen.findByLabelText("Switching to other@example.com…");
 
 	act(() => queryClient.setQueryData(["codex-accounts"], {
 		...accountResponse,
@@ -269,7 +271,7 @@ it("keeps a visible live success outcome when an observed switch disappears on i
 	}));
 
 	const outcome = await screen.findByRole("status");
-	expect(outcome).toHaveTextContent("The device Codex account was switched.");
+	expect(outcome).toHaveTextContent("Switched to other@example.com.");
 	expect(outcome).toHaveAttribute("aria-live", "polite");
 	expect(outcome).toBeVisible();
 });
@@ -279,6 +281,7 @@ it("reports when a failed switch safely restores the previous account", async ()
 		...accountResponse,
 		currentSwitch: {
 			id: "33333333-3333-4333-8333-333333333333",
+			restartRunningSessions: true,
 			phase: "activating_target",
 			failureCode: "activation_unconfirmed",
 			canRecover: false,
@@ -292,7 +295,7 @@ it("reports when a failed switch safely restores the previous account", async ()
 	getMock.mockResolvedValue({ data: switchingResponse });
 	postMock.mockResolvedValue({ data: switchingResponse });
 	const { queryClient } = renderSection();
-	await screen.findByLabelText("Activating the selected account…");
+	await screen.findByLabelText("Switching to other@example.com…");
 
 	act(() => queryClient.setQueryData(["codex-accounts"], {
 		...accountResponse,
@@ -301,7 +304,7 @@ it("reports when a failed switch safely restores the previous account", async ()
 	}));
 
 	const outcome = await screen.findByRole("status");
-	expect(outcome).toHaveTextContent("Account switch failed. Your previous Codex account was restored.");
+	expect(outcome).toHaveTextContent("Couldn't switch accounts. You're still using active@example.com.");
 	expect(outcome).toHaveAttribute("aria-live", "polite");
 	expect(outcome).toBeVisible();
 	expect(screen.queryByText("activation_unconfirmed")).not.toBeInTheDocument();
@@ -763,14 +766,12 @@ it("starts a global switch with the displayed account revision", async () => {
 	await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
 	await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
 	const dialog = await screen.findByRole("dialog");
-	const restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO Codex sessions" });
+	const restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO sessions" });
 	expect(restartSwitch).not.toBeChecked();
-	expect(dialog).toHaveTextContent("New Codex sessions will use this account.");
-	expect(dialog).toHaveTextContent("Running AO Codex sessions and reviewers stay running.");
-	expect(dialog).toHaveTextContent("external terminals, IDEs, and ChatGPT are unmanaged");
-	const info = within(dialog).getByRole("button", { name: "About restarting running AO Codex sessions" });
-	act(() => info.focus());
-	expect(await screen.findByRole("tooltip")).toHaveTextContent(/preserving native history and worktrees/);
+	expect(dialog).toHaveTextContent("Switch to other@example.com?");
+	expect(dialog).toHaveTextContent("New sessions will use this account.");
+	expect(dialog).toHaveTextContent("Running sessions stay open. New sessions will use this account.");
+	expect(dialog).not.toHaveTextContent("external terminals, IDEs, and ChatGPT");
 	fireEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
 		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1", restartRunningSessions: false },
@@ -796,24 +797,24 @@ it("offers an unpersisted restart option with dynamic labels and a locked busy s
 	};
 
 	let dialog = await openSwitchDialog();
-	let restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO Codex sessions" });
+	let restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO sessions" });
 	await userEvent.click(restartSwitch);
 	expect(restartSwitch).toBeChecked();
-	expect(within(dialog).getByRole("button", { name: "Switch and restart" })).toBeEnabled();
-	expect(dialog).toHaveTextContent("will stop and resume with the selected account");
+	expect(within(dialog).getByRole("button", { name: "Switch account" })).toBeEnabled();
+	expect(dialog).toHaveTextContent("Running AO sessions will reconnect using this account.");
 	await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
 	dialog = await openSwitchDialog();
-	restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO Codex sessions" });
+	restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO sessions" });
 	expect(restartSwitch).not.toBeChecked();
 	await userEvent.click(restartSwitch);
-	await userEvent.click(within(dialog).getByRole("button", { name: "Switch and restart" }));
+	await userEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
 		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "restart-idempotency", restartRunningSessions: true },
 	}));
 	expect(restartSwitch).toBeDisabled();
 	expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-	expect(within(dialog).getByRole("button", { name: "Switch and restart" })).toBeDisabled();
+	expect(within(dialog).getByRole("button", { name: "Switch account" })).toBeDisabled();
 
 	finishSwitch?.({ data: {} });
 	await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());

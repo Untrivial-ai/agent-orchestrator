@@ -157,7 +157,7 @@ const reasonKeys = {
 export const codexAccountReasonCodes = Object.keys(reasonKeys) as Array<keyof typeof reasonKeys>;
 
 export type CodexAccountMessageKey = (typeof reasonKeys)[keyof typeof reasonKeys]
-	| `settings.codexAccounts.switch.${CodexAccountSwitch["phase"] | "unknown"}`;
+	| `settings.codexAccounts.switch.${CodexAccountSwitch["phase"] | "unknown" | "sessions_recovery_required"}`;
 
 export function codexAccountReasonKey(reasonCode: string | null | undefined): CodexAccountMessageKey {
 	return reasonKeys[reasonCode as keyof typeof reasonKeys] ?? "settings.codexAccounts.reason.unknown";
@@ -169,33 +169,46 @@ export type CodexSwitchDisplay = {
 	busy: boolean;
 	mutationBlocked: boolean;
 	canRecover: boolean;
+	recoveryKind: "sessions" | "account" | null;
 };
 
+const sessionRecoveryFailureCodes = new Set([
+	"restart_unconfirmed",
+	"reviewer_restart_unconfirmed",
+]);
+
 export function codexSwitchDisplay(switchState: CodexAccountSwitch): CodexSwitchDisplay {
-	const failureKey = switchState.failureCode ? codexAccountReasonKey(switchState.failureCode) : null;
-	const failureKnown = failureKey !== "settings.codexAccounts.reason.unknown";
 	const phase = switchState.phase;
 	const canRecover = switchState.canRecover && (phase === "rollback_required" || phase === "recovery_required");
 	const terminal = phase === "completed" || phase === "failed" || phase === "recovery_required" || (phase === "rollback_required" && canRecover);
 	const busy = !terminal;
-	const phaseKeys: Record<CodexAccountSwitch["phase"], CodexAccountMessageKey> = {
-		requested: "settings.codexAccounts.switch.requested",
-		stopping_sessions: "settings.codexAccounts.switch.stopping_sessions",
-		sessions_stopped: "settings.codexAccounts.switch.sessions_stopped",
-		checkpointing_source: "settings.codexAccounts.switch.checkpointing_source",
-		activating_target: "settings.codexAccounts.switch.activating_target",
-		verifying_target: "settings.codexAccounts.switch.verifying_target",
-		restarting_sessions: "settings.codexAccounts.switch.restarting_sessions",
-		rollback_required: "settings.codexAccounts.switch.rollback_required",
-		recovery_required: "settings.codexAccounts.switch.recovery_required",
-		completed: "settings.codexAccounts.switch.completed",
-		failed: "settings.codexAccounts.switch.failed",
-	};
+	const recoveryKind = canRecover && switchState.restartRunningSessions && sessionRecoveryFailureCodes.has(switchState.failureCode ?? "")
+		? "sessions"
+		: canRecover
+			? "account"
+			: null;
+	let key: CodexAccountMessageKey;
+	if (busy) {
+		key = phase === "rollback_required"
+			? "settings.codexAccounts.switch.rollback_required"
+			: "settings.codexAccounts.switch.requested";
+	} else if (recoveryKind === "sessions") {
+		key = "settings.codexAccounts.switch.sessions_recovery_required";
+	} else if (canRecover) {
+		key = "settings.codexAccounts.switch.recovery_required";
+	} else if (phase === "completed") {
+		key = "settings.codexAccounts.switch.completed";
+	} else if (phase === "failed") {
+		key = "settings.codexAccounts.switch.failed";
+	} else {
+		key = "settings.codexAccounts.switch.unknown";
+	}
 	return {
-		key: !busy && failureKnown && failureKey ? failureKey : phaseKeys[phase] ?? "settings.codexAccounts.switch.unknown",
-		tone: phase === "failed" ? "error" : failureKnown || phase === "rollback_required" || phase === "recovery_required" ? "warning" : "muted",
+		key,
+		tone: phase === "failed" ? "error" : phase === "rollback_required" || phase === "recovery_required" ? "warning" : "muted",
 		busy,
 		mutationBlocked: phase !== "completed" && phase !== "failed",
 		canRecover,
+		recoveryKind,
 	};
 }
