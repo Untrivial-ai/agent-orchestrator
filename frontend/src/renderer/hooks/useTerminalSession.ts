@@ -867,9 +867,13 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			r.resizeTimer = null;
 		}
 		r.needsVisibleSizeSync = false;
-		const published = r.lastPublishedGrid;
-		if (published?.cols === cols && published.rows === rows) return;
-		r.mux.resize(r.handle, cols, rows);
+		// Force this one. The grid we are promoting back may be byte-identical to
+		// what was last published — a parked terminal reattaches at 0×0 and is
+		// refitted to the same size it had — and the daemon deduplicates repeat
+		// resizes, so the unforced call would be dropped and tmux would never be
+		// told to redraw. Only this activation path forces; ordinary resizes stay
+		// deduplicated.
+		r.mux.resize(r.handle, cols, rows, true);
 		r.lastPublishedGrid = { cols, rows };
 	}, []);
 

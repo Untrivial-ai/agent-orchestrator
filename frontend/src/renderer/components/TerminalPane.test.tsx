@@ -469,6 +469,31 @@ describe("TerminalPane replay cover", () => {
 		}
 	});
 
+	it("attaches and lifts the cover even when activation preparation rejects", async () => {
+		prepareForActivationMock.mockRejectedValue(new Error("viewport gone"));
+		replaySettled.value = false;
+		const view = renderPane({ ...worker, terminalHandleId: "term-1" });
+		try {
+			await waitFor(() => expect(attachMock).toHaveBeenCalled());
+			replaySettled.value = true;
+			view.rerender(
+				<QueryClientProvider client={view.queryClient}>
+					<TerminalPane
+						daemonReady
+						fontSize={12}
+						session={{ ...worker, terminalHandleId: "term-1" }}
+						theme="dark"
+					/>
+				</QueryClientProvider>,
+			);
+			await waitFor(() =>
+				expect(screen.queryByTestId("terminal-replay-cover")).not.toBeInTheDocument(),
+			);
+		} finally {
+			view.restore();
+		}
+	});
+
 	it("keeps the replay cover silent even when attachment takes longer", () => {
 		vi.useFakeTimers();
 		try {
@@ -531,7 +556,31 @@ describe("TerminalCacheProvider", () => {
 		}
 	});
 
-	it("retains every visited terminal until an authoritative lifecycle cleanup", async () => {
+	it("reveals a returning retained terminal even when its preparation rejects", async () => {
+		const view = renderCachedPane({ session: sessionA, sessions: [sessionA, sessionB] });
+		try {
+			await waitFor(() => activeXterm());
+			view.show(sessionB);
+			await waitFor(() => expect(screen.getAllByTestId("xterm")).toHaveLength(2));
+
+			// Returning to a retained terminal runs the cached preparation path. A
+			// rejection there must not strand the entry in "preparing", which stays
+			// visibility:hidden and reads as a permanently black pane.
+			prepareForActivationMock.mockRejectedValue(new Error("viewport gone"));
+			view.show(sessionA);
+			await waitFor(() => {
+				const container = document.querySelector<HTMLElement>(
+					`[data-terminal-cache-key^="session:${sessionA.id}:worker|"]`,
+				);
+				expect(container?.dataset.terminalActivationPhase).toBe("visible");
+				expect(container?.style.visibility).not.toBe("hidden");
+			});
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("retains visited terminals up to the cap and evicts the oldest parked one beyond it", async () => {
 		const sessions = Array.from({ length: 7 }, (_, index) => ({
 			...worker,
 			id: `sess-retained-${index}`,
@@ -541,7 +590,7 @@ describe("TerminalCacheProvider", () => {
 		const view = renderCachedPane({ session: sessions[0], sessions });
 		try {
 			const oldest = await waitFor(() => activeXterm());
-			for (const session of sessions.slice(1)) {
+			for (const session of sessions.slice(1, 6)) {
 				view.show(session);
 				await waitFor(() =>
 					expect(
@@ -549,13 +598,25 @@ describe("TerminalCacheProvider", () => {
 					).not.toBeNull(),
 				);
 			}
-			expect(document.querySelectorAll("[data-terminal-cache-key]")).toHaveLength(7);
+			// Six visited sessions fit the cap, so nothing has been evicted yet.
+			expect(document.querySelectorAll("[data-terminal-cache-key]")).toHaveLength(6);
 			expect(oldest.isConnected).toBe(true);
 			expect(xtermUnmounts.value).toBe(0);
 
+			// The seventh evicts the least-recently-activated parked entry, keeping
+			// retained xterm buffers, renderer contexts and mux writers bounded.
+			view.show(sessions[6]);
+			await waitFor(() => expect(xtermUnmounts.value).toBe(1));
+			expect(document.querySelectorAll("[data-terminal-cache-key]")).toHaveLength(6);
+			expect(
+				document.querySelector(`[data-terminal-cache-key^="session:${sessions[0].id}:worker|"]`),
+			).toBeNull();
+
+			// Reopening an evicted session builds a fresh terminal over the covered
+			// replay path rather than resurrecting the disposed one.
 			view.show(sessions[0]);
-			await waitFor(() => expect(activeXterm()).toBe(oldest));
-			expect(xtermMounts.value).toBe(7);
+			await waitFor(() => expect(activeXterm()).not.toBe(oldest));
+			expect(xtermMounts.value).toBe(8);
 		} finally {
 			view.restore();
 		}
