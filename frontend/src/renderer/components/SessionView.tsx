@@ -22,6 +22,7 @@ import {
 	SessionChatSurface,
 	type ConversationWorkState,
 } from "./chat/SessionChatSurface";
+import { CloudSessionChatSurface } from "./chat/CloudSessionChatSurface";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
@@ -40,7 +41,6 @@ import { SwitchAgentDialog } from "./SwitchAgentDialog";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
 import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
 import { TopbarButton } from "./TopbarButton";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
 import { useBrowserView } from "../hooks/useBrowserView";
 import { useCodexAccountActions } from "../hooks/useCodexAccountActions";
@@ -60,7 +60,14 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
-import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import {
+	toCloudWorkspaceSession,
+	useCloudSessionQuery,
+	useWorkspaceQuery,
+	useWorkspaceSession,
+	workspaceQueryKey,
+} from "../hooks/useWorkspaceQuery";
+import { useCloudGate } from "../hooks/useCloudGate";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
@@ -235,6 +242,8 @@ function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTa
 
 type SessionViewProps = {
 	sessionId: string;
+	cloudOrgId?: string;
+	projectId?: string;
 };
 
 // Mirrors the left sidebar: a Motion gap takes layout width while a sibling
@@ -370,14 +379,30 @@ function SessionInspectorRail({
 // x-transform). Summary/Reviews/Files share a utility width, while Browser
 // automatically grows into a co-work canvas. Chat readability clamps either
 // profile before the conversation can become unusably narrow.
-export function SessionView({ sessionId }: SessionViewProps) {
+export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { cloudEnabled } = useCloudGate();
 	const refreshWorkspaces = useCallback(
 		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 		[queryClient],
 	);
-	const workspaceQuery = useWorkspaceSession(sessionId);
+	const workspaceSessionQuery = useWorkspaceSession(sessionId);
+	const workspaceQuery = useWorkspaceQuery();
+	const workspaces = workspaceQuery.data ?? [];
+	const routedWorkspace = projectId ? workspaces.find((workspace) => workspace.id === projectId) : undefined;
+	const isCloudRoute = routedWorkspace?.kind === "cloud";
+	const listedSession = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
+	// Project-scoped navigation identifies Cloud routes immediately. The legacy
+	// cross-project route has no project id, so fall back to a direct CP lookup
+	// when the session is absent from the merged list. This keeps a fresh Cloud
+	// tab from ever being resolved through the local daemon during list-cache
+	// races or after restoring an old route.
+	const cloudRouteSession = useCloudSessionQuery(
+		cloudOrgId,
+		sessionId,
+		Boolean(cloudOrgId && (isCloudRoute || !listedSession)),
+	);
 	const theme = useResolvedTheme();
 	const prefersReducedMotion = useReducedMotion();
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? true);
@@ -506,7 +531,33 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
-	const session = workspaceQuery.data;
+	// A newly-created Cloud session can be routed before the paginated session
+	// list refresh completes. Resolve that exact row from Cloud so terminal and
+	// interface operations retain {orgId, sessionId} instead of falling back to
+	// the local daemon and surfacing SESSION_NOT_FOUND.
+	const directCloudWorkspace = cloudRouteSession.data
+		? workspaces.find(
+				(workspace) =>
+					workspace.kind === "cloud" && workspace.id === cloudRouteSession.data?.projectId,
+			)
+		: undefined;
+	const cloudSessionWorkspace = directCloudWorkspace ?? routedWorkspace;
+	const session =
+		listedSession ??
+		workspaceSessionQuery.data ??
+		(cloudOrgId && cloudRouteSession.data && cloudSessionWorkspace
+			? toCloudWorkspaceSession(
+					cloudRouteSession.data,
+					{
+						// A session lookup remains authoritative even if the projects list
+						// is refetching. Do not turn a real Cloud row into "Session not
+						// found" merely because its parent list is temporarily absent.
+						id: cloudSessionWorkspace?.id ?? cloudRouteSession.data.projectId,
+						displayName: cloudSessionWorkspace?.name ?? "Cloud project",
+					},
+					cloudOrgId,
+				)
+			: undefined);
 	const routeVisibilityOperation =
 		session?.activeAgentSwitch &&
 		session.activeAgentSwitch.state !== "completed" &&
@@ -525,11 +576,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			(codexAccountSwitch.sessions.length === 0 ||
 				codexAccountSwitch.sessions.some((entry) => entry.sessionId === session.id)),
 	);
-	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
+	const interfaceContext = session
+		? (session.cloud ?? null)
+		: cloudOrgId
+			? { orgId: cloudOrgId }
+			: undefined;
+	const interfaceSwitch = useSessionInterfaceTransition(sessionId, interfaceContext);
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
-			window.ao && session && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
+			window.ao && session && !session.cloud && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
 		),
 		refetchInterval: (query) => {
 			const data = query.state.data as ReviewsResponse | undefined;
@@ -972,27 +1028,25 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the button entirely rather than showing a permanently disabled control.
 	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	const isCloudSession = Boolean(interfaceContext);
 	const showInterfaceSwitchAction = Boolean(
-		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
+		cloudEnabled && sessionId && !interfaceSwitchUnsupported,
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
+	// Shell terminals are implemented by the loopback daemon only. A Cloud
+	// session's id is not a daemon session id, so never offer an action that
+	// would send it to /api/v1/shell-terminals and produce SESSION_NOT_FOUND.
 	const newShellTerminalAction =
-		session && !isOrchestrator ? (
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<TopbarButton
-						aria-label={t("shortcut.new-shell-terminal")}
-						onClick={addShellTerminal}
-						type="button"
-						variant="icon"
-					>
-						<Plus aria-hidden="true" className="size-icon-md" />
-					</TopbarButton>
-				</TooltipTrigger>
-				<TooltipContent side="bottom">
-					{newTerminalError ?? t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}
-				</TooltipContent>
-			</Tooltip>
+		session && !session.cloud && !isOrchestrator ? (
+			<TopbarButton
+				aria-label={t("shortcut.new-shell-terminal")}
+				onClick={addShellTerminal}
+				title={newTerminalError ?? t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}
+				type="button"
+				variant="icon"
+			>
+				<Plus aria-hidden="true" className="size-icon-md" />
+			</TopbarButton>
 		) : null;
 	const fileAnnotation = useFileAnnotation(sessionId);
 	const centerFileTabs = useMemo(
@@ -1077,6 +1131,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
+	// A Cloud Chat -> TUI handoff must not reuse the TUI cache entry that was
+	// intentionally closed when Chat started. The committed mode changes to TUI
+	// only after the coordinator has stopped Chat, so using the completed
+	// transition id here is safe and gives the new PTY a deterministic generation.
+	const terminalGeneration =
+		session?.cloud && session.mode === "tui" && interfaceSwitch.transition?.targetMode === "tui"
+			? interfaceSwitch.transition.id
+			: undefined;
 	const {
 		agentSwitch: handoffAgentSwitch,
 		switchControlPresentation: handoffControlPresentation,
@@ -1094,11 +1156,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (handoffSwitchError) setHandoffDialogOpen(true);
 	}, [handoffSwitchError]);
+	// Keep the switch visible on the session tab, rather than only in the
+	// overflow menu. In particular, a Cloud tab can be selected before its
+	// row reaches the list cache; the visible control then makes its resolving
+	// state explicit instead of looking like the feature disappeared.
 	const interfaceSwitchInlineStatus =
-		session && showInterfaceSwitchAction && activeInterfaceTransition ? (
+		showInterfaceSwitchAction ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
-				supported={Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition}
+				supported={isCloudSession ? Boolean(interfaceSwitch.status?.supported) : true}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1115,10 +1181,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			/>
 		) : null;
 	const interfaceSwitchMenuItem =
-		session && showInterfaceSwitchAction && !activeInterfaceTransition ? (
+		showInterfaceSwitchAction && !activeInterfaceTransition ? (
 			<SessionInterfaceSwitchMenuItem
 				target={interfaceTarget}
-				supported={Boolean(interfaceSwitch.status?.supported)}
+				supported={isCloudSession ? Boolean(interfaceSwitch.status?.supported) : true}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1140,8 +1206,17 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null;
+	// Cloud's Chat surface does not have an interactive terminal tab to hover.
+	// Keep the handoff control in the app chrome as a direct, always-visible
+	// button so users can reliably return from Chat UI to TUI.
+	// `session` is briefly undefined while a newly-created Cloud tab is being
+	// resolved from the control plane. The route still has its Cloud org
+	// context, however, so mount the control from that context rather than from
+	// the eventually-populated row. Otherwise the very list-cache race this
+	// surface is intended to handle makes the switch disappear entirely.
+	const cloudInterfaceSwitchAction = cloudEnabled && interfaceContext ? interfaceSwitchInlineStatus : null;
 	const sessionTabActions = (
-		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
+		<SessionActionsMenu inlineStatus={isCloudSession ? undefined : interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
@@ -1154,7 +1229,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			className="session-topbar-session-chrome flex shrink-0 items-center"
 			data-compact-session-chrome="false"
 		>
-			<ShellTopbar embedded />
+			<ShellTopbar
+				embedded
+				sessionAction={cloudInterfaceSwitchAction}
+			/>
 		</div>
 	);
 
@@ -1446,7 +1524,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			inspectorMotionReadyRef.current = false;
 		};
 	}, [hasInspector]);
-	if (!session && !workspaceQuery.isLoading) {
+	// A Cloud tab may arrive before the paginated workspace cache contains its
+	// row. Keep the session surface (and its switch control) mounted while the
+	// direct control-plane lookup is in flight; only show "not found" after
+	// both sources have settled.
+	const cloudSessionResolving = Boolean(
+		cloudOrgId &&
+		(isCloudRoute || !listedSession) &&
+		cloudRouteSession.isLoading,
+	);
+	if (!session && !workspaceQuery.isLoading && !cloudSessionResolving) {
 		return (
 			<div className="grid h-full place-items-center p-6 text-center font-mono text-xs text-passive">
 				{t("session.notFound")}
@@ -1530,7 +1617,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								className={cn("h-full min-h-0", fileTabs.activePath && "invisible pointer-events-none")}
 								inert={fileTabs.activePath ? true : undefined}
 							>
-							{showChatSurface ? (
+							{showChatSurface && session?.cloud ? (
+								<CloudSessionChatSurface
+									controllerTransitioning={chatControllerTransitioning}
+									headerActions={sessionHeaderActions}
+									newWorkDisabled={chatNewWorkDisabled}
+									onConversationWorkChange={handleConversationWorkChange}
+									session={session}
+									sessionTabAction={sessionTabActions}
+								/>
+							) : showChatSurface ? (
 								<SessionChatSurface
 									key={session.id}
 									session={session}
@@ -1584,6 +1680,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									onSelectShellTerminal={selectShellTerminal}
 									reviewerTerminal={reviewerTerminal}
 									session={session}
+									terminalGeneration={terminalGeneration}
 									shellTerminals={shellTerminals}
 									terminalTarget={routedTerminalTarget}
 									theme={theme}
@@ -1605,7 +1702,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									<SessionFileWorkspace annotation={fileAnnotation} path={fileTabs.activePath} sessionId={sessionId} />
 								</div>
 							) : null}
-							{interfaceSwitch.startError && !interfaceSwitchDialogOpen ? (
+							{cloudEnabled && interfaceSwitch.startError && !interfaceSwitchDialogOpen ? (
 								<div role="alert" className="absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-3 rounded-lg border border-destructive/40 bg-popover px-3 py-2.5 text-xs shadow-md">
 									<div className="min-w-0 flex-1">
 										<p className="font-medium">{t("session.interfaceSwitchFailed")}</p>
@@ -1614,7 +1711,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									<button type="button" aria-label={t("session.dismissInterfaceSwitchError")} className="shrink-0 rounded px-1 text-muted-foreground hover:text-foreground" onClick={interfaceSwitch.resetStartError}>{t("session.dismissInterfaceSwitchNotice")}</button>
 								</div>
 							) : null}
-							{!interfaceSwitch.startError && interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) ? (
+							{cloudEnabled && !interfaceSwitch.startError && interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) ? (
 								<SessionInterfaceTransitionNotice
 									transition={interfaceSwitch.transition}
 									dismissing={interfaceSwitch.acknowledgingNotice}
@@ -1674,22 +1771,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			</div>
 			{hasInspector ? (
 				<div className="session-pinned-actions" data-testid="session-pinned-actions" style={noDragStyle}>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<TopbarButton
-								aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
-								aria-pressed={isInspectorOpen}
-								onClick={handleToggleInspector}
-								style={noDragStyle}
-								variant="icon"
-							>
-								<PanelRight className="size-icon-md" aria-hidden="true" />
-							</TopbarButton>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">
-							{isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
-						</TooltipContent>
-					</Tooltip>
+					<TopbarButton
+						aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
+						aria-pressed={isInspectorOpen}
+						onClick={handleToggleInspector}
+						style={noDragStyle}
+						title={isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
+						variant="icon"
+					>
+						<PanelRight className="size-icon-md" aria-hidden="true" />
+					</TopbarButton>
 					{/* Keep the global notification action trailing at the window edge. */}
 					<NotificationCenter style={noDragStyle} />
 				</div>

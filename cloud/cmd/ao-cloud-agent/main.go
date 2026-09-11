@@ -114,6 +114,21 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	if !ok {
 		return nil
 	}
+	// Provider hooks can also run for headless commands when a workspace
+	// config installs them. Mark only the interactive command so the control
+	// plane can safely accept a late TUI stop after a mode commit without
+	// duplicating Chat controller events.
+	activity.SourceInterface = strings.TrimSpace(os.Getenv("AO_CLOUD_SOURCE_INTERFACE"))
+	// Codex's interactive Stop hook reports lifecycle state but does not
+	// reliably include the final agent reply. The native rollout is durable in
+	// CODEX_HOME, however, so project its latest assistant message before
+	// reporting the hook. This is what lets ChatUI show a reply produced in the
+	// native TUI rather than only the user's terminal prompt.
+	if activity.Harness == "codex" && activity.Event == "stop" && activity.LatestAssistantUpdate == "" {
+		activity.LatestAssistantUpdate = latestCodexAssistantMessage(
+			strings.TrimSpace(os.Getenv("CODEX_HOME")), activity.AgentSessionID,
+		)
+	}
 	hookCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	_ = c.request(

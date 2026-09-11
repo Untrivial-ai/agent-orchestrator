@@ -548,6 +548,9 @@ func createSessionTx(
 	if input.DeniedCommands == nil {
 		input.DeniedCommands = []string{}
 	}
+	if !input.Interface.Valid() {
+		input.Interface = domain.SessionInterfaceTUI
+	}
 	var session domain.Session
 
 	// Serialize quota allocation before inserting any rows that reference the
@@ -622,13 +625,13 @@ func createSessionTx(
 		`WITH generated AS (SELECT gen_random_uuid() AS id)
 		INSERT INTO ao_sessions (
 			id, org_id, project_id, kind, harness, display_name, branch,
-			prompt, mode, denied_commands, parent_session_id, created_by_user_id
+			prompt, mode, denied_commands, interface, parent_session_id, created_by_user_id
 		)
 		SELECT id, $1, $2, $3, $4, $5, 'ao/' || left(id::text, 8),
-			$6, $7, $8, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid
+			$6, $7, $8, $9, NULLIF($10, '')::uuid, NULLIF($11, '')::uuid
 		FROM generated
-		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
-			mode, denied_commands, activity_state, is_terminated,
+		RETURNING id, org_id, project_id, kind, harness, model, reasoning_effort, display_name, branch,
+			mode, denied_commands, interface, activity_state, is_terminated,
 			false, '', '', created_at, updated_at`,
 		orgID,
 		input.ProjectID,
@@ -638,6 +641,7 @@ func createSessionTx(
 		input.Prompt,
 		input.Mode,
 		input.DeniedCommands,
+		input.Interface,
 		parentSessionID,
 		actorUserID,
 	), &session)
@@ -830,8 +834,8 @@ func (s *Store) GetSession(
 
 const sessionSelect = `
 	SELECT session.id, session.org_id, session.project_id, session.kind,
-		session.harness, session.display_name, session.branch,
-		session.mode, session.denied_commands,
+		session.harness, session.model, session.reasoning_effort, session.display_name, session.branch,
+		session.mode, session.denied_commands, session.interface,
 		CASE
 			WHEN EXISTS (
 				SELECT 1 FROM ao_turns turn
@@ -892,16 +896,20 @@ func scanProject(row scanner, project *domain.Project) error {
 
 func scanSession(row scanner, session *domain.Session) error {
 	var activity string
+	var interfaceValue string
 	err := row.Scan(
 		&session.ID,
 		&session.OrgID,
 		&session.ProjectID,
 		&session.Kind,
 		&session.Harness,
+		&session.Model,
+		&session.ReasoningEffort,
 		&session.DisplayName,
 		&session.Branch,
 		&session.Mode,
 		&session.DeniedCommands,
+		&interfaceValue,
 		&activity,
 		&session.IsTerminated,
 		&session.RuntimeConnected,
@@ -910,6 +918,7 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.CreatedAt,
 		&session.UpdatedAt,
 	)
+	session.Interface = domain.SessionInterface(interfaceValue).Normalized()
 	session.ActivityState = contract.ActivityState(activity)
 	return err
 }

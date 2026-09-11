@@ -54,10 +54,13 @@ type sessionResponse struct {
 	ProjectID        string    `json:"projectId"`
 	Kind             string    `json:"kind"`
 	Harness          string    `json:"harness"`
+	Model            string    `json:"model,omitempty"`
+	ReasoningEffort  string    `json:"reasoningEffort,omitempty"`
 	DisplayName      string    `json:"displayName"`
 	Branch           string    `json:"branch"`
 	Mode             string    `json:"mode"`
 	DeniedCommands   []string  `json:"deniedCommands"`
+	InterfaceMode    string    `json:"interfaceMode"`
 	ActivityState    string    `json:"activityState"`
 	Status           string    `json:"status"`
 	RuntimeConnected bool      `json:"runtimeConnected"`
@@ -515,10 +518,13 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		ProjectID:        session.ProjectID,
 		Kind:             session.Kind,
 		Harness:          session.Harness,
+		Model:            session.Model,
+		ReasoningEffort:  session.ReasoningEffort,
 		DisplayName:      session.DisplayName,
 		Branch:           session.Branch,
 		Mode:             session.Mode,
 		DeniedCommands:   nonNilStrings(session.DeniedCommands),
+		InterfaceMode:    string(session.Interface),
 		ActivityState:    string(session.ActivityState),
 		Status:           string(session.Status(time.Now().UTC(), prs)),
 		RuntimeConnected: session.RuntimeConnected,

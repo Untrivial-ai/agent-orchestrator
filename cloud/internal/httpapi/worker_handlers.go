@@ -119,18 +119,21 @@ func (s *Server) workerBootstrap(w http.ResponseWriter, r *http.Request) {
 		ExpiresIn:   int(s.workerTokenTTL().Seconds()),
 		SessionID:   ticket.SessionID,
 		Launch: worker.LaunchContext{
-			SessionID:      launch.SessionID,
-			ProjectID:      launch.ProjectID,
-			Kind:           launch.Kind,
-			Harness:        launch.Harness,
-			DisplayName:    launch.DisplayName,
-			Branch:         launch.Branch,
-			Prompt:         launch.Prompt,
-			AgentSessionID: launch.AgentSessionID,
-			Mode:           launch.Mode,
-			DeniedCommands: launch.DeniedCommands,
-			RepositoryURL:  launch.RepositoryURL,
-			DefaultBranch:  launch.DefaultBranch,
+			SessionID:       launch.SessionID,
+			ProjectID:       launch.ProjectID,
+			Kind:            launch.Kind,
+			Harness:         launch.Harness,
+			Model:           launch.Model,
+			ReasoningEffort: launch.ReasoningEffort,
+			DisplayName:     launch.DisplayName,
+			Branch:          launch.Branch,
+			Prompt:          launch.Prompt,
+			AgentSessionID:  launch.AgentSessionID,
+			Mode:            launch.Mode,
+			DeniedCommands:  launch.DeniedCommands,
+			Interface:       string(launch.Interface),
+			RepositoryURL:   launch.RepositoryURL,
+			DefaultBranch:   launch.DefaultBranch,
 		},
 	})
 }
@@ -543,6 +546,14 @@ func (s *Server) workerEvent(w http.ResponseWriter, r *http.Request) {
 			s.writeWorkerStoreError(w, r, err)
 			return
 		}
+		if err := s.store.AppendInteractiveConversationFacts(
+			r.Context(), claims.OrgID, claims.SessionID, activity.Event,
+			activity.SourceInterface, activity.LatestUserPrompt,
+			activity.LatestAssistantUpdate,
+		); err != nil {
+			s.writeWorkerStoreError(w, r, err)
+			return
+		}
 		s.appendSessionProjectionEvent(
 			r.Context(), claims.OrgID, claims.SessionID, input.Type, activity,
 		)
@@ -626,6 +637,8 @@ func (s *Server) workerClaimTurn(w http.ResponseWriter, r *http.Request) {
 			Mode:            turn.Mode,
 			DeniedCommands:  turn.DeniedCommands,
 			Harness:         turn.Harness,
+			Model:           turn.Model,
+			ReasoningEffort: turn.ReasoningEffort,
 			Attempt:         turn.Attempt,
 			CancelRequested: turn.CancelRequested,
 			AgentSessionID:  turn.AgentSessionID,

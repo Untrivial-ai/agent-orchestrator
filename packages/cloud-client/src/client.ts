@@ -26,6 +26,9 @@ import type {
   RedactedProviderConnection,
   RequestOptions,
   Session,
+  SessionInterfaceTransition,
+  SessionInterfaceTransitionStatus,
+  StartSessionInterfaceTransitionInput,
   SessionPage,
   SessionPullRequests,
   SessionReviewState,
@@ -317,6 +320,64 @@ export class CloudClient {
     return this.request(
       this.orgPath(orgId, `/sessions/${encodeURIComponent(sessionId)}`),
       options,
+    );
+  }
+
+  getSessionInterfaceTransition(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<SessionInterfaceTransitionStatus> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition`,
+      ),
+      options,
+    );
+  }
+
+  startSessionInterfaceTransition(
+    orgId: string,
+    sessionId: string,
+    input: StartSessionInterfaceTransitionInput,
+    options: RequestOptions = {},
+  ): Promise<{ transition: SessionInterfaceTransition }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition`,
+      ),
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  cancelSessionInterfaceTransition(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition`,
+      ),
+      { method: "DELETE", signal: options.signal },
+    );
+  }
+
+  acknowledgeSessionInterfaceTransitionNotice(
+    orgId: string,
+    sessionId: string,
+    transitionId: string,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition/${encodeURIComponent(transitionId)}/notice-acknowledgement`,
+      ),
+      { method: "PUT", signal: options.signal },
     );
   }
 

@@ -72,6 +72,9 @@ type Config struct {
 	// replaces the input/output polling loops. Off means the polled
 	// store-and-forward behavior, byte for byte.
 	TerminalStreamEnabled bool
+	// InterfaceHandoffInterval is how often the interface-transition
+	// coordinator converges durable controller handoffs.
+	InterfaceHandoffInterval time.Duration
 
 	NodeOpsBaseURL       string
 	NodeOpsAPIKey        string
@@ -184,6 +187,10 @@ func Load() (Config, error) {
 		IdlePauseInterval:      durationEnv("AO_CLOUD_IDLE_PAUSE_INTERVAL", defaultIdlePauseInterval),
 		IdlePauseThreshold:     durationEnv("AO_CLOUD_IDLE_PAUSE_THRESHOLD", defaultIdlePauseThreshold),
 		PRStatusPollInterval:   durationEnv("AO_CLOUD_PR_STATUS_POLL_INTERVAL", defaultPRStatusPollInterval),
+		// Keep the durable coordinator responsive after an API request. Individual
+		// worker commands are already polled at 100 ms, so a two-second outer tick
+		// only adds visible dead time before a handoff starts.
+		InterfaceHandoffInterval: durationEnv("AO_CLOUD_INTERFACE_HANDOFF_INTERVAL", 500*time.Millisecond),
 
 		NodeOpsBaseURL:         strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_BASE_URL")),
 		NodeOpsAPIKey:          strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_API_KEY")),
@@ -390,6 +397,9 @@ func Load() (Config, error) {
 	}
 	if cfg.PRStatusPollInterval <= 0 {
 		return Config{}, errors.New("AO_CLOUD_PR_STATUS_POLL_INTERVAL must be positive")
+	}
+	if cfg.InterfaceHandoffInterval <= 0 {
+		return Config{}, errors.New("AO_CLOUD_INTERFACE_HANDOFF_INTERVAL must be positive")
 	}
 	if cfg.MaxSandboxesPerOrg < 1 {
 		return Config{}, errors.New("AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG must be at least 1")

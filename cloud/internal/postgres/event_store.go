@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -34,6 +35,8 @@ func (s *Store) SendMessage(
 	sessionID string,
 	idempotencyKey string,
 	text string,
+	model string,
+	reasoningEffort string,
 ) (domain.ClientEvent, error) {
 	var event domain.ClientEvent
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
@@ -42,7 +45,7 @@ func (s *Store) SendMessage(
 		}
 		var err error
 		event, err = sendMessageTx(
-			ctx, tx, orgID, sessionID, idempotencyKey, text, principal.UserID, "",
+			ctx, tx, orgID, sessionID, idempotencyKey, text, model, reasoningEffort, principal.UserID, "",
 			access.ModeCap, access.DeniedCommands,
 		)
 		return err
@@ -53,11 +56,11 @@ func (s *Store) SendMessage(
 func sendMessageTx(
 	ctx context.Context,
 	tx pgx.Tx,
-	orgID, sessionID, idempotencyKey, text, actorUserID, actorSessionID string,
+	orgID, sessionID, idempotencyKey, text, model, reasoningEffort, actorUserID, actorSessionID string,
 	modeCap string,
 	deniedCommands []string,
 ) (domain.ClientEvent, error) {
-	payload, err := json.Marshal(map[string]string{"text": text})
+	payload, err := json.Marshal(map[string]string{"text": text, "model": strings.TrimSpace(model), "reasoningEffort": strings.TrimSpace(reasoningEffort)})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -81,7 +84,7 @@ func sendMessageTx(
 	if err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
 	}
-	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, modeCap, deniedCommands)
+	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, model, reasoningEffort, modeCap, deniedCommands)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -226,6 +229,81 @@ func (s *Store) AppendSessionEvent(
 	return event, nil
 }
 
+// AppendInteractiveConversationFacts projects provider hook facts from the
+// native TUI into the same durable Chat event stream used by ChatUI. The
+// source marker, rather than the session's current interface, is authoritative:
+// a TUI stop hook can arrive after the coordinator commits the target Chat
+// interface. Headless Chat commands leave the marker empty and already append
+// their own typed events, so they must not be projected a second time.
+func (s *Store) AppendInteractiveConversationFacts(
+	ctx context.Context,
+	orgID, sessionID, eventType, sourceInterface, userPrompt, assistantUpdate string,
+) error {
+	if sourceInterface != "" && sourceInterface != "tui" {
+		return nil
+	}
+	if eventType != "user-prompt-submit" && eventType != "stop" {
+		return nil
+	}
+	text := userPrompt
+	clientEventType := "chat.user_message"
+	if eventType == "stop" {
+		text = assistantUpdate
+		clientEventType = "chat.assistant_delta"
+	}
+	if text == "" {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return err
+	}
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if sourceInterface == "" {
+			// Workers built before sourceInterface was added did not tag their
+			// hooks. Preserve their active-TUI behavior during a rolling deploy,
+			// while still suppressing inherited headless hooks once Chat is active.
+			var interfaceValue string
+			if err := tx.QueryRow(ctx,
+				`SELECT interface FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
+				orgID, sessionID,
+			).Scan(&interfaceValue); errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			} else if err != nil {
+				return err
+			} else if interfaceValue != "tui" {
+				return nil
+			}
+		}
+		var sessionExists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM ao_sessions
+				WHERE org_id = $1 AND id = $2 AND is_terminated = false
+			)`,
+			orgID, sessionID,
+		).Scan(&sessionExists); err != nil {
+			return err
+		} else if !sessionExists {
+			return ErrNotFound
+		}
+		var sequence int64
+		if err := tx.QueryRow(ctx,
+			`UPDATE ao_sessions SET next_sequence = next_sequence + 1, updated_at = now()
+			 WHERE org_id = $1 AND id = $2 RETURNING next_sequence - 1`,
+			orgID, sessionID,
+		).Scan(&sequence); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO ao_events (org_id, session_id, sequence, type, payload)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			orgID, sessionID, sequence, clientEventType, payload,
+		)
+		return err
+	})
+}
+
 // appendUserMessage records a user message and, depending on how the
 // session is currently running, either injects it directly into an
 // already-open interactive agent terminal or queues it as a new turn.
@@ -242,12 +320,28 @@ func appendUserMessage(
 	orgID string,
 	sessionID string,
 	text string,
+	model string,
+	reasoningEffort string,
 	modeCap string,
 	deniedCommands []string,
 ) (domain.ClientEvent, error) {
 	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text)
 	if err != nil {
 		return domain.ClientEvent{}, err
+	}
+	// Persist the ChatUI selection before checking for a live terminal. During
+	// handoff there is a short window where the old terminal row can still be
+	// open even though ChatUI is already accepting input. The message may be
+	// routed to that terminal, but the selected model must still be durable for
+	// the next TUI rebuild.
+	if strings.TrimSpace(model) != "" {
+		if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET model = $3, reasoning_effort = $4, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, strings.TrimSpace(model), strings.TrimSpace(reasoningEffort)); err != nil {
+			return domain.ClientEvent{}, err
+		}
+	} else if strings.TrimSpace(reasoningEffort) != "" {
+		if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET reasoning_effort = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, strings.TrimSpace(reasoningEffort)); err != nil {
+			return domain.ClientEvent{}, err
+		}
 	}
 	var terminalID string
 	var workerEpoch int64
@@ -259,6 +353,11 @@ func appendUserMessage(
 		JOIN ao_sessions session
 			ON session.org_id = terminal.org_id AND session.id = terminal.session_id
 		WHERE terminal.org_id = $1 AND terminal.session_id = $2 AND terminal.kind = 'agent'
+		  -- A terminal may still be recorded as open while its PTY is winding
+		  -- down during a TUI -> Chat handoff. Once Chat is committed, it must
+		  -- never receive new input: that would strand a ChatUI message in the
+		  -- old terminal instead of creating a durable worker turn.
+		  AND session.interface = 'tui'
 		  AND terminal.state = 'open' AND terminal.expires_at > now()
 		ORDER BY terminal.created_at DESC
 		LIMIT 1`,

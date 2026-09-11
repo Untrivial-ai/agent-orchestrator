@@ -45,7 +45,13 @@ func Migrate(ctx context.Context, databaseURL string) error {
 	if err := goose.SetDialect("postgres"); err != nil {
 		return err
 	}
-	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+	// A restored migration can land below the highest applied version (e.g.
+	// 00032 behind 00035/00036 after a branch merge). Without allow-missing
+	// goose aborts with "found N missing migrations before current version"
+	// and never applies the fix. 00032's Up is a pure constraint rewrite with
+	// a superset allowlist, so applying it out of order only adds allowed
+	// kinds and cannot change any already-granted state.
+	if err := goose.UpContext(ctx, db, "migrations", goose.WithAllowMissing()); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 	return nil

@@ -124,6 +124,16 @@ func TestBuildRestoreCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "claude restore model",
+			cfg: RestoreConfig{
+				Harness:  HarnessClaudeCode,
+				Binary:   "claude",
+				Metadata: map[string]string{MetadataKeyAgentSessionID: "claude-1"},
+				Model:    "claude-sonnet-4-5",
+			},
+			want: []string{"claude", "--model", "claude-sonnet-4-5", "--resume", "claude-1"},
+		},
+		{
 			name: "codex metadata identity",
 			cfg: RestoreConfig{
 				Harness:    HarnessCodex,

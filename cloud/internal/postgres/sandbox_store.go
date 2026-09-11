@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
@@ -688,11 +689,13 @@ func (s *Store) WorkerLaunchSpec(
 ) (domain.WorkerLaunch, error) {
 	launch := domain.WorkerLaunch{OrgID: orgID}
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var interfaceValue string
 		err := tx.QueryRow(
 			ctx,
-			`SELECT session.id, session.project_id, session.kind, session.harness,
+			`SELECT session.id, session.project_id, session.kind, session.harness, session.model, session.reasoning_effort,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
+				session.interface,
 				project.repository_url, project.default_branch
 			FROM ao_sessions session
 			JOIN ao_projects project ON project.id = session.project_id
@@ -704,12 +707,15 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.ProjectID,
 			&launch.Kind,
 			&launch.Harness,
+			&launch.Model,
+			&launch.ReasoningEffort,
 			&launch.DisplayName,
 			&launch.Branch,
 			&launch.Prompt,
 			&launch.AgentSessionID,
 			&launch.Mode,
 			&launch.DeniedCommands,
+			&interfaceValue,
 			&launch.RepositoryURL,
 			&launch.DefaultBranch,
 		)
@@ -719,6 +725,7 @@ func (s *Store) WorkerLaunchSpec(
 		if err != nil {
 			return fmt.Errorf("load worker launch spec: %w", err)
 		}
+		launch.Interface = domain.SessionInterface(interfaceValue).Normalized()
 		return nil
 	})
 	if err != nil {
@@ -852,17 +859,21 @@ func (s *Store) SetWorkerActivity(
 			return ErrStaleWorker
 		}
 		var currentState, blockedToolName, blockedToolUseID string
+		var sessionInterface domain.SessionInterface
 		if err := tx.QueryRow(ctx,
 			`SELECT activity_state, activity_blocked_tool_name,
-				activity_blocked_tool_use_id
+				activity_blocked_tool_use_id, interface
 			FROM ao_sessions
 			WHERE org_id = $1 AND id = $2 AND is_terminated = false
 			FOR UPDATE`,
 			orgID, sessionID,
-		).Scan(&currentState, &blockedToolName, &blockedToolUseID); errors.Is(err, pgx.ErrNoRows) {
+		).Scan(&currentState, &blockedToolName, &blockedToolUseID, &sessionInterface); errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return fmt.Errorf("load worker activity: %w", err)
+		}
+		if !shouldApplyWorkerActivity(sessionInterface, activity) {
+			return nil
 		}
 		if activity.State == "" {
 			tag, err := tx.Exec(ctx,
@@ -906,6 +917,23 @@ func (s *Store) SetWorkerActivity(
 		}
 		return nil
 	})
+}
+
+// shouldApplyWorkerActivity ignores lifecycle hooks inherited by a headless
+// Chat turn. A chat controller is short-lived by design, so its Claude
+// session-end hook must not turn the durable AO session into "exited" after
+// every message. Interactive TUI facts remain authoritative, including a
+// late TUI stop emitted while the handoff is committing. Untagged identity
+// facts are also retained because they carry the native conversation ID used
+// to rebuild the TUI after a Chat -> TUI handoff.
+func shouldApplyWorkerActivity(sessionInterface domain.SessionInterface, activity worker.ActivityEvent) bool {
+	if activity.SourceInterface == "tui" {
+		return true
+	}
+	if sessionInterface.Normalized() == domain.SessionInterfaceTUI {
+		return true
+	}
+	return activity.State == "" && strings.TrimSpace(activity.AgentSessionID) != ""
 }
 
 func matchingBlockedTool(

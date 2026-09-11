@@ -14,6 +14,10 @@ test("untouched Chat reports interface refusal and can dismiss and retry @T0", a
 	});
 	await page.route("http://127.0.0.1:8080/api/v1/**", async (route) => {
 		const pathname = new URL(route.request().url()).pathname;
+		if (pathname === "/api/v1/settings") {
+			await route.fulfill({ json: { cloudEnabled: true, localEnabled: true, chatHarnesses: ["codex"] } });
+			return;
+		}
 		if (pathname === "/api/v1/agents/readiness" || pathname === "/api/v1/agents/readiness/ensure") {
 			await route.fulfill({
 				json: {

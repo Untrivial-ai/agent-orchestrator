@@ -17,7 +17,11 @@ export AO_CLOUD_ROLLBACK_ALARM="ao-cloud-dev-target-5xx"
 export AO_CLOUD_RUNTIME_DATABASE_USER="ao_dev_app"
 export AO_CLOUD_WORKER_SECRET_ID="ao-cloud/dev/worker"
 export AO_CLOUD_PROVIDER_SECRET_ID="ao-cloud/dev/provider-secret-key"
-export AO_CLOUD_PUBLIC_URL="https://dev-api.aoagents.dev"
+export AO_CLOUD_NODEOPS_SECRET_ID="ao-cloud/dev/nodeops"
+# Until dev-api.aoagents.dev DNS + certificate exist, workers reach the dev
+# control plane through the ALB listener on :8443 (routes by port, valid
+# staging-api certificate). Override once DNS lands.
+export AO_CLOUD_PUBLIC_URL="${AO_CLOUD_PUBLIC_URL:-https://staging-api.aoagents.dev:8443}"
 export AO_CLOUD_DEPLOY_ENVIRONMENT="dev"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -55,7 +55,7 @@ type Store interface {
 	CreateSession(context.Context, domain.Principal, string, string, int, domain.CreateSession) (domain.Session, error)
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
-	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
+	SendMessage(context.Context, domain.Principal, string, string, string, string, string, string) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
 	WakePausedSessions(context.Context, domain.Principal, string) (int64, error)
@@ -63,8 +63,12 @@ type Store interface {
 	WorkerLaunchSpec(context.Context, string, string) (domain.WorkerLaunch, error)
 	RegisterWorkerBootstrap(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	WorkerConnectionCurrent(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (bool, error)
+	WorkerAgentSessionID(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error)
+	WorkerSessionModel(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error)
+	WorkerSessionReasoningEffort(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error)
 	MarkWorkerSeen(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	SetWorkerActivity(ctx context.Context, orgID, sessionID, workerID string, epoch int64, activity worker.ActivityEvent) error
+	AppendInteractiveConversationFacts(ctx context.Context, orgID, sessionID, eventType, sourceInterface, userPrompt, assistantUpdate string) error
 	AppendSessionEvent(ctx context.Context, orgID, sessionID, eventType string, payload json.RawMessage) (domain.ClientEvent, error)
 	ClaimWorkerTurn(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerTurn, bool, error)
 	RequestTurnCancellation(ctx context.Context, principal domain.Principal, orgID, sessionID, turnID string) error
@@ -90,7 +94,7 @@ type Store interface {
 	CloseTerminal(context.Context, domain.TerminalSession) error
 	AppendTerminalOutput(context.Context, string, string, string, string, int64, []byte) (int64, error)
 	ClaimTerminalInput(context.Context, string, string, string, int64, string, time.Duration) (domain.WorkerRequest, bool, error)
-	MarkTerminalExited(context.Context, string, string, string, string, int64, int) error
+	MarkTerminalExited(context.Context, string, string, string, string, int64, int, bool) error
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
 	ListTerminalOutput(context.Context, domain.TerminalSession, int64, int) ([]domain.TerminalOutput, string, error)
 	ListPullRequestsBySession(context.Context, domain.Principal, string, string) ([]domain.PullRequest, error)
@@ -105,6 +109,12 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
+	GetSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, error)
+	StartSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterface, domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string) (domain.SessionInterfaceTransition, error)
+	GetActiveSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
+	GetLatestRelevantSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
+	AdvanceSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterfaceTransitionPhase, domain.SessionInterfaceTransitionPhase, string, string, string) error
+	AcknowledgeSessionInterfaceTransitionNotice(context.Context, domain.Principal, string, string, string) error
 }
 
 // WorkerTokens issues and verifies the short-lived credentials sandbox workers
@@ -298,6 +308,7 @@ func New(options Options) *Server {
 			router.Use(server.workerAuth)
 			router.Post("/worker/heartbeat", server.workerHeartbeat)
 			router.Post("/worker/events", server.workerEvent)
+			router.Get("/worker/session", server.workerSession)
 			router.Post("/worker/turns/claim", server.workerClaimTurn)
 			router.Get("/worker/turns/{turnId}/cancellation", server.workerTurnCancellation)
 			router.Post("/worker/turns/{turnId}/complete", server.workerCompleteTurn)
@@ -369,6 +380,10 @@ func New(options Options) *Server {
 			router.Get("/sessions/{sessionId}/workspace/diff", server.getWorkspaceDiff)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)
 			router.Get("/sessions/{sessionId}/reviews", server.getSessionReviewState)
+			router.Get("/sessions/{sessionId}/interface-transition", server.getSessionInterfaceTransition)
+			router.Post("/sessions/{sessionId}/interface-transition", server.startSessionInterfaceTransition)
+			router.Delete("/sessions/{sessionId}/interface-transition", server.cancelSessionInterfaceTransition)
+			router.Put("/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement", server.acknowledgeSessionInterfaceTransitionNotice)
 			router.Get("/members", server.listOrgMembers)
 			router.Patch("/members/{userId}", server.updateOrgMemberRole)
 			router.Get("/invitations", server.listOrgInvitations)

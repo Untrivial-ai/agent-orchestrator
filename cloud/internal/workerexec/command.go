@@ -99,6 +99,7 @@ func (b HarnessBuilder) BuildInteractive(
 			Binary:        binary,
 			SessionID:     launch.SessionID,
 			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
+			Model:         launch.Model,
 			WorkspacePath: workspace,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
@@ -114,6 +115,7 @@ func (b HarnessBuilder) BuildInteractive(
 			SessionID:     launch.SessionID,
 			WorkspacePath: workspace,
 			Prompt:        launch.Prompt,
+			Model:         launch.Model,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
 			Permission:    permission,
@@ -122,11 +124,18 @@ func (b HarnessBuilder) BuildInteractive(
 	if err != nil {
 		return Command{}, err
 	}
+	if launch.Harness == "codex" && strings.TrimSpace(launch.ReasoningEffort) != "" {
+		argv = appendCodexEffort(argv, strings.TrimSpace(launch.ReasoningEffort))
+	}
 	command := Command{
 		Path: argv[0],
 		Args: argv[1:],
 		Dir:  workspace,
-		Env:  map[string]string{},
+		// This marker lets the hook bridge distinguish interactive TUI facts
+		// from any provider hooks a headless Chat invocation may inherit from
+		// the workspace. It also survives a TUI -> Chat handoff: the final stop
+		// hook can arrive after the control plane commits the new interface.
+		Env: map[string]string{"AO_CLOUD_SOURCE_INTERFACE": "tui"},
 	}
 	if err := b.configureCredential(&command, launch.Harness, credential); err != nil {
 		if command.Cleanup != nil {
@@ -153,20 +162,34 @@ func (b HarnessBuilder) BuildInteractive(
 	return command, nil
 }
 
+// appendCodexEffort keeps Cloud's optional provider setting local to the Cloud
+// module; its Docker build intentionally consumes a pinned backend module.
+func appendCodexEffort(argv []string, effort string) []string {
+	for i, arg := range argv {
+		if arg == "--" {
+			return append(argv[:i], append([]string{"-c", "model_reasoning_effort=" + effort}, argv[i:]...)...)
+		}
+	}
+	return append(argv, "-c", "model_reasoning_effort="+effort)
+}
+
 func (b HarnessBuilder) interactiveRestoreIdentity(
 	launch worker.LaunchContext,
 ) string {
 	if launch.Harness != "claude-code" {
 		return strings.TrimSpace(launch.AgentSessionID)
 	}
-	if identity := strings.TrimSpace(launch.AgentSessionID); b.claudeConversationAvailable(identity) {
-		return identity
+	// A newly provisioned worker has no native conversation yet. Do not infer
+	// one from the deterministic Claude session id: a stale or partially
+	// created JSONL file can make Claude start with --resume for a conversation
+	// that does not exist, leaving the PTY open with no agent process/output.
+	// The control plane's agentSessionID is populated only after a real native
+	// conversation has been observed, so it is the only safe restore hint here.
+	identity := strings.TrimSpace(launch.AgentSessionID)
+	if identity == "" || !b.claudeConversationAvailable(identity) {
+		return ""
 	}
-	identity := agentruntime.ClaudeSessionID(launch.SessionID)
-	if b.claudeConversationAvailable(identity) {
-		return identity
-	}
-	return ""
+	return identity
 }
 
 func (b HarnessBuilder) claudeConfigDir() (string, error) {
@@ -383,7 +406,10 @@ func updateJSONFile(path string, update func(map[string]any)) error {
 }
 
 func claudeArgs(turn worker.Turn) ([]string, error) {
-	args := []string{"--print", "--output-format", "stream-json"}
+	// Claude Code hard-errors on `--print --output-format stream-json` without
+	// --verbose. Streamed assistant/result events are also the only machine
+	// readable projection source for the Chat UI, so both flags are load-bearing.
+	args := []string{"--print", "--output-format", "stream-json", "--verbose"}
 	switch turn.Mode {
 	case "read-only":
 		args = append(args, "--permission-mode", "plan")
@@ -412,6 +438,9 @@ func claudeArgs(turn worker.Turn) ([]string, error) {
 	if turn.AgentSessionID != "" {
 		args = append(args, "--resume", turn.AgentSessionID)
 	}
+	if strings.TrimSpace(turn.Model) != "" {
+		args = append(args, "--model", strings.TrimSpace(turn.Model))
+	}
 	return append(args, turn.Prompt), nil
 }
 
@@ -419,19 +448,35 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	if len(turn.DeniedCommands) > 0 {
 		return nil, fmt.Errorf("%w: Codex has no exact denied-command primitive", ErrUnsupportedPolicy)
 	}
-	args := []string{"exec", "--json", "--skip-git-repo-check"}
+	// Match the interactive Codex policy for the same Cloud session. In
+	// particular, a trusted TUI runs in YOLO mode; launching headless Chat with
+	// only `--sandbox danger-full-access` can leave Codex waiting for an
+	// approval that no terminal is available to answer.
+	args := []string{
+		"exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-hook-trust",
+	}
 	switch turn.Mode {
 	case "read-only":
-		args = append(args, "--sandbox", "read-only")
+		args = append(args, "--sandbox", "read-only", "--ask-for-approval", "on-request")
 	case "standard":
-		args = append(args, "--sandbox", "workspace-write")
+		args = append(args,
+			"--sandbox", "workspace-write",
+			"--ask-for-approval", "on-request",
+			"-c", `approvals_reviewer="auto_review"`,
+		)
 	case "trusted":
-		args = append(args, "--sandbox", "danger-full-access")
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "resume", turn.AgentSessionID)
 	}
-	return append(args, turn.Prompt), nil
+	if strings.TrimSpace(turn.Model) != "" {
+		args = append(args, "--model", strings.TrimSpace(turn.Model))
+	}
+	if strings.TrimSpace(turn.ReasoningEffort) != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strings.TrimSpace(turn.ReasoningEffort))
+	}
+	return append(args, "--", turn.Prompt), nil
 }
 
 func cursorArgs(turn worker.Turn) ([]string, error) {
@@ -447,6 +492,9 @@ func cursorArgs(turn worker.Turn) ([]string, error) {
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "--resume", turn.AgentSessionID)
+	}
+	if strings.TrimSpace(turn.Model) != "" {
+		args = append(args, "--model", strings.TrimSpace(turn.Model))
 	}
 	return append(args, turn.Prompt), nil
 }
