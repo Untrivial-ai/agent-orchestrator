@@ -27,13 +27,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const (
@@ -42,14 +46,40 @@ const (
 	// gooseModeEnvVar is the only permission-control surface Goose honors: the
 	// approval mode is read from this process env var, not from any CLI flag.
 	gooseModeEnvVar = "GOOSE_MODE"
+
+	// Goose identity probes use a native exec.Cmd. WaitDelay bounds the small
+	// pipe-drain window left when a misbehaving candidate leaves stdout/stderr
+	// open after its direct process exits; broader process supervision belongs
+	// outside this issue.
+	gooseIdentityWaitDelay = 100 * time.Millisecond
 )
 
-// Plugin is the Goose agent adapter. It is safe for concurrent use; the binary
-// path is resolved once and cached under binaryMu.
+// gooseIdentityProbeTimeout bounds the adapter-owned --help identity probe.
+// ResolveBinary's caller can impose a shorter deadline, including the
+// readiness coordinator's installation-check timeout.
+var gooseIdentityProbeTimeout = time.Second
+
+// gooseIdentityCommand is kept injectable so identity tests never need to
+// launch a real CLI. Production uses direct native execution; in particular,
+// it does not wrap Windows candidates in cmd.exe.
+var gooseIdentityCommand = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+	return runGooseIdentityCommand(ctx, binary, args...)
+}
+
+func runGooseIdentityCommand(ctx context.Context, binary string, args ...string) ([]byte, error) {
+	cmd := aoprocess.CommandContext(ctx, binary, args...) //nolint:gosec // binary is resolved by binaryutil; args are static
+	cmd.WaitDelay = gooseIdentityWaitDelay
+	return cmd.CombinedOutput()
+}
+
+// Plugin is the Goose agent adapter. It is safe for concurrent use; ordinary
+// launch and presence calls reuse the binary path cached under binaryMu, while
+// explicit resolution refreshes it.
 type Plugin struct {
 	agentbase.Base
-	binaryMu       sync.Mutex
-	resolvedBinary string
+	binaryMu           sync.Mutex
+	resolvedBinary     string
+	resolvedBinaryInfo os.FileInfo
 }
 
 // New returns a ready-to-register Goose adapter.
@@ -259,36 +289,88 @@ func gooseMode(mode ports.PermissionMode) string {
 var gooseBinarySpec = binaryutil.BinarySpec{
 	Label:         "goose",
 	Names:         []string{"goose"},
-	WinNames:      []string{"goose.cmd", "goose.exe", "goose"},
+	WinNames:      []string{"goose.exe"},
 	UnixPaths:     []string{"/usr/local/bin/goose", "/opt/homebrew/bin/goose"},
 	UnixHomePaths: binaryutil.NodeManagedUnixHomePaths("goose", []string{".cargo", "bin", "goose"}),
 	NodeManaged:   true,
 	WinPaths: []binaryutil.WinPath{
-		{Base: binaryutil.WinAppData, Parts: []string{"npm", "goose.cmd"}},
 		{Base: binaryutil.WinAppData, Parts: []string{"npm", "goose.exe"}},
 		{Base: binaryutil.WinLocalAppData, Parts: []string{"Programs", "goose", "goose.exe"}},
 		{Base: binaryutil.WinHome, Parts: []string{".cargo", "bin", "goose.exe"}},
 	},
+	ValidateIdentity: isOfficialGooseBinary,
 }
 
-// ResolveGooseBinary returns the path to the goose binary, or a wrapped
-// ports.ErrAgentBinaryNotFound when it is absent.
+// ResolveGooseBinary returns the path to the official Block Goose binary, or a
+// wrapped ports.ErrAgentBinaryNotFound when no candidate passes identity
+// validation.
 func ResolveGooseBinary(ctx context.Context) (string, error) {
 	return binaryutil.ResolveBinary(ctx, gooseBinarySpec)
 }
 
-func (p *Plugin) gooseBinary(ctx context.Context) (string, error) {
-	p.binaryMu.Lock()
-	defer p.binaryMu.Unlock()
+func isOfficialGooseBinary(ctx context.Context, binary string) bool {
+	if err := ctx.Err(); err != nil || binary == "" {
+		return false
+	}
+	if runtime.GOOS == "windows" && !isNativelyLaunchableWindowsGoose(binary) {
+		return false
+	}
 
-	if p.resolvedBinary != "" {
-		return p.resolvedBinary, nil
+	probeCtx, cancel := context.WithTimeout(ctx, gooseIdentityProbeTimeout)
+	defer cancel()
+	out, err := gooseIdentityCommand(probeCtx, binary, "--help")
+	if probeCtx.Err() != nil || err != nil {
+		return false
+	}
+	return hasGooseHelpCommand(out, "session") && hasGooseHelpCommand(out, "recipe")
+}
+
+// hasGooseHelpCommand checks the command list in Goose's help output. Requiring
+// both stable Block commands avoids accepting Pressly's migration CLI, whose
+// similarly named binary advertises a different command set.
+func hasGooseHelpCommand(output []byte, command string) bool {
+	command = strings.ToLower(command)
+	for _, line := range strings.Split(strings.ToLower(string(output)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		token := strings.Trim(fields[0], "`'\"")
+		if strings.HasPrefix(token, "-") {
+			continue
+		}
+		token = strings.TrimSuffix(token, ":")
+		if token == command {
+			return true
+		}
+	}
+	return false
+}
+
+// isNativelyLaunchableWindowsGoose keeps the identity path native-only. A
+// .cmd/.bat shim needs shell-specific launch semantics and is tracked
+// separately under #3409; this adapter deliberately does not introduce them.
+func isNativelyLaunchableWindowsGoose(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".exe")
+}
+
+func (p *Plugin) gooseBinary(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	if cached := p.cachedGooseBinary(); cached != "" {
+		return cached, nil
 	}
 
 	binary, err := ResolveGooseBinary(ctx)
 	if err != nil {
 		return "", err
 	}
-	p.resolvedBinary = binary
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	p.cacheGooseBinary(binary)
 	return binary, nil
 }

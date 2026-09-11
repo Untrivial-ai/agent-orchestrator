@@ -15,7 +15,7 @@ var _ ports.AgentAuthChecker = (*Plugin)(nil)
 
 // AuthStatus returns the plugin's local authentication status.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
-	_, err := p.ResolveBinary(ctx)
+	_, err := p.gooseBinary(ctx)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
