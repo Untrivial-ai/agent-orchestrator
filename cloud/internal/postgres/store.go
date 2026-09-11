@@ -20,6 +20,9 @@ var (
 	ErrWorkerUnavailable    = errors.New("worker unavailable")
 	ErrTransportExpired     = errors.New("worker request expired")
 	ErrWorkspaceReadOnly    = errors.New("workspace is read-only")
+	// ErrProjectRepositoryExists is the one project conflict a caller can act
+	// on: the organization already has a live project for that repository.
+	ErrProjectRepositoryExists = errors.New("organization already has a project for this repository")
 )
 
 type Store struct {

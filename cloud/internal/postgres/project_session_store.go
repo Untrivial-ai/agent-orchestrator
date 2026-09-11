@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (s *Store) CreateProject(
@@ -71,7 +72,7 @@ func (s *Store) CreateProject(
 			config,
 		), &project)
 		if err != nil {
-			return normalizeConstraintError(err)
+			return normalizeProjectConstraintError(err)
 		}
 		if _, err := tx.Exec(
 			ctx,
@@ -483,7 +484,7 @@ func (s *Store) CreateGitHubScratchProject(
 			return ErrForbidden
 		}
 		if err != nil {
-			return normalizeConstraintError(err)
+			return normalizeProjectConstraintError(err)
 		}
 		input.Session.ProjectID = project.ID
 		input.Session.Kind = "orchestrator"
@@ -874,6 +875,24 @@ func getSession(
 
 type scanner interface {
 	Scan(dest ...any) error
+}
+
+// activeProjectRepositoryIndex is the partial unique index that keeps one live
+// project per repository per organization (migration 00032). Archived projects
+// are outside it, so a deleted project no longer reserves its repository URL.
+const activeProjectRepositoryIndex = "ao_projects_org_active_repository_url_key"
+
+// normalizeProjectConstraintError names the one project conflict a caller can
+// act on, so the API can say which repository is taken instead of reporting an
+// unexplained conflict. Every other violation keeps the generic mapping.
+func normalizeProjectConstraintError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == activeProjectRepositoryIndex {
+		return ErrProjectRepositoryExists
+	}
+	return normalizeConstraintError(err)
 }
 
 func scanProject(row scanner, project *domain.Project) error {
