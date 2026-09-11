@@ -245,11 +245,16 @@ func TestNotificationsAPI_MarkAllReadRejectsInvalidBody(t *testing.T) {
 }
 
 func TestNotificationsAPI_ClearAll(t *testing.T) {
-	svc := &fakeNotificationService{clearResult: notificationsvc.ClearResult{ClearedCount: 3, ClearID: "clear-1"}}
+	svc := &fakeNotificationService{clearResult: notificationsvc.ClearResult{
+		ClearedCount: 3, ClearID: "clear-1", ClearEpoch: "epoch-1", ClearSequence: 7,
+	}}
 	srv := newNotificationTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "DELETE", "/api/v1/notifications", "")
-	if status != http.StatusOK || !strings.Contains(string(body), `"clearedCount":3`) || !strings.Contains(string(body), `"clearId":"clear-1"`) {
+	if status != http.StatusOK || !strings.Contains(string(body), `"clearedCount":3`) ||
+		!strings.Contains(string(body), `"clearId":"clear-1"`) ||
+		!strings.Contains(string(body), `"clearEpoch":"epoch-1"`) ||
+		!strings.Contains(string(body), `"clearSequence":7`) {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
 }
@@ -312,8 +317,13 @@ func TestNotificationsAPI_StreamCreatedNotifications(t *testing.T) {
 	if _, err := reader.ReadString('\n'); err != nil {
 		t.Fatal(err)
 	}
-	stream.ch <- domain.NotificationEvent{Kind: domain.NotificationCleared, ClearID: "clear-1"}
-	if eventLine, dataLine := readSSE(); eventLine != "event: notification_cleared" || !strings.Contains(dataLine, `"clearId":"clear-1"`) {
+	stream.ch <- domain.NotificationEvent{
+		Kind: domain.NotificationCleared, ClearID: "clear-1", ClearEpoch: "epoch-1", ClearSequence: 7,
+	}
+	if eventLine, dataLine := readSSE(); eventLine != "event: notification_cleared" ||
+		!strings.Contains(dataLine, `"clearId":"clear-1"`) ||
+		!strings.Contains(dataLine, `"clearEpoch":"epoch-1"`) ||
+		!strings.Contains(dataLine, `"clearSequence":7`) {
 		t.Fatalf("eventLine=%q dataLine=%q", eventLine, dataLine)
 	}
 }

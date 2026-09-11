@@ -13,7 +13,7 @@ import {
 export function useNotificationsQuery(status: NotificationListStatus, enabled = true) {
 	return useInfiniteQuery({
 		queryKey: notificationsQueryKey(status),
-		queryFn: ({ pageParam }) => fetchNotificationsPage(status, pageParam),
+		queryFn: ({ pageParam, signal }) => fetchNotificationsPage(status, pageParam, signal),
 		initialPageParam: "",
 		getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
 		enabled,
@@ -49,7 +49,7 @@ export function useClearAllNotificationsMutation() {
 		onMutate: () => queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false }),
 		onSuccess: async (result) => {
 			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
-			applyNotificationsCleared(queryClient, result.clearId);
+			applyNotificationsCleared(queryClient, result);
 		},
 	});
 }

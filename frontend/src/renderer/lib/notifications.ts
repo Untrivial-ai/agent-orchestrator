@@ -9,6 +9,7 @@ export type NotificationsPage = components["schemas"]["ListNotificationsResponse
 export type NotificationsCache = InfiniteData<NotificationsPage>;
 export type NotificationListStatus = "unread" | "all";
 export type ClearNotificationsResult = components["schemas"]["ClearNotificationsResponse"];
+export type NotificationClear = Pick<ClearNotificationsResult, "clearId" | "clearEpoch" | "clearSequence">;
 
 export const unreadNotificationsQueryKey = ["notifications", "history", "unread"] as const;
 export const recentNotificationsQueryKey = ["notifications", "history", "all"] as const;
@@ -29,9 +30,9 @@ type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentN
 type LiveNotificationEvent =
 	| { kind: "created"; notification: NotificationDTO }
 	| { kind: "resolved"; notification: NotificationDTO }
-	| { kind: "cleared"; clearId: string };
+	| { kind: "cleared"; clear: NotificationClear };
 
-const appliedClearIds = new WeakMap<QueryClient, Set<string>>();
+const latestClearGeneration = new WeakMap<QueryClient, { epoch: string; sequence: number }>();
 
 export function notificationsQueryKey(status: NotificationListStatus): NotificationsQueryKey {
 	return status === "unread" ? unreadNotificationsQueryKey : recentNotificationsQueryKey;
@@ -41,8 +42,13 @@ function isUnresolved(notification: NotificationDTO): boolean {
 	return UNRESOLVABLE_TYPES.has(notification.type) && !notification.resolvedAt;
 }
 
-export async function fetchNotificationsPage(status: NotificationListStatus, cursor = ""): Promise<NotificationsPage> {
+export async function fetchNotificationsPage(
+	status: NotificationListStatus,
+	cursor = "",
+	signal?: AbortSignal,
+): Promise<NotificationsPage> {
 	const { data, error } = await apiClient.GET("/api/v1/notifications", {
+		signal,
 		params: {
 			query: {
 				status,
@@ -241,14 +247,13 @@ export function markAllCachedNotificationsRead(
 	}
 }
 
-// The DELETE response and SSE event share a clear id. Applying each id once
-// prevents a late mutation response from erasing a notification delivered
-// after that clear event.
-export function applyNotificationsCleared(queryClient: QueryClient, clearId: string): boolean {
-	const seen = appliedClearIds.get(queryClient) ?? new Set<string>();
-	if (seen.has(clearId)) return false;
-	seen.add(clearId);
-	appliedClearIds.set(queryClient, seen);
+// The DELETE response and SSE event share a daemon epoch and monotonic sequence.
+// Ignoring older generations prevents an earlier clear response from erasing a
+// notification that arrived after a later clear event.
+export function applyNotificationsCleared(queryClient: QueryClient, clear: NotificationClear): boolean {
+	const latest = latestClearGeneration.get(queryClient);
+	if (latest?.epoch === clear.clearEpoch && latest.sequence >= clear.clearSequence) return false;
+	latestClearGeneration.set(queryClient, { epoch: clear.clearEpoch, sequence: clear.clearSequence });
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, {
 			pageParams: [""],
@@ -325,11 +330,16 @@ export function createNotificationsTransport(
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
 			let snapshotRefresh: { dirty: boolean; events: LiveNotificationEvent[] } | undefined;
+			let pendingLiveEvents: Promise<void> | undefined;
 
-			const applyLiveNotificationEvent = (event: LiveNotificationEvent) => {
+			const applyLiveNotificationEvent = (event: LiveNotificationEvent): Promise<void> | void => {
 				if (event.kind === "cleared") {
-					applyNotificationsCleared(queryClient, event.clearId);
-					return;
+					return queryClient
+						.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false })
+						.catch(() => undefined)
+						.then(() => {
+							applyNotificationsCleared(queryClient, event.clear);
+						});
 				}
 				if (event.kind === "resolved") {
 					applyResolvedNotification(queryClient, event.notification);
@@ -347,12 +357,32 @@ export function createNotificationsTransport(
 				}
 			};
 
+			const enqueueLiveNotificationEvent = (event: LiveNotificationEvent): Promise<void> | undefined => {
+				if (!pendingLiveEvents && event.kind !== "cleared") {
+					applyLiveNotificationEvent(event);
+					return undefined;
+				}
+				const applied = (pendingLiveEvents ?? Promise.resolve()).then(
+					() => applyLiveNotificationEvent(event),
+					() => applyLiveNotificationEvent(event),
+				);
+				const settled = applied.then(
+					() => undefined,
+					() => undefined,
+				);
+				pendingLiveEvents = settled;
+				void settled.then(() => {
+					if (pendingLiveEvents === settled) pendingLiveEvents = undefined;
+				});
+				return settled;
+			};
+
 			const receiveLiveNotificationEvent = (event: LiveNotificationEvent) => {
 				if (snapshotRefresh) {
 					snapshotRefresh.events.push(event);
 					return;
 				}
-				applyLiveNotificationEvent(event);
+				enqueueLiveNotificationEvent(event);
 			};
 
 			const invalidateNotifications = () => {
@@ -362,10 +392,11 @@ export function createNotificationsTransport(
 				}
 				const refresh = { dirty: false, events: [] as LiveNotificationEvent[] };
 				snapshotRefresh = refresh;
-				const finish = () => {
+				const finish = async () => {
 					if (snapshotRefresh !== refresh) return;
 					snapshotRefresh = undefined;
-					for (const event of refresh.events) applyLiveNotificationEvent(event);
+					for (const event of refresh.events) enqueueLiveNotificationEvent(event);
+					await pendingLiveEvents;
 					if (refresh.dirty) invalidateNotifications();
 				};
 				void Promise.all([
@@ -420,8 +451,8 @@ export function createNotificationsTransport(
 						receiveLiveNotificationEvent({ kind: "resolved", notification });
 					});
 					source.addEventListener("notification_cleared", (event) => {
-						const clearId = parseNotificationClearEvent(event);
-						if (clearId) receiveLiveNotificationEvent({ kind: "cleared", clearId });
+						const clear = parseNotificationClearEvent(event);
+						if (clear) receiveLiveNotificationEvent({ kind: "cleared", clear });
 					});
 				} catch {
 					source = undefined;
@@ -448,12 +479,31 @@ export function createNotificationsTransport(
 	};
 }
 
-function parseNotificationClearEvent(event: Event): string | null {
+function parseNotificationClearEvent(event: Event): NotificationClear | null {
 	const data = (event as MessageEvent<string>).data;
 	if (typeof data !== "string" || data === "") return null;
 	try {
-		const decoded = JSON.parse(data) as { clearId?: unknown };
-		return typeof decoded.clearId === "string" && decoded.clearId ? decoded.clearId : null;
+		const decoded = JSON.parse(data) as {
+			clearId?: unknown;
+			clearEpoch?: unknown;
+			clearSequence?: unknown;
+		};
+		if (
+			typeof decoded.clearId !== "string" ||
+			!decoded.clearId ||
+			typeof decoded.clearEpoch !== "string" ||
+			!decoded.clearEpoch ||
+			typeof decoded.clearSequence !== "number" ||
+			!Number.isSafeInteger(decoded.clearSequence) ||
+			decoded.clearSequence <= 0
+		) {
+			return null;
+		}
+		return {
+			clearId: decoded.clearId,
+			clearEpoch: decoded.clearEpoch,
+			clearSequence: decoded.clearSequence,
+		};
 	} catch {
 		return null;
 	}
