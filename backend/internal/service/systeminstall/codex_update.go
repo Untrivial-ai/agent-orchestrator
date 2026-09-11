@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ var ErrInstallationChanged = errors.New("selected Codex installation changed; re
 // The token identifies daemon-derived ownership evidence, never executable argv.
 type CodexUpdateAdvisory struct {
 	scope            string
+	reviewerHandles  []string
 	Path             string    `json:"path"`
 	RealPath         string    `json:"realPath"`
 	Version          string    `json:"version"`
@@ -106,9 +108,9 @@ func advisoryFor(i ports.CodexInstallation, latest string) CodexUpdateAdvisory {
 }
 
 func (s *Service) withCodexSessions(ctx context.Context, a CodexUpdateAdvisory) (CodexUpdateAdvisory, error) {
-	if s.sessions == nil || s.codexReviewers == nil || s.codexOperationGate == nil {
+	if s.sessions == nil || s.codexReviewers == nil || s.codexOperationGate == nil || s.reviewerInput == nil {
 		a.CanUpdate = false
-		a.Warning = strings.TrimSpace(a.Warning + " AO cannot verify Codex worker and reviewer processes; refresh before updating.")
+		a.Warning = strings.TrimSpace(a.Warning + " AO cannot verify and fence Codex worker and reviewer processes; refresh before updating.")
 		return a, nil
 	}
 	sessions, err := s.sessions.ListAllSessions(ctx)
@@ -120,10 +122,15 @@ func (s *Service) withCodexSessions(ctx context.Context, a CodexUpdateAdvisory) 
 		if err != nil {
 			return a, fmt.Errorf("verify Codex reviewer for session %s: %w", session.ID, err)
 		}
+		if reviewer.HandleID != "" {
+			a.reviewerHandles = append(a.reviewerHandles, reviewer.HandleID)
+		}
 		if (session.Harness == domain.HarnessCodex && !session.IsTerminated) || reviewer.Running {
 			a.RunningSessions++
 		}
 	}
+	slices.Sort(a.reviewerHandles)
+	a.reviewerHandles = slices.Compact(a.reviewerHandles)
 	return a, nil
 }
 
@@ -170,7 +177,7 @@ func (s *Service) StartCodexUpdate(ctx context.Context, token string) (Job, erro
 	}
 	go func() { //nolint:gosec // bounded daemon-owned job intentionally outlives the HTTP request.
 		defer s.workers.Done()
-		s.runCodexUpdate(job, a)
+		s.runCodexUpdate(s.backgroundContext, job, a)
 	}()
 	return initial, nil
 }
@@ -208,8 +215,8 @@ func (s *Service) releaseInstaller() {
 	}
 }
 
-func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
-	ctx, cancel := context.WithTimeout(s.backgroundContext, s.installTimeout)
+func (s *Service) runCodexUpdate(parent context.Context, job *Job, before CodexUpdateAdvisory) {
+	ctx, cancel := context.WithTimeout(parent, s.installTimeout)
 	defer cancel()
 	if err := s.acquireInstaller(ctx, job); err != nil {
 		s.finishAgentJob(job, StatusInterrupted, "", err.Error(), "")
@@ -227,7 +234,7 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 	lease, err := s.codexOperationGate.AcquireExclusive(ctx)
 	if err != nil {
 		status := StatusFailed
-		if s.backgroundContext.Err() != nil {
+		if parent.Err() != nil {
 			status = StatusInterrupted
 		}
 		s.finishAgentJob(job, status, "", "Could not pause Codex launches for the update: "+err.Error()+". Wait, then refresh and try again.", "")
@@ -237,6 +244,27 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 	a, err := s.withCodexSessions(ctx, CodexUpdateAdvisory{})
 	if err != nil || s.sessions == nil || s.codexReviewers == nil || a.RunningSessions > 0 {
 		s.finishAgentJob(job, StatusFailed, "", "Stop AO Codex workers and reviewers explicitly before updating; AO could not establish a safe stopped state.", "")
+		return
+	}
+	if s.reviewerInput == nil {
+		s.finishAgentJob(job, StatusFailed, "", "Reviewer terminal input admission is unavailable; refresh before updating.", "")
+		return
+	}
+	releaseInput, err := s.reviewerInput.ReserveTerminalInput(ctx, a.reviewerHandles)
+	if err != nil {
+		status := StatusFailed
+		if parent.Err() != nil {
+			status = StatusInterrupted
+		}
+		s.finishAgentJob(job, status, "", "Could not drain reviewer terminal input: "+err.Error()+". Wait, then refresh and try again.", "")
+		return
+	}
+	defer releaseInput()
+	// A raw write admitted before reservation may have relaunched Codex. Only
+	// this post-drain observation is stopped-state proof for replacement.
+	stopped, err := s.withCodexSessions(ctx, CodexUpdateAdvisory{})
+	if err != nil || stopped.RunningSessions > 0 || !slices.Equal(stopped.reviewerHandles, a.reviewerHandles) {
+		s.finishAgentJob(job, StatusFailed, "", "Reviewer processes changed while draining terminal input. Stop reviewers, refresh and try again.", "")
 		return
 	}
 	installation, err := s.codexMaintenance.Resolve(ctx)
@@ -268,6 +296,7 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 	// provider processes now: readiness verification itself uses shared account
 	// clients. The idempotent deferred release still covers every earlier exit.
 	lease.Release()
+	releaseInput()
 	// Even unsuccessful installers may have replaced files. Refresh independently
 	// of the expired command context and preserve stale catalogs on probe errors.
 	commandError := ""
@@ -275,7 +304,7 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 		commandError = runErr.Error()
 	}
 	transitionErr := s.transitionAgentJob(job, StatusVerifying, "", commandError, installation.Path)
-	verifyCtx, verifyCancel := context.WithTimeout(s.backgroundContext, 90*time.Second)
+	verifyCtx, verifyCancel := context.WithTimeout(parent, 90*time.Second)
 	defer verifyCancel()
 	after, probeErr := s.CodexUpdate(verifyCtx, true)
 	var refreshErr error
@@ -284,7 +313,7 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 	} else {
 		refreshErr = fmt.Errorf("provider readiness/model refresh is unavailable")
 	}
-	if s.backgroundContext.Err() != nil {
+	if parent.Err() != nil {
 		s.finishAgentJob(job, StatusInterrupted, "", "Daemon shutdown interrupted Codex update verification. Refresh before retrying.", "")
 		return
 	}

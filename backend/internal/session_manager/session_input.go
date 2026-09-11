@@ -21,6 +21,7 @@ const (
 	agentOperationRetire             agentOperationKind = "retire"
 	agentOperationReconcile          agentOperationKind = "reconcile"
 	agentOperationCodexAccountSwitch agentOperationKind = "codex_account_switch"
+	agentOperationProviderUpdate     agentOperationKind = "provider_update"
 )
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")
@@ -48,6 +49,39 @@ func (m *Manager) AcquireSessionInput(id domain.SessionID) (release func(), ok b
 	return func() {
 		once.Do(func() { m.releaseSessionInput(id) })
 	}, true
+}
+
+// ReserveTerminalInput closes raw input for exact opaque terminal IDs and drains
+// writes already admitted by AcquireSessionInput, including attach-buffered input.
+// The caller must hold provider launch admission while selecting these handles
+// and reprobe the provider after reservation. Unrelated terminal input stays open.
+func (m *Manager) ReserveTerminalInput(ctx context.Context, terminalIDs []string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	acquired := make([]domain.SessionID, 0, len(terminalIDs))
+	seen := make(map[domain.SessionID]bool, len(terminalIDs))
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			for i := len(acquired) - 1; i >= 0; i-- {
+				m.endAgentOperation(acquired[i], agentOperationProviderUpdate)
+			}
+		})
+	}
+	for _, terminalID := range terminalIDs {
+		id := domain.SessionID(strings.TrimSpace(terminalID))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := m.beginAgentOperation(ctx, id, agentOperationProviderUpdate); err != nil {
+			release()
+			return nil, err
+		}
+		acquired = append(acquired, id)
+	}
+	return release, nil
 }
 
 func (m *Manager) releaseSessionInput(id domain.SessionID) {

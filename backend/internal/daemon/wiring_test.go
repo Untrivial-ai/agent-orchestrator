@@ -955,6 +955,10 @@ func (f *fakeSessionLifecycle) AcquireSessionInput(domain.SessionID) (func(), bo
 	return func() {}, true
 }
 
+func (f *fakeSessionLifecycle) ReserveTerminalInput(context.Context, []string) (func(), error) {
+	return func() {}, nil
+}
+
 func (f *fakeSessionLifecycle) SessionMutationInProgress(domain.SessionID) bool         { return false }
 func (f *fakeSessionLifecycle) SetReviewerTerminator(sessionmanager.ReviewerTerminator) {}
 func (f *fakeSessionLifecycle) SetHarnessUseGate(sessionmanager.HarnessUseGate)         {}

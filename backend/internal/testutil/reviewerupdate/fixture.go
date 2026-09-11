@@ -16,6 +16,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/review"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 // Runtime is the production reviewer runtime boundary.
@@ -110,7 +111,7 @@ func New(ctx context.Context, t *testing.T, rt Runtime, mode, binary string) *Fi
 	engine := review.New(review.Deps{Store: store, Launcher: l})
 	runner := &installer{binary: binary}
 	gate := codexops.NewGate()
-	service := systeminstall.NewWithDeps(nil, runner, systeminstall.Deps{Sessions: store, CodexReviewers: engine, CodexMaintenance: runner, CodexOperationGate: gate, RefreshCodex: func(ctx context.Context) error { runner.refreshed.Store(true); return ctx.Err() }})
+	service := systeminstall.NewWithDeps(nil, runner, systeminstall.Deps{ReviewerInput: sessionmanager.New(sessionmanager.Deps{DataDir: t.TempDir()}), Sessions: store, CodexReviewers: engine, CodexMaintenance: runner, CodexOperationGate: gate, RefreshCodex: func(ctx context.Context) error { runner.refreshed.Store(true); return ctx.Err() }})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 type maintenanceFake struct {
@@ -55,6 +56,7 @@ func updateFixture(t *testing.T) (*Service, *maintenanceFake) {
 	s.codexMaintenance = f
 	s.sessions = sessionListerStub{}
 	s.codexOperationGate = codexops.NewGate()
+	s.reviewerInput = sessionmanager.New(sessionmanager.Deps{DataDir: t.TempDir()})
 	s.codexReviewers = codexReviewerProbe(func(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
 		return ports.CodexReviewerControllerSnapshot{}, nil
 	})
@@ -439,4 +441,46 @@ type observedContext struct {
 func (c *observedContext) Done() <-chan struct{} {
 	c.once.Do(func() { close(c.observed) })
 	return c.Context.Done()
+}
+
+func TestCodexUpdateWorkerDerivesBothTimeoutsFromCaller(t *testing.T) {
+	s, _ := updateFixture(t)
+	type callerKey struct{}
+	parent := context.WithValue(context.Background(), callerKey{}, "caller")
+	s.installTimeout = 30 * time.Millisecond
+	var refreshed bool
+	s.installCommands = updateRunner(func(ctx context.Context, _ ports.InstallCommand, _, _ io.Writer) error {
+		if ctx.Value(callerKey{}) != "caller" {
+			t.Error("installer lost caller context")
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	s.refreshCodex = func(ctx context.Context) error {
+		if ctx.Value(callerKey{}) != "caller" || ctx.Err() != nil {
+			t.Errorf("verification did not derive fresh timeout from caller: %v", ctx.Err())
+		}
+		refreshed = true
+		return nil
+	}
+	before, err := s.CodexUpdate(parent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	job := &Job{Target: TargetCodex, Status: StatusQueued, Method: "update:npm", StartedAt: &now, UpdatedAt: &now}
+	s.jobs[TargetCodex] = job
+	s.runCodexUpdate(parent, job, before)
+	if job.Status != StatusFailed || !refreshed {
+		t.Fatalf("expired installer was not independently verified: %+v refreshed=%v", job, refreshed)
+	}
+}
+
+func TestCodexUpdateRequiresReviewerInputAdmission(t *testing.T) {
+	s, _ := updateFixture(t)
+	s.reviewerInput = nil
+	a, err := s.CodexUpdate(context.Background(), false)
+	if err != nil || a.CanUpdate {
+		t.Fatalf("missing raw-input fence left update enabled: %+v %v", a, err)
+	}
 }

@@ -276,6 +276,12 @@ type CodexReviewerInspector interface {
 	SnapshotCodexReviewer(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error)
 }
 
+// TerminalInputReserver owns the raw mux input leases for reviewer handles.
+// Reservation drains admitted writes and rejects new ones until release.
+type TerminalInputReserver interface {
+	ReserveTerminalInput(context.Context, []string) (func(), error)
+}
+
 // Deps are the durable and adapter-backed dependencies used for harness jobs.
 type Deps struct {
 	JobStore           ports.AgentInstallJobStore
@@ -285,6 +291,7 @@ type Deps struct {
 	RefreshCodex       func(context.Context) error
 	CodexOperationGate ports.CodexOperationGate
 	CodexReviewers     CodexReviewerInspector
+	ReviewerInput      TerminalInputReserver
 }
 
 // Service runs real install commands for the fixed Target allowlist.
@@ -299,6 +306,7 @@ type Service struct {
 
 	codexOperationGate ports.CodexOperationGate
 	codexReviewers     CodexReviewerInspector
+	reviewerInput      TerminalInputReserver
 	// All daemon installers share a conservative lock. This includes separate
 	// harnesses that mutate the same npm prefix or Homebrew installation.
 	installerGate    chan struct{}
@@ -392,6 +400,7 @@ func NewWithDeps(executables ports.ExecutableFinder, commands ports.CommandRunne
 		refreshCodex:        deps.RefreshCodex,
 		codexOperationGate:  deps.CodexOperationGate,
 		codexReviewers:      deps.CodexReviewers,
+		reviewerInput:       deps.ReviewerInput,
 	}
 }
 

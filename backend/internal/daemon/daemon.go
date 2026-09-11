@@ -538,6 +538,7 @@ func Run() error {
 		RefreshCodex:       agentSvc.RefreshCodexInstallation,
 		CodexOperationGate: codexOperationGate,
 		CodexReviewers:     codexReviewers,
+		ReviewerInput:      sessMgr,
 	})
 	if err := systemInstall.Recover(ctx); err != nil {
 		stop()
