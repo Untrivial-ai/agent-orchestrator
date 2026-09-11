@@ -101,7 +101,7 @@ func TestBaseClassifiesStaticTextAndModeAgents(t *testing.T) {
 		{agent: "claude-code", mode: ports.ModelSelectionCatalog},
 		{agent: "codex", mode: ports.ModelSelectionCatalog},
 		{agent: "amp", mode: ports.ModelSelectionModeList, count: 4},
-		{agent: "muse", mode: ports.ModelSelectionCatalog, count: 3},
+		{agent: "muse", mode: ports.ModelSelectionCatalog, count: 5},
 		{agent: "aider", mode: ports.ModelSelectionCatalog},
 		{agent: "autohand", mode: ports.ModelSelectionCatalog},
 		{agent: "kimchi", mode: ports.ModelSelectionCatalog},
@@ -135,6 +135,8 @@ func TestMuseReturnsStaticCatalogWithoutStartingAgent(t *testing.T) {
 		{ID: "muse-spark", Label: "Muse Spark", IsDefault: true},
 		{ID: "muse-spark-1.1", Label: "Muse Spark 1.1"},
 		{ID: "muse-spark-1.2", Label: "Muse Spark 1.2"},
+		{ID: "muse-spark-1.3", Label: "Muse Spark 1.3"},
+		{ID: "muse-spark-1.3-contributor", Label: "Muse Spark 1.3 (Contributor)"},
 	}
 	if got.Source != "official-catalog" || !reflect.DeepEqual(got.Models, want) {
 		t.Fatalf("catalog = %#v, want models %#v", got, want)
