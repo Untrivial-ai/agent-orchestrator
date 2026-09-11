@@ -201,9 +201,9 @@ func kimiConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 		if err != nil || found {
 			return status, found, err
 		}
-		// Legacy Kimi installs keep OAuth tokens in the OS keyring. The
-		// configured reference is the only local, non-secret signal available
-		// to AO; Kimi itself resolves and validates the credential at launch.
+		// Before Kimi migrates deprecated keyring storage to a credentials file,
+		// the configured reference is the only local, non-secret signal available
+		// to AO. A credentials file, even without tokens, takes precedence above.
 		if strings.EqualFold(strings.TrimSpace(provider.OAuth.Storage), "keyring") {
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
@@ -257,5 +257,5 @@ func kimiCredentialsAuthStatus(path string) (ports.AgentAuthStatus, bool, error)
 		strings.TrimSpace(credentials.RefreshToken) != "" {
 		return ports.AgentAuthStatusAuthorized, true, nil
 	}
-	return ports.AgentAuthStatusUnknown, false, nil
+	return ports.AgentAuthStatusUnknown, true, nil
 }
