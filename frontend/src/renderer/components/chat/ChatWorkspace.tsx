@@ -842,6 +842,14 @@ export function ChatWorkspace({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
+	const reauthErrorInChat = snapshot.account?.reauthReason
+		? snapshot.items.some(
+				(item) =>
+					item.kind === "activity" &&
+					item.activityKind === "error" &&
+					item.summary === snapshot.account?.reauthReason,
+			)
+		: false;
 	const editHumanMessage = onEditMessage;
 	const pendingApproval = useMemo(
 		() =>
@@ -1112,7 +1120,7 @@ export function ChatWorkspace({
 					{/* Ordered by what blocks what. A session that needs credentials cannot make
 				    progress at all, so it is stated first; the controller's own health next;
 				    then the two that degrade a session rather than stopping it. */}
-					{snapshot.account ? (
+					{snapshot.account && !reauthErrorInChat ? (
 						<ReauthBanner account={snapshot.account} harness={snapshot.harness} />
 					) : null}
 					<ControllerBanner
