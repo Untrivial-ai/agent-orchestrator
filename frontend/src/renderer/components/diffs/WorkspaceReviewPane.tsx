@@ -340,6 +340,8 @@ export function WorkspaceReviewPane({
 	const hasAnyReviewFiles = data.files.some((file) => file.status !== "unmodified")
 		|| workingScopeOrder.some((entry) => data.sections[entry].length > 0)
 		|| data.commits.some((commit) => commit.files.length > 0);
+	const commitHashForButton = (selectedCommit?.sha ?? data.commits[0]?.sha)?.slice(0, 7);
+	const showReviewScopeSwitcher = hasAnyReviewFiles && workingSourceOptions.length > 0;
 
 	return (
 		<div
@@ -349,7 +351,7 @@ export function WorkspaceReviewPane({
 			ref={reviewRef}
 		>
 			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
-				{workingSourceOptions.map((entry) => (
+				{showReviewScopeSwitcher ? workingSourceOptions.map((entry) => (
 					<Button
 						aria-pressed={scope === entry}
 						disabled={!entry}
@@ -362,11 +364,11 @@ export function WorkspaceReviewPane({
 						{workingSourceLabel(entry)}
 						<span className="text-caption text-passive">{sectionFiles(data, entry).length}</span>
 					</Button>
-				))}
+				)) : null}
 				<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} className="gap-1.5" disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" type="button" variant={scope === "committed" ? "secondary" : "ghost"}>
 					<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
 					<span>{t("files.commits")}</span>
-					<span className="text-caption text-passive">{selectedCommit ? selectedCommit.sha.slice(0, 7) : data.commits.length}</span>
+					{commitHashForButton ? <span className="text-caption text-passive">{commitHashForButton}</span> : null}
 				</Button>
 				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
 					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>

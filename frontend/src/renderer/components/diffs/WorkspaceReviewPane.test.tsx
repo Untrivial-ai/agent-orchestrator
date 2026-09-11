@@ -306,9 +306,36 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={workspace([])} filter="" onBrowseAll={onBrowseAll} sessionId="sess-1" split={false} />);
 
 		expect(screen.getByText("No changed files found.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Unstaged|Staged|Review changes/ })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Browse all files" }));
 		expect(onBrowseAll).toHaveBeenCalledOnce();
 		expect(postMock).not.toHaveBeenCalled();
+	});
+
+	it("shows the active commit hash on the commits button even when commit is not the active scope", async () => {
+		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" }]);
+		data.commits = [{
+			author: "Ada Lovelace",
+			files: [{
+				path: "src/App.tsx",
+				status: "modified",
+				additions: 1,
+				deletions: 1,
+				size: 20,
+				binary: false,
+				fileFingerprint: "file-1",
+				editable: false,
+			}],
+			sha: "abcdef1234567890",
+			subject: "Document the commit browser",
+			timestamp: "2026-09-10T10:00:00Z",
+		}];
+
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		const commitButton = screen.getByRole("button", { name: /Commits/ });
+		expect(commitButton).toHaveTextContent("Commits");
+		expect(screen.getByText("abcdef1")).toBeInTheDocument();
 	});
 
 	it("filters the review without requesting unrelated files", async () => {
