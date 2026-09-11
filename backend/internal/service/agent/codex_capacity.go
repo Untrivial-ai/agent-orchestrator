@@ -179,13 +179,24 @@ func (c *codexCapacityCoordinator) authGate(record codexAccountRecord, capabilit
 		return c.preserveFailure(record.Snapshot.ID, domain.CodexCapacityReasonCheckInconclusive, "Codex capacity could not be checked."), true
 	}
 	auth := record.Snapshot.Authentication
-	if auth.State == domain.AgentAuthenticationUnauthorized && auth.Freshness == domain.AgentReadinessFresh {
+	verified, reauthenticationRequired := c.manager.authenticationVerification(record.Snapshot.ID)
+	if reauthenticationRequired {
 		return c.replace(record.Snapshot.ID, staticCodexCapacity(domain.CodexCapacityUnknown, domain.CodexCapacityReasonSkippedSignedOut, "Sign in to Codex to see subscription capacity."), "signed_out"), true
+	}
+	if auth.State == domain.AgentAuthenticationUnauthorized && auth.Freshness == domain.AgentReadinessFresh {
+		// Older AO versions could mark an account unauthorized from
+		// account/read(refreshToken=true) even while protected calls worked. Let
+		// one protected read repair that stale conclusion. A non-verified local
+		// signed-out observation still skips the provider call.
+		if !verified {
+			return c.replace(record.Snapshot.ID, staticCodexCapacity(domain.CodexCapacityUnknown, domain.CodexCapacityReasonSkippedSignedOut, "Sign in to Codex to see subscription capacity."), "signed_out"), true
+		}
 	}
 	if auth.State == domain.AgentAuthenticationNotApplicable || record.Snapshot.AuthMethod == domain.CodexAuthMethodAPIKey || record.Snapshot.AuthMethod == domain.CodexAuthMethodOther {
 		return c.replace(record.Snapshot.ID, staticCodexCapacity(domain.CodexCapacityUnsupported, domain.CodexCapacityReasonUnsupported, "Subscription capacity is not available for this Codex authentication method."), "unsupported_auth"), true
 	}
-	if auth.State != domain.AgentAuthenticationAuthorized || record.Snapshot.AuthMethod != domain.CodexAuthMethodChatGPT {
+	staleRefreshFailure := auth.State == domain.AgentAuthenticationUnauthorized && verified
+	if (auth.State != domain.AgentAuthenticationAuthorized && !staleRefreshFailure) || record.Snapshot.AuthMethod != domain.CodexAuthMethodChatGPT {
 		return c.preserveFailure(record.Snapshot.ID, domain.CodexCapacityReasonSkippedAuthUnknown, "Confirm Codex authentication before checking capacity."), true
 	}
 	return domain.CodexCapacitySnapshot{}, false
@@ -252,13 +263,21 @@ func (c *codexCapacityCoordinator) refreshRevokedTokenAndRetry(ctx context.Conte
 		return ports.CodexCapacityObservation{}, err
 	}
 	defer releaseMutation()
+	return c.refreshRevokedTokenAndRetryLocked(ctx, record, client)
+}
 
+// refreshRevokedTokenAndRetryLocked refreshes and retries while the caller owns
+// the account-mutation gate.
+func (c *codexCapacityCoordinator) refreshRevokedTokenAndRetryLocked(ctx context.Context, record codexAccountRecord, client ports.CodexAccountClient) (ports.CodexCapacityObservation, error) {
 	refreshed, err := client.Read(ctx, true)
 	if err != nil {
 		return ports.CodexCapacityObservation{}, err
 	}
 	if refreshed.Authentication == domain.AgentAuthenticationUnauthorized {
-		return ports.CodexCapacityObservation{}, ports.ErrCodexOAuthTokenRevoked
+		// account/read can return no account after refresh even when the token is
+		// accepted by protected methods. Retry the protected call and let that
+		// result decide.
+		return client.ReadCapacity(ctx)
 	}
 	if refreshed.Authentication != domain.AgentAuthenticationAuthorized || !sameCodexStructuredIdentity(record.Snapshot, refreshed) {
 		return ports.CodexCapacityObservation{}, ports.ErrCodexCapacityProviderUnavailable
@@ -319,7 +338,7 @@ func (c *codexCapacityCoordinator) finishSuccess(accountID string, observation p
 	generation := state.generation
 	result := state.snapshot
 	c.mu.Unlock()
-	c.publish(accountID, &result)
+	c.manager.confirmAuthentication(accountID)
 	c.scheduleResetInvalidation(accountID, generation, result)
 	c.logger.Info("Codex account capacity updated", "account_id", accountID, "trigger", "capacity", "source", source, "duration_ms", receivedAt.Sub(attemptedAt).Milliseconds(), "outcome", result.State, "classification", map[bool]string{true: "partial", false: "full"}[observation.Partial])
 }

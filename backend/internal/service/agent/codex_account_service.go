@@ -50,6 +50,38 @@ func (s *Service) structuredCodexAuthentication(ctx context.Context, agentID str
 	if err != nil {
 		return failedAuthentication(s.codexAccounts.now(), domain.AgentReadinessReasonAuthCheckFailed, "Authentication check failed."), true
 	}
+	record, ok = s.codexAccounts.catalog.record(id)
+	if !ok {
+		return domain.AgentAuthenticationObservation{}, false
+	}
+	if purpose == domain.AgentReadinessPurposeLaunch && result.State == domain.AgentAuthenticationAuthorized && record.Snapshot.AuthMethod == domain.CodexAuthMethodChatGPT {
+		capabilities := s.codexAccounts.detectCapabilities(ctx)
+		if capabilities.CapacityRead.State != domain.CodexCapabilitySupported {
+			return domain.AgentAuthenticationObservation{}, false
+		}
+		// Launch readiness uses a protected provider call. account/read is only
+		// local metadata discovery and cannot prove that the server accepts the
+		// stored tokens.
+		s.codexAccounts.capacity.invalidate(record.Snapshot.ID, false)
+		_, capacityErr := s.codexAccounts.capacity.ensureOne(ctx, record, capabilities, true)
+		if capacityErr != nil {
+			return domain.AgentAuthenticationObservation{}, false
+		}
+		latest, ok := s.codexAccounts.catalog.record(record.Snapshot.ID)
+		if !ok {
+			return domain.AgentAuthenticationObservation{}, false
+		}
+		verified, reauthenticationRequired := s.codexAccounts.authenticationVerification(record.Snapshot.ID)
+		if reauthenticationRequired {
+			return latest.Snapshot.Authentication, true
+		}
+		if !verified {
+			// Offline, timeout, and provider failures are not evidence that the
+			// account is signed out. Let native launch readiness remain advisory.
+			return domain.AgentAuthenticationObservation{}, false
+		}
+		return latest.Snapshot.Authentication, true
+	}
 	return result, true
 }
 
@@ -502,19 +534,44 @@ func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID str
 	}
 	client, err := s.codexAccounts.factory.Open(verifyCtx, ports.CodexAccountContext{Home: record.Home, Managed: true})
 	if err != nil {
+		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
+	}
+	defer func() { _ = client.Close() }()
+	observation, err := client.Read(verifyCtx, false)
+	if err != nil {
+		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
+	}
+	if observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable {
 		s.codexAccounts.requireReauthentication(record.Snapshot.ID)
 		return apierr.Conflict("CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED", "Sign in again before switching to this Codex account", nil)
 	}
-	refresh := record.Snapshot.AccountEmail != nil && safeAccountEmail(*record.Snapshot.AccountEmail)
-	observation, err := client.Read(verifyCtx, refresh)
-	_ = client.Close()
+	protectedVerified := false
+	if observation.Authentication == domain.AgentAuthenticationAuthorized && observation.Method == domain.CodexAuthMethodChatGPT {
+		_, err = client.ReadCapacity(verifyCtx)
+		if errors.Is(err, ports.ErrCodexOAuthTokenRevoked) {
+			// Session Manager owns the mutation gate for the full switch
+			// admission path, so do not try to acquire it again here.
+			_, err = s.codexAccounts.capacity.refreshRevokedTokenAndRetryLocked(verifyCtx, record, client)
+		}
+		if errors.Is(err, ports.ErrCodexOAuthTokenRevoked) {
+			s.codexAccounts.requireReauthentication(record.Snapshot.ID)
+			return apierr.Conflict("CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED", "Sign in again before switching to this Codex account", nil)
+		}
+		if err != nil {
+			return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
+		}
+		protectedVerified = true
+	}
 	latestCredential, latest, latestErr := readCodexFileState(credentialPath, false)
 	stableOpaqueIdentity := distinguishableCodexIdentity(observation) || (latestErr == nil && sameCodexFileState(admitted, latest))
-	if err != nil || latestErr != nil || !stableOpaqueIdentity || (observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable) || !s.codexAccounts.observationAndCredentialIdentifyRecord(record, observation, latestCredential) || (!distinguishableCodexIdentity(observation) && !bytes.Equal(credential, latestCredential)) {
-		s.codexAccounts.requireReauthentication(record.Snapshot.ID)
-		return apierr.Conflict("CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED", "Sign in again before switching to this Codex account", nil)
+	if latestErr != nil || !stableOpaqueIdentity || !s.codexAccounts.observationAndCredentialIdentifyRecord(record, observation, latestCredential) || (!distinguishableCodexIdentity(observation) && !bytes.Equal(credential, latestCredential)) {
+		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
 	}
-	s.codexAccounts.clearReauthenticationRequired(record.Snapshot.ID)
+	if protectedVerified {
+		s.codexAccounts.confirmAuthentication(record.Snapshot.ID)
+	} else {
+		s.codexAccounts.clearReauthenticationRequired(record.Snapshot.ID)
+	}
 	return nil
 }
 

@@ -431,7 +431,10 @@ func (m *codexAccountManager) reconcileGlobalInner(ctx context.Context) error {
 			verifyCancel()
 			return deviceReconciliationFailure("account_client_unavailable", true)
 		}
-		checked, checkErr := verifiedClient.Read(verifyCtx, true)
+		// Reconciliation identifies and imports the device account. Remote token
+		// validity is checked separately through a protected account call so a
+		// refresh-only account/read result cannot block local account management.
+		checked, checkErr := verifiedClient.Read(verifyCtx, false)
 		_ = verifiedClient.Close()
 		verifyCancel()
 		if checkErr != nil || (checked.Authentication != domain.AgentAuthenticationAuthorized && checked.Authentication != domain.AgentAuthenticationNotApplicable) {
@@ -578,9 +581,8 @@ func (m *codexAccountManager) verifyOpaqueGlobalCredential(ctx context.Context, 
 	// Reconciliation only needs to prove that the opaque global credential is
 	// usable from a file-backed home. A proactive refresh here can race Codex's
 	// live global credential and rotate the copied refresh token, incorrectly
-	// classifying the device account as unmanaged. Strict refresh remains part
-	// of login and switch admission, where no duplicate live credential is being
-	// introduced.
+	// classifying the device account as unmanaged. Login and switch admission use
+	// a protected account call, refreshing only after an explicit token rejection.
 	observation, readErr := client.Read(verifyCtx, false)
 	_ = client.Close()
 	if readErr != nil {

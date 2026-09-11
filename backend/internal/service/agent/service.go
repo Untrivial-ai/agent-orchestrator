@@ -122,6 +122,11 @@ func NewWithDeps(deps Deps) *Service {
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
 		AuthenticationCheck: svc.structuredCodexAuthentication,
 	})
+	if svc.codexAccounts != nil {
+		svc.codexAccounts.onAuthenticationChanged = func() {
+			svc.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+		}
+	}
 	svc.sessions = deps.Sessions
 	return svc
 }

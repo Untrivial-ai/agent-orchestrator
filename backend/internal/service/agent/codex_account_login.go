@@ -142,19 +142,47 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 	defer cancel()
 	client, err := m.factory.Open(verifyCtx, ports.CodexAccountContext{Home: home, Managed: true})
 	if err != nil {
-		return m.finishLoginUnverified(operationID, "Codex could not verify this account."), nil
+		return m.finishLoginUnverified(operationID), nil
 	}
-	observation, readErr := client.Read(verifyCtx, true)
-	_ = client.Close()
+	observation, readErr := client.Read(verifyCtx, false)
 	if readErr != nil || observation.Authentication == domain.AgentAuthenticationUnknown {
-		return m.finishLoginUnverified(operationID, "Codex could not verify this account."), nil
+		_ = client.Close()
+		return m.finishLoginUnverified(operationID), nil
 	}
 	if observation.Authentication == domain.AgentAuthenticationUnauthorized {
+		_ = client.Close()
 		return m.finishLogin(operationID, domain.CodexAccountLoginUnauthorized, domain.CodexAccountLoginReasonUnauthorized, "Codex is still signed out.", nil), nil
 	}
 	if observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable {
-		return m.finishLoginUnverified(operationID, "Codex could not verify this account."), nil
+		_ = client.Close()
+		return m.finishLoginUnverified(operationID), nil
 	}
+	protectedVerified := false
+	if observation.Authentication == domain.AgentAuthenticationAuthorized && observation.Method == domain.CodexAuthMethodChatGPT {
+		_, protectedErr := client.ReadCapacity(verifyCtx)
+		if errors.Is(protectedErr, ports.ErrCodexOAuthTokenRevoked) {
+			refreshed, refreshErr := client.Read(verifyCtx, true)
+			if refreshErr != nil {
+				_ = client.Close()
+				return m.finishLoginUnverified(operationID), nil
+			}
+			if refreshed.Authentication == domain.AgentAuthenticationAuthorized && !codexObservationsMatch(observation, refreshed) {
+				_ = client.Close()
+				return m.finishLoginUnverified(operationID), nil
+			}
+			_, protectedErr = client.ReadCapacity(verifyCtx)
+		}
+		if errors.Is(protectedErr, ports.ErrCodexOAuthTokenRevoked) {
+			_ = client.Close()
+			return m.finishLogin(operationID, domain.CodexAccountLoginUnauthorized, domain.CodexAccountLoginReasonUnauthorized, "Codex is still signed out.", nil), nil
+		}
+		if protectedErr != nil {
+			_ = client.Close()
+			return m.finishLoginUnverified(operationID), nil
+		}
+		protectedVerified = true
+	}
+	_ = client.Close()
 	exclusive, exclusiveErr := m.acquireGlobalMutation(ctx)
 	if exclusiveErr != nil {
 		return domain.CodexAccountLoginOperation{}, exclusiveErr
@@ -263,6 +291,9 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 			}
 		}
 	}
+	if protectedVerified {
+		m.confirmAuthentication(record.Snapshot.ID)
+	}
 	latest, _ := m.catalog.record(record.Snapshot.ID)
 	snapshot := latest.Snapshot
 	snapshot.Active = snapshot.ID == m.activeAccountID()
@@ -311,8 +342,8 @@ func (m *codexAccountManager) verifyActiveAccountCredentialLocked(ctx context.Co
 	return latestCredential, nil
 }
 
-func (m *codexAccountManager) finishLoginUnverified(id, reason string) domain.CodexAccountLoginOperation {
-	return m.finishLogin(id, domain.CodexAccountLoginUnverified, domain.CodexAccountLoginReasonUnverified, reason, nil)
+func (m *codexAccountManager) finishLoginUnverified(id string) domain.CodexAccountLoginOperation {
+	return m.finishLogin(id, domain.CodexAccountLoginUnverified, domain.CodexAccountLoginReasonUnverified, "Codex could not verify this account.", nil)
 }
 func (m *codexAccountManager) finishLogin(id string, status domain.CodexAccountLoginStatus, code, reason string, account *domain.CodexAccountSnapshot) domain.CodexAccountLoginOperation {
 	m.mu.Lock()

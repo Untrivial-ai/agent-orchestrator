@@ -185,6 +185,78 @@ func TestCodexCapacityRevokedAccessTokenRefreshesAndRetriesOnce(t *testing.T) {
 	}
 }
 
+func TestCodexCapacityProtectedRetryOverridesInconclusiveRefreshRead(t *testing.T) {
+	now := time.Date(2026, 9, 11, 9, 30, 0, 0, time.UTC)
+	email := "person@example.com"
+	var capacityReads atomic.Int32
+	var refreshReads atomic.Int32
+	client := &fakeCodexAccountClient{
+		readFn: func(_ context.Context, refresh bool) (ports.CodexAccountObservation, error) {
+			if !refresh {
+				return ports.CodexAccountObservation{}, errors.New("refresh was not requested")
+			}
+			refreshReads.Add(1)
+			// account/read can report no account after refresh even though the
+			// protected endpoint accepts the resulting credential.
+			return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}, nil
+		},
+		capacityFn: func(context.Context) (ports.CodexCapacityObservation, error) {
+			if capacityReads.Add(1) == 1 {
+				return ports.CodexCapacityObservation{}, ports.ErrCodexOAuthTokenRevoked
+			}
+			return ports.CodexCapacityObservation{ObservedAt: now}, nil
+		},
+	}
+	supported := domain.CodexCapabilityObservation{State: domain.CodexCapabilitySupported}
+	factory := &fakeCodexAccountFactory{capabilities: domain.CodexAccountCapabilities{CapacityRead: supported}, open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) { return client, nil }}
+	manager := newTestCodexAccountManager(t, factory, nil)
+	manager.now = func() time.Time { return now }
+	manager.capacity.now = manager.now
+	record := commitAuthorizedCodexCapacityTestRecord(t, manager, "8b0d7f34-af76-482e-a4ca-6a2727e16b3d", email, now)
+
+	if _, err := manager.capacity.ensureOne(context.Background(), record, factory.capabilities, true); err != nil {
+		t.Fatal(err)
+	}
+	if capacityReads.Load() != 2 || refreshReads.Load() != 1 {
+		t.Fatalf("capacity reads = %d, refresh reads = %d", capacityReads.Load(), refreshReads.Load())
+	}
+	latest, _ := manager.catalog.record(record.Snapshot.ID)
+	if latest.Snapshot.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("protected success did not win over account/read = %#v", latest.Snapshot.Authentication)
+	}
+	verified, reauthenticationRequired := manager.authenticationVerification(record.Snapshot.ID)
+	if !verified || reauthenticationRequired {
+		t.Fatalf("verification = %t, reauthentication required = %t", verified, reauthenticationRequired)
+	}
+}
+
+func TestCodexCapacitySuccessRepairsStaleRefreshBasedSignedOutState(t *testing.T) {
+	now := time.Date(2026, 9, 11, 9, 30, 0, 0, time.UTC)
+	email := "person@example.com"
+	client := &fakeCodexAccountClient{capacity: ports.CodexCapacityObservation{ObservedAt: now}}
+	supported := domain.CodexCapabilityObservation{State: domain.CodexCapabilitySupported}
+	factory := &fakeCodexAccountFactory{capabilities: domain.CodexAccountCapabilities{CapacityRead: supported}, open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) { return client, nil }}
+	manager := newTestCodexAccountManager(t, factory, nil)
+	manager.now = func() time.Time { return now }
+	manager.capacity.now = manager.now
+	record := commitAuthorizedCodexCapacityTestRecord(t, manager, "72eef9ac-8f87-47bb-a8cc-e9380823688d", email, now)
+	manager.catalog.updateSnapshot(record.Snapshot.ID, func(snapshot *domain.CodexAccountSnapshot) {
+		snapshot.Authentication = signedOutAuthentication(now, "stale refresh result")
+	})
+	manager.mu.Lock()
+	manager.auth[record.Snapshot.ID] = &accountAuthState{launchVerified: true}
+	manager.mu.Unlock()
+	record, _ = manager.catalog.record(record.Snapshot.ID)
+
+	if _, err := manager.capacity.ensureOne(context.Background(), record, factory.capabilities, true); err != nil {
+		t.Fatal(err)
+	}
+	latest, _ := manager.catalog.record(record.Snapshot.ID)
+	if latest.Snapshot.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("protected success did not repair stale signed-out state = %#v", latest.Snapshot.Authentication)
+	}
+}
+
 func TestCodexCapacityRevokedAfterRefreshRequiresSignInAgain(t *testing.T) {
 	now := time.Date(2026, 9, 11, 9, 30, 0, 0, time.UTC)
 	email := "person@example.com"
