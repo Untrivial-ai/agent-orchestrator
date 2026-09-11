@@ -25,6 +25,11 @@ type fakeStore struct {
 	markAllCount  int64
 	markedAll     bool
 	markedIDs     []string
+	deleteRow     domain.NotificationRecord
+	deleteOK      bool
+	deletedID     string
+	deleteSawLock bool
+	deleteLock    *recordingLocker
 	clearAllCount int64
 	clearedAll    bool
 	clearSawLock  bool
@@ -89,6 +94,12 @@ func (f *fakeStore) MarkAllNotificationsRead(context.Context) (int64, error) {
 func (f *fakeStore) MarkNotificationsRead(_ context.Context, ids []string) (int64, error) {
 	f.markedIDs = ids
 	return int64(len(ids)), f.err
+}
+
+func (f *fakeStore) DeleteNotification(_ context.Context, id string) (domain.NotificationRecord, bool, error) {
+	f.deletedID = id
+	f.deleteSawLock = f.deleteLock == nil || f.deleteLock.held
+	return f.deleteRow, f.deleteOK, f.err
 }
 
 func (f *fakeStore) ClearAllNotifications(context.Context) (int64, error) {
@@ -197,6 +208,37 @@ func TestMarkAllReadWithIDsScopesToThoseNotifications(t *testing.T) {
 	}
 	if len(st.markedIDs) != 2 || st.markedIDs[0] != "n1" {
 		t.Fatalf("marked ids = %v", st.markedIDs)
+	}
+}
+
+func TestDeletePublishesRemovedNotificationInsideBarrier(t *testing.T) {
+	barrier := &recordingLocker{}
+	row := domain.NotificationRecord{
+		ID: "n1", SessionID: "mer-1", ProjectID: "mer", Type: domain.NotificationNeedsInput,
+		Title: "needs input", Status: domain.NotificationUnread, CreatedAt: time.Now(),
+	}
+	st := &fakeStore{deleteRow: row, deleteOK: true, deleteLock: barrier}
+	publisher := &capturePublisher{barrier: barrier, t: t}
+	mgr := New(Deps{Store: st, Publisher: publisher, Barrier: barrier})
+
+	got, err := mgr.Delete(context.Background(), "n1")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if st.deletedID != "n1" || !st.deleteSawLock || got.ID != "n1" || got.Target.Kind != TargetSession {
+		t.Fatalf("deleted=%q locked=%v notification=%+v", st.deletedID, st.deleteSawLock, got)
+	}
+	if len(publisher.events) != 1 || publisher.events[0].Kind != domain.NotificationDeleted || publisher.events[0].Record.ID != "n1" {
+		t.Fatalf("events = %+v", publisher.events)
+	}
+}
+
+func TestDeleteMissingReturnsNotFound(t *testing.T) {
+	mgr := New(Deps{Store: &fakeStore{}})
+	_, err := mgr.Delete(context.Background(), "missing")
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindNotFound || apiErr.Code != "NOTIFICATION_NOT_FOUND" {
+		t.Fatalf("err = %v, want notification not found", err)
 	}
 }
 

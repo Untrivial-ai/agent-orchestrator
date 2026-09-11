@@ -99,6 +99,30 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 	return i, err
 }
 
+const deleteNotification = `-- name: DeleteNotification :one
+DELETE FROM notifications
+WHERE id = ?
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+`
+
+func (q *Queries) DeleteNotification(ctx context.Context, id string) (Notification, error) {
+	row := q.db.QueryRowContext(ctx, deleteNotification, id)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.ProjectID,
+		&i.PRURL,
+		&i.Type,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const getOpenNotificationByDedupe = `-- name: GetOpenNotificationByDedupe :one
 SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
 FROM notifications

@@ -111,6 +111,8 @@ const (
 	// NotificationResolved announces that a stored notification's underlying
 	// issue went away, so open dashboards can drop it from the unresolved list.
 	NotificationResolved NotificationEventKind = "resolved"
+	// NotificationDeleted announces that one stored notification was deleted.
+	NotificationDeleted NotificationEventKind = "deleted"
 	// NotificationCleared announces that notification history was deleted.
 	NotificationCleared NotificationEventKind = "cleared"
 )
