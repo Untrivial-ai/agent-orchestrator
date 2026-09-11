@@ -129,8 +129,10 @@ func (c *NotificationsController) clearAll(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, ClearNotificationsResponse{
-		ClearedCount: result.ClearedCount,
-		ClearID:      result.ClearID,
+		ClearedCount:  result.ClearedCount,
+		ClearID:       result.ClearID,
+		ClearEpoch:    result.ClearEpoch,
+		ClearSequence: result.ClearSequence,
 	})
 }
 
@@ -177,8 +179,10 @@ func writeNotificationSSE(w http.ResponseWriter, flusher http.Flusher, event dom
 	case domain.NotificationCleared:
 		name = "notification_cleared"
 		payload = struct {
-			ClearID string `json:"clearId"`
-		}{ClearID: event.ClearID}
+			ClearID       string `json:"clearId"`
+			ClearEpoch    string `json:"clearEpoch"`
+			ClearSequence int64  `json:"clearSequence"`
+		}{ClearID: event.ClearID, ClearEpoch: event.ClearEpoch, ClearSequence: event.ClearSequence}
 	case domain.NotificationResolved:
 		name = "notification_resolved"
 	}

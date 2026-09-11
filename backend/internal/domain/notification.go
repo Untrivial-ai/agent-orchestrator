@@ -117,9 +117,11 @@ const (
 
 // NotificationEvent is one live notification-stream message.
 type NotificationEvent struct {
-	Kind    NotificationEventKind
-	Record  NotificationRecord
-	ClearID string
+	Kind          NotificationEventKind
+	Record        NotificationRecord
+	ClearID       string
+	ClearEpoch    string
+	ClearSequence int64
 }
 
 var (

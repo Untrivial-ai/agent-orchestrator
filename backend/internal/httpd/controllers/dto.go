@@ -1557,8 +1557,10 @@ type MarkAllNotificationsReadResponse struct {
 
 // ClearNotificationsResponse is the body of DELETE /api/v1/notifications.
 type ClearNotificationsResponse struct {
-	ClearedCount int64  `json:"clearedCount" description:"Number of notifications deleted."`
-	ClearID      string `json:"clearId" description:"Identifier shared with the ordered notification_cleared stream event."`
+	ClearedCount  int64  `json:"clearedCount" description:"Number of notifications deleted."`
+	ClearID       string `json:"clearId" description:"Identifier shared with the ordered notification_cleared stream event."`
+	ClearEpoch    string `json:"clearEpoch" description:"Daemon epoch for ordering notification clears across one daemon lifetime."`
+	ClearSequence int64  `json:"clearSequence" description:"Monotonic notification-clear sequence within clearEpoch."`
 }
 
 // ImportStatusResponse is the body of GET /api/v1/import: whether a legacy AO

@@ -166,7 +166,9 @@ const stableUnreadQuery = notificationQueryResult("unread");
 const stableAllQuery = notificationQueryResult("all");
 
 beforeEach(() => {
-	clearAllMock.mockReset().mockResolvedValue({ clearId: "clear-1", clearedCount: 4 });
+	clearAllMock
+		.mockReset()
+		.mockResolvedValue({ clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1, clearedCount: 4 });
 	connectMock.mockReset();
 	paramsMock.mockReset().mockReturnValue({});
 	useUiStore.setState({ visibleTerminalKindBySession: {} });

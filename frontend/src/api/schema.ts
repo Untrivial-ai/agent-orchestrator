@@ -2619,8 +2619,15 @@ export interface components {
             sessionId: string;
         };
         ClearNotificationsResponse: {
+            /** @description Daemon epoch for ordering notification clears across one daemon lifetime. */
+            clearEpoch: string;
             /** @description Identifier shared with the ordered notification_cleared stream event. */
             clearId: string;
+            /**
+             * Format: int64
+             * @description Monotonic notification-clear sequence within clearEpoch.
+             */
+            clearSequence: number;
             /**
              * Format: int64
              * @description Number of notifications deleted.

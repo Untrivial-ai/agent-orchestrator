@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -206,20 +207,36 @@ func TestListUnreadRequiresStore(t *testing.T) {
 	}
 }
 
-func TestClearAllPublishesMatchingIDInsideBarrier(t *testing.T) {
+func TestClearAllPublishesMatchingOrderedGenerationInsideBarrier(t *testing.T) {
 	barrier := &recordingLocker{}
 	st := &fakeStore{clearAllCount: 4, clearLock: barrier}
 	publisher := &capturePublisher{barrier: barrier, t: t}
-	mgr := New(Deps{Store: st, Publisher: publisher, Barrier: barrier, NewClearID: func() string { return "clear-1" }})
+	clearID := 0
+	mgr := New(Deps{
+		Store: st, Publisher: publisher, Barrier: barrier, ClearEpoch: "epoch-1",
+		NewClearID: func() string {
+			clearID++
+			return fmt.Sprintf("clear-%d", clearID)
+		},
+	})
 
-	result, err := mgr.ClearAll(context.Background())
+	first, err := mgr.ClearAll(context.Background())
 	if err != nil {
 		t.Fatalf("ClearAll: %v", err)
 	}
-	if result.ClearedCount != 4 || result.ClearID != "clear-1" || !st.clearedAll || !st.clearSawLock {
-		t.Fatalf("result=%+v cleared=%v locked=%v", result, st.clearedAll, st.clearSawLock)
+	second, err := mgr.ClearAll(context.Background())
+	if err != nil {
+		t.Fatalf("second ClearAll: %v", err)
 	}
-	if len(publisher.events) != 1 || publisher.events[0].Kind != domain.NotificationCleared || publisher.events[0].ClearID != "clear-1" {
+	if first.ClearedCount != 4 || first.ClearID != "clear-1" || first.ClearEpoch != "epoch-1" || first.ClearSequence != 1 ||
+		second.ClearID != "clear-2" || second.ClearEpoch != "epoch-1" || second.ClearSequence != 2 ||
+		!st.clearedAll || !st.clearSawLock {
+		t.Fatalf("first=%+v second=%+v cleared=%v locked=%v", first, second, st.clearedAll, st.clearSawLock)
+	}
+	if len(publisher.events) != 2 || publisher.events[0].Kind != domain.NotificationCleared ||
+		publisher.events[0].ClearID != first.ClearID || publisher.events[0].ClearEpoch != first.ClearEpoch ||
+		publisher.events[0].ClearSequence != first.ClearSequence || publisher.events[1].ClearID != second.ClearID ||
+		publisher.events[1].ClearEpoch != second.ClearEpoch || publisher.events[1].ClearSequence != second.ClearSequence {
 		t.Fatalf("events = %+v", publisher.events)
 	}
 }

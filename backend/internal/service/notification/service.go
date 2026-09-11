@@ -24,10 +24,12 @@ const (
 
 // Manager reads stored notifications for REST controllers.
 type Manager struct {
-	store      Store
-	publisher  Publisher
-	barrier    sync.Locker
-	newClearID func() string
+	store         Store
+	publisher     Publisher
+	barrier       sync.Locker
+	newClearID    func() string
+	clearEpoch    string
+	clearSequence int64
 }
 
 // Publisher sends notification changes to live dashboard subscribers.
@@ -37,8 +39,10 @@ type Publisher interface {
 
 // ClearResult describes one completed notification-history clear.
 type ClearResult struct {
-	ClearedCount int64
-	ClearID      string
+	ClearedCount  int64
+	ClearID       string
+	ClearEpoch    string
+	ClearSequence int64
 }
 
 // Deps configures a Manager.
@@ -47,16 +51,23 @@ type Deps struct {
 	Publisher  Publisher
 	Barrier    sync.Locker
 	NewClearID func() string
+	ClearEpoch string
 }
 
 // New constructs a notification Manager.
 func New(d Deps) *Manager {
-	m := &Manager{store: d.Store, publisher: d.Publisher, barrier: d.Barrier, newClearID: d.NewClearID}
+	m := &Manager{
+		store: d.Store, publisher: d.Publisher, barrier: d.Barrier,
+		newClearID: d.NewClearID, clearEpoch: d.ClearEpoch,
+	}
 	if m.barrier == nil {
 		m.barrier = &sync.Mutex{}
 	}
 	if m.newClearID == nil {
 		m.newClearID = func() string { return "ntf_clear_" + uuid.NewString() }
+	}
+	if m.clearEpoch == "" {
+		m.clearEpoch = "ntf_clear_epoch_" + uuid.NewString()
 	}
 	return m
 }
@@ -141,9 +152,9 @@ func (m *Manager) MarkAllRead(ctx context.Context, ids []string) (int64, error) 
 	return m.store.MarkNotificationsRead(ctx, ids)
 }
 
-// ClearAll deletes notification history and publishes the same clear id that
-// the HTTP response returns. Clients use that id to apply the reset once even
-// when the stream event arrives before the mutation response.
+// ClearAll deletes notification history and publishes the same ordered clear
+// generation that the HTTP response returns. Clients use the epoch and sequence
+// to reject a stale response when concurrent clears complete out of order.
 func (m *Manager) ClearAll(ctx context.Context) (ClearResult, error) {
 	if m == nil || m.store == nil {
 		return ClearResult{}, errors.New("notification: store is required")
@@ -154,9 +165,21 @@ func (m *Manager) ClearAll(ctx context.Context) (ClearResult, error) {
 	if err != nil {
 		return ClearResult{}, err
 	}
-	result := ClearResult{ClearedCount: cleared, ClearID: m.newClearID()}
+	m.clearSequence++
+	result := ClearResult{
+		ClearedCount:  cleared,
+		ClearID:       m.newClearID(),
+		ClearEpoch:    m.clearEpoch,
+		ClearSequence: m.clearSequence,
+	}
 	if m.publisher != nil {
-		if err := m.publisher.Publish(ctx, domain.NotificationEvent{Kind: domain.NotificationCleared, ClearID: result.ClearID}); err != nil {
+		event := domain.NotificationEvent{
+			Kind:          domain.NotificationCleared,
+			ClearID:       result.ClearID,
+			ClearEpoch:    result.ClearEpoch,
+			ClearSequence: result.ClearSequence,
+		}
+		if err := m.publisher.Publish(ctx, event); err != nil {
 			return ClearResult{}, fmt.Errorf("notification: publish clear-all: %w", err)
 		}
 	}
