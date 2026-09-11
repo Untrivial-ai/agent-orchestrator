@@ -17,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
+	coderprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/coder"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/go-chi/chi/v5"
@@ -148,6 +149,7 @@ type Server struct {
 	environmentControlToken string
 	secretCipher            *secrets.Cipher
 	credentialValidator     credentialValidator
+	coderInspector          coderConnectionInspector
 	webhookMaxBody          int64
 	handler                 http.Handler
 }
@@ -172,6 +174,7 @@ type Options struct {
 	EnvironmentControlToken string
 	SecretCipher            *secrets.Cipher
 	CredentialValidator     credentialValidator
+	CoderInspector          coderConnectionInspector
 	WebhookMaxBody          int64
 }
 
@@ -228,10 +231,14 @@ func New(options Options) *Server {
 		environmentControlToken: options.EnvironmentControlToken,
 		secretCipher:            options.SecretCipher,
 		credentialValidator:     options.CredentialValidator,
+		coderInspector:          options.CoderInspector,
 		webhookMaxBody:          webhookMaxBody,
 	}
 	if server.credentialValidator == nil {
 		server.credentialValidator = newAgentCredentialValidator(nil)
+	}
+	if server.coderInspector == nil {
+		server.coderInspector = coderprovider.InspectConnection
 	}
 	if server.checkoutBroker == nil && options.GitHub != nil {
 		server.checkoutBroker = options.GitHub

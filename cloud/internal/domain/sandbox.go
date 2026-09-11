@@ -60,6 +60,7 @@ type Sandbox struct {
 	Provider              string
 	ProviderEnvironmentID string
 	ProviderConnectionID  string
+	UserConnectionID      string
 	DesiredState          string
 	ObservedState         string
 	ResourceProfile       json.RawMessage

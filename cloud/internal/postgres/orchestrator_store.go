@@ -78,6 +78,34 @@ func (s *Store) CreateOrchestratorChild(
 		}
 		input.ProjectID = projectID
 		input.Kind = "worker"
+		if createdByUserID != nil {
+			if _, err := tx.Exec(
+				ctx, `SELECT set_config('ao.user_id', $1, true)`, *createdByUserID,
+			); err != nil {
+				return err
+			}
+		}
+		// Children run beside their orchestrator. Inherit the exact immutable
+		// provider contract and connection rather than resolving today's
+		// deployment default again.
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT provider,
+				COALESCE(provider_connection_id::text, ''),
+				COALESCE(user_provider_connection_id::text, ''),
+				resource_profile, bootstrap_context
+			FROM ao_sandboxes
+			WHERE org_id = $1 AND session_id = $2`,
+			orgID, orchestratorSessionID,
+		).Scan(
+			&input.Provider,
+			&input.SandboxConnectionID,
+			&input.UserSandboxConnectionID,
+			&input.ResourceProfile,
+			&input.BootstrapContext,
+		); err != nil {
+			return err
+		}
 		creator := ""
 		if createdByUserID != nil {
 			creator = *createdByUserID

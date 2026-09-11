@@ -64,6 +64,27 @@ type CoderConfig struct {
 	WorkerTokenTTL time.Duration
 }
 
+// CoderConnectionConfig is the non-secret portion of a user's personal Coder
+// connection. The API token is encrypted separately; this object is safe to
+// return to the desktop and stamp into a sandbox plan.
+type CoderConnectionConfig struct {
+	BaseURL     string            `json:"baseUrl"`
+	Owner       string            `json:"owner"`
+	TemplateID  string            `json:"templateId"`
+	AgentName   string            `json:"agentName,omitempty"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+	DurableRoot string            `json:"durableRoot"`
+}
+
+// Config expands a stored connection into the existing provisioning contract.
+func (c CoderConnectionConfig) Config(workerTokenTTL time.Duration) CoderConfig {
+	return CoderConfig{
+		BaseURL: c.BaseURL, Owner: c.Owner, TemplateID: c.TemplateID,
+		AgentName: c.AgentName, Parameters: c.Parameters,
+		DurableRoot: c.DurableRoot, WorkerTokenTTL: workerTokenTTL,
+	}
+}
+
 // CoderSessionProfile is the non-secret provider contract stamped onto one
 // session. Reconciliation reads these values from the durable sandbox row; a
 // later deployment configuration change must not move or recreate that session.

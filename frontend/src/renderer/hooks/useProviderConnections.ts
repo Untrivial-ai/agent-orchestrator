@@ -26,7 +26,26 @@ export function useProviderConnections(orgId: string | undefined) {
 	});
 }
 
+export const userProviderConnectionsQueryKey = ["cloud-user-provider-connections"] as const;
+
+export function useUserProviderConnections(enabled = true) {
+	const { client, ready } = useCloudCp();
+	return useQuery({
+		queryKey: userProviderConnectionsQueryKey,
+		enabled: ready && enabled,
+		staleTime: 60_000,
+		queryFn: async (): Promise<CloudCpProviderConnection[]> => {
+			const { providerConnections } = await client.listUserProviderConnections();
+			return providerConnections;
+		},
+	});
+}
+
 /** True when the org has at least one connection the control plane validated. */
 export function hasValidAgentConnection(connections: CloudCpProviderConnection[] | undefined): boolean {
-	return (connections ?? []).some((connection) => connection.validationState === "valid");
+	return (connections ?? []).some(
+		(connection) =>
+			(connection.provider === "claude-code" || connection.provider === "codex" || connection.provider === "cursor") &&
+			connection.validationState === "valid",
+	);
 }

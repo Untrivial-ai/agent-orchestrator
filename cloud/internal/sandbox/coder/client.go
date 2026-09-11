@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -74,6 +75,69 @@ type Client struct {
 	http                  *http.Client
 }
 
+// ConnectionIdentity is the account/template identity verified directly with
+// Coder before AO persists a personal connection.
+type ConnectionIdentity struct {
+	Owner        string
+	TemplateID   string
+	TemplateName string
+}
+
+// APIError preserves Coder's status code so the control plane can distinguish
+// rejected credentials from an unavailable deployment without exposing a
+// response body to the desktop.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("coder: API returned %d: %s", e.StatusCode, e.Message)
+}
+
+// NewPublicHTTPClient returns the transport used for self-service Coder
+// connections. Customer-managed deployment configuration may deliberately use
+// private networking, but a URL entered by an end user must not turn the AO
+// control plane into an SSRF path to loopback, link-local, or VPC services.
+func NewPublicHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("coder: resolve public endpoint: %w", err)
+		}
+		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("coder: resolve public endpoint: %w", err)
+		}
+		if len(addresses) == 0 {
+			return nil, errors.New("coder: public endpoint has no IP address")
+		}
+		for _, address := range addresses {
+			ip := address.IP
+			if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+				ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				return nil, errors.New("coder: self-service endpoint must resolve only to public IP addresses")
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].IP.String(), port))
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   defaultTimeout,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if request.URL.Scheme != "https" {
+				return errors.New("coder: self-service endpoint redirects must use https")
+			}
+			if len(via) >= 10 {
+				return errors.New("coder: too many redirects")
+			}
+			return nil
+		},
+	}
+}
+
 var (
 	_ sandbox.Provider     = (*Client)(nil)
 	_ sandbox.Bootstrapper = (*Client)(nil)
@@ -117,6 +181,50 @@ func New(config Config) (*Client, error) {
 		agentName:  strings.TrimSpace(config.AgentName),
 		parameters: parameters,
 		http:       httpClient,
+	}, nil
+}
+
+// InspectConnection verifies a token and template without creating a
+// workspace. The returned owner comes from Coder itself, so AO never trusts a
+// user-supplied workspace owner.
+func InspectConnection(
+	ctx context.Context,
+	baseURL, token, templateID string,
+	httpClient *http.Client,
+) (ConnectionIdentity, error) {
+	client, err := New(Config{
+		BaseURL: baseURL, Token: token, Owner: "me", TemplateID: templateID,
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		return ConnectionIdentity{}, err
+	}
+	var user struct {
+		Username string `json:"username"`
+	}
+	if err := client.do(ctx, http.MethodGet, "/api/v2/users/me", nil, &user); err != nil {
+		return ConnectionIdentity{}, fmt.Errorf("inspect account: %w", err)
+	}
+	user.Username = strings.TrimSpace(user.Username)
+	if user.Username == "" {
+		return ConnectionIdentity{}, errors.New("coder: account username is empty")
+	}
+	var template struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := client.do(
+		ctx, http.MethodGet, "/api/v2/templates/"+url.PathEscape(client.templateID), nil, &template,
+	); err != nil {
+		return ConnectionIdentity{}, fmt.Errorf("inspect template: %w", err)
+	}
+	resolvedTemplateID, err := uuid.Parse(strings.TrimSpace(template.ID))
+	if err != nil || resolvedTemplateID.String() != client.templateID {
+		return ConnectionIdentity{}, errors.New("coder: template identity did not match the requested template")
+	}
+	return ConnectionIdentity{
+		Owner: user.Username, TemplateID: resolvedTemplateID.String(),
+		TemplateName: strings.TrimSpace(template.Name),
 	}, nil
 }
 
@@ -920,7 +1028,7 @@ func (c *Client) do(ctx context.Context, method, requestPath string, body, outpu
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		snippet, _ := io.ReadAll(io.LimitReader(response.Body, maxErrorBody))
-		return fmt.Errorf("coder: API returned %d: %s", response.StatusCode, strings.TrimSpace(string(snippet)))
+		return &APIError{StatusCode: response.StatusCode, Message: strings.TrimSpace(string(snippet))}
 	}
 	if output == nil {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBody))

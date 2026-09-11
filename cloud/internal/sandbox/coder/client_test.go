@@ -33,6 +33,62 @@ const (
 	testAgentID     = "0536c201-bd3f-44c7-91cb-f22844bbade1"
 )
 
+func TestInspectConnection(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Coder-Session-Token") != "test-token" {
+			t.Errorf("token header = %q", request.Header.Get("Coder-Session-Token"))
+		}
+		switch request.URL.Path {
+		case "/api/v2/users/me":
+			_ = json.NewEncoder(writer).Encode(map[string]string{"username": "ao-user"})
+		case "/api/v2/templates/" + testTemplateID:
+			_ = json.NewEncoder(writer).Encode(map[string]string{"id": testTemplateID, "name": "AO Linux"})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	identity, err := InspectConnection(
+		context.Background(), server.URL, "test-token", testTemplateID, server.Client(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Owner != "ao-user" || identity.TemplateID != testTemplateID || identity.TemplateName != "AO Linux" {
+		t.Fatalf("identity = %+v", identity)
+	}
+}
+
+func TestInspectConnectionPreservesAuthenticationStatus(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	_, err := InspectConnection(
+		context.Background(), server.URL, "bad-token", testTemplateID, server.Client(),
+	)
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("error = %v, want wrapped 401 APIError", err)
+	}
+}
+
+func TestPublicHTTPClientRejectsLoopback(t *testing.T) {
+	t.Parallel()
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://127.0.0.1/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewPublicHTTPClient().Do(request)
+	if err == nil || !strings.Contains(err.Error(), "public IP addresses") {
+		t.Fatalf("error = %v, want public-address rejection", err)
+	}
+}
+
 func TestLifecycle(t *testing.T) {
 	t.Parallel()
 

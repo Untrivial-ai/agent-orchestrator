@@ -289,6 +289,15 @@ export interface CloudCpPutAgentConnectionRequest {
 	secret: string;
 }
 
+export interface CloudCpPutCoderConnectionRequest {
+	baseUrl: string;
+	apiToken: string;
+	templateId: string;
+	agentName?: string;
+	parameters?: Record<string, string>;
+	durableRoot: string;
+}
+
 export interface CloudCpProviderConnection {
 	id: string;
 	provider: string;
@@ -300,7 +309,7 @@ export interface CloudCpProviderConnection {
 	updatedAt: string;
 }
 
-/** GET /orgs/{orgId}/provider-connections */
+/** GET /orgs/{orgId}/provider-connections or GET /me/providers */
 export interface CloudCpProviderConnectionsResponse {
 	providerConnections: CloudCpProviderConnection[];
 }

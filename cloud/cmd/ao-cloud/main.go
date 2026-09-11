@@ -93,6 +93,7 @@ func provisioningDefaults(cfg config.Config) sandbox.ProvisioningDefaults {
 func newSandboxReconciler(
 	cfg config.Config,
 	store *postgres.Store,
+	providerCipher *secrets.Cipher,
 	logger *slog.Logger,
 ) (*reconcile.Reconciler, error) {
 	if cfg.SandboxProvider != sandbox.ProviderNodeOps &&
@@ -165,7 +166,11 @@ func newSandboxReconciler(
 		}
 		coderProvider = provider
 	}
-	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider), reconcile.Options{
+	providerResolver := sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider)
+	if providerCipher != nil {
+		providerResolver.WithUserConnections(store, providerCipher)
+	}
+	return reconcile.New(store, providerResolver, reconcile.Options{
 		PublicURL:              cfg.PublicURL,
 		WorkerBinary:           workerBinary,
 		WorkerHelperBinary:     workerHelperBinary,
@@ -294,7 +299,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 	}
-	reconciler, err := newSandboxReconciler(cfg, store, logger)
+	reconciler, err := newSandboxReconciler(cfg, store, providerCipher, logger)
 	if err != nil {
 		return err
 	}

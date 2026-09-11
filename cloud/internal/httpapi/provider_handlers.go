@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
+	coderprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/coder"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -70,9 +73,26 @@ type credentialValidator interface {
 	Validate(context.Context, string, string, []byte) error
 }
 
+type coderConnectionInspector func(
+	context.Context,
+	string,
+	string,
+	string,
+	*http.Client,
+) (coderprovider.ConnectionIdentity, error)
+
 type putAgentConnectionRequest struct {
 	CredentialType string `json:"credentialType"`
 	Secret         string `json:"secret"`
+}
+
+type putCoderConnectionRequest struct {
+	BaseURL     string            `json:"baseUrl"`
+	APIToken    string            `json:"apiToken"`
+	TemplateID  string            `json:"templateId"`
+	AgentName   string            `json:"agentName,omitempty"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+	DurableRoot string            `json:"durableRoot"`
 }
 
 type providerConnectionResponse struct {
@@ -323,6 +343,10 @@ func (s *Server) listUserProviderConnections(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) putUserAgentConnection(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(chi.URLParam(r, "agent"))
+	if agent == sandbox.ProviderCoder {
+		s.putUserCoderConnection(w, r)
+		return
+	}
 	if !validAgentProvider(agent) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "The coding agent is invalid.")
 		return
@@ -406,8 +430,8 @@ func (s *Server) putUserAgentConnection(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) deleteUserAgentConnection(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(chi.URLParam(r, "agent"))
-	if !validAgentProvider(agent) {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "The coding agent is invalid.")
+	if !validAgentProvider(agent) && agent != sandbox.ProviderCoder {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "The provider is invalid.")
 		return
 	}
 	store, ok := s.store.(userProviderConnectionStore)
@@ -422,6 +446,96 @@ func (s *Server) deleteUserAgentConnection(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) putUserCoderConnection(w http.ResponseWriter, r *http.Request) {
+	if s.secretCipher == nil || s.coderInspector == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "provider_connections_unavailable", "Provider credential storage is not configured.")
+		return
+	}
+	var request putCoderConnectionRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
+		return
+	}
+	request.BaseURL = strings.TrimRight(strings.TrimSpace(request.BaseURL), "/")
+	request.TemplateID = strings.TrimSpace(request.TemplateID)
+	request.AgentName = strings.TrimSpace(request.AgentName)
+	request.DurableRoot = strings.TrimSpace(request.DurableRoot)
+	secret := []byte(strings.TrimSpace(request.APIToken))
+	defer clear(secret)
+	request.APIToken = ""
+	config := sandbox.CoderConnectionConfig{
+		BaseURL: request.BaseURL, TemplateID: request.TemplateID,
+		AgentName: request.AgentName, Parameters: request.Parameters,
+		DurableRoot: request.DurableRoot,
+	}
+	endpoint, endpointErr := url.Parse(config.BaseURL)
+	if endpointErr != nil || endpoint.Scheme != "https" {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Self-service Coder connections require an HTTPS URL.")
+		return
+	}
+	if len(secret) == 0 || len(secret) > 64<<10 {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "The Coder API token is invalid.")
+		return
+	}
+	// Reuse the provisioning validator so unsafe URLs, parameter names, and
+	// durable paths are rejected before any network request or persistence.
+	probeConfig := config.Config(time.Minute)
+	probeConfig.Owner = "pending"
+	if err := probeConfig.Validate(); err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		return
+	}
+	identity, err := s.coderInspector(
+		r.Context(), config.BaseURL, string(secret), config.TemplateID, coderprovider.NewPublicHTTPClient(),
+	)
+	if err != nil {
+		var apiError *coderprovider.APIError
+		if errors.As(err, &apiError) && (apiError.StatusCode == http.StatusUnauthorized || apiError.StatusCode == http.StatusForbidden) {
+			writeError(w, r, http.StatusUnprocessableEntity, "invalid_credential", "Coder rejected the API token or template access.")
+			return
+		}
+		if errors.Is(err, sandbox.ErrNotFound) {
+			writeError(w, r, http.StatusUnprocessableEntity, "invalid_template", "The Coder template was not found or is not accessible to this account.")
+			return
+		}
+		s.logger.Warn("validate Coder connection", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "provider_unavailable", "The Coder deployment could not be validated.")
+		return
+	}
+	config.Owner = identity.Owner
+	encodedConfig, err := json.Marshal(config)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "The Coder connection could not be stored.")
+		return
+	}
+	principal := principalFrom(r)
+	encrypted, nonce, err := s.secretCipher.Encrypt(
+		secret,
+		providerSecretAssociatedData("user:"+principal.UserID, sandbox.ProviderCoder),
+	)
+	if err != nil {
+		s.logger.Error("encrypt Coder credential", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "The Coder connection could not be stored.")
+		return
+	}
+	store, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	connection, err := store.UpsertUserProviderConnection(
+		r.Context(), principal, sandbox.ProviderCoder, defaultAgentConnectionLabel,
+		encrypted, nonce, encodedConfig,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"providerConnection": toUserProviderConnectionResponse(connection),
+	})
 }
 
 func (s *Server) promoteAgentConnection(w http.ResponseWriter, r *http.Request) {

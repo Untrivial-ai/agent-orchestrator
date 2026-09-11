@@ -99,6 +99,9 @@ type CreateSession struct {
 	// SandboxConnectionID names a bring-your-own provider credential. It is
 	// empty for sandboxes that run on the platform's own account.
 	SandboxConnectionID string
+	// UserSandboxConnectionID names the creator's personal provider
+	// connection. It is mutually exclusive with SandboxConnectionID.
+	UserSandboxConnectionID string
 	// ResourceProfile and BootstrapContext are the provisioning plan the
 	// sandbox row is created with. They are stamped at intent time so a later
 	// configuration change cannot disturb an in-flight session.

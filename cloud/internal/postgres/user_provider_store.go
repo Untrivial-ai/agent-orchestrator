@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -109,6 +110,48 @@ func (s *Store) DeleteUserProviderConnection(
 	provider, label string,
 ) error {
 	return s.withUser(ctx, principal.UserID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(
+			ctx, `SELECT set_config('ao.service', 'control-plane', true)`,
+		); err != nil {
+			return err
+		}
+		var inUse bool
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM ao_sandboxes sandbox
+				JOIN ao_user_provider_connections connection
+				  ON connection.id = sandbox.user_provider_connection_id
+				WHERE connection.user_id = $1
+				  AND connection.provider = $2
+				  AND connection.label = $3
+				  AND NOT (
+					sandbox.desired_state = 'deleted' AND
+					sandbox.observed_state = 'deleted'
+				  )
+			)`,
+			principal.UserID, provider, label,
+		).Scan(&inUse); err != nil {
+			return err
+		}
+		if inUse {
+			return ErrConflict
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sandboxes sandbox
+			SET user_provider_connection_id = NULL
+			FROM ao_user_provider_connections connection
+			WHERE connection.id = sandbox.user_provider_connection_id
+			  AND connection.user_id = $1
+			  AND connection.provider = $2
+			  AND connection.label = $3
+			  AND sandbox.desired_state = 'deleted'
+			  AND sandbox.observed_state = 'deleted'`,
+			principal.UserID, provider, label,
+		); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(
 			ctx,
 			`DELETE FROM ao_user_provider_connections
@@ -151,4 +194,35 @@ func (s *Store) UserAgentCredentialAvailable(
 		).Scan(&available)
 	})
 	return available, err
+}
+
+// UserProviderConnectionSecretByID loads one validated personal provider
+// connection for reconciliation. The caller is the control plane itself, so
+// this uses the service role; session creation already bound the ID to the
+// sandbox creator and the database trigger keeps that invariant durable.
+func (s *Store) UserProviderConnectionSecretByID(
+	ctx context.Context,
+	connectionID string,
+) (domain.UserProviderConnectionSecret, error) {
+	var connection domain.UserProviderConnectionSecret
+	err := s.withService(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(
+			ctx,
+			`SELECT id, user_id, provider, encrypted_secret, secret_nonce, config
+			FROM ao_user_provider_connections
+			WHERE id = $1 AND validation_state = 'valid'`,
+			connectionID,
+		).Scan(
+			&connection.ID,
+			&connection.UserID,
+			&connection.Provider,
+			&connection.EncryptedSecret,
+			&connection.Nonce,
+			&connection.Config,
+		)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.UserProviderConnectionSecret{}, ErrNotFound
+	}
+	return connection, err
 }

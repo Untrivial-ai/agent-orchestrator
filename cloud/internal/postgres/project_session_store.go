@@ -649,6 +649,9 @@ func createSessionTx(
 	if provider == "" {
 		provider = sandbox.DefaultProvider
 	}
+	if input.SandboxConnectionID != "" && input.UserSandboxConnectionID != "" {
+		return domain.Session{}, ErrInvalid
+	}
 	if input.SandboxConnectionID != "" {
 		var connectionProvider string
 		if err := tx.QueryRow(
@@ -666,16 +669,36 @@ func createSessionTx(
 			return domain.Session{}, ErrInvalid
 		}
 	}
+	if input.UserSandboxConnectionID != "" {
+		var connectionProvider, connectionUserID string
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT provider, user_id::text FROM ao_user_provider_connections
+			WHERE id = $1`,
+			input.UserSandboxConnectionID,
+		).Scan(&connectionProvider, &connectionUserID); errors.Is(err, pgx.ErrNoRows) {
+			return domain.Session{}, ErrNotFound
+		} else if err != nil {
+			return domain.Session{}, err
+		}
+		if connectionProvider != provider || connectionUserID != actorUserID {
+			return domain.Session{}, ErrInvalid
+		}
+	}
+	connectionID := input.SandboxConnectionID
+	if connectionID == "" {
+		connectionID = input.UserSandboxConnectionID
+	}
 	resourceProfile, err := patchSandboxJSON(
 		input.ResourceProfile, provider, orgID, session.ID,
-		input.Release, input.SandboxConnectionID, false,
+		input.Release, connectionID, false,
 	)
 	if err != nil {
 		return domain.Session{}, err
 	}
 	bootstrapContext, err := patchSandboxJSON(
 		input.BootstrapContext, provider, orgID, session.ID,
-		input.Release, input.SandboxConnectionID, true,
+		input.Release, connectionID, true,
 	)
 	if err != nil {
 		return domain.Session{}, err
@@ -683,10 +706,10 @@ func createSessionTx(
 	if _, err := tx.Exec(
 		ctx,
 		`INSERT INTO ao_sandboxes (
-			session_id, org_id, provider, provider_connection_id,
+			session_id, org_id, provider, provider_connection_id, user_provider_connection_id,
 			resource_profile, bootstrap_context
-		) VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6)`,
-		session.ID, orgID, provider, input.SandboxConnectionID,
+		) VALUES ($1, $2, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, $7)`,
+		session.ID, orgID, provider, input.SandboxConnectionID, input.UserSandboxConnectionID,
 		resourceProfile, bootstrapContext,
 	); err != nil {
 		return domain.Session{}, normalizeConstraintError(err)

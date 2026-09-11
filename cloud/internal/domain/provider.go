@@ -29,3 +29,14 @@ type UserProviderConnection struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
+
+// UserProviderConnectionSecret is the encrypted internal form used by a
+// sandbox resolver. It is never serialized by renderer-facing APIs.
+type UserProviderConnectionSecret struct {
+	ID              string
+	UserID          string
+	Provider        string
+	EncryptedSecret []byte
+	Nonce           []byte
+	Config          json.RawMessage
+}

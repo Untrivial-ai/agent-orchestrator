@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -290,7 +293,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.
-	plan, err := s.provisioning.SessionPlan(request.Harness)
+	plan, userSandboxConnectionID, err := s.sessionPlanForUser(
+		r.Context(), principalFrom(r), request.Harness, request.SandboxProviderConnectionID,
+	)
 	if err != nil {
 		s.logger.Error("resolve sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(
@@ -306,18 +311,19 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		key,
 		s.maxSandboxes,
 		domain.CreateSession{
-			ProjectID:           request.ProjectID,
-			Kind:                request.Kind,
-			Harness:             request.Harness,
-			DisplayName:         request.DisplayName,
-			Prompt:              request.Prompt,
-			Mode:                request.Mode,
-			DeniedCommands:      request.DeniedCommands,
-			Provider:            plan.Provider,
-			SandboxConnectionID: request.SandboxProviderConnectionID,
-			ResourceProfile:     plan.ResourceProfile,
-			BootstrapContext:    plan.BootstrapContext,
-			Release:             s.release,
+			ProjectID:               request.ProjectID,
+			Kind:                    request.Kind,
+			Harness:                 request.Harness,
+			DisplayName:             request.DisplayName,
+			Prompt:                  request.Prompt,
+			Mode:                    request.Mode,
+			DeniedCommands:          request.DeniedCommands,
+			Provider:                plan.Provider,
+			SandboxConnectionID:     request.SandboxProviderConnectionID,
+			UserSandboxConnectionID: userSandboxConnectionID,
+			ResourceProfile:         plan.ResourceProfile,
+			BootstrapContext:        plan.BootstrapContext,
+			Release:                 s.release,
 		},
 	)
 	if err != nil {
@@ -325,6 +331,42 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"session": toSessionResponse(session, nil)})
+}
+
+// sessionPlanForUser makes a validated personal Coder connection the user's
+// sandbox provider. An explicit org-scoped provider selection still wins.
+func (s *Server) sessionPlanForUser(
+	ctx context.Context,
+	principal domain.Principal,
+	harness, orgConnectionID string,
+) (sandbox.Plan, string, error) {
+	if orgConnectionID == "" {
+		if store, ok := s.store.(userProviderConnectionStore); ok {
+			connections, err := store.ListUserProviderConnections(ctx, principal)
+			if err != nil {
+				return sandbox.Plan{}, "", err
+			}
+			for _, connection := range connections {
+				if connection.Provider != sandbox.ProviderCoder ||
+					connection.Label != defaultAgentConnectionLabel ||
+					connection.ValidationState != "valid" {
+					continue
+				}
+				var config sandbox.CoderConnectionConfig
+				if err := json.Unmarshal(connection.Config, &config); err != nil {
+					return sandbox.Plan{}, "", fmt.Errorf("decode personal Coder connection: %w", err)
+				}
+				plan, err := (sandbox.ProvisioningDefaults{
+					Provider: sandbox.ProviderCoder,
+					Release:  s.release,
+					Coder:    config.Config(s.workerTokenTTL()),
+				}).SessionPlan(harness)
+				return plan, connection.ID, err
+			}
+		}
+	}
+	plan, err := s.provisioning.SessionPlan(harness)
+	return plan, "", err
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
