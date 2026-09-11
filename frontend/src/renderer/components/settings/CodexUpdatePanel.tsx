@@ -52,7 +52,7 @@ export function CodexUpdatePanel({ job, onJob }: { job?: InstallJob; onJob: (job
 			{error ? <p role="alert" className="text-error">{error}</p> : null}
 			{advisory.error ? <p aria-live="polite">{advisory.error.message}</p> : null}
 			{current?.updateAvailable ? <p className="text-pretty">{t("settings.codexUpdate.shared")}</p> : null}
-			{(current?.runningSessions ?? 0) > 0 ? <p className="text-pretty">{t("settings.codexUpdate.sessions", { count: current?.runningSessions })}</p> : null}
+			{(current?.runningSessions ?? 0) > 0 ? <p className="text-pretty">{t("settings.codexUpdate.sessions", { count: current?.runningSessions, closeAction: t("inspector.review.killSession"), stopAction: t("inspector.review.cancel") })}</p> : null}
 			<div className="flex flex-wrap gap-2">
 				{current?.canUpdate ? <Button size="sm" disabled={pending || active || current.runningSessions > 0} onClick={() => void update()}>{t("settings.codexUpdate.update")}</Button> : null}
 				<Button size="sm" variant="outline" disabled={pending || active || advisory.isFetching} onClick={() => void refresh()}>{pending || advisory.isFetching ? t("settings.codexUpdate.checking") : t("settings.codexUpdate.check")}</Button>

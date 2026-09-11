@@ -36,10 +36,13 @@ describe("Codex update", () => {
 		expect(screen.queryByRole("button", { name: "Update now" })).not.toBeInTheDocument();
 		expect(screen.getByText("Selected: /selected/codex")).toBeInTheDocument();
 	});
-	it("blocks running provider processes without offering termination", async () => {
-		setup({ ...advisory, runningSessions: 2 });
+	it("requires explicit reviewer terminal closure without offering implicit termination", async () => {
+		const { post } = setup({ ...advisory, runningSessions: 2 });
 		expect(await screen.findByRole("button", { name: "Update now" })).toBeDisabled();
-		expect(screen.getByText(/Stop Codex workers or reviewers/)).toBeInTheDocument();
+		expect(screen.getByText(/close reviewer terminals/)).toBeInTheDocument();
+		expect(screen.getByText(/Kill review session.*Stop review alone leaves the terminal open/)).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Kill review session" })).not.toBeInTheDocument();
+		expect(post).not.toHaveBeenCalled();
 		expect(screen.getByText(/Restarting AO can leave old provider processes running/)).toBeInTheDocument();
 	});
 	it("shows failed verification even when the installed CLI remains usable", async () => {

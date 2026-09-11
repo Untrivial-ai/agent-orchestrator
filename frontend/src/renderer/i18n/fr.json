@@ -1938,7 +1938,7 @@
 	"settings.codexUpdate.available": "Disponible : {{version}} ({{source}})",
 	"settings.codexUpdate.stale": "Échec de la dernière vérification",
 	"settings.codexUpdate.shared": "La mise à jour modifie votre installation partagée de Codex, y compris son utilisation hors AO. Elle ne change pas les droits de votre compte aux modèles et ne garantit pas de retour en arrière.",
-	"settings.codexUpdate.sessions": "Arrêtez explicitement les agents ou réviseurs Codex de ces sessions AO ({{count}}) avant la mise à jour. Redémarrer AO peut laisser les anciens processus du fournisseur actifs.",
+	"settings.codexUpdate.sessions": "Arrêtez les agents Codex et fermez les terminaux de révision dans les sessions AO concernées ({{count}}) avant la mise à jour. Dans le panneau de révision, choisissez {{closeAction}} ; {{stopAction}} seul laisse le terminal ouvert. Redémarrer AO peut laisser les anciens processus du fournisseur actifs.",
 	"settings.codexUpdate.update": "Mettre à jour",
 	"settings.codexUpdate.checking": "Vérification…",
 	"settings.codexUpdate.check": "Rechercher les mises à jour de Codex",

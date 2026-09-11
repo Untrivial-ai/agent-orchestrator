@@ -1910,7 +1910,7 @@
 	"settings.codexUpdate.available": "Verfügbar: {{version}} ({{source}})",
 	"settings.codexUpdate.stale": "Letzte Prüfung fehlgeschlagen",
 	"settings.codexUpdate.shared": "Das Update ändert Ihre gemeinsam genutzte Codex-Installation, einschließlich der Nutzung außerhalb von AO. Es ändert nicht den Modellzugriff Ihres Kontos und garantiert keine Rückkehr zur vorherigen Version.",
-	"settings.codexUpdate.sessions": "Beenden Sie Codex-Agenten oder Reviewer in diesen AO-Sitzungen ({{count}}) ausdrücklich vor dem Update. Nach einem Neustart von AO können alte Anbieterprozesse weiterlaufen.",
+	"settings.codexUpdate.sessions": "Beenden Sie Codex-Agenten und schließen Sie Reviewer-Terminals in den betroffenen AO-Sitzungen ({{count}}) vor dem Update. Wählen Sie im Review-Bereich {{closeAction}}; {{stopAction}} allein lässt das Terminal offen. Nach einem Neustart von AO können alte Anbieterprozesse weiterlaufen.",
 	"settings.codexUpdate.update": "Jetzt aktualisieren",
 	"settings.codexUpdate.checking": "Wird geprüft…",
 	"settings.codexUpdate.check": "Nach Codex-Updates suchen",

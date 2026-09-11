@@ -72,10 +72,12 @@ func TestReviewerWorkloadUpdateTransition(t *testing.T) {
 			cancel()
 			f.Blocked(canceled, t, context.Canceled)
 			h.pty.signalExit(42)
-			f.Ready(ctx, t)
+			f.Blocked(ctx, t, nil)
 			if alive, err := rt.IsAlive(ctx, ports.RuntimeHandle{ID: f.Result.HandleID}); err != nil || !alive {
 				t.Fatalf("update terminated retained host: %v %v", alive, err)
 			}
+			f.Close(ctx, t)
+			f.Ready(ctx, t)
 		})
 	}
 }

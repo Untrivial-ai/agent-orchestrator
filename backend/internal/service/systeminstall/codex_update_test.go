@@ -263,12 +263,41 @@ func TestCodexUpdateBlocksLiveReviewersOnOtherHarnesses(t *testing.T) {
 	}
 }
 
+func TestCodexUpdateRequiresExplicitReviewerTerminalClosure(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprint(running), func(t *testing.T) {
+			s, _ := updateFixture(t)
+			s.sessions = sessionListerStub{sessions: []domain.SessionRecord{{ID: "worker", Harness: domain.HarnessClaudeCode}}}
+			var closed atomic.Bool
+			s.codexReviewers = codexReviewerProbe(func(ctx context.Context, _ domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+				if closed.Load() {
+					return ports.CodexReviewerControllerSnapshot{NativeSessionID: "history"}, ctx.Err()
+				}
+				return ports.CodexReviewerControllerSnapshot{HandleID: "review-worker", Running: running, NativeSessionID: "history"}, ctx.Err()
+			})
+			a, err := s.CodexUpdate(context.Background(), false)
+			if err != nil || a.RunningSessions != 1 {
+				t.Fatalf("advisory=%+v %v", a, err)
+			}
+			if _, err := s.StartCodexUpdate(context.Background(), a.Token); !errors.Is(err, ErrHarnessActive) || !strings.Contains(err.Error(), "Kill review session") {
+				t.Fatal(err)
+			}
+			closed.Store(true) // verified explicit lifecycle closure, not workload exit
+			startUpdate(t, s)
+			waitForStatus(t, s, TargetCodex, StatusSucceeded)
+		})
+	}
+}
+
 func TestCodexUpdateRechecksReviewerAfterLaunchRegistration(t *testing.T) {
 	s, _ := updateFixture(t)
 	s.sessions = sessionListerStub{sessions: []domain.SessionRecord{{ID: "claude-worker", Harness: domain.HarnessClaudeCode, ReviewerHarness: domain.ReviewerCodex}}}
-	var running, installed atomic.Bool
+	var registered, installed atomic.Bool
 	s.codexReviewers = codexReviewerProbe(func(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
-		return ports.CodexReviewerControllerSnapshot{Running: running.Load()}, nil
+		if registered.Load() {
+			return ports.CodexReviewerControllerSnapshot{HandleID: "review-worker"}, nil
+		}
+		return ports.CodexReviewerControllerSnapshot{}, nil
 	})
 	s.installCommands = updateRunner(func(context.Context, ports.InstallCommand, io.Writer, io.Writer) error {
 		installed.Store(true)
@@ -282,7 +311,7 @@ func TestCodexUpdateRechecksReviewerAfterLaunchRegistration(t *testing.T) {
 	startUpdate(t, s)
 	// The reviewer launch registered after the advisory but before relinquishing
 	// shared admission. The updater must drain admission before its final probe.
-	running.Store(true)
+	registered.Store(true)
 	release()
 	waitForStatus(t, s, TargetCodex, StatusFailed)
 	job, _ := s.Status(context.Background(), TargetCodex)
@@ -482,5 +511,54 @@ func TestCodexUpdateRequiresReviewerInputAdmission(t *testing.T) {
 	a, err := s.CodexUpdate(context.Background(), false)
 	if err != nil || a.CanUpdate {
 		t.Fatalf("missing raw-input fence left update enabled: %+v %v", a, err)
+	}
+}
+
+// Closure is checked again after exact-handle input admission is acquired. A
+// changed/unknown terminal identity must fail and release both reservations.
+type terminalInputReserverFunc func(context.Context, []string) (func(), error)
+
+func (f terminalInputReserverFunc) ReserveTerminalInput(ctx context.Context, ids []string) (func(), error) {
+	return f(ctx, ids)
+}
+
+func TestCodexUpdateRechecksClosureAndReleasesAdmission(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprint(unknown), func(t *testing.T) {
+			s, _ := updateFixture(t)
+			s.sessions = sessionListerStub{sessions: []domain.SessionRecord{{ID: "worker", Harness: domain.HarnessClaudeCode}}}
+			var changed, released, installed atomic.Bool
+			s.codexReviewers = codexReviewerProbe(func(ctx context.Context, _ domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+				if changed.Load() {
+					if unknown {
+						return ports.CodexReviewerControllerSnapshot{}, ports.ErrRuntimeProbeInconclusive
+					}
+					return ports.CodexReviewerControllerSnapshot{HandleID: "replacement-reviewer"}, nil
+				}
+				return ports.CodexReviewerControllerSnapshot{}, ctx.Err()
+			})
+			s.reviewerInput = terminalInputReserverFunc(func(_ context.Context, ids []string) (func(), error) {
+				if len(ids) != 0 {
+					return nil, errors.New("open reviewer reached replacement reservation")
+				}
+				changed.Store(true)
+				return func() { released.Store(true) }, nil
+			})
+			s.installCommands = updateRunner(func(context.Context, ports.InstallCommand, io.Writer, io.Writer) error {
+				installed.Store(true)
+				return nil
+			})
+			startUpdate(t, s)
+			waitForStatus(t, s, TargetCodex, StatusFailed)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			// Close joins the failed worker, including its deferred releases.
+			if err := s.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if installed.Load() || !released.Load() || s.codexOperationGate.ExclusivePendingOrHeld() {
+				t.Fatal("failed closure recheck ran installer or retained admission")
+			}
+		})
 	}
 }

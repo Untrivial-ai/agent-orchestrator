@@ -35,6 +35,7 @@ type Fixture struct {
 	Result    review.LaunchResult
 	Service   *systeminstall.Service
 	Gate      *codexops.Gate
+	store     *reviewerStore
 	installer *installer
 }
 
@@ -48,6 +49,23 @@ func (s *reviewerStore) GetReviewBySessionAndHarness(ctx context.Context, id dom
 }
 func (s *reviewerStore) ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error) {
 	return []domain.SessionRecord{{ID: s.row.SessionID, Harness: domain.HarnessClaudeCode, ReviewerHarness: domain.ReviewerCodex}}, ctx.Err()
+}
+
+func (s *reviewerStore) ListReviewsBySession(ctx context.Context, _ domain.SessionID) ([]domain.Review, error) {
+	return []domain.Review{s.row}, ctx.Err()
+}
+func (s *reviewerStore) ListRunningReviewRunsBySession(ctx context.Context, _ domain.SessionID) ([]domain.ReviewRun, error) {
+	return nil, ctx.Err()
+}
+func (s *reviewerStore) ClearReviewerHandle(ctx context.Context, _ domain.SessionID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.row.ReviewerHandleID = ""
+	return nil
+}
+func (s *reviewerStore) CancelRunningReviewRunsBySession(ctx context.Context, _ domain.SessionID, _ string) (int64, error) {
+	return 0, ctx.Err()
 }
 
 type adapter struct{ binary string }
@@ -119,14 +137,14 @@ func New(ctx context.Context, t *testing.T, rt Runtime, mode, binary string) *Fi
 			t.Error(err)
 		}
 	})
-	return &Fixture{Engine: engine, Launcher: l, Result: result, Service: service, Gate: gate, installer: runner}
+	return &Fixture{Engine: engine, Launcher: l, Result: result, Service: service, Gate: gate, store: store, installer: runner}
 }
 
 // Blocked requires both the snapshot and updater to preserve live/unknown proof.
 func (f *Fixture) Blocked(ctx context.Context, t *testing.T, wantErr error) {
 	t.Helper()
 	snapshot, err := f.Engine.SnapshotCodexReviewer(ctx, "worker")
-	if !errors.Is(err, wantErr) || (wantErr == nil && !snapshot.Running) {
+	if !errors.Is(err, wantErr) || (wantErr == nil && !snapshot.Running && snapshot.HandleID == "") {
 		t.Fatalf("snapshot=%+v, %v; want blocking %v", snapshot, err, wantErr)
 	}
 	if snapshot.HandleID != "" && (snapshot.HandleID != f.Result.HandleID || snapshot.NativeSessionID != "native-history") {
@@ -141,15 +159,24 @@ func (f *Fixture) Blocked(ctx context.Context, t *testing.T, wantErr error) {
 	}
 }
 
-// Ready requires confirmed completion to permit and verify a fake update job.
+// Close exercises the existing explicit Kill review session lifecycle. It keeps
+// native history and clears the recorded handle only after confirmed teardown.
+func (f *Fixture) Close(ctx context.Context, t *testing.T) {
+	t.Helper()
+	if _, err := f.Engine.TerminateReviewer(ctx, "worker", "explicit user closure"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Ready requires explicit terminal closure to permit and verify a fake update job.
 func (f *Fixture) Ready(ctx context.Context, t *testing.T) {
 	t.Helper()
 	snapshot, err := f.Engine.SnapshotCodexReviewer(ctx, "worker")
 	if err != nil || snapshot.Running {
 		t.Fatalf("completed reviewer snapshot=%+v, %v", snapshot, err)
 	}
-	if snapshot.NativeSessionID != "native-history" || snapshot.HandleID != f.Result.HandleID {
-		t.Fatalf("completion lost history: %+v", snapshot)
+	if snapshot.NativeSessionID != "native-history" || snapshot.HandleID != "" {
+		t.Fatalf("closure lost history: %+v", snapshot)
 	}
 	if _, err = f.Service.StartCodexUpdate(ctx, "1.0.0"); err != nil {
 		t.Fatal(err)
@@ -169,10 +196,12 @@ func (f *Fixture) RecheckBlocked(ctx context.Context, t *testing.T, register fun
 		t.Fatal(err)
 	}
 	defer release()
+	f.store.row.ReviewerHandleID = "" // launch has not registered its terminal yet
 	if _, err = f.Service.StartCodexUpdate(ctx, "1.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	register()
+	f.store.row.ReviewerHandleID = f.Result.HandleID
 	release()
 	job := f.waitStatus(ctx, t, systeminstall.StatusFailed)
 	if f.installer.runs.Load() != 0 || !strings.Contains(job.Error, "reviewers") {

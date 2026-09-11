@@ -14,6 +14,7 @@ import (
 )
 
 type fakeBackend struct {
+	destroyed     bool
 	createHandle  ports.RuntimeHandle
 	createErr     error
 	calls         []string
@@ -31,6 +32,7 @@ func (f *fakeBackend) record(call string, handle ports.RuntimeHandle) {
 }
 
 func (f *fakeBackend) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	f.destroyed = false
 	f.calls = append(f.calls, "create:"+string(cfg.SessionID))
 	if f.createErr != nil {
 		return ports.RuntimeHandle{}, f.createErr
@@ -42,6 +44,7 @@ func (f *fakeBackend) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 }
 
 func (f *fakeBackend) Destroy(_ context.Context, handle ports.RuntimeHandle) error {
+	f.destroyed = true
 	f.record("destroy", handle)
 	return nil
 }
@@ -58,7 +61,7 @@ func (f *fakeBackend) GetStyledOutput(_ context.Context, handle ports.RuntimeHan
 
 func (f *fakeBackend) IsAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
 	f.record("alive", handle)
-	return true, nil
+	return !f.destroyed, nil
 }
 
 func (f *fakeBackend) IsChildAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
@@ -342,6 +345,8 @@ func TestReviewerWorkloadUpdateRoutesSnapshot(t *testing.T) {
 				f.Blocked(context.Background(), t, ports.ErrRuntimeProbeInconclusive)
 				selected.workloadErr = nil
 				alive = false
+				f.Blocked(context.Background(), t, nil)
+				f.Close(context.Background(), t)
 				f.Ready(context.Background(), t)
 				if f.Result.HandleID != prefix+"review-worker" || selected.workloadRef != (ports.SupervisedProcessRef{}) {
 					t.Fatalf("router lost unsupervised identity: %+v %+v", f.Result, selected.workloadRef)

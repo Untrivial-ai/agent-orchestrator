@@ -1938,7 +1938,7 @@
 	"settings.codexUpdate.available": "Disponible: {{version}} ({{source}})",
 	"settings.codexUpdate.stale": "Falló la última comprobación",
 	"settings.codexUpdate.shared": "La actualización cambia la instalación compartida de Codex, incluido su uso fuera de AO. No cambia el acceso a modelos de tu cuenta ni garantiza la reversión.",
-	"settings.codexUpdate.sessions": "Detén explícitamente los agentes o revisores de Codex en estas sesiones de AO ({{count}}) antes de actualizar. Reiniciar AO puede dejar procesos antiguos del proveedor en ejecución.",
+	"settings.codexUpdate.sessions": "Detén los agentes de Codex y cierra los terminales de revisión en las sesiones de AO afectadas ({{count}}) antes de actualizar. En el panel de revisión elige {{closeAction}}; {{stopAction}} por sí solo deja el terminal abierto. Reiniciar AO puede dejar procesos antiguos del proveedor en ejecución.",
 	"settings.codexUpdate.update": "Actualizar ahora",
 	"settings.codexUpdate.checking": "Comprobando…",
 	"settings.codexUpdate.check": "Buscar actualizaciones de Codex",

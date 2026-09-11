@@ -71,86 +71,35 @@ func newReviewerUpdateFixture(t *testing.T) (*reviewerUpdateFixture, *systeminst
 	return f, s, input
 }
 
-func TestCodexUpdateRejectsRawReviewerInputDuringReplacement(t *testing.T) {
-	for _, outcome := range []string{"success", "failure", "shutdown"} {
-		t.Run(outcome, func(t *testing.T) {
-			f, s, input := newReviewerUpdateFixture(t)
-			f.fail = outcome == "failure"
-			pty := newFakePTY()
-			mgr := NewManager(&fakeSource{alive: true, spawner: &fakeSpawner{ptys: []*fakePTY{pty}}}, nil, testLogger(), WithHeartbeat(0))
-			mgr.SetSessionInputLease(input)
-			defer mgr.Close()
-			conn := newFakeConn()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go mgr.Serve(ctx, conn)
-			id := "ptyhost-v1:review-worker"
-			conn.in <- clientMsg{Ch: chTerminal, ID: id, Type: msgOpen}
-			recv(t, conn, chTerminal, msgOpened, time.Second)
-			if _, err := s.StartCodexUpdate(ctx, "1.0.0"); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-f.entered:
-			case <-time.After(time.Second):
-				t.Fatal("installer not reached")
-			}
-			conn.in <- clientMsg{Ch: chTerminal, ID: id, Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("codex\n"))}
-			recv(t, conn, chTerminal, msgError, time.Second)
-			if got := string(pty.writtenBytes()); got != "" {
-				t.Fatalf("input reached reviewer during replacement: %q", got)
-			}
-			if outcome == "shutdown" {
-				if err := s.Close(ctx); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				close(f.finish)
-			}
-			eventually(t, time.Second, func() bool {
-				j, err := s.Status(ctx, systeminstall.TargetCodex)
-				return err == nil && (j.Status == systeminstall.StatusSucceeded || j.Status == systeminstall.StatusFailed || j.Status == systeminstall.StatusInterrupted)
-			})
-			conn.in <- clientMsg{Ch: chTerminal, ID: id, Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("after\n"))}
-			eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "after\n" })
-		})
-	}
-}
-
-// relaunchPTY models the process becoming live only when admitted input actually
-// reaches the PTY, rather than when the WebSocket frame was received.
-type relaunchPTY struct {
-	*fakePTY
-	running *atomic.Bool
-}
-
-func (p relaunchPTY) Write(b []byte) (int, error) {
-	n, err := p.fakePTY.Write(b)
-	if err == nil {
-		p.running.Store(true)
-	}
-	return n, err
-}
-
-type reportedInputLease struct {
+// completedInputLease reports after the mux has returned from PTY.Write and
+// released its input lease. The fake PTY stores bytes but never consumes them.
+type completedInputLease struct {
 	*sessionmanager.Manager
 	admitted chan struct{}
+	released chan struct{}
 }
 
-func (l reportedInputLease) AcquireSessionInput(id domain.SessionID) (func(), bool) {
+func (l completedInputLease) AcquireSessionInput(id domain.SessionID) (func(), bool) {
 	release, ok := l.Manager.AcquireSessionInput(id)
-	if ok {
+	if !ok {
+		return nil, false
+	}
+	select {
+	case l.admitted <- struct{}{}:
+	default:
+	}
+	return func() {
+		release()
 		select {
-		case l.admitted <- struct{}{}:
+		case l.released <- struct{}{}:
 		default:
 		}
-	}
-	return release, ok
+	}, true
 }
 
-func TestCodexUpdateDrainsAdmittedReviewerInputBeforeReprobe(t *testing.T) {
+func TestCodexUpdateBlocksWrittenButUnconsumedReviewerInput(t *testing.T) {
 	for _, buffered := range []bool{false, true} {
-		t.Run(map[bool]string{false: "in_flight_PTY_write", true: "buffered_during_attach"}[buffered], func(t *testing.T) {
+		t.Run(map[bool]string{false: "attached_PTY", true: "buffered_during_attach"}[buffered], func(t *testing.T) {
 			f, s, input := newReviewerUpdateFixture(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -159,9 +108,6 @@ func TestCodexUpdateDrainsAdmittedReviewerInputBeforeReprobe(t *testing.T) {
 			unblock := func() { once.Do(func() { close(barrier) }) }
 			defer unblock()
 			pty := newFakePTY()
-			if !buffered {
-				pty.writeUnblock = barrier
-			}
 			src := &fakeSource{alive: true, attachFn: func(ctx context.Context, _, _ uint16) (ports.Stream, error) {
 				if buffered {
 					select {
@@ -170,11 +116,11 @@ func TestCodexUpdateDrainsAdmittedReviewerInputBeforeReprobe(t *testing.T) {
 						return nil, ctx.Err()
 					}
 				}
-				return relaunchPTY{pty, &f.running}, nil
+				return pty, nil
 			}}
 			mgr := NewManager(src, nil, testLogger(), WithHeartbeat(0))
 			defer mgr.Close()
-			lease := reportedInputLease{input, make(chan struct{}, 1)}
+			lease := completedInputLease{input, make(chan struct{}, 1), make(chan struct{}, 1)}
 			mgr.SetSessionInputLease(lease)
 			conn := newFakeConn()
 			go mgr.Serve(ctx, conn)
@@ -187,40 +133,43 @@ func TestCodexUpdateDrainsAdmittedReviewerInputBeforeReprobe(t *testing.T) {
 			select {
 			case <-lease.admitted:
 			case <-time.After(time.Second):
-				t.Fatal("raw input not admitted")
-			}
-			if _, err := s.StartCodexUpdate(ctx, "1.0.0"); err != nil {
-				t.Fatal(err)
-			}
-			eventually(t, time.Second, func() bool { return input.SessionMutationInProgress(domain.SessionID(id)) })
-			select {
-			case <-f.entered:
-				t.Fatal("installer overtook an admitted pane write")
-			default:
-			}
-			if release, ok := input.AcquireSessionInput(domain.SessionID(id)); ok {
-				release()
-				t.Fatal("late input admitted during drain")
+				t.Fatal("raw input was not admitted")
 			}
 			unblock()
-			eventually(t, time.Second, func() bool {
-				j, err := s.Status(ctx, systeminstall.TargetCodex)
-				return err == nil && j.Status == systeminstall.StatusFailed
-			})
+			select {
+			case <-lease.released:
+			case <-time.After(time.Second):
+				t.Fatal("PTY write did not return and release its lease")
+			}
+			if got := string(pty.writtenBytes()); got != "codex\n" {
+				t.Fatalf("written bytes = %q", got)
+			}
+			// There is deliberately no shell consumption yet. A successful write
+			// and a stopped workload snapshot must not admit executable replacement.
+			if f.running.Load() {
+				t.Fatal("fixture consumed input prematurely")
+			}
+			if _, err := s.StartCodexUpdate(ctx, "1.0.0"); !errors.Is(err, systeminstall.ErrHarnessActive) {
+				t.Fatalf("unconsumed input admitted installer: %v", err)
+			}
 			select {
 			case <-f.entered:
-				t.Fatal("installer ignored reviewer relaunched by admitted input")
+				t.Fatal("installer ran with retained terminal")
 			default:
 			}
-			if !f.running.Load() {
-				t.Fatal("raw input never reached PTY")
+			select {
+			case <-pty.closed:
+				t.Fatal("updater implicitly closed terminal")
+			default:
 			}
-			eventually(t, time.Second, func() bool { return !input.SessionMutationInProgress(domain.SessionID(id)) })
-			release, ok := input.AcquireSessionInput(domain.SessionID(id))
-			if !ok {
-				t.Fatal("failed recheck retained input reservation")
+			if input.SessionMutationInProgress(domain.SessionID(id)) {
+				t.Fatal("rejection leaked an input reservation")
 			}
-			release()
+			// Later consumption can launch Codex; the existing terminal still blocks.
+			f.running.Store(true)
+			if _, err := s.StartCodexUpdate(ctx, "1.0.0"); !errors.Is(err, systeminstall.ErrHarnessActive) {
+				t.Fatal(err)
+			}
 		})
 	}
 }

@@ -1930,7 +1930,7 @@
 	"settings.codexUpdate.available": "Available: {{version}} ({{source}})",
 	"settings.codexUpdate.stale": "Last check failed",
 	"settings.codexUpdate.shared": "Updating changes your shared Codex installation, including use outside AO. It does not change model access for your account or provide a guaranteed rollback.",
-	"settings.codexUpdate.sessions": "Stop Codex workers or reviewers in these AO sessions ({{count}}) explicitly before updating. Restarting AO can leave old provider processes running.",
+	"settings.codexUpdate.sessions": "Stop Codex workers and close reviewer terminals in affected AO sessions ({{count}}) before updating. In the Review panel choose {{closeAction}}; {{stopAction}} alone leaves the terminal open. Restarting AO can leave old provider processes running.",
 	"settings.codexUpdate.update": "Update now",
 	"settings.codexUpdate.checking": "Checking…",
 	"settings.codexUpdate.check": "Check Codex for updates",

@@ -54,7 +54,9 @@ func (m *Manager) AcquireSessionInput(id domain.SessionID) (release func(), ok b
 // ReserveTerminalInput closes raw input for exact opaque terminal IDs and drains
 // writes already admitted by AcquireSessionInput, including attach-buffered input.
 // The caller must hold provider launch admission while selecting these handles
-// and reprobe the provider after reservation. Unrelated terminal input stays open.
+// and recheck the provider after reservation. Draining confirms delivery, not
+// execution: it cannot establish that a retained shell consumed pending input.
+// Unrelated terminal input stays open.
 func (m *Manager) ReserveTerminalInput(ctx context.Context, terminalIDs []string) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

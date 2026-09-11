@@ -416,6 +416,7 @@ func (f *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 	return ports.RuntimeHandle{ID: string(cfg.SessionID)}, nil
 }
 func (f *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) error {
+	f.alive = false
 	f.destroyed = handle.ID
 	if !f.created {
 		f.destroyBefore = true

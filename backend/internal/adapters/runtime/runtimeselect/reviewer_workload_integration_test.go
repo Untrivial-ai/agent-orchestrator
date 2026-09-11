@@ -113,12 +113,14 @@ func TestReviewerWorkloadControlledProcessIntegration(t *testing.T) {
 						t.Fatalf("expected retained shell child: %v %v", alive, err)
 					}
 				}
-				stop(ctx) // real wrapper execs the retained interactive shell after helper exit
+				stop(ctx)              // real wrapper execs the retained interactive shell after helper exit
+				f.Blocked(ctx, t, nil) // retained shell can consume input after a successful PTY write
 				if !manual {
-					f.Ready(ctx, t) // real snapshot permits the daemon's fake installer job
 					if alive, err := rt.IsAlive(ctx, handle); err != nil || !alive {
 						t.Fatalf("updater removed retained terminal: %v %v", alive, err)
 					}
+					f.Close(ctx, t) // user explicitly invokes Kill review session
+					f.Ready(ctx, t) // only confirmed closure admits the fake installer
 					return
 				}
 				for _, prefix := range []string{"", "exec "} {

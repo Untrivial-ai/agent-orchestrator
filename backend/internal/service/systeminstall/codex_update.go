@@ -125,7 +125,9 @@ func (s *Service) withCodexSessions(ctx context.Context, a CodexUpdateAdvisory) 
 		if reviewer.HandleID != "" {
 			a.reviewerHandles = append(a.reviewerHandles, reviewer.HandleID)
 		}
-		if (session.Harness == domain.HarnessCodex && !session.IsTerminated) || reviewer.Running {
+		// An idle retained terminal can still execute previously buffered input.
+		// Only explicit lifecycle closure may clear its recorded handle.
+		if (session.Harness == domain.HarnessCodex && !session.IsTerminated) || reviewer.Running || reviewer.HandleID != "" {
 			a.RunningSessions++
 		}
 	}
@@ -148,7 +150,7 @@ func (s *Service) StartCodexUpdate(ctx context.Context, token string) (Job, erro
 		return Job{}, fmt.Errorf("%w: refresh Codex update information or update the selected installation manually", ErrInstallMethod)
 	}
 	if a.RunningSessions > 0 {
-		return Job{}, fmt.Errorf("%w: stop AO Codex workers and reviewers explicitly before updating the shared installation; restarting AO does not replace surviving provider processes", ErrHarnessActive)
+		return Job{}, fmt.Errorf("%w: stop AO Codex workers and explicitly close reviewer terminals using Kill review session in the Review panel before updating; Stop review leaves the terminal open", ErrHarnessActive)
 	}
 	s.mu.Lock()
 	if job := s.jobs[TargetCodex]; job != nil && activeStatus(job.Status) {
@@ -243,7 +245,7 @@ func (s *Service) runCodexUpdate(parent context.Context, job *Job, before CodexU
 	defer lease.Release()
 	a, err := s.withCodexSessions(ctx, CodexUpdateAdvisory{})
 	if err != nil || s.sessions == nil || s.codexReviewers == nil || a.RunningSessions > 0 {
-		s.finishAgentJob(job, StatusFailed, "", "Stop AO Codex workers and reviewers explicitly before updating; AO could not establish a safe stopped state.", "")
+		s.finishAgentJob(job, StatusFailed, "", "Stop AO Codex workers and close terminals for Codex reviewers using Kill review session in the Review panel before updating; AO could not verify terminal closure.", "")
 		return
 	}
 	if s.reviewerInput == nil {
@@ -260,11 +262,12 @@ func (s *Service) runCodexUpdate(parent context.Context, job *Job, before CodexU
 		return
 	}
 	defer releaseInput()
-	// A raw write admitted before reservation may have relaunched Codex. Only
-	// this post-drain observation is stopped-state proof for replacement.
+	// Recheck closure and exact identities under exclusive launch admission.
+	// Draining writes is not execution proof: even an idle recorded terminal
+	// blocks replacement until its explicit lifecycle close clears the handle.
 	stopped, err := s.withCodexSessions(ctx, CodexUpdateAdvisory{})
 	if err != nil || stopped.RunningSessions > 0 || !slices.Equal(stopped.reviewerHandles, a.reviewerHandles) {
-		s.finishAgentJob(job, StatusFailed, "", "Reviewer processes changed while draining terminal input. Stop reviewers, refresh and try again.", "")
+		s.finishAgentJob(job, StatusFailed, "", "Reviewer terminals changed while checking closure. Close terminals for Codex reviewers using Kill review session, refresh and try again.", "")
 		return
 	}
 	installation, err := s.codexMaintenance.Resolve(ctx)

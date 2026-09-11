@@ -740,5 +740,28 @@ func (l *agentLauncher) Destroy(ctx context.Context, handleID string) error {
 	if handleID == "" {
 		return nil
 	}
-	return l.runtime.Destroy(ctx, ports.RuntimeHandle{ID: handleID})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handle := ports.RuntimeHandle{ID: handleID}
+	if err := l.runtime.Destroy(ctx, handle); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Workload completion is insufficient: a retained shell may still consume
+	// buffered input. Do not let lifecycle clear the handle until the terminal
+	// itself is confirmed absent. Unknown teardown must retain its identity.
+	alive, err := l.runtime.IsAlive(ctx, handle)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err != nil && !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		return fmt.Errorf("verify reviewer terminal closure: %w", err)
+	}
+	if alive {
+		return fmt.Errorf("%w: reviewer terminal remains open; retry Kill review session", ports.ErrRuntimeProbeInconclusive)
+	}
+	return nil
 }

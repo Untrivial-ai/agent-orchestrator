@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 type reviewerTransitionRunner struct {
 	workloadProbeRunner
 	cwd, launch string
+	closed      bool
 	created     bool
 	mutations   int
 	paneChanged bool
@@ -28,6 +30,7 @@ func (r *reviewerTransitionRunner) Run(ctx context.Context, env []string, name s
 	if name != "ps" && len(args) > 0 {
 		switch args[0] {
 		case "new-session":
+			r.closed = false
 			r.created = true
 			r.mutations++
 			r.cwd = args[9]
@@ -35,8 +38,13 @@ func (r *reviewerTransitionRunner) Run(ctx context.Context, env []string, name s
 			r.processes = "100 1 /bin/sh -c " + r.launch + "\n101 100 /fixture/codex\n"
 			return nil, nil
 		case "kill-session":
+			r.closed = true
 			r.mutations++
 			return nil, nil
+		case "has-session":
+			if r.closed {
+				return []byte("can't find session"), &exec.ExitError{}
+			}
 		case "set-option":
 			return nil, nil
 		case "display-message":
@@ -48,7 +56,7 @@ func (r *reviewerTransitionRunner) Run(ctx context.Context, env []string, name s
 				return nil, nil
 			}
 			if args[len(args)-1] == "#{pane_pid}" {
-				return []byte("100"), nil
+				return nil, nil // never allow synthetic PIDs into real process-group teardown
 			}
 			r.paneReads++
 			if r.paneChanged && r.paneReads%2 == 0 {
@@ -104,13 +112,15 @@ func TestReviewerWorkloadUpdateTransition(t *testing.T) {
 			canceled, cancel := context.WithCancel(ctx)
 			cancel()
 			f.Blocked(canceled, t, context.Canceled)
-			f.Ready(ctx, t) // the same launched command has exited into its retained shell
+			f.Blocked(ctx, t, nil) // retained shell still requires explicit closure
 			if runner.mutations != mutations {
 				t.Fatalf("snapshot/update mutated reviewer runtime: %d -> %d", mutations, runner.mutations)
 			}
 			if alive, err := rt.IsAlive(ctx, ports.RuntimeHandle{ID: f.Result.HandleID}); err != nil || !alive {
 				t.Fatal(fmt.Sprint("retained host lost: ", alive, " ", err))
 			}
+			f.Close(ctx, t)
+			f.Ready(ctx, t)
 		})
 	}
 }
@@ -122,5 +132,5 @@ func TestReviewerWorkloadUpdateRechecksActualRuntime(t *testing.T) {
 	ctx := context.Background()
 	f := reviewerupdate.New(ctx, t, rt, "resume", "/fixture/codex")
 	runner.processes = "100 1 /bin/sh -i\n"
-	f.RecheckBlocked(ctx, t, func() { runner.processes = "100 1 /bin/sh -i\n101 100 /fixture/codex resume native-history\n" })
+	f.RecheckBlocked(ctx, t, func() { runner.processes = "100 1 /bin/sh -i\n" }) // even idle registration blocks
 }
