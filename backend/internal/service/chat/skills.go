@@ -28,6 +28,11 @@ func (s *Service) Skills(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	if err != nil {
 		return nil, err
 	}
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.requireProviderAuth(); err != nil {
+		return nil, err
+	}
 	lister, ok := controller.conv.(ports.ChatSkillLister)
 	if !ok {
 		return nil, ErrSkillsUnsupported

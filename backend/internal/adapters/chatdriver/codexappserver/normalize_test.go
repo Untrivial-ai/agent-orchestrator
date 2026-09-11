@@ -207,13 +207,16 @@ func TestNormalizeStructuredTurnAuthFailureRequiresReauth(t *testing.T) {
 		Method: codexproto.MethodTurnCompleted,
 		Params: json.RawMessage(`{"threadId":"th","turn":{"id":"tu","status":"failed","error":{"message":"Provider changed this sentence completely.","codexErrorInfo":"unauthorized"}}}`),
 	}, testNow)
-	if len(events) != 2 || events[0].Kind != ports.ChatEventTurnCompleted ||
-		events[1].Kind != ports.ChatEventAccountChanged || events[1].Account == nil ||
-		!events[1].Account.ReauthRequired {
-		t.Fatalf("events = %+v, want failed turn plus reauthentication", events)
+	if len(events) != 2 || events[0].Kind != ports.ChatEventAccountChanged ||
+		events[0].Account == nil || !events[0].Account.ReauthRequired ||
+		events[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %+v, want reauthentication fence before failed turn", events)
 	}
-	if events[1].Account.ReauthReason != "Provider changed this sentence completely." {
-		t.Fatalf("reason = %q, want provider prose retained for display", events[1].Account.ReauthReason)
+	if events[0].Account.ReauthReason != "Codex rejected this chat's credentials." {
+		t.Fatalf("reason = %q, want stable safe explanation", events[0].Account.ReauthReason)
+	}
+	if events[1].Err == nil || events[1].Err.Error() != "Provider changed this sentence completely." {
+		t.Fatalf("failed turn error = %v, want original provider detail", events[1].Err)
 	}
 }
 
@@ -237,12 +240,12 @@ func TestNormalizeStructuredErrorNotificationRequiresReauth(t *testing.T) {
 		Method: codexproto.MethodError,
 		Params: json.RawMessage(`{"threadId":"th","turnId":"tu","willRetry":false,"error":{"message":"Authentication rejected.","codexErrorInfo":"unauthorized"}}`),
 	}, testNow)
-	if len(events) != 2 || events[0].Kind != ports.ChatEventError ||
+	if len(events) != 2 || events[0].Kind != ports.ChatEventAccountChanged ||
+		events[0].Account == nil || !events[0].Account.ReauthRequired ||
 		events[0].ProviderTurnID != "tu" || events[0].ProviderConversationID != "th" ||
-		events[1].Kind != ports.ChatEventAccountChanged || events[1].Account == nil ||
-		!events[1].Account.ReauthRequired || events[1].ProviderTurnID != "tu" ||
+		events[1].Kind != ports.ChatEventError || events[1].ProviderTurnID != "tu" ||
 		events[1].ProviderConversationID != "th" {
-		t.Fatalf("events = %+v, want provider error plus reauthentication", events)
+		t.Fatalf("events = %+v, want reauthentication fence before provider error", events)
 	}
 }
 

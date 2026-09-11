@@ -2174,7 +2174,13 @@ func (m *Manager) resumeAgentRecordWithPolicy(
 	forceFresh bool,
 	requireNativeHistory bool,
 ) (RestoreResult, error) {
-	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, forceFresh, requireNativeHistory, "", true)
+	queueRecoveryPolicy := domain.ChatQueueRecoveryRetainAndDrain
+	if rec.Harness == domain.HarnessCodex {
+		queueRecoveryPolicy = domain.ChatQueueRecoveryNormal
+	}
+	return m.resumeAgentRecordWithReservedGeneration(
+		ctx, operation, rec, forceFresh, requireNativeHistory, "", queueRecoveryPolicy,
+	)
 }
 
 func (m *Manager) resumeAgentRecordWithReservedGeneration(
@@ -2184,7 +2190,7 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	forceFresh bool,
 	requireNativeHistory bool,
 	reservedGeneration string,
-	resumeRetainedChatQueue bool,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
 ) (RestoreResult, error) {
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
@@ -2205,15 +2211,15 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	}
 	if mode == domain.SessionModeChat {
 		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil,
-			forceFresh, requireNativeHistory, reservedGeneration, resumeRetainedChatQueue)
+			forceFresh, requireNativeHistory, reservedGeneration, queueRecoveryPolicy)
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
 	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle,
-		forceFresh, requireNativeHistory, reservedGeneration, false)
+		forceFresh, requireNativeHistory, reservedGeneration, domain.ChatQueueRecoveryNormal)
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false, false, false)
+	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false, false, domain.ChatQueueRecoveryNormal)
 }
 
 func (m *Manager) relaunchSessionWithPolicy(
@@ -2223,10 +2229,11 @@ func (m *Manager) relaunchSessionWithPolicy(
 	project domain.ProjectRecord,
 	ws ports.WorkspaceInfo,
 	restartHandle *ports.RuntimeHandle,
-	forceFresh, requireNativeHistory, resumeRetainedChatQueue bool,
+	forceFresh, requireNativeHistory bool,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
 ) (RestoreResult, error) {
 	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle,
-		forceFresh, requireNativeHistory, "", resumeRetainedChatQueue)
+		forceFresh, requireNativeHistory, "", queueRecoveryPolicy)
 }
 
 func (m *Manager) relaunchSessionWithPolicyAndGeneration(
@@ -2238,7 +2245,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(
 	restartHandle *ports.RuntimeHandle,
 	forceFresh, requireNativeHistory bool,
 	reservedGeneration string,
-	resumeRetainedChatQueue bool,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
 ) (RestoreResult, error) {
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
@@ -2250,7 +2257,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
 		return m.resumeChatController(
-			ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration, resumeRetainedChatQueue,
+			ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration, queueRecoveryPolicy,
 		)
 	}
 

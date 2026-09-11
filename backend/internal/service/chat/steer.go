@@ -136,6 +136,9 @@ func (c *Controller) PromoteQueuedTurn(
 	if c.handoffActive() {
 		return PromoteQueuedTurnResult{}, ErrControllerHandoff
 	}
+	if err := c.requireProviderAuth(); err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
 
 	source, err := c.store.TurnByID(ctx, turnID)
 	if err != nil {
@@ -251,6 +254,9 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 	defer c.sendMu.Unlock()
 	if c.handoffActive() {
 		return SteerResult{}, ErrControllerHandoff
+	}
+	if err := c.requireProviderAuth(); err != nil {
+		return SteerResult{}, err
 	}
 
 	turn, ok := c.awaitAcknowledgedTurn(ctx)

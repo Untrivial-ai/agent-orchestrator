@@ -18,27 +18,27 @@ WHERE singleton_id = 1 AND revision = sqlc.arg(expected_revision);
 -- name: InsertCodexAccountSwitch :execrows
 INSERT INTO codex_account_switches (
     id, source_account_id, target_account_id, idempotency_key,
-    request_fingerprint, expected_account_revision, restart_running_sessions, phase, failure_code,
+    request_fingerprint, expected_account_revision, restart_running_sessions, operation_kind, phase, failure_code,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
 ON CONFLICT DO NOTHING;
 
 -- name: GetCodexAccountSwitch :one
 SELECT id, source_account_id, target_account_id, idempotency_key,
        request_fingerprint, expected_account_revision, phase, failure_code,
-       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions
+       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions, operation_kind
 FROM codex_account_switches WHERE id = ?;
 
 -- name: GetCodexAccountSwitchByIdempotency :one
 SELECT id, source_account_id, target_account_id, idempotency_key,
        request_fingerprint, expected_account_revision, phase, failure_code,
-       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions
+       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions, operation_kind
 FROM codex_account_switches WHERE idempotency_key = ?;
 
 -- name: GetActiveCodexAccountSwitch :one
 SELECT id, source_account_id, target_account_id, idempotency_key,
        request_fingerprint, expected_account_revision, phase, failure_code,
-       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions
+       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions, operation_kind
 FROM codex_account_switches
 WHERE phase NOT IN ('completed', 'failed')
 ORDER BY created_at LIMIT 1;
@@ -54,15 +54,16 @@ WHERE id = sqlc.arg(id) AND phase = sqlc.arg(expected_phase);
 INSERT INTO codex_account_switch_sessions (
     switch_id, session_id, native_session_id, interface_mode, source_handle_id, source_generation,
     was_running, stop_state, restart_state, reviewer_was_running,
-    reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state, reviewer_restart_state
-) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+    reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state, reviewer_restart_state,
+    retain_queued_turns
+) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT DO NOTHING;
 
 -- name: ListCodexAccountSwitchSessions :many
 SELECT switch_id, session_id, native_session_id, interface_mode,
        source_handle_id, source_generation, was_running, stop_state, restart_state,
        reviewer_was_running, reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state,
-       reviewer_restart_state, error_code, stopped_at, restarted_at
+       reviewer_restart_state, error_code, stopped_at, restarted_at, retain_queued_turns
 FROM codex_account_switch_sessions WHERE switch_id = ? ORDER BY session_id;
 
 -- name: UpdateCodexAccountSwitchSession :execrows

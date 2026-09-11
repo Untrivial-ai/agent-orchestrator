@@ -21,6 +21,7 @@ import {
 	useConversation,
 	useConversationCommands,
 } from "./useConversation";
+import { codexAccountsQueryKey } from "./codex-accounts-state";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -886,6 +887,26 @@ describe("tool server reload refusals", () => {
 });
 
 describe("controller recovery", () => {
+	it("starts scoped authentication recovery and refreshes operation state", async () => {
+		postMock.mockResolvedValue({ data: { id: "recovery-1" }, error: undefined });
+		const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await act(async () => {
+			await result.current.recoverAuth(false);
+		});
+
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/recover-auth",
+			{
+				params: { path: { sessionId: "ao-1" } },
+				body: { restartRunningSessions: false },
+			},
+		);
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: codexAccountsQueryKey });
+		invalidateSpy.mockRestore();
+	});
+
 	it("refreshes the conversation after Stop reports stale turn state", async () => {
 		postMock.mockResolvedValue({
 			data: undefined,

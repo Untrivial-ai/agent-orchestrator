@@ -1163,12 +1163,11 @@ func (s *Store) SettleOrphanedTurns(ctx context.Context, session domain.SessionI
 func (s *Store) CleanupOwnedControllerWork(
 	ctx context.Context,
 	session domain.SessionID,
-	conversationID, generation string,
-	retainQueued bool,
+	conversationID, generation, reauthReason string,
 	now time.Time,
 ) (owned bool, err error) {
 	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
-		return cleanupOwnedControllerWork(ctx, q, session, conversationID, generation, retainQueued, now)
+		return cleanupOwnedControllerWork(ctx, q, session, conversationID, generation, reauthReason, now)
 	}
 
 	s.writeMu.Lock()
@@ -1177,7 +1176,7 @@ func (s *Store) CleanupOwnedControllerWork(
 	err = s.inTx(ctx, "clean up owned Chat controller work", func(q *gen.Queries) error {
 		var cleanupErr error
 		owned, cleanupErr = cleanupOwnedControllerWork(
-			ctx, q, session, conversationID, generation, retainQueued, now)
+			ctx, q, session, conversationID, generation, reauthReason, now)
 		return cleanupErr
 	})
 	return owned, err
@@ -1187,8 +1186,7 @@ func cleanupOwnedControllerWork(
 	ctx context.Context,
 	q *gen.Queries,
 	session domain.SessionID,
-	conversationID, generation string,
-	retainQueued bool,
+	conversationID, generation, reauthReason string,
 	now time.Time,
 ) (bool, error) {
 	owner, err := q.GetSession(ctx, session)
@@ -1198,7 +1196,29 @@ func cleanupOwnedControllerWork(
 	if owner.ControllerGeneration != generation {
 		return false, nil
 	}
-	if retainQueued {
+	if reauthReason != "" {
+		conversation, err := q.SelectConversationByID(ctx, conversationID)
+		if err != nil {
+			return false, fmt.Errorf("read conversation %s for reauthentication cleanup: %w", conversationID, err)
+		}
+		account := domain.ConversationAccount{}
+		if conversation.AccountJson.Valid && conversation.AccountJson.String != "" {
+			if err := json.Unmarshal([]byte(conversation.AccountJson.String), &account); err != nil {
+				return false, fmt.Errorf("decode account for %s: %w", conversationID, err)
+			}
+		}
+		at := now
+		account.ReauthRequiredAt = &at
+		account.ReauthReason = reauthReason
+		encoded, err := json.Marshal(account)
+		if err != nil {
+			return false, fmt.Errorf("encode account for %s: %w", conversationID, err)
+		}
+		if err := q.UpdateConversationAccount(ctx, gen.UpdateConversationAccountParams{
+			AccountJson: sql.NullString{String: string(encoded), Valid: true}, UpdatedAt: now, ID: conversationID,
+		}); err != nil {
+			return false, fmt.Errorf("record reauthentication marker for %s: %w", conversationID, err)
+		}
 		if err := q.FailOrphanedRunningConversationActivities(ctx,
 			gen.FailOrphanedRunningConversationActivitiesParams{
 				UpdatedAt: now, HandledBySessionID: session,

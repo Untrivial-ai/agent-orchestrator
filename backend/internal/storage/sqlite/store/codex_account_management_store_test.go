@@ -154,6 +154,7 @@ func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *te
 	now := time.Now().UTC().Truncate(time.Second)
 	sw := domain.CodexAccountSwitch{
 		ID: "switch-snapshot", SourceAccountID: "account-a", TargetAccountID: "account-b",
+		OperationKind:  domain.CodexAccountOperationExternalAuthRecovery,
 		IdempotencyKey: "request-snapshot", RequestFingerprint: "v1:snapshot", ExpectedAccountRevision: 1,
 		RestartRunningSessions: true,
 		Phase:                  domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
@@ -163,6 +164,7 @@ func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *te
 			WasRunning: true, StopState: "pending", RestartState: "pending",
 			ReviewerWasRunning: true, ReviewerSourceHandleID: "reviewer-handle",
 			ReviewerNativeSessionID: "native-reviewer", ReviewerStopState: "pending", ReviewerRestartState: "pending",
+			RetainQueuedTurns: true,
 		}},
 	}
 
@@ -171,7 +173,7 @@ func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *te
 		t.Fatalf("CreateCodexAccountSwitch = %+v, inserted=%v, err=%v", created, inserted, err)
 	}
 	loaded, ok, err := st.GetCodexAccountSwitch(ctx, sw.ID)
-	if err != nil || !ok || !loaded.RestartRunningSessions {
+	if err != nil || !ok || !loaded.RestartRunningSessions || loaded.OperationKind != domain.CodexAccountOperationExternalAuthRecovery {
 		t.Fatalf("persisted restart policy = %+v, ok=%v, err=%v", loaded, ok, err)
 	}
 	got, err := st.ListCodexAccountSwitchSessions(ctx, sw.ID)
@@ -182,7 +184,8 @@ func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *te
 		t.Fatalf("snapshot rows = %d, want 1", len(got))
 	}
 	if got[0].SourceHandleID != "worker-handle" || got[0].ReviewerSourceHandleID != "reviewer-handle" ||
-		got[0].NativeSessionID != "native-worker" || got[0].ReviewerNativeSessionID != "native-reviewer" {
+		got[0].NativeSessionID != "native-worker" || got[0].ReviewerNativeSessionID != "native-reviewer" ||
+		!got[0].RetainQueuedTurns {
 		t.Fatalf("private snapshot identities = %+v", got[0])
 	}
 }

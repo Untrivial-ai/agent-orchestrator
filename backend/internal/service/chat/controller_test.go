@@ -3040,15 +3040,14 @@ func TestSendWhileBusyQueuesUntilTheTurnEnds(t *testing.T) {
 
 // A credential demand is a delivery fence, not a reason to discard work that
 // never reached the provider. Automatic controller recovery keeps that queue
-// inert; the user's explicit Resume agent action is the only boundary that may
-// release the oldest retained message into a fresh provider process.
+// inert; the verified external-auth recovery policy is the only boundary that
+// may release the oldest retained message into a fresh provider process.
 func TestReauthenticationRetainsQueueUntilExplicitResume(t *testing.T) {
 	st := openStore(t)
 	stale := newFakeConversation()
-	automatic := newFakeConversation()
 	explicit := newFakeConversation()
 	explicit.turnSeq = 100
-	driver := &sequenceDriver{conversations: []ports.ChatConversation{stale, automatic, explicit}}
+	driver := &sequenceDriver{conversations: []ports.ChatConversation{stale, explicit}}
 	var idMu sync.Mutex
 	nextID := 0
 	svc := chatsvc.New(chatsvc.Options{
@@ -3073,9 +3072,10 @@ func TestReauthenticationRetainsQueueUntilExplicitResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
-	if _, err := svc.Send(ctx, testSession, ports.ChatUserMessage{
+	running, err := svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "running with stale credentials", ClientMessageID: "reauth-running",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Send running: %v", err)
 	}
 	stale.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
@@ -3128,27 +3128,36 @@ func TestReauthenticationRetainsQueueUntilExplicitResume(t *testing.T) {
 	if got := stale.sentTexts(); len(got) != 1 {
 		t.Fatalf("stale provider received post-auth work: %v", got)
 	}
+	beforeRetry, err := st.LoadConversationSnapshot(ctx, first.ConversationID())
+	if err != nil {
+		t.Fatalf("load snapshot before refused retry: %v", err)
+	}
+	beforeRetryTurns := len(beforeRetry.Turns)
+	if _, err := svc.RetryTurn(ctx, testSession, running.ID); !errors.Is(err, ports.ErrChatAuthRequired) {
+		t.Fatalf("RetryTurn while reauthentication is required: %v, want ErrChatAuthRequired", err)
+	}
+	afterRetry, err := st.LoadConversationSnapshot(ctx, first.ConversationID())
+	if err != nil {
+		t.Fatalf("load snapshot after refused retry: %v", err)
+	}
+	if len(afterRetry.Turns) != beforeRetryTurns {
+		t.Fatalf("refused retry created a turn: before=%d after=%d", beforeRetryTurns, len(afterRetry.Turns))
+	}
+	if got := stale.sentTexts(); len(got) != 1 {
+		t.Fatalf("refused retry reached stale provider: %v", got)
+	}
 	if err := stale.Close(); err != nil {
 		t.Fatalf("close stale conversation: %v", err)
 	}
 	first.Wait()
 
-	// Ordinary recovery can recreate provider state, but it cannot assume the user
-	// repaired credentials or authorize delivery of retained work.
-	second, err := svc.Start(ctx, chatsvc.StartConfig{
+	// Ordinary recovery cannot even recreate provider state: doing so would contact
+	// Codex before the durable account coordinator verifies the current credentials.
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: workspace, ProviderConversationID: "thread-1",
-	})
-	if err != nil {
-		t.Fatalf("automatic Start: %v", err)
-	}
-	if got := automatic.sentTexts(); len(got) != 0 {
-		t.Fatalf("automatic recovery delivered retained work: %v", got)
-	}
-	second.Wait()
-	if second.State() != ports.ChatControllerStopped {
-		t.Fatalf("automatic recovery controller state = %q, want stopped for explicit resume",
-			second.State())
+	}); !errors.Is(err, ports.ErrChatAuthRequired) {
+		t.Fatalf("automatic Start error = %v, want ErrChatAuthRequired", err)
 	}
 	awaitStoreSnapshot(t, st, first.ConversationID(), func(s store.ConversationSnapshot) bool {
 		states := turnStateByText(t, s)
@@ -3158,16 +3167,16 @@ func TestReauthenticationRetainsQueueUntilExplicitResume(t *testing.T) {
 
 	third, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: workspace, ProviderConversationID: "thread-1", ResumeRetainedQueue: true,
+		WorkspacePath: workspace, ProviderConversationID: "thread-1", QueueRecoveryPolicy: domain.ChatQueueRecoveryRetainAndDrain,
 	})
 	if err != nil {
-		t.Fatalf("explicit Resume agent Start: %v", err)
+		t.Fatalf("verified recovery Start: %v", err)
 	}
 	awaitStoreSnapshot(t, st, third.ConversationID(), func(s store.ConversationSnapshot) bool {
 		return turnStateByText(t, s)["retain me for repaired credentials"] == domain.TurnStateRunning
 	})
 	if got := explicit.sentTexts(); len(got) != 1 || got[0] != "retain me for repaired credentials" {
-		t.Fatalf("explicit resume delivered %v, want the retained queue head", got)
+		t.Fatalf("verified recovery delivered %v, want the retained queue head", got)
 	}
 }
 
@@ -5260,12 +5269,11 @@ type recordingCleanupStore struct {
 func (s *recordingCleanupStore) CleanupOwnedControllerWork(
 	ctx context.Context,
 	session domain.SessionID,
-	conversationID, generation string,
-	retainQueued bool,
+	conversationID, generation, reauthReason string,
 	now time.Time,
 ) (bool, error) {
 	s.called <- struct{}{}
-	return s.Store.CleanupOwnedControllerWork(ctx, session, conversationID, generation, retainQueued, now)
+	return s.Store.CleanupOwnedControllerWork(ctx, session, conversationID, generation, reauthReason, now)
 }
 
 func (s *failingProjectStore) ProjectProviderEvent(
@@ -5409,6 +5417,57 @@ func TestControllerStateChangesOnlyAfterProjectionCommits(t *testing.T) {
 	}
 	if got := h.ctrl.State(); got != want {
 		t.Fatalf("controller state after rolled-back projection = %q, want committed %q", got, want)
+	}
+}
+
+func TestReauthenticationFenceSurvivesProjectionFailureAndStreamShutdown(t *testing.T) {
+	var failingStore *failingProjectStore
+	h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
+		failingStore = &failingProjectStore{
+			Store: st, failMethod: string(ports.ChatEventAccountChanged), failed: make(chan struct{}),
+		}
+		return failingStore
+	})
+	ctx := context.Background()
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "ambiguous work", ClientMessageID: "projection-auth-running",
+	}); err != nil {
+		t.Fatalf("Send running: %v", err)
+	}
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-auth-running"})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["ambiguous work"] == domain.TurnStateRunning
+	})
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "retained work", ClientMessageID: "projection-auth-queued",
+	}); err != nil {
+		t.Fatalf("Send queued: %v", err)
+	}
+
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{
+		ReauthRequired: true, ReauthReason: "unauthorized",
+	}})
+	select {
+	case <-failingStore.failed:
+	case <-time.After(4 * time.Second):
+		t.Fatal("account projection did not reach injected rollback")
+	}
+	if err := h.conv.Close(); err != nil {
+		t.Fatalf("close provider: %v", err)
+	}
+	h.ctrl.Wait()
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		states := turnStateByText(t, s)
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil &&
+			states["ambiguous work"] == domain.TurnStateFailed &&
+			states["retained work"] == domain.TurnStateQueued
+	})
+	if snapshot.Conversation.Account.ReauthReason != "unauthorized" {
+		t.Fatalf("reauth reason = %q", snapshot.Conversation.Account.ReauthReason)
+	}
+	if got := h.conv.sentTexts(); len(got) != 1 {
+		t.Fatalf("provider received %v; retained work crossed the failed projection fence", got)
 	}
 }
 

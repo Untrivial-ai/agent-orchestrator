@@ -549,8 +549,16 @@ func (s *Service) VerifyCurrentCodexAccount(ctx context.Context, accountID strin
 	observation, readErr := client.Read(verifyCtx, false)
 	_ = client.Close()
 	latestCredential, latest, latestErr := readCodexFileState(globalPath, false)
-	if readErr != nil || (observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable) ||
-		latestErr != nil || !sameCodexFileState(admitted, latest) || !bytes.Equal(globalCredential, latestCredential) ||
+	if latestErr != nil || !sameCodexFileState(admitted, latest) || !bytes.Equal(globalCredential, latestCredential) {
+		return apierr.Conflict("CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed", nil)
+	}
+	if readErr != nil {
+		return apierr.Conflict("CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account could not be verified", nil)
+	}
+	if observation.Authentication == domain.AgentAuthenticationUnauthorized {
+		return ports.ErrChatAuthRequired
+	}
+	if (observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable) ||
 		!s.codexAccounts.observationAndCredentialIdentifyRecord(record, observation, latestCredential) {
 		return apierr.Conflict("CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed", nil)
 	}

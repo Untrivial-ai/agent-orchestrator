@@ -1034,7 +1034,7 @@ func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID
 	// daemon restore deliberately use the normal context-resume policy.
 	_, err = m.relaunchSessionWithPolicy(
 		ctx, "switch interface", rec, project, ws, nil,
-		fresh, requireNativeHistory && !fresh, false,
+		fresh, requireNativeHistory && !fresh, domain.ChatQueueRecoveryNormal,
 	)
 	return err
 }

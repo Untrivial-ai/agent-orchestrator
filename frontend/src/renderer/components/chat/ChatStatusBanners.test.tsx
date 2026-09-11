@@ -8,7 +8,8 @@ import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBa
 // that teaches readers to ignore the row.
 
 describe("ReauthBanner", () => {
-	it("names the command, because re-authenticating is not something AO can do", () => {
+	it("offers automatic Codex recovery without showing login before verification fails", () => {
+		const onRecover = vi.fn();
 		render(
 			<ReauthBanner
 				account={{
@@ -16,12 +17,55 @@ describe("ReauthBanner", () => {
 					reauthReason: "The stored session expired.",
 				}}
 				harness="codex"
+				onRecover={onRecover}
 			/>,
 		);
 		expect(screen.getByRole("alert")).toBeInTheDocument();
-		expect(screen.getByText("codex login")).toBeInTheDocument();
+		expect(screen.queryByText("codex login")).not.toBeInTheDocument();
 		expect(screen.getByText(/The stored session expired/)).toBeInTheDocument();
-		expect(screen.getByText(/resume the agent, then inspect/i)).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Reconnect this chat" })).toBeInTheDocument();
+		expect(screen.getByRole("checkbox", { name: /Also restart other running/i })).not.toBeChecked();
+	});
+
+	it("keeps all-session recovery default-off and sends the user's explicit choice", async () => {
+		const onRecover = vi.fn();
+		render(
+			<ReauthBanner
+				account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }}
+				harness="codex"
+				onRecover={onRecover}
+			/>,
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Reconnect this chat" }));
+		expect(onRecover).toHaveBeenLastCalledWith(false);
+		await userEvent.click(screen.getByRole("checkbox", { name: /Also restart other running/i }));
+		await userEvent.click(screen.getByRole("button", { name: "Reconnect this chat" }));
+		expect(onRecover).toHaveBeenLastCalledWith(true);
+	});
+
+	it("shows codex login only after credential verification fails", () => {
+		render(
+			<ReauthBanner
+				account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }}
+				harness="codex"
+				onRecover={vi.fn()}
+				needsLogin
+			/>,
+		);
+		expect(screen.getByText("codex login")).toBeInTheDocument();
+	});
+
+	it("locks the recovery choice while reconnection is running", () => {
+		render(
+			<ReauthBanner
+				account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }}
+				harness="codex"
+				onRecover={vi.fn()}
+				recovering
+			/>,
+		);
+		expect(screen.getByRole("button", { name: "Reconnecting…" })).toBeDisabled();
+		expect(screen.getByRole("checkbox", { name: /Also restart other running/i })).toBeDisabled();
 	});
 
 	it("warns that the failed turn may have already produced side effects", () => {
@@ -29,7 +73,8 @@ describe("ReauthBanner", () => {
 			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="codex" />,
 		);
 		expect(screen.getByText(/may have already changed files or run commands/i)).toBeInTheDocument();
-		expect(screen.getByText(/before deciding whether to resend/i)).toBeInTheDocument();
+		expect(screen.getByText(/failed turn was not retried/i)).toBeInTheDocument();
+		expect(screen.getByText(/manual Retry action/i)).toBeInTheDocument();
 		expect(screen.queryByText(/worktree is untouched/i)).not.toBeInTheDocument();
 	});
 

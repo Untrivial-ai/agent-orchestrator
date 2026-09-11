@@ -3803,6 +3803,63 @@ paths:
       summary: Rewrite the durable queue order for undispatched turns
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/recover-auth:
+    post:
+      operationId: recoverSessionConversationAuth
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoverConversationAuthRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountSwitchResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Verify current Codex credentials and reconnect a fenced chat session
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/settings:
     patch:
       operationId: setSessionConversationTurnSettings
@@ -7598,6 +7655,11 @@ components:
           type: string
         id:
           type: string
+        operationKind:
+          enum:
+          - account_switch
+          - external_auth_recovery
+          type: string
         phase:
           enum:
           - requested
@@ -7614,6 +7676,12 @@ components:
           type: string
         restartRunningSessions:
           type: boolean
+        scope:
+          enum:
+          - credentials_only
+          - current_chat
+          - all_running_ao_codex_sessions
+          type: string
         sessions:
           items:
             $ref: '#/components/schemas/CodexAccountSwitchSessionResponse'
@@ -7627,6 +7695,8 @@ components:
           type: string
       required:
       - id
+      - operationKind
+      - scope
       - sourceAccountId
       - targetAccountId
       - restartRunningSessions
@@ -10286,6 +10356,11 @@ components:
       required:
       - createdAt
       - lastSeenAt
+      type: object
+    RecoverConversationAuthRequest:
+      properties:
+        restartRunningSessions:
+          type: boolean
       type: object
     RegisterPushDeviceRequest:
       properties:

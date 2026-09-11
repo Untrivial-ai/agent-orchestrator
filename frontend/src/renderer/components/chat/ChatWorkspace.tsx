@@ -269,6 +269,10 @@ export interface ChatWorkspaceProps {
 	onResumeAgent?: () => void;
 	resumingAgent?: boolean;
 	resumeError?: string;
+	onRecoverAuth?: (restartRunningSessions: boolean) => void;
+	recoveringAuth?: boolean;
+	recoverAuthNeedsLogin?: boolean;
+	recoverAuthError?: string;
 	onOpenShell?: () => void;
 	openingShell?: boolean;
 	shellError?: string;
@@ -422,6 +426,10 @@ export function ChatWorkspace({
 	onResumeAgent,
 	resumingAgent,
 	resumeError,
+	onRecoverAuth,
+	recoveringAuth,
+	recoverAuthNeedsLogin,
+	recoverAuthError,
 	onOpenShell,
 	openingShell,
 	shellError,
@@ -473,6 +481,8 @@ export function ChatWorkspace({
 	mcpReloadError,
 }: ChatWorkspaceProps) {
 	const turn = activeTurn(snapshot);
+	const authFenced = snapshot.harness === "codex" && Boolean(snapshot.account?.reauthRequiredAt);
+	const providerActionsDisabled = newWorkDisabled || authFenced;
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
 			item.kind === "activity" &&
@@ -483,7 +493,7 @@ export function ChatWorkspace({
 	const handleChatKeyDown = useCallback(
 		(event: ReactKeyboardEvent<HTMLElement>) => {
 			if (
-				newWorkDisabled ||
+				providerActionsDisabled ||
 				event.key !== "Escape" ||
 				event.defaultPrevented ||
 				isDialogOrMenuOpen() ||
@@ -498,7 +508,7 @@ export function ChatWorkspace({
 			event.preventDefault();
 			onInterrupt();
 		},
-		[hasPendingInteraction, newWorkDisabled, onInterrupt, turn],
+		[hasPendingInteraction, providerActionsDisabled, onInterrupt, turn],
 	);
 	const handleChatSurfaceClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
 		const target = event.target;
@@ -838,7 +848,7 @@ export function ChatWorkspace({
 
 	// Offered only while the agent is idle. The daemon refuses a rollback mid-turn,
 	// and a control that exists to be refused is worse than one that waits.
-	const rollbackTarget = onRollback && !turn && !newWorkDisabled ? (id: string) => setConfirming(id) : undefined;
+	const rollbackTarget = onRollback && !turn && !providerActionsDisabled ? (id: string) => setConfirming(id) : undefined;
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
@@ -875,13 +885,13 @@ export function ChatWorkspace({
 					rememberedPermissionMode={rememberedPermissionMode}
 					harness={snapshot.harness}
 					reroute={stableModelReroute}
-					onChange={newWorkDisabled ? undefined : onChooseSettings}
+					onChange={providerActionsDisabled ? undefined : onChooseSettings}
 					configOptions={configOptions ?? []}
-					onChangeConfigOption={newWorkDisabled ? undefined : onChooseConfigOption}
+					onChangeConfigOption={providerActionsDisabled ? undefined : onChooseConfigOption}
 					configPending={configOptionPending}
 					error={configOptionError}
 					disabled={
-						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
+						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || providerActionsDisabled
 					}
 				/>
 			) : null,
@@ -891,7 +901,7 @@ export function ChatWorkspace({
 			configOptions,
 			controllerTransitioning,
 			models,
-			newWorkDisabled,
+			providerActionsDisabled,
 			onChooseConfigOption,
 			onChooseSettings,
 			onRememberPermissions,
@@ -908,12 +918,12 @@ export function ChatWorkspace({
 			stablePendingApproval ? (
 				<ApprovalCard
 					activity={stablePendingApproval}
-					onDecide={onDecide}
-					busy={busy}
+					onDecide={providerActionsDisabled ? undefined : onDecide}
+					busy={busy || providerActionsDisabled}
 					embedded
 				/>
 			) : undefined,
-		[busy, onDecide, stablePendingApproval],
+		[busy, onDecide, providerActionsDisabled, stablePendingApproval],
 	);
 	const canSteerQueuedMessage =
 		Boolean(onSteer) && can(snapshot, "steer") && turn?.state === "running";
@@ -924,7 +934,7 @@ export function ChatWorkspace({
 					messages={queuedMessages}
 					editingTurnId={queueEdit?.turnId}
 					canSteer={canSteerQueuedMessage}
-					onPromoteQueuedTurn={newWorkDisabled ? undefined : promoteQueuedTurn}
+					onPromoteQueuedTurn={providerActionsDisabled ? undefined : promoteQueuedTurn}
 					onBeginQueuedEdit={
 						newWorkDisabled || !onEditQueuedTurn ? undefined : beginQueuedEdit
 					}
@@ -940,6 +950,7 @@ export function ChatWorkspace({
 			cancelQueuedTurnPendingTurnId,
 			handleCancelQueuedTurn,
 			newWorkDisabled,
+			providerActionsDisabled,
 			onEditQueuedTurn,
 			onReorderQueuedTurns,
 			promoteQueuedTurn,
@@ -1113,12 +1124,19 @@ export function ChatWorkspace({
 				    progress at all, so it is stated first; the controller's own health next;
 				    then the two that degrade a session rather than stopping it. */}
 					{snapshot.account ? (
-						<ReauthBanner account={snapshot.account} harness={snapshot.harness} />
+						<ReauthBanner
+							account={snapshot.account}
+							harness={snapshot.harness}
+							onRecover={onRecoverAuth}
+							recovering={recoveringAuth}
+							needsLogin={recoverAuthNeedsLogin}
+							error={recoverAuthError}
+						/>
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
 						transitioning={controllerTransitioning}
-						onResume={newWorkDisabled ? undefined : onResumeAgent}
+						onResume={providerActionsDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
 						resumeError={resumeError}
 						onOpenShell={onOpenShell}
@@ -1128,7 +1146,7 @@ export function ChatWorkspace({
 					{snapshot.threadState ? <ThreadStateBanner threadState={snapshot.threadState} /> : null}
 					<McpServerBanner
 						servers={brokenServers}
-						onReload={newWorkDisabled ? undefined : onReloadMcpServers}
+						onReload={providerActionsDisabled ? undefined : onReloadMcpServers}
 						reloading={reloadingMcpServers}
 						turnInFlight={Boolean(turn)}
 						error={mcpReloadError}
@@ -1143,8 +1161,8 @@ export function ChatWorkspace({
 								hasOlder={hasOlder}
 								loadingOlder={loadingOlder}
 								onLoadOlder={onLoadOlder}
-								onDecide={onDecide}
-								onResolveInput={onResolveInput}
+								onDecide={providerActionsDisabled ? undefined : onDecide}
+								onResolveInput={providerActionsDisabled ? undefined : onResolveInput}
 								busy={busy}
 								onRollback={rollbackTarget}
 								onOpenFiles={onOpenFiles}
@@ -1157,7 +1175,7 @@ export function ChatWorkspace({
 								onActivateBranch={onActivateBranch}
 								activateBranchPending={activateBranchPending}
 								activateBranchError={activateBranchError}
-								newWorkDisabled={newWorkDisabled}
+								newWorkDisabled={providerActionsDisabled}
 							/>
 						</ChatLinkProvider>
 
@@ -1179,11 +1197,11 @@ export function ChatWorkspace({
 											editQueuedTurnPendingTurnId === queueEdit.turnId,
 									)}
 									onCancelQueuedEdit={cancelQueuedEdit}
-									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
+									onInterrupt={turn && !providerActionsDisabled ? stableInterrupt : undefined}
 									commandError={commandError}
 									settings={composerSettings}
 									busy={busy}
-									willQueue={Boolean(turn)}
+									willQueue={Boolean(turn) || authFenced}
 									disabled={snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
@@ -1198,12 +1216,12 @@ export function ChatWorkspace({
 									autoFocusKey={snapshot.sessionId}
 									// Steering is only meaningful into a turn that is running. A queued turn
 									// has not reached the provider, so there is nothing to steer.
-									onSteer={newWorkDisabled ? undefined : steer}
+									onSteer={providerActionsDisabled ? undefined : steer}
 									canSteer={Boolean(onSteer) && turn?.state === "running"}
 									sendPending={sendPending}
 									steerPending={steerPending}
 									steerRefusal={steerRefusal}
-									onCompact={newWorkDisabled ? undefined : onCompact}
+									onCompact={providerActionsDisabled ? undefined : onCompact}
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}

@@ -172,6 +172,7 @@ type CodexAccountSwitch struct {
 	UpdatedAt               time.Time
 	CompletedAt             sql.NullTime
 	RestartRunningSessions  bool
+	OperationKind           string
 }
 
 type CodexAccountSwitchSession struct {
@@ -192,6 +193,7 @@ type CodexAccountSwitchSession struct {
 	ErrorCode               string
 	StoppedAt               sql.NullTime
 	RestartedAt             sql.NullTime
+	RetainQueuedTurns       bool
 }
 
 type CodexActiveAccount struct {

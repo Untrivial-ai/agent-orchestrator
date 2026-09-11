@@ -218,6 +218,9 @@ describe("normalizeApiOperation", () => {
 		expect(normalizeApiOperation("POST", "/api/v1/agents/codex/account-switches/switch-1/recover")).toBe(
 			"POST /api/v1/agents/codex/account-switches/:id/recover",
 		);
+		expect(normalizeApiOperation("POST", "/api/v1/sessions/chat-1/conversation/recover-auth")).toBe(
+			"POST /api/v1/sessions/:id/conversation/recover-auth",
+		);
 	});
 
 	it("leaves collection and non-resource paths untouched", () => {

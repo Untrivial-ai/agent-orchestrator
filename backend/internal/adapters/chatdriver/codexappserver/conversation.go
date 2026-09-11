@@ -241,17 +241,17 @@ pumpLoop:
 			}
 			if stopForReauth {
 				// Signing in rewrites Codex's credential file, but this app-server has
-				// already proved that the credentials it holds in memory are stale. End
-				// only this controller after its terminal work is emitted; Resume agent
-				// can then open a process against the same thread with fresh credentials.
-				_ = c.Close()
+				// already proved that the credentials it holds in memory are stale. Destroy
+				// this exact host after its terminal work is emitted; the durable recovery
+				// coordinator can then resume the same thread with verified credentials.
+				_ = c.Terminate()
 				break pumpLoop
 			}
 
 		case <-reauthTimeout:
 			c.log.Warn("turn completion missing after authentication failure; stopping stale app-server",
 				"turn", reauthTurn)
-			_ = c.Close()
+			_ = c.Terminate()
 			break pumpLoop
 		}
 	}

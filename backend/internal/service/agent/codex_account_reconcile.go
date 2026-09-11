@@ -464,7 +464,7 @@ func (m *codexAccountManager) reconcileGlobalInner(ctx context.Context) error {
 	// result is discovery only and must not present an account the launch path
 	// has already rejected as signed in again.
 	m.applyDiscoveryAuthentication(record.Snapshot.ID, accountAuthenticationObservation(m.now(), observation.Authentication), credentialChanged)
-	if err := m.setActivePointer(ctx, record.Snapshot.ID); err != nil {
+	if err := m.setActivePointerAfterReconciliation(ctx, record.Snapshot.ID, credentialChanged); err != nil {
 		return deviceReconciliationStateFailure(err)
 	}
 	m.mu.Lock()
@@ -611,10 +611,22 @@ func (m *codexAccountManager) setGlobalAuthenticationFailure(observation domain.
 }
 
 func (m *codexAccountManager) setActivePointer(ctx context.Context, accountID string) error {
+	return m.setActivePointerAfterReconciliation(ctx, accountID, false)
+}
+
+// setActivePointerAfterReconciliation advances the revision when the device
+// replaced credential material for the same logical account. Recovery uses that
+// revision as its epoch, so one rejected controller generation cannot trigger an
+// unbounded restart loop while a genuine re-login remains recoverable.
+func (m *codexAccountManager) setActivePointerAfterReconciliation(
+	ctx context.Context,
+	accountID string,
+	credentialChanged bool,
+) error {
 	m.mu.Lock()
 	current := m.active
 	m.mu.Unlock()
-	if current.AccountID == accountID {
+	if current.AccountID == accountID && !credentialChanged {
 		return nil
 	}
 	now := m.now()

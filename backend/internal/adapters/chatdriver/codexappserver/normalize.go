@@ -1031,8 +1031,8 @@ func normalizeItem(params json.RawMessage, completed bool) []ports.ChatEvent {
 }
 
 // appendStructuredReauthEvent reads the provider's machine-readable error kind.
-// The prose is retained only as the reason shown to the user: changing that prose
-// cannot change the classification decision.
+// The original prose remains on the failed event; durable authentication state
+// receives a stable safe explanation instead of arbitrary provider text.
 func appendStructuredReauthEvent(
 	events []ports.ChatEvent,
 	turnErr *codexproto.TurnError,
@@ -1040,11 +1040,7 @@ func appendStructuredReauthEvent(
 	if turnErr == nil || !codexUnauthorized(turnErr.CodexErrorInfo) {
 		return events
 	}
-	reason := strings.TrimSpace(turnErr.Message)
-	if reason == "" {
-		reason = "unauthorized"
-	}
-	return appendReauthEvent(events, reason)
+	return appendReauthEvent(events, "Codex rejected this chat's credentials.")
 }
 
 // codexUnauthorized recognizes the stable CodexErrorInfo discriminator. The
@@ -1059,14 +1055,15 @@ func codexUnauthorized(info *codexproto.CodexErrorInfo) bool {
 }
 
 // appendReauthEvent preserves the failed event and adds current account state.
-// Authentication explains why the work failed; it does not erase that work from
-// the timeline.
+// The fence must publish first: a concurrent Send must not reach credentials this
+// same frame rejected, and projecting a terminal completion may also drain queued
+// work. The provider error/completion remains immediately behind the fence.
 func appendReauthEvent(events []ports.ChatEvent, reason string) []ports.ChatEvent {
 	correlation := ports.ChatEvent{}
 	if len(events) > 0 {
 		correlation = events[len(events)-1]
 	}
-	return append(events, ports.ChatEvent{
+	reauth := ports.ChatEvent{
 		Kind:                   ports.ChatEventAccountChanged,
 		ProviderTurnID:         correlation.ProviderTurnID,
 		ProviderConversationID: correlation.ProviderConversationID,
@@ -1074,7 +1071,8 @@ func appendReauthEvent(events []ports.ChatEvent, reason string) []ports.ChatEven
 			ReauthRequired: true,
 			ReauthReason:   reason,
 		},
-	})
+	}
+	return append([]ports.ChatEvent{reauth}, events...)
 }
 
 // activityFor maps a provider item type onto an activity kind and label.

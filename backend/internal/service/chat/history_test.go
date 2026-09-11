@@ -692,7 +692,7 @@ func newEditHarnessFull(
 		startCfg.SkipNativeHistoryImport = true
 		// This harness is exercising work after the user resumed a controller whose
 		// persisted account warning came from the previous process.
-		startCfg.ResumeRetainedQueue = true
+		startCfg.QueueRecoveryPolicy = domain.ChatQueueRecoveryRetainAndDrain
 	}
 	ctrl, err := svc.Start(context.Background(), startCfg)
 	if err != nil {

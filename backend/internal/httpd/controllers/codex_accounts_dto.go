@@ -133,6 +133,10 @@ func newCodexLoginResponse(input domain.CodexAccountLoginOperation) CodexAccount
 }
 
 func newCodexSwitchResponse(input domain.CodexAccountSwitch) CodexAccountSwitchResponse {
+	operationKind := input.OperationKind
+	if operationKind == "" {
+		operationKind = domain.CodexAccountOperationSwitch
+	}
 	sessions := make([]CodexAccountSwitchSessionResponse, len(input.Sessions))
 	for i := range input.Sessions {
 		session := input.Sessions[i]
@@ -143,12 +147,23 @@ func newCodexSwitchResponse(input domain.CodexAccountSwitch) CodexAccountSwitchR
 		}
 	}
 	return CodexAccountSwitchResponse{
-		ID: input.ID, SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
+		ID: input.ID, OperationKind: string(operationKind), Scope: codexSwitchScope(input),
+		SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
 		RestartRunningSessions: input.RestartRunningSessions,
 		Phase:                  CodexAccountSwitchPhase(input.Phase), FailureCode: input.FailureCode, Sessions: sessions,
 		CanRecover: input.CanRecover, CredentialsCommittedAt: input.CredentialsCommittedAt,
 		CreatedAt: input.CreatedAt, UpdatedAt: input.UpdatedAt, CompletedAt: input.CompletedAt,
 	}
+}
+
+func codexSwitchScope(input domain.CodexAccountSwitch) string {
+	if input.RestartRunningSessions {
+		return "all_running_ao_codex_sessions"
+	}
+	if input.OperationKind == domain.CodexAccountOperationExternalAuthRecovery {
+		return "current_chat"
+	}
+	return "credentials_only"
 }
 
 func redactedCodexSwitchSessionErrorCode(code string) string {

@@ -139,6 +139,11 @@ func (s *Service) ForkConversation(ctx context.Context, id domain.SessionID) (st
 	if !ok {
 		return "", ErrForkUnsupported
 	}
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.requireProviderAuth(); err != nil {
+		return "", err
+	}
 	forked, err := forker.Fork(ctx, nil)
 	if err != nil {
 		return "", classify(fmt.Errorf("fork conversation for %s: %w", id, err))
@@ -866,6 +871,11 @@ func (s *Service) SetTitle(ctx context.Context, id domain.SessionID, title strin
 	renamer, ok := controller.conv.(ports.ChatRenamer)
 	if !ok {
 		return "", ErrRenameUnsupported
+	}
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.requireProviderAuth(); err != nil {
+		return "", err
 	}
 	if err := renamer.SetTitle(ctx, normalized); err != nil {
 		return "", classify(fmt.Errorf("set title for %s: %w", id, err))

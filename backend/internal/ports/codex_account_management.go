@@ -29,6 +29,9 @@ var (
 	ErrCodexGlobalCredentialStoreUnsupported = errors.New("global codex credential store is not safely file-backed")
 	// ErrCodexRunningSessionNotResumable rejects switching before stopping a controller without exact native identity.
 	ErrCodexRunningSessionNotResumable = errors.New("running codex session cannot be resumed exactly")
+	// ErrCodexChatAuthRecoveryNotRequired rejects recovery without a durable
+	// authentication marker on the triggering conversation.
+	ErrCodexChatAuthRecoveryNotRequired = errors.New("codex Chat authentication recovery is not required")
 )
 
 // CodexOperationLease is one idempotently releasable ownership token for the
@@ -77,6 +80,13 @@ type CodexAccountSwitchConfig struct {
 	ExpectedAccountRevision int64
 	IdempotencyKey          string
 	RestartRunningSessions  bool
+}
+
+// CodexChatAuthRecoveryConfig scopes recovery after a Chat controller reports
+// that its launch credentials were rejected.
+type CodexChatAuthRecoveryConfig struct {
+	SessionID              domain.SessionID
+	RestartRunningSessions bool
 }
 
 // CodexAccountSwitchStore persists global switch facts and CAS transitions.

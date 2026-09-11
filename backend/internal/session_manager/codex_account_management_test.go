@@ -232,6 +232,26 @@ type bootstrapOrderingStore struct {
 	*collectingCodexSwitchStore
 }
 
+type authRecoveryTestStore struct {
+	*bootstrapOrderingStore
+	conversation domain.ConversationRecord
+}
+
+func (s *authRecoveryTestStore) ConversationForSession(_ context.Context, id domain.SessionID) (domain.ConversationRecord, error) {
+	if s.conversation.SessionID != id {
+		return domain.ConversationRecord{}, domain.ErrNoConversation
+	}
+	return s.conversation, nil
+}
+
+func (*authRecoveryTestStore) ConversationBranch(context.Context, string, string) (domain.ConversationBranch, error) {
+	return domain.ConversationBranch{}, domain.ErrNoConversationBranch
+}
+
+func (*authRecoveryTestStore) HasConversationTurns(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 type collectingCodexSwitchStore struct {
 	sessions     []domain.CodexAccountSwitchSession
 	switchRecord domain.CodexAccountSwitch
@@ -357,6 +377,48 @@ func TestCodexAccountSwitchFingerprintIsVersionedAndStable(t *testing.T) {
 	}
 	if got := codexAccountSwitchFingerprint("account-b", 7, true); got == first {
 		t.Fatal("restart policy must participate in fingerprint")
+	}
+}
+
+func TestCodexChatAuthRecoveryAlwaysIncludesStoppedTriggerAndDefaultsToCurrentChat(t *testing.T) {
+	base := newFakeStore()
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	reauthAt := now.Add(-time.Minute)
+	base.projects["proj"] = domain.ProjectRecord{ID: "proj", Path: t.TempDir()}
+	base.sessions["chat-trigger"] = domain.SessionRecord{
+		ID: "chat-trigger", ProjectID: "proj", Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: t.TempDir(), ProviderConversationID: "native-thread",
+			ControllerGeneration: "rejected-generation",
+		},
+	}
+	journal := &collectingCodexSwitchStore{}
+	store := &authRecoveryTestStore{
+		bootstrapOrderingStore: &bootstrapOrderingStore{fakeStore: base, collectingCodexSwitchStore: journal},
+		conversation: domain.ConversationRecord{
+			ID: "conversation-1", SessionID: "chat-trigger",
+			Account: &domain.ConversationAccount{ReauthRequiredAt: &reauthAt, ReauthReason: "unauthorized"},
+		},
+	}
+	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}, Chat: &recordingLauncher{live: false}, Clock: func() time.Time { return now }})
+	manager.SetAgentReadiness(&bootstrapOrderingCredentials{})
+
+	sw, err := manager.StartCodexChatAuthRecovery(context.Background(), ports.CodexChatAuthRecoveryConfig{
+		SessionID: "chat-trigger",
+	})
+	if err != nil {
+		t.Fatalf("start recovery: %v", err)
+	}
+	if sw.OperationKind != domain.CodexAccountOperationExternalAuthRecovery || sw.RestartRunningSessions {
+		t.Fatalf("operation = %#v", sw)
+	}
+	if len(sw.Sessions) != 1 || sw.Sessions[0].SessionID != "chat-trigger" ||
+		!sw.Sessions[0].WasRunning || !sw.Sessions[0].RetainQueuedTurns {
+		t.Fatalf("recovery sessions = %#v", sw.Sessions)
+	}
+	if sw.Sessions[0].SourceGeneration != "rejected-generation" || sw.Sessions[0].NativeSessionID != "native-thread" {
+		t.Fatalf("trigger identity = %#v", sw.Sessions[0])
 	}
 }
 
