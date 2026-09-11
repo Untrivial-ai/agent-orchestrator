@@ -32,6 +32,8 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"agent rules file bare dot", ProjectConfig{AgentRulesFile: "."}, true},
 		{"good reviewers", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerClaudeCode}}}, false},
 		{"good codex reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerCodex}}}, false},
+		{"good reviewer model", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerCodex, AgentConfig: AgentConfig{Model: "gpt-5.6"}}}}, false},
+		{"invalid reviewer model", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerCodex, AgentConfig: AgentConfig{Model: "bad\nmodel"}}}}, true},
 		{"good copilot reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerCopilot}}}, false},
 		{"good cursor reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerCursor}}}, false},
 		{"good Kilo Code reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerKiloCode}}}, false},

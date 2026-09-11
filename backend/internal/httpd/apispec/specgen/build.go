@@ -303,6 +303,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersClaimPRRequest":                           "ClaimPRRequest",
 	"ControllersSessionPRFacts":                           "SessionPRFacts",
 	"ControllersSessionPRSummary":                         "SessionPRSummary",
+	"ControllersSessionPRAOReviewSummary":                 "SessionPRAOReviewSummary",
 	"ControllersSessionPRCISummary":                       "SessionPRCISummary",
 	"ControllersSessionPRFailingCheck":                    "SessionPRFailingCheck",
 	"ControllersSessionPRReviewSummary":                   "SessionPRReviewSummary",
@@ -391,8 +392,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSubmitReviewItem":      "SubmitReviewItem",
 	"ControllersSubmitReviewInput":     "SubmitReviewInput",
 	// domain review entities
-	"DomainReviewRun":     "ReviewRun",
-	"ReviewPRReviewState": "PRReviewState",
+	"ContractAOReviewRequester": "AOReviewRequester",
+	"DomainReviewRun":           "ReviewRun",
+	"ReviewPRReviewState":       "PRReviewState",
 	// httpd/controllers: import wire envelopes
 	"ControllersImportStatusResponse": "ImportStatusResponse",
 	"ControllersImportRunResponse":    "ImportRunResponse",
@@ -672,7 +674,6 @@ func browserOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusForbidden, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
-				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusServiceUnavailable, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
@@ -1592,6 +1593,7 @@ func reviewOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.ResolveReviewCommentResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
@@ -1664,6 +1666,7 @@ func reviewOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.ReviewRunResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},

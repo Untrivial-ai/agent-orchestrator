@@ -1553,14 +1553,16 @@ function ReviewsSection({
 	});
 	const triggerReview = useMutation({
 		mutationFn: async () => {
-			// No override sends no body at all, leaving the default path on the wire
-			// exactly as it was.
 			const reviewerConfig = reviewerModel || reviewerMode
 				? { ...(reviewerModel ? { model: reviewerModel } : {}), ...(reviewerMode ? { mode: reviewerMode } : {}) }
 				: undefined;
 			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: session.id } },
-				...(reviewerOverride || reviewerConfig ? { body: { ...(reviewerOverride ? { harness: reviewerOverride } : {}), ...(reviewerConfig ? { agentConfig: reviewerConfig } : {}) } } : {}),
+				body: {
+					requestedBy: "orchestrator",
+					...(reviewerOverride ? { harness: reviewerOverride } : {}),
+					...(reviewerConfig ? { agentConfig: reviewerConfig } : {}),
+				},
 			});
 			if (error) throw new Error(apiErrorMessage(error, t("inspector.unableStartReview")));
 			return { data, reused: response?.status === 200 };

@@ -247,6 +247,7 @@ func (l *agentLauncher) invocation(spec LaunchSpec) ports.ReviewInvocation {
 		ReviewerID:      reviewerHandleID(spec.WorkerID),
 		RunID:           spec.RunID,
 		WorkerSessionID: spec.WorkerID,
+		Model:           spec.AgentConfig.Model,
 		AgentSessionID:  spec.AgentSessionID,
 		PRURL:           spec.PRURL,
 		TargetSHA:       spec.TargetSHA,
@@ -326,6 +327,7 @@ func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvo
 	return ports.ReviewInvocation{
 		ReviewerID:       reviewerHandleID(spec.WorkerID),
 		WorkerSessionID:  spec.WorkerID,
+		Model:            spec.AgentConfig.Model,
 		AgentSessionID:   spec.AgentSessionID,
 		Config:           spec.AgentConfig,
 		WorkspacePath:    spec.WorkspacePath,
@@ -402,6 +404,12 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	reviewer, ok := l.reviewers.Reviewer(spec.Harness)
 	if !ok {
 		return LaunchResult{}, fmt.Errorf("no reviewer adapter for harness %q", spec.Harness)
+	}
+	if strings.TrimSpace(inv.Model) != "" {
+		selector, ok := reviewer.(ports.ReviewerModelSelector)
+		if !ok || !selector.SupportsReviewModelSelection() {
+			return LaunchResult{}, fmt.Errorf("%w: reviewer harness %q does not support model selection", ErrInvalid, spec.Harness)
+		}
 	}
 	if pl, ok := reviewer.(preLaunchReviewer); ok {
 		if err := pl.PreLaunch(ctx, inv); err != nil {

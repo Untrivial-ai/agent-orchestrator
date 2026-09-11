@@ -25,6 +25,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerMuse
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 var _ ports.ReviewerRestorer = (*Reviewer)(nil)
@@ -53,7 +56,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 // ReviewRestoreCommand resumes the reviewer Muse conversation captured from
 // hooks, reapplying the same no-write reviewer launch flag.
 func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
-	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{Permissions: ports.PermissionModeAuto})
+	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{Config: inv.Config, Permissions: ports.PermissionModeAuto})
 	if err != nil || !ok {
 		return cmd, ok, err
 	}

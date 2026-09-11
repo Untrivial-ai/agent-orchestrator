@@ -139,6 +139,7 @@ func (f *fakeStore) InsertReviewRun(_ context.Context, r domain.ReviewRun) error
 			existing.PRURL == r.PRURL &&
 			existing.TargetSHA == r.TargetSHA &&
 			existing.Harness == r.Harness &&
+			existing.Model == r.Model &&
 			existing.TargetSHA != "" &&
 			existing.Status == domain.ReviewRunRunning &&
 			existing.Verdict == domain.VerdictNone {
@@ -227,9 +228,9 @@ func (f *fakeStore) GetReviewRunBySessionPRAndSHA(_ context.Context, sessionID d
 	}
 	return domain.ReviewRun{}, false, nil
 }
-func (f *fakeStore) GetReviewRunBySessionPRSHAAndHarness(_ context.Context, sessionID domain.SessionID, prURL, sha string, harness domain.ReviewerHarness) (domain.ReviewRun, bool, error) {
+func (f *fakeStore) GetReviewRunBySessionPRSHAHarnessAndModel(_ context.Context, sessionID domain.SessionID, prURL, sha string, harness domain.ReviewerHarness, model string) (domain.ReviewRun, bool, error) {
 	for i := len(f.runs) - 1; i >= 0; i-- {
-		if f.runs[i].SessionID == sessionID && f.runs[i].PRURL == prURL && f.runs[i].TargetSHA == sha && f.runs[i].Harness == harness {
+		if f.runs[i].SessionID == sessionID && f.runs[i].PRURL == prURL && f.runs[i].TargetSHA == sha && f.runs[i].Harness == harness && f.runs[i].Model == model {
 			return f.runs[i], true, nil
 		}
 	}
@@ -425,6 +426,57 @@ func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	}
 	if len(store.runs) != 1 || store.review == nil || store.review.ReviewerHandleID != "review-mer-1" {
 		t.Fatalf("persisted review=%+v runs=%+v", store.review, store.runs)
+	}
+}
+
+func TestRequestUsesConfiguredReviewerModelAndRecordsOrigin(t *testing.T) {
+	store := &fakeStore{}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	projects := fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{
+		Harness: domain.ReviewerCodex, AgentConfig: domain.AgentConfig{Model: "gpt-5.6"},
+	}}}}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), projects, launcher)
+
+	res, err := eng.Request(context.Background(), "mer-1", Request{RequestedBy: "mer-1"})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if !res.Created || res.Run.Harness != domain.ReviewerCodex || res.Run.Model != "gpt-5.6" || res.Run.RequestedBy != domain.ReviewRequesterWorker || res.Run.RequestedBySessionID != "mer-1" {
+		t.Fatalf("run = %+v", res.Run)
+	}
+	if launcher.gotSpec.Harness != domain.ReviewerCodex || launcher.gotSpec.AgentConfig.Model != "gpt-5.6" {
+		t.Fatalf("launch spec = %+v", launcher.gotSpec)
+	}
+	if store.review == nil || store.review.Model != "gpt-5.6" {
+		t.Fatalf("review = %+v", store.review)
+	}
+}
+
+func TestRequestRecordsOrchestratorRequester(t *testing.T) {
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{handle: "review-mer-1"})
+
+	res, err := eng.Request(context.Background(), "mer-1", Request{Requester: domain.ReviewRequesterOrchestrator})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Run.RequestedBy != domain.ReviewRequesterOrchestrator || res.Run.RequestedBySessionID != "" {
+		t.Fatalf("run = %+v", res.Run)
+	}
+}
+
+func TestRequestRejectsMismatchedRequesterClass(t *testing.T) {
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{})
+	_, err := eng.Request(context.Background(), "mer-1", Request{Requester: domain.ReviewRequesterOrchestrator, RequestedBy: "mer-1"})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRequestRejectsOriginatingSessionMismatch(t *testing.T) {
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{})
+	_, err := eng.Request(context.Background(), "mer-1", Request{RequestedBy: "mer-2"})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
 }
 
@@ -1078,6 +1130,29 @@ func TestTriggerIsIdempotentForSameCommit(t *testing.T) {
 	}
 }
 
+func TestRequestModelOverrideDoesNotReplaceConcurrentRunningReview(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, Model: "model-a", ReviewerHandleID: "review-mer-1"},
+		runs: []domain.ReviewRun{{
+			ID: "run-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1",
+			Harness: domain.ReviewerClaudeCode, Model: "model-a", Status: domain.ReviewRunRunning,
+		}},
+	}
+	launcher := &fakeLauncher{alive: true}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.Request(context.Background(), "mer-1", Request{AgentConfig: domain.AgentConfig{Model: "model-b"}, RequestedBy: "mer-1"})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Created || res.Run.ID != "run-1" || launcher.destroyed || launcher.spawned || launcher.notified {
+		t.Fatalf("concurrent request replaced running review: result=%+v launcher=%+v", res, launcher)
+	}
+	if store.review.Model != "model-a" || len(store.runs) != 1 {
+		t.Fatalf("persisted state changed during active review: review=%+v runs=%+v", store.review, store.runs)
+	}
+}
+
 // Choosing a different reviewer is a request for a second opinion on this exact
 // commit. Before this, an approved commit was skipped before the harness was
 // even consulted, so the picker looked broken precisely when a user would reach
@@ -1524,7 +1599,7 @@ func TestTriggerRejectsInvalidReviewerConfig(t *testing.T) {
 	}
 }
 
-func TestTriggerConfigOverrideWhileSameCommitRunningRestartsReview(t *testing.T) {
+func TestTriggerConfigOverrideWhileSameCommitRunningReusesReview(t *testing.T) {
 	store := &fakeStore{
 		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "review-mer-1", AgentSessionID: "native-reviewer-1"},
 		runs: []domain.ReviewRun{{
@@ -1543,14 +1618,11 @@ func TestTriggerConfigOverrideWhileSameCommitRunningRestartsReview(t *testing.T)
 	if err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
-	if !res.Created || res.Run.ID != "run-1" {
-		t.Fatalf("expected running same-commit config override to restart the existing run as a fresh pass: %+v", res)
+	if res.Created || res.Run.ID != "run-1" {
+		t.Fatalf("expected running same-commit config override to reuse the existing run: %+v", res)
 	}
-	if !launcher.spawned || launcher.notified {
-		t.Fatalf("config override should relaunch, not reuse running pane: %+v", launcher)
-	}
-	if got := launcher.gotSpec.AgentConfig.Model; got != "gpt-5-mini" {
-		t.Fatalf("spawn config model = %q, want gpt-5-mini", got)
+	if launcher.spawned || launcher.notified || launcher.destroyed {
+		t.Fatalf("config override should not relaunch or disturb the running pane: %+v", launcher)
 	}
 	if got := store.runs[0]; got.Status != domain.ReviewRunRunning {
 		t.Fatalf("running run should stay active in storage while the pane restarts, got %+v", got)

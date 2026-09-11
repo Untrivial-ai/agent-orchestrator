@@ -707,6 +707,7 @@ describe("CommandPalette PR and review actions", () => {
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: "w-merge" } },
+				body: { requestedBy: "orchestrator" },
 			}),
 		);
 		await waitFor(() => expect(paletteInput()).toBeNull());

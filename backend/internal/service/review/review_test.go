@@ -26,6 +26,7 @@ type fakeStore struct {
 	prReviews               map[string][]domain.PullRequestReview
 	prComments              map[string][]domain.PullRequestComment
 	sessionAutoInjectReview *bool
+	staleHead               bool
 
 	updateCalls        int
 	agentSessionUpdate int
@@ -98,6 +99,13 @@ func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status d
 	f.run.GithubReviewID = githubReviewID
 	f.run.AutoInjectReview = autoInjectReview
 	return true, nil
+}
+
+func (f *fakeStore) CompleteReviewRunIfHeadCurrent(ctx context.Context, id string, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error) {
+	if f.staleHead {
+		return false, nil
+	}
+	return f.UpdateReviewRunResult(ctx, id, domain.ReviewRunComplete, verdict, body, githubReviewID, autoInjectReview)
 }
 
 func (f *fakeStore) MarkReviewRunDelivered(_ context.Context, id string, deliveredAt time.Time) (bool, error) {
@@ -359,6 +367,25 @@ func TestSubmitSnapshotsDisabledPolicyAndNeverDeliversOnRetry(t *testing.T) {
 	}
 	if run.Status != domain.ReviewRunComplete || run.AutoInjectReview || reducer.batchCalls != 0 || st.markCalls != 0 {
 		t.Fatalf("retry rewrote or delivered disabled review = %+v reducerCalls=%d markCalls=%d", run, reducer.batchCalls, st.markCalls)
+	}
+}
+
+func TestSubmitRejectsAndCancelsStaleHeadAtomically(t *testing.T) {
+	st := &fakeStore{
+		ok: true, staleHead: true,
+		run: domain.ReviewRun{
+			ID: "run-1", SessionID: "mer-1", PRURL: "pr1", TargetSHA: "old", Status: domain.ReviewRunRunning,
+		},
+		prs: []domain.PullRequest{{URL: "pr1", HeadSHA: "new"}},
+	}
+	svc := New(nil, st)
+
+	_, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictApproved, "looks good", "101")
+	if !errors.Is(err, ErrStaleHead) {
+		t.Fatalf("err = %v, want ErrStaleHead", err)
+	}
+	if st.run.Status != domain.ReviewRunCancelled || st.run.Verdict != domain.VerdictNone {
+		t.Fatalf("stale run = %+v, want cancelled without an accepted verdict", st.run)
 	}
 }
 
@@ -703,7 +730,7 @@ func TestTriggerReportsWhoStartedThePass(t *testing.T) {
 			sink := &recordingSink{}
 			svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 			svc.engineTrigger = func(
-				_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+				_ context.Context, _ domain.SessionID, _ reviewcore.Request, _ domain.ReviewTriggerSource,
 			) (reviewcore.TriggerResult, error) {
 				return reviewcore.TriggerResult{
 					Run:         domain.ReviewRun{Harness: "claude-code"},
@@ -731,7 +758,7 @@ func TestTriggerFailureReportsWhichPassFailed(t *testing.T) {
 	sink := &recordingSink{}
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ reviewcore.Request, _ domain.ReviewTriggerSource,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{}, fmt.Errorf("%w: no PR", reviewcore.ErrInvalid)
 	}
@@ -758,7 +785,7 @@ func TestTriggerRejectsInvalidReviewerConfigBeforeEngine(t *testing.T) {
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	called := false
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ reviewcore.Request, _ domain.ReviewTriggerSource,
 	) (reviewcore.TriggerResult, error) {
 		called = true
 		return reviewcore.TriggerResult{}, nil
@@ -814,7 +841,7 @@ func TestRestartedManualPassIsNotReportedAsReused(t *testing.T) {
 	sink := &recordingSink{}
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ reviewcore.Request, _ domain.ReviewTriggerSource,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{Run: domain.ReviewRun{Harness: "codex"}, Created: true, CreatedRuns: nil}, nil
 	}
@@ -835,7 +862,7 @@ func TestReusedManualPassStaysATrigger(t *testing.T) {
 	sink := &recordingSink{}
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ reviewcore.Request, _ domain.ReviewTriggerSource,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{Run: domain.ReviewRun{Harness: "codex"}, CreatedRuns: nil}, nil
 	}
@@ -876,7 +903,7 @@ func TestReusedOrSkippedAutoPassStillCountsAsTriggered(t *testing.T) {
 			sink := &recordingSink{}
 			svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 			svc.engineTrigger = func(
-				_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+				_ context.Context, _ domain.SessionID, _ reviewcore.Request, _ domain.ReviewTriggerSource,
 			) (reviewcore.TriggerResult, error) {
 				return c.result, nil
 			}

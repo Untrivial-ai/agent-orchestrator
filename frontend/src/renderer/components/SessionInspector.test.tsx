@@ -144,6 +144,7 @@ const prSummary = (
       hasUnresolvedHumanComments: false,
       unresolvedBy: [],
     },
+    aoReview: { state: "up_to_date", verdict: "approved", targetSha: `sha-${number}` },
     mergeability: {
       state: "mergeable",
       reasons: [],
@@ -1830,6 +1831,7 @@ describe("SessionInspector summary reviews", () => {
         "/api/v1/sessions/{sessionId}/reviews/trigger",
         {
           params: { path: { sessionId: "sess-1" } },
+          body: { requestedBy: "orchestrator" },
         },
       ),
     );
@@ -2932,7 +2934,7 @@ describe("SessionInspector summary reviews", () => {
       "/api/v1/sessions/{sessionId}/reviews/trigger",
       {
         params: { path: { sessionId: "sess-1" } },
-        body: { harness: "opencode" },
+        body: { harness: "opencode", requestedBy: "orchestrator" },
       },
     );
   });

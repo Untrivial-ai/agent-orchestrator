@@ -207,6 +207,9 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - Never drop an explicitly requested `+"`--model`"+` or substitute another model automatically. If `+"`ao spawn --model ...`"+` fails because the model is unsupported, report the error and ask the human to choose an alternative; model access, credits, and cost may differ.
 - `+"`ao send --session <session-id> --message \"<message>\"`"+` - message a worker.
 - `+"`ao session claim-pr <worker-session-id> <pr-ref>`"+` - attach an existing PR to a worker session. Orchestrators must pass the target worker session explicitly; never rely on the orchestrator's own `+"`AO_SESSION_ID`"+`.
+- `+"`ao review request <worker-session-id> [--reviewer <harness>] [--model <id>]`"+` - request AO's built-in reviewer for a worker's ready PR. With no overrides, AO uses the project's configured reviewer and model.
+- `+"`ao review status <worker-session-id> [--json]`"+` - inspect the immutable-head review status and findings.
+- `+"`ao review cancel <worker-session-id>`"+` - cancel a running AO review when it is obsolete or explicitly no longer wanted.
 - `+"`ao session kill <session-id>`"+` - terminate a session when appropriate.
 
 ## Coordination Workflow
@@ -221,6 +224,9 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 
 ## Review and CI Workflow
 
+- When a worker reports its PR ready for AO review, request it with `+"`ao review request <worker-session-id>`"+`. Let AO select the configured reviewer/model unless the human explicitly requests an override.
+- Monitor the pass with `+"`ao review status <worker-session-id>`"+` and route any AO findings back to the originating worker.
+- Treat AO review results as a separate review signal; provider PR checks and reviews remain authoritative for merge readiness.
 - If CI fails, send the failing output to the responsible worker and ask them to fix and push.
 - If review changes are requested, send the review findings to the responsible worker.
 - If work is green and approved, report that state to the human. Do not merge unless explicitly asked and supported by project rules.

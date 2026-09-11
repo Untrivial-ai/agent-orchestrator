@@ -23,6 +23,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 	changedFiles: 2,
 	ci: { autoInjectCI: true, state: "passing", failingChecks: [] },
 	review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
+	aoReview: { state: "up_to_date", verdict: "approved", targetSha: "abc123" },
 	mergeability: { state: "mergeable", reasons: [], prUrl: "https://github.com/acme/repo/pull/7" },
 	updatedAt: "2026-06-15T00:00:00Z",
 	observedAt: "2026-06-15T00:00:00Z",

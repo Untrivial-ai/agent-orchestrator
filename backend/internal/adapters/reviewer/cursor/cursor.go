@@ -32,6 +32,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerCursor
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 

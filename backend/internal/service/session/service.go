@@ -47,6 +47,7 @@ type Store interface {
 	ListPRReviews(ctx context.Context, prURL string) ([]domain.PullRequestReview, error)
 	ListPRReviewThreads(ctx context.Context, prURL string) ([]domain.PullRequestReviewThread, error)
 	ListPRComments(ctx context.Context, prURL string) ([]domain.PullRequestComment, error)
+	ListReviewRunsBySession(ctx context.Context, id domain.SessionID) ([]domain.ReviewRun, error)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 }
 

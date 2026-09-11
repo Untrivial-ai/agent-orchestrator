@@ -100,22 +100,27 @@ const FallbackReviewerHarness = ReviewerClaudeCode
 // inherited from the worker. Every other reviewer requires explicit selection,
 // so adding an experimental adapter never silently changes an existing project.
 func (c ProjectConfig) ResolveReviewerHarness(worker AgentHarness) ReviewerHarness {
+	return c.ResolveReviewerConfig(worker).Harness
+}
+
+// ResolveReviewerConfig picks the configured reviewer and its default model.
+func (c ProjectConfig) ResolveReviewerConfig(worker AgentHarness) ReviewerConfig {
 	if len(c.Reviewers) > 0 {
-		return c.Reviewers[0].Harness
+		return c.Reviewers[0]
 	}
 	switch worker {
 	case HarnessClaudeCode:
-		return ReviewerClaudeCode
+		return ReviewerConfig{Harness: ReviewerClaudeCode}
 	case HarnessCodex:
-		return ReviewerCodex
+		return ReviewerConfig{Harness: ReviewerCodex}
 	case HarnessOpenCode:
-		return ReviewerOpenCode
+		return ReviewerConfig{Harness: ReviewerOpenCode}
 	case HarnessMuse:
-		return ReviewerMuse
+		return ReviewerConfig{Harness: ReviewerMuse}
 	case HarnessKimchi:
-		return ReviewerKimchi
+		return ReviewerConfig{Harness: ReviewerKimchi}
 	}
-	return FallbackReviewerHarness
+	return ReviewerConfig{Harness: FallbackReviewerHarness}
 }
 
 // RoleOverride overrides the harness and/or agent config for a session role.
@@ -206,6 +211,10 @@ func (c ProjectConfig) Validate() error {
 		}
 		if err := rv.AgentConfig.Validate(); err != nil {
 			return fmt.Errorf("reviewers[%d].%w", i, err)
+		}
+		model := rv.AgentConfig.Model
+		if len(strings.TrimSpace(model)) > 256 || strings.ContainsAny(model, "\r\n\x00") {
+			return fmt.Errorf("reviewers[%d].agentConfig.model: must be a single line of at most 256 characters", i)
 		}
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {

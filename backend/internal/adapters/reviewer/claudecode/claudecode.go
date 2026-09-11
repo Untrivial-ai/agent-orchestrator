@@ -32,6 +32,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerClaudeCode
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 var _ ports.ReviewerRestorer = (*Reviewer)(nil)
@@ -140,6 +143,7 @@ func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInv
 		inv.AgentSessionID = migratedID
 	}
 	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{
+		Config:          inv.Config,
 		Permissions:     ports.PermissionModeAuto,
 		AllowedTools:    reviewerAllowedTools,
 		DisallowedTools: reviewerDisallowedTools,

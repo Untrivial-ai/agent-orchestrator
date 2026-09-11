@@ -423,7 +423,7 @@ describe("ProjectSettingsForm", () => {
 					model: "claude-opus-4-5",
 					permissions: "auto",
 				},
-				reviewers: [{ harness: "claude-code" }],
+				reviewers: [{ harness: "claude-code", agentConfig: { model: "claude-opus-4-6" } }],
 			},
 		});
 
@@ -463,7 +463,7 @@ describe("ProjectSettingsForm", () => {
 					defaultBranch: "develop",
 					sessionPrefix: "po",
 					env: { FOO: "bar" },
-					reviewers: [{ harness: "claude-code" }],
+					reviewers: [{ harness: "claude-code", agentConfig: { model: "claude-opus-4-6" } }],
 					// Agents changes applied
 					worker: {
 						agent: "opencode",
