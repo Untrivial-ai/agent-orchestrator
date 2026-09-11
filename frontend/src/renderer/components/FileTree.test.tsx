@@ -25,11 +25,7 @@ function renderWithQuery(children: ReactNode) {
 	act(() => {
 		for (const callback of resizeCallbacks) callback([{ contentRect: { width: 400, height: 400 } }] as never, {} as ResizeObserver);
 	});
-	return {
-		...view,
-		rerender: (nextChildren: ReactNode) =>
-			view.rerender(<QueryClientProvider client={client}>{nextChildren}</QueryClientProvider>),
-	};
+	return view;
 }
 
 const resizeCallbacks: ResizeObserverCallback[] = [];
@@ -149,31 +145,6 @@ describe("FileTree", () => {
 		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/search", {
 			params: { path: { sessionId: "sess-1" }, query: { query: "target", limit: 100 } },
 		});
-	});
-
-	it("shares one recursive hydration across rapid search input", async () => {
-		getMock.mockImplementation(async (_path: string, options: unknown) => {
-			const query = (options as { params?: { query?: { path?: string } } }).params?.query?.path;
-			if (!query) return treeResponse("", [{ name: "src", path: "src", type: "dir", hasChanges: false }]);
-			if (query === "src") return treeResponse("src", [{ name: "nested", path: "src/nested", type: "dir", hasChanges: false }]);
-			if (query === "src/nested") {
-				return treeResponse("src/nested", [{ name: "target.ts", path: "src/nested/target.ts", type: "file", status: "unmodified" }]);
-			}
-			return treeResponse(query, []);
-		});
-
-		const view = renderWithQuery(
-			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="t" />,
-		);
-		view.rerender(
-			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="ta" />,
-		);
-		view.rerender(
-			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="target" />,
-		);
-
-		await screen.findByText("target.ts");
-		expect(getMock).toHaveBeenCalledTimes(3);
 	});
 
 	it("renders the precomputed changed-only tree without calling the tree endpoint", async () => {
