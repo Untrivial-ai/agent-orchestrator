@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -273,6 +274,32 @@ func TestAttachmentNeverAttachesToDeadRuntime(t *testing.T) {
 	}
 	if got := sp.calls(); got != 0 {
 		t.Fatalf("attach must never run against a dead runtime, got %d attaches", got)
+	}
+}
+
+// TestAttachmentExitsImmediatelyOnRuntimeUnavailable pins the fix for #4641:
+// ErrRuntimeUnavailable (e.g. "no server running" after a reboot) is a
+// definitive, permanent signal, not a transient probe hiccup. Routing it
+// through the same failures/backoff counter as ordinary probe errors raced
+// against the frontend's own ~3s open timeout — which tears down and
+// re-opens the attachment on every timeout, resetting the counter to zero —
+// producing an infinite "reattaching" loop that never reached the failure
+// cap. It must instead report a clean exit on the very first probe.
+func TestAttachmentExitsImmediatelyOnRuntimeUnavailable(t *testing.T) {
+	sp := &fakeSpawner{}
+	src := &fakeSource{aliveErr: fmt.Errorf("wrap: %w", ports.ErrRuntimeUnavailable), spawner: sp}
+
+	exited := make(chan struct{})
+	a := newTestAttachment(src, nil, func() { close(exited) })
+
+	go a.run(context.Background())
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("expected immediate exit on ErrRuntimeUnavailable, got infinite reattach")
+	}
+	if got := sp.calls(); got != 0 {
+		t.Fatalf("attach must never run once the runtime is conclusively unavailable, got %d attaches", got)
 	}
 }
 

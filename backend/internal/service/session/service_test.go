@@ -68,6 +68,7 @@ type fakeStore struct {
 	activeSwitchListErr error
 	pr                  map[domain.SessionID]domain.PRFacts
 	prFacts             map[domain.SessionID][]domain.PRFacts
+	listPRFactsErr      map[domain.SessionID]error
 	prs                 map[domain.SessionID][]domain.PullRequest
 	projects            map[string]domain.ProjectRecord
 	worktrees           map[domain.SessionID][]domain.SessionWorktreeRecord
@@ -89,6 +90,7 @@ func newFakeStore() *fakeStore {
 		activeSwitches: map[domain.SessionID]domain.AgentSwitch{},
 		pr:             map[domain.SessionID]domain.PRFacts{},
 		prFacts:        map[domain.SessionID][]domain.PRFacts{},
+		listPRFactsErr: map[domain.SessionID]error{},
 		prs:            map[domain.SessionID][]domain.PullRequest{},
 		projects:       map[string]domain.ProjectRecord{},
 		worktrees:      map[domain.SessionID][]domain.SessionWorktreeRecord{},
@@ -333,6 +335,11 @@ func (f *fakeStore) ListPRsBySession(_ context.Context, id domain.SessionID) ([]
 
 func (f *fakeStore) ListPRFactsForSession(_ context.Context, id domain.SessionID) ([]domain.PRFacts, error) {
 	f.listPRFactsCalls++
+	if f.listPRFactsErr != nil {
+		if err, ok := f.listPRFactsErr[id]; ok {
+			return nil, err
+		}
+	}
 	if prs, ok := f.prFacts[id]; ok {
 		return append([]domain.PRFacts(nil), prs...), nil
 	}
@@ -2228,6 +2235,7 @@ type fakeCommander struct {
 	killsAtSpawn    int
 	restoreErr      error
 	restoreResult   sessionmanager.RestoreResult
+	restoreCalls    []domain.SessionID
 	readyErr        error
 }
 
@@ -2260,7 +2268,8 @@ func (*fakeCommander) ListAgentSwitches(context.Context, domain.SessionID) ([]do
 func (*fakeCommander) SubmitAgentHandoff(context.Context, domain.SessionID, domain.AgentSwitchID, domain.AgentGenerationID, json.RawMessage) (domain.AgentSwitch, error) {
 	return domain.AgentSwitch{}, nil
 }
-func (f *fakeCommander) RestoreWithMode(context.Context, domain.SessionID) (sessionmanager.RestoreResult, error) {
+func (f *fakeCommander) RestoreWithMode(_ context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error) {
+	f.restoreCalls = append(f.restoreCalls, id)
 	if f.restoreErr != nil {
 		return sessionmanager.RestoreResult{}, f.restoreErr
 	}
@@ -2413,13 +2422,182 @@ func TestSpawnOrchestratorCleanRetiresActiveOrchestratorsBeforeSpawn(t *testing.
 	if len(fc.killed) != 0 {
 		t.Fatalf("interactive Kill must not be used for replacement: killed=%v", fc.killed)
 	}
+	if len(fc.restoreCalls) != 0 {
+		t.Fatalf("restoreCalls = %v, want none: with more than one active orchestrator there is no single native conversation to resume (#4641)", fc.restoreCalls)
+	}
+}
+
+// TestSpawnOrchestratorCleanResumesRetiredOrchestrator pins issue #4641's core
+// requirement: a clean replacement of a single retired orchestrator (e.g. its
+// tmux runtime died in a reboot) must resume its native conversation via
+// RestoreWithMode before ever falling back to a fresh, unlinked spawn.
+func TestSpawnOrchestratorCleanResumesRetiredOrchestrator(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	fc := &fakeCommander{
+		restoreResult: sessionmanager.RestoreResult{
+			Session: domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator},
+		},
+	}
+	svc := &Service{manager: fc, store: st}
+
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "")
+	if err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if got.ID != "mer-1" {
+		t.Fatalf("resumed session id = %q, want the retired orchestrator's own id mer-1", got.ID)
+	}
+	if len(fc.restoreCalls) != 1 || fc.restoreCalls[0] != "mer-1" {
+		t.Fatalf("restoreCalls = %v, want exactly [mer-1]", fc.restoreCalls)
+	}
+	if fc.spawned {
+		t.Fatal("a successful resume must not fall back to a fresh spawn")
+	}
+	if len(fc.sentMessages) != 1 {
+		t.Fatalf("sent messages = %v, want only the retire notice (no cold-start notice on a successful resume)", fc.sentMessages)
+	}
+}
+
+// TestSpawnOrchestratorCleanFallsBackWhenResumeFails covers the explicit
+// "told cold, not silently swapped" acceptance criterion from #4641: when
+// resume genuinely fails (unresumable adapter, no native id, etc.) the
+// replacement still succeeds via a fresh spawn, and the user is told via a
+// distinct notice into the new session rather than the swap looking seamless.
+func TestSpawnOrchestratorCleanFallsBackWhenResumeFails(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	fc := &fakeCommander{restoreErr: sessionmanager.ErrNotResumable}
+	svc := &Service{manager: fc, store: st}
+
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "")
+	if err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if !fc.spawned {
+		t.Fatal("a failed resume must fall back to a fresh spawn")
+	}
+	if got.ID != "mer-9" {
+		t.Fatalf("got session id = %q, want the fresh spawn's id", got.ID)
+	}
+	if len(fc.restoreCalls) != 1 || fc.restoreCalls[0] != "mer-1" {
+		t.Fatalf("restoreCalls = %v, want exactly [mer-1]", fc.restoreCalls)
+	}
+	if len(fc.sentMessages) != 2 || fc.sentMessages[1] != orchestratorColdStartNotice {
+		t.Fatalf("sent messages = %v, want retire notice followed by the cold-start notice", fc.sentMessages)
+	}
+	if len(fc.ready) != 1 || fc.ready[0] != "mer-9" {
+		t.Fatalf("ready = %v, want the cold-start notice to wait for the new session to be ready", fc.ready)
+	}
+}
+
+// TestSpawnOrchestratorCleanRetiresResumedSessionOnReadBackFailure pins the
+// review finding from #4721: if RestoreWithMode succeeds (relaunching the
+// runtime) but reading back the session via toSession fails, the just-resumed
+// runtime must be retired before falling back to cold spawn, so only the cold
+// replacement remains active.
+func TestSpawnOrchestratorCleanRetiresResumedSessionOnReadBackFailure(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	st.listPRFactsErr["mer-1"] = errors.New("database read error")
+	fc := &fakeCommander{
+		restoreResult: sessionmanager.RestoreResult{
+			Session: domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator},
+		},
+	}
+	svc := &Service{manager: fc, store: st}
+
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "")
+	if err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if !fc.spawned {
+		t.Fatal("fallback cold spawn must run after read-back failure")
+	}
+	if got.ID != "mer-9" {
+		t.Fatalf("got session id = %q, want cold replacement mer-9", got.ID)
+	}
+	if len(fc.restoreCalls) != 1 || fc.restoreCalls[0] != "mer-1" {
+		t.Fatalf("restoreCalls = %v, want exactly [mer-1]", fc.restoreCalls)
+	}
+	// mer-1 must be retired twice: once initially when preparing replacement,
+	// and once more after the resumed runtime fails read-back.
+	if len(fc.retired) != 2 || fc.retired[0] != "mer-1" || fc.retired[1] != "mer-1" {
+		t.Fatalf("retired = %v, want [mer-1, mer-1] (resumed runtime must be torn down before cold spawn)", fc.retired)
+	}
+	if fc.killsAtSpawn != 2 {
+		t.Fatalf("killsAtSpawn = %d, want 2 (teardown must happen before cold spawn)", fc.killsAtSpawn)
+	}
+	if len(fc.sentMessages) != 2 || fc.sentMessages[1] != orchestratorColdStartNotice {
+		t.Fatalf("sent messages = %v, want retire notice followed by cold-start notice", fc.sentMessages)
+	}
+	if len(fc.ready) != 1 || fc.ready[0] != "mer-9" {
+		t.Fatalf("ready = %v, want the cold-start notice to wait for the new session to be ready", fc.ready)
+	}
+}
+
+// TestSpawnOrchestratorCleanRetiresResumedSessionOnVerificationFailure pins the
+// review finding from #4721: if RestoreWithMode succeeds (relaunching the
+// runtime) but the resumed session fails replacement verification (e.g. wrong
+// kind, harness, or branch), the just-resumed runtime must be retired before
+// falling back to cold spawn, so only the cold replacement remains active.
+func TestSpawnOrchestratorCleanRetiresResumedSessionOnVerificationFailure(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindOrchestrator,
+	}
+	fc := &fakeCommander{
+		restoreResult: sessionmanager.RestoreResult{
+			// Restored session has an unexpected kind, causing verifyOrchestratorReplacement to fail
+			Session: domain.SessionRecord{
+				ID:        "mer-1",
+				ProjectID: "mer",
+				Kind:      domain.KindWorker,
+			},
+		},
+	}
+	svc := &Service{manager: fc, store: st}
+
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "")
+	if err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if !fc.spawned {
+		t.Fatal("fallback cold spawn must run after verification failure")
+	}
+	if got.ID != "mer-9" {
+		t.Fatalf("got session id = %q, want cold replacement mer-9", got.ID)
+	}
+	if len(fc.restoreCalls) != 1 || fc.restoreCalls[0] != "mer-1" {
+		t.Fatalf("restoreCalls = %v, want exactly [mer-1]", fc.restoreCalls)
+	}
+	// mer-1 must be retired twice: once initially when preparing replacement,
+	// and once more after the resumed runtime fails replacement verification.
+	if len(fc.retired) != 2 || fc.retired[0] != "mer-1" || fc.retired[1] != "mer-1" {
+		t.Fatalf("retired = %v, want [mer-1, mer-1] (resumed runtime must be torn down before cold spawn)", fc.retired)
+	}
+	if fc.killsAtSpawn != 2 {
+		t.Fatalf("killsAtSpawn = %d, want 2 (teardown must happen before cold spawn)", fc.killsAtSpawn)
+	}
+	if len(fc.sentMessages) != 2 || fc.sentMessages[1] != orchestratorColdStartNotice {
+		t.Fatalf("sent messages = %v, want retire notice followed by cold-start notice", fc.sentMessages)
+	}
+	if len(fc.ready) != 1 || fc.ready[0] != "mer-9" {
+		t.Fatalf("ready = %v, want the cold-start notice to wait for the new session to be ready", fc.ready)
+	}
 }
 
 func TestSpawnOrchestratorCleanContinuesWhenRetireNoticeFails(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator}
-	fc := &fakeCommander{sendErr: errors.New("pane closed")}
+	fc := &fakeCommander{sendErr: errors.New("pane closed"), restoreErr: sessionmanager.ErrNotResumable}
 	svc := &Service{manager: fc, store: st}
 
 	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
@@ -2493,11 +2671,17 @@ func TestSpawnOrchestratorCleanRetireNoticeIsBranchNeutral(t *testing.T) {
 	if _, err := svc.SpawnOrchestrator(context.Background(), "scratch", true, ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
-	if len(fc.sentMessages) != 1 {
-		t.Fatalf("retire messages = %d, want 1", len(fc.sentMessages))
+	// The fake's default zero-value RestoreWithMode result fails replacement
+	// verification, so the resume attempt falls back to a cold spawn, which
+	// sends a second, distinct notice into the new session (#4641).
+	if len(fc.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want 1 retire notice + 1 cold-start notice", len(fc.sentMessages))
 	}
 	if strings.Contains(strings.ToLower(fc.sentMessages[0]), "branch") {
 		t.Fatalf("retire notice must be branch-neutral, got %q", fc.sentMessages[0])
+	}
+	if strings.Contains(strings.ToLower(fc.sentMessages[1]), "branch") {
+		t.Fatalf("cold-start notice must be branch-neutral, got %q", fc.sentMessages[1])
 	}
 }
 
