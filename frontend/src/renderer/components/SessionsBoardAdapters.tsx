@@ -283,39 +283,24 @@ function pullRequestProgressLabel(
 		.join(" · ");
 }
 
-// Keep the board metric scannable by showing cost only. The full cost/token
-// summary remains available from the hover tooltip and to screen readers.
+// Keep the board metric scannable by showing processed tokens. The full
+// cost/token summary remains available from the hover tooltip and to screen readers.
 function toUsagePresentation(
 	usage: SessionUsageSummary | undefined,
 	t: TFunction,
 ): BoardUsagePresentation | undefined {
 	const processedTokens = usage?.processedTokens ?? null;
-	if (!usage) {
+	if (!usage || processedTokens === null || processedTokens <= 0) {
 		return undefined;
 	}
-	const cost = formatEstimatedCost(usage.estimatedCost);
-	if (!cost) {
-		if (processedTokens === null || processedTokens <= 0) {
-			return undefined;
-		}
-		const compactTokens = formatTokenCount(processedTokens).replace(/ tok$/, "");
-		const accessibleTokens = t("shell.usageTokens", {
-			count: processedTokens.toLocaleString("en-US"),
-		});
-		return {
-			accessibleLabel: accessibleTokens,
-			compactLabel: compactTokens,
-		};
-	}
-	if (processedTokens === null) {
-		return { accessibleLabel: cost, compactLabel: cost };
-	}
+	const compactTokens = formatTokenCount(processedTokens).replace(/ tok$/, "");
 	const accessibleTokens = t("shell.usageTokens", {
 		count: processedTokens.toLocaleString("en-US"),
 	});
+	const cost = formatEstimatedCost(usage.estimatedCost);
 	return {
-		accessibleLabel: `${cost} · ${accessibleTokens}`,
-		compactLabel: cost,
+		accessibleLabel: cost ? `${accessibleTokens} · ${cost}` : accessibleTokens,
+		compactLabel: compactTokens,
 	};
 }
 
