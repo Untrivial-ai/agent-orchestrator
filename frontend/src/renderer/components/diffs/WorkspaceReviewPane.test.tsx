@@ -34,12 +34,6 @@ vi.mock("@pierre/diffs/react", () => ({
 	),
 }));
 
-vi.mock("../FileContentPane", () => ({
-	FileContentPane: ({ path, scope }: { path: string; scope: string }) => (
-		<div data-scope={scope} data-testid="right-file-content">{path}</div>
-	),
-}));
-
 function annotation(): FileAnnotationModel {
 	return { target: null, draft: "", status: "idle", error: "", begin: vi.fn(), setDraft: vi.fn(), cancel: vi.fn(), submit: vi.fn() };
 }
@@ -214,42 +208,45 @@ describe("WorkspaceReviewPane", () => {
 		expect(onOpenFile).toHaveBeenCalledWith("README.md", { commitSha: "commit-1", mode: "file", scope: "committed" });
 	});
 
-	it("uses VS Code-style collapsible resource groups for unstaged and staged changes", async () => {
+	it("uses source tabs and shows diffs in the review pane for unstaged and staged changes", async () => {
 		const onOpenFile = vi.fn();
 		const unstaged = { path: "src/App.tsx", status: "modified" as const, additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" };
 		const staged = { path: "README.md", status: "modified" as const, additions: 1, deletions: 0, size: 20, binary: false, fileFingerprint: "s-1" };
 		const data = workspace([unstaged]);
 		data.sections.staged = [staged];
 		data.sections.untracked = [{ ...staged, path: "notes.txt", status: "added", fileFingerprint: "n-1" }];
+		postMock.mockImplementation((_path, init) => Promise.resolve({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [{
+					repository: "",
+					patch: init?.body?.scope === "staged"
+						? "diff --git a/README.md b/README.md\n"
+						: "diff --git a/src/App.tsx b/src/App.tsx\n",
+					truncated: false,
+					includedPaths: [init?.body?.scope === "staged" ? "README.md" : "src/App.tsx"],
+					deferred: [],
+				}],
+			},
+		}));
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={onOpenFile} sessionId="sess-1" split={false} />);
-
-		const sourceControl = screen.getByRole("region", { name: "Choose change source" });
-		const unstagedGroup = screen.getByRole("button", { name: "Collapse Unstaged (1)" });
-		const stagedGroup = screen.getByRole("button", { name: "Collapse Staged (1)" });
-		expect(sourceControl).toContainElement(unstagedGroup);
-		expect(sourceControl).toContainElement(stagedGroup);
-		expect(sourceControl).toHaveClass("min-h-0", "flex-1");
-		expect(sourceControl).not.toHaveClass("max-h-64");
-		expect(unstagedGroup.closest("section")?.nextElementSibling).toBe(stagedGroup.closest("section"));
-		expect(unstagedGroup).toHaveAttribute("aria-expanded", "true");
-		expect(stagedGroup).toHaveAttribute("aria-expanded", "true");
+		const sourceScope = screen.getByRole("button", { name: /Unstaged/ });
+		const stagedScope = screen.getByRole("button", { name: /Staged/ });
 		expect(screen.queryByText("Untracked")).not.toBeInTheDocument();
-		expect(screen.getByRole("tree", { name: "Unstaged" })).toBeInTheDocument();
-		expect(screen.getByRole("tree", { name: "Staged" })).toBeInTheDocument();
-		expect(screen.queryByTestId("code-view")).not.toBeInTheDocument();
-		await userEvent.click(stagedGroup);
-		expect(stagedGroup).toHaveAttribute("aria-expanded", "false");
-		expect(screen.queryByRole("tree", { name: "Staged" })).not.toBeInTheDocument();
-		expect(screen.getByRole("tree", { name: "Unstaged" })).toBeInTheDocument();
-		await userEvent.click(stagedGroup);
-		await userEvent.click(screen.getByRole("treeitem", { name: "README.md" }));
-		expect(postMock).not.toHaveBeenCalled();
+		await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
+			body: expect.objectContaining({ commitSha: undefined, paths: ["src/App.tsx"], scope: "unstaged", workspaceVersion: "workspace-1" }),
+		})));
+		expect(screen.getByTestId("code-view")).toBeInTheDocument();
+		expect(sourceScope).toHaveAttribute("aria-pressed", "true");
+		expect(stagedScope).toHaveAttribute("aria-pressed", "false");
+		await userEvent.click(stagedScope);
+		expect(stagedScope).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByTestId("code-view")).toBeInTheDocument();
 		expect(onOpenFile).not.toHaveBeenCalled();
-		expect(screen.getByTestId("right-file-content")).toHaveTextContent("README.md");
-		expect(screen.getByTestId("right-file-content")).toHaveAttribute("data-scope", "staged");
-		expect(screen.queryByRole("region", { name: "Choose change source" })).not.toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: "Back to changes" }));
-		expect(screen.getByRole("region", { name: "Choose change source" })).toBeInTheDocument();
+		await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
+			body: expect.objectContaining({ paths: ["README.md"], scope: "staged", workspaceVersion: "workspace-1" }),
+		})));
 	});
 
 	it("omits empty and untracked working-change sources", () => {
@@ -259,8 +256,8 @@ describe("WorkspaceReviewPane", () => {
 		data.sections.staged = [staged];
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
-		expect(screen.getByRole("button", { name: "Collapse Unstaged (1)" })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Collapse Staged (1)" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Unstaged/ })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Staged/ })).toBeInTheDocument();
 		expect(screen.queryByText("Untracked")).not.toBeInTheDocument();
 	});
 
@@ -268,10 +265,10 @@ describe("WorkspaceReviewPane", () => {
 		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" }]);
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
-		const sourceButton = screen.getByRole("button", { name: "Collapse Unstaged (1)" });
-		expect(sourceButton).toHaveAttribute("aria-expanded", "true");
+		const sourceButton = screen.getByRole("button", { name: /Unstaged/ });
+		expect(sourceButton).toHaveAttribute("aria-pressed", "true");
 		await userEvent.click(sourceButton);
-		expect(sourceButton).toHaveAttribute("aria-expanded", "false");
+		expect(screen.getByTestId("code-view")).toBeInTheDocument();
 	});
 
 	it("browses GitHub-style commits and reviews the selected commit only", async () => {
@@ -309,7 +306,6 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={workspace([])} filter="" onBrowseAll={onBrowseAll} sessionId="sess-1" split={false} />);
 
 		expect(screen.getByText("No changed files found.")).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Choose change source" })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Browse all files" }));
 		expect(onBrowseAll).toHaveBeenCalledOnce();
 		expect(postMock).not.toHaveBeenCalled();
