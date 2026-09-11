@@ -309,3 +309,15 @@ export interface CloudCpProviderConnectionsResponse {
 export interface CloudCpProviderConnectionResponse {
 	providerConnection: CloudCpProviderConnection;
 }
+
+export interface CloudCpAvailableAgent {
+	id: string;
+	provider: string;
+	hasValidCred: boolean;
+	validationState: string;
+}
+
+/** GET /orgs/{orgId}/agents/available */
+export interface CloudCpAvailableAgentsResponse {
+	agents: CloudCpAvailableAgent[];
+}

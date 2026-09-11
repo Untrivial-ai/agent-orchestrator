@@ -22,6 +22,7 @@ import { type FileAttachmentPayload, useFileAttachments } from "../hooks/useFile
 import { useSettings } from "../hooks/useSettings";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -238,6 +239,21 @@ export function TaskComposer({
 	const projectModelForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerModel : "";
 	const projectModeForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerMode : "";
 	const agentCatalog = agentsQuery.data;
+	const providerConnections = useProviderConnections(isCloudProject ? cloudOrg?.id : undefined);
+	const agentsForDropdown = useMemo(() => {
+		if (!isCloudProject || !agentCatalog?.agents) return agentCatalog?.agents;
+		const validAgents = new Set<string>();
+		providerConnections.data?.forEach((conn) => {
+			if (conn.validationState === "valid" && conn.label === "default") {
+				validAgents.add(conn.provider);
+			}
+		});
+		return agentCatalog.agents.map((agent) => ({
+			...agent,
+			disabled: !validAgents.has(agent.id),
+			hint: !validAgents.has(agent.id) ? "Needs auth" : undefined,
+		}));
+	}, [isCloudProject, agentCatalog?.agents, providerConnections.data]);
 
 	// Shares the picker's query key, so this is the same fetch, not a second one.
 	const modelCatalogQuery = useQuery(agentModelsQueryOptions(selectedAgent, modelsProjectId));
@@ -396,7 +412,7 @@ export function TaskComposer({
 				label: t("newTask.agent"),
 				placeholder: t("newTask.selectAgent"),
 				value: selectedAgent,
-				agents: agentCatalog?.agents,
+				agents: agentsForDropdown,
 				disabled: isSubmitting || (agentsQuery.isFetching && agentCatalog === undefined),
 				onChange: (value) => {
 					setAgent(value);

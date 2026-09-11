@@ -113,6 +113,52 @@ func (s *Server) listProviderConnections(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"providerConnections": items})
 }
 
+func (s *Server) listAvailableAgents(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	if requireUUID(orgID, "orgId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId must be a UUID.")
+		return
+	}
+	store, ok := s.store.(providerConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	connections, err := store.ListProviderConnections(
+		r.Context(),
+		principalFrom(r),
+		orgID,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	type agent struct {
+		ID              string `json:"id"`
+		Provider        string `json:"provider"`
+		HasValidCred    bool   `json:"hasValidCred"`
+		ValidationState string `json:"validationState"`
+	}
+	availableAgents := []agent{}
+	for _, provider := range []string{"claude-code", "codex", "cursor"} {
+		hasValid := agentConnectionAvailable(connections, provider)
+		state := "not_configured"
+		for _, conn := range connections {
+			if conn.Provider == provider && conn.Label == defaultAgentConnectionLabel {
+				state = conn.ValidationState
+				break
+			}
+		}
+		availableAgents = append(availableAgents, agent{
+			ID:              provider,
+			Provider:        provider,
+			HasValidCred:    hasValid,
+			ValidationState: state,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": availableAgents})
+}
+
 func (s *Server) putAgentConnection(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgId")
 	agent := strings.TrimSpace(chi.URLParam(r, "agent"))
