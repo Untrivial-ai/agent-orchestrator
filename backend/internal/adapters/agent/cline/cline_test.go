@@ -3,6 +3,7 @@ package cline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -221,6 +222,55 @@ func TestManifestIDMatchesHarness(t *testing.T) {
 	}
 }
 
+func TestSessionIDFromHook(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+		ok      bool
+	}{
+		{name: "current root session id", payload: `{"taskId":"conv_123","sessionContext":{"rootSessionId":"1788421369083_s110d"}}`, want: "1788421369083_s110d", ok: true},
+		{name: "root session id wins over legacy ulid", payload: `{"sessionContext":{"rootSessionId":"current-123"},"taskStart":{"taskMetadata":{"ulid":"legacy-123"}}}`, want: "current-123", ok: true},
+		{name: "legacy task start ulid", payload: `{"taskStart":{"taskMetadata":{"ulid":"legacy-start"}}}`, want: "legacy-start", ok: true},
+		{name: "legacy task resume ulid", payload: `{"taskResume":{"taskMetadata":{"ulid":"legacy-resume"}}}`, want: "legacy-resume", ok: true},
+		{name: "legacy task cancel ulid", payload: `{"taskCancel":{"taskMetadata":{"ulid":"legacy-cancel"}}}`, want: "legacy-cancel", ok: true},
+		{name: "legacy task complete ulid", payload: `{"taskComplete":{"taskMetadata":{"ulid":"legacy-complete"}}}`, want: "legacy-complete", ok: true},
+		{name: "trimmed", payload: `{"sessionContext":{"rootSessionId":"  session-456  "}}`, want: "session-456", ok: true},
+		{name: "task id is not resumable", payload: `{"taskId":"conv_123"}`, ok: false},
+		{name: "missing", payload: `{}`, ok: false},
+		{name: "blank", payload: `{"sessionContext":{"rootSessionId":"   "}}`, ok: false},
+		{name: "malformed", payload: `{`, ok: false},
+		{name: "oversized", payload: `{"sessionContext":{"rootSessionId":"` + strings.Repeat("x", maxHookSessionIDLen+1) + `"}}`, ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := SessionIDFromHook([]byte(tt.payload))
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("SessionIDFromHook() = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestManagedHooksCoverClineTaskLifecycle(t *testing.T) {
+	want := map[clineHookSpec]bool{
+		{Event: "TaskStart", Subcommand: "session-start"}:  false,
+		{Event: "TaskResume", Subcommand: "session-start"}: false,
+		{Event: "TaskComplete", Subcommand: "stop"}:        false,
+		{Event: "TaskCancel", Subcommand: "stop"}:          false,
+	}
+	for _, got := range clineManagedHooks {
+		if _, ok := want[got]; ok {
+			want[got] = true
+		}
+	}
+	for spec, found := range want {
+		if !found {
+			t.Errorf("managed hook missing: %+v", spec)
+		}
+	}
+}
+
 func TestGetAgentHooksInstallsClineHooks(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "cline"}
 	workspace := t.TempDir()
@@ -397,7 +447,6 @@ func TestGetRestoreCommandFalseWithoutAgentSessionID(t *testing.T) {
 		{"empty session ref", ports.SessionRef{}},
 		{"empty metadata", ports.SessionRef{Metadata: map[string]string{}}},
 		{"blank agent session metadata", ports.SessionRef{Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "   "}}},
-		{"workspace path only", ports.SessionRef{WorkspacePath: "/some/path"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -415,6 +464,40 @@ func TestGetRestoreCommandFalseWithoutAgentSessionID(t *testing.T) {
 				t.Fatalf("cmd = %#v, want nil", cmd)
 			}
 		})
+	}
+}
+
+func TestGetRestoreCommandFindsInteractiveSessionInClineHistory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a shell script")
+	}
+	workspace := t.TempDir()
+	history, err := json.Marshal([]map[string]string{
+		{"sessionId": "other-session", "cwd": filepath.Join(workspace, "other")},
+		{"sessionId": "cline-session-123", "cwd": workspace},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "cline")
+	script := "#!/bin/sh\nprintf '%s\\n' '" + string(history) + "'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &Plugin{resolvedBinary: binary}
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Session: ports.SessionRef{WorkspacePath: workspace, Metadata: map[string]string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []string{binary, "--id", "cline-session-123"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
 }
 

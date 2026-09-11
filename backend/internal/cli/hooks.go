@@ -41,8 +41,9 @@ const (
 // POST /api/v1/sessions/{id}/activity. The CLI keeps its own copy so it need
 // not import httpd. Event carries the AO hook sub-command that produced the
 // state; ToolName/ToolUseID are the tool-use correlation facts lifted from the
-// native payload when present. All four are optional: an old daemon decodes
-// the body leniently and simply ignores them.
+// native payload when present. AgentSessionID is a native resumable-session id
+// lifted from the payload when present. All four are optional: an old daemon
+// decodes the body leniently and simply ignores them.
 type setActivityAPIRequest struct {
 	State                 string             `json:"state,omitempty"`
 	Event                 string             `json:"event,omitempty"`
@@ -377,6 +378,9 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	agentSessionID := ""
 	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
 		agentSessionID = hookAgentSessionID(payload)
+	}
+	if adapterSessionID, ok := activitydispatch.AgentSessionID(agent, payload); ok {
+		agentSessionID = adapterSessionID
 	}
 	usage := hookUsageMetadata(agent, payload)
 	if !hasActivity && agentSessionID == "" && usage == nil {
