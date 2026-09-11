@@ -68,7 +68,7 @@ export function TerminalTabFrame({
 					<button
 						ref={buttonRef}
 						className={cn(
-							"inline-flex h-full max-w-full min-w-0 cursor-pointer items-center overflow-hidden px-2 text-left text-control leading-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
+							"inline-flex h-full max-w-full min-w-0 flex-1 cursor-pointer items-center overflow-hidden px-2 text-left text-control leading-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
 							overlayTrailing && "pr-7",
 							buttonClassName,
 						)}

@@ -571,13 +571,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		setAuxiliaryTabOrderBySession((current) => {
 			const currentOrder = current[sessionId] ?? [];
-			if (
-				currentOrder.length === resolvedAuxiliaryTabOrder.length &&
-				currentOrder.every((key, index) => key === resolvedAuxiliaryTabOrder[index])
-			) {
+			const newKeys = resolvedAuxiliaryTabOrder.filter((key) => !currentOrder.includes(key));
+			if (newKeys.length === 0) {
 				return current;
 			}
-			return { ...current, [sessionId]: resolvedAuxiliaryTabOrder };
+			return { ...current, [sessionId]: [...currentOrder, ...newKeys] };
 		});
 	}, [resolvedAuxiliaryTabOrder, sessionId]);
 	const openShellTerminal = useOpenShellTerminal();
