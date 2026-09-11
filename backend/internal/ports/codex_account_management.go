@@ -64,11 +64,13 @@ type CodexAccountCredentialManager interface {
 	BeginCodexAccountMutation(context.Context) error
 	EndCodexAccountMutation()
 	CurrentCodexActiveAccount() domain.CodexActiveAccount
+	CurrentCodexAccountSwitchSource() domain.CodexAccountSwitchSource
 	CodexAccountLoginInProgress() bool
 	VerifyCodexAccountForSwitch(context.Context, string) error
 	VerifyCurrentCodexAccount(context.Context, string) error
-	CheckpointAndActivateCodexAccount(context.Context, string, string, int64) (domain.CodexActiveAccount, error)
-	RestoreCodexAccountCredential(context.Context, string, string) error
+	CheckpointAndActivateCodexAccount(context.Context, domain.CodexAccountSwitchSourceKind, string, string, int64) (domain.CodexActiveAccount, error)
+	RestoreCodexAccountCredential(context.Context, string, domain.CodexAccountSwitchSourceKind, string, string) error
+	CleanupCodexAccountSwitch(context.Context, string) error
 }
 
 // CodexAccountSwitchConfig is the validated input to the global switch coordinator.

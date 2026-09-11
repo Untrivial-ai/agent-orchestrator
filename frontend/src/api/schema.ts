@@ -260,6 +260,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/codex/accounts/device/login-terminal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open an isolated native login that replaces the device Codex account after verification */
+        post: operations["openCodexDeviceAccountLoginTerminal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/codex/accounts/ensure": {
         parameters: {
             query?: never;
@@ -2704,7 +2721,9 @@ export interface components {
             phase: "requested" | "stopping_sessions" | "sessions_stopped" | "checkpointing_source" | "activating_target" | "verifying_target" | "restarting_sessions" | "rollback_required" | "recovery_required" | "completed" | "failed";
             restartRunningSessions: boolean;
             sessions: components["schemas"]["CodexAccountSwitchSessionResponse"][];
-            sourceAccountId: string;
+            sourceAccountId?: string;
+            /** @enum {string} */
+            sourceKind: "managed" | "device" | "none";
             targetAccountId: string;
             /** Format: date-time */
             updatedAt: string;
@@ -2810,6 +2829,7 @@ export interface components {
             accountEmail?: null | string;
             /** @enum {string} */
             authMethod: "chatgpt" | "api_key" | "other" | "unknown";
+            authentication: components["schemas"]["CodexAuthenticationResponse"];
             label: string;
             reason: string;
             reasonCode: string;
@@ -3251,6 +3271,7 @@ export interface components {
         EnsureCodexAccountsRequest: {
             accountIds?: string[];
             forceAuthentication?: boolean;
+            forceDeviceReconciliation?: boolean;
             includeUsage?: boolean;
         };
         EstimatedCostResponse: {
@@ -5194,6 +5215,53 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    openCodexDeviceAccountLoginTerminal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenCodexAccountLoginTerminalResponse"];
                 };
             };
             /** @description Conflict */

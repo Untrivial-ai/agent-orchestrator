@@ -76,13 +76,16 @@ func (s *Store) SetCodexActiveAccount(ctx context.Context, accountID string, exp
 
 // CreateCodexAccountSwitch inserts or returns an idempotent global switch.
 func (s *Store) CreateCodexAccountSwitch(ctx context.Context, rec domain.CodexAccountSwitch) (domain.CodexAccountSwitch, bool, error) {
+	if rec.SourceKind == "" {
+		rec.SourceKind = domain.CodexAccountSwitchSourceManaged
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	var n int64
 	err := s.inTxDB(ctx, "create Codex account switch snapshot", func(q *gen.Queries, db gen.DBTX) error {
 		var insertErr error
 		n, insertErr = q.InsertCodexAccountSwitch(ctx, gen.InsertCodexAccountSwitchParams{
-			ID: rec.ID, SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
+			ID: rec.ID, SourceKind: string(rec.SourceKind), SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
 			IdempotencyKey: rec.IdempotencyKey, RequestFingerprint: rec.RequestFingerprint,
 			ExpectedAccountRevision: rec.ExpectedAccountRevision, RestartRunningSessions: rec.RestartRunningSessions,
 			Phase:     string(rec.Phase),
@@ -253,7 +256,7 @@ func (s *Store) UpdateCodexAccountSwitchSession(ctx context.Context, switchID st
 
 func codexAccountSwitchFromGen(row gen.CodexAccountSwitch) domain.CodexAccountSwitch {
 	return domain.CodexAccountSwitch{
-		ID: row.ID, SourceAccountID: row.SourceAccountID, TargetAccountID: row.TargetAccountID,
+		ID: row.ID, SourceKind: domain.CodexAccountSwitchSourceKind(row.SourceKind), SourceAccountID: row.SourceAccountID, TargetAccountID: row.TargetAccountID,
 		Phase: domain.CodexAccountSwitchPhase(row.Phase), FailureCode: row.FailureCode,
 		CredentialsCommittedAt: nullTimeToPtr(row.CredentialsCommittedAt),
 		CreatedAt:              row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: nullTimeToPtr(row.CompletedAt),

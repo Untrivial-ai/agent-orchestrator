@@ -75,6 +75,7 @@ describe("codexAuthenticationDisplay", () => {
 it("keeps account mutations fenced while recovery is required", () => {
 	const display = codexSwitchDisplay({
 		id: "switch-1",
+		sourceKind: "managed",
 		sourceAccountId: "account-a",
 		targetAccountId: "account-b",
 		restartRunningSessions: true,
@@ -91,10 +92,10 @@ it("keeps account mutations fenced while recovery is required", () => {
 	expect(display.recoveryKind).toBe("account");
 });
 
-it("shows active rollback as progress and exposes interrupted rollback recovery", () => {
-	const active = codexSwitchDisplay({
-		id: "switch-1", sourceAccountId: "account-a", targetAccountId: "account-b",
-		restartRunningSessions: true,
+	it("shows active rollback as progress and exposes interrupted rollback recovery", () => {
+		const active = codexSwitchDisplay({
+			id: "switch-1", sourceKind: "managed", sourceAccountId: "account-a", targetAccountId: "account-b",
+			restartRunningSessions: true,
 		phase: "rollback_required", failureCode: "activation_unconfirmed", canRecover: false,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 	} satisfies CodexAccountSwitch);
@@ -103,9 +104,9 @@ it("shows active rollback as progress and exposes interrupted rollback recovery"
 	expect(active.mutationBlocked).toBe(true);
 	expect(active.canRecover).toBe(false);
 
-	const interrupted = codexSwitchDisplay({
-		id: "switch-1", sourceAccountId: "account-a", targetAccountId: "account-b",
-		restartRunningSessions: true,
+		const interrupted = codexSwitchDisplay({
+			id: "switch-1", sourceKind: "managed", sourceAccountId: "account-a", targetAccountId: "account-b",
+			restartRunningSessions: true,
 		phase: "rollback_required", failureCode: "activation_unconfirmed", canRecover: true,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 	} satisfies CodexAccountSwitch);
@@ -159,6 +160,8 @@ it("maps every account reason to complete native locale copy with a safe unknown
 		"settings.codexAccounts.authenticationRetryFailed",
 		"settings.codexAccounts.retryingAuthentication",
 		"settings.codexAccounts.tryAgain",
+		"settings.codexAccounts.noActiveAccount",
+		"settings.codexAccounts.deviceRefreshFailed",
 		"settings.codexAccounts.switch.restored",
 		"settings.codexAccounts.retryRecovery",
 		"settings.codexAccounts.reconnectSessions",

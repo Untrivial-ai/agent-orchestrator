@@ -65,6 +65,8 @@ func newCodexLaunchReadinessFixture(t *testing.T) *codexLaunchReadinessFixture {
 	manager.active = state.active
 	manager.accountStoreReady = true
 	manager.reconciliation = domain.CodexDeviceReconciliation{Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true, ReasonCode: "verified"}
+	manager.deviceAccountID = active.Snapshot.ID
+	manager.deviceCredentialPresent = true
 	fixture := &codexLaunchReadinessFixture{t: t, manager: manager, active: active, other: other}
 	manager.factory = &fakeCodexAccountFactory{capabilities: supportedCodexAccountCapabilities(), open: func(account ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		return &fakeCodexAccountClient{readFn: func(_ context.Context, refresh bool) (ports.CodexAccountObservation, error) {
@@ -336,7 +338,7 @@ func TestRotatedCredentialsDoNotReVerifyAnAuthorizedAccount(t *testing.T) {
 	}
 }
 
-func TestReplacedCredentialsReVerifyALaunchFailure(t *testing.T) {
+func TestExternallyReplacedCredentialsDoNotGetAttributedToOldActiveSlot(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
 	fixture.rejectActiveCapacity(ports.ErrCodexOAuthTokenRevoked, ports.ErrCodexOAuthTokenRevoked)
 	view := fixture.ensureSettings()
@@ -359,10 +361,10 @@ func TestReplacedCredentialsReVerifyALaunchFailure(t *testing.T) {
 
 	view = fixture.ensureSettings()
 
-	if got := fixture.protectedReads(); got == 0 || got > reads {
-		t.Fatalf("replaced credentials did not get one fresh protected verification: before %d after reset %d", reads, got)
+	if got := fixture.protectedReads(); got != 0 {
+		t.Fatalf("external credential was verified through the old account slot: before %d after reset %d", reads, got)
 	}
-	if active := fixture.account(view, fixture.active.Snapshot.ID); active.Authentication.State != domain.AgentAuthenticationAuthorized {
-		t.Fatalf("Settings did not recover after an out-of-band sign-in = %#v", active.Authentication)
+	if view.ActiveAccountID != "" || view.UnmanagedGlobalAccount == nil {
+		t.Fatalf("external credential was not isolated as a device-only account = %#v", view)
 	}
 }

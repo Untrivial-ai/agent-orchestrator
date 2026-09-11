@@ -33,15 +33,22 @@ func TestCodexAccountStoreReadyDoesNotDependOnDeviceReconciliation(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
+			globalHome := filepath.Join(root, "global")
+			if err := ensurePrivateDirectory(globalHome); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeGlobalCredentialAtomic(filepath.Join(globalHome, codexCredentialFilename), []byte("device-credential")); err != nil {
+				t.Fatal(err)
+			}
 			attempts := 0
 			factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 				attempts++
 				if attempts == 1 {
 					return nil, firstError
 				}
-				return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}}, nil
+				return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodAPIKey}}, nil
 			}}
-			manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, nil, nil)
+			manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, factory, nil, nil)
 			now := time.Now()
 			manager.now = func() time.Time { return now }
 			service := &Service{codexAccounts: manager}
@@ -55,11 +62,14 @@ func TestCodexAccountStoreReadyDoesNotDependOnDeviceReconciliation(t *testing.T)
 				t.Fatal("device reconciliation unexpectedly succeeded")
 			}
 			now = now.Add(time.Minute)
-			if err := service.EnsureCodexDeviceAccountReconciled(context.Background()); err != nil {
-				t.Fatalf("device reconciliation retry remained blocked: %v", err)
+			if err := service.EnsureCodexDeviceAccountReconciled(context.Background()); err == nil {
+				t.Fatal("unmatched device account was incorrectly treated as a managed account")
 			}
 			if attempts != 2 {
 				t.Fatalf("attempts = %d", attempts)
+			}
+			if view := manager.cached(); view.UnmanagedGlobalAccount == nil || view.DeviceReconciliation.Status != domain.CodexDeviceReconciliationBlocked {
+				t.Fatalf("recovered device-only projection = %#v", view)
 			}
 		})
 	}
@@ -67,10 +77,17 @@ func TestCodexAccountStoreReadyDoesNotDependOnDeviceReconciliation(t *testing.T)
 
 func TestCodexDeviceReconciliationCooldownAndSafeFailure(t *testing.T) {
 	root := t.TempDir()
+	globalHome := filepath.Join(root, "global")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGlobalCredentialAtomic(filepath.Join(globalHome, codexCredentialFilename), []byte("device-credential")); err != nil {
+		t.Fatal(err)
+	}
 	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		return nil, errors.New("secret credential /private/path")
 	}}
-	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, nil, nil)
+	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, factory, nil, nil)
 	var logs bytes.Buffer
 	manager.logger = slog.New(slog.NewTextHandler(&logs, nil))
 	service := &Service{codexAccounts: manager}
@@ -265,7 +282,7 @@ func TestCodexBootstrapRetriesStateReadFailure(t *testing.T) {
 	root := t.TempDir()
 	state := &bootstrapFailingStateStore{}
 	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
-		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}}, nil
+		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodAPIKey}}, nil
 	}}
 	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, state, nil)
 	now := time.Now()
@@ -286,14 +303,21 @@ func TestCodexBootstrapRetriesStateReadFailure(t *testing.T) {
 
 func TestCodexDeviceReconciliationRetriesInconclusiveRead(t *testing.T) {
 	root := t.TempDir()
+	globalHome := filepath.Join(root, "global")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGlobalCredentialAtomic(filepath.Join(globalHome, codexCredentialFilename), []byte("device-credential")); err != nil {
+		t.Fatal(err)
+	}
 	var attempts atomic.Int32
 	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		if attempts.Add(1) == 1 {
 			return &fakeCodexAccountClient{readErr: context.DeadlineExceeded}, nil
 		}
-		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}}, nil
+		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodAPIKey}}, nil
 	}}
-	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, nil, nil)
+	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, factory, nil, nil)
 	now := time.Now()
 	manager.now = func() time.Time { return now }
 	service := &Service{codexAccounts: manager}
@@ -305,24 +329,35 @@ func TestCodexDeviceReconciliationRetriesInconclusiveRead(t *testing.T) {
 		t.Fatalf("read failure = %#v", err)
 	}
 	now = now.Add(time.Minute)
-	if err := service.EnsureCodexDeviceAccountReconciled(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := service.EnsureCodexDeviceAccountReconciled(context.Background()); err == nil {
+		t.Fatal("unmatched device account was incorrectly treated as managed")
 	}
 	if attempts.Load() != 2 {
 		t.Fatalf("attempts = %d", attempts.Load())
+	}
+	if view := manager.cached(); view.UnmanagedGlobalAccount == nil || view.DeviceReconciliation.Status != domain.CodexDeviceReconciliationBlocked {
+		t.Fatalf("recovered device-only projection = %#v", view)
 	}
 }
 
 func TestCodexDeviceReconciliationRetriesInBackground(t *testing.T) {
 	root := t.TempDir()
+	globalHome := filepath.Join(root, "global")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGlobalCredentialAtomic(filepath.Join(globalHome, codexCredentialFilename), []byte("device-credential")); err != nil {
+		t.Fatal(err)
+	}
 	var attempts atomic.Int32
 	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		if attempts.Add(1) == 1 {
 			return nil, errors.New("temporary provider failure")
 		}
-		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}}, nil
+		email := "device@example.com"
+		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email}}, nil
 	}}
-	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, nil, nil)
+	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, factory, nil, nil)
 	now := time.Now().UTC()
 	manager.now = func() time.Time { return now }
 	retry := make(chan time.Time, 1)
@@ -343,7 +378,7 @@ func TestCodexDeviceReconciliationRetriesInBackground(t *testing.T) {
 		manager.mu.Lock()
 		state := manager.reconciliation
 		manager.mu.Unlock()
-		if state.Status == domain.CodexDeviceReconciliationVerified {
+		if state.Status == domain.CodexDeviceReconciliationBlocked && state.ReasonCode == "global_account_unverified" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -358,8 +393,15 @@ func TestCodexDeviceReconciliationRetriesInBackground(t *testing.T) {
 
 func TestCodexDeviceReconciliationFailureKeepsSavedAccountsReadable(t *testing.T) {
 	root := t.TempDir()
+	globalHome := filepath.Join(root, "global")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGlobalCredentialAtomic(filepath.Join(globalHome, codexCredentialFilename), []byte("different-device-credential")); err != nil {
+		t.Fatal(err)
+	}
 	state := &fakeCodexAccountStateStore{active: domain.CodexActiveAccount{AccountID: testAccountID, Revision: 4}, found: true}
-	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), nil, state, nil)
+	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, nil, state, nil)
 	manager.catalog.newID = func() string { return testAccountID }
 	email := "saved@example.com"
 	commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{
@@ -381,7 +423,7 @@ func TestCodexDeviceReconciliationFailureKeepsSavedAccountsReadable(t *testing.T
 	if err != nil {
 		t.Fatalf("cached accounts failed with device reconciliation: %v", err)
 	}
-	if view.ActiveAccountID != testAccountID || view.AccountRevision != 4 || len(view.Accounts) != 1 || view.Accounts[0].ID != testAccountID {
+	if view.ActiveAccountID != "" || view.AccountRevision != 4 || len(view.Accounts) != 1 || view.Accounts[0].ID != testAccountID {
 		t.Fatalf("saved account disappeared: %#v", view)
 	}
 	if view.Accounts[0].Active {
@@ -390,7 +432,7 @@ func TestCodexDeviceReconciliationFailureKeepsSavedAccountsReadable(t *testing.T
 	if view.DeviceReconciliation.Status != domain.CodexDeviceReconciliationTemporarilyUnavailable || view.DeviceReconciliation.ReasonCode != "account_client_unavailable" {
 		t.Fatalf("device reconciliation = %#v", view.DeviceReconciliation)
 	}
-	if view.UnmanagedGlobalAccount != nil {
-		t.Fatalf("temporary failure was presented as unmanaged: %#v", view.UnmanagedGlobalAccount)
+	if view.UnmanagedGlobalAccount == nil {
+		t.Fatal("observed unmatched device credential was not kept as a device-only account")
 	}
 }

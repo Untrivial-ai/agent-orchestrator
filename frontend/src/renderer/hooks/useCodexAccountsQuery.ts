@@ -19,8 +19,13 @@ export async function fetchCodexAccounts(): Promise<CodexAccountsResponse> {
 	return data as CodexAccountsResponse;
 }
 
-export async function ensureCodexAccounts(accountIds: string[] = [], includeUsage = false, forceAuthentication = false): Promise<CodexAccountsResponse> {
-	const body = forceAuthentication ? { accountIds, includeUsage, forceAuthentication } : { accountIds, includeUsage };
+export async function ensureCodexAccounts(accountIds: string[] = [], includeUsage = false, forceAuthentication = false, forceDeviceReconciliation = false): Promise<CodexAccountsResponse> {
+	const body = {
+		accountIds,
+		includeUsage,
+		...(forceAuthentication ? { forceAuthentication } : {}),
+		...(forceDeviceReconciliation ? { forceDeviceReconciliation } : {}),
+	};
 	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/ensure", { body });
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountsResponse;
@@ -37,6 +42,12 @@ export async function consumeCodexAccountResetCredit(accountId: string, idempote
 
 export async function openCodexAccountLoginTerminal(): Promise<CodexAccountLoginTerminalStart> {
 	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/login-terminal");
+	if (error) throw new Error(apiErrorMessage(error));
+	return data as CodexAccountLoginTerminalStart;
+}
+
+export async function openCodexDeviceAccountLoginTerminal(): Promise<CodexAccountLoginTerminalStart> {
+	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/device/login-terminal");
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountLoginTerminalStart;
 }

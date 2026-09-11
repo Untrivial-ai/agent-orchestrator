@@ -106,7 +106,7 @@ func (s *Service) CachedCodexAccounts(ctx context.Context) (CodexAccounts, error
 }
 
 // EnsureCodexAccounts rediscovers requested accounts and refreshes eligible observations.
-func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, includeUsage, forceAuthentication bool) (CodexAccounts, error) {
+func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, includeUsage, forceAuthentication, forceDeviceReconciliation bool) (CodexAccounts, error) {
 	if s.codexAccounts == nil {
 		return CodexAccounts{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
@@ -123,8 +123,13 @@ func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, include
 	}
 	// Settings refreshes prompt device discovery only when the cached result is
 	// absent or stale. A temporary native failure must not turn this local
-	// account read into a 503.
-	s.codexAccounts.requestGlobalReconciliationIfNeeded()
+	// account read into a 503. An explicit retry waits for one fresh attempt but
+	// still returns the saved catalog if device discovery fails.
+	if forceDeviceReconciliation {
+		_ = s.codexAccounts.reconcileGlobalWithPolicy(ctx, true)
+	} else {
+		s.codexAccounts.requestGlobalReconciliationIfNeeded()
+	}
 	installation, err := s.readiness.EnsureInstallation(ctx, []string{string(domain.HarnessCodex)}, domain.AgentReadinessPurposeDisplay)
 	if err != nil {
 		return CodexAccounts{}, err
@@ -206,28 +211,45 @@ func (s *Service) SetCodexAccountLoginTerminalOpener(opener codexAccountLoginTer
 	}
 }
 
-// OpenCodexAccountLoginTerminal starts one private native-login operation.
-func (s *Service) OpenCodexAccountLoginTerminal(ctx context.Context) (CodexAccountLoginTerminalStart, error) {
+func (s *Service) prepareCodexAccountLogin(ctx context.Context) error {
 	if s.codexAccounts == nil {
-		return CodexAccountLoginTerminalStart{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
+		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
 	if s.codexSwitches != nil && s.codexSwitches.CodexAccountSwitchInProgress() {
-		return CodexAccountLoginTerminalStart{}, apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "A Codex account switch is already in progress", nil)
+		return apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "A Codex account switch is already in progress", nil)
 	}
 	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
-		return CodexAccountLoginTerminalStart{}, err
+		return err
 	}
 	if err := s.requireCodexAccountInstallation(ctx); err != nil {
-		return CodexAccountLoginTerminalStart{}, err
+		return err
 	}
 	capabilities := s.codexAccounts.detectCapabilities(ctx)
 	switch capabilities.AccountManagement.State {
 	case domain.CodexCapabilityUnsupported:
-		return CodexAccountLoginTerminalStart{}, apierr.NotImplemented("CODEX_ACCOUNT_MANAGEMENT_UNSUPPORTED", "This Codex version does not support account management")
+		return apierr.NotImplemented("CODEX_ACCOUNT_MANAGEMENT_UNSUPPORTED", "This Codex version does not support account management")
 	case domain.CodexCapabilityUnknown:
-		return CodexAccountLoginTerminalStart{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management capability could not be verified")
+		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management capability could not be verified")
+	default:
+		return nil
 	}
-	return s.codexAccounts.openLoginTerminal(ctx, "")
+}
+
+// OpenCodexAccountLoginTerminal starts one private native-login operation.
+func (s *Service) OpenCodexAccountLoginTerminal(ctx context.Context) (CodexAccountLoginTerminalStart, error) {
+	if err := s.prepareCodexAccountLogin(ctx); err != nil {
+		return CodexAccountLoginTerminalStart{}, err
+	}
+	return s.codexAccounts.openLoginTerminal(ctx, "", false)
+}
+
+// OpenCodexDeviceAccountLoginTerminal signs in through an isolated home and,
+// after verification, atomically replaces the current device credential.
+func (s *Service) OpenCodexDeviceAccountLoginTerminal(ctx context.Context) (CodexAccountLoginTerminalStart, error) {
+	if err := s.prepareCodexAccountLogin(ctx); err != nil {
+		return CodexAccountLoginTerminalStart{}, err
+	}
+	return s.codexAccounts.openLoginTerminal(ctx, "", true)
 }
 
 // OpenCodexAccountReauthenticationTerminal starts native sign-in for one
@@ -256,7 +278,7 @@ func (s *Service) OpenCodexAccountReauthenticationTerminal(ctx context.Context, 
 	if capabilities.AccountManagement.State != domain.CodexCapabilitySupported {
 		return CodexAccountLoginTerminalStart{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management capability could not be verified")
 	}
-	return s.codexAccounts.openLoginTerminal(ctx, accountID)
+	return s.codexAccounts.openLoginTerminal(ctx, accountID, false)
 }
 
 // LogoutCodexAccount removes one AO-saved credential while retaining the
@@ -472,6 +494,24 @@ func (s *Service) CurrentCodexActiveAccount() domain.CodexActiveAccount {
 	return s.codexAccounts.active
 }
 
+// CurrentCodexAccountSwitchSource reports what currently occupies the device
+// credential store without treating the durable pointer as proof.
+func (s *Service) CurrentCodexAccountSwitchSource() domain.CodexAccountSwitchSource {
+	if s.codexAccounts == nil {
+		return domain.CodexAccountSwitchSource{Kind: domain.CodexAccountSwitchSourceNone}
+	}
+	s.codexAccounts.mu.Lock()
+	defer s.codexAccounts.mu.Unlock()
+	source := domain.CodexAccountSwitchSource{Kind: domain.CodexAccountSwitchSourceNone, Revision: s.codexAccounts.active.Revision}
+	if s.codexAccounts.reconciliation.ActiveAccountVerified && s.codexAccounts.active.AccountID != "" {
+		source.Kind = domain.CodexAccountSwitchSourceManaged
+		source.AccountID = s.codexAccounts.active.AccountID
+	} else if s.codexAccounts.deviceCredentialPresent {
+		source.Kind = domain.CodexAccountSwitchSourceDevice
+	}
+	return source
+}
+
 // CodexAccountLoginInProgress reports whether native login owns its mutation gate.
 func (s *Service) CodexAccountLoginInProgress() bool {
 	if s.codexAccounts == nil {
@@ -486,29 +526,6 @@ func (s *Service) CodexAccountLoginInProgress() bool {
 func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID string) error {
 	if s.codexAccounts == nil || s.codexAccounts.factory == nil {
 		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
-	}
-	s.codexAccounts.mu.Lock()
-	reconciliation := s.codexAccounts.reconciliation
-	s.codexAccounts.mu.Unlock()
-	if reconciliation.Status != domain.CodexDeviceReconciliationVerified || !reconciliation.ActiveAccountVerified {
-		// A direct caller may arrive before startup reconciliation has run. Do
-		// that work here unless the switch coordinator already owns the global
-		// gate; re-entering reconciliation from inside that lease would contend
-		// with the caller itself.
-		gate := s.codexAccounts.operationGate
-		if gate == nil || !gate.ExclusivePendingOrHeld() {
-			if err := s.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
-				return err
-			}
-		}
-		s.codexAccounts.mu.Lock()
-		reconciliation = s.codexAccounts.reconciliation
-		s.codexAccounts.mu.Unlock()
-		if reconciliation.Status != domain.CodexDeviceReconciliationVerified || !reconciliation.ActiveAccountVerified {
-			return apierr.New(apierr.KindUnavailable, "CODEX_DEVICE_ACCOUNT_UNVERIFIED", "The device Codex account could not be verified", map[string]any{
-				"reasonCode": reconciliation.ReasonCode, "retryable": reconciliation.Retryable,
-			})
-		}
 	}
 	if s.CodexAccountLoginInProgress() {
 		return apierr.Conflict("CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before switching accounts", nil)
@@ -590,9 +607,6 @@ func (s *Service) VerifyCurrentCodexAccount(ctx context.Context, accountID strin
 		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
 	accountID = strings.TrimSpace(accountID)
-	if s.CurrentCodexActiveAccount().AccountID != accountID {
-		return apierr.Conflict("CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed", nil)
-	}
 	record, ok := s.codexAccounts.catalog.record(accountID)
 	if !ok || record.Snapshot.Status != domain.CodexAccountStatusValid {
 		return apierr.NotFound("CODEX_ACCOUNT_NOT_FOUND", "Codex account not found")
@@ -620,11 +634,21 @@ func (s *Service) VerifyCurrentCodexAccount(ctx context.Context, accountID strin
 		return apierr.Conflict("CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed", nil)
 	}
 	_ = writePrivateFileAtomic(filepath.Join(record.Home, codexCredentialFilename), latestCredential)
+	// The device credential is authoritative. Recovery can reach this point after
+	// the credential was committed but before the active pointer was persisted.
+	// Only adopt the pointer after the exact global bytes and provider identity
+	// have both been verified as the requested saved account.
+	if s.CurrentCodexActiveAccount().AccountID != accountID {
+		if err := s.codexAccounts.setActivePointer(ctx, accountID); err != nil {
+			return apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The active Codex account state could not be updated")
+		}
+	}
+	s.codexAccounts.setManagedGlobal(accountID)
 	return nil
 }
 
 // CheckpointAndActivateCodexAccount journals and verifies a credential activation.
-func (s *Service) CheckpointAndActivateCodexAccount(ctx context.Context, switchID, targetID string, expectedRevision int64) (domain.CodexActiveAccount, error) {
+func (s *Service) CheckpointAndActivateCodexAccount(ctx context.Context, sourceKind domain.CodexAccountSwitchSourceKind, switchID, targetID string, expectedRevision int64) (domain.CodexActiveAccount, error) {
 	if s.codexAccounts == nil {
 		return domain.CodexActiveAccount{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
@@ -639,15 +663,17 @@ func (s *Service) CheckpointAndActivateCodexAccount(ctx context.Context, switchI
 	if err := ensurePrivateDirectory(stagingDir); err != nil {
 		return domain.CodexActiveAccount{}, apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The Codex credential switch could not be staged")
 	}
-	defer func() { _ = os.RemoveAll(stagingDir) }()
-	if err := s.codexAccounts.validateGlobalCredentialStore(); err != nil {
+	if sourceKind != domain.CodexAccountSwitchSourceManaged && sourceKind != domain.CodexAccountSwitchSourceDevice && sourceKind != domain.CodexAccountSwitchSourceNone {
+		return domain.CodexActiveAccount{}, apierr.Invalid("INVALID_CODEX_ACCOUNT_SWITCH_SOURCE", "Invalid Codex account switch source", nil)
+	}
+	if sourceKind != domain.CodexAccountSwitchSourceNone && s.codexAccounts.validateGlobalCredentialStore() != nil {
 		return domain.CodexActiveAccount{}, apierr.NotImplemented("CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials")
 	}
-	globalCredential, globalState, err := readCodexFileState(s.codexAccounts.globalCredentialPath(), false)
+	globalCredential, globalState, err := readCodexFileState(s.codexAccounts.globalCredentialPath(), sourceKind == domain.CodexAccountSwitchSourceNone)
 	if err != nil {
 		return domain.CodexActiveAccount{}, apierr.NotImplemented("CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials")
 	}
-	if current.AccountID != "" {
+	if sourceKind == domain.CodexAccountSwitchSourceManaged {
 		record, ok := s.codexAccounts.catalog.record(current.AccountID)
 		if !ok {
 			return domain.CodexActiveAccount{}, apierr.Conflict("CODEX_ACCOUNT_SWITCH_RECOVERY_REQUIRED", "The active Codex account slot is unavailable", nil)
@@ -676,6 +702,15 @@ func (s *Service) CheckpointAndActivateCodexAccount(ctx context.Context, switchI
 		if err := copyOpaqueCredential(checkpoint, filepath.Join(record.Home, codexCredentialFilename)); err != nil {
 			return domain.CodexActiveAccount{}, apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The active Codex credential could not be checkpointed")
 		}
+	} else if sourceKind == domain.CodexAccountSwitchSourceDevice {
+		if !globalState.exists {
+			return domain.CodexActiveAccount{}, ports.ErrCodexGlobalAccountChanged
+		}
+		if err := writePrivateFileAtomic(filepath.Join(stagingDir, "source-auth.json"), globalCredential); err != nil {
+			return domain.CodexActiveAccount{}, apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The device Codex credential could not be checkpointed")
+		}
+	} else if sourceKind == domain.CodexAccountSwitchSourceNone && globalState.exists {
+		return domain.CodexActiveAccount{}, ports.ErrCodexGlobalAccountChanged
 	}
 	target, ok := s.codexAccounts.catalog.record(strings.TrimSpace(targetID))
 	if !ok {
@@ -684,7 +719,11 @@ func (s *Service) CheckpointAndActivateCodexAccount(ctx context.Context, switchI
 	if err := copyOpaqueCredential(filepath.Join(target.Home, codexCredentialFilename), filepath.Join(stagingDir, "target-auth.json")); err != nil {
 		return domain.CodexActiveAccount{}, apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The selected Codex credential could not be staged")
 	}
-	active, err := s.codexAccounts.activateFromCredentialLocked(ctx, strings.TrimSpace(targetID), expectedRevision, filepath.Join(stagingDir, "target-auth.json"), globalCredential)
+	expectedGlobal := globalCredential
+	if sourceKind == domain.CodexAccountSwitchSourceNone {
+		expectedGlobal = []byte{}
+	}
+	active, err := s.codexAccounts.activateFromCredentialLocked(ctx, strings.TrimSpace(targetID), expectedRevision, filepath.Join(stagingDir, "target-auth.json"), expectedGlobal)
 	if err == nil {
 		s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 	}
@@ -695,24 +734,53 @@ func (s *Service) CheckpointAndActivateCodexAccount(ctx context.Context, switchI
 // account only when the global credential still exactly matches the recorded
 // source or target slot. Any other bytes may belong to an external login and
 // are never overwritten by recovery.
-func (s *Service) RestoreCodexAccountCredential(ctx context.Context, sourceAccountID, targetAccountID string) error {
+func (s *Service) RestoreCodexAccountCredential(ctx context.Context, switchID string, sourceKind domain.CodexAccountSwitchSourceKind, sourceAccountID, targetAccountID string) error {
 	if s.codexAccounts == nil {
 		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
-	}
-	source, ok := s.codexAccounts.catalog.record(strings.TrimSpace(sourceAccountID))
-	if !ok || source.Snapshot.Status != domain.CodexAccountStatusValid {
-		return apierr.NotFound("CODEX_ACCOUNT_NOT_FOUND", "Codex account not found")
 	}
 	target, ok := s.codexAccounts.catalog.record(strings.TrimSpace(targetAccountID))
 	if !ok || target.Snapshot.Status != domain.CodexAccountStatusValid {
 		return apierr.NotFound("CODEX_ACCOUNT_NOT_FOUND", "Codex account not found")
 	}
-	sourceCredential, sourceErr := readOpaqueCredential(filepath.Join(source.Home, codexCredentialFilename))
+	var source codexAccountRecord
+	var sourceCredential []byte
+	var sourceErr error
+	switch sourceKind {
+	case domain.CodexAccountSwitchSourceManaged:
+		source, ok = s.codexAccounts.catalog.record(strings.TrimSpace(sourceAccountID))
+		if !ok || source.Snapshot.Status != domain.CodexAccountStatusValid {
+			return apierr.NotFound("CODEX_ACCOUNT_NOT_FOUND", "Codex account not found")
+		}
+		sourceCredential, sourceErr = readOpaqueCredential(filepath.Join(source.Home, codexCredentialFilename))
+	case domain.CodexAccountSwitchSourceDevice:
+		sourceCredential, sourceErr = readOpaqueCredential(filepath.Join(s.codexAccounts.switchStagingRoot, switchID, "source-auth.json"))
+	}
 	targetCredential, targetErr := readOpaqueCredential(filepath.Join(target.Home, codexCredentialFilename))
 	globalPath := s.codexAccounts.globalCredentialPath()
-	globalCredential, globalErr := readOpaqueCredential(globalPath)
-	if sourceErr != nil || targetErr != nil || globalErr != nil {
+	globalCredential, globalState, globalErr := readCodexFileState(globalPath, sourceKind == domain.CodexAccountSwitchSourceNone)
+	if (sourceKind != domain.CodexAccountSwitchSourceNone && sourceErr != nil) || targetErr != nil || globalErr != nil {
 		return apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The previous Codex credential could not be restored")
+	}
+	if sourceKind == domain.CodexAccountSwitchSourceNone {
+		if !globalState.exists {
+			return nil
+		}
+		if !bytes.Equal(globalCredential, targetCredential) {
+			return ports.ErrCodexGlobalAccountChanged
+		}
+		if err := removeGlobalCredentialSettled(globalPath); err != nil {
+			return apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The previous Codex credential could not be restored")
+		}
+		if err := s.codexAccounts.setActivePointer(ctx, ""); err != nil {
+			return apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The previous Codex account state could not be restored")
+		}
+		s.codexAccounts.mu.Lock()
+		s.codexAccounts.deviceAccountID = ""
+		s.codexAccounts.deviceCredentialPresent = false
+		s.codexAccounts.deferredAccountID = ""
+		s.codexAccounts.unmanaged = nil
+		s.codexAccounts.mu.Unlock()
+		return nil
 	}
 	if !bytes.Equal(globalCredential, sourceCredential) {
 		if !bytes.Equal(globalCredential, targetCredential) {
@@ -729,6 +797,13 @@ func (s *Service) RestoreCodexAccountCredential(ctx context.Context, sourceAccou
 	admittedCredential, admitted, admittedErr := readCodexFileState(globalPath, false)
 	if admittedErr != nil || !bytes.Equal(admittedCredential, sourceCredential) {
 		return ports.ErrCodexGlobalAccountChanged
+	}
+	if sourceKind == domain.CodexAccountSwitchSourceDevice {
+		if err := s.codexAccounts.setActivePointer(ctx, ""); err != nil {
+			return apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The previous Codex account state could not be restored")
+		}
+		s.codexAccounts.setUnmanagedGlobal("Device Codex account", domain.CodexAuthMethodUnknown, nil, "global_account_unverified", "AO could not verify the device's current Codex account.")
+		return nil
 	}
 	verifyCtx, cancel := context.WithTimeout(ctx, codexAccountAuthTimeout)
 	defer cancel()
@@ -748,6 +823,15 @@ func (s *Service) RestoreCodexAccountCredential(ctx context.Context, sourceAccou
 	_ = writePrivateFileAtomic(filepath.Join(source.Home, codexCredentialFilename), latestCredential)
 	s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 	return nil
+}
+
+// CleanupCodexAccountSwitch removes private credential checkpoints only after
+// the durable switch has reached a verified terminal phase.
+func (s *Service) CleanupCodexAccountSwitch(_ context.Context, switchID string) error {
+	if s.codexAccounts == nil || !isCanonicalUUIDv4(strings.TrimSpace(switchID)) {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(s.codexAccounts.switchStagingRoot, switchID))
 }
 
 var _ ports.CodexAccountCredentialManager = (*Service)(nil)

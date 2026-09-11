@@ -45,13 +45,13 @@ func TestCodexAccountSwitchIdempotencyAndSingleActiveConstraint(t *testing.T) {
 	st := newTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	first := domain.CodexAccountSwitch{
-		ID: "switch-a", SourceAccountID: "account-a", TargetAccountID: "account-b",
+		ID: "switch-a", SourceKind: domain.CodexAccountSwitchSourceDevice, TargetAccountID: "account-b",
 		IdempotencyKey: "request-a", RequestFingerprint: "v1:first", ExpectedAccountRevision: 1,
 		Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
 	}
 
 	created, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
-	if err != nil || !inserted || created.ID != first.ID || created.RestartRunningSessions {
+	if err != nil || !inserted || created.ID != first.ID || created.RestartRunningSessions || created.SourceKind != domain.CodexAccountSwitchSourceDevice || created.SourceAccountID != "" {
 		t.Fatalf("create switch: got=%+v inserted=%v err=%v", created, inserted, err)
 	}
 	replayed, inserted, err := st.CreateCodexAccountSwitch(ctx, first)

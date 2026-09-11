@@ -2,6 +2,27 @@ package domain
 
 import "time"
 
+// CodexAccountSwitchSourceKind describes what occupied the device credential
+// store before a durable switch began.
+type CodexAccountSwitchSourceKind string
+
+const (
+	// CodexAccountSwitchSourceManaged means the device credential belongs to a saved AO account.
+	CodexAccountSwitchSourceManaged CodexAccountSwitchSourceKind = "managed"
+	// CodexAccountSwitchSourceDevice means the device has an unmatched credential.
+	CodexAccountSwitchSourceDevice CodexAccountSwitchSourceKind = "device"
+	// CodexAccountSwitchSourceNone means the device has no Codex credential.
+	CodexAccountSwitchSourceNone CodexAccountSwitchSourceKind = "none"
+)
+
+// CodexAccountSwitchSource is the daemon-private, reconciled source snapshot
+// used to admit a switch.
+type CodexAccountSwitchSource struct {
+	Kind      CodexAccountSwitchSourceKind
+	AccountID string
+	Revision  int64
+}
+
 // CodexAccountSwitchPhase is the durable global credential-switch phase.
 type CodexAccountSwitchPhase string
 
@@ -58,18 +79,19 @@ type CodexAccountSwitchSession struct {
 
 // CodexAccountSwitch is the durable global account-switch operation.
 type CodexAccountSwitch struct {
-	ID                     string                      `json:"id"`
-	SourceAccountID        string                      `json:"sourceAccountId"`
-	TargetAccountID        string                      `json:"targetAccountId"`
-	RestartRunningSessions bool                        `json:"restartRunningSessions"`
-	Phase                  CodexAccountSwitchPhase     `json:"phase"`
-	FailureCode            string                      `json:"failureCode,omitempty"`
-	Sessions               []CodexAccountSwitchSession `json:"sessions"`
-	CanRecover             bool                        `json:"canRecover"`
-	CredentialsCommittedAt *time.Time                  `json:"credentialsCommittedAt,omitempty"`
-	CreatedAt              time.Time                   `json:"createdAt"`
-	UpdatedAt              time.Time                   `json:"updatedAt"`
-	CompletedAt            *time.Time                  `json:"completedAt,omitempty"`
+	ID                     string                       `json:"id"`
+	SourceKind             CodexAccountSwitchSourceKind `json:"sourceKind" enum:"managed,device,none"`
+	SourceAccountID        string                       `json:"sourceAccountId,omitempty"`
+	TargetAccountID        string                       `json:"targetAccountId"`
+	RestartRunningSessions bool                         `json:"restartRunningSessions"`
+	Phase                  CodexAccountSwitchPhase      `json:"phase"`
+	FailureCode            string                       `json:"failureCode,omitempty"`
+	Sessions               []CodexAccountSwitchSession  `json:"sessions"`
+	CanRecover             bool                         `json:"canRecover"`
+	CredentialsCommittedAt *time.Time                   `json:"credentialsCommittedAt,omitempty"`
+	CreatedAt              time.Time                    `json:"createdAt"`
+	UpdatedAt              time.Time                    `json:"updatedAt"`
+	CompletedAt            *time.Time                   `json:"completedAt,omitempty"`
 	// Daemon-private idempotency data.
 	IdempotencyKey          string `json:"-"`
 	RequestFingerprint      string `json:"-"`

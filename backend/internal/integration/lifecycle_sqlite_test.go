@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -228,13 +229,20 @@ func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) 
 	now.Store(100)
 	factory := &retryingCodexAccountFactory{}
 	gate := codexops.NewGate()
+	globalHome := filepath.Join(root, "global")
+	if err := os.MkdirAll(globalHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalHome, "auth.json"), []byte(`{"tokens":{"access_token":"test-only"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	agents := agentsvc.NewWithDeps(agentsvc.Deps{
 		Context:                ctx,
 		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
 		CodexAccountRoot:       filepath.Join(root, "accounts"),
 		CodexPendingRoot:       filepath.Join(root, "pending"),
 		CodexSwitchStagingRoot: filepath.Join(root, "staging"),
-		CodexGlobalHome:        filepath.Join(root, "global"),
+		CodexGlobalHome:        globalHome,
 		CodexAccounts:          factory,
 		CodexAccountState:      store,
 		CodexOperationGate:     gate,
@@ -290,11 +298,18 @@ func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) 
 	}
 
 	now.Add(2)
-	if err := agents.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
-		t.Fatalf("device reconciliation did not recover without daemon restart: %v", err)
+	if err := agents.EnsureCodexDeviceAccountReconciled(ctx); err == nil {
+		t.Fatal("unmatched signed-out device credential was treated as a managed account")
 	}
 	if factory.opens.Load() != 2 {
 		t.Fatalf("account client opens = %d, want 2", factory.opens.Load())
+	}
+	accounts, err := agents.CachedCodexAccounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts.UnmanagedGlobalAccount == nil || accounts.ActiveAccountID != "" {
+		t.Fatalf("device-only recovery state = %#v", accounts)
 	}
 	if runtime.created != 1 {
 		t.Fatalf("reconciliation restarted sessions: runtime Create calls=%d", runtime.created)

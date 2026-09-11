@@ -25,10 +25,12 @@ type fakeCodexAccounts struct {
 	ensureIDs           []string
 	includeUsage        bool
 	forceAuthentication bool
+	forceReconciliation bool
 	resetAccountID      string
 	resetIdempotencyKey string
 	events              chan agentsvc.CodexAccounts
 	loginStart          agentsvc.CodexAccountLoginTerminalStart
+	deviceLoginOpened   bool
 	verifiedOperation   string
 	cancelledOperation  string
 	reauthenticatedID   string
@@ -42,8 +44,8 @@ type fakeCodexAccounts struct {
 func (f *fakeCodexAccounts) CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error) {
 	return f.result, nil
 }
-func (f *fakeCodexAccounts) EnsureCodexAccounts(_ context.Context, ids []string, includeUsage, forceAuthentication bool) (agentsvc.CodexAccounts, error) {
-	f.ensureIDs, f.includeUsage, f.forceAuthentication = ids, includeUsage, forceAuthentication
+func (f *fakeCodexAccounts) EnsureCodexAccounts(_ context.Context, ids []string, includeUsage, forceAuthentication, forceReconciliation bool) (agentsvc.CodexAccounts, error) {
+	f.ensureIDs, f.includeUsage, f.forceAuthentication, f.forceReconciliation = ids, includeUsage, forceAuthentication, forceReconciliation
 	return f.result, nil
 }
 func (f *fakeCodexAccounts) ConsumeCodexAccountResetCredit(_ context.Context, accountID, idempotencyKey string) (agentsvc.CodexAccounts, error) {
@@ -59,6 +61,10 @@ func (f *fakeCodexAccounts) SubscribeCodexAccounts(ctx context.Context) (<-chan 
 	return ch, nil
 }
 func (f *fakeCodexAccounts) OpenCodexAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error) {
+	return f.loginStart, nil
+}
+func (f *fakeCodexAccounts) OpenCodexDeviceAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error) {
+	f.deviceLoginOpened = true
 	return f.loginStart, nil
 }
 func (f *fakeCodexAccounts) OpenCodexAccountReauthenticationTerminal(_ context.Context, id string) (agentsvc.CodexAccountLoginTerminalStart, error) {
@@ -176,9 +182,9 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	if response.DeviceReconciliation.Status != string(domain.CodexDeviceReconciliationVerified) || !response.DeviceReconciliation.ActiveAccountVerified {
 		t.Fatalf("decoded device reconciliation = %#v", response.DeviceReconciliation)
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true,"forceAuthentication":true}`)
-	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage || !fake.forceAuthentication {
-		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v forceAuthentication=%v body=%s", status, fake.ensureIDs, fake.includeUsage, fake.forceAuthentication, body)
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true,"forceAuthentication":true,"forceDeviceReconciliation":true}`)
+	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage || !fake.forceAuthentication || !fake.forceReconciliation {
+		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v forceAuthentication=%v forceReconciliation=%v body=%s", status, fake.ensureIDs, fake.includeUsage, fake.forceAuthentication, fake.forceReconciliation, body)
 	}
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"unknown":true}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
@@ -233,6 +239,14 @@ func TestCodexAccountLoginTerminalAndVerificationRoutesExposeNoCommandOrPath(t *
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/login-terminal", `{}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_REQUEST_BODY"`) {
 		t.Fatalf("body rejection status=%d body=%s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/device/login-terminal", "")
+	if status != http.StatusAccepted || !fake.deviceLoginOpened || !strings.Contains(string(body), `"operationId":"op-1"`) {
+		t.Fatalf("device login status=%d opened=%t body=%s", status, fake.deviceLoginOpened, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/device/login-terminal", `{}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_REQUEST_BODY"`) {
+		t.Fatalf("device body rejection status=%d body=%s", status, body)
 	}
 	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/login-operations/op-1/verify", "")
 	if status != http.StatusOK || fake.verifiedOperation != "op-1" {

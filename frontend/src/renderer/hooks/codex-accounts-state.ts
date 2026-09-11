@@ -132,6 +132,7 @@ const reasonKeys = {
 	global_account_unverified: "settings.codexAccounts.reason.globalAccountUnverified",
 	global_account_identity_unverified: "settings.codexAccounts.reason.globalAccountIdentityUnverified",
 	global_account_changed: "settings.codexAccounts.reason.globalAccountChanged",
+	global_account_login_expired: "settings.codexAccounts.reason.globalAccountLoginExpired",
 	login_pending: "settings.codexAccounts.reason.loginPending",
 	login_completed: "settings.codexAccounts.reason.loginCompleted",
 	login_cancelled: "settings.codexAccounts.reason.loginCancelled",

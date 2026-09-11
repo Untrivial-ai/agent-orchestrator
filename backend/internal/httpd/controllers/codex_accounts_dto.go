@@ -26,7 +26,12 @@ func newCodexAccountsResponse(input agentsvc.CodexAccounts) CodexAccountsRespons
 		response.UnmanagedGlobalAccount = &CodexUnmanagedGlobalAccountResponse{
 			Label: input.UnmanagedGlobalAccount.Label, AuthMethod: string(input.UnmanagedGlobalAccount.AuthMethod),
 			AccountEmail: input.UnmanagedGlobalAccount.AccountEmail,
-			ReasonCode:   input.UnmanagedGlobalAccount.ReasonCode, Reason: input.UnmanagedGlobalAccount.Reason,
+			Authentication: CodexAuthenticationResponse{
+				State: string(input.UnmanagedGlobalAccount.Authentication.State), Freshness: string(input.UnmanagedGlobalAccount.Authentication.Freshness),
+				CheckedAt: input.UnmanagedGlobalAccount.Authentication.CheckedAt, AttemptedAt: input.UnmanagedGlobalAccount.Authentication.AttemptedAt,
+				ReasonCode: input.UnmanagedGlobalAccount.Authentication.ReasonCode, Reason: input.UnmanagedGlobalAccount.Authentication.Reason,
+			},
+			ReasonCode: input.UnmanagedGlobalAccount.ReasonCode, Reason: input.UnmanagedGlobalAccount.Reason,
 		}
 	}
 	if input.ActiveLogin != nil {
@@ -143,7 +148,7 @@ func newCodexSwitchResponse(input domain.CodexAccountSwitch) CodexAccountSwitchR
 		}
 	}
 	return CodexAccountSwitchResponse{
-		ID: input.ID, SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
+		ID: input.ID, SourceKind: string(input.SourceKind), SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
 		RestartRunningSessions: input.RestartRunningSessions,
 		Phase:                  CodexAccountSwitchPhase(input.Phase), FailureCode: input.FailureCode, Sessions: sessions,
 		CanRecover: input.CanRecover, CredentialsCommittedAt: input.CredentialsCommittedAt,

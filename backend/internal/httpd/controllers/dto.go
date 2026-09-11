@@ -1212,18 +1212,20 @@ type CodexAccountCapabilitiesResponse struct {
 
 // CodexUnmanagedGlobalAccountResponse explains a device identity AO cannot manage.
 type CodexUnmanagedGlobalAccountResponse struct {
-	Label        string  `json:"label"`
-	AuthMethod   string  `json:"authMethod" enum:"chatgpt,api_key,other,unknown"`
-	AccountEmail *string `json:"accountEmail,omitempty"`
-	ReasonCode   string  `json:"reasonCode"`
-	Reason       string  `json:"reason"`
+	Label          string                      `json:"label"`
+	AuthMethod     string                      `json:"authMethod" enum:"chatgpt,api_key,other,unknown"`
+	AccountEmail   *string                     `json:"accountEmail,omitempty"`
+	Authentication CodexAuthenticationResponse `json:"authentication"`
+	ReasonCode     string                      `json:"reasonCode"`
+	Reason         string                      `json:"reason"`
 }
 
 // EnsureCodexAccountsRequest selects accounts for display reads.
 type EnsureCodexAccountsRequest struct {
-	AccountIDs          []string `json:"accountIds,omitempty"`
-	IncludeUsage        bool     `json:"includeUsage,omitempty"`
-	ForceAuthentication bool     `json:"forceAuthentication,omitempty"`
+	AccountIDs                []string `json:"accountIds,omitempty"`
+	IncludeUsage              bool     `json:"includeUsage,omitempty"`
+	ForceAuthentication       bool     `json:"forceAuthentication,omitempty"`
+	ForceDeviceReconciliation bool     `json:"forceDeviceReconciliation,omitempty"`
 }
 
 // ConsumeCodexAccountResetCreditRequest identifies one idempotent provider
@@ -1289,7 +1291,8 @@ type CodexAccountSwitchPhase string
 // CodexAccountSwitchResponse contains only safe AO identifiers and progress.
 type CodexAccountSwitchResponse struct {
 	ID                     string                              `json:"id"`
-	SourceAccountID        string                              `json:"sourceAccountId"`
+	SourceKind             string                              `json:"sourceKind" enum:"managed,device,none"`
+	SourceAccountID        string                              `json:"sourceAccountId,omitempty"`
 	TargetAccountID        string                              `json:"targetAccountId"`
 	RestartRunningSessions bool                                `json:"restartRunningSessions"`
 	Phase                  CodexAccountSwitchPhase             `json:"phase" enum:"requested,stopping_sessions,sessions_stopped,checkpointing_source,activating_target,verifying_target,restarting_sessions,rollback_required,recovery_required,completed,failed"`

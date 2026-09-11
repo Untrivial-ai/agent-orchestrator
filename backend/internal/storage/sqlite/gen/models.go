@@ -172,6 +172,7 @@ type CodexAccountSwitch struct {
 	UpdatedAt               time.Time
 	CompletedAt             sql.NullTime
 	RestartRunningSessions  bool
+	SourceKind              string
 }
 
 type CodexAccountSwitchSession struct {

@@ -1172,6 +1172,11 @@ func agentOperations() []operation {
 			resps:   []respUnit{{http.StatusAccepted, controllers.OpenCodexAccountLoginTerminalResponse{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/device/login-terminal", id: "openCodexDeviceAccountLoginTerminal", tag: "agents",
+			summary: "Open an isolated native login that replaces the device Codex account after verification",
+			resps:   []respUnit{{http.StatusAccepted, controllers.OpenCodexAccountLoginTerminalResponse{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
 			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/login-operations/{operationId}/verify", id: "verifyCodexAccountLogin", tag: "agents",
 			summary: "Verify one native Codex account login operation", pathParams: []any{controllers.CodexAccountLoginIDParam{}},
 			resps: []respUnit{{http.StatusOK, controllers.CodexAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},

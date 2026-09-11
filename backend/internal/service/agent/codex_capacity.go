@@ -374,9 +374,10 @@ func (c *codexCapacityCoordinator) finishFailure(accountID string, attemptedAt t
 	result := state.snapshot
 	c.mu.Unlock()
 	authCode, authReason := domain.AgentReadinessReasonAuthCheckFailed, "Could not verify Codex sign-in."
-	if code == domain.CodexCapacityReasonCheckTimeout {
+	switch code {
+	case domain.CodexCapacityReasonCheckTimeout:
 		authCode, authReason = domain.AgentReadinessReasonAuthCheckTimeout, "The Codex sign-in check timed out."
-	} else if code == domain.CodexCapacityReasonCheckInconclusive {
+	case domain.CodexCapacityReasonCheckInconclusive:
 		authCode, authReason = domain.AgentReadinessReasonAuthCheckInconclusive, "Could not verify Codex sign-in."
 	}
 	c.manager.recordProtectedAuthenticationFailure(accountID, attemptedAt, authCode, authReason)
@@ -495,6 +496,10 @@ func mergeCapacityObservation(current domain.CodexCapacitySnapshot, observation 
 
 func (c *codexCapacityCoordinator) acceptDirect(accountID string, observation ports.CodexCapacityObservation, attemptedAt time.Time) {
 	c.finishSuccess(accountID, observation, attemptedAt, nil, "reset_credit")
+}
+
+func (c *codexCapacityCoordinator) acceptLoginVerification(accountID string, observation ports.CodexCapacityObservation, attemptedAt time.Time) {
+	c.finishSuccess(accountID, observation, attemptedAt, nil, "login_verification")
 }
 
 func (c *codexCapacityCoordinator) invalidateAfterReset(accountID string) {

@@ -227,9 +227,10 @@ type CodexActiveAccount struct {
 // CodexUnmanagedGlobalAccount describes a device-global identity that AO cannot
 // safely import or switch because its credential is unavailable or ambiguous.
 type CodexUnmanagedGlobalAccount struct {
-	Label        string          `json:"label"`
-	AuthMethod   CodexAuthMethod `json:"authMethod"`
-	AccountEmail *string         `json:"accountEmail,omitempty"`
-	ReasonCode   string          `json:"reasonCode"`
-	Reason       string          `json:"reason"`
+	Label          string                         `json:"label"`
+	AuthMethod     CodexAuthMethod                `json:"authMethod"`
+	AccountEmail   *string                        `json:"accountEmail,omitempty"`
+	Authentication AgentAuthenticationObservation `json:"authentication"`
+	ReasonCode     string                         `json:"reasonCode"`
+	Reason         string                         `json:"reason"`
 }

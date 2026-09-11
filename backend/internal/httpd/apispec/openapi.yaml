@@ -657,6 +657,38 @@ paths:
       summary: Consume one provider-reported Codex usage-limit reset credit
       tags:
       - agents
+  /api/v1/agents/codex/accounts/device/login-terminal:
+    post:
+      operationId: openCodexDeviceAccountLoginTerminal
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenCodexAccountLoginTerminalResponse'
+          description: Accepted
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Open an isolated native login that replaces the device Codex account
+        after verification
+      tags:
+      - agents
   /api/v1/agents/codex/accounts/ensure:
     post:
       operationId: ensureCodexAccounts
@@ -7620,6 +7652,12 @@ components:
           type: array
         sourceAccountId:
           type: string
+        sourceKind:
+          enum:
+          - managed
+          - device
+          - none
+          type: string
         targetAccountId:
           type: string
         updatedAt:
@@ -7627,7 +7665,7 @@ components:
           type: string
       required:
       - id
-      - sourceAccountId
+      - sourceKind
       - targetAccountId
       - restartRunningSessions
       - phase
@@ -7923,6 +7961,8 @@ components:
           - other
           - unknown
           type: string
+        authentication:
+          $ref: '#/components/schemas/CodexAuthenticationResponse'
         label:
           type: string
         reason:
@@ -7932,6 +7972,7 @@ components:
       required:
       - label
       - authMethod
+      - authentication
       - reasonCode
       - reason
       type: object
@@ -9154,6 +9195,8 @@ components:
             type: string
           type: array
         forceAuthentication:
+          type: boolean
+        forceDeviceReconciliation:
           type: boolean
         includeUsage:
           type: boolean

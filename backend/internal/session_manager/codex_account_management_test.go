@@ -41,7 +41,7 @@ func (c *blockingActivationCredentials) CurrentCodexActiveAccount() domain.Codex
 	return c.current
 }
 
-func (c *blockingActivationCredentials) CheckpointAndActivateCodexAccount(ctx context.Context, _ string, target string, expected int64) (domain.CodexActiveAccount, error) {
+func (c *blockingActivationCredentials) CheckpointAndActivateCodexAccount(ctx context.Context, _ domain.CodexAccountSwitchSourceKind, _ string, target string, expected int64) (domain.CodexActiveAccount, error) {
 	close(c.activationEntered)
 	select {
 	case <-c.activationReleased:
@@ -77,11 +77,11 @@ func (r *trackingCodexReviewerLifecycle) RestoreCodexReviewerExact(context.Conte
 	return nil
 }
 
-func (*rollbackTrackingCredentials) CheckpointAndActivateCodexAccount(context.Context, string, string, int64) (domain.CodexActiveAccount, error) {
+func (*rollbackTrackingCredentials) CheckpointAndActivateCodexAccount(context.Context, domain.CodexAccountSwitchSourceKind, string, string, int64) (domain.CodexActiveAccount, error) {
 	return domain.CodexActiveAccount{}, errors.New("injected activation failure")
 }
 
-func (c *rollbackTrackingCredentials) RestoreCodexAccountCredential(_ context.Context, sourceAccountID, _ string) error {
+func (c *rollbackTrackingCredentials) RestoreCodexAccountCredential(_ context.Context, _ string, _ domain.CodexAccountSwitchSourceKind, sourceAccountID, _ string) error {
 	c.restoreCalls++
 	if sourceAccountID != "source" {
 		return fmt.Errorf("restore source = %q", sourceAccountID)
@@ -206,6 +206,9 @@ func (c *bootstrapOrderingCredentials) EndCodexAccountMutation() {
 func (*bootstrapOrderingCredentials) CurrentCodexActiveAccount() domain.CodexActiveAccount {
 	return domain.CodexActiveAccount{AccountID: "source", Revision: 1}
 }
+func (*bootstrapOrderingCredentials) CurrentCodexAccountSwitchSource() domain.CodexAccountSwitchSource {
+	return domain.CodexAccountSwitchSource{Kind: domain.CodexAccountSwitchSourceManaged, AccountID: "source", Revision: 1}
+}
 func (*bootstrapOrderingCredentials) CodexAccountLoginInProgress() bool { return false }
 func (c *bootstrapOrderingCredentials) VerifyCodexAccountForSwitch(_ context.Context, _ string) error {
 	c.record("verify")
@@ -217,13 +220,18 @@ func (c *bootstrapOrderingCredentials) VerifyCodexAccountForSwitch(_ context.Con
 	}
 	return nil
 }
-func (*bootstrapOrderingCredentials) VerifyCurrentCodexAccount(context.Context, string) error {
+
+func (c *bootstrapOrderingCredentials) VerifyCurrentCodexAccount(_ context.Context, accountID string) error {
+	c.record("verify-current:" + accountID)
 	return nil
 }
-func (*bootstrapOrderingCredentials) CheckpointAndActivateCodexAccount(context.Context, string, string, int64) (domain.CodexActiveAccount, error) {
+func (*bootstrapOrderingCredentials) CheckpointAndActivateCodexAccount(context.Context, domain.CodexAccountSwitchSourceKind, string, string, int64) (domain.CodexActiveAccount, error) {
 	return domain.CodexActiveAccount{AccountID: "target", Revision: 2}, nil
 }
-func (*bootstrapOrderingCredentials) RestoreCodexAccountCredential(context.Context, string, string) error {
+func (*bootstrapOrderingCredentials) RestoreCodexAccountCredential(context.Context, string, domain.CodexAccountSwitchSourceKind, string, string) error {
+	return nil
+}
+func (*bootstrapOrderingCredentials) CleanupCodexAccountSwitch(context.Context, string) error {
 	return nil
 }
 
@@ -586,6 +594,29 @@ func TestCodexAccountSwitchAutomaticallyRestoresSourceAfterActivationFailure(t *
 	}
 	if !slices.Equal(credentials.verified, []string{"source"}) {
 		t.Fatalf("verified accounts = %v, want source", credentials.verified)
+	}
+}
+
+func TestCodexAccountSwitchRecoveryUsesVerifiedDeviceTargetInsteadOfStalePointer(t *testing.T) {
+	credentials := &bootstrapOrderingCredentials{}
+	store := &bootstrapOrderingStore{fakeStore: newFakeStore(), collectingCodexSwitchStore: &collectingCodexSwitchStore{}}
+	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
+	sw := domain.CodexAccountSwitch{
+		ID: "switch-1", SourceKind: domain.CodexAccountSwitchSourceManaged,
+		SourceAccountID: "source", TargetAccountID: "target",
+		ExpectedAccountRevision: 1, Phase: domain.CodexAccountSwitchRecoveryRequired,
+	}
+
+	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, nil)
+
+	if sw.Phase != domain.CodexAccountSwitchCompleted {
+		t.Fatalf("phase = %q, want completed", sw.Phase)
+	}
+	credentials.mu.Lock()
+	calls := append([]string(nil), credentials.calls...)
+	credentials.mu.Unlock()
+	if !slices.Contains(calls, "verify-current:target") {
+		t.Fatalf("recovery calls = %v, want target verification", calls)
 	}
 }
 

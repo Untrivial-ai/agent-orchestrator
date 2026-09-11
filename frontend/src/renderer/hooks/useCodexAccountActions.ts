@@ -9,6 +9,7 @@ import {
 	ensureCodexAccounts,
 	logoutCodexAccount,
 	openCodexAccountLoginTerminal,
+	openCodexDeviceAccountLoginTerminal,
 	openCodexAccountReauthenticationTerminal,
 	recoverCodexAccountSwitch,
 	startCodexAccountSwitch,
@@ -30,6 +31,7 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 	const [loginOperationPending, setLoginOperationPending] = useState(false);
 	const [recoverPending, setRecoverPending] = useState(false);
 	const [authenticationRetryAccountId, setAuthenticationRetryAccountId] = useState<string | null>(null);
+	const [deviceRefreshPending, setDeviceRefreshPending] = useState(false);
 	const verifyingRef = useRef<string | null>(null);
 
 	const current = useCallback(() => queryClient.getQueryData<CodexAccountsResponse>(codexAccountsQueryKey), [queryClient]);
@@ -50,6 +52,31 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 				activeLogin: {
 					operationId: started.operation.operationId,
 					accountId: started.operation.accountId ?? accountId,
+					status: started.operation.status,
+					reasonCode: started.operation.reasonCode,
+					reason: started.operation.reason,
+					expiresAt: started.operation.expiresAt,
+					shellTerminal: started.shellTerminal,
+				},
+			}));
+			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
+		} catch (cause) {
+			setError(errorMessage(cause, t("settings.codexAccounts.loginFailed")));
+			throw cause;
+		} finally {
+			setLoginPending(false);
+		}
+	}, [queryClient, t, writeCurrent]);
+
+	const beginDeviceLogin = useCallback(async () => {
+		setError(null);
+		setLoginPending(true);
+		try {
+			const started = await openCodexDeviceAccountLoginTerminal();
+			writeCurrent((snapshot) => ({
+				...snapshot,
+				activeLogin: {
+					operationId: started.operation.operationId,
 					status: started.operation.status,
 					reasonCode: started.operation.reasonCode,
 					reason: started.operation.reason,
@@ -154,6 +181,20 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 		}
 	}, [queryClient, t]);
 
+	const retryDeviceRefresh = useCallback(async () => {
+		setError(null);
+		setDeviceRefreshPending(true);
+		try {
+			const next = await ensureCodexAccounts([], false, false, true);
+			writeCodexAccounts(queryClient, next, "replace");
+		} catch (cause) {
+			setError(errorMessage(cause, t("settings.codexAccounts.deviceRefreshFailed")));
+			throw cause;
+		} finally {
+			setDeviceRefreshPending(false);
+		}
+	}, [queryClient, t]);
+
 	const switchAccount = useCallback(async (account: CodexAccount, revision: number, idempotencyKey: string, restartRunningSessions: boolean) => {
 		setError(null);
 		try {
@@ -208,12 +249,15 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 		loginOperationPending,
 		recoverPending,
 		authenticationRetryAccountId,
+		deviceRefreshPending,
 		beginLogin,
+		beginDeviceLogin,
 		verifyLogin,
 		closeLogin,
 		retryLogin,
 		ensureAccount,
 		retryAuthentication,
+		retryDeviceRefresh,
 		switchAccount,
 		recoverSwitch,
 		resetAccount,

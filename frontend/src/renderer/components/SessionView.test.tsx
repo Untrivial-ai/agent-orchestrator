@@ -692,6 +692,7 @@ describe("SessionView", () => {
 			currentSwitch: {
 				id: "switch-1",
 				sourceAccountId: "account-a",
+				sourceKind: "managed",
 				targetAccountId: "account-b",
 				restartRunningSessions: true,
 				phase: "recovery_required",
