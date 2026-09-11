@@ -229,6 +229,19 @@ func newSCMFixture(t *testing.T, branch string) *scmFixture {
 	}
 }
 
+// setSessionBranch rewrites the fixture session's recorded branch after
+// creation. AO-convention branches ("ao/<session-id>/<topic>") embed the
+// session ID the store assigns on insert, so they can only be built here.
+func (f *scmFixture) setSessionBranch(t *testing.T, branch string) {
+	t.Helper()
+	rec := f.session
+	rec.Metadata.Branch = branch
+	if err := f.store.UpdateSession(context.Background(), rec); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	f.session = rec
+}
+
 func (f *scmFixture) enableTerminateOnPRMerge(t *testing.T) {
 	t.Helper()
 	ok, err := f.store.SetSessionTerminateOnPRMerge(context.Background(), f.session.ID, true, f.now)
@@ -699,6 +712,55 @@ func TestSCMObserverMultiPREndToEnd(t *testing.T) {
 		}
 		if childSig != "" {
 			t.Fatalf("stacked child must not record a nudge signature: %q", childSig)
+		}
+	})
+	// Regression guard for issue #4984: the recorded session branch is a topic
+	// branch, not the "<namespace>/root" leaf, and the worker opens a second,
+	// independent PR from a sibling branch targeting main. Attribution must come
+	// from the session's canonical AO namespace, without claiming an unrelated
+	// contributor's branch in the same repo.
+	t.Run("session on a topic branch owns an independent sibling PR targeting main", func(t *testing.T) {
+		ctx := context.Background()
+		f := newSCMFixture(t, "unset")
+		namespace := "ao/" + string(f.session.ID)
+		topic := namespace + "/topic-a"
+		sibling := namespace + "/topic-b"
+		f.setSessionBranch(t, topic)
+		const (
+			topicURL   = "https://github.com/octocat/hello/pull/401"
+			siblingURL = "https://github.com/octocat/hello/pull/402"
+			otherURL   = "https://github.com/octocat/hello/pull/403"
+		)
+		f.provider.detected[topic] = detectedPR(topicURL, 401, topic, "main", "sha-topic")
+		f.provider.detected[sibling] = detectedPR(siblingURL, 402, sibling, "main", "sha-sibling")
+		f.provider.detected["feature/other"] = detectedPR(otherURL, 403, "feature/other", "main", "sha-other")
+		f.provider.observations[401] = openSCMObservation(topicURL, 401, "sha-topic", topic, "main", domain.MergeMergeable)
+		f.provider.observations[402] = openSCMObservation(siblingURL, 402, "sha-sibling", sibling, "main", domain.MergeMergeable)
+		f.provider.observations[403] = openSCMObservation(otherURL, 403, "sha-other", "feature/other", "main", domain.MergeMergeable)
+
+		if err := f.observer.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+
+		prs, err := f.store.ListPRsBySession(ctx, f.session.ID)
+		if err != nil {
+			t.Fatalf("ListPRsBySession: %v", err)
+		}
+		byURL := map[string]domain.PullRequest{}
+		for _, pr := range prs {
+			byURL[pr.URL] = pr
+		}
+		if len(prs) != 2 || byURL[topicURL].URL == "" || byURL[siblingURL].URL == "" {
+			t.Fatalf("session should own its topic and sibling PRs, got %d: %+v", len(prs), prs)
+		}
+		if got := byURL[siblingURL].SourceBranch; got != sibling {
+			t.Fatalf("sibling source branch = %q, want %q", got, sibling)
+		}
+		if got := byURL[siblingURL].TargetBranch; got != "main" {
+			t.Fatalf("sibling target branch = %q, want main", got)
+		}
+		if _, ok, err := f.store.GetPR(ctx, otherURL); err != nil || ok {
+			t.Fatalf("unrelated branch must stay unattributed: ok=%v err=%v", ok, err)
 		}
 	})
 }

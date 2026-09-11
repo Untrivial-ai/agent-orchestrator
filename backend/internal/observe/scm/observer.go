@@ -46,6 +46,11 @@ const (
 	// to the single-provider IdentityResolver path. It represents the
 	// unnamed identity that applies when no ScopedIdentityResolver is wired.
 	fallbackIdentityKey = ""
+
+	// aoBranchRootSegment is the first path segment of every AO-generated work
+	// branch ("ao[/<data-dir-namespace>]/<session-id>/..."). It gates namespace
+	// derivation so only AO's own convention can widen branch ownership.
+	aoBranchRootSegment = "ao"
 )
 
 // identityKey builds the cache key for a per-provider, per-host identity.
@@ -319,6 +324,23 @@ type sessionRepo struct {
 	repo     ports.SCMRepo
 	headRepo ports.SCMRepo
 	branch   string
+	// namespace is the canonical AO session namespace derived from branch, or
+	// empty when branch is not an AO-generated branch for this session. It is
+	// what lets a session own its independent sibling PR branches regardless of
+	// which branch under that namespace happens to be the recorded one.
+	namespace string
+}
+
+// newSessionRepo pairs a session with a repo to scan and derives the session's
+// canonical AO namespace once, so every scanned repo agrees on ownership.
+func newSessionRepo(sess domain.SessionRecord, repo, headRepo ports.SCMRepo, branch string) sessionRepo {
+	return sessionRepo{
+		session:   sess,
+		repo:      repo,
+		headRepo:  headRepo,
+		branch:    branch,
+		namespace: sessionBranchNamespace(sess.ID, branch),
+	}
 }
 
 type repoGuardState struct {
@@ -768,7 +790,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
 		if origin, ok := originRepos[sess.ProjectID]; ok {
 			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch})
+				sessionRepos = append(sessionRepos, newSessionRepo(sess, repo, origin, branch))
 				repos = append(repos, repo)
 			}
 		}
@@ -865,7 +887,7 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 				continue
 			}
 			seen[key] = true
-			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch})
+			repos = append(repos, newSessionRepo(sess, scanRepo, repo, branch))
 		}
 	}
 	return repos, nil
@@ -1199,13 +1221,13 @@ func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []session
 }
 
 // matchSession picks the session that owns sourceBranch. A session owns the
-// branch when it is an exact match or a stacked descendant ("branch/..."). The
-// default worker branch is a leaf named "<namespace>/root"; for that shape the
-// session also owns sibling branches under "<namespace>/..." so Git can create
-// child PR branches without colliding with the root ref. When several session
-// branches are prefixes of the same source branch the longest (most specific)
-// one wins, so a child session claims its own stacked PRs rather than the
-// ancestor session.
+// branch when it is an exact match or a stacked descendant ("branch/..."). A
+// session on an AO-generated branch also owns every sibling under its canonical
+// namespace ("ao[/...]/<session-id>/..."), so an independent second PR is
+// attributed whether the recorded branch is the "/root" leaf or a topic branch
+// the worker already moved to. When several session branches are prefixes of
+// the same source branch the longest (most specific) one wins, so a child
+// session claims its own stacked PRs rather than the ancestor session.
 // candidatesForHeadRepo narrows the scanned repo's session candidates to those
 // whose head branch lives in headRepo (the PR's head repository full name). This
 // is the fork guard: a PR is only attributable when its head repo equals a
@@ -1236,7 +1258,7 @@ func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, b
 		if sr.branch == "" {
 			continue
 		}
-		for _, prefix := range sessionBranchPrefixes(sr.branch) {
+		for _, prefix := range sessionBranchPrefixes(sr.branch, sr.namespace) {
 			if prefix == sourceBranch || strings.HasPrefix(sourceBranch, prefix+"/") {
 				if len(prefix) > bestLen {
 					best = sr
@@ -1248,12 +1270,60 @@ func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, b
 	return best, bestLen >= 0
 }
 
-func sessionBranchPrefixes(branch string) []string {
+// sessionBranchPrefixes returns every branch prefix a session owns: its own
+// branch (exact match and stacked "branch/..." children), the legacy
+// "<namespace>/root" leaf expansion, and the canonical AO session namespace
+// when one could be derived. Only the derived namespace is trusted to broaden
+// ownership beyond the recorded branch, so custom branches such as "feature/a"
+// never claim a sibling "feature/b".
+func sessionBranchPrefixes(branch, namespace string) []string {
 	prefixes := []string{branch}
-	if namespace, ok := strings.CutSuffix(branch, "/root"); ok && namespace != "" {
-		prefixes = append(prefixes, namespace)
+	if root, ok := strings.CutSuffix(branch, "/root"); ok && root != "" {
+		prefixes = append(prefixes, root)
+	}
+	if namespace != "" {
+		known := false
+		for _, prefix := range prefixes {
+			if prefix == namespace {
+				known = true
+				break
+			}
+		}
+		if !known {
+			prefixes = append(prefixes, namespace)
+		}
 	}
 	return prefixes
+}
+
+// sessionBranchNamespace returns the canonical AO namespace that owns a
+// session's PR branches, or "" when branch is not an AO-generated branch for
+// this session.
+//
+// AO generates worker branches as "ao[/<data-dir-namespace>]/<session-id>/root"
+// and workers open sibling PRs as "ao[/...]/<session-id>/<topic>". The namespace
+// is therefore the branch prefix through the segment equal to the session ID,
+// which holds whether the recorded branch is the "/root" leaf or a topic branch
+// (issue #4984). Requiring both the "ao" root segment and this session's own ID
+// keeps the expansion tight: an orchestrator branch keyed on the project prefix,
+// a custom "feature/x", or a branch sitting in another session's namespace all
+// yield "" and stay on exact/descendant matching, so no session can claim a
+// branch that is merely a sibling of its own.
+func sessionBranchNamespace(id domain.SessionID, branch string) string {
+	sessionID := strings.TrimSpace(string(id))
+	if sessionID == "" {
+		return ""
+	}
+	segments := strings.Split(strings.TrimSpace(branch), "/")
+	if len(segments) < 2 || segments[0] != aoBranchRootSegment {
+		return ""
+	}
+	for i := 1; i < len(segments); i++ {
+		if segments[i] == sessionID {
+			return strings.Join(segments[:i+1], "/")
+		}
+	}
+	return ""
 }
 
 func (o *Observer) selectRefreshCandidates(ctx context.Context, subjects map[string]*subject, guards map[string]repoGuardState, listedPRs map[string]bool, markRepoFailed func(ports.SCMRepo), now time.Time) refreshSelection {

@@ -777,6 +777,141 @@ func TestPoll_DiscoversSiblingUnderRootSessionNamespace(t *testing.T) {
 	}
 }
 
+// TestPoll_DiscoversSiblingUnderTopicSessionNamespace is the regression guard
+// for issue #4984: a session whose recorded branch is already a topic branch
+// (not the "/root" leaf) must still own an independent sibling PR opened under
+// its AO namespace and targeting the default branch.
+func TestPoll_DiscoversSiblingUnderTopicSessionNamespace(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].Metadata.Branch = "ao/p-1/topic-a"
+	prObs := testObs(1)
+	prObs.PR.SourceBranch = "ao/p-1/topic-b"
+	prObs.PR.TargetBranch = "main"
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
+			{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "ao/p-1/topic-b", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1"},
+		}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): prObs},
+	}
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("expected discovered PR write")
+	}
+	if got := store.writes[0].pr.SourceBranch; got != "ao/p-1/topic-b" {
+		t.Fatalf("source branch = %q, want ao/p-1/topic-b", got)
+	}
+	if got := store.writes[0].pr.SessionID; got != "p-1" {
+		t.Fatalf("session id = %q, want p-1", got)
+	}
+	if len(lc.observed) != 1 {
+		t.Fatalf("lifecycle observations = %d, want 1", len(lc.observed))
+	}
+}
+
+// TestPoll_IgnoresForkSiblingUnderTopicSessionNamespace keeps the fork guard
+// ahead of namespace attribution: a same-named branch pushed from a stranger's
+// fork is not this session's PR even though the branch sits under its namespace.
+func TestPoll_IgnoresForkSiblingUnderTopicSessionNamespace(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].Metadata.Branch = "ao/p-1/topic-a"
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
+			{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "ao/p-1/topic-b", HeadRepo: "stranger/r", TargetBranch: "main", HeadSHA: "sha1"},
+		}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): testObs(1)},
+	}
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) != 0 {
+		t.Fatalf("fork PR must not be attributed, got %+v", store.writes)
+	}
+}
+
+func TestMatchSession_TopicBranchOwnsNamespaceSibling(t *testing.T) {
+	sess := domain.SessionRecord{ID: "p-1"}
+	sr := newSessionRepo(sess, testRepo, testRepo, "ao/p-1/topic-a")
+	got, ok := matchSession([]sessionRepo{sr}, "ao/p-1/topic-b")
+	if !ok || got.session.ID != "p-1" {
+		t.Fatalf("matchSession = (%q, %v), want p-1 owner", got.session.ID, ok)
+	}
+}
+
+func TestMatchSession_CustomBranchDoesNotOwnSibling(t *testing.T) {
+	sr := newSessionRepo(domain.SessionRecord{ID: "p-1"}, testRepo, testRepo, "feature/a")
+	if got, ok := matchSession([]sessionRepo{sr}, "feature/b"); ok {
+		t.Fatalf("custom branch must not own a sibling, matched %q", got.session.ID)
+	}
+	if _, ok := matchSession([]sessionRepo{sr}, "feature/a/stacked"); !ok {
+		t.Fatal("custom branch must still own its stacked child")
+	}
+}
+
+// TestMatchSession_ForeignNamespaceBranchStaysExact covers a session parked on
+// another session's namespace by an explicit --branch: it may own that branch
+// and its stack, never the rest of the other session's namespace.
+func TestMatchSession_ForeignNamespaceBranchStaysExact(t *testing.T) {
+	sr := newSessionRepo(domain.SessionRecord{ID: "p-2"}, testRepo, testRepo, "ao/p-1/topic-a")
+	if got, ok := matchSession([]sessionRepo{sr}, "ao/p-1/topic-b"); ok {
+		t.Fatalf("foreign namespace sibling must not match, got %q", got.session.ID)
+	}
+	if _, ok := matchSession([]sessionRepo{sr}, "ao/p-1/topic-a"); !ok {
+		t.Fatal("expected the recorded branch itself to match")
+	}
+}
+
+// TestMatchSession_StackedChildSessionWinsOverNamespaceOwner keeps
+// longest-prefix ownership: a session sitting on the stacked branch claims its
+// own descendants ahead of the namespace-owning parent session.
+func TestMatchSession_StackedChildSessionWinsOverNamespaceOwner(t *testing.T) {
+	parent := newSessionRepo(domain.SessionRecord{ID: "p-1"}, testRepo, testRepo, "ao/p-1/topic-a")
+	child := newSessionRepo(domain.SessionRecord{ID: "p-2"}, testRepo, testRepo, "ao/p-1/topic-a/stacked")
+	got, ok := matchSession([]sessionRepo{parent, child}, "ao/p-1/topic-a/stacked/more")
+	if !ok {
+		t.Fatal("expected a matching session")
+	}
+	if got.session.ID != "p-2" {
+		t.Fatalf("matched %q, want the most specific owner p-2", got.session.ID)
+	}
+}
+
+func TestSessionBranchNamespace(t *testing.T) {
+	cases := []struct {
+		name   string
+		id     domain.SessionID
+		branch string
+		want   string
+	}{
+		{"root leaf", "p-1", "ao/p-1/root", "ao/p-1"},
+		{"topic branch", "p-1", "ao/p-1/topic-a", "ao/p-1"},
+		{"stacked topic branch", "p-1", "ao/p-1/topic-a/stacked", "ao/p-1"},
+		{"dev data dir namespace", "p-1", "ao/dev/p-1/topic-a", "ao/dev/p-1"},
+		{"workspace leaf", "p-1", "ao/p-1", "ao/p-1"},
+		{"orchestrator branch", "p-1", "ao/p-orchestrator", ""},
+		{"custom branch", "p-1", "feature/a", ""},
+		{"ao-shaped custom branch", "p-1", "ao/other/topic", ""},
+		{"another session namespace", "p-2", "ao/p-1/topic-a", ""},
+		{"session id prefix is not a segment", "p-1", "ao/p-10/topic-a", ""},
+		{"empty session id", "", "ao/p-1/root", ""},
+		{"empty branch", "p-1", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionBranchNamespace(tc.id, tc.branch); got != tc.want {
+				t.Fatalf("sessionBranchNamespace(%q, %q) = %q, want %q", tc.id, tc.branch, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMatchSession_PrefersExactBranchOverNamespaceMatch(t *testing.T) {
 	exact := sessionRepo{session: domain.SessionRecord{ID: "exact"}, branch: "ao/p-1"}
 	namespace := sessionRepo{session: domain.SessionRecord{ID: "namespace"}, branch: "ao/p-1/root"}
