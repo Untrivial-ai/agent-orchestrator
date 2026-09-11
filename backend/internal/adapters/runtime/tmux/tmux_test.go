@@ -1341,6 +1341,74 @@ func TestIsAliveReportsOtherExitFailuresAsProbeErrors(t *testing.T) {
 	}
 }
 
+func TestIsChildAliveServerAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		wantErr      bool
+	}{
+		{name: "absent server", output: "no server running on /tmp/tmux-1000/default"},
+		{name: "missing socket is inconclusive", output: "error connecting to /tmp/tmux-1000/default (No such file or directory)", wantErr: true},
+		{name: "connection refused", output: "error connecting to /tmp/tmux-1000/default (Connection refused)", wantErr: true},
+		{name: "protocol failure", output: "protocol version mismatch", wantErr: true},
+		{name: "unexpected exit", output: "server exited unexpectedly", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{[]byte(tc.output)}
+			fr.err = &exec.ExitError{}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive || (err != nil) != tc.wantErr {
+				t.Fatalf("IsChildAlive = %v, %v; want false, error=%v", alive, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestIsChildAliveUsesPaneStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  string
+		alive   bool
+		wantErr bool
+	}{
+		{name: "running", status: "0\n", alive: true},
+		{name: "retained exit", status: "1\n"},
+		{name: "another pane running", status: "1\n0\n", alive: true},
+		{name: "all panes exited", status: "1\n1\n"},
+		{name: "missing status", wantErr: true},
+		{name: "invalid status", status: "unknown", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{nil, []byte(tc.status)}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive != tc.alive || (err != nil) != tc.wantErr {
+				t.Fatalf("child status %q = %v, %v; want alive %v, error %v", tc.status, alive, err, tc.alive, tc.wantErr)
+			}
+			if len(fr.calls) != 2 || !reflect.DeepEqual(fr.calls[1].args, []string{"list-panes", "-s", "-t", "=shell", "-F", "#{pane_dead}"}) {
+				t.Fatalf("child probe calls = %v", fr.calls)
+			}
+		})
+	}
+}
+
+func TestIsChildAlivePreservesProbeFailures(t *testing.T) {
+	for _, failedCall := range []int{1, 2} {
+		r, fr := newTestRuntime(0)
+		probeErr := errors.New("runtime probe failed")
+		fr.hook = func(_ context.Context, call int) error {
+			if call == failedCall {
+				return probeErr
+			}
+			return nil
+		}
+		alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+		if alive || !errors.Is(err, probeErr) {
+			t.Fatalf("probe failure at call %d = %v, %v; want original error", failedCall, alive, err)
+		}
+	}
+}
+
 // -- SendMessage tests --
 
 func TestSendMessageChunksAndSendsEnter(t *testing.T) {

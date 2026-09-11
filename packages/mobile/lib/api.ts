@@ -116,7 +116,11 @@ export type SessionsResponse = {
 	stats: DashboardStats;
 	// Returned here so callers don't fetch /projects a second time — getSessions
 	// already needs it to label orchestrators.
-	projects: ProjectInfo[];
+	//
+	// Null when the /projects request itself failed, which is NOT the same fact
+	// as an empty list: the board judges a saved project filter against this, so
+	// folding a failure into [] told it every project was gone (#5058 review).
+	projects: ProjectInfo[] | null;
 };
 
 // ---- Wire types (this repo's Go daemon, /api/v1/*) --------------------------
@@ -377,13 +381,17 @@ export async function getSessions(cfg: ServerConfig, _projectId?: string): Promi
 	// code, fail with 429 before the new password was ever checked. Probing first
 	// caps a bad-credential tick at a single failed attempt.
 	const sessRes = await req(cfg, `${API}/sessions`);
+	// A failed /projects is reported as null rather than [] so a caller can tell
+	// "this daemon has no projects" from "we could not ask". It stays caught: an
+	// older daemon, or one blip on that one route, must not knock the board
+	// offline when /sessions answered fine.
 	const [orchRes, projects] = await Promise.all([
 		req(cfg, `${API}/orchestrators`),
-		getProjects(cfg).catch(() => [] as ProjectInfo[]),
+		getProjects(cfg).catch(() => null),
 	]);
 	const sessData = await sessRes.json();
 	const orchData = await orchRes.json();
-	const nameOf = new Map(projects.map((p) => [p.id, p.name]));
+	const nameOf = new Map((projects ?? []).map((p) => [p.id, p.name]));
 
 	const rawSessions: WireSession[] = Array.isArray(sessData?.sessions) ? sessData.sessions : [];
 	const rawOrchestrators: WireSession[] = Array.isArray(orchData?.sessions) ? orchData.sessions : [];

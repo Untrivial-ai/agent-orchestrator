@@ -43,11 +43,22 @@ surface (`npm run sqlc`, `npm run api`).
   conversation between TUI and Chat without changing the AO session/worktree;
   rollback, restart recovery, controller-generation fencing, and a transition
   message outbox preserve the one-controller invariant.
-- Codex Chat app-server processes are owned by authenticated, detached
+- Codex and all eight registered ACP Chat providers are
+  owned by authenticated, detached
   per-session hosts. Desktop close, full quit, and updater daemon replacement
   detach and reconnect without relaunching the provider or interrupting an
-  in-flight turn; explicit session termination destroys the host. Other Chat
-  drivers still use native resume after daemon replacement.
+  in-flight turn; explicit session termination destroys the host. ACP reconnect
+  restores the initialized session snapshot, JSON-RPC correlation, pending
+  interactions, and an acknowledged prompt journal before replaying the same
+  durable turn. Host-accepted approval/input commands close the crash window
+  before SQLite projection, and live host adoption preserves the browser bearer
+  already held by the provider instead of rotating its verifier. Native
+  load/resume remains the repair path after actual host failure; it is not needed
+  for live adoption. Installation changes and launch-only credentials do not
+  block adoption. Updater warnings use actual controller ownership rather than
+  a provider allowlist. Shared process tests cover all eight ACP identities;
+  authenticated vendor and platform coverage is tracked separately in
+  [the research/evidence note](research/persistent-acp-chat-hosts.md).
 - Durable Chat conversations with project-scoped orchestrator continuity,
   session-scoped worker history, bounded history pages, transactional raw-event
   archive/projection, controller-generation fencing, turns, messages,
@@ -90,6 +101,10 @@ surface (`npm run sqlc`, `npm run api`).
   ([#75](https://github.com/aoagents/agent-orchestrator/issues/75),
   [#108](https://github.com/aoagents/agent-orchestrator/issues/108),
   [#109](https://github.com/aoagents/agent-orchestrator/issues/109)).
+- User-opened standalone and session side shells reconnect across daemon and
+  desktop restarts while their runtimes live. Explicit close, confirmed exit,
+  and session/worktree teardown remain cleanup boundaries; new trusted command
+  and authentication terminals remain scoped to their originating app launch.
 - Terminal mux over WebSocket (`/mux`): detached native PTY host for new macOS
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.

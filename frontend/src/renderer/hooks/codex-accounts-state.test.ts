@@ -119,7 +119,7 @@ it("presents every normal phase as the same switch progress with either session 
 	for (const restartRunningSessions of [false, true]) {
 		for (const phase of ["requested", "stopping_sessions", "sessions_stopped", "checkpointing_source", "activating_target", "verifying_target", "restarting_sessions"] as const) {
 			const display = codexSwitchDisplay({
-				id: "switch-in-progress", sourceAccountId: "account-a", targetAccountId: "account-b",
+				id: "switch-in-progress", sourceKind: "managed", sourceAccountId: "account-a", targetAccountId: "account-b",
 				restartRunningSessions, phase, canRecover: false, sessions: [],
 				createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 			} satisfies CodexAccountSwitch);
@@ -128,14 +128,14 @@ it("presents every normal phase as the same switch progress with either session 
 	}
 });
 
-it("shows a simple reconnect recovery only when restarted sessions need attention", () => {
-	const sessions = codexSwitchDisplay({
-		id: "switch-sessions", sourceAccountId: "account-a", targetAccountId: "account-b",
+	it("shows a simple reconnect recovery only when restarted sessions need attention", () => {
+		const sessions = codexSwitchDisplay({
+			id: "switch-sessions", sourceKind: "managed", sourceAccountId: "account-a", targetAccountId: "account-b",
 		restartRunningSessions: true, phase: "recovery_required", failureCode: "restart_unconfirmed", canRecover: true,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
-	} satisfies CodexAccountSwitch);
-	const account = codexSwitchDisplay({
-		id: "switch-account", sourceAccountId: "account-a", targetAccountId: "account-b",
+		} satisfies CodexAccountSwitch);
+		const account = codexSwitchDisplay({
+			id: "switch-account", sourceKind: "managed", sourceAccountId: "account-a", targetAccountId: "account-b",
 		restartRunningSessions: true, phase: "recovery_required", failureCode: "activation_unconfirmed", canRecover: true,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 	} satisfies CodexAccountSwitch);

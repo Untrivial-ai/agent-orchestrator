@@ -133,8 +133,19 @@ var shippedMigrations = map[int64]string{
 	126: "0126_canonical_repository_identity.sql",
 	127: "0127_session_permissions.sql",
 	128: "0128_pr_author_avatar_url.sql",
-	129: "0129_codex_account_switch_restart_policy.sql",
-	130: "0130_codex_switch_source_kind.sql",
+	129: "0129_change_log_retention_index.sql",
+	130: "0130_pr_review_partial.sql",
+	131: "0131_repair_intermediate_pr_review_certainty.sql",
+	132: "0132_conversation_opencode_mode.sql",
+	133: "0133_shell_terminal_lifetime.sql",
+	134: "0134_review_activity_state.sql",
+	135: "0135_review_launch_id.sql",
+	136: "0136_conversation_queued_edit_delivery.sql",
+	137: "0137_conversation_edit_delivery.sql",
+	138: "0138_conversation_edit_dispatch_boundary.sql",
+	139: "0139_conversation_steer_delivery.sql",
+	140: "0140_codex_account_switch_restart_policy.sql",
+	141: "0141_codex_switch_source_kind.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

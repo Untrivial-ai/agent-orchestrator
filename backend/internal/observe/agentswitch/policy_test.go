@@ -72,6 +72,66 @@ func TestHeadlessAuthorityTruthTable(t *testing.T) {
 	}
 }
 
+func TestOpenGateDoesNotResumeConsentGivenWhileGated(t *testing.T) {
+	generation := "7f80c8a9-ec67-4a16-a067-a444ffcc5cca"
+	tests := []struct {
+		name        string
+		record      map[string]any
+		wantEnabled bool
+	}{
+		{name: "version 1 opt-in predates the gate opening", record: map[string]any{
+			"schema_version": 1, "events_enabled": true, "consent_generation": generation, "updated_at": "2026-08-28T10:15:30.000Z",
+		}},
+		{name: "opt-in recorded while gated", record: map[string]any{
+			"schema_version": 2, "events_enabled": true, "consent_generation": generation, "consent_production_enabled": false, "updated_at": "2026-08-28T10:15:30.000Z",
+		}},
+		{name: "opt-in recorded while open", wantEnabled: true, record: map[string]any{
+			"schema_version": 2, "events_enabled": true, "consent_generation": generation, "consent_production_enabled": true, "updated_at": "2026-08-28T10:15:30.000Z",
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), PolicyFileName)
+			writePolicyRecord(t, path, tc.record, 0o600)
+			coordinator := NewPolicyCoordinator(&policyStoreFake{}, PolicyOptions{
+				AuthorityReader: policyauthority.New(path), TelemetryEvents: true, TelemetryEventsExplicit: true,
+				DestinationFingerprint: "destination", ProductionEnabled: boolPtr(true), Metadata: validMetadata(),
+			})
+			if err := coordinator.ForceDisabled(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := coordinator.Synchronize(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := coordinator.Authorization(); got.Enabled != tc.wantEnabled {
+				t.Fatalf("Enabled = %v, want %v", got.Enabled, tc.wantEnabled)
+			}
+			if _, err := coordinator.ApplyPolicy(context.Background(), generation, tc.wantEnabled); errors.Is(err, ErrPolicyHintMismatch) {
+				t.Fatalf("desktop hint %v rejected as a mismatch", tc.wantEnabled)
+			}
+		})
+	}
+}
+
+func TestClosedGateKeepsHonouringTheStoredChoiceAsTheHint(t *testing.T) {
+	generation := "7f80c8a9-ec67-4a16-a067-a444ffcc5cca"
+	path := filepath.Join(t.TempDir(), PolicyFileName)
+	writePolicyRecord(t, path, map[string]any{
+		"schema_version": 2, "events_enabled": true, "consent_generation": generation, "consent_production_enabled": false, "updated_at": "2026-08-28T10:15:30.000Z",
+	}, 0o600)
+	coordinator := NewPolicyCoordinator(&policyStoreFake{}, PolicyOptions{
+		AuthorityReader: policyauthority.New(path), TelemetryEvents: true, TelemetryEventsExplicit: true,
+		DestinationFingerprint: "destination", ProductionEnabled: boolPtr(false), Metadata: validMetadata(),
+	})
+	acknowledgement, err := coordinator.ApplyPolicy(context.Background(), generation, true)
+	if err != nil {
+		t.Fatalf("enabled hint for a gated opt-in = %v", err)
+	}
+	if acknowledgement.Authorization.Enabled || coordinator.Authorization().Enabled {
+		t.Fatal("closed release gate reported events enabled")
+	}
+}
+
 func TestApplyPolicyTreatsBodyAsHintAndCannotForgeEnablement(t *testing.T) {
 	dir := t.TempDir()
 	generation := "7f80c8a9-ec67-4a16-a067-a444ffcc5cca"
@@ -416,12 +476,17 @@ func validMetadata() domain.AgentSwitchEventMetadata {
 func boolPtr(value bool) *bool { return &value }
 func writePolicy(t *testing.T, path string, enabled bool, generation string, mode os.FileMode) {
 	t.Helper()
-	record := map[string]any{
-		"schema_version":     1,
-		"events_enabled":     enabled,
-		"consent_generation": generation,
-		"updated_at":         "2026-08-28T10:15:30.000Z",
-	}
+	writePolicyRecord(t, path, map[string]any{
+		"schema_version":             2,
+		"events_enabled":             enabled,
+		"consent_generation":         generation,
+		"consent_production_enabled": true,
+		"updated_at":                 "2026-08-28T10:15:30.000Z",
+	}, mode)
+}
+
+func writePolicyRecord(t *testing.T, path string, record map[string]any, mode os.FileMode) {
+	t.Helper()
 	raw, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)

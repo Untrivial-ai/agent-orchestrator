@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-func TestMigration0129PreservesHistoricalAccountSwitchRestartBehavior(t *testing.T) {
+func TestMigration0140PreservesHistoricalAccountSwitchRestartBehavior(t *testing.T) {
 	db := openTestDB(t)
-	upTo(t, db, 128)
+	upTo(t, db, 139)
 
 	now := time.Now().UTC().Truncate(time.Second)
 	if _, err := db.Exec(`INSERT INTO codex_account_switches (
@@ -19,7 +19,7 @@ func TestMigration0129PreservesHistoricalAccountSwitchRestartBehavior(t *testing
 		t.Fatalf("seed historical switch: %v", err)
 	}
 
-	upTo(t, db, 129)
+	upTo(t, db, 140)
 
 	var restartRunningSessions bool
 	if err := db.QueryRow(`SELECT restart_running_sessions FROM codex_account_switches WHERE id = ?`, "historical-switch").Scan(&restartRunningSessions); err != nil {

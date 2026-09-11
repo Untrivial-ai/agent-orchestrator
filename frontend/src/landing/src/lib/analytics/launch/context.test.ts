@@ -34,7 +34,7 @@ describe("classifySource", () => {
 		expect(classifySource(undefined, "https://dropbox.com/home")).toBe("other");
 		expect(classifySource(undefined, "https://graph.company/")).toBe("other");
 		// ...while real subdomains still match.
-		expect(classifySource(undefined, "https://news.x.com/aoagents")).toBe("x");
+		expect(classifySource(undefined, "https://news.x.com/ao_build")).toBe("x");
 		expect(classifySource(undefined, "https://api.producthunt.com/")).toBe("product_hunt");
 	});
 

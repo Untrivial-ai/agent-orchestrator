@@ -1,7 +1,7 @@
 import { render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { typeInLexicalEditor } from "../../test/lexical";
 import { TooltipProvider } from "../ui/tooltip";
@@ -20,6 +20,8 @@ import type {
 // that works for a day: every turn re-sends the history, so context fills on its
 // own until the conversation cannot accept another turn. These cover the two halves
 // the user sees — that a compaction happened, and how to cause one.
+
+beforeEach(() => localStorage.clear());
 
 function compaction(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
 	return {

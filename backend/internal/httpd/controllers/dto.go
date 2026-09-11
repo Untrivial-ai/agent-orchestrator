@@ -170,7 +170,16 @@ type WorkspaceFileQuery struct {
 	// against the index. A file can carry independent changes in both. Omit (or
 	// pass committed/untracked) to diff the worktree against the compare base,
 	// as before this field existed.
-	Section string `query:"section,omitempty" enum:"committed,staged,unstaged,untracked" description:"Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base."`
+	Section   string `query:"section,omitempty" enum:"committed,staged,unstaged,untracked" description:"Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base."`
+	CommitSHA string `query:"commitSha,omitempty" description:"Exact commit SHA to read as an immutable committed-scope snapshot."`
+}
+
+// UpdateWorkspaceFileRequest replaces an existing text file after verifying
+// that the viewer's source snapshot is still current.
+type UpdateWorkspaceFileRequest struct {
+	Path                    string `json:"path"`
+	Content                 string `json:"content"`
+	ExpectedFileFingerprint string `json:"expectedFileFingerprint"`
 }
 
 // WorkspaceFileBlobQuery is the query string accepted by GET /api/v1/sessions/{sessionId}/workspace/file/blob.
@@ -181,6 +190,23 @@ type WorkspaceFileBlobQuery struct {
 	Path string `query:"path" required:"true" description:"Session-worktree-relative file path."`
 	Side string `query:"side,omitempty" enum:"before,after" description:"Which revision to read: the compare base (before) or the session worktree (after). Defaults to after."`
 	V    string `query:"v,omitempty" description:"Cache-busting token. Ignored by the server; the response is never cached."`
+}
+
+// WorkspaceFileRevisionQuery selects one text-capable comparison side.
+type WorkspaceFileRevisionQuery struct {
+	Path             string `query:"path" required:"true" description:"Session-worktree-relative file path."`
+	Scope            string `query:"scope,omitempty" enum:"combined,committed,staged,unstaged,untracked" description:"Comparison scope. Defaults to combined."`
+	Side             string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
+	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
+	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
+	CommitSHA        string `query:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
+}
+
+// WorkspaceSearchQuery is the query string accepted by the workspace path search.
+type WorkspaceSearchQuery struct {
+	Query  string `query:"query" required:"true" description:"Case-insensitive path substring."`
+	Cursor string `query:"cursor,omitempty" description:"Opaque pagination cursor returned by the previous page."`
+	Limit  int    `query:"limit,omitempty" minimum:"1" maximum:"100" description:"Maximum results. Defaults to 50."`
 }
 
 // WorkspaceTreeQuery is the query string accepted by GET /api/v1/sessions/{sessionId}/workspace/tree.
@@ -374,17 +400,18 @@ type StageSessionAttachmentsResponse struct {
 
 // ListWorkspaceFilesResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/files.
 type ListWorkspaceFilesResponse struct {
-	SessionID      domain.SessionID                `json:"sessionId"`
-	CompareBaseSHA string                          `json:"compareBaseSha,omitempty"`
-	CompareBaseRef string                          `json:"compareBaseRef,omitempty"`
-	CompareMode    sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
-	Files          []WorkspaceFileSummary          `json:"files"`
-	Truncated      bool                            `json:"truncated"`
+	SessionID        domain.SessionID                `json:"sessionId"`
+	WorkspaceVersion string                          `json:"workspaceVersion"`
+	CompareBaseSHA   string                          `json:"compareBaseSha,omitempty"`
+	CompareBaseRef   string                          `json:"compareBaseRef,omitempty"`
+	CompareMode      sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
+	Files            []WorkspaceFileSummary          `json:"files"`
+	Truncated        bool                            `json:"truncated"`
 	// Sections groups the same working tree into git-state sections. Only
 	// populated for single-repo sessions; empty for workspace-project
 	// (multi-repo) and scratch sessions.
 	Sections WorkspaceFileSections `json:"sections"`
-	// Commits are the commits between the compare base and HEAD, oldest first.
+	// Commits are the commits between the compare base and HEAD, newest first.
 	Commits []WorkspaceCommitSummary `json:"commits"`
 	Summary WorkspaceSummary         `json:"summary"`
 	// Ahead and Behind are omitted when no push/pull data is available (no
@@ -406,10 +433,11 @@ type WorkspaceFileSections struct {
 
 // WorkspaceCommitSummary is one commit between the compare base and HEAD.
 type WorkspaceCommitSummary struct {
-	SHA       string    `json:"sha"`
-	Subject   string    `json:"subject"`
-	Author    string    `json:"author"`
-	Timestamp time.Time `json:"timestamp"`
+	SHA       string                 `json:"sha"`
+	Subject   string                 `json:"subject"`
+	Author    string                 `json:"author"`
+	Timestamp time.Time              `json:"timestamp"`
+	Files     []WorkspaceFileSummary `json:"files"`
 }
 
 // WorkspaceSummary aggregates a session workspace's base..worktree diff into
@@ -422,13 +450,15 @@ type WorkspaceSummary struct {
 
 // WorkspaceFileSummary is one file row in the session workspace browser.
 type WorkspaceFileSummary struct {
-	Path         string                         `json:"path"`
-	PreviousPath string                         `json:"previousPath,omitempty"`
-	Status       sessionsvc.WorkspaceFileStatus `json:"status" enum:"unmodified,modified,added,deleted,renamed"`
-	Additions    int                            `json:"additions"`
-	Deletions    int                            `json:"deletions"`
-	Size         int64                          `json:"size"`
-	Binary       bool                           `json:"binary"`
+	Path            string                         `json:"path"`
+	PreviousPath    string                         `json:"previousPath,omitempty"`
+	Status          sessionsvc.WorkspaceFileStatus `json:"status" enum:"unmodified,modified,added,deleted,renamed"`
+	Additions       int                            `json:"additions"`
+	Deletions       int                            `json:"deletions"`
+	Size            int64                          `json:"size"`
+	Binary          bool                           `json:"binary"`
+	Editable        bool                           `json:"editable"`
+	FileFingerprint string                         `json:"fileFingerprint"`
 }
 
 // WorkspaceFileResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/file.
@@ -442,6 +472,7 @@ type WorkspaceFileResponse struct {
 	Size             int64                           `json:"size"`
 	Binary           bool                            `json:"binary"`
 	Deleted          bool                            `json:"deleted"`
+	Editable         bool                            `json:"editable"`
 	ImageMediaType   string                          `json:"imageMediaType,omitempty"`
 	Content          string                          `json:"content"`
 	ContentTruncated bool                            `json:"contentTruncated"`
@@ -450,6 +481,81 @@ type WorkspaceFileResponse struct {
 	CompareBaseSHA   string                          `json:"compareBaseSha,omitempty"`
 	CompareBaseRef   string                          `json:"compareBaseRef,omitempty"`
 	CompareMode      sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
+	WorkspaceVersion string                          `json:"workspaceVersion"`
+	FileFingerprint  string                          `json:"fileFingerprint"`
+}
+
+// WorkspaceDiffRequest requests renderer-independent unified patches.
+type WorkspaceDiffRequest struct {
+	Scope            string   `json:"scope" enum:"combined,committed,staged,unstaged,untracked"`
+	Paths            []string `json:"paths" minItems:"1" maxItems:"100"`
+	ContextLines     int      `json:"contextLines" minimum:"0" maximum:"20"`
+	IgnoreWhitespace bool     `json:"ignoreWhitespace"`
+	WorkspaceVersion string   `json:"workspaceVersion,omitempty"`
+	CommitSHA        string   `json:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
+}
+
+// WorkspaceDiffDeferredResponse describes a file omitted from an initial patch.
+type WorkspaceDiffDeferredResponse struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason" enum:"binary,oversized,generated,long_line,budget_exceeded"`
+}
+
+// WorkspaceDiffGroupResponse is one repository-local grouped patch.
+type WorkspaceDiffGroupResponse struct {
+	Repository    string                          `json:"repository,omitempty"`
+	Patch         string                          `json:"patch"`
+	Truncated     bool                            `json:"truncated"`
+	IncludedPaths []string                        `json:"includedPaths"`
+	Deferred      []WorkspaceDiffDeferredResponse `json:"deferred"`
+	Errors        []WorkspaceDiffErrorResponse    `json:"errors"`
+}
+
+// WorkspaceDiffErrorResponse is a redacted repository-local patch failure.
+type WorkspaceDiffErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// WorkspaceDiffsResponse returns renderer-independent patches for one snapshot.
+type WorkspaceDiffsResponse struct {
+	SessionID        domain.SessionID             `json:"sessionId"`
+	WorkspaceVersion string                       `json:"workspaceVersion"`
+	Groups           []WorkspaceDiffGroupResponse `json:"groups"`
+}
+
+// WorkspaceFileRevisionResponse returns one bounded side of a file comparison.
+type WorkspaceFileRevisionResponse struct {
+	SessionID        domain.SessionID                 `json:"sessionId"`
+	Path             string                           `json:"path"`
+	Side             sessionsvc.WorkspaceFileBlobSide `json:"side" enum:"before,after"`
+	Revision         string                           `json:"revision,omitempty"`
+	WorkspaceVersion string                           `json:"workspaceVersion"`
+	MediaType        string                           `json:"mediaType,omitempty"`
+	Encoding         string                           `json:"encoding,omitempty"`
+	Size             int64                            `json:"size"`
+	Exists           bool                             `json:"exists"`
+	Binary           bool                             `json:"binary"`
+	Truncated        bool                             `json:"truncated"`
+	Content          string                           `json:"content"`
+}
+
+// WorkspaceFileSearchResultResponse is one path search match.
+type WorkspaceFileSearchResultResponse struct {
+	Path            string                         `json:"path"`
+	Status          sessionsvc.WorkspaceFileStatus `json:"status" enum:"unmodified,modified,added,deleted,renamed"`
+	Size            int64                          `json:"size"`
+	Binary          bool                           `json:"binary"`
+	FileFingerprint string                         `json:"fileFingerprint"`
+}
+
+// WorkspaceFileSearchResponse is a bounded page of workspace path matches.
+type WorkspaceFileSearchResponse struct {
+	SessionID  domain.SessionID                    `json:"sessionId"`
+	Query      string                              `json:"query"`
+	Results    []WorkspaceFileSearchResultResponse `json:"results"`
+	NextCursor string                              `json:"nextCursor,omitempty"`
+	Truncated  bool                                `json:"truncated"`
 }
 
 // DesktopWorkspaceLocationResponse is returned only by the LAN-blocked desktop
@@ -475,7 +581,7 @@ type RenameSessionRequest struct {
 // SetSessionReviewerRequest sets the durable reviewer preference for a session.
 // Empty clears the preference and falls back to project configuration.
 type SetSessionReviewerRequest struct {
-	Harness     domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	Harness     domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig domain.AgentConfig     `json:"agentConfig,omitempty"`
 }
 
@@ -833,6 +939,7 @@ type SessionPRFailingCheck struct {
 type SessionPRReviewSummary struct {
 	Decision                   domain.ReviewDecision         `json:"decision" enum:"none,approved,changes_requested,review_required"`
 	HasUnresolvedHumanComments bool                          `json:"hasUnresolvedHumanComments"`
+	UnresolvedThreadCount      *int                          `json:"unresolvedThreadCount,omitempty"`
 	UnresolvedBy               []SessionPRUnresolvedReviewer `json:"unresolvedBy"`
 	ResolvedBy                 []SessionPRUnresolvedReviewer `json:"resolvedBy,omitempty"`
 	Reviews                    []SessionPRReviewEntry        `json:"reviews,omitempty"`
@@ -949,7 +1056,14 @@ func newSessionPRReviewSummary(in sessionsvc.PRReviewSummary) SessionPRReviewSum
 			AutoInjectReview: review.AutoInjectReview,
 		})
 	}
-	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedBy: reviewers, ResolvedBy: resolvedReviewers, Reviews: entries}
+	return SessionPRReviewSummary{
+		Decision:                   in.Decision,
+		HasUnresolvedHumanComments: in.HasUnresolvedHumanComments,
+		UnresolvedThreadCount:      in.UnresolvedThreadCount,
+		UnresolvedBy:               reviewers,
+		ResolvedBy:                 resolvedReviewers,
+		Reviews:                    entries,
+	}
 }
 
 func newSessionPRCommentReviewers(in []sessionsvc.PRUnresolvedReviewer) []SessionPRUnresolvedReviewer {
@@ -1028,11 +1142,11 @@ type SetActivityResponse struct {
 }
 
 // SetReviewActivityRequest is the body of POST /api/v1/reviews/{reviewSessionID}/activity.
-// Reviewer activity does not currently feed worker/Kanban session state.
 // AgentSessionID is the native reviewer conversation id used for reviewer
-// restore.
+// restore. State is used for reviewer-pane live review presentation only; it
+// does not mutate the worker session lifecycle row.
 type SetReviewActivityRequest struct {
-	State          string `json:"state,omitempty" enum:"active,idle,waiting_input,blocked,exited" description:"Reviewer activity state reported by a hook. Accepted for forward compatibility, not used for session display state."`
+	State          string `json:"state,omitempty" enum:"active,idle,waiting_input,blocked,exited" description:"Reviewer activity state reported by a hook. Used for reviewer-pane live status, not worker session state."`
 	Event          string `json:"event,omitempty" description:"AO hook sub-command that produced this signal."`
 	AgentSessionID string `json:"agentSessionId,omitempty" description:"Native reviewer session identifier used to resume its transcript."`
 	LaunchID       string `json:"launchId,omitempty" description:"AO process generation that produced the signal."`
@@ -1755,8 +1869,10 @@ type ConversationImageContentRequest struct {
 // EditQueuedConversationMessageRequest changes an undispatched prompt. Omitted
 // retainedContent preserves the stored blocks; an empty list removes attachments.
 type EditQueuedConversationMessageRequest struct {
-	Text        string                            `json:"text"`
-	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
+	// Stable retry key for this exact edit, including its attachments.
+	ClientMessageID string                            `json:"clientMessageId,omitempty"`
+	Text            string                            `json:"text"`
+	Attachments     []ConversationImageContentRequest `json:"attachments,omitempty"`
 	// Indices in the message's public content summary, in their original order.
 	RetainedContent *[]int `json:"retainedContent,omitempty"`
 	// Reject a stale editor before interpreting attachment indices.
@@ -1792,10 +1908,13 @@ type SteerConversationRequest struct {
 	Text string `json:"text"`
 	// Attachments are native image prompt blocks delivered with the correction.
 	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
-	// ClientMessageID makes a retry idempotent: the same handle updates the recorded
-	// guidance instead of adding a second copy of it, and the provider echoes it back
-	// on the item it replays so a client can recognize its own steer.
+	// ClientMessageID makes a retry idempotent at AO's durable daemon boundary. The
+	// provider does not promise to honor this handle, so AO reserves it before I/O
+	// and replays only a known result on every later request.
 	ClientMessageID string `json:"clientMessageId,omitempty"`
+	// RecoverOnly reads the saved result for ClientMessageID without contacting the
+	// provider. Native image bytes need not be resent after a renderer restart.
+	RecoverOnly bool `json:"recoverOnly,omitempty"`
 }
 
 // SteerConversationResponse reports the turn the guidance joined.
@@ -2407,7 +2526,7 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // it for this pass only, without editing project config, so one session's choice
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
-	Harness     domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	Harness     domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig domain.AgentConfig     `json:"agentConfig,omitempty"`
 }
 

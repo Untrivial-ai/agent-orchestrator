@@ -1090,8 +1090,13 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(await screen.findByRole("option", { name: "acme" }));
 		const privateRepository = screen.getByRole("switch", { name: "Private repository" });
 		expect(privateRepository).toBeChecked();
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
 		await user.click(privateRepository);
 		expect(privateRepository).not.toBeChecked();
+		expect(screen.getByRole("switch", { name: "Public repository" })).toBe(privateRepository);
+		expect(screen.getByText("Public repository")).toBeInTheDocument();
+		expect(screen.getByText("Anyone on the internet can see this repo")).toBeInTheDocument();
 			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
 			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
@@ -1111,6 +1116,44 @@ describe("CreateProjectFlow project import validation", () => {
 		const sheet = await screen.findByTestId("agent-sheet");
 		expect(sheet).toHaveAttribute("data-path", "/repo/project");
 		expect(screen.queryByText("Prepare project")).not.toBeInTheDocument();
+	});
+
+	it("updates visibility toggle label, helper text, and accessible name dynamically when toggled", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/project", {
+				nextStep: "prepare_git",
+				root: { hasOrigin: false, requiredActions: ["create_remote_repository"] },
+			}),
+		});
+
+		renderChooseFlow();
+
+		await openSource(user, "Import an existing project");
+		const ownerInput = await screen.findByLabelText("Owner");
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+
+		// Default state is ON (Private repository)
+		const toggle = screen.getByRole("switch", { name: "Private repository" });
+		expect(toggle).toBeChecked();
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
+
+		// Toggle to OFF (Public repository)
+		await user.click(toggle);
+		expect(toggle).not.toBeChecked();
+		expect(screen.getByRole("switch", { name: "Public repository" })).toBe(toggle);
+		expect(screen.getByText("Public repository")).toBeInTheDocument();
+		expect(screen.getByText("Anyone on the internet can see this repo")).toBeInTheDocument();
+
+		// Toggle back to ON (Private repository)
+		await user.click(toggle);
+		expect(toggle).toBeChecked();
+		expect(screen.getByRole("switch", { name: "Private repository" })).toBe(toggle);
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
 	});
 
 	it("blocks an unavailable GitHub repository before Git preparation", async () => {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +19,10 @@ import (
 // worktree add, tmux launch, hook install), so it is generous compared to the
 // status probe timeout.
 const commandTimeout = 2 * time.Minute
+
+// maxDrainedBodyBytes bounds how much of an unused response body the CLI
+// discards for keep-alive reuse without an unbounded read.
+const maxDrainedBodyBytes = 4 << 10
 
 // apiError is the subset of the daemon's JSON error envelope the CLI surfaces.
 // RequestID is surfaced so a failed command can be correlated with daemon logs.
@@ -164,13 +169,51 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		_ = json.NewDecoder(resp.Body).Decode(&e)
 		return apiResponseError{StatusCode: resp.StatusCode, ErrorBody: e}
 	}
-	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if out == nil {
+		// Explicitly bodyless call (telemetry/activity hooks, fire-and-forget
+		// posts). Drain only a bounded remainder so the connection can be
+		// reused without an unbounded read.
+		_, _ = io.CopyN(io.Discard, resp.Body, maxDrainedBodyBytes)
+		return nil
+	}
+	// A 204 carries no body by contract; a zero-value out is the legitimate
+	// result. Any other 2xx with a required decoded result must carry a
+	// JSON document — an empty body is a broken contract, not success.
+	if resp.StatusCode == http.StatusNoContent {
+		_, _ = io.CopyN(io.Discard, resp.Body, maxDrainedBodyBytes)
+		return nil
+	}
+	// Peek at the first non-whitespace byte before decoding: an empty body
+	// surfaces as io.EOF, but a literal JSON null decodes successfully into
+	// a zero value. Both are a broken contract for a required result, so
+	// both are rejected here rather than silently succeeding.
+	br := bufio.NewReader(resp.Body)
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil
+				return fmt.Errorf("decode response: missing required response body (HTTP %d %s %s): %w", resp.StatusCode, method, path, err)
 			}
 			return fmt.Errorf("decode response: %w", err)
 		}
+		if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		if b == 'n' {
+			if rest, err := br.Peek(3); err == nil && string(rest) == "ull" {
+				return fmt.Errorf("decode response: missing required response body (HTTP %d %s %s): null response body", resp.StatusCode, method, path)
+			}
+		}
+		if err := br.UnreadByte(); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+		break
+	}
+	if err := json.NewDecoder(br).Decode(out); err != nil {
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("decode response: missing required response body (HTTP %d %s %s): %w", resp.StatusCode, method, path, err)
+		}
+		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
 }
