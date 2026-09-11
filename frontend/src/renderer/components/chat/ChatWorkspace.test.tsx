@@ -3327,7 +3327,9 @@ describe("durable queued edits", () => {
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
 		expect(save.mock.calls[1]).toEqual(save.mock.calls[0]);
 		expect(send).not.toHaveBeenCalled();
+		const pending = readChatSessionDraft(snapshot.sessionId).queuedEdit;
+		expect(pending?.clientMessageId).toBeTruthy();
 		fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Escape" });
-		await waitFor(() => expect(readChatSessionDraft(snapshot.sessionId).queuedEdit).toBeUndefined());
+		expect(readChatSessionDraft(snapshot.sessionId).queuedEdit).toEqual(pending);
 	});
 });
