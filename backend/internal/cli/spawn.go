@@ -17,7 +17,7 @@ import (
 
 // maxDisplayNameLen caps the sidebar label set by `--name`. Mirrored by the
 // daemon's spawn handler so a direct API call is held to the same limit.
-const maxDisplayNameLen = 20
+const maxDisplayNameLen = 100
 
 type spawnOptions struct {
 	project         string
@@ -199,7 +199,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
 	f.StringVar(&opts.trackerProvider, "tracker-provider", "github", "Issue tracker provider: github or gitlab (default: github)")
-	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")
+	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 100 characters)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Immediately claim an existing PR for the spawned session")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")

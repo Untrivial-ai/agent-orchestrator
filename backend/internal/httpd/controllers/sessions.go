@@ -39,7 +39,7 @@ const (
 	maxPromptLen      = 16 << 10
 	maxMessageLen     = 4096
 	maxModelLen       = 256
-	maxDisplayNameLen = 20
+	maxDisplayNameLen = 100
 	maxIdempotencyKey = 128
 
 	// Agent-authored handoffs are deliberately bounded. Deterministic AO
@@ -265,7 +265,7 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	// a direct API call cannot exceed it.
 	displayName := strings.TrimSpace(in.DisplayName)
 	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_TOO_LONG", "displayName must be 20 characters or fewer", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_TOO_LONG", fmt.Sprintf("displayName must be %d characters or fewer", maxDisplayNameLen), nil)
 		return
 	}
 	if in.Kind == "" {
@@ -987,6 +987,10 @@ func (c *SessionsController) rename(w http.ResponseWriter, r *http.Request) {
 	displayName := strings.TrimSpace(in.DisplayName)
 	if displayName == "" {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_REQUIRED", "displayName is required", nil)
+		return
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_TOO_LONG", fmt.Sprintf("displayName must be %d characters or fewer", maxDisplayNameLen), nil)
 		return
 	}
 	if err := c.Svc.Rename(r.Context(), sessionID(r), displayName); err != nil {

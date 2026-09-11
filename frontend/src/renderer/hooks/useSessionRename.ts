@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { renameSession } from "../lib/rename-session";
 import type { WorkspaceSession } from "../types/workspace";
 
-export const MAX_SESSION_DISPLAY_NAME_LEN = 20;
+export const MAX_SESSION_DISPLAY_NAME_LEN = 100;
 
 type RenameableSession = Pick<WorkspaceSession, "id" | "title">;
 
