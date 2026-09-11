@@ -693,7 +693,9 @@ describe("SessionView", () => {
 				id: "switch-1",
 				sourceAccountId: "account-a",
 				targetAccountId: "account-b",
+				restartRunningSessions: true,
 				phase: "recovery_required",
+				failureCode: "restart_unconfirmed",
 				canRecover: true,
 				sessions: [{
 					sessionId: "sess-1",
@@ -710,10 +712,33 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		const retry = screen.getByRole("button", { name: "Retry recovery" });
+		const retry = screen.getByRole("button", { name: "Reconnect sessions" });
+		expect(screen.getByText("Account switched. Some sessions couldn't reconnect.")).toBeInTheDocument();
 		expect(retry).toBeEnabled();
 		await userEvent.click(retry);
 		expect(recoverCodexAccountSwitchMock).toHaveBeenCalledWith("switch-1");
+	});
+
+	it("does not block a running session when session restart is off", () => {
+		const session = workerSession("sess-1");
+		session.provider = "codex";
+		codexAccountsQueryState.data = {
+			currentSwitch: {
+				id: "switch-1",
+				sourceAccountId: "account-a",
+				targetAccountId: "account-b",
+				restartRunningSessions: false,
+				phase: "activating_target",
+				canRecover: false,
+				sessions: [],
+				createdAt: "2026-09-02T00:00:00Z",
+				updatedAt: "2026-09-02T00:01:00Z",
+			},
+		};
+
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(screen.queryByTestId("codex-account-switch-blocker")).not.toBeInTheDocument();
 	});
 
 	// Regression: shell terminals are an app-wide list, so without a per-session

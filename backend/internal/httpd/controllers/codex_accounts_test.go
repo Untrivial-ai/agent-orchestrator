@@ -83,7 +83,9 @@ func (f *fakeCodexAccounts) CancelCodexAccountLogin(_ context.Context, id string
 }
 func (f *fakeCodexAccounts) StartCodexAccountSwitch(_ context.Context, cfg ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
 	f.switchConfig = cfg
-	return f.switchResult, f.switchErr
+	result := f.switchResult
+	result.RestartRunningSessions = cfg.RestartRunningSessions
+	return result, f.switchErr
 }
 func (f *fakeCodexAccounts) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
 	return f.switchResult, nil
@@ -361,13 +363,18 @@ func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testi
 	}
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"request-key"}`)
 	text := string(body)
-	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" || !strings.Contains(text, `"sessionId":"ao-1"`) {
+	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" || fake.switchConfig.RestartRunningSessions ||
+		!strings.Contains(text, `"restartRunningSessions":false`) || !strings.Contains(text, `"sessionId":"ao-1"`) {
 		t.Fatalf("switch status=%d config=%#v body=%s", status, fake.switchConfig, body)
 	}
 	for _, forbidden := range []string{"native-secret", "source-handle-secret", "generation-secret", "reviewer-handle-secret", "reviewer-native-secret", "private-key", "private-fingerprint"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("switch leaked %q: %s", forbidden, body)
 		}
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"restart-key","restartRunningSessions":true}`)
+	if status != http.StatusAccepted || !fake.switchConfig.RestartRunningSessions || !strings.Contains(string(body), `"restartRunningSessions":true`) {
+		t.Fatalf("restart-enabled switch status=%d config=%#v body=%s", status, fake.switchConfig, body)
 	}
 }
 

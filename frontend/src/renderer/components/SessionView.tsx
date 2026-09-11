@@ -521,6 +521,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const codexAccountSwitchBlocksSession = Boolean(
 		session?.provider === "codex" &&
 			codexAccountSwitch &&
+			codexAccountSwitch.restartRunningSessions &&
 			!["completed", "failed"].includes(codexAccountSwitch.phase) &&
 			(codexAccountSwitch.sessions.length === 0 ||
 				codexAccountSwitch.sessions.some((entry) => entry.sessionId === session.id)),
@@ -1463,13 +1464,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				>
 					<div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-border bg-card px-6 py-5 text-center shadow-lg">
 						<div aria-live="assertive" className="flex flex-col items-center gap-3" role="status">
-							{codexAccountSwitchPresentation?.busy ? <LoaderCircle className="size-5 animate-spin text-passive" aria-label={t(codexAccountSwitchPresentation.key)} /> : null}
+							{codexAccountSwitchPresentation?.busy ? <LoaderCircle className="size-5 animate-spin text-passive" aria-label={t("settings.codexAccounts.switchingSessions")} /> : null}
 							<p className="text-sm font-medium">
 								{codexAccountSwitchPresentation?.canRecover
 									? t(codexAccountSwitchPresentation.key)
 									: t("settings.codexAccounts.switchingSessions")}
 							</p>
-							{codexAccountSwitchPresentation && !codexAccountSwitchPresentation.canRecover ? <p className="text-xs text-passive">{t(codexAccountSwitchPresentation.key)}</p> : null}
 						</div>
 						{codexAccountSwitchPresentation?.canRecover && codexAccountSwitch ? (
 							<Button
@@ -1480,7 +1480,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								onClick={() => void codexAccountActions.recoverSwitch(codexAccountSwitch.id)}
 							>
 								{codexAccountActions.recoverPending ? <LoaderCircle className="animate-spin" aria-label={t("settings.codexAccounts.recovering")} /> : null}
-								{t("settings.codexAccounts.retryRecovery")}
+								{t(codexAccountSwitchPresentation.recoveryKind === "sessions" ? "settings.codexAccounts.reconnectSessions" : "settings.codexAccounts.retryRecovery")}
 							</Button>
 						) : null}
 						{codexAccountActions.error ? <p className="text-xs text-error" role="alert">{codexAccountActions.error}</p> : null}

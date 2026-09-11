@@ -2702,6 +2702,7 @@ export interface components {
             id: string;
             /** @enum {string} */
             phase: "requested" | "stopping_sessions" | "sessions_stopped" | "checkpointing_source" | "activating_target" | "verifying_target" | "restarting_sessions" | "rollback_required" | "recovery_required" | "completed" | "failed";
+            restartRunningSessions: boolean;
             sessions: components["schemas"]["CodexAccountSwitchSessionResponse"][];
             sourceAccountId: string;
             targetAccountId: string;
@@ -4155,6 +4156,7 @@ export interface components {
             /** Format: int64 */
             expectedAccountRevision: number;
             idempotencyKey: string;
+            restartRunningSessions?: boolean;
             targetAccountId: string;
         };
         StartPreviewServerRequest: {
