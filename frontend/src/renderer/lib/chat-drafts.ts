@@ -785,7 +785,10 @@ function isChatSessionDraft(value: unknown, scope: ChatDraftScope): value is Cha
 
 type DraftReadResult = { ok: true; draft: ChatSessionDraft } | { ok: false; draft: ChatSessionDraft };
 
-function loadChatSessionDraft(scopeInput: ChatDraftScopeInput, storage: DraftStorage | undefined): DraftReadResult {
+export function loadChatSessionDraft(
+	scopeInput: ChatDraftScopeInput,
+	storage: DraftStorage | undefined = rendererStorage(),
+): DraftReadResult {
 	const scope = normalizeScope(scopeInput);
 	const empty = emptyDraft(scope);
 	if (!scope.sessionId || !scope.incarnation || !storage) return { ok: false, draft: empty };
