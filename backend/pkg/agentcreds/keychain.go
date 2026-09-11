@@ -72,7 +72,9 @@ func readKeychain(ctx context.Context, opts ResolveOptions) (string, Kind, bool)
 	}
 
 	// Fall through to "Claude Code", the service Claude Code v2.1.268+ uses
-	// for the /login managed key. The value is a raw sk-ant-api* key.
+	// for the /login managed key. The value is a raw sk-ant-api* key, though
+	// a setup token (sk-ant-oat*) could also land here, so the Kind is
+	// chosen by prefix rather than assumed.
 	apiKeyOut, apiKeyErr := runner(probeCtx, "security",
 		"find-generic-password", "-s", keychainServiceManagedKey, "-w")
 	if probeCtx.Err() != nil {
@@ -82,12 +84,23 @@ func readKeychain(ctx context.Context, opts ResolveOptions) (string, Kind, bool)
 		return "", "", false
 	}
 	if raw := strings.TrimSpace(lastNonEmptyLine(string(apiKeyOut))); raw != "" && !strings.HasPrefix(raw, "{") {
-		return raw, KindAPIKey, true
+		return raw, kindForToken(raw), true
 	}
 	if token, ok := oauthTokenFromCredentialsJSON([]byte(apiKeyOut)); ok {
 		return token, KindOAuthToken, true
 	}
 	return "", "", false
+}
+
+// kindForToken selects the auth header from the token prefix. Claude Code
+// console keys are sk-ant-api* (x-api-key); setup tokens and subscription
+// logins are sk-ant-oat* (Bearer). Anything unrecognised defaults to API key
+// so the probe still runs rather than silently skipping a credential.
+func kindForToken(token string) Kind {
+	if strings.HasPrefix(strings.TrimSpace(token), "sk-ant-oat") {
+		return KindOAuthToken
+	}
+	return KindAPIKey
 }
 
 func keychainExitCode(err error) int {

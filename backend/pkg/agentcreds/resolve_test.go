@@ -203,6 +203,38 @@ func TestKeychainEmptyCredentialsFallsThroughToManagedKey(t *testing.T) {
 	}
 }
 
+// A setup token (sk-ant-oat*) stored under the "Claude Code" keychain service
+// must be classified as KindOAuthToken so the probe sends Bearer, not
+// x-api-key. Sending it under x-api-key would be rejected as an invalid API
+// key even though the credential is valid.
+func TestKeychainSetupTokenFromClassifiedAsOAuth(t *testing.T) {
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: t.TempDir(), GOOS: "darwin", AllowKeychain: true,
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch {
+			case len(args) >= 3 && args[2] == "Claude Code-credentials":
+				return []byte("{}"), nil
+			case len(args) >= 3 && args[2] == "Claude Code":
+				return []byte("sk-ant-oat01-setup-token"), nil
+			default:
+				return nil, errors.New("security: item not found")
+			}
+		},
+	})
+	if !ok {
+		t.Fatal("expected the setup token to resolve")
+	}
+	if cred.Kind != KindOAuthToken {
+		t.Fatalf("kind = %q, want %q", cred.Kind, KindOAuthToken)
+	}
+	if cred.Source != "keychain" {
+		t.Fatalf("source = %q, want keychain", cred.Source)
+	}
+	if cred.Secret != "sk-ant-oat01-setup-token" {
+		t.Fatalf("secret = %q", cred.Secret)
+	}
+}
+
 // Non-Mac platforms must never invoke the keychain helper at all.
 func TestKeychainIsMacOnly(t *testing.T) {
 	for _, goos := range []string{"linux", "windows"} {
