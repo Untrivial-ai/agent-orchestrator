@@ -13,12 +13,6 @@ import {
 	settingsDialogHeaderClass,
 } from "./ui/dialog";
 
-/**
- * Asks again for an opt-in given while the release gate was closed, once a
- * release has opened it. Both answers carry equal weight: this is a consent
- * decision, so neither is styled as the one to pick. Closing without choosing
- * is not an answer, so it asks again on the next launch.
- */
 export function TelemetryConsentRenewalDialog() {
 	const view = useTelemetryPolicyStore((state) => state.view);
 	const [dismissed, setDismissed] = useState(false);

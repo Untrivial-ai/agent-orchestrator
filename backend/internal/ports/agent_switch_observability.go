@@ -10,11 +10,9 @@ import (
 // AgentSwitchFailureAuthoritySnapshot is the validated, provider-neutral
 // telemetry authority read by the filesystem adapter.
 type AgentSwitchFailureAuthoritySnapshot struct {
-	Present           bool
-	EventsEnabled     bool
-	ConsentGeneration string
-	// ConsentProductionEnabled reports whether the release gate was open when
-	// the stored choice was written. Version 1 records predate it and read false.
+	Present                  bool
+	EventsEnabled            bool
+	ConsentGeneration        string
 	ConsentProductionEnabled bool
 }
 

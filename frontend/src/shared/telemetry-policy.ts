@@ -13,7 +13,6 @@ export type TelemetryPolicySnapshot = {
 	consentGeneration: string;
 	updatedAt: string;
 	acknowledged: boolean;
-	/** The stored opt-in was given while the release gate was closed and the gate is now open. */
 	consentRenewalRequired: boolean;
 };
 
@@ -82,7 +81,6 @@ export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyPars
 		schema_version: 2,
 		events_enabled: record.events_enabled,
 		consent_generation: record.consent_generation,
-		// Every version 1 record was written before the release gate ever opened.
 		consent_production_enabled: record.schema_version === 2 ? record.consent_production_enabled as boolean : false,
 		updated_at: record.updated_at,
 	} };
@@ -93,11 +91,6 @@ function isCanonicalTimestamp(value: string): boolean {
 	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-/**
- * An opt-in given while the release gate was closed is not carried into a
- * release that opens it: the user agreed while reporting read as disabled.
- * The daemon applies the same rule (agentswitch readAuthority).
- */
 export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, acknowledged: boolean, productionEnabled: boolean): TelemetryPolicySnapshot {
 	return {
 		eventsEnabled: record.events_enabled && (!productionEnabled || record.consent_production_enabled),
@@ -108,11 +101,6 @@ export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, ackno
 	};
 }
 
-/**
- * Whether an unsettled policy can still be advanced by retrying. Keyed on
- * durabilitySupported rather than reason: reason is rewritten by the
- * controller's catch and by failClosedTelemetryPolicyView (main.ts).
- */
 export function telemetryPolicyRetryable(view: TelemetryPolicyView): boolean {
 	return view.state !== "applied" && view.durabilitySupported;
 }

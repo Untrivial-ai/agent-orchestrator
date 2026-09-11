@@ -202,7 +202,6 @@ describe("DesktopTelemetryController", () => {
 
 	it("settles a saved opt-in in one request when the release gate refuses enablement", async () => {
 		const authority = new AuthorityFake(true, "generation-on");
-		// The real client: the defect lived in its acknowledgement validation.
 		const fetcher = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => new Response(JSON.stringify({
 			status: "applied",
 			consentGeneration: JSON.parse(String(init.body)).consentGeneration,
@@ -225,8 +224,6 @@ describe("DesktopTelemetryController", () => {
 	});
 
 	it("stays terminal on a platform without durable policy replacement", async () => {
-		// win32: load() returns before touching disk, so initialize() never calls
-		// the daemon and the reason must survive the retry (#5196).
 		const authority = new TelemetryPolicyAuthority({
 			dataDir: path.join(os.tmpdir(), "ao-controller-win32-unused"),
 			packagedDefault: false,
@@ -361,7 +358,6 @@ describe("DesktopTelemetryController", () => {
 		expect(telemetryPolicyRetryable(controller.snapshot())).toBe(true);
 		attempts.length = 0;
 
-		// An hour of the 1s tick main.ts drives this with.
 		for (clock = 1_000; clock <= 3_600_000; clock += 1_000) await controller.retryPendingCleanup();
 
 		expect(attempts.slice(0, 6)).toEqual([1_000, 3_000, 7_000, 15_000, 31_000, 63_000]);

@@ -2586,9 +2586,6 @@ app.whenReady().then(async () => {
 	telemetryPolicyController = policyController;
 	try { await policyController.initialize(); }
 	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	// Only retry what a retry can actually fix. A permanently restricted policy
-	// (no durable policy replacement on this platform) is terminal; retrying it
-	// re-POSTed apply-policy once a second for the life of the process (#5196).
 	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and

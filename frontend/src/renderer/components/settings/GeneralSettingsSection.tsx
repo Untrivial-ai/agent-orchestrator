@@ -257,8 +257,6 @@ function TelemetryEventsRow() {
 	const setEnabled = useTelemetryPolicyStore((state) => state.setEnabled);
 	const checked = view?.eventsEnabled ?? false;
 	const blockedEnable = !checked && (view?.environmentVeto || !view?.durabilitySupported);
-	// A platform restriction outranks cleanup_failed, whose copy promises retries
-	// that will never run there (#5196).
 	const status = saveError ? "failed"
 		: !view ? null
 		: !view.durabilitySupported ? "unsupported"

@@ -264,9 +264,6 @@ func (c *Coordinator) readAuthority(ctx context.Context) authorityRead {
 			generation: c.bootToken,
 		}
 	}
-	// An opt-in given while the release gate was closed is not carried into a
-	// release that opens it. The desktop applies the same rule
-	// (telemetryPolicySnapshot), so the two stay in agreement on the hint.
 	storedEnabled := snapshot.EventsEnabled && (!c.productionEnabled() || snapshot.ConsentProductionEnabled)
 	return authorityRead{
 		valid: true, eventsEnabled: storedEnabled && c.options.TelemetryEventsExplicit && c.options.TelemetryEvents,

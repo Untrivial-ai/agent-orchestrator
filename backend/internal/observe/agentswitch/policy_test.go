@@ -106,7 +106,6 @@ func TestOpenGateDoesNotResumeConsentGivenWhileGated(t *testing.T) {
 			if got := coordinator.Authorization(); got.Enabled != tc.wantEnabled {
 				t.Fatalf("Enabled = %v, want %v", got.Enabled, tc.wantEnabled)
 			}
-			// The desktop derives the same effective choice, so its hint must match.
 			if _, err := coordinator.ApplyPolicy(context.Background(), generation, tc.wantEnabled); errors.Is(err, ErrPolicyHintMismatch) {
 				t.Fatalf("desktop hint %v rejected as a mismatch", tc.wantEnabled)
 			}
@@ -477,8 +476,6 @@ func validMetadata() domain.AgentSwitchEventMetadata {
 func boolPtr(value bool) *bool { return &value }
 func writePolicy(t *testing.T, path string, enabled bool, generation string, mode os.FileMode) {
 	t.Helper()
-	// These tests run with the release gate open, so the record is one written
-	// by that release.
 	writePolicyRecord(t, path, map[string]any{
 		"schema_version":             2,
 		"events_enabled":             enabled,

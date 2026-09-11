@@ -19,7 +19,6 @@ describe("telemetry policy wire record", () => {
 	});
 
 	it("reads a version 1 record as consent given while the release gate was closed", () => {
-		// Every version 1 record predates the gate ever opening.
 		expect(parseTelemetryPolicyDiskRecord(JSON.stringify({
 			schema_version: 1,
 			events_enabled: true,

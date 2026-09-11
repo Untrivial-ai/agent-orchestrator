@@ -278,7 +278,6 @@ describe("GlobalSettingsForm", () => {
 	});
 
 	it("does not promise retries for the fail-closed view when the controller is unavailable", async () => {
-		// The shape failClosedTelemetryPolicyView() returns in main.ts.
 		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" }, loaded: true });
 		renderForm();
 		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();

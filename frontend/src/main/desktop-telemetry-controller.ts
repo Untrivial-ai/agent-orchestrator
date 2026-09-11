@@ -1,12 +1,10 @@
-import { AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED as agentSwitchFailureProductionEnabled, type RendererTelemetryCapture, type TelemetryPolicySnapshot, type TelemetryPolicyView } from "../shared/telemetry-policy";
+import { AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED, type RendererTelemetryCapture, type TelemetryPolicySnapshot, type TelemetryPolicyView } from "../shared/telemetry-policy";
 import type { DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-policy-client";
 
 const RETRY_BACKOFF_INIT_MS = 2_000;
 const RETRY_BACKOFF_MAX_MS = 60_000;
 const RETRY_BACKOFF_MAX_EXPONENT = 31;
 
-// No jitter, unlike renderer/lib/sse-backoff: one desktop process retries its
-// own loopback daemon, so there are no concurrent callers to desynchronise.
 export function telemetryRetryDelayMs(failures: number): number {
 	const attempt = Number.isFinite(failures) ? Math.min(Math.max(Math.floor(failures), 1), RETRY_BACKOFF_MAX_EXPONENT) : 1;
 	return Math.min(RETRY_BACKOFF_INIT_MS * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS);
@@ -83,11 +81,7 @@ export class DesktopTelemetryController {
 
 	async retryPendingCleanup(): Promise<TelemetryPolicyView> {
 		return this.serialize(async () => {
-			// Without durable replacement retryPendingReplacement always throws, so a
-			// retry is a guaranteed no-op that also relabels the reason (#5196).
 			if (this.view.state === "applied" || !this.options.authority.durabilitySupported) return this.snapshot();
-			// A daemon that is merely unreachable may recover, so this path stays
-			// retryable — but paced, not once a second for the process lifetime.
 			if (this.clock() < this.nextRetryAtMs) return this.snapshot();
 			let desktopCleanupFailed = false;
 			let authorityVerified = false;
@@ -189,7 +183,7 @@ export class DesktopTelemetryController {
 		let transport: DesktopTelemetryTransport | null = null;
 		try {
 			const ack = await this.options.daemon.applyPolicy(snapshot.consentGeneration, true);
-			const releaseEnabled = this.options.productionEnabled ?? agentSwitchFailureProductionEnabled;
+			const releaseEnabled = this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED;
 			if (ack.consentGeneration !== snapshot.consentGeneration || (releaseEnabled && !ack.eventsEnabled)) {
 				throw new Error("telemetry enablement was not acknowledged");
 			}
@@ -210,7 +204,7 @@ export class DesktopTelemetryController {
 	}
 
 	private captureEnabled(snapshot: Pick<TelemetryPolicySnapshot, "eventsEnabled" | "acknowledged">): boolean {
-		return snapshot.eventsEnabled && snapshot.acknowledged && this.options.authority.durabilitySupported && this.options.environmentAllowsEvents && (this.options.productionEnabled ?? agentSwitchFailureProductionEnabled);
+		return snapshot.eventsEnabled && snapshot.acknowledged && this.options.authority.durabilitySupported && this.options.environmentAllowsEvents && (this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED);
 	}
 
 	private toView(snapshot: TelemetryPolicySnapshot, state: TelemetryPolicyView["state"], reason = this.baseReason()): TelemetryPolicyView {
@@ -220,14 +214,14 @@ export class DesktopTelemetryController {
 	private baseReason(): TelemetryPolicyView["reason"] {
 		if (!this.options.authority.durabilitySupported) return "durability_unsupported";
 		if (!this.options.environmentAllowsEvents) return "environment_veto";
-		if (!(this.options.productionEnabled ?? agentSwitchFailureProductionEnabled)) return "release_blocked";
+		if (!(this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED)) return "release_blocked";
 		return undefined;
 	}
 
 	private acknowledges(enabled: boolean, generation: string, ack: DaemonTelemetryPolicyAcknowledgement): boolean {
 		if (ack.consentGeneration !== generation) return false;
 		if (!enabled) return !ack.eventsEnabled && ack.gateDrained && ack.purgeConfirmed;
-		return ack.eventsEnabled || !(this.options.productionEnabled ?? agentSwitchFailureProductionEnabled);
+		return ack.eventsEnabled || !(this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED);
 	}
 
 	private clock(): number {

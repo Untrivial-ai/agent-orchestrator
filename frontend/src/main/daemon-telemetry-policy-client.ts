@@ -18,8 +18,6 @@ export class DaemonTelemetryPolicyClient {
 		});
 	}
 
-	// A closed release gate answers every enable with eventsEnabled:false, so only
-	// the disable direction is a violation; the controller judges the rest (#5196).
 	async applyPolicy(consentGeneration: string, eventsEnabled: boolean): Promise<DaemonTelemetryPolicyAcknowledgement> {
 		const acknowledgement = await this.request("/internal/agent-switch-observability/apply-policy", { consentGeneration, eventsEnabled }, consentGeneration);
 		if (!eventsEnabled && acknowledgement.eventsEnabled) throw new Error("daemon telemetry acknowledgement policy mismatch");
