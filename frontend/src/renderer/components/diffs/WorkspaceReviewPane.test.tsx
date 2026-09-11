@@ -237,12 +237,12 @@ describe("WorkspaceReviewPane", () => {
 		await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
 			body: expect.objectContaining({ commitSha: undefined, paths: ["src/App.tsx"], scope: "unstaged", workspaceVersion: "workspace-1" }),
 		})));
-		expect(screen.getByTestId("code-view")).toBeInTheDocument();
+	expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 		expect(sourceScope).toHaveAttribute("aria-pressed", "true");
 		expect(stagedScope).toHaveAttribute("aria-pressed", "false");
 		await userEvent.click(stagedScope);
 		expect(stagedScope).toHaveAttribute("aria-pressed", "true");
-		expect(screen.getByTestId("code-view")).toBeInTheDocument();
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 		expect(onOpenFile).not.toHaveBeenCalled();
 		await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
 			body: expect.objectContaining({ paths: ["README.md"], scope: "staged", workspaceVersion: "workspace-1" }),
