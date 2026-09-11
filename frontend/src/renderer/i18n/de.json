@@ -1203,6 +1203,8 @@
 	"shell.remove": "Entfernen",
 	"shell.removeProjectBody": "Dadurch werden live laufende Sitzungen gestoppt und das Projekt aus der Seitenleiste entfernt, der Repository-Ordner und der gespeicherte Verlauf bleiben jedoch auf dem Datenträger.",
 	"shell.removeProjectLead": "Dadurch wird {{name}} aus AO entfernt",
+	"shell.removeProjectOpenPrWarning_one": "Zu diesem Projekt gehört {{count}} offener Pull Request. Durch das Entfernen wird dieser Pull Request in AO ausgeblendet, aber nicht geschlossen.",
+	"shell.removeProjectOpenPrWarning_other": "Zu diesem Projekt gehören {{count}} offene Pull Requests. Durch das Entfernen werden diese Pull Requests in AO ausgeblendet, aber nicht geschlossen.",
 	"shell.removeProjectTitle": "Projekt entfernen",
 	"shell.removingNamed": "{{name}} wird entfernt…",
 	"shell.renameSession": "{{title}} umbenennen",

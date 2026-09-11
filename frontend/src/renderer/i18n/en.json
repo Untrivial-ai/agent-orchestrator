@@ -1326,6 +1326,8 @@
 	"shell.remove": "Remove",
 	"shell.removeProjectBody": "This stops its live sessions and removes it from the sidebar, but keeps the repository folder and stored history on disk.",
 	"shell.removeProjectLead": "This will remove {{name}} from AO",
+	"shell.removeProjectOpenPrWarning_one": "{{count}} open pull request belongs to this project. Removing it will hide that pull request from AO, but will not close it.",
+	"shell.removeProjectOpenPrWarning_other": "{{count}} open pull requests belong to this project. Removing it will hide those pull requests from AO, but will not close them.",
 	"shell.removeProjectTitle": "Remove project",
 	"shell.removingNamed": "Removing {{name}}…",
 	"shell.renameSession": "Rename {{title}}",

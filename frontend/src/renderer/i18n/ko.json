@@ -1203,6 +1203,8 @@
 	"shell.remove": "제거",
 	"shell.removeProjectBody": "실행 중인 세션을 중지하고 사이드바에서 제거하지만, 저장소 폴더와 저장된 기록은 디스크에 유지됩니다.",
 	"shell.removeProjectLead": "AO에서 {{name}}을(를) 제거합니다",
+	"shell.removeProjectOpenPrWarning_one": "이 프로젝트에 열려 있는 풀 리퀘스트가 {{count}}개 있습니다. 프로젝트를 제거하면 AO에서 숨겨지지만 풀 리퀘스트는 닫히지 않습니다.",
+	"shell.removeProjectOpenPrWarning_other": "이 프로젝트에 열려 있는 풀 리퀘스트가 {{count}}개 있습니다. 프로젝트를 제거하면 AO에서 숨겨지지만 풀 리퀘스트는 닫히지 않습니다.",
 	"shell.removeProjectTitle": "프로젝트 제거",
 	"shell.removingNamed": "{{name}} 제거 중…",
 	"shell.renameSession": "{{title}} 이름 바꾸기",

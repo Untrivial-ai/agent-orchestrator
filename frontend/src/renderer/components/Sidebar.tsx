@@ -63,6 +63,7 @@ import { parseNightlyVersion } from "../lib/build-channel";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
+	openPRs,
 	type WorkspaceSession,
 	type WorkspaceSummary,
 	sortedWorkerSessions,
@@ -1190,6 +1191,9 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		setRemoveError(null);
 		setConfirmOpen(true);
 	};
+	const openPullRequestCount = new Set(
+		workspace.sessions.flatMap((session) => openPRs(session).map((pr) => pr.url)),
+	).size;
 
 	const handleConfirmRemove = async () => {
 		setConfirmOpen(false);
@@ -1523,6 +1527,11 @@ const ProjectItemContent = memo(function ProjectItemContent({
 							<>
 								<p className="text-sm font-medium text-foreground">{t("shell.removeProjectLead", { name: workspace.name })}</p>
 								<p className="mt-1 text-xs text-muted-foreground">{t("shell.removeProjectBody")}</p>
+								{openPullRequestCount > 0 ? (
+									<p className="mt-2 text-xs font-medium text-error">
+										{t("shell.removeProjectOpenPrWarning", { count: openPullRequestCount })}
+									</p>
+								) : null}
 							</>
 						}
 						confirmLabel={t("shell.remove")}

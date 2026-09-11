@@ -1189,6 +1189,8 @@
 	"shell.remove": "移除",
 	"shell.removeProjectBody": "会停止其活跃会话并从侧边栏移除，但保留磁盘上的仓库文件夹与历史记录。",
 	"shell.removeProjectLead": "这将从 AO 中移除 {{name}}",
+	"shell.removeProjectOpenPrWarning_one": "此项目有 {{count}} 个未关闭的拉取请求。移除项目后，该拉取请求将在 AO 中隐藏，但不会被关闭。",
+	"shell.removeProjectOpenPrWarning_other": "此项目有 {{count}} 个未关闭的拉取请求。移除项目后，这些拉取请求将在 AO 中隐藏，但不会被关闭。",
 	"shell.removeProjectTitle": "移除项目",
 	"shell.removingNamed": "正在移除 {{name}}…",
 	"shell.renameSession": "重命名{{title}}",
