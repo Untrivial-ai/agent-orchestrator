@@ -1105,6 +1105,7 @@
 	"settings.project.name": "Project name",
 	"settings.project.settings": "Project Settings",
 	"settings.project.nameRequired": "Project name is required.",
+	"settings.project.nameTooLong": "Project name must be {{max}} characters or fewer.",
 	"settings.project.path": "path",
 	"settings.project.permissionAcceptEdits": "Accept edits",
 	"settings.project.permissionAuto": "Auto",

@@ -51,6 +51,43 @@ describe("project models", () => {
 				intakeAssignee: "",
 			}),
 		).toBe("intake_assignee_required");
+		expect(
+			validateProjectSettings({
+				displayName: "a".repeat(101),
+				workerAgent: "codex",
+				orchestratorAgent: "claude-code",
+				intakeEnabled: false,
+				intakeAssignee: "",
+			}),
+		).toBe("name_too_long");
+		expect(
+			validateProjectSettings({
+				displayName: "yandex-direct-mcp-plugin",
+				workerAgent: "codex",
+				orchestratorAgent: "claude-code",
+				intakeEnabled: false,
+				intakeAssignee: "",
+			}),
+		).toBeNull();
+		// 100 astral symbols (e.g. emoji) have UTF-16 length 200, but 100 Unicode code points (runes)
+		expect(
+			validateProjectSettings({
+				displayName: "🚀".repeat(100),
+				workerAgent: "codex",
+				orchestratorAgent: "claude-code",
+				intakeEnabled: false,
+				intakeAssignee: "",
+			}),
+		).toBeNull();
+		expect(
+			validateProjectSettings({
+				displayName: "🚀".repeat(101),
+				workerAgent: "codex",
+				orchestratorAgent: "claude-code",
+				intakeEnabled: false,
+				intakeAssignee: "",
+			}),
+		).toBe("name_too_long");
 	});
 
 	it("gates project setup on agents and intake eligibility", () => {
@@ -164,7 +201,8 @@ describe("project presentation", () => {
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Edit Project name" }));
-		expect(screen.getByLabelText("Project name")).toHaveValue("Workspace");
+		const input = screen.getByLabelText("Project name");
+		expect(input).toHaveValue("Workspace");
 		expect(screen.getByRole("link", { name: "/repo" })).toHaveAttribute("title", "/repo");
 		expect(screen.getByRole("link", { name: "https://github.com/acme/workspace" })).toHaveAttribute(
 			"title",

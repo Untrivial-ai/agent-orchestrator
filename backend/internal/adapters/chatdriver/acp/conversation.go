@@ -512,6 +512,25 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 func (c *conversation) runTurn(ctx context.Context, sessionID string, turn preparedTurn) {
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.id})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		c.mu.Lock()
+		if c.activeTurn == turn.id {
+			c.activeTurn = ""
+			c.settlingTurn = ""
+			c.turnCancel = nil
+			c.providerFailure = nil
+			if c.interrupt != nil && c.interrupt.turnID == turn.id {
+				c.interrupt = nil
+			}
+		}
+		c.mu.Unlock()
+		c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+	}()
+
 	// ACP message ids are opaque idempotency/correlation keys. Preserve AO's
 	// durable client id when possible so an agent that echoes it from session/load
 	// can be reconciled without provider-specific knowledge. Some agents (notably
@@ -527,6 +546,7 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 		Prompt:    turn.prompt,
 	})
 
+	completed = true
 	c.finishPrompt(turn.id, resp, err)
 }
 
@@ -592,14 +612,6 @@ func (c *conversation) finishPrompt(
 	}
 	c.mu.Lock()
 	c.terminalEventID = eventID
-	c.mu.Unlock()
-	c.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state,
-	})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
-
-	c.mu.Lock()
 	if c.activeTurn == turnID {
 		c.activeTurn = ""
 		c.settlingTurn = ""
@@ -610,6 +622,11 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+	c.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
+		ProviderTurnID: turnID, TurnState: state,
+	})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
 
 func turnState(reason acpsdk.StopReason) domain.TurnState {

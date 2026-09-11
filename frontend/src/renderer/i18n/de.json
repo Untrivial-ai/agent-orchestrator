@@ -989,6 +989,7 @@
 	"settings.project.modelOverride": "Modell-Überschreibung",
 	"settings.project.name": "Projektname",
 	"settings.project.nameRequired": "Projektname ist erforderlich.",
+	"settings.project.nameTooLong": "Projektname darf maximal {{max}} Zeichen lang sein.",
 	"settings.project.path": "Pfad",
 	"settings.project.permissionAcceptEdits": "Änderungen akzeptieren",
 	"settings.project.permissionAuto": "Auto",

@@ -271,10 +271,10 @@ type SpawnSessionRequest struct {
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
 
-	// DisplayName is the sidebar label for the session, capped at 20 characters.
+	// DisplayName is the sidebar label for the session, capped at 100 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
 	// dialog) may omit it and fall back to the session id in the read model.
-	DisplayName string `json:"displayName,omitempty" maxLength:"20"`
+	DisplayName string `json:"displayName,omitempty" maxLength:"100"`
 	// Attachments are files pasted or dropped into the task brief. Each carries
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
@@ -469,7 +469,7 @@ type SessionPreviewResponse struct {
 
 // RenameSessionRequest is the body of PATCH /api/v1/sessions/{sessionId}.
 type RenameSessionRequest struct {
-	DisplayName string `json:"displayName" minLength:"1"`
+	DisplayName string `json:"displayName" minLength:"1" maxLength:"100"`
 }
 
 // SetSessionReviewerRequest sets the durable reviewer preference for a session.

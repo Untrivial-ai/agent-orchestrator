@@ -1008,6 +1008,7 @@
 	"settings.project.modelOverride": "Anulación del modelo",
 	"settings.project.name": "Nombre del proyecto",
 	"settings.project.nameRequired": "El nombre del proyecto es obligatorio.",
+	"settings.project.nameTooLong": "El nombre del proyecto debe tener {{max}} caracteres o menos.",
 	"settings.project.path": "ruta",
 	"settings.project.permissionAcceptEdits": "Aceptar ediciones",
 	"settings.project.permissionAuto": "Automático",

@@ -260,7 +260,7 @@ describe("CenterPane toolbar session label", () => {
 
 		await user.dblClick(screen.getByRole("tab", { name: /^do the thing/ }));
 		const input = screen.getByRole("textbox", { name: "Rename do the thing" });
-		expect(input).toHaveAttribute("maxlength", "20");
+		expect(input).toHaveAttribute("maxlength", "100");
 		await user.clear(input);
 		if (nextName) await user.type(input, nextName);
 		await user.keyboard("{Enter}");

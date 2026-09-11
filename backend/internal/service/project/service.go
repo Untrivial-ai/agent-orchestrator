@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -79,7 +80,7 @@ type Service struct {
 	addMu sync.Mutex
 }
 
-const maxDisplayNameLen = 20
+const maxDisplayNameLen = 100
 
 var _ Manager = (*Service)(nil)
 
@@ -217,9 +218,16 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	name := string(id)
 	if in.Name != nil {
 		name = strings.TrimSpace(*in.Name)
+		if utf8.RuneCountInString(name) > maxDisplayNameLen {
+			return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
+		}
 	}
 	if name == "" {
 		name = string(id)
+	}
+	if utf8.RuneCountInString(name) > maxDisplayNameLen {
+		runes := []rune(name)
+		name = string(runes[:maxDisplayNameLen])
 	}
 
 	existing, registered, err := m.store.FindProjectByPath(ctx, path)
@@ -629,9 +637,6 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if displayName == "" {
 		return Project{}, apierr.Invalid("DISPLAY_NAME_REQUIRED", "Display name is required", nil)
 	}
-	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
-		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", "Display name must be 20 characters or fewer", nil)
-	}
 	if err := in.Config.Validate(); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
@@ -641,6 +646,9 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	}
 	if !ok || !row.ArchivedAt.IsZero() {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameLen && displayName != row.DisplayName {
+		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
 	}
 	if row.Kind.WithDefault() == domain.ProjectKindScratch {
 		if err := validateScratchProjectConfig(in.Config); err != nil {

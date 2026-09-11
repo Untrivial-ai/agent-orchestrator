@@ -481,6 +481,21 @@ func TestSessionRenameUpdatesDisplayName(t *testing.T) {
 	}
 }
 
+func TestSessionRenameRejectsOverlongDisplayName(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+
+	overlong := strings.Repeat("x", 101)
+	err := (&Service{store: st}).Rename(context.Background(), "mer-1", overlong)
+	if err == nil {
+		t.Fatal("expected error for overlong display name, got nil")
+	}
+	var e *apierr.Error
+	if !errors.As(err, &e) || e.Code != "DISPLAY_NAME_TOO_LONG" {
+		t.Fatalf("err = %v, want DISPLAY_NAME_TOO_LONG", err)
+	}
+}
+
 func TestSessionPinAndUnpin(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
