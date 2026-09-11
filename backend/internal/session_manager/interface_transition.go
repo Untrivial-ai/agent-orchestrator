@@ -635,7 +635,21 @@ func (m *Manager) nativeConversationNotStarted(
 	rec domain.SessionRecord,
 	agent ports.Agent,
 ) bool {
-	if rec.Metadata.LatestUserPrompt != "" || rec.Metadata.LatestAssistantUpdate != "" {
+	// A hook can identify a real turn without carrying its text. Neither a
+	// missing transcript nor an apparently untouched composer can override that
+	// durable evidence and authorize discarding the conversation.
+	if rec.Metadata.LatestUserPrompt != "" || rec.Metadata.LatestAssistantUpdate != "" ||
+		!rec.Metadata.LatestUserPromptAt.IsZero() || rec.Metadata.ConversationCheckpointUnsettled {
+		return false
+	}
+	switch rec.Metadata.ConversationCheckpointState {
+	case "", domain.ConversationCheckpointLegacy, domain.ConversationCheckpointEmpty:
+		// Blank legacy rows and an explicit empty checkpoint can accompany the
+		// independent untouched-terminal / empty-Chat proof below.
+	default:
+		return false
+	}
+	if rec.Metadata.ConversationCheckpointGeneration != "" || rec.Metadata.ConversationCheckpointNativeID != "" {
 		return false
 	}
 	if path := rec.Metadata.NativeTranscriptPath; path != "" {

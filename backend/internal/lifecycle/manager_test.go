@@ -896,6 +896,73 @@ func TestActivity_UserPromptStoresItsSignalTimestamp(t *testing.T) {
 	}
 }
 
+func TestActivity_ReorderedPromptPreservesLatestHumanCheckpoint(t *testing.T) {
+	promptAt := time.Unix(456, 0).UTC()
+	for _, tt := range []struct {
+		name    string
+		prompt  string
+		at      time.Time
+		wantNew bool
+	}{
+		{name: "older duplicate", prompt: "current prompt", at: promptAt.Add(-time.Minute)},
+		{name: "older different prompt", prompt: "old prompt", at: promptAt.Add(-time.Minute)},
+		{name: "exact duplicate", prompt: "current prompt", at: promptAt},
+		{name: "equal time different prompt", prompt: "new prompt", at: promptAt, wantNew: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, st, _ := newManager()
+			rec := working("mer-1")
+			rec.Metadata.RuntimeLaunchID = "launch-current"
+			rec.Metadata.AgentSessionID = "native-current"
+			rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+			st.sessions[rec.ID] = rec
+			for _, signal := range []ports.ActivitySignal{
+				{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestUserPrompt: "current prompt", Timestamp: promptAt},
+				{Valid: true, State: domain.ActivityIdle, Event: "stop",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestAssistantUpdate: "current answer", Timestamp: promptAt.Add(time.Second)},
+			} {
+				if err := m.ApplyActivitySignal(ctx, rec.ID, signal); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+				LaunchID: "launch-current", AgentSessionID: "native-current",
+				LatestUserPrompt: tt.prompt, Timestamp: tt.at,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Metadata.LatestUserPromptAt.Equal(promptAt) {
+				t.Fatalf("last human message time regressed to %s, want %s", got.Metadata.LatestUserPromptAt, promptAt)
+			}
+			if tt.wantNew {
+				if got.Metadata.LatestUserPrompt != "new prompt" || got.Metadata.LatestAssistantUpdate != "" ||
+					got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointPrompt {
+					t.Fatalf("equal-time new prompt lost its own boundary: %+v", got.Metadata)
+				}
+			} else {
+				if tt.prompt != before.Metadata.LatestUserPrompt {
+					before.Metadata.ConversationCheckpointUnsettled = true
+				}
+				if got.Metadata != before.Metadata {
+					t.Fatalf("delayed or duplicate prompt replaced newer checkpoint or lost ordering uncertainty: got %+v, want %+v", got.Metadata, before.Metadata)
+				}
+			}
+		})
+	}
+}
+
 func TestActivity_MetadataOnlyConfirmsIdentityWithoutCreatingActivityReceipt(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -1632,6 +1699,88 @@ func TestActivity_NewRuntimeLaunchClearsPriorConversationCheckpoint(t *testing.T
 	}
 	if !got.ConversationCheckpointUnsettled {
 		t.Fatal("same-native runtime restart erased unresolved provider turn boundary")
+	}
+}
+
+func TestActivity_NewCheckpointEpochKeepsLastHumanTimeMonotonic(t *testing.T) {
+	lastHumanAt := time.Unix(456, 0).UTC()
+	for _, tt := range []struct {
+		name           string
+		previousLaunch string
+		previousNative string
+	}{
+		{name: "new native identity", previousLaunch: "launch-current", previousNative: "native-old"},
+		{name: "new runtime launch", previousLaunch: "launch-old", previousNative: "native-current"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, st, _ := newManager()
+			rec := working("mer-1")
+			rec.Metadata = domain.SessionMetadata{
+				RuntimeLaunchID: "launch-current", AgentSessionID: tt.previousNative,
+				AgentSessionIDLaunchID: tt.previousLaunch, LatestUserPrompt: "old prompt",
+				LatestUserPromptAt: lastHumanAt, LatestAssistantUpdate: "old answer",
+				ConversationCheckpointState:      domain.ConversationCheckpointComplete,
+				ConversationCheckpointGeneration: tt.previousLaunch,
+				ConversationCheckpointNativeID:   tt.previousNative,
+			}
+			st.sessions[rec.ID] = rec
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Event: "session-start", LaunchID: "launch-current", AgentSessionID: "native-current",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cleared, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cleared.Metadata.LatestUserPromptAt.Equal(lastHumanAt) ||
+				cleared.Metadata.LatestUserPrompt != "" || cleared.Metadata.LatestAssistantUpdate != "" ||
+				cleared.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty {
+				t.Fatalf("epoch reset mixed old checkpoint with new owner or lost human time: %+v", cleared.Metadata)
+			}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+				LaunchID: "launch-current", AgentSessionID: "native-current",
+				LatestUserPrompt: "new owner prompt", Timestamp: lastHumanAt.Add(-time.Minute),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Metadata.LatestUserPromptAt.Equal(lastHumanAt) ||
+				got.Metadata.LatestUserPrompt != "new owner prompt" || got.Metadata.LatestAssistantUpdate != "" ||
+				got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointPrompt ||
+				got.Metadata.ConversationCheckpointGeneration != "launch-current" ||
+				got.Metadata.ConversationCheckpointNativeID != "native-current" {
+				t.Fatalf("current owner did not establish an independent checkpoint with monotonic human time: %+v", got.Metadata)
+			}
+			// The retained time is a session-wide high-water mark, not this
+			// owner's clock. A later prompt below it is ordering-ambiguous and
+			// its Stop must not validate the previous prompt with a new answer.
+			for _, signal := range []ports.ActivitySignal{
+				{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestUserPrompt: "later skewed prompt", Timestamp: lastHumanAt.Add(-time.Second)},
+				{Valid: true, State: domain.ActivityIdle, Event: "stop",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestAssistantUpdate: "later answer", Timestamp: lastHumanAt},
+			} {
+				if err := m.ApplyActivitySignal(ctx, rec.ID, signal); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, _, err = st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Metadata.ConversationCheckpointUnsettled ||
+				got.Metadata.LatestUserPrompt != "new owner prompt" || got.Metadata.LatestAssistantUpdate != "" ||
+				!got.Metadata.LatestUserPromptAt.Equal(lastHumanAt) {
+				t.Fatalf("ambiguous prompt's Stop admitted a mixed checkpoint: %+v", got.Metadata)
+			}
+		})
 	}
 }
 

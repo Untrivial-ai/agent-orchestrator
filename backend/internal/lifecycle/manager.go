@@ -702,8 +702,28 @@ retryProjection:
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
 		} else {
+			promptAt := timeOr(s.Timestamp, now)
+			sameCheckpointOwner := !resetConversationCheckpoint && ownerGeneration != "" &&
+				checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
+				checkpoint.ConversationCheckpointNativeID == checkpointNativeID
+			if sameCheckpointOwner && (promptAt.Before(checkpoint.LatestUserPromptAt) ||
+				(promptAt.Equal(checkpoint.LatestUserPromptAt) && s.LatestUserPrompt == checkpoint.LatestUserPrompt)) {
+				// A delayed/duplicate prompt must not replace a newer coherent
+				// checkpoint or clear its answer. Equal-time different text still
+				// establishes a new boundary; timestamps alone cannot order it.
+				if s.LatestUserPrompt != checkpoint.LatestUserPrompt {
+					// The timestamp may be a prior owner's high-water mark after
+					// clock skew. Do not let this prompt's Stop validate old text.
+					checkpoint.ConversationCheckpointUnsettled = true
+				}
+				break
+			}
 			checkpoint.LatestUserPrompt = s.LatestUserPrompt
-			checkpoint.LatestUserPromptAt = timeOr(s.Timestamp, now)
+			if promptAt.After(checkpoint.LatestUserPromptAt) {
+				// Owner changes can carry skewed clocks. Preserve the last-human
+				// high-water time while replacing all checkpoint text/provenance.
+				checkpoint.LatestUserPromptAt = promptAt
+			}
 			checkpoint.LatestAssistantUpdate = ""
 			checkpoint.ConversationCheckpointUnsettled = false
 			checkpoint.ConversationCheckpointGeneration = ""
@@ -731,6 +751,7 @@ retryProjection:
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
 		} else if checkpoint.ConversationCheckpointState == domain.ConversationCheckpointPrompt &&
+			!checkpoint.ConversationCheckpointUnsettled &&
 			ownerGeneration != "" && checkpointNativeID != "" &&
 			checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
 			checkpoint.ConversationCheckpointNativeID == checkpointNativeID {

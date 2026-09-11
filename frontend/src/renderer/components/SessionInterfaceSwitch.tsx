@@ -16,6 +16,7 @@ import type {
 import {
 	interfaceTransitionIsActive,
 	interfaceTransitionIsCancellable,
+	interfaceTransitionNeedsRestart,
 } from "../hooks/useSessionInterfaceTransition";
 import { cn } from "../lib/utils";
 import { TopbarButton } from "./TopbarButton";
@@ -55,16 +56,6 @@ const phaseCopy: Record<SessionInterfaceTransition["phase"], string> = {
 
 const targetStopUnconfirmedDetail =
 	"AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface.";
-
-function interfaceTransitionNeedsRestart(transition?: SessionInterfaceTransition): boolean {
-	// The daemon retains the active fence until target shutdown is proven;
-	// this is an actionable recovery state, not ongoing progress.
-	return Boolean(
-		transition &&
-			interfaceTransitionIsActive(transition) &&
-			transition.errorCode === "TARGET_STOP_UNCONFIRMED",
-	);
-}
 
 export function SessionInterfaceSwitchButton({
 	target,

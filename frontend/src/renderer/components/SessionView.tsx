@@ -62,6 +62,7 @@ import {
 import {
 	interfaceTransitionHasUnacknowledgedNotice,
 	interfaceTransitionIsActive,
+	interfaceTransitionNeedsRestart,
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
@@ -1182,6 +1183,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const activeInterfaceTransition = interfaceTransitionIsActive(interfaceSwitch.transition);
 	const hasInterfaceNotice = interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition);
 	const historyRecoveryNotice = hasInterfaceNotice && interfaceTransitionOffersHistoryRecovery(interfaceSwitch.transition);
+	const restartRequiredNotice = interfaceTransitionNeedsRestart(interfaceSwitch.transition);
 	const chatLeaveLocked = Boolean(
 		chatLeaveLock?.sessionId === sessionId && session?.mode === "chat",
 	);
@@ -1998,7 +2000,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									/>
 								</div>
 							) : null}
-							{interfaceSwitch.startError && !interfaceSwitchDialogOpen && !historyRecoveryNotice ? (
+							{interfaceSwitch.startError && !interfaceSwitchDialogOpen && !historyRecoveryNotice && !restartRequiredNotice ? (
 								<div role="alert" className="absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-3 rounded-lg border border-destructive/40 bg-popover px-3 py-2.5 text-xs shadow-md">
 									<div className="min-w-0 flex-1">
 										<p className="font-medium">{t("session.interfaceSwitchFailed")}</p>
@@ -2007,7 +2009,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									<button type="button" aria-label={t("session.dismissInterfaceSwitchError")} className="shrink-0 rounded px-1 text-muted-foreground hover:text-foreground" onClick={interfaceSwitch.resetStartError}>{t("session.dismissInterfaceSwitchNotice")}</button>
 								</div>
 							) : null}
-							{(!interfaceSwitch.startError || historyRecoveryNotice) && hasInterfaceNotice ? (
+							{(!interfaceSwitch.startError || historyRecoveryNotice || restartRequiredNotice) && hasInterfaceNotice ? (
 								<SessionInterfaceTransitionNotice
 									transition={interfaceSwitch.transition}
 									dismissing={interfaceSwitch.acknowledgingNotice}

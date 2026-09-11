@@ -71,33 +71,8 @@ vi.mock("../lib/platform", () => ({
 vi.mock("../hooks/useWindowFullScreen", () => ({
 	useWindowFullScreen: () => nativeFullScreenMock(),
 }));
-vi.mock("../hooks/useSessionInterfaceTransition", () => ({
-	interfaceTransitionIsActive: (transition?: { phase?: string }) =>
-		Boolean(
-			transition &&
-				[
-					"requested",
-					"preflighting",
-					"draining",
-					"source_stopping",
-					"source_stopped",
-					"target_starting",
-					"activating",
-				].includes(transition.phase ?? ""),
-		),
-	interfaceTransitionIsCancellable: (transition?: { phase?: string }) =>
-		Boolean(
-			transition && ["requested", "preflighting", "draining"].includes(transition.phase ?? ""),
-		),
-	interfaceTransitionHasUnacknowledgedNotice: (transition?: {
-		phase?: string;
-		noticeAcknowledgedAt?: string;
-	}) =>
-		Boolean(
-			transition &&
-				!transition.noticeAcknowledgedAt &&
-				(transition.phase === "failed" || transition.phase === "recovery_required"),
-		),
+vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
+	...await importOriginal<typeof import("../hooks/useSessionInterfaceTransition")>(),
 	useSessionInterfaceTransition: () => ({
 		status: interfaceTransitionState.status,
 		transition: interfaceTransitionState.status?.transition,
@@ -353,6 +328,7 @@ vi.mock("./chat/SessionChatSurface", () => ({
 }));
 vi.mock("./CenterPane", () => ({
 	CenterPane: ({
+		agentInputDisabled,
 		session,
 		shellTerminals = [],
 		onCloseShellTerminal,
@@ -368,6 +344,7 @@ vi.mock("./CenterPane", () => ({
 		terminalTarget,
 		auxiliaryTabOrder,
 	}: {
+		agentInputDisabled?: boolean;
 		session?: WorkspaceSession;
 		shellTerminals?: Array<{ handleId: string; title: string }>;
 		onCloseShellTerminal?: (handleId: string) => void;
@@ -383,7 +360,7 @@ vi.mock("./CenterPane", () => ({
 		terminalTarget?: { kind: string; handleId?: string };
 		auxiliaryTabOrder?: string[];
 	}) => (
-		<div>
+		<div data-testid="terminal-center" data-agent-input-disabled={agentInputDisabled ? "true" : "false"}>
 			terminal center
 			<div data-testid={`auxiliary-tab-order-tui-${session?.id ?? "none"}`}>
 				{auxiliaryTabOrder?.join("|") ?? ""}
@@ -2307,6 +2284,49 @@ describe("SessionView", () => {
 			"Recovery attempt failed: Provider history recovery is no longer available.",
 		);
 	});
+
+	it.each([undefined, "A newer start request was refused."])(
+		"shows unconfirmed target shutdown through SessionView while keeping Terminal input fenced (%s)",
+		(startError) => {
+			workerSession("sess-1").mode = "tui";
+			interfaceTransitionState.startError = startError;
+			const errorDetail =
+				"AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface. target still running";
+			interfaceTransitionState.status = {
+				supported: true,
+				targetMode: "chat",
+				transition: {
+					id: "transition-target-stop-unconfirmed",
+					sessionId: "sess-1",
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					historyPolicy: "strict",
+					phase: "target_starting",
+					errorCode: "TARGET_STOP_UNCONFIRMED",
+					errorDetail,
+					createdAt: "2026-08-23T17:00:00Z",
+					updatedAt: "2026-08-23T17:01:00Z",
+				},
+			};
+
+			render(<SessionView sessionId="sess-1" />);
+
+			expect(screen.getAllByRole("alert")).toHaveLength(1);
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent("Interface switch needs attention");
+			expect(alert).toHaveTextContent(errorDetail);
+			expect(within(alert).queryByRole("button")).not.toBeInTheDocument();
+			expect(screen.getByTestId("terminal-center")).toHaveAttribute("data-agent-input-disabled", "true");
+			expect(screen.getByRole("status", { name: /^Interface switch needs attention/ }).querySelector(".animate-spin")).toBeNull();
+			expect(screen.queryByRole("button", { name: "Cancel switch to Chat UI" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Retry switch to Chat UI" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Stay in Terminal" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Use provider history and switch" })).not.toBeInTheDocument();
+			expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+			expect(interfaceTransitionMock.acknowledgeNotice).not.toHaveBeenCalled();
+		},
+	);
 
 	it("returns to the source terminal while a failed Chat switch mode refetch settles", () => {
 		const session = workerSession("sess-1");

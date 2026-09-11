@@ -8,9 +8,102 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestInterfaceTransitionPromptlessHookCannotAuthorizeFreshConversation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		events    []string
+		origin    domain.ConversationCheckpointOrigin
+		state     domain.ConversationCheckpointState
+		unsettled bool
+	}{
+		{name: "submitted prompt", events: []string{"user-prompt-submit"},
+			origin: domain.ConversationCheckpointOriginHuman, state: domain.ConversationCheckpointPrompt},
+		{name: "completed turn", events: []string{"user-prompt-submit", "stop"},
+			origin: domain.ConversationCheckpointOriginHuman, state: domain.ConversationCheckpointComplete},
+		{name: "unpaired stop", events: []string{"stop"}, unsettled: true},
+		{name: "coordination turn", events: []string{"user-prompt-submit"},
+			origin: domain.ConversationCheckpointOriginCoordination, state: domain.ConversationCheckpointCoordination},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeTUI)
+			useFastInterfaceTransitionTimings(manager)
+			manager.agents = singleAgent{agent: untouchedEmptyTransitionAgent{}}
+			recorder := lifecycle.New(&transitionLifecycleStore{transitionStore: store}, nil)
+			for _, event := range tc.events {
+				state := domain.ActivityActive
+				if event == "stop" {
+					state = domain.ActivityIdle
+				}
+				if err := recorder.ApplyActivitySignal(ctx, "session-1", ports.ActivitySignal{
+					Valid: true, State: state, Event: event,
+					LaunchID: "old-tui-generation", AgentSessionID: "native-1",
+					ConversationCheckpointOrigin: tc.origin, Timestamp: time.Now().UTC(),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rec := store.sessions["session-1"]
+			if rec.Metadata.LatestUserPrompt != "" || rec.Metadata.LatestAssistantUpdate != "" ||
+				rec.Metadata.ConversationCheckpointState != tc.state ||
+				rec.Metadata.ConversationCheckpointUnsettled != tc.unsettled ||
+				(tc.origin == domain.ConversationCheckpointOriginHuman && rec.Metadata.LatestUserPromptAt.IsZero()) {
+				t.Fatalf("promptless provider hook did not create the expected turn evidence: %+v", rec.Metadata)
+			}
+
+			transition, err := manager.StartInterfaceTransition(ctx, rec.ID, domain.SessionModeChat,
+				domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+			if err == nil {
+				settled := awaitTransition(t, store, transition.ID)
+				t.Fatalf("promptless turn was admitted as a fresh conversation: %+v", settled)
+			}
+			if !errors.Is(err, ErrNativeConversationMissing) {
+				t.Fatalf("promptless turn freshness rejection = %v, want missing native conversation", err)
+			}
+			if len(store.transitions) != 0 || runtime.destroyed != 0 || len(*log) != 0 {
+				t.Fatalf("freshness check stopped the source despite accepted work: %v", *log)
+			}
+		})
+	}
+}
+
+func TestInterfaceTransitionInitialSessionStartStillAllowsFreshConversation(t *testing.T) {
+	ctx := context.Background()
+	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: untouchedEmptyTransitionAgent{}}
+	rec := store.sessions["session-1"]
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.AgentSessionIDLaunchID = ""
+	store.sessions[rec.ID] = rec
+	recorder := lifecycle.New(&transitionLifecycleStore{transitionStore: store}, nil)
+	if err := recorder.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "session-start",
+		LaunchID: "old-tui-generation", AgentSessionID: "native-1", Timestamp: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if store.sessions[rec.ID].Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty {
+		t.Fatal("initial SessionStart did not establish an empty checkpoint")
+	}
+	transition, err := manager.StartInterfaceTransition(ctx, rec.ID, domain.SessionModeChat,
+		domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+	if err != nil {
+		t.Fatalf("untouched initial launch was rejected: %v", err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted || settled.NativeConversationID != "" ||
+		chat.start.ProviderConversationID != "" {
+		t.Fatalf("untouched initial launch did not start fresh: %+v", settled)
+	}
+}
 
 func TestInterfaceTransitionReservedTranscriptRequiresUntouchedTerminal(t *testing.T) {
 	for _, name := range []string{

@@ -126,13 +126,24 @@ export function interfaceTransitionIsCancellable(transition?: SessionInterfaceTr
 	return Boolean(transition && cancellablePhases.has(transition.phase));
 }
 
+export function interfaceTransitionNeedsRestart(transition?: SessionInterfaceTransition): boolean {
+	// The daemon retains the active fence until target shutdown is proven;
+	// this is an actionable recovery state, not ongoing progress.
+	return Boolean(
+		transition &&
+			interfaceTransitionIsActive(transition) &&
+			transition.errorCode === "TARGET_STOP_UNCONFIRMED",
+	);
+}
+
 export function interfaceTransitionHasUnacknowledgedNotice(
 	transition?: SessionInterfaceTransition,
 ): boolean {
 	return Boolean(
-		transition &&
-			!transition.noticeAcknowledgedAt &&
-			(transition.phase === "failed" || transition.phase === "recovery_required"),
+		interfaceTransitionNeedsRestart(transition) ||
+			(transition &&
+				!transition.noticeAcknowledgedAt &&
+				(transition.phase === "failed" || transition.phase === "recovery_required")),
 	);
 }
 
