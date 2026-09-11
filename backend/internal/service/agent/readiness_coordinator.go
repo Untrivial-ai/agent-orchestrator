@@ -468,7 +468,7 @@ func (c *readinessCoordinator) runCheck(id string, purpose domain.AgentReadiness
 		} else {
 			entry.snapshot.Installation = install
 			if entry.installVersion == call.installVersion &&
-				!(presenceOnly && install.ReasonCode == domain.AgentReadinessReasonInstallIdentityPending) {
+				(!presenceOnly || install.ReasonCode != domain.AgentReadinessReasonInstallIdentityPending) {
 				entry.invalidated &^= readinessInvalidateInstallation
 			}
 		}
