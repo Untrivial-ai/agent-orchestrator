@@ -372,6 +372,9 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	if isCursorPermissionHook(agent, event) {
 		return c.runCursorPermissionHook(ctx, agent, event, sessionID, payload)
 	}
+	if ref := hookCreatedPR(agent, event, payload); ref != "" {
+		c.registerHookPR(ctx, agent, event, sessionID, ref)
+	}
 
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""

@@ -76,9 +76,24 @@ identity resolution and alias collapse:
    persists a baseline row before the first detail fetch.
 2. **Observer refresh** (the rest of `Poll`): batch GraphQL detail fetches,
    review-thread refreshes, and terminal reconciliation update existing rows.
-3. **Explicit claim** (`ao session claim-pr`, `spawn --claim-pr`, gh-wrapper
-   capture): resolves a PR ref against the project origin and claims the row
-   for a session, including takeover rules for terminated owners.
+3. **Explicit claim** (`ao session claim-pr`, `spawn --claim-pr`, Claude Code
+   creation hooks): resolves a PR ref against the project origin and claims the
+   row for a session, including takeover rules for terminated owners.
+
+Claude Code's `PostToolUse` hook provides a best-effort registration fast path
+for successful Bash `gh pr create` calls. It accepts a standalone command or
+`cd <literal-path> && gh pr create ...`, with one GitHub PR URL as the complete
+stdout result. Failed/interrupted/background calls, scripts, pipelines, and
+output that only mentions a URL are not registration evidence. The CLI parses
+the shell command without executing it and sends the ref to the existing daemon
+claim endpoint with takeover disabled and a five-second deadline. Provider and
+repository validation stay in the daemon. Review-session hooks never claim PRs.
+Failures go to stderr and `$AO_DATA_DIR/hooks.log`, without failing the hook.
+
+This fast path currently covers Claude Code and github.com only. Polling remains
+unchanged for every harness and is still needed for unsupported command forms,
+API/MCP/browser creation, and missed hooks. This does not relax workspace claim
+validation or allow claiming an already merged/closed PR.
 
 The **read model** (`ListPRSummaries`) groups rows through `pr_url_alias` so a
 PR observed under multiple URLs renders as one card, then derives the summary
