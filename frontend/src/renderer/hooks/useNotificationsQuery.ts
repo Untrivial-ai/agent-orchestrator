@@ -1,5 +1,7 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+	applyNotificationsCleared,
+	clearAllNotifications,
 	fetchNotificationsPage,
 	markAllCachedNotificationsRead,
 	markAllNotificationsRead,
@@ -36,6 +38,18 @@ export function useMarkAllNotificationsReadMutation() {
 			if (ids.length === 0) {
 				void queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey });
 			}
+		},
+	});
+}
+
+export function useClearAllNotificationsMutation() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: clearAllNotifications,
+		onMutate: () => queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false }),
+		onSuccess: async (result) => {
+			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
+			applyNotificationsCleared(queryClient, result.clearId);
 		},
 	});
 }

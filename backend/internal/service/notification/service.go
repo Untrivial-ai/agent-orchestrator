@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -20,17 +24,41 @@ const (
 
 // Manager reads stored notifications for REST controllers.
 type Manager struct {
-	store Store
+	store      Store
+	publisher  Publisher
+	barrier    sync.Locker
+	newClearID func() string
+}
+
+// Publisher sends notification changes to live dashboard subscribers.
+type Publisher interface {
+	Publish(ctx context.Context, event domain.NotificationEvent) error
+}
+
+// ClearResult describes one completed notification-history clear.
+type ClearResult struct {
+	ClearedCount int64
+	ClearID      string
 }
 
 // Deps configures a Manager.
 type Deps struct {
-	Store Store
+	Store      Store
+	Publisher  Publisher
+	Barrier    sync.Locker
+	NewClearID func() string
 }
 
-// New constructs a read-only notification Manager.
+// New constructs a notification Manager.
 func New(d Deps) *Manager {
-	return &Manager{store: d.Store}
+	m := &Manager{store: d.Store, publisher: d.Publisher, barrier: d.Barrier, newClearID: d.NewClearID}
+	if m.barrier == nil {
+		m.barrier = &sync.Mutex{}
+	}
+	if m.newClearID == nil {
+		m.newClearID = func() string { return "ntf_clear_" + uuid.NewString() }
+	}
+	return m
 }
 
 // List returns one stable newest-first page of notification history.
@@ -111,6 +139,28 @@ func (m *Manager) MarkAllRead(ctx context.Context, ids []string) (int64, error) 
 		return m.store.MarkAllNotificationsRead(ctx)
 	}
 	return m.store.MarkNotificationsRead(ctx, ids)
+}
+
+// ClearAll deletes notification history and publishes the same clear id that
+// the HTTP response returns. Clients use that id to apply the reset once even
+// when the stream event arrives before the mutation response.
+func (m *Manager) ClearAll(ctx context.Context) (ClearResult, error) {
+	if m == nil || m.store == nil {
+		return ClearResult{}, errors.New("notification: store is required")
+	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
+	cleared, err := m.store.ClearAllNotifications(ctx)
+	if err != nil {
+		return ClearResult{}, err
+	}
+	result := ClearResult{ClearedCount: cleared, ClearID: m.newClearID()}
+	if m.publisher != nil {
+		if err := m.publisher.Publish(ctx, domain.NotificationEvent{Kind: domain.NotificationCleared, ClearID: result.ClearID}); err != nil {
+			return ClearResult{}, fmt.Errorf("notification: publish clear-all: %w", err)
+		}
+	}
+	return result, nil
 }
 
 func normalizeLimit(limit int) int {

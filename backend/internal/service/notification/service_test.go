@@ -19,12 +19,35 @@ type fakeStore struct {
 	unreadCount     int64
 	unresolvedCount int64
 
-	markRow      domain.NotificationRecord
-	markOK       bool
-	markAllCount int64
-	markedAll    bool
-	markedIDs    []string
-	err          error
+	markRow       domain.NotificationRecord
+	markOK        bool
+	markAllCount  int64
+	markedAll     bool
+	markedIDs     []string
+	clearAllCount int64
+	clearedAll    bool
+	clearSawLock  bool
+	clearLock     *recordingLocker
+	err           error
+}
+
+type recordingLocker struct{ held bool }
+
+func (l *recordingLocker) Lock()   { l.held = true }
+func (l *recordingLocker) Unlock() { l.held = false }
+
+type capturePublisher struct {
+	events  []domain.NotificationEvent
+	barrier *recordingLocker
+	t       *testing.T
+}
+
+func (p *capturePublisher) Publish(_ context.Context, event domain.NotificationEvent) error {
+	if p.barrier != nil && !p.barrier.held {
+		p.t.Fatal("notification event published outside clear barrier")
+	}
+	p.events = append(p.events, event)
+	return nil
 }
 
 func (f *fakeStore) CreateNotification(context.Context, domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
@@ -65,6 +88,12 @@ func (f *fakeStore) MarkAllNotificationsRead(context.Context) (int64, error) {
 func (f *fakeStore) MarkNotificationsRead(_ context.Context, ids []string) (int64, error) {
 	f.markedIDs = ids
 	return int64(len(ids)), f.err
+}
+
+func (f *fakeStore) ClearAllNotifications(context.Context) (int64, error) {
+	f.clearedAll = true
+	f.clearSawLock = f.clearLock == nil || f.clearLock.held
+	return f.clearAllCount, f.err
 }
 
 func TestListAddsTargetsAndReturnsNextCursor(t *testing.T) {
@@ -174,5 +203,23 @@ func TestListUnreadRequiresStore(t *testing.T) {
 	_, err := New(Deps{}).List(context.Background(), ListFilter{})
 	if err == nil {
 		t.Fatal("want missing store error")
+	}
+}
+
+func TestClearAllPublishesMatchingIDInsideBarrier(t *testing.T) {
+	barrier := &recordingLocker{}
+	st := &fakeStore{clearAllCount: 4, clearLock: barrier}
+	publisher := &capturePublisher{barrier: barrier, t: t}
+	mgr := New(Deps{Store: st, Publisher: publisher, Barrier: barrier, NewClearID: func() string { return "clear-1" }})
+
+	result, err := mgr.ClearAll(context.Background())
+	if err != nil {
+		t.Fatalf("ClearAll: %v", err)
+	}
+	if result.ClearedCount != 4 || result.ClearID != "clear-1" || !st.clearedAll || !st.clearSawLock {
+		t.Fatalf("result=%+v cleared=%v locked=%v", result, st.clearedAll, st.clearSawLock)
+	}
+	if len(publisher.events) != 1 || publisher.events[0].Kind != domain.NotificationCleared || publisher.events[0].ClearID != "clear-1" {
+		t.Fatalf("events = %+v", publisher.events)
 	}
 }
