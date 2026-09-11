@@ -18,10 +18,9 @@
 |------|--------|-----|
 | `backend/internal/domain/projectconfig.go` | modify | Add `GitHubAccount GitHubAccountRef` and validation |
 | `backend/internal/domain/projectconfig_test.go` | modify | Validation cases |
-| `backend/internal/domain/github_account.go` | create | Snapshot types, capability states, login operation |
+| `backend/internal/domain/github_account.go` | create | Ref, snapshots, context helpers |
 | `backend/internal/adapters/scm/github/auth.go` | modify | Per-account `gh auth token --hostname --user`, context ref |
 | `backend/internal/adapters/scm/github/auth_account_test.go` | create | Cache key, env override, missing user |
-| `backend/internal/domain/github_account.go` | create | Ref, validation, `WithGitHubAccount` / `GitHubAccountFrom` context helpers |
 | `backend/internal/adapters/scm/github/provider.go` | modify | Identity cache keyed by host+login |
 | `backend/internal/service/githubacct/` | create | Catalog, login terminal, logout, ensure |
 | `backend/internal/httpd/controllers/github_accounts.go` | create | HTTP routes |
@@ -34,6 +33,7 @@
 | `backend/internal/httpd/apispec/specgen/build.go` | modify | `schemaNames` + operations |
 | `backend/internal/observe/scm/observer.go` | modify | Per-project GitHub identity |
 | `backend/internal/observe/scm/scoped_identity_test.go` | modify | Two GitHub logins |
+| `backend/internal/service/systemcheck/systemcheck.go` | modify | Share `gh auth login` terminal with Settings add-account |
 | `backend/internal/session_manager/manager.go` | modify | Inject GH_TOKEN |
 | `backend/internal/session_manager/github_env_test.go` | create | Env injection tests |
 | `backend/internal/daemon/scm_wiring.go` | modify | Keep FallbackTokenSource, now account-aware |
@@ -391,7 +391,7 @@ EOF
 - Modify: `backend/internal/service/githubacct/login.go`
 - Test: `backend/internal/service/githubacct/login_test.go`
 
-Reuse `shellterm` the way Codex login does (`backend/internal/service/agent/codex_account_login.go`). Command argv is exactly `gh auth login --hostname <host> --git-protocol ssh` (or https if the existing accounts on that host use https). Do not pass tokens on argv.
+Reuse the existing onboarding GitHub auth terminal (`systemcheck.OpenGitHubAuthTerminal`, `POST /api/v1/system/github-auth/terminal`, `GitHubOnboardingNotice`) rather than cloning Codex's pending-home vault. Extract a shared “run `gh auth login` in a trusted shellterm” helper if Settings add-account and onboarding would otherwise duplicate argv/PTY setup. Command argv is exactly `gh auth login --hostname <host> --git-protocol ssh` (or https if the existing accounts on that host use https). Do not pass tokens on argv. Do not set `GH_CONFIG_DIR`.
 
 After verify:
 
@@ -533,7 +533,9 @@ func (m *Manager) applyGitHubAccountEnv(ctx context.Context, project domain.Proj
 }
 ```
 
-Protected: if `ProjectConfig.Env` already had `GH_TOKEN`, overwrite. Tests: `TestSpawnEnvProjectVarsCannotOverrideInternal` style.
+Protected: if `ProjectConfig.Env` already had `GH_TOKEN`, overwrite. Chat/TUI overlay this map on full `os.Environ()` (`processenv.Merge`, tmux `os.Environ()`), so injected keys must win over inherited daemon `GITHUB_TOKEN`/`GH_TOKEN`. Preview servers must keep stripping those keys (`previewEnvironment` / `TestPreviewEnvironmentDoesNotInheritDaemonCredentials`).
+
+Tests: `TestSpawnEnvProjectVarsCannotOverrideInternal` style, plus one overlay test that daemon env `GITHUB_TOKEN=daemon` is replaced by the bound account token in the merged child env.
 
 Skip injection when ref is zero or daemon env override is set.
 

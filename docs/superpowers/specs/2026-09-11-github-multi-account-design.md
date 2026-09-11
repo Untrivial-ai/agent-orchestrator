@@ -71,6 +71,17 @@ This is the v1 design.
 - Changing the machine's active `gh` account as a product action.
 - SSH key inventory or per-account SSH identity files. SSH remotes keep using the user's SSH agent. `GH_TOKEN` still authenticates `gh` API calls.
 - Fine-grained PAT onboarding as a separate flow. `gh auth login` remains the interactive path.
+- Copilot's separate token chain (`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh`). That adapter stays as it is.
+
+## Existing surfaces to extend, not replace
+
+Onboarding already has `GET/POST /api/v1/system/github-auth*` (`systemcheck.OpenGitHubAuthTerminal`, `GitHubOnboardingNotice`). That flow signs in the **active** `gh` account so the daemon has any GitHub identity at all.
+
+v1 Add account in Settings should reuse that shell-terminal implementation (same `gh auth login`, same trusted auth-terminal class) rather than copying Codex login as a second PTY stack. After login it must rediscover **all** `gh` accounts and restore the previously active login if `gh` switched. The onboarding notice stays the empty-state path; Settings is the multi-account path.
+
+Comments on `EnvTokenSource` call `AO_GITHUB_TOKEN` “project-scoped.” That is the **daemon process** environment today, not SQLite project config. This design does not change that override. Per-project binding is `ProjectConfig.githubAccount`, not a new `AO_GITHUB_TOKEN` per project.
+
+Chat/TUI runtimes overlay session env on full `os.Environ()`. Injected `GH_TOKEN` / `GITHUB_TOKEN` must win over inherited daemon env for that session. Preview servers already strip daemon credentials (`previewEnvironment`); they must keep stripping GitHub tokens.
 
 ## User experience
 
