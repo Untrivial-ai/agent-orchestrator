@@ -107,35 +107,36 @@ export function SessionFileExplorer({
 						value={filter}
 					/>
 				</label>
-				<div
-					aria-label={t("files.viewMode")}
-					className="flex shrink-0 items-center rounded-md border border-border bg-muted/30 p-0.5"
-					role="tablist"
-				>
-					<Button
-						aria-selected={showChanges}
-						className="h-6 rounded px-2 text-2xs"
-						disabled={Boolean(filesQuery.data) && !hasChanges}
-						onClick={() => handleViewChange(true)}
-						role="tab"
-						size="sm"
-						type="button"
-						variant={showChanges ? "secondary" : "ghost"}
+				{hasChanges ? (
+					<div
+						aria-label={t("files.viewMode")}
+						className="flex shrink-0 items-center rounded-md border border-border bg-muted/30 p-0.5"
+						role="tablist"
 					>
-						{t("files.reviewChanges")}
-					</Button>
-					<Button
-						aria-selected={!showChanges}
-						className="h-6 rounded px-2 text-2xs"
-						onClick={() => handleViewChange(false)}
-						role="tab"
-						size="sm"
-						type="button"
-						variant={!showChanges ? "secondary" : "ghost"}
-					>
-						{t("files.allFiles")}
-					</Button>
-				</div>
+						<Button
+							aria-selected={showChanges}
+							className="h-6 rounded px-2 text-2xs"
+							onClick={() => handleViewChange(true)}
+							role="tab"
+							size="sm"
+							type="button"
+							variant={showChanges ? "secondary" : "ghost"}
+						>
+							{t("files.reviewChanges")}
+						</Button>
+						<Button
+							aria-selected={!showChanges}
+							className="h-6 rounded px-2 text-2xs"
+							onClick={() => handleViewChange(false)}
+							role="tab"
+							size="sm"
+							type="button"
+							variant={!showChanges ? "secondary" : "ghost"}
+						>
+							{t("files.allFiles")}
+						</Button>
+					</div>
+				) : null}
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<Button

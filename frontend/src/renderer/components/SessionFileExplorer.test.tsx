@@ -191,8 +191,8 @@ describe("SessionFileExplorer", () => {
 
 		expect(await screen.findByTestId("tree-changed-only")).toHaveTextContent("false");
 		expect(screen.queryByTestId("review-pane")).not.toBeInTheDocument();
-		expect(screen.getByRole("tab", { name: "Changes" })).toBeDisabled();
-		expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.queryByRole("tab", { name: "Changes" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
 	});
 
 	it("keeps the continuous right-side diff visible when opening the full file in center", async () => {
