@@ -77,6 +77,11 @@ type commander interface {
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
 }
 
+type permissionRelaunchCommander interface {
+	AffectedByPermissionChange(ctx context.Context, projectID domain.ProjectID) ([]sessionmanager.AffectedSession, error)
+	RelaunchForPermissionChange(ctx context.Context, projectID domain.ProjectID) ([]sessionmanager.RelaunchOutcome, error)
+}
+
 // interfaceTransitionCommander is an optional command capability. Keeping it
 // separate avoids widening every focused session-service fake while production
 // can expose the feature through the concrete Session Manager.
@@ -131,6 +136,23 @@ const (
 type RestoreOutcome struct {
 	Session domain.Session  `json:"session"`
 	Mode    RestoreModeView `json:"restoreMode"`
+}
+
+// PermissionRelaunchSession is a running worker that will keep its previous
+// approval policy unless the user explicitly relaunches it.
+type PermissionRelaunchSession struct {
+	SessionID domain.SessionID      `json:"sessionId"`
+	Title     string                `json:"title"`
+	Kind      domain.SessionKind    `json:"kind"`
+	FromMode  domain.PermissionMode `json:"fromMode"`
+	ToMode    domain.PermissionMode `json:"toMode"`
+}
+
+// PermissionRelaunchOutcome reports one worker's requested relaunch result.
+type PermissionRelaunchOutcome struct {
+	SessionID domain.SessionID `json:"sessionId"`
+	OK        bool             `json:"ok"`
+	Error     string           `json:"error,omitempty"`
 }
 
 // ResumeAgentOutcome reports the resumed read model and how AO relaunched it.
@@ -586,6 +608,52 @@ func (s *Service) Restore(ctx context.Context, id domain.SessionID) (RestoreOutc
 		return RestoreOutcome{}, err
 	}
 	return RestoreOutcome{Session: session, Mode: restoreModeView(res.Mode)}, nil
+}
+
+// AffectedByPermissionChange lists live workers whose pinned launch permission
+// differs from the project's current setting. The caller uses this read before
+// asking the user whether interrupting those workers is acceptable.
+func (s *Service) AffectedByPermissionChange(ctx context.Context, projectID domain.ProjectID) ([]PermissionRelaunchSession, error) {
+	if _, err := s.requireProject(ctx, projectID); err != nil {
+		return nil, err
+	}
+	manager, ok := s.manager.(permissionRelaunchCommander)
+	if !ok {
+		return nil, apierr.Conflict("PERMISSION_RELAUNCH_UNSUPPORTED", "This build cannot relaunch sessions for a permission change", nil)
+	}
+	affected, err := manager.AffectedByPermissionChange(ctx, projectID)
+	if err != nil {
+		return nil, toAPIError(err)
+	}
+	result := make([]PermissionRelaunchSession, 0, len(affected))
+	for _, item := range affected {
+		result = append(result, PermissionRelaunchSession{
+			SessionID: item.SessionID, Title: item.Title, Kind: item.Kind,
+			FromMode: item.FromMode, ToMode: item.ToMode,
+		})
+	}
+	return result, nil
+}
+
+// RelaunchForPermissionChange applies the current project permission to each
+// worker the user explicitly chose to interrupt.
+func (s *Service) RelaunchForPermissionChange(ctx context.Context, projectID domain.ProjectID) ([]PermissionRelaunchOutcome, error) {
+	if _, err := s.requireProject(ctx, projectID); err != nil {
+		return nil, err
+	}
+	manager, ok := s.manager.(permissionRelaunchCommander)
+	if !ok {
+		return nil, apierr.Conflict("PERMISSION_RELAUNCH_UNSUPPORTED", "This build cannot relaunch sessions for a permission change", nil)
+	}
+	outcomes, err := manager.RelaunchForPermissionChange(ctx, projectID)
+	if err != nil {
+		return nil, toAPIError(err)
+	}
+	result := make([]PermissionRelaunchOutcome, 0, len(outcomes))
+	for _, item := range outcomes {
+		result = append(result, PermissionRelaunchOutcome{SessionID: item.SessionID, OK: item.OK, Error: item.Error})
+	}
+	return result, nil
 }
 
 // ExitAgent stops only the agent controller while preserving the AO session,

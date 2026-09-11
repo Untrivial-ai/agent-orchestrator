@@ -217,6 +217,10 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersProjectOrDegraded":                        "ProjectOrDegraded",
 	"ControllersListSessionsQuery":                        "ListSessionsQuery",
 	"ControllersCleanupSessionsQuery":                     "CleanupSessionsQuery",
+	"ControllersAffectedPermissionRelaunchResponse":       "AffectedPermissionRelaunchResponse",
+	"ControllersPermissionRelaunchSessionItem":            "PermissionRelaunchSessionItem",
+	"ControllersPermissionRelaunchResponse":               "PermissionRelaunchResponse",
+	"ControllersPermissionRelaunchOutcomeItem":            "PermissionRelaunchOutcomeItem",
 	"ControllersListSessionsResponse":                     "ListSessionsResponse",
 	"ControllersSpawnSessionRequest":                      "SpawnSessionRequest",
 	"ControllersSpawnSessionResponse":                     "SpawnSessionResponse",
@@ -1821,6 +1825,30 @@ func projectOperations() []operation {
 
 func sessionOperations() []operation {
 	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/projects/{id}/permission-relaunch/affected", id: "affectedByPermissionChange", tag: "sessions",
+			summary:    "List live workers that need a relaunch to apply the project permission setting",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.AffectedPermissionRelaunchResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/projects/{id}/permission-relaunch", id: "relaunchForPermissionChange", tag: "sessions",
+			summary:    "Relaunch live workers with the current project permission setting",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.PermissionRelaunchResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
 		{
 			method: http.MethodGet, path: "/api/v1/sessions", id: "listSessions", tag: "sessions",
 			summary:    "List sessions",

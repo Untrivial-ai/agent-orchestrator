@@ -31,6 +31,7 @@ import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, type IntakeForm } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
+import { PermissionRelaunchDialog } from "./PermissionRelaunchDialog";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
@@ -48,6 +49,7 @@ const DEFAULT_BRANCH_AUTO = "auto";
 const projectQueryKey = (id: string) => ["project", id] as const;
 
 type SettingsSaveResult = {
+	permissionChanged: boolean;
 	replacementError: string | null;
 	replacementSessionId: string | null;
 	replacementFailure: OrchestratorReplacementFailure | null;
@@ -158,7 +160,9 @@ function SettingsBody({
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
 	const [validationError, setValidationError] = useState<string | null>(null);
+	const [permissionRelaunchOpen, setPermissionRelaunchOpen] = useState(false);
 	const initialOrchestratorAgent = config.orchestrator?.agent ?? "";
+	const initialPermissions = config.agentConfig?.permissions ?? "";
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
 	const agentsQuery = useAgentReadinessQuery();
 	useEnsureAgentReadiness();
@@ -257,6 +261,7 @@ function SettingsBody({
 				body: { displayName, config: next },
 			});
 			if (error) throw new Error(apiErrorMessage(error));
+			const permissionChanged = form.permissions !== initialPermissions;
 			if (
 				form.orchestratorAgent !== initialOrchestratorAgent ||
 				(activeOrchestrator && activeOrchestrator.provider !== form.orchestratorAgent)
@@ -264,6 +269,7 @@ function SettingsBody({
 				try {
 					const sessionId = await spawnOrchestrator(projectId, "settings", true);
 					return {
+						permissionChanged,
 						replacementError: null,
 						replacementSessionId: sessionId,
 						replacementFailure: null,
@@ -278,6 +284,7 @@ function SettingsBody({
 							: {}),
 					};
 					return {
+						permissionChanged,
 						replacementError: replacementFailure.message,
 						replacementSessionId: null,
 						replacementFailure,
@@ -286,6 +293,7 @@ function SettingsBody({
 				}
 			}
 			return {
+				permissionChanged,
 				replacementError: null,
 				replacementSessionId: null,
 				replacementFailure: null,
@@ -296,6 +304,7 @@ function SettingsBody({
 			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
 			setSavedAt(Date.now());
 			setReplacementError(result.replacementError);
+			if (result.permissionChanged) setPermissionRelaunchOpen(true);
 			setValidationError(null);
 			void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
 			const workspaceRefresh = onSaved();
@@ -370,6 +379,7 @@ function SettingsBody({
 	}, [savedAt]);
 
 	return (
+		<>
 		<ProjectSettingsFormView
 			id="project-settings-form"
 			onSubmit={() => {
@@ -615,6 +625,12 @@ function SettingsBody({
 				</>
 			)}
 		</ProjectSettingsFormView>
+		<PermissionRelaunchDialog
+			open={permissionRelaunchOpen}
+			projectId={projectId}
+			onOpenChange={setPermissionRelaunchOpen}
+		/>
+		</>
 	);
 }
 

@@ -66,6 +66,9 @@ type fakeSessionService struct {
 	handoffSource        domain.AgentGenerationID
 	autoInjectCISession  domain.SessionID
 	autoInjectCIEnabled  bool
+	permissionProjectID  domain.ProjectID
+	permissionAffected   []sessionsvc.PermissionRelaunchSession
+	permissionOutcomes   []sessionsvc.PermissionRelaunchOutcome
 }
 
 type fakeInterfaceTransitionSessionService struct {
@@ -437,6 +440,16 @@ func (f *fakeSessionService) Cleanup(_ context.Context, project domain.ProjectID
 		cleaned = []domain.SessionID{"ao-1"}
 	}
 	return sessionsvc.CleanupOutcome{Cleaned: cleaned, Skipped: f.cleanupSkipped}, nil
+}
+
+func (f *fakeSessionService) AffectedByPermissionChange(_ context.Context, projectID domain.ProjectID) ([]sessionsvc.PermissionRelaunchSession, error) {
+	f.permissionProjectID = projectID
+	return f.permissionAffected, nil
+}
+
+func (f *fakeSessionService) RelaunchForPermissionChange(_ context.Context, projectID domain.ProjectID) ([]sessionsvc.PermissionRelaunchOutcome, error) {
+	f.permissionProjectID = projectID
+	return f.permissionOutcomes, nil
 }
 
 func (f *fakeSessionService) Rename(_ context.Context, id domain.SessionID, displayName string) error {
@@ -868,6 +881,28 @@ func (f *fakeSessionService) InvalidateWorkspaceCache(_ domain.SessionID) {}
 
 func newSessionTestServer(t *testing.T, svc *fakeSessionService) *httptest.Server {
 	return newSessionTestServerWithPreview(t, svc, nil)
+}
+
+func TestSessionsAPI_PermissionRelaunch(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.permissionAffected = []sessionsvc.PermissionRelaunchSession{{
+		SessionID: "ao-1", Title: "Fix permission flow", Kind: domain.KindWorker,
+		FromMode: domain.PermissionModeAuto, ToMode: domain.PermissionModeBypassPermissions,
+	}}
+	svc.permissionOutcomes = []sessionsvc.PermissionRelaunchOutcome{{SessionID: "ao-1", OK: true}}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/projects/project-1/permission-relaunch/affected", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"count":1`) || !strings.Contains(string(body), `"fromMode":"auto"`) {
+		t.Fatalf("affected = %d %s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/projects/project-1/permission-relaunch", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"relaunched":1`) || !strings.Contains(string(body), `"failed":0`) {
+		t.Fatalf("relaunch = %d %s", status, body)
+	}
+	if svc.permissionProjectID != "project-1" {
+		t.Fatalf("project id = %q, want project-1", svc.permissionProjectID)
+	}
 }
 
 func newSessionTestServerWithPreview(
