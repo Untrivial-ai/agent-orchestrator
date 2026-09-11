@@ -1208,6 +1208,7 @@
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Abrir panel del inspector",
 	"shell.openInspectorTitle": "Abrir inspector · ⌘⇧B",
+	"shell.openAllSessions": "Abrir todas las sesiones",
 	"shell.openKanban": "Abrir Kanban",
 	"shell.openProjectDashboard": "Abrir panel de {{name}}",
 	"shell.openProjectOrchestrator": "Abrir orquestador de {{name}}",

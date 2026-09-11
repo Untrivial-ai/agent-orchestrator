@@ -356,6 +356,7 @@ function useSelection() {
 		select: (state) => state.location.pathname,
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
+	const goAllSessions = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
 	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
 	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
@@ -373,9 +374,11 @@ function useSelection() {
 	);
 	return useMemo(() => ({
 		isHome: pathname === "/",
+		isAllSessions: pathname === "/sessions",
 		activeProjectId: params.projectId,
 		activeSessionId: params.sessionId,
 		goHome,
+		goAllSessions,
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings,
@@ -383,7 +386,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
+	}), [goAllSessions, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
 }
 
 // Colour tracks the session's board section, preserving SCM state while the
@@ -660,14 +663,18 @@ export function Sidebar({
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
 				>
-					<span
+					<button
+						aria-label={t("shell.openAllSessions")}
 						className={cn(
-							"grid h-5.5 w-5.5 shrink-0 place-items-center",
-							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
+							"grid h-5.5 w-5.5 shrink-0 place-items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50",
+							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:hover:bg-interactive-hover",
+							selection.isAllSessions && "group-data-[collapsible=icon]:bg-interactive-active",
 						)}
+						onClick={selection.goAllSessions}
+						type="button"
 					>
 						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
-					</span>
+					</button>
 					{isWindows ? (
 						<span
 							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"

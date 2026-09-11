@@ -1187,6 +1187,7 @@
 	"shell.nightly": "nightly",
 	"shell.openInspector": "インスペクターパネルを開く",
 	"shell.openInspectorTitle": "インスペクターを開く · ⌘⇧B",
+	"shell.openAllSessions": "すべてのセッションを開く",
 	"shell.openKanban": "カンバンを開く",
 	"shell.openProjectDashboard": "{{name}} のダッシュボードを開く",
 	"shell.openProjectOrchestrator": "{{name}} のオーケストレーターを開く",

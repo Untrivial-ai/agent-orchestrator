@@ -1171,6 +1171,7 @@
 	"shell.nightly": "每日构建",
 	"shell.openInspector": "打开检查器面板",
 	"shell.openInspectorTitle": "打开检查器 · ⌘⇧B",
+	"shell.openAllSessions": "打开所有会话",
 	"shell.openKanban": "打开看板",
 	"shell.openProjectDashboard": "打开 {{name}} 看板",
 	"shell.openProjectOrchestrator": "打开 {{name}} 编排器",

@@ -1187,6 +1187,7 @@
 	"shell.nightly": "nightly",
 	"shell.openInspector": "인스펙터 패널 열기",
 	"shell.openInspectorTitle": "인스펙터 열기 · ⌘⇧B",
+	"shell.openAllSessions": "모든 세션 열기",
 	"shell.openKanban": "칸반 열기",
 	"shell.openProjectDashboard": "{{name}} 대시보드 열기",
 	"shell.openProjectOrchestrator": "{{name}} 오케스트레이터 열기",
