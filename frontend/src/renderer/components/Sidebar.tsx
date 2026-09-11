@@ -918,7 +918,8 @@ const ProjectItem = memo(function ProjectItem({
 	const [isSpawning, setIsSpawning] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
-	// expand/collapse toggles.	const [animReady, setAnimReady] = useState(false);
+	// expand/collapse toggles.
+	const [animReady, setAnimReady] = useState(false);
 	const hasInteractedWithDisclosure = useRef(false);
 	useEffect(() => {
 		const id = window.setTimeout(() => setAnimReady(true), 500);
@@ -1450,6 +1451,8 @@ function SessionRow({
 	session: WorkspaceSession;
 	active: boolean;
 	indented?: boolean;
+	/** Not used in the native-drag implementation; accepted for call-site compatibility. */
+	disableLayout?: boolean;
 	onOpen: () => void;
 	/** Present only for rows inside a reorderable project list. */
 	reorder?: SessionReorder;
