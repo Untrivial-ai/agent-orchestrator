@@ -189,7 +189,24 @@ function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
 }
 
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
-	if (event.metaKey || event.shiftKey) return null;
+	if (event.shiftKey) return null;
+
+	// macOS Command+Left/Right → readline beginning/end of line. Do not treat
+	// the Windows key (metaKey on Win/Linux) as Command, and do not rewrite
+	// Windows Home/End: those must fall through to xterm's native sequences
+	// because Ctrl+A is SelectAll in default PSReadLine (#3093).
+	if (event.metaKey && !event.ctrlKey && !event.altKey && isMacPlatform()) {
+		switch (event.key) {
+			case "ArrowLeft":
+				return "\x01";
+			case "ArrowRight":
+				return "\x05";
+			default:
+				return null;
+		}
+	}
+
+	if (event.metaKey) return null;
 
 	if (event.altKey && !event.ctrlKey) {
 		switch (event.key) {
@@ -1352,23 +1369,20 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			notifyCursorSchemeRef.current = () => {};
 			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			const disposeTerminal = () => {
+			// xterm's Viewport queues an untracked zero-delay scroll-area sync during
+			// open(). React StrictMode immediately runs this cleanup once after mount;
+			// disposing the renderer before that queued sync runs makes xterm read the
+			// now-missing renderer dimensions. Queue disposal behind xterm's task so
+			// the terminal remains internally valid until its own initialization work
+			// has drained. All AO listeners and attachment state are already detached.
+			window.setTimeout(() => {
 				try {
 					term.dispose();
 				} catch {
 					// Some renderer addons can throw during dispose in certain GPU
 					// environments; the terminal is being torn down regardless.
 				}
-			};
-			if (import.meta.env.DEV) {
-				// xterm's Viewport constructor queues an untracked zero-delay
-				// syncScrollArea(). React StrictMode immediately runs this cleanup after
-				// its development probe mount; queue disposal behind that callback so it
-				// cannot read the already-cleared renderer dimensions.
-				window.setTimeout(disposeTerminal, 0);
-			} else {
-				disposeTerminal();
-			}
+			}, 0);
 		};
 	}, []);
 

@@ -1,0 +1,36 @@
+providers:
+  azure-claude:
+    baseUrl: https://xds.services.ai.azure.com/openai/v1
+    api: azure-openai-responses
+    apiKey: AZURE_OPENAI_API_KEY
+    models:
+      - id: claude-opus-4-8
+        name: Claude Opus 4.8 (Azure)
+        input: [text, image]
+        supportsTools: true
+        contextWindow: 1000000
+        maxTokens: 128000
+      - id: claude-sonnet-4-6
+        name: Claude Sonnet 4.6 (Azure)
+        input: [text, image]
+        supportsTools: true
+        contextWindow: 1000000
+        maxTokens: 128000
+      - id: claude-haiku-4-5
+        name: Claude Haiku 4.5 (Azure)
+        input: [text, image]
+        supportsTools: true
+        contextWindow: 200000
+        maxTokens: 32768
+*** Add File: omp-opus-config.yml
+modelRoles:
+  default: azure-claude/claude-opus-4-8
+theme:
+  dark: titanium
+  light: light
+symbolPreset: unicode
+memory:
+  backend: local
+setupVersion: 2
+composer:
+  shape: claude

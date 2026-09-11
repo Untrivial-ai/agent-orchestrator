@@ -93,17 +93,23 @@ func TestEditQueuedTurnRouteRefusals(t *testing.T) {
 		name   string
 		err    error
 		status int
+		code   string
 	}{
-		{"empty", chatsvc.ErrQueuedTurnTextRequired, http.StatusBadRequest},
-		{"invalid content", chatsvc.ErrQueuedContentInvalid, http.StatusBadRequest},
-		{"stale revision", chatsvc.ErrQueuedEditConflict, http.StatusConflict},
-		{"already dispatched", store.ErrQueuedTurnNotAvailable, http.StatusConflict},
+		{"empty", chatsvc.ErrQueuedTurnTextRequired, http.StatusBadRequest, "CHAT_QUEUED_TEXT_REQUIRED"},
+		{"invalid content", chatsvc.ErrQueuedContentInvalid, http.StatusBadRequest, "CHAT_QUEUED_CONTENT_INVALID"},
+		{"stale revision", chatsvc.ErrQueuedEditConflict, http.StatusConflict, "CHAT_QUEUED_EDIT_CONFLICT"},
+		{"reused recovery key", store.ErrQueuedEditDeliveryConflict, http.StatusConflict, "CHAT_QUEUED_EDIT_IDEMPOTENCY_CONFLICT"},
+		{"already dispatched", store.ErrQueuedTurnNotAvailable, http.StatusConflict, "CHAT_TURN_NOT_QUEUED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &editQueuedStub{fakeConversationService: &fakeConversationService{}, err: tc.err}
-			if status := postEditQueuedTurn(t, svc, "turn-queued", map[string]any{"text": "update"}); status != tc.status {
-				t.Fatalf("status = %d, want %d", status, tc.status)
-			}
+			router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{
+				Sessions: newFakeSessionService(), Conversations: svc,
+			}, httpd.ControlDeps{})
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/p1-1/conversation/turns/turn-queued/queue/edit", bytes.NewBufferString(`{"text":"update"}`))
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			assertErrorCode(t, response.Body.Bytes(), response.Code, tc.status, tc.code)
 		})
 	}
 }

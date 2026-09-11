@@ -325,6 +325,7 @@ function useSelection() {
 		select: (state) => state.location.pathname,
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
+	const goAllSessions = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
 	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
 	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
@@ -342,9 +343,11 @@ function useSelection() {
 	);
 	return useMemo(() => ({
 		isHome: pathname === "/",
+		isAllSessions: pathname === "/sessions",
 		activeProjectId: params.projectId,
 		activeSessionId: params.sessionId,
 		goHome,
+		goAllSessions,
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings,
@@ -352,7 +355,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
+	}), [goAllSessions, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
 }
 
 // Colour tracks the session's board section, preserving SCM state while the
@@ -480,6 +483,14 @@ export function Sidebar({
 		onExpand: () => setOpen(true),
 	});
 
+	// Suppress layout animations for the first 500ms so background session
+	// re-sorts during daemon settle don't cause visible row shuffling.
+	const [layoutSettled, setLayoutSettled] = useState(false);
+	useEffect(() => {
+		const timer = window.setTimeout(() => setLayoutSettled(true), 500);
+		return () => window.clearTimeout(timer);
+	}, []);
+
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const orderedWorkspaces = useMemo(
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
@@ -601,14 +612,18 @@ export function Sidebar({
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
 				>
-					<span
+					<button
+						aria-label={t("shell.openAllSessions")}
 						className={cn(
-							"grid h-5.5 w-5.5 shrink-0 place-items-center",
-							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
+							"grid h-5.5 w-5.5 shrink-0 place-items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50",
+							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:hover:bg-interactive-hover",
+							selection.isAllSessions && "group-data-[collapsible=icon]:bg-interactive-active",
 						)}
+						onClick={selection.goAllSessions}
+						type="button"
 					>
 						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
-					</span>
+					</button>
 					{isWindows ? (
 						<span
 							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
@@ -676,6 +691,7 @@ export function Sidebar({
 									key={session.id}
 									session={session}
 									active={selection.activeSessionId === session.id}
+									layoutSettled={layoutSettled}
 									onOpenSession={selection.goSession}
 								/>
 								))}
@@ -738,8 +754,7 @@ export function Sidebar({
 									className="pointer-events-none absolute inset-x-0 z-[70] h-px rounded-full bg-foreground transition-opacity duration-100"
 									style={{ top: dropLine.top, opacity: dropLine.visible ? 1 : 0 }}
 								/>
-							</SidebarMenu>
-						)}
+							</SidebarMenu>						)}
 					</SidebarGroupContent>
 				</SidebarGroup>
 			</SidebarContent>
@@ -865,8 +880,7 @@ type ProjectItemProps = {
 	workspace: WorkspaceSummary;
 	expanded: boolean;
 	selection: Selection;
-	isDragged: boolean;
-	onToggle: (projectId: string) => void;
+	isDragged: boolean;	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
 	onProjectDragStart: (event: ReactDragEvent<HTMLElement>, projectId: string) => void;
@@ -879,8 +893,7 @@ const ProjectItem = memo(function ProjectItem({
 	workspace,
 	expanded,
 	selection,
-	isDragged,
-	onToggle,
+	isDragged,	onToggle,
 	onRemoveProject,
 	suppressInitialExpandAnimation,
 	onProjectDragStart,
@@ -905,12 +918,11 @@ const ProjectItem = memo(function ProjectItem({
 	const [isSpawning, setIsSpawning] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
-	// expand/collapse toggles.
-	const [animReady, setAnimReady] = useState(false);
+	// expand/collapse toggles.	const [animReady, setAnimReady] = useState(false);
 	const hasInteractedWithDisclosure = useRef(false);
 	useEffect(() => {
-		const id = requestAnimationFrame(() => setAnimReady(true));
-		return () => cancelAnimationFrame(id);
+		const id = window.setTimeout(() => setAnimReady(true), 500);
+		return () => window.clearTimeout(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
@@ -1081,8 +1093,7 @@ const ProjectItem = memo(function ProjectItem({
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
 					onDragOver={(event) => onProjectDragOver(event, workspace.id)}
-					onDrop={onProjectDrop}
-				>
+					onDrop={onProjectDrop}				>
 					<div
 						className="relative"
 						data-project-drag-row=""
@@ -1324,8 +1335,7 @@ const ProjectItem = memo(function ProjectItem({
 														))}
 													</SidebarMenuSub>
 												</SortableContext>
-											</DndContext>
-								</motion.div>
+											</DndContext>								</motion.div>
 					</div>
 							</motion.div>
 						)}
@@ -1373,14 +1383,16 @@ const ProjectItem = memo(function ProjectItem({
 const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
+	layoutSettled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	layoutSettled: boolean;
 	onOpenSession: (projectId: string, sessionId: string) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
-	return <SessionRow session={session} active={active} indented={false} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders

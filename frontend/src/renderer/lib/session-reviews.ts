@@ -8,6 +8,7 @@ import { usesPreviewWorkspaceData as usePreviewData } from "./preview-mode";
 export type PRReviewState = components["schemas"]["PRReviewState"];
 export type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 export type ReviewRunFacts = components["schemas"]["ReviewRun"];
+export type ReviewerActivityState = ReviewsResponse["reviewerActivityState"];
 
 /**
  * Shared query options for a session's AO review states. The query key is the
@@ -48,6 +49,28 @@ export function openReviewStatesFor(session: WorkspaceSession, reviewStates: PRR
 
 export function reviewIsRunning(openReviewStates: PRReviewState[]): boolean {
 	return openReviewStates.some((reviewState) => reviewState.status === "running");
+}
+
+export function reviewHasLiveActivity(
+	openReviewStates: PRReviewState[],
+	reviewerActivityState: ReviewerActivityState | undefined,
+	hasReviewerSession: boolean,
+): boolean {
+	if (!reviewIsRunning(openReviewStates)) return false;
+	if (!hasReviewerSession) return false;
+	switch (reviewerActivityState) {
+		case "idle":
+		case "waiting_input":
+		case "exited":
+			return false;
+		case "active":
+		case "blocked":
+			return true;
+		default:
+			// Older daemons do not return reviewer activity state. Keep today's
+			// running-run semantics until a hook says otherwise.
+			return true;
+	}
 }
 
 export function reviewRunDisabled(openReviewStates: PRReviewState[], isTriggering: boolean): boolean {

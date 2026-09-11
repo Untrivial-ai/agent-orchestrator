@@ -71,8 +71,13 @@ export const MOBILE_ALLOWLIST: Record<string, Readonly<Record<string, PropRule>>
 	},
 	[MOBILE_EVENTS.featureUsed]: {
 		feature: {
-			oneOf: ["spawn", "merge", "kill", "restore", "conductor", "send"],
+			oneOf: ["spawn", "merge", "kill", "restore", "conductor", "send", "handoff"],
 		},
 		outcome: { oneOf: ["succeeded", "failed"] },
+		// The chat/tui interface. Set on spawn and conductor (the mode the session
+		// starts in) and on handoff (the mode it switches to). Absent on the other
+		// features, which are mode-agnostic. Only the two enum values ever leave the
+		// device; no titles or paths ride on this.
+		mode: { oneOf: ["chat", "tui"] },
 	},
 };

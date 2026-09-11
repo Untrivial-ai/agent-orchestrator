@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
@@ -64,10 +65,30 @@ type harnessProbe struct {
 	ExpectedVersionPrefix string
 }
 
-var doctorHarnesses = []harnessProbe{
-	{Name: "claude-code", BinaryName: "claude", VersionArg: "--version"},
-	{Name: "codex", BinaryName: "codex", VersionArg: "--version"},
-	{Name: "muse", BinaryName: "muse", VersionArg: "--version", ExpectedVersionPrefix: "Muse Code "},
+type harnessProbeSpec struct {
+	BinaryName            string
+	VersionArg            string
+	ExpectedVersionPrefix string
+}
+
+// harnessProbeSpecs overrides per-harness probe settings for agent harnesses whose
+// binary name or version flags differ from the default convention (where BinaryName
+// defaults to the harness ID and VersionArg is empty for PATH-only probing).
+var harnessProbeSpecs = map[string]harnessProbeSpec{
+	"claude-code": {BinaryName: "claude", VersionArg: "--version"},
+	"codex":       {BinaryName: "codex", VersionArg: "--version"},
+	"opencode":    {BinaryName: "opencode", VersionArg: "--version"},
+	"muse":        {BinaryName: "muse", VersionArg: "--version", ExpectedVersionPrefix: "Muse Code "},
+	"aider":       {BinaryName: "aider", VersionArg: "--version"},
+	"goose":       {BinaryName: "goose", VersionArg: "--version"},
+	"grok":        {BinaryName: "grok", VersionArg: "--version"},
+	"devin":       {BinaryName: "devin", VersionArg: "--version"},
+	"kimi":        {BinaryName: "kimi", VersionArg: "--version"},
+	"kiro":        {BinaryName: "kiro-cli", VersionArg: "--version"},
+	"kilocode":    {BinaryName: "kilocode", VersionArg: "--version"},
+	"omp":         {BinaryName: "omp", VersionArg: "--version"},
+	"cursor":      {BinaryName: "cursor-agent"},
+	"continue":    {BinaryName: "cn"},
 }
 
 func newDoctorCommand(ctx *commandContext) *cobra.Command {
@@ -181,8 +202,19 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 		c.checkTerminalRuntime(ctx),
 		c.checkAOBinary(daemonExe),
 	)
-	for _, harness := range doctorHarnesses {
-		checks = append(checks, c.checkHarness(ctx, harness))
+	for _, ha := range registry.Harnessed() {
+		id := string(ha.Harness)
+		spec := harnessProbeSpecs[id]
+		binaryName := spec.BinaryName
+		if binaryName == "" {
+			binaryName = id
+		}
+		checks = append(checks, c.checkHarness(ctx, harnessProbe{
+			Name:                  id,
+			BinaryName:            binaryName,
+			VersionArg:            spec.VersionArg,
+			ExpectedVersionPrefix: spec.ExpectedVersionPrefix,
+		}))
 	}
 	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks

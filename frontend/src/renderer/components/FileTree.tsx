@@ -7,10 +7,12 @@ import { cn } from "../lib/utils";
 import { WorkspaceEntryIcon } from "./WorkspaceEntryIcon";
 import { statusLabel, statusTone } from "../lib/workspace-file-status";
 import {
+	buildWorkspaceFileTree,
 	sessionWorkspaceTreeQueryOptions,
 	type TreeNode,
 	type WorkspaceTreeEntry,
 } from "../hooks/useSessionWorkspaceTree";
+import { sessionWorkspaceSearchQueryOptions } from "../hooks/useSessionWorkspaceFiles";
 
 const ROW_HEIGHT = 28;
 const INDENT = 14;
@@ -89,20 +91,19 @@ export function FileTree({
 	const queryClient = useQueryClient();
 	const treeApiRef = useRef<TreeApi<TreeNode> | null>(null);
 	const loadedDirsRef = useRef<Set<string>>(new Set());
-	const searchHydrationRef = useRef<{ sessionId: string; started: boolean }>({
-		sessionId,
-		started: false,
-	});
 	const [lazyData, setLazyData] = useState<TreeNode[]>([]);
 	const [containerRef, size] = useContainerSize();
-	const searchActive = Boolean(filterText.trim());
+	const normalizedFilter = filterText.trim();
 
-	const rootQuery = useQuery({ ...sessionWorkspaceTreeQueryOptions(sessionId, ""), enabled: !changedOnly });
+	const rootQuery = useQuery({ ...sessionWorkspaceTreeQueryOptions(sessionId, ""), enabled: !changedOnly && normalizedFilter.length === 0 });
+	const searchQuery = useQuery({
+		...sessionWorkspaceSearchQueryOptions(sessionId, normalizedFilter, t("files.error.searchWorkspace")),
+		enabled: !changedOnly && normalizedFilter.length > 0,
+	});
 
 	useEffect(() => {
 		setLazyData([]);
 		loadedDirsRef.current = new Set();
-		searchHydrationRef.current = { sessionId, started: false };
 	}, [sessionId]);
 
 	useEffect(() => {
@@ -110,44 +111,6 @@ export function FileTree({
 		loadedDirsRef.current.add("");
 		setLazyData((current) => mergeRootEntries(current, rootQuery.data.entries));
 	}, [changedOnly, rootQuery.data]);
-
-	useEffect(() => {
-		if (changedOnly || !searchActive || !rootQuery.data) return;
-		const hydration = searchHydrationRef.current;
-		if (hydration.sessionId !== sessionId) {
-			searchHydrationRef.current = { sessionId, started: false };
-		}
-		if (searchHydrationRef.current.started) return;
-		searchHydrationRef.current.started = true;
-		let cancelled = false;
-		const loadDirectory = async (entries: WorkspaceTreeEntry[]): Promise<TreeNode[]> =>
-			Promise.all(
-				entries.map(async (entry) => {
-					const node = entryToNode(entry);
-					if (node.type !== "dir") return node;
-					const result = await queryClient.fetchQuery(
-						sessionWorkspaceTreeQueryOptions(sessionId, node.path, t("files.error.loadWorkspaceTree")),
-					);
-					loadedDirsRef.current.add(node.path);
-					return { ...node, children: await loadDirectory(result.entries) };
-				}),
-			);
-		void loadDirectory(rootQuery.data.entries)
-			.then((nodes) => {
-				if (!cancelled) setLazyData(nodes);
-			})
-			.catch(() => {
-				// Keep the already loaded tree usable; React Query retains the
-				// request error so a later search can retry the missing branch.
-				if (!cancelled) searchHydrationRef.current.started = false;
-			});
-		return () => {
-			cancelled = true;
-		};
-		// `filterText` is intentionally reduced to whether search is active. The
-		// recursive read makes a complete local tree once; repeating it for every
-		// character turns fast typing into overlapping workspace scans.
-	}, [changedOnly, queryClient, rootQuery.data, searchActive, sessionId, t]);
 
 	const loadChildren = useCallback(
 		async (dir: string) => {
@@ -183,16 +146,19 @@ export function FileTree({
 		[onSelectPath],
 	);
 
-	const data = changedOnly ? changedOnlyData : lazyData;
-	const isEmpty = data.length === 0 && (changedOnly || (rootQuery.isFetched && !rootQuery.isError));
+	const searchData = buildWorkspaceFileTree(searchQuery.data?.results ?? []);
+	const data = changedOnly ? changedOnlyData : normalizedFilter ? searchData : lazyData;
+	const isPending = !changedOnly && (normalizedFilter ? searchQuery.isPending : rootQuery.isPending);
+	const activeError = !changedOnly && (normalizedFilter ? searchQuery.error : rootQuery.error);
+	const isEmpty = data.length === 0 && (changedOnly || (!isPending && !activeError));
 
 	return (
 		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background" ref={containerRef}>
-			{rootQuery.isPending && !changedOnly ? (
+			{isPending ? (
 				<p className="p-3 text-xs text-muted-foreground">{t("files.loading")}</p>
 			) : null}
-			{rootQuery.isError && !changedOnly ? (
-				<p className="p-3 text-xs text-error">{rootQuery.error.message || t("files.error.loadWorkspaceTree")}</p>
+			{activeError ? (
+				<p className="p-3 text-xs text-error">{activeError.message || t("files.error.loadWorkspaceTree")}</p>
 			) : null}
 			{isEmpty ? <p className="p-3 text-xs text-muted-foreground">{t("files.explorer.empty")}</p> : null}
 			{size.width > 0 && size.height > 0 ? (
@@ -202,13 +168,13 @@ export function FileTree({
 					idAccessor="path"
 					onToggle={handleToggle}
 					onActivate={handleActivate}
-					openByDefault={false}
+					openByDefault={!changedOnly && normalizedFilter.length > 0}
 					selection={selectedPath ?? undefined}
 					disableDrag
 					disableDrop
 					disableEdit
 					disableMultiSelection
-					searchTerm={filterText}
+					searchTerm={changedOnly ? filterText : ""}
 					rowHeight={ROW_HEIGHT}
 					indent={INDENT}
 					width={size.width}

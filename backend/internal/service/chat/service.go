@@ -522,6 +522,12 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, err
 		}
 	}
+	if !liveReconnect && cfg.Harness == domain.HarnessOpenCode && conversation.Settings.OpenCodeMode != "" {
+		if err := restoreOpenCodeMode(ctx, conv, conversation.Settings.OpenCodeMode); err != nil {
+			cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+			return nil, err
+		}
+	}
 	var liveRows ConversationRows
 	if liveReconnect {
 		if s.reader == nil {
@@ -1388,12 +1394,40 @@ func (s *Service) SetConfigOption(
 		return nil, err
 	}
 	options = permissionConfigOptions(record.Harness, options)
-	if settings, changed := settingsFromConfigOptions(controller.Settings(), options); changed {
+	previous := controller.Settings()
+	settings, _ := settingsFromConfigOptions(previous, options)
+	if record.Harness == domain.HarnessOpenCode && configID == "mode" {
+		for _, option := range options {
+			if option.ID == "mode" {
+				settings.OpenCodeMode = option.Current.Select
+			}
+		}
+	}
+	if settings != previous {
 		if err := controller.SetSettings(ctx, settings); err != nil {
 			return nil, err
 		}
 	}
 	return options, nil
+}
+
+// Restore the provider-owned choice before publishing a controller. A rejected
+// Plan restore must not silently leave a usable controller in Build mode.
+func restoreOpenCodeMode(ctx context.Context, conv ports.ChatConversation, mode string) error {
+	configurer, ok := conv.(ports.ChatConfigOptionController)
+	if !ok {
+		return fmt.Errorf("restore OpenCode mode %q: %w", mode, ErrConfigOptionsUnsupported)
+	}
+	options, err := configurer.SetConfigOption(ctx, "mode", ports.ChatConfigOptionValue{Select: mode})
+	if err != nil {
+		return fmt.Errorf("restore OpenCode mode %q: %w", mode, err)
+	}
+	for _, option := range options {
+		if option.ID == "mode" && option.Current.Select == mode {
+			return nil
+		}
+	}
+	return fmt.Errorf("restore OpenCode mode %q: provider did not confirm selected mode", mode)
 }
 
 func settingsFromConfigOptions(
@@ -1506,6 +1540,10 @@ func (s *Service) SetTurnSettings(
 	if err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	controller.configMu.Lock()
+	defer controller.configMu.Unlock()
+	// The turn-settings endpoint does not own provider session mode choices.
+	settings.OpenCodeMode = controller.Settings().OpenCodeMode
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
 	}
