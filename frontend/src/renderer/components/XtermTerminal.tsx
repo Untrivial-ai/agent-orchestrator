@@ -270,6 +270,10 @@ type XtermInternal = Terminal & {
 		_selectionService?: {
 			enable: () => void;
 			shouldForceSelection: (event: MouseEvent) => boolean;
+			// xterm installs this listener on document while a drag selection is
+			// active. It is private, but xterm exposes no public hook for changing
+			// the document-wide drag behavior.
+			_mouseMoveListener?: EventListener;
 		};
 	};
 };
@@ -330,6 +334,27 @@ function forceSelectionMode(term: Terminal): void {
 function configureScrollbarReservation(term: Terminal): void {
 	const viewport = (term as XtermInternal)._core?.viewport;
 	if (viewport) viewport.scrollBarWidth = isMacPlatform() ? MAC_TERMINAL_SCROLLBAR_WIDTH : 0;
+}
+
+// xterm deliberately keeps drag selection listening on document. When a drag
+// leaves the terminal horizontally, its coordinate conversion clamps the pointer
+// to the last terminal column. In split layouts that turns a drag into the
+// neighboring inspector into a selection of a full-width TUI sidebar (OpenCode
+// is the visible example). Keep vertical overflow intact for xterm's standard
+// drag-to-scroll behavior, but do not extend a selection into a sibling pane.
+function confineDragSelectionToTerminalWidth(term: Terminal): void {
+	const internal = term as XtermInternal;
+	const selectionService = internal._core?._selectionService;
+	const element = internal._core?.element;
+	const originalMouseMoveListener = selectionService?._mouseMoveListener;
+	if (!selectionService || !element || !originalMouseMoveListener) return;
+
+	selectionService._mouseMoveListener = (event: Event) => {
+		if (!(event instanceof MouseEvent)) return;
+		const { left, right } = element.getBoundingClientRect();
+		if (event.clientX < left || event.clientX > right) return;
+		originalMouseMoveListener(event);
+	};
 }
 
 export function XtermTerminal(props: XtermTerminalProps) {
@@ -584,6 +609,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		loadRenderer(term);
 		term.options.macOptionClickForcesSelection = true;
 		forceSelectionMode(term);
+		confineDragSelectionToTerminalWidth(term);
 
 		// xterm 5's native viewport scrollbar follows macOS's system auto-hide
 		// preference even when its WebKit pseudo-elements are styled. Keep the

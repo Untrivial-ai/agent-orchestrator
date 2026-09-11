@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
 		findPrevious: ReturnType<typeof vi.fn>;
 		resultListeners: Set<(results: { resultCount: number; resultIndex: number }) => void>;
 	},
+	mouseMoveListener: vi.fn(),
 	lastTerminal: null as null | {
 		write(data: Uint8Array, done?: () => void): void;
 		keyHandler?: (event: KeyboardEvent) => boolean;
@@ -42,11 +43,15 @@ const state = vi.hoisted(() => ({
 		selectionListeners: Set<() => void>;
 		scrollListeners: Set<() => void>;
 		_core: {
-			element: { classList: { add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> } };
+			element: {
+				classList: { add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> };
+				getBoundingClientRect: () => DOMRect;
+			};
 			viewport: { scrollBarWidth: number };
 			_selectionService: {
 				enable: ReturnType<typeof vi.fn>;
 				shouldForceSelection: (event: MouseEvent) => boolean;
+				_mouseMoveListener?: EventListener;
 			};
 		};
 	},
@@ -93,11 +98,15 @@ vi.mock("@xterm/xterm", () => ({
 		scrollListeners = new Set<() => void>();
 		writeBuffer = "";
 		_core = {
-			element: { classList: { add: vi.fn(), remove: vi.fn() } },
+			element: {
+				classList: { add: vi.fn(), remove: vi.fn() },
+				getBoundingClientRect: () => ({ left: 0, right: 800 }) as DOMRect,
+			},
 			viewport: { scrollBarWidth: 15 },
 			_selectionService: {
 				enable: vi.fn(),
 				shouldForceSelection: () => false,
+				_mouseMoveListener: state.mouseMoveListener,
 			},
 		};
 
@@ -224,6 +233,7 @@ describe("XtermTerminal", () => {
 		state.lastTerminal = null;
 		state.linkHandler = null;
 		state.searchAddon = null;
+		state.mouseMoveListener.mockClear();
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("");
@@ -2033,5 +2043,16 @@ describe("XtermTerminal", () => {
 		window.removeEventListener("drop", bubbled);
 		expect(bubbled).toHaveBeenCalledTimes(1);
 		expect(saveDroppedFile).not.toHaveBeenCalled();
+	});
+
+	it("does not extend a drag selection into a neighboring pane", () => {
+		render(<XtermTerminal theme="dark" />);
+		const listener = state.lastTerminal!._core._selectionService._mouseMoveListener!;
+
+		listener(new MouseEvent("mousemove", { clientX: 801 }));
+		expect(state.mouseMoveListener).not.toHaveBeenCalled();
+
+		listener(new MouseEvent("mousemove", { clientX: 800 }));
+		expect(state.mouseMoveListener).toHaveBeenCalledTimes(1);
 	});
 });
