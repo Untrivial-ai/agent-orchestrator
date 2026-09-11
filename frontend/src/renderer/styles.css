@@ -3521,6 +3521,7 @@ html.sidebar-reordering * {
  * (gap width + x-transform). Dragging updates --ao-inspector-w directly. */
 
 .session-inspector__topbar {
+	position: relative;
 	background: var(--bg);
 	color: var(--fg);
 	user-select: none;
@@ -4259,7 +4260,9 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 }
 
 .browser-popout-overlay .browser-panel__toolbar,
-.browser-popout-overlay .browser-panel__toolbar * {
+.browser-popout-overlay .browser-panel__toolbar *,
+.browser-panel__address-bar,
+.browser-panel__address-bar * {
 	-webkit-app-region: no-drag;
 }
 
@@ -4280,19 +4283,53 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	box-shadow: none;
 }
 
-.browser-panel__toolbar {
+.browser-panel__topbar-host,
+.browser-panel__address-bar {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+}
+
+.browser-panel__address-bar {
+	height: var(--size-inspector-tabs);
+	justify-content: center;
+}
+
+.browser-panel__topbar-host > .browser-panel__address-bar {
+	position: absolute;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 240px;
+	pointer-events: auto;
+}
+
+.browser-panel > .browser-panel__address-bar {
+	width: 100%;
+	flex: 0 0 var(--size-inspector-tabs);
+	padding: 0 4px;
+}
+
+.browser-panel__tab-row {
 	container-name: browser-toolbar;
 	container-type: inline-size;
 	display: flex;
+	height: 36px;
 	align-items: center;
 	gap: 2px;
 	flex-shrink: 0;
 	min-width: 0;
-	/* Keep the toolbar close to the 28px controls, matching the compact sidebar
-	   chrome instead of adding a loose band around every browser action. */
-	min-height: 0;
-	padding: 0 2px 4px;
+	padding: 4px;
 	background: var(--bg);
+}
+
+.browser-panel__toolbar,
+.browser-panel__tab-bar {
+	display: contents;
+}
+
+.browser-panel__toolbar > .browser-panel__navigation-control,
+.browser-panel__toolbar > .browser-panel__navigation-btn {
+	order: -1;
 }
 
 /* Keep the URL field useful in the narrow inspector. The selected profile name
@@ -4319,16 +4356,6 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	container-type: inline-size;
 }
 
-.browser-panel__tab-bar {
-	display: flex;
-	height: 36px;
-	min-width: 0;
-	align-items: center;
-	gap: 2px;
-	padding: 0 4px;
-	background: var(--bg);
-}
-
 .browser-panel__tab-actions {
 	margin-left: auto;
 	padding-left: 4px;
@@ -4336,6 +4363,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-actions button,
 .browser-panel__toolbar button,
+.browser-panel__address-bar button,
 .browser-panel__tab-new,
 .browser-panel__tab-close {
 	color: var(--fg-muted);
@@ -4349,12 +4377,14 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-actions button:not(:disabled):hover,
-.browser-panel__toolbar button:not(:disabled):hover {
+.browser-panel__toolbar button:not(:disabled):hover,
+.browser-panel__address-bar button:not(:disabled):hover {
 	color: var(--fg);
 }
 
 .browser-panel__tab-actions button:not(:disabled):active,
-.browser-panel__toolbar button:not(:disabled):active {
+.browser-panel__toolbar button:not(:disabled):active,
+.browser-panel__address-bar button:not(:disabled):active {
 	transform: scale(0.98);
 	transform-origin: center;
 }
@@ -4363,7 +4393,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	position: relative;
 	display: flex;
 	min-width: 0;
-	flex: 0 1 auto;
+	flex: 1 1 0;
 	overflow: hidden;
 }
 
@@ -4559,6 +4589,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	position: relative;
 	min-width: 0;
 	flex: 1;
+	max-width: 240px;
 	height: var(--size-control-md);
 }
 
@@ -4576,6 +4607,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: var(--bg);
 	font-family: var(--font-family-base);
 	font-size: 12px;
+	text-align: center;
 	transition:
 		border-color var(--duration-fast) ease,
 		box-shadow var(--duration-fast) ease;
@@ -4583,6 +4615,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__url-input:focus,
 .browser-panel__url-input:focus-visible {
+	text-align: left;
 	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
 	box-shadow: none;
 	outline: none;
@@ -4614,6 +4647,11 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	flex: 1;
 	min-height: 0;
 	overflow: hidden;
+	background: var(--bg);
+}
+
+.browser-panel__body {
+	padding: 4px;
 	background: var(--bg);
 }
 

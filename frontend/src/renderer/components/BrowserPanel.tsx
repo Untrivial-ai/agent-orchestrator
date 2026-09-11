@@ -9,6 +9,7 @@ import {
 	type FocusEvent,
 	type FormEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
 	DndContext,
@@ -145,6 +146,7 @@ type BrowserPanelProps = {
 	active: boolean;
 	poppedOut: boolean;
 	onTogglePopOut: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+	topbarHost?: HTMLElement | null;
 };
 
 type AnnotationStatus = "idle" | "picking" | "queued" | "sending" | "sent" | "error";
@@ -312,6 +314,7 @@ export function BrowserPanel({
 	active,
 	poppedOut,
 	onTogglePopOut,
+	topbarHost,
 }: BrowserPanelProps) {
 	const browserView = useBrowserView({
 		sessionId: session.id,
@@ -332,6 +335,7 @@ export function BrowserPanel({
 			onTogglePopOut={onTogglePopOut}
 			poppedOut={poppedOut}
 			session={session}
+			topbarHost={topbarHost}
 		/>
 	);
 }
@@ -342,6 +346,7 @@ export function BrowserPanelView({
 	onTogglePopOut,
 	browserView,
 	annotationQueue,
+	topbarHost,
 }: BrowserPanelProps & { annotationQueue: BrowserAnnotationQueueModel; browserView: BrowserViewModel }) {
 	const { t } = useTranslation();
 	const {
@@ -724,6 +729,54 @@ export function BrowserPanelView({
 							? error
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
+	const browserAddressBar = (
+		<form
+			className="browser-panel__address-bar min-w-0 flex-1"
+			data-testid="browser-address-bar"
+			onSubmit={submit}
+		>
+			<div className="browser-panel__url-wrap relative min-w-0 flex-1">
+				<Input
+					aria-label={t("browser.url")}
+					className="browser-panel__url-input h-browser-url text-xs"
+					list={historySuggestions.length > 0 ? historyListId : undefined}
+					onBlur={endUrlEditing}
+					onChange={(event) => handleURLChange(event.target.value)}
+					onClick={() => urlInputRef.current?.select()}
+					onFocus={beginUrlEditing}
+					placeholder={t("browser.urlPlaceholder")}
+					ref={urlInputRef}
+					value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
+				/>
+				{isWebLink(navState.url) ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={t("inspector.openInSystemBrowser")}
+								className="browser-panel__url-external"
+								onClick={openCurrentPageExternally}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								<ExternalLink aria-hidden="true" className="size-icon-base" />
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent data-browser-native-overlay="true" side="bottom">
+							{t("inspector.openInSystemBrowser")}
+						</TooltipContent>
+					</Tooltip>
+				) : null}
+				<datalist id={historyListId}>
+					{historySuggestions.map((suggestion) => (
+						<option key={suggestion.url} value={suggestion.url}>
+							{suggestion.title}
+						</option>
+					))}
+				</datalist>
+			</div>
+		</form>
+	);
 	const browserTabBar = (
 		<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
 			<DndContext
@@ -773,24 +826,6 @@ export function BrowserPanelView({
 			>
 				<Plus aria-hidden="true" className="size-icon-base" />
 			</button>
-			<div className="browser-panel__tab-actions flex items-center gap-0.5">
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							aria-label={poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-							onClick={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
-							size="icon-sm"
-							type="button"
-							variant="ghost"
-						>
-							{poppedOut ? <Minimize2 aria-hidden="true" className="size-icon-base" /> : <Maximize2 aria-hidden="true" className="size-icon-base" />}
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">
-						{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-					</TooltipContent>
-				</Tooltip>
-			</div>
 		</div>
 	);
 	return (
@@ -817,12 +852,13 @@ export function BrowserPanelView({
 			ref={panelRef}
 			role="tabpanel"
 		>
-			{browserTabBar}
-			<form
-				className="browser-panel__toolbar flex shrink-0 min-w-0 items-center gap-1 bg-background"
-				data-testid="browser-toolbar"
-				onSubmit={submit}
-			>
+			{topbarHost ? createPortal(browserAddressBar, topbarHost) : browserAddressBar}
+			<div className="browser-panel__tab-row" data-testid="browser-tab-row">
+				{browserTabBar}
+				<div
+					className="browser-panel__toolbar"
+					data-testid="browser-toolbar"
+				>
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<span className="browser-panel__navigation-control inline-flex">
@@ -887,46 +923,6 @@ export function BrowserPanelView({
 						{agentStatusLabel}
 					</span>
 				) : null}
-				<div className="browser-panel__url-wrap relative min-w-0 flex-1">
-					<Input
-						aria-label={t("browser.url")}
-						className="browser-panel__url-input h-browser-url text-xs"
-						list={historySuggestions.length > 0 ? historyListId : undefined}
-						onBlur={endUrlEditing}
-						onChange={(event) => handleURLChange(event.target.value)}
-						onClick={() => urlInputRef.current?.select()}
-						onFocus={beginUrlEditing}
-						placeholder={t("browser.urlPlaceholder")}
-						ref={urlInputRef}
-						value={urlEditing || poppedOut ? urlInput : navState.url}
-					/>
-					{isWebLink(navState.url) ? (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									aria-label={t("inspector.openInSystemBrowser")}
-									className="browser-panel__url-external"
-									onClick={openCurrentPageExternally}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<ExternalLink aria-hidden="true" className="size-icon-base" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">
-								{t("inspector.openInSystemBrowser")}
-							</TooltipContent>
-						</Tooltip>
-					) : null}
-					<datalist id={historyListId}>
-						{historySuggestions.map((suggestion) => (
-							<option key={suggestion.url} value={suggestion.url}>
-								{suggestion.title}
-							</option>
-						))}
-					</datalist>
-				</div>
 				{tabNotice ? (
 					<span className="max-w-24 truncate text-caption text-accent" role="status">
 						{tabNotice}
@@ -1168,6 +1164,20 @@ export function BrowserPanelView({
 							<>
 								<DropdownMenuItem
 									className="gap-2"
+									onSelect={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
+								>
+									{poppedOut ? (
+										<Minimize2 aria-hidden="true" className="size-icon-base shrink-0" />
+									) : (
+										<Maximize2 aria-hidden="true" className="size-icon-base shrink-0" />
+									)}
+									<span className="flex-1">
+										{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
+									</span>
+								</DropdownMenuItem>
+								<div className="my-1 h-px bg-border" role="separator" />
+								<DropdownMenuItem
+									className="gap-2"
 									onSelect={(event) => {
 										event.preventDefault();
 										setControlsView("devices");
@@ -1219,7 +1229,8 @@ export function BrowserPanelView({
 						)}
 					</DropdownMenuContent>
 				</DropdownMenu>
-			</form>
+				</div>
+			</div>
 			<div className="browser-panel__body flex min-h-0 flex-1 overflow-hidden">
 				<div
 					className="browser-panel__viewport relative min-h-0 flex-1 overflow-hidden"
@@ -1409,6 +1420,15 @@ function browserActionVerb(action: string): string {
 		}
 	})();
 	return appI18n.t(key);
+}
+
+function getDisplayUrl(url: string): string {
+	if (!url) return url;
+	try {
+		return new URL(url).hostname.replace(/^www\./, "");
+	} catch {
+		return url;
+	}
 }
 
 function StaticPreview({ url }: { url: string }) {

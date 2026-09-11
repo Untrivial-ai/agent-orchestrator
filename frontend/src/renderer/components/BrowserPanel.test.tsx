@@ -365,7 +365,7 @@ describe("BrowserPanel", () => {
 		expect(hookState.reopenClosedTab).toHaveBeenCalledWith();
 	});
 
-	it("shows the current address left-aligned in the URL input", () => {
+	it("shows the domain only in the URL input when unfocused", () => {
 		hookState.navState = {
 			...hookState.navState,
 			url: "https://www.google.com/search?q=agent+orchestrator#results",
@@ -374,11 +374,10 @@ describe("BrowserPanel", () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
 		const input = screen.getByRole("textbox", { name: /browser url/i });
-		expect(input).toHaveValue("https://www.google.com/search?q=agent+orchestrator#results");
-		expect(input).not.toHaveClass("text-center");
+		expect(input).toHaveValue("google.com");
 	});
 
-	it("reveals the full URL and selects it on focus, keeping it when the page takes focus", async () => {
+	it("reveals the full URL on focus, reverts to domain when the page takes focus", async () => {
 		const url = "https://www.google.com/search?q=agent+orchestrator#results";
 		hookState.navState = { ...hookState.navState, url, canGoBack: true };
 		const user = userEvent.setup();
@@ -401,7 +400,7 @@ describe("BrowserPanel", () => {
 			for (const listener of pageFocusListeners) listener("42:sess-1");
 		});
 
-		expect(input).toHaveValue(url);
+		expect(input).toHaveValue("google.com");
 		expect(within(toolbar).getByRole("button", { name: /back/i })).toBeInTheDocument();
 	});
 
@@ -975,24 +974,27 @@ describe("BrowserPanel", () => {
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
 		render(<BrowserPanel active onTogglePopOut={onTogglePopOut} poppedOut={false} session={session} />);
 
-		await userEvent.click(screen.getByRole("button", { name: /pop out/i }));
+		await openBrowserControls();
+		await userEvent.click(screen.getByRole("menuitem", { name: /pop out/i }));
 
 		expect(onTogglePopOut.mock.calls[0]?.[0]).toBe(true);
 		expect(onTogglePopOut.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ width: expect.any(Number) }));
 	});
 
-	it("keeps workspace sizing controls out of the browser toolbar", () => {
+	it("keeps workspace sizing controls out of the browser toolbar", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
 		expect(screen.queryByRole("button", { name: /focus browser workspace/i })).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: /pop out/i })).toBeInTheDocument();
+		await openBrowserControls();
+		expect(screen.getByRole("menuitem", { name: /pop out/i })).toBeInTheDocument();
 	});
 
 	it("pops out an empty browser", async () => {
 		const onTogglePopOut = vi.fn();
 		render(<BrowserPanel active onTogglePopOut={onTogglePopOut} poppedOut={false} session={session} />);
 
-		const popOut = screen.getByRole("button", { name: /pop out/i });
+		await openBrowserControls();
+		const popOut = screen.getByRole("menuitem", { name: /pop out/i });
 		expect(popOut).not.toBeDisabled();
 		await userEvent.click(popOut);
 
