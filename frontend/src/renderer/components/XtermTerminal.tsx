@@ -189,7 +189,24 @@ function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
 }
 
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
-	if (event.metaKey || event.shiftKey) return null;
+	if (event.shiftKey) return null;
+
+	// macOS Command+Left/Right → readline beginning/end of line. Do not treat
+	// the Windows key (metaKey on Win/Linux) as Command, and do not rewrite
+	// Windows Home/End: those must fall through to xterm's native sequences
+	// because Ctrl+A is SelectAll in default PSReadLine (#3093).
+	if (event.metaKey && !event.ctrlKey && !event.altKey && isMacPlatform()) {
+		switch (event.key) {
+			case "ArrowLeft":
+				return "\x01";
+			case "ArrowRight":
+				return "\x05";
+			default:
+				return null;
+		}
+	}
+
+	if (event.metaKey) return null;
 
 	if (event.altKey && !event.ctrlKey) {
 		switch (event.key) {

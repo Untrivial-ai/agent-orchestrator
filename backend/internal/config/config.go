@@ -139,14 +139,9 @@ type Config struct {
 	// Agent is the compatibility agent adapter id selected by AO_AGENT;
 	// startSession fails fast if no adapter with this id is registered.
 	Agent string
-	// AppRunID identifies one desktop-app launch. The Electron supervisor mints
-	// it and passes it down (AO_APP_RUN_ID), holding it constant across daemon
-	// restarts it performs, so standalone shell terminals can survive a daemon
-	// restart while still being reaped when the APP itself goes away.
-	//
-	// Empty means no supervising app (a bare `ao daemon`): the daemon mints a
-	// fresh id per boot, which correctly makes any surviving shell terminals
-	// from an earlier run look like orphans and get cleaned up.
+	// AppRunID identifies one desktop-app launch and scopes transient command
+	// terminals to it. User shells survive across launches. The supervisor keeps
+	// this constant across daemon restarts; bare daemons mint a fresh id per boot.
 	AppRunID string
 	// AllowedOrigins are the browser origins granted CORS read access (see
 	// DefaultAllowedOrigins). Overridden by AO_ALLOWED_ORIGINS.

@@ -100,6 +100,9 @@ jobs:
           go test -race ./internal/adapters/codexmaintenance/ ./internal/adapters/systemexec/
           go test -race -run Codex ./internal/service/systeminstall/
 
+      - name: Test Windows mobile tunnel subprocesses
+        run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
+
   lint:
     runs-on: ubuntu-latest
     steps:

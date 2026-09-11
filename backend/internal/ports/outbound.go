@@ -216,10 +216,10 @@ type RuntimeConfig struct {
 	WorkspacePath string
 	Argv          []string
 	Env           map[string]string
-	// ExitOnCommandCompletion is reserved for short-lived, backend-owned
-	// command terminals. Interactive agent and shell runtimes deliberately keep
-	// their terminal alive after the launched command exits so scrollback and
-	// manual recovery remain available.
+	// ExitOnCommandCompletion prevents a recovery shell after Argv exits.
+	// User shell terminals and trusted command terminals enable it; it does
+	// not determine whether a terminal survives an app launch. Agent runtimes
+	// leave it disabled to retain scrollback and manual recovery.
 	ExitOnCommandCompletion bool
 }
 

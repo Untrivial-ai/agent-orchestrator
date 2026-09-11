@@ -587,6 +587,12 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 // IsChildAlive also detects exited panes retained by tmux's remain-on-exit.
 func (r *Runtime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
 	alive, err := r.IsAlive(ctx, handle)
+	// Unlike agent-session recovery, shell reconciliation can forget a handle
+	// when its server is conclusively absent (e.g. its last shell exited).
+	// Transport and protocol failures remain inconclusive errors.
+	if errors.Is(err, ports.ErrRuntimeUnavailable) {
+		return false, nil
+	}
 	if err != nil || !alive {
 		return false, err
 	}
