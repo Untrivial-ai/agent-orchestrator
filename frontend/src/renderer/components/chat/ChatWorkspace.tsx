@@ -2047,7 +2047,11 @@ function Timeline({
 			visible: boolean;
 		}>,
 	});
-	const minimapEnabled = scrollbar.visible && !isInspectorOpen;
+	// Show turn ticks whenever the inspector is closed and there are human
+	// prompts — not only when the transcript overflows. Closing the rail
+	// widens chat; shorter histories (common on non-Codex harnesses) often
+	// stop overflowing and used to lose the minimap exactly then.
+	const minimapEnabled = !isInspectorOpen && scrollbar.markers.length > 0;
 	const queued = useMemo(() => queuedTurnIds(snapshot), [snapshot]);
 	const decide = useStableCallback(onDecide);
 	const resolveInput = useStableCallback(onResolveInput);

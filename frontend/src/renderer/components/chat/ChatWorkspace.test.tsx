@@ -1137,6 +1137,31 @@ describe("ChatWorkspace timeline", () => {
 		expect(log.scrollTop).toBe(1000);
 	});
 
+	it("keeps conversation minimap markers when the transcript fits the viewport", () => {
+		useUiStore.setState({
+			inspectorSessions: { "ao-long": { isOpen: false, view: "summary" } },
+		});
+		render(<ChatWorkspace snapshot={chatFixtureLongHistory(4)} />);
+		const log = screen.getByRole("log");
+		const scrollbar = screen.getByTestId("chat-conversation-minimap");
+		// Closing the inspector widens chat; a short history can stop overflowing.
+		stubGeometry(log, {
+			scrollHeight: 600,
+			clientHeight: 600,
+			scrollTop: 0,
+		});
+		stubGeometry(scrollbar, {
+			scrollHeight: 600,
+			clientHeight: 600,
+			scrollTop: 0,
+		});
+		fireEvent.scroll(log);
+
+		expect(scrollbar).not.toHaveAttribute("aria-hidden", "true");
+		expect(scrollbar).not.toHaveClass("pointer-events-none");
+		expect(scrollbar.querySelectorAll("[data-chat-scroll-marker]").length).toBeGreaterThan(1);
+	});
+
 	it("re-enables the conversation minimap when the inspector closes again", async () => {
 		useUiStore.setState({
 			inspectorSessions: { "ao-long": { isOpen: false, view: "summary" } },
