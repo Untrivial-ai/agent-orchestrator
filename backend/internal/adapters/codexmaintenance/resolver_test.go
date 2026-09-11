@@ -381,3 +381,34 @@ func TestOwnershipProbeCancellationAndBoundedOutput(t *testing.T) {
 		t.Fatalf("canceled probe: %v", err)
 	}
 }
+
+func TestToolLookupHonorsCancellation(t *testing.T) {
+	for _, when := range []string{"before", "adjacent_success", "adjacent_failure", "path_success"} {
+		t.Run(when, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			r := &Resolver{lookup: func(name string) (string, error) {
+				calls++
+				if when == "path_success" && calls == 1 {
+					return "", os.ErrNotExist
+				}
+				cancel()
+				if when == "adjacent_failure" {
+					return "", os.ErrNotExist
+				}
+				return name, nil
+			}}
+			wantCalls := 1
+			if when == "before" {
+				cancel()
+				wantCalls = 0
+			} else if when == "path_success" {
+				wantCalls = 2
+			}
+			if got := r.tool(ctx, "npm", "/owning/bin/npm"); got != "" || calls != wantCalls {
+				t.Fatalf("canceled lookup = %q after %d lookups, want no tool after %d", got, calls, wantCalls)
+			}
+		})
+	}
+}

@@ -255,13 +255,22 @@ func (r *Resolver) shimTarget(ctx context.Context, p string) string {
 	return target
 }
 
-func (r *Resolver) tool(name, adjacent string) string {
+func (r *Resolver) tool(ctx context.Context, name, adjacent string) string {
+	if ctx.Err() != nil {
+		return ""
+	}
 	if adjacent != "" {
-		if p, err := r.lookup(adjacent); err == nil {
+		if p, err := r.lookup(adjacent); err == nil && ctx.Err() == nil {
 			return p
 		}
 	}
+	if ctx.Err() != nil {
+		return ""
+	}
 	p, _ := r.lookup(name)
+	if ctx.Err() != nil {
+		return ""
+	}
 	return p
 }
 
@@ -289,7 +298,7 @@ func (r *Resolver) resolvePackage(ctx context.Context, s *ports.CodexInstallatio
 		if !plausible {
 			continue
 		}
-		tool := r.tool(manager, path.Join(path.Dir(slash(s.Path)), manager))
+		tool := r.tool(ctx, manager, path.Join(path.Dir(slash(s.Path)), manager))
 		if tool == "" {
 			return
 		}
@@ -334,7 +343,7 @@ func (r *Resolver) resolvePackage(ctx context.Context, s *ports.CodexInstallatio
 	if r.goos == "windows" {
 		adjacent = prefix + "/npm.cmd"
 	}
-	tool := r.tool("npm", adjacent)
+	tool := r.tool(ctx, "npm", adjacent)
 	if tool == "" {
 		return
 	}
@@ -358,7 +367,7 @@ func (r *Resolver) resolveVite(ctx context.Context, s *ports.CodexInstallation) 
 	if r.goos == "windows" {
 		toolName = "vp.exe"
 	}
-	tool := r.tool(toolName, bin+"/"+toolName)
+	tool := r.tool(ctx, toolName, bin+"/"+toolName)
 	if tool == "" {
 		return false
 	}
@@ -457,7 +466,7 @@ func (r *Resolver) resolveBrew(ctx context.Context, s *ports.CodexInstallation) 
 		return
 	}
 	s.Source, s.VersionSource = "homebrew", "homebrew"
-	tool := r.tool("brew", m[1]+"/bin/brew")
+	tool := r.tool(ctx, "brew", m[1]+"/bin/brew")
 	if tool == "" {
 		return
 	}
