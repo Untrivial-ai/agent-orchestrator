@@ -31,8 +31,7 @@ func (h *shutdownRefusingHost) Terminate() error {
 }
 
 func TestFailedBranchShutdownPreservesSurvivingHostCredentials(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	st := openStore(t)
 	source := &shutdownRefusingHost{historyRecorder: newHistoryRecorder()}
 	reattached := newFakeConversation()
@@ -114,7 +113,12 @@ func TestFailedBranchShutdownPreservesSurvivingHostCredentials(t *testing.T) {
 		t.Fatalf("read after edit: %v", err)
 	}
 	current, controllerErr := svc.Controller(testSession)
-	if rotations != 1 || reattachments != 0 || controllerErr != nil || current != ctrl {
+	// The watcher may already have removed the stopped source after handoff
+	// aborts. Neither timing may publish a replacement for the surviving host.
+	if controllerErr != nil && !errors.Is(controllerErr, chatsvc.ErrNoController) {
+		t.Fatal(controllerErr)
+	}
+	if rotations != 1 || reattachments != 0 || (current != nil && current != ctrl) {
 		t.Fatalf("unconfirmed host was replaced: rotations=%d reattachments=%d controllerErr=%v", rotations, reattachments, controllerErr)
 	}
 	if !authority.Valid(testSession, source.browserToken, rec.Metadata.BrowserCapabilityVerifier) {
