@@ -150,9 +150,17 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.refreshTerminalInteraction(ctx, terminal)
 	structured := r.URL.Query().Get("protocol") == "2"
-	if structured && terminal.Kind == "workspace" {
-		// Workspace reconnects create a fresh shell. Tell the client to discard
-		// output from the previous shell and replay this one from sequence zero.
+	if structured {
+		// Replay this attachment from sequence zero and tell the client to discard
+		// whatever it was showing. A workspace reconnect gets a fresh shell; an
+		// agent terminal's output sequence space is per worker epoch (an idle
+		// resume or worker restart bumps the epoch and restarts sequences at 1), so
+		// a resume cursor carried across a bump would point past the new epoch's
+		// output and strand the pane. A from-0 replay is always correct, and the
+		// reset makes the client wipe stale content so the replay does not stack.
+		// (A future epoch-aware CP can compare the client's `after` against this
+		// epoch's output floor and resume within an epoch instead — see the cursor
+		// note in cloud-terminal-mux.ts.)
 		after = 0
 		if err := writeTerminalMessage(ctx, connection, terminalServerMessage{Type: "reset"}); err != nil {
 			return
