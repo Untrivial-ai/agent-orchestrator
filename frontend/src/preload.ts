@@ -544,6 +544,8 @@ const api = {
 	updateSettings: {
 		get: () => ipcRenderer.invoke("updateSettings:get") as Promise<UpdateSettings>,
 		set: (settings: UpdateSettings) => ipcRenderer.invoke("updateSettings:set", settings) as Promise<void>,
+		setMacDifferentialUpdates: (enabled: boolean) =>
+			ipcRenderer.invoke("updateSettings:setMacDifferentialUpdates", enabled) as Promise<void>,
 	},
 	uiSettings: {
 		get: () => ipcRenderer.invoke("uiSettings:get") as Promise<UiSettings>,

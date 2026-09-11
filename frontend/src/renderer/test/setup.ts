@@ -305,8 +305,9 @@ if (typeof window !== "undefined") {
 			setMigration: async () => undefined,
 		},
 		updateSettings: {
-			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false }),
 			set: async () => undefined,
+			setMacDifferentialUpdates: async () => undefined,
 		},
 		uiSettings: {
 			get: async () => ({ ...DEFAULT_UI_SETTINGS }),

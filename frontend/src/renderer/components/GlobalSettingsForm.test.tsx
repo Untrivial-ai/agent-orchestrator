@@ -32,6 +32,7 @@ const {
 	getKeybindings,
 	setKeybindings,
 	setKeybindingRecording,
+	setMacDifferentialUpdates,
 	getTelemetryPolicy,
 	setTelemetryEvents,
 	onTelemetryPolicy,
@@ -56,6 +57,7 @@ const {
 	getKeybindings: vi.fn(),
 	setKeybindings: vi.fn(),
 	setKeybindingRecording: vi.fn(),
+	setMacDifferentialUpdates: vi.fn().mockResolvedValue(undefined),
 	// agent-switch visibility initializes at module load, before beforeEach can
 	// install the per-test policy response. Preserve the bridge's Promise
 	// contract for that initial read as well.
@@ -82,7 +84,11 @@ vi.mock("../lib/bridge", () => ({
 		app: { getVersion, openExternal },
 		clipboard: { writeText },
 		daemon: { getStatus: getDaemonStatus },
-		updateSettings: { get: getUpdate, set: setUpdate },
+		updateSettings: {
+			get: getUpdate,
+			set: setUpdate,
+			setMacDifferentialUpdates,
+		},
 		uiSettings: { get: getUiSettings, set: setUiSettings },
 		keybindings: {
 			get: getKeybindings,
@@ -136,6 +142,7 @@ beforeEach(async () => {
 		getKeybindings,
 		setKeybindings,
 		setKeybindingRecording,
+		setMacDifferentialUpdates,
 		getTelemetryPolicy,
 		setTelemetryEvents,
 		onTelemetryPolicy,
@@ -166,6 +173,7 @@ beforeEach(async () => {
 	getKeybindings.mockResolvedValue({});
 	setKeybindings.mockImplementation(async (overrides) => overrides);
 	setKeybindingRecording.mockResolvedValue(undefined);
+	setMacDifferentialUpdates.mockResolvedValue(undefined);
 	getTelemetryPolicy.mockResolvedValue({ eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true });
 	setTelemetryEvents.mockResolvedValue({ eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:31.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true });
 	onTelemetryPolicy.mockReturnValue(() => undefined);
@@ -218,6 +226,7 @@ describe("GlobalSettingsForm", () => {
 
 		await user.click(toggle);
 		expect(window.localStorage.getItem("ao.developerMode")).toBe("true");
+		expect(setMacDifferentialUpdates).toHaveBeenCalledWith(true);
 		await user.click(screen.getByLabelText("Channel"));
 		expect(await screen.findByRole("menuitem", { name: "Feature builds" })).toBeInTheDocument();
 	});

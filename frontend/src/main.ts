@@ -30,6 +30,7 @@ import {
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
+	setMacDifferentialUpdates,
 	returnToHome,
 	type UpdateCheckOptions,
 } from "./main/auto-updater";
@@ -2205,13 +2206,19 @@ ipcMain.handle("appState:setMigration", async (_event, migration: MigrationState
 
 ipcMain.handle("updateSettings:get", async (): Promise<UpdateSettings> => {
 	const runFile = runFilePath();
-	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
+	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false };
 	return readUpdateSettings(path.dirname(runFile));
 });
 ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) => {
 	const runFile = runFilePath();
 	if (!runFile) return;
 	await setUpdateSettings(path.dirname(runFile), settings);
+});
+ipcMain.handle("updateSettings:setMacDifferentialUpdates", async (_event, enabled: unknown) => {
+	if (typeof enabled !== "boolean") return;
+	const runFile = runFilePath();
+	if (!runFile) return;
+	await setMacDifferentialUpdates(path.dirname(runFile), enabled);
 });
 
 ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
