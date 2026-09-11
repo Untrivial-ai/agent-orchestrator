@@ -534,16 +534,22 @@ func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID str
 	}
 	client, err := s.codexAccounts.factory.Open(verifyCtx, ports.CodexAccountContext{Home: record.Home, Managed: true})
 	if err != nil {
+		s.codexAccounts.invalidate(record.Snapshot.ID)
 		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
 	}
 	defer func() { _ = client.Close() }()
 	observation, err := client.Read(verifyCtx, false)
 	if err != nil {
+		s.codexAccounts.invalidate(record.Snapshot.ID)
 		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
 	}
-	if observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable {
+	if observation.Authentication == domain.AgentAuthenticationUnauthorized {
 		s.codexAccounts.requireReauthentication(record.Snapshot.ID)
 		return apierr.Conflict("CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED", "Sign in again before switching to this Codex account", nil)
+	}
+	if observation.Authentication != domain.AgentAuthenticationAuthorized && observation.Authentication != domain.AgentAuthenticationNotApplicable {
+		s.codexAccounts.invalidate(record.Snapshot.ID)
+		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
 	}
 	protectedVerified := false
 	if observation.Authentication == domain.AgentAuthenticationAuthorized && observation.Method == domain.CodexAuthMethodChatGPT {
@@ -558,6 +564,7 @@ func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID str
 			return apierr.Conflict("CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED", "Sign in again before switching to this Codex account", nil)
 		}
 		if err != nil {
+			s.codexAccounts.invalidate(record.Snapshot.ID)
 			return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
 		}
 		protectedVerified = true
@@ -565,7 +572,8 @@ func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID str
 	latestCredential, latest, latestErr := readCodexFileState(credentialPath, false)
 	stableOpaqueIdentity := distinguishableCodexIdentity(observation) || (latestErr == nil && sameCodexFileState(admitted, latest))
 	if latestErr != nil || !stableOpaqueIdentity || !s.codexAccounts.observationAndCredentialIdentifyRecord(record, observation, latestCredential) || (!distinguishableCodexIdentity(observation) && !bytes.Equal(credential, latestCredential)) {
-		return apierr.Unavailable("CODEX_ACCOUNT_VERIFICATION_UNAVAILABLE", "The Codex account could not be checked. Try again.")
+		s.codexAccounts.invalidate(record.Snapshot.ID)
+		return apierr.Conflict("CODEX_ACCOUNT_IDENTITY_CHANGED", "The Codex account changed during verification, try again", nil)
 	}
 	if protectedVerified {
 		s.codexAccounts.confirmAuthentication(record.Snapshot.ID)

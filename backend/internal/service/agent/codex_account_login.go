@@ -264,17 +264,37 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 			snapshot.Label = accountLabel(snapshot.ID, observation.Method, observation.Email)
 		})
 	} else {
-		var err error
-		record, err = m.catalog.commitPending(pendingDir, observation)
-		if err != nil {
-			return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The verified Codex account could not be saved.", nil), nil
+		if existing, found := m.findExistingAccountForLogin(observation); found {
+			credential, credentialErr := readOpaqueCredential(filepath.Join(home, codexCredentialFilename))
+			if credentialErr != nil {
+				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The verified Codex account could not be saved.", nil), nil
+			}
+			var replaceErr error
+			record, replaceErr = m.catalog.replaceCredential(existing.Snapshot.ID, credential, observation)
+			if replaceErr != nil {
+				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The verified Codex account could not be saved.", nil), nil
+			}
+			_ = os.RemoveAll(pendingDir)
+			m.clearReauthenticationRequired(existing.Snapshot.ID)
+			m.catalog.updateSnapshot(existing.Snapshot.ID, func(s *domain.CodexAccountSnapshot) {
+				s.Authentication = accountAuthenticationObservation(m.now(), observation.Authentication)
+				s.AuthMethod = observation.Method
+				s.AccountEmail = observation.Email
+				s.Label = accountLabel(s.ID, observation.Method, observation.Email)
+			})
+		} else {
+			var err error
+			record, err = m.catalog.commitPending(pendingDir, observation)
+			if err != nil {
+				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The verified Codex account could not be saved.", nil), nil
+			}
+			m.catalog.updateSnapshot(record.Snapshot.ID, func(s *domain.CodexAccountSnapshot) {
+				s.Authentication = accountAuthenticationObservation(m.now(), observation.Authentication)
+				s.AuthMethod = observation.Method
+				s.AccountEmail = observation.Email
+				s.Label = accountLabel(s.ID, observation.Method, observation.Email)
+			})
 		}
-		m.catalog.updateSnapshot(record.Snapshot.ID, func(s *domain.CodexAccountSnapshot) {
-			s.Authentication = accountAuthenticationObservation(m.now(), observation.Authentication)
-			s.AuthMethod = observation.Method
-			s.AccountEmail = observation.Email
-			s.Label = accountLabel(s.ID, observation.Method, observation.Email)
-		})
 		m.mu.Lock()
 		activateFirst := m.active.AccountID == "" && m.globalAuth.State == domain.AgentAuthenticationUnauthorized
 		m.mu.Unlock()
@@ -451,4 +471,29 @@ func (m *codexAccountManager) expireLogin(ctx context.Context, id string, at tim
 		m.finishLogin(id, domain.CodexAccountLoginExpired, domain.CodexAccountLoginReasonExpired, "Codex account login expired.", nil)
 		return
 	}
+}
+
+func (m *codexAccountManager) findExistingAccountForLogin(observation ports.CodexAccountObservation) (codexAccountRecord, bool) {
+	if !distinguishableCodexIdentity(observation) {
+		return codexAccountRecord{}, false
+	}
+	records, err := m.catalog.recordsFor(nil)
+	if err != nil {
+		return codexAccountRecord{}, false
+	}
+	var best *codexAccountRecord
+	for i := range records {
+		r := records[i]
+		if r.Snapshot.Status != domain.CodexAccountStatusValid && r.Snapshot.Status != domain.CodexAccountStatusSignedOut {
+			continue
+		}
+		if sameCodexStructuredIdentity(r.Snapshot, observation) && (best == nil || r.VerifiedAt.After(best.VerifiedAt)) {
+			candidate := r
+			best = &candidate
+		}
+	}
+	if best != nil {
+		return *best, true
+	}
+	return codexAccountRecord{}, false
 }

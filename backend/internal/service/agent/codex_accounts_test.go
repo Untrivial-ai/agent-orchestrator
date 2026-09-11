@@ -1747,3 +1747,194 @@ func TestAuthenticationRequestCancellationDoesNotCancelSharedRead(t *testing.T) 
 		}
 	}
 }
+
+func TestLoginDeduplicatesExistingAccountByEmail(t *testing.T) {
+	email := "duplicate@example.com"
+	observation := ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+		Email:          &email,
+	}
+	client := &fakeCodexAccountClient{read: observation}
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			return client, nil
+		},
+	}
+	state := &fakeCodexAccountStateStore{}
+	manager := newTestCodexAccountManager(t, factory, state)
+	manager.globalAuth = accountAuthenticationObservation(time.Now().UTC(), domain.AgentAuthenticationUnauthorized)
+
+	existingID := "a1111111-1111-4111-8111-111111111111"
+	manager.catalog.newID = func() string { return existingID }
+	existing := commitTestAccount(t, manager.catalog, manager.pendingRoot, "c1111111-1111-4111-8111-111111111111", observation)
+	if existing.Snapshot.ID != existingID {
+		t.Fatalf("existing account id = %q", existing.Snapshot.ID)
+	}
+
+	loginID := "d2222222-2222-4222-8222-222222222222"
+	newAccountID := "b2222222-2222-4222-8222-222222222222"
+	manager.newID = func() string { return loginID }
+	manager.catalog.newID = func() string { return newAccountID }
+	manager.executable = func() (string, error) { return "/ao", nil }
+	manager.terminal = &fakeCodexLoginTerminal{
+		writeCredential: true,
+		result:          shellterm.ShellTerminal{HandleID: "shellterm-dedup", Title: "Add Codex account"},
+	}
+
+	started, err := manager.openLoginTerminal(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := manager.verifyLogin(context.Background(), started.Operation.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != domain.CodexAccountLoginCompleted {
+		t.Fatalf("login status = %q", completed.Status)
+	}
+	snapshots := manager.catalog.snapshots()
+	if len(snapshots) != 1 {
+		t.Fatalf("expected 1 account after dedup login, got %d", len(snapshots))
+	}
+	if snapshots[0].ID != existingID {
+		t.Fatalf("expected existing account %q to be reused, got %q", existingID, snapshots[0].ID)
+	}
+	credential, err := readOpaqueCredential(filepath.Join(existing.Home, codexCredentialFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(credential) != "opaque-login-credential" {
+		t.Fatalf("credential was not replaced: %q", credential)
+	}
+}
+
+func newSwitchAdmissionFixture(t *testing.T, factory *fakeCodexAccountFactory, observation ports.CodexAccountObservation) (*codexAccountManager, *Service, codexAccountRecord) {
+	t.Helper()
+	root := t.TempDir()
+	globalHome := filepath.Join(root, "global-codex")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	state := &fakeCodexAccountStateStore{
+		active: domain.CodexActiveAccount{AccountID: sourceID, Revision: 1},
+		found:  true,
+	}
+	manager := newCodexAccountManager(context.Background(),
+		filepath.Join(root, "accounts"), filepath.Join(root, "pending"),
+		filepath.Join(root, "staging"), globalHome, factory, state, nil)
+	ids := []string{sourceID, testAccountID}
+	idx := 0
+	manager.catalog.newID = func() string { id := ids[idx]; idx++; return id }
+	sourceObs := ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT}
+	commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", sourceObs)
+	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "1c5de3ab-82d0-4a68-a06b-8495cdeab909", observation)
+	if err := writeGlobalCredentialAtomic(manager.globalCredentialPath(), []byte("source-credential")); err != nil {
+		t.Fatal(err)
+	}
+	manager.active = state.active
+	manager.accountStoreReady = true
+	manager.reconciliation = domain.CodexDeviceReconciliation{
+		Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true,
+	}
+	svc := &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}
+	return manager, svc, record
+}
+
+func TestSwitchAdmissionTransientErrorDoesNotRequireReauthentication(t *testing.T) {
+	email := "switch-test@example.com"
+	observation := ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+		Email:          &email,
+	}
+	callCount := 0
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, errors.New("transient process spawn failure")
+			}
+			return &fakeCodexAccountClient{read: observation}, nil
+		},
+	}
+	manager, svc, record := newSwitchAdmissionFixture(t, factory, observation)
+
+	err := svc.VerifyCodexAccountForSwitch(context.Background(), record.Snapshot.ID)
+	if err == nil {
+		t.Fatal("expected transient error, got nil")
+	}
+	latest, _ := manager.catalog.record(record.Snapshot.ID)
+	if latest.Snapshot.Authentication.State == domain.AgentAuthenticationUnauthorized {
+		t.Fatal("transient factory.Open failure incorrectly triggered requireReauthentication")
+	}
+
+	auth, authErr := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay)
+	if authErr != nil {
+		t.Fatal(authErr)
+	}
+	if auth.State == domain.AgentAuthenticationUnauthorized {
+		t.Fatal("account is permanently locked out after transient error")
+	}
+}
+
+func TestSwitchAdmissionReadErrorDoesNotRequireReauthentication(t *testing.T) {
+	email := "read-err@example.com"
+	observation := ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+		Email:          &email,
+	}
+	callCount := 0
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			callCount++
+			if callCount == 1 {
+				return &fakeCodexAccountClient{readErr: errors.New("timeout reading account")}, nil
+			}
+			return &fakeCodexAccountClient{read: observation}, nil
+		},
+	}
+	manager, svc, record := newSwitchAdmissionFixture(t, factory, observation)
+
+	err := svc.VerifyCodexAccountForSwitch(context.Background(), record.Snapshot.ID)
+	if err == nil {
+		t.Fatal("expected transient error, got nil")
+	}
+	latest, _ := manager.catalog.record(record.Snapshot.ID)
+	if latest.Snapshot.Authentication.State == domain.AgentAuthenticationUnauthorized {
+		t.Fatal("transient client.Read failure incorrectly triggered requireReauthentication")
+	}
+}
+
+func TestSwitchAdmissionUnauthorizedRequiresReauthentication(t *testing.T) {
+	email := "unauth@example.com"
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			return &fakeCodexAccountClient{read: ports.CodexAccountObservation{
+				Authentication: domain.AgentAuthenticationUnauthorized,
+				Method:         domain.CodexAuthMethodChatGPT,
+				Email:          &email,
+			}}, nil
+		},
+	}
+	_, svc, record := newSwitchAdmissionFixture(t, factory, ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+		Email:          &email,
+	})
+
+	err := svc.VerifyCodexAccountForSwitch(context.Background(), record.Snapshot.ID)
+	if err == nil {
+		t.Fatal("expected reauth error for unauthorized account")
+	}
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED" {
+		t.Fatalf("expected CODEX_ACCOUNT_REAUTHENTICATION_REQUIRED, got %v", err)
+	}
+}
