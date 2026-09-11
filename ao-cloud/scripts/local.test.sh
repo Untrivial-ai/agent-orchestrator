@@ -28,6 +28,21 @@ export PATH="$temp_dir/bin:$PATH"
 # shellcheck source=local.sh
 source "$script_dir/local.sh"
 
+assert_lf_shell_checkout() {
+  local script
+  for script in \
+    ao-cloud/scripts/local.sh \
+    ao-cloud/docker/worker-entrypoint.sh \
+    cloud/scripts/cloud-local-up.sh; do
+    if [[ "$(git -C "$root" check-attr eol -- "$script")" != "$script: eol: lf" ]]; then
+      echo "expected $script to be checked out with LF line endings" >&2
+      exit 1
+    fi
+  done
+}
+
+assert_lf_shell_checkout
+
 export AO_GITHUB_APP_PRIVATE_KEY_PATH="$AO_DATA_DIR/cloud-local/github-app.private-key.pem"
 export AO_GITHUB_APP_WEBHOOK_SECRET="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 export AO_GITHUB_APP_STATE_SECRET="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

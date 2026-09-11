@@ -2,3 +2,6 @@
 backend/internal/httpd/apispec/openapi.yaml text eol=lf
 frontend/src/api/schema.ts text eol=lf
 frontend/src/renderer/routeTree.gen.ts text eol=lf
+
+# Local Cloud commands run through Bash, including on Windows via WSL.
+*.sh text eol=lf
