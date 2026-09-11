@@ -2211,10 +2211,15 @@ describe("Sidebar", () => {
 		// A build ready to install is more actionable than "checks are failing".
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveClass("border", "border-success/35", "bg-success/12", "text-success");
+		expect(readyRow).toHaveClass("bg-muted", "rounded-xl", "shadow-md", "w-full");
+		expect(readyRow).not.toHaveClass("absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
+		expect(within(readyRow).getByText("Install Update")).toBeVisible();
 		expect(within(readyRow).getByText("v9.9.9 ready")).toBeVisible();
 		expect(readyRow.querySelector(".rounded-full")).toBeNull();
 		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+		// Stays above Connect mobile / Settings — not overlaid on them.
+		const connectMobile = screen.getByRole("button", { name: "Connect mobile" });
+		expect(readyRow.compareDocumentPosition(connectMobile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 		expect(screen.queryByLabelText(/Hide update/)).not.toBeInTheDocument();
 	});
 
@@ -2277,7 +2282,7 @@ describe("Sidebar", () => {
 		expect(screen.queryByText("Update check failed")).not.toBeInTheDocument();
 	});
 
-	it("renders the restart-to-update row with the green treatment even when escalated", async () => {
+	it("keeps the muted install cue when the staged update is escalated", async () => {
 		updateStatusMock.mockResolvedValue({
 			state: "downloaded",
 			version: "9.9.9",
@@ -2290,9 +2295,24 @@ describe("Sidebar", () => {
 		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
 		for (const button of buttons) {
-		expect(button).toHaveClass("text-success");
+			expect(button).toHaveClass("bg-muted");
+			expect(button).not.toHaveClass("text-success");
 		}
 		expect(screen.getByText("v9.9.9 ready")).toBeInTheDocument();
+	});
+
+	it("stacks install label above build details so nightly copy can wrap", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "downloaded",
+			version: "0.12.11-nightly.202609021713",
+			stagedAt: Date.now(),
+		});
+		renderSidebar();
+
+		const readyRow = await screen.findByTestId("sidebar-update-ready");
+		expect(within(readyRow).getByText("Install Update")).toBeVisible();
+		expect(within(readyRow).getByText(/^Nightly 0\.12\.11 · /)).toBeVisible();
+		expect(readyRow.querySelectorAll(".block").length).toBeGreaterThanOrEqual(2);
 	});
 
 	it("commits a project drop", () => {
