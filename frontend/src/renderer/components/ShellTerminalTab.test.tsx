@@ -98,7 +98,7 @@ describe("ShellTerminalTab rename", () => {
 		renderTab({ appearance: "connected", isActive: true });
 
 		const closeButton = screen.getByRole("button", { name: "Close terminal ao" });
-		expect(closeButton.parentElement).toHaveClass("absolute", "left-2", "inset-y-0");
+		expect(closeButton.parentElement).toHaveClass("absolute", "right-2", "inset-y-0");
 		expect(closeButton).toHaveClass(
 			"opacity-0",
 			"pointer-events-none",

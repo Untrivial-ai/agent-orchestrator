@@ -35,8 +35,7 @@ export function TerminalTabFrame({
 	"data-terminal-role": terminalRole,
 }: TerminalTabFrameProps) {
 	const { className: buttonClassName, ...restButtonProps } = buttonProps ?? {};
-	const overlayTrailing =
-		actionLayout === "overlay" && ((actionPosition === "trailing" && action) || trailingAction);
+	const overlayTrailing = actionLayout === "overlay" && actionPosition === "trailing" && action;
 	const inlineAction =
 		action && actionLayout === "inline" ? (
 			<div
@@ -63,19 +62,19 @@ export function TerminalTabFrame({
 				restButtonProps.onClick?.(event as unknown as ReactMouseEvent<HTMLButtonElement>);
 			}}
 		>
-			<span className="relative inline-flex h-[calc(100%-2px)] min-w-0 flex-1 self-stretch">
+			<span className="relative inline-flex h-[calc(100%-2px)] min-w-0 self-stretch">
 				{actionPosition === "leading" ? inlineAction : null}
 				{editingContent ?? (
 					<button
 						ref={buttonRef}
 						className={cn(
-							"inline-flex h-full min-w-0 flex-1 cursor-pointer items-center px-2 text-left text-control leading-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
-							overlayTrailing && "pr-9",
+							"inline-flex h-full max-w-full min-w-0 cursor-pointer items-center overflow-hidden px-2 text-left text-control leading-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
+							overlayTrailing && "pr-7",
 							buttonClassName,
 						)}
 						{...restButtonProps}
 					>
-						<span className={cn("inline-flex min-w-0 items-center gap-2", contentClassName)}>
+						<span className={cn("inline-flex max-w-full min-w-0 items-center gap-2 overflow-hidden", contentClassName)}>
 							{children}
 						</span>
 					</button>
@@ -94,7 +93,7 @@ export function TerminalTabFrame({
 				) : null}
 				{trailingAction ? (
 					<div
-						className="absolute inset-y-0 right-1 z-10 flex items-center"
+						className="flex shrink-0 items-center pr-1"
 						data-terminal-tab-action
 					>
 						{trailingAction}

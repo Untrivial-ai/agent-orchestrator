@@ -26,8 +26,8 @@ describe("SessionFileTabs", () => {
 		expect(languageIcon).toBeInTheDocument();
 		const closeButton = screen.getByRole("button", { name: "Close App.tsx" });
 		const feedbackButton = screen.getByRole("button", { name: "Add feedback for file src/App.tsx" });
-		expect(closeButton.parentElement).toHaveClass("left-2");
-		expect(feedbackButton.parentElement).toHaveClass("right-1");
+		expect(feedbackButton.parentElement).toHaveClass("left-2");
+		expect(closeButton.parentElement).toHaveClass("right-1");
 		expect(tab.closest("[data-terminal-tab-frame]")).toHaveClass("max-w-shell-tab-max");
 		expect(tab.closest("[data-terminal-tab-frame]")).not.toHaveClass(
 			"session-tab-icon-floor",

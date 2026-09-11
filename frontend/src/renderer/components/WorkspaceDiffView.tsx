@@ -12,7 +12,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Check, Plus, Send as SendIcon } from "lucide-react";
+import { Plus, Send as SendIcon } from "lucide-react";
 import type { FileAnnotationTarget } from "../../shared/file-annotations";
 import {
 	type WorkspaceCompareMode,
@@ -721,59 +721,53 @@ function LineFeedbackButton({
 
 export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotationModel }) {
 	const { t } = useTranslation();
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	useEffect(() => {
+		const textarea = textareaRef.current;
+		if (!textarea) return;
+		textarea.style.height = "0px";
+		textarea.style.height = `${textarea.scrollHeight}px`;
+	}, [annotation.draft]);
 	const target = annotation.target;
 	if (!target) return null;
 	const side = target.side === "file" ? "" : t(target.side === "old" ? "files.oldSide" : "files.newSide");
 	const targetLabel =
-		target.side === "file"
+			target.side === "file"
 			? t("files.fileFeedbackTarget", { file: target.path })
 			: t("files.lineFeedbackTarget", { file: target.path, line: target.line, side });
 	const submit = () => void annotation.submit();
 
 	return (
 		<form
-			className="border-y border-border/70 bg-surface px-3 py-2 font-sans"
+			className="w-full overflow-hidden rounded-2xl border border-border-strong bg-surface font-sans shadow-2xl shadow-black/35"
 			onSubmit={(event) => {
 				event.preventDefault();
 				submit();
 			}}
 		>
-			<div className="mb-1.5 flex items-center justify-between gap-2">
-				<span className="min-w-0 truncate font-mono text-caption text-passive">{targetLabel}</span>
-				{annotation.status === "sent" ? (
-					<span className="inline-flex items-center gap-1 text-caption text-success" role="status">
-						<Check className="size-icon-sm" aria-hidden="true" />
-						{t("files.feedbackSent")}
-					</span>
-				) : null}
+			<div className="px-4 pb-2.5 pt-3.5">
+				<textarea
+					aria-label={t("files.feedbackLabel", { target: targetLabel })}
+					autoFocus
+					className="block min-h-7 w-full resize-none overflow-hidden border-0 bg-transparent px-0 py-0.5 text-base text-foreground outline-none placeholder:text-passive focus-visible:outline-none disabled:opacity-60"
+					disabled={annotation.status === "sending" || annotation.status === "sent"}
+					onChange={(event) => annotation.setDraft(event.target.value)}
+					onKeyDown={(event) => {
+						if (event.key === "Escape") {
+							event.preventDefault();
+							annotation.cancel();
+						}
+					}}
+					placeholder={t("files.feedbackPlaceholder")}
+					ref={textareaRef}
+					value={annotation.draft}
+				/>
 			</div>
-			<textarea
-				aria-label={t("files.feedbackLabel", { target: targetLabel })}
-				autoFocus
-				className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground outline-none placeholder:text-passive focus-visible:outline-none disabled:opacity-60"
-				disabled={annotation.status === "sending" || annotation.status === "sent"}
-				onChange={(event) => annotation.setDraft(event.target.value)}
-				onKeyDown={(event) => {
-					if (event.key === "Escape") {
-						event.preventDefault();
-						annotation.cancel();
-					} else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-						event.preventDefault();
-						submit();
-					}
-				}}
-				placeholder={t("files.feedbackPlaceholder")}
-				value={annotation.draft}
-			/>
-			{annotation.status === "error" ? (
-				<p className="mt-1.5 text-xs text-error" role="alert">
-					{annotation.error}
-				</p>
-			) : null}
-			<div className="mt-2 flex items-center justify-end gap-1.5">
-				<span className="mr-auto text-caption text-passive">{t("files.feedbackShortcut")}</span>
+			{annotation.status === "error" ? <p className="px-4 pb-2 text-xs text-error" role="alert">{annotation.error}</p> : null}
+			<div className="flex items-center justify-between gap-3 px-4 pb-3.5">
 				<Button
 					disabled={annotation.status === "sending" || annotation.status === "sent"}
+					className="h-9 rounded-full border border-border/70 px-4"
 					onClick={annotation.cancel}
 					size="sm"
 					type="button"
@@ -782,12 +776,13 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 					{t("files.cancelFeedback")}
 				</Button>
 				<Button
+					aria-label={t("files.sendFeedback")}
 					disabled={!annotation.draft.trim() || annotation.status === "sending" || annotation.status === "sent"}
-					size="sm"
+					className="grid size-10 place-items-center rounded-full bg-[#e8e8eb] p-0 text-[#1b1b1f] shadow-sm hover:bg-white"
+					size={null}
 					type="submit"
 				>
-					<SendIcon className="size-icon-sm" aria-hidden="true" />
-					{annotation.status === "sending" ? t("files.sendingFeedback") : t("files.sendFeedback")}
+					<SendIcon className="size-5" aria-hidden="true" />
 				</Button>
 			</div>
 		</form>

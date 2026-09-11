@@ -90,13 +90,13 @@ export function SessionFileTab({
 	) : undefined;
 	return (
 		<TerminalTabFrame
-			action={closeAction}
+			action={feedbackAction}
+			actionLayout="inline"
 			actionPosition="leading"
 			active={active}
 			buttonProps={{
 				"aria-label": name,
 				"aria-selected": active,
-				className: "pr-9",
 				onClick: onActivate,
 				role: "tab",
 				tabIndex: active ? 0 : -1,
@@ -105,10 +105,10 @@ export function SessionFileTab({
 			}}
 			className="max-w-shell-tab-max"
 			contentClassName="font-medium"
-			trailingAction={feedbackAction}
+			trailingAction={closeAction}
 		>
 			<WorkspaceEntryIcon
-				className="size-icon-base shrink-0 group-hover:opacity-0 group-focus-within:opacity-0"
+				className="size-icon-base shrink-0"
 				kind="file"
 				name={name}
 			/>
