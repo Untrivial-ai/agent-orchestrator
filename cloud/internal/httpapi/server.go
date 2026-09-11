@@ -260,6 +260,7 @@ func New(options Options) *Server {
 		if server.brokerAuthToken != "" {
 			router.Post("/api/cloud/v1/control/github/capabilities/validate", server.validateRepositoryCapability)
 			router.Post("/api/cloud/v1/control/github/capabilities/redeem", server.redeemRepositoryCapability)
+			router.Post("/api/cloud/v1/control/github/capabilities/redeem-write", server.redeemRepositoryWriteCapability)
 			router.With(server.authenticateBrokerUser).Post(
 				"/api/cloud/v1/orgs/{orgId}/github/scratch-capabilities",
 				server.createGitHubScratchCapability,

@@ -267,6 +267,37 @@ func (s *Server) redeemRepositoryCapability(
 	writeJSON(w, http.StatusOK, grant)
 }
 
+func (s *Server) redeemRepositoryWriteCapability(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	request, installationID, repositoryID, target, ok :=
+		s.authorizedCapabilityRequest(w, r)
+	if !ok {
+		return
+	}
+	grant, err := s.github.RedeemRepositoryCapabilityForWrite(
+		r.Context(),
+		request.Capability,
+		target,
+		installationID,
+		repositoryID,
+		request.UserExternalID,
+	)
+	if errors.Is(err, postgres.ErrForbidden) ||
+		errors.Is(err, postgres.ErrNotFound) {
+		writeError(w, r, http.StatusForbidden, "CAPABILITY_INVALID", "The repository capability is invalid or revoked.")
+		return
+	}
+	if err != nil {
+		s.logger.Error("redeem repository write capability", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository write grant could not be issued.")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, grant)
+}
+
 func (s *Server) authorizedCapabilityRequest(
 	w http.ResponseWriter,
 	r *http.Request,
