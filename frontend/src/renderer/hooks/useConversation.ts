@@ -20,6 +20,7 @@ import {
 import { useCallback, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { codexAccountsQueryKey } from "./codex-accounts-state";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import type {
 	ActivityKind,
@@ -454,6 +455,25 @@ export function useConversationCommands(sessionId: string | undefined) {
 		},
 	});
 
+	const recoverAuth = useMutation({
+		mutationFn: async (restartRunningSessions: boolean) => {
+			const { data, error } = await apiClient.POST(
+				"/api/v1/sessions/{sessionId}/conversation/recover-auth",
+				{
+					params: { path: { sessionId: sessionId as string } },
+					body: { restartRunningSessions },
+				},
+			);
+			if (error) throw error;
+			return data;
+		},
+		onSuccess: () => {
+			invalidate();
+			void queryClient.invalidateQueries({ queryKey: codexAccountsQueryKey });
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+	});
+
 	/**
 	 * Summarize earlier history to reclaim context.
 	 *
@@ -798,6 +818,10 @@ export function useConversationCommands(sessionId: string | undefined) {
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent: resume.isPending,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
+		recoverAuth: (restartRunningSessions: boolean) => recoverAuth.mutateAsync(restartRunningSessions),
+		recoveringAuth: recoverAuth.isPending,
+		recoverAuthNeedsLogin: apiErrorCode(recoverAuth.error) === "CHAT_AUTH_REQUIRED",
+		recoverAuthError: recoverAuth.error ? apiErrorMessage(recoverAuth.error) : undefined,
 		compact: () => compact.mutateAsync(),
 		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
 		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate({ targetSessionId: sessionId as string, settings }),

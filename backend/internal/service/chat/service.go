@@ -171,6 +171,9 @@ type StartConfig struct {
 	// provider boundary does not exist until ControllerReady commits; AO already
 	// retains the unified timeline and the finalized continuation separately.
 	SkipNativeHistoryImport bool
+	// QueueRecoveryPolicy distinguishes ordinary restart cleanup from the one
+	// verified recovery path allowed to release retained work.
+	QueueRecoveryPolicy domain.ChatQueueRecoveryPolicy
 	// ControllerReady commits the controller's durable generation before event
 	// consumption starts. A controller that exits immediately must report after
 	// the launch has been marked live, so its exited signal cannot be overwritten
@@ -246,10 +249,21 @@ func cloneStartConfig(cfg StartConfig) StartConfig {
 // Best-effort by design: a failure here must not stop a session from coming back,
 // because a session the user cannot reopen is worse than a stale row. Both
 // failures are logged rather than swallowed.
-func (s *Service) settleOrphanedWork(ctx context.Context, session domain.SessionID, conversationID string) {
+func (s *Service) settleOrphanedWork(
+	ctx context.Context,
+	session domain.SessionID,
+	conversationID string,
+	policy domain.ChatQueueRecoveryPolicy,
+) {
 	now := s.now()
-	if err := s.store.SettleOrphanedTurns(ctx, session, now); err != nil {
-		s.log.Error("chat start: settle orphaned turns", "session", session, "error", err)
+	var settleErr error
+	if policy == domain.ChatQueueRecoveryRetainAndDrain {
+		settleErr = s.store.SettleOrphanedRunningTurns(ctx, session, now)
+	} else {
+		settleErr = s.store.SettleOrphanedTurns(ctx, session, now)
+	}
+	if settleErr != nil {
+		s.log.Error("chat start: settle orphaned turns", "session", session, "error", settleErr)
 	}
 	// An approval left pending can never be answered: the provider call it was
 	// blocking died with the process that was holding it.
@@ -312,21 +326,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		s.mu.Unlock()
 	}
 
-	driver, err := s.drivers.Driver(cfg.Harness)
-	if err != nil {
-		return nil, fmt.Errorf("chat driver for %s: %w", cfg.Harness, err)
-	}
-
-	caps, err := s.driverCapabilities(ctx, cfg.Harness, driver)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.ProviderConversationID == "" {
-		if err := capabilityAdmissionError(cfg.Harness, caps, cfg.Permissions); err != nil {
-			return nil, err
-		}
-	}
-
 	scope := domain.ConversationScopeSession
 	if cfg.Kind == domain.KindOrchestrator {
 		scope = domain.ConversationScopeProject
@@ -369,6 +368,31 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open conversation: %w", err)
+	}
+	reauthRequired := conversation.Account != nil && conversation.Account.ReauthRequiredAt != nil
+	if cfg.Harness == domain.HarnessCodex && reauthRequired &&
+		cfg.QueueRecoveryPolicy != domain.ChatQueueRecoveryRetainAndDrain {
+		// The durable marker is an admission fence, not merely banner state. Do not
+		// probe, resume, or otherwise contact a provider until the verified account
+		// recovery coordinator supplies the explicit retain-and-drain policy.
+		s.settleOrphanedWork(
+			ctx, cfg.SessionID, conversation.ID, domain.ChatQueueRecoveryRetainAndDrain,
+		)
+		return nil, ports.ErrChatAuthRequired
+	}
+
+	driver, err := s.drivers.Driver(cfg.Harness)
+	if err != nil {
+		return nil, fmt.Errorf("chat driver for %s: %w", cfg.Harness, err)
+	}
+	caps, err := s.driverCapabilities(ctx, cfg.Harness, driver)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ProviderConversationID == "" {
+		if err := capabilityAdmissionError(cfg.Harness, caps, cfg.Permissions); err != nil {
+			return nil, err
+		}
 	}
 	repairedBranch, restoredProviderOwner, err := s.store.RepairIncompleteConversationEdit(
 		ctx, cfg.SessionID, conversation.ID, s.now())
@@ -538,7 +562,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
 	if !liveReconnect {
-		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
+		queuePolicy := domain.ChatQueueRecoveryNormal
+		if reauthRequired {
+			queuePolicy = domain.ChatQueueRecoveryRetainAndDrain
+		}
+		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID, queuePolicy)
 	}
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
@@ -646,6 +674,23 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
+	switch {
+	case cfg.QueueRecoveryPolicy == domain.ChatQueueRecoveryRetainAndDrain:
+		if err := controller.resumeRetainedQueue(context.WithoutCancel(ctx)); err != nil {
+			return controller, err
+		}
+	case reauthRequired:
+		// Non-Codex agents retain their established manual sign-in + Resume flow.
+		// Codex cannot reach this branch because its durable marker is rejected
+		// before provider probe/launch unless the verified recovery policy is set.
+		closeCtx := context.WithoutCancel(ctx)
+		go func() {
+			if err := controller.Close(closeCtx); err != nil {
+				s.log.Warn("chat start: close controller awaiting reauthentication",
+					"session", cfg.SessionID, "error", err)
+			}
+		}()
+	}
 
 	// Drop the registry entry when the provider stream ends, so a later command
 	// reports ErrNoController instead of writing into a dead controller.
@@ -660,6 +705,18 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}()
 
 	return controller, nil
+}
+
+// ResumeRetainedQueue completes the durable authentication-recovery boundary for
+// an already-published replacement controller. It is used when the generation
+// commit succeeded but clearing the marker failed, so the durable saga can retry
+// that final step without launching or adopting another provider process.
+func (s *Service) ResumeRetainedQueue(ctx context.Context, id domain.SessionID) error {
+	controller, err := s.Controller(id)
+	if err != nil {
+		return err
+	}
+	return controller.resumeRetainedQueue(ctx)
 }
 
 // cleanupUnpublishedConversation rolls back a provider opened before its AO
@@ -1196,6 +1253,7 @@ type StartRequest struct {
 	ControllerGeneration    string
 	RequireNativeHistory    bool
 	SkipNativeHistoryImport bool
+	QueueRecoveryPolicy     domain.ChatQueueRecoveryPolicy
 	// ControllerReady runs after the provider and generation exist but before
 	// live event projection starts.
 	ControllerReady func(StartResult) (ControllerCommit, error)
@@ -1263,6 +1321,11 @@ func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	if err != nil {
 		return nil, domain.ConversationSettings{}, err
 	}
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.requireProviderAuth(); err != nil {
+		return nil, controller.Settings(), err
+	}
 	lister, ok := controller.conv.(ports.ChatModelLister)
 	if !ok {
 		return nil, controller.Settings(), ErrModelsUnsupported
@@ -1285,6 +1348,11 @@ func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]por
 	}
 	controller, err := s.Controller(id)
 	if err != nil {
+		return nil, err
+	}
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.requireProviderAuth(); err != nil {
 		return nil, err
 	}
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
@@ -1315,6 +1383,11 @@ func (s *Service) SetConfigOption(
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
+	}
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.requireProviderAuth(); err != nil {
+		return nil, err
 	}
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()

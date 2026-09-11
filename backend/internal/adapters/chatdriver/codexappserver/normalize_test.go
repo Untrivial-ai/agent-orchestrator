@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -177,6 +178,83 @@ func TestNormalizeOtherItemKinds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Error items are timeline content, not machine-readable account state. Even the
+// wording from the original report must remain an ordinary failed activity: old
+// items also pass through this normalizer during history import.
+func TestNormalizeErrorItemTextDoesNotInferAccountState(t *testing.T) {
+	const message = "Error running remote compact task: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again."
+	events := normalizeNotification(notification{
+		Method: codexproto.MethodItemCompleted,
+		Params: json.RawMessage(`{"threadId":"th","turnId":"tu","item":{"id":"err-1","type":"error","message":"` + message + `"}}`),
+	}, testNow)
+
+	if len(events) != 1 {
+		t.Fatalf("normalize error item produced %d events, want only the failed activity", len(events))
+	}
+	if events[0].Kind != ports.ChatEventActivityCompleted ||
+		events[0].ActivityStatus != domain.ActivityStatusFailed ||
+		events[0].Summary != message {
+		t.Fatalf("event = %+v, want the original failed activity preserved", events[0])
+	}
+}
+
+// Current app-server builds provide a stable CodexErrorInfo discriminator. The
+// deliberately unrelated prose proves AO does not depend on provider wording.
+func TestNormalizeStructuredTurnAuthFailureRequiresReauth(t *testing.T) {
+	events := normalizeNotification(notification{
+		Method: codexproto.MethodTurnCompleted,
+		Params: json.RawMessage(`{"threadId":"th","turn":{"id":"tu","status":"failed","error":{"message":"Provider changed this sentence completely.","codexErrorInfo":"unauthorized"}}}`),
+	}, testNow)
+	if len(events) != 2 || events[0].Kind != ports.ChatEventAccountChanged ||
+		events[0].Account == nil || !events[0].Account.ReauthRequired ||
+		events[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %+v, want reauthentication fence before failed turn", events)
+	}
+	if events[0].Account.ReauthReason != "Codex rejected this chat's credentials." {
+		t.Fatalf("reason = %q, want stable safe explanation", events[0].Account.ReauthReason)
+	}
+	if events[1].Err == nil || events[1].Err.Error() != "Provider changed this sentence completely." {
+		t.Fatalf("failed turn error = %v, want original provider detail", events[1].Err)
+	}
+}
+
+// A login-looking sentence is not authority when the provider supplied a
+// different structured classification. This prevents a model, tool, or backend
+// error from stopping the controller merely because its prose mentions login.
+func TestNormalizeStructuredNonAuthErrorDoesNotRequireReauth(t *testing.T) {
+	events := normalizeNotification(notification{
+		Method: codexproto.MethodTurnCompleted,
+		Params: json.RawMessage(`{"threadId":"th","turn":{"id":"tu","status":"failed","error":{"message":"Access token could not be refreshed; please sign in again.","codexErrorInfo":"other"}}}`),
+	}, testNow)
+	if len(events) != 1 || events[0].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %+v, want only the failed turn", events)
+	}
+}
+
+// The mid-turn error notification carries the same TurnError shape as the final
+// completion and must not lose its structured classification during normalization.
+func TestNormalizeStructuredErrorNotificationRequiresReauth(t *testing.T) {
+	events := normalizeNotification(notification{
+		Method: codexproto.MethodError,
+		Params: json.RawMessage(`{"threadId":"th","turnId":"tu","willRetry":false,"error":{"message":"Authentication rejected.","codexErrorInfo":"unauthorized"}}`),
+	}, testNow)
+	if len(events) != 2 || events[0].Kind != ports.ChatEventAccountChanged ||
+		events[0].Account == nil || !events[0].Account.ReauthRequired ||
+		events[0].ProviderTurnID != "tu" || events[0].ProviderConversationID != "th" ||
+		events[1].Kind != ports.ChatEventError || events[1].ProviderTurnID != "tu" ||
+		events[1].ProviderConversationID != "th" {
+		t.Fatalf("events = %+v, want reauthentication fence before provider error", events)
+	}
+}
+
+// A typed unauthorized error can still be transient when Codex explicitly says
+// it will retry. AO waits for Codex's terminal decision instead of pre-empting
+// provider-managed recovery.
+func TestNormalizeRetryingUnauthorizedErrorDoesNotRequireReauthYet(t *testing.T) {
+	normalizeNone(t, codexproto.MethodError,
+		`{"threadId":"th","turnId":"tu","willRetry":true,"error":{"message":"Refreshing credentials.","codexErrorInfo":"unauthorized"}}`)
 }
 
 // An item type this build does not model must produce nothing rather than an

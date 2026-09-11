@@ -27,6 +27,13 @@ const eventBuffer = 4096
 // deciding on the user's behalf.
 const approvalWait = 30 * time.Minute
 
+// reauthCompletionWait gives Codex's terminal turn notification time to follow a
+// non-retrying error. Current app-server builds emit error first and
+// turn/completed second; stopping on the first frame discards the provider's
+// authoritative status. The bound still ends a stale controller if a future or
+// broken provider never sends the completion.
+const reauthCompletionWait = 3 * time.Second
+
 // errConversationClosed reports a decision arriving after the controller ended.
 var errConversationClosed = errors.New("conversation closed")
 
@@ -147,45 +154,105 @@ func (c *conversation) pump() {
 	defer close(c.pumpDone)
 	defer close(c.events)
 
-	for n := range c.conn.notifs() {
-		// Before normalizing, because a token-usage report is the only place the
-		// context position is stated and a compaction event that arrives in the same
-		// batch has to be able to read it.
-		c.trackContext(n)
+	var reauthTurn string
+	var reauthTimer *time.Timer
+	var reauthTimeout <-chan time.Time
+	defer func() {
+		if reauthTimer != nil {
+			reauthTimer.Stop()
+		}
+	}()
 
-		// The clock is passed in rather than read inside: a rate-limit reset arrives
-		// as an absolute instant and has to become a remaining duration, and a
-		// normalizer that reads the clock itself cannot be tested deterministically.
-		for _, ev := range normalizeNotification(n, time.Now()) {
-			rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
-			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
-				c.mu.Lock()
-				c.activeTurn = ev.ProviderTurnID
-				// Snapshot the context position this turn starts from. Cheap on every
-				// turn, and the only way to know what a compaction reclaimed.
-				c.contextAtTurnStart = c.contextTokens
-				c.mu.Unlock()
+	notifications := c.conn.notifs()
+pumpLoop:
+	for {
+		select {
+		case n, ok := <-notifications:
+			if !ok {
+				break pumpLoop
 			}
-			if ev.Kind == ports.ChatEventTurnCompleted && ev.ProviderTurnID != "" && rootConversation {
-				c.mu.Lock()
-				if c.activeTurn == ev.ProviderTurnID {
-					c.activeTurn = ""
+			stopForReauth := false
+			completedTurn := ""
+			// Before normalizing, because a token-usage report is the only place the
+			// context position is stated and a compaction event that arrives in the same
+			// batch has to be able to read it.
+			c.trackContext(n)
+
+			// The clock is passed in rather than read inside: a rate-limit reset arrives
+			// as an absolute instant and has to become a remaining duration, and a
+			// normalizer that reads the clock itself cannot be tested deterministically.
+			for _, ev := range normalizeNotification(n, time.Now()) {
+				rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
+				if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
+					c.mu.Lock()
+					c.activeTurn = ev.ProviderTurnID
+					// Snapshot the context position this turn starts from. Cheap on every
+					// turn, and the only way to know what a compaction reclaimed.
+					c.contextAtTurnStart = c.contextTokens
+					c.mu.Unlock()
 				}
-				c.mu.Unlock()
-			}
-			if ev.Kind == ports.ChatEventCompacted {
-				settled, ok := c.settleCompaction(ev)
-				if !ok {
+				if ev.Kind == ports.ChatEventTurnCompleted && ev.ProviderTurnID != "" {
+					completedTurn = ev.ProviderTurnID
+					if reauthTurn == ev.ProviderTurnID {
+						stopForReauth = true
+					}
+					if rootConversation {
+						c.mu.Lock()
+						if c.activeTurn == ev.ProviderTurnID {
+							c.activeTurn = ""
+						}
+						c.mu.Unlock()
+					}
+				}
+				if ev.Kind == ports.ChatEventCompacted {
+					settled, ok := c.settleCompaction(ev)
+					if !ok {
+						continue
+					}
+					ev = settled
+				}
+				if ev.Kind == ports.ChatEventApprovalResolved {
+					// The provider resolved it (possibly via another client), so any
+					// card AO is still showing is stale.
+					c.discardPending(ev.RequestID)
+				}
+				c.emit(ev)
+				if ev.Kind != ports.ChatEventAccountChanged || ev.Account == nil ||
+					!ev.Account.ReauthRequired {
 					continue
 				}
-				ev = settled
+
+				// A turn/completed notification normalizes to the completion and account
+				// change together, so it is already safe to stop. A preceding error
+				// notification instead arms the bounded wait for that same turn.
+				if ev.ProviderTurnID == "" {
+					stopForReauth = true
+					continue
+				}
+				if completedTurn == ev.ProviderTurnID {
+					stopForReauth = true
+					continue
+				}
+				if reauthTurn == "" {
+					reauthTurn = ev.ProviderTurnID
+					reauthTimer = time.NewTimer(reauthCompletionWait)
+					reauthTimeout = reauthTimer.C
+				}
 			}
-			if ev.Kind == ports.ChatEventApprovalResolved {
-				// The provider resolved it (possibly via another client), so any
-				// card AO is still showing is stale.
-				c.discardPending(ev.RequestID)
+			if stopForReauth {
+				// Signing in rewrites Codex's credential file, but this app-server has
+				// already proved that the credentials it holds in memory are stale. Destroy
+				// this exact host after its terminal work is emitted; the durable recovery
+				// coordinator can then resume the same thread with verified credentials.
+				_ = c.Terminate()
+				break pumpLoop
 			}
-			c.emit(ev)
+
+		case <-reauthTimeout:
+			c.log.Warn("turn completion missing after authentication failure; stopping stale app-server",
+				"turn", reauthTurn)
+			_ = c.Terminate()
+			break pumpLoop
 		}
 	}
 

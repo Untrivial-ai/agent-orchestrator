@@ -94,6 +94,10 @@ type ChatStart struct {
 	// boundary is committed inside ControllerReady, so old provider events must
 	// not be projected into the source branch before that atomic write.
 	SkipNativeHistoryImport bool
+	// QueueRecoveryPolicy is explicit because ordinary daemon recovery must not
+	// release work retained by an authentication fence. Only the durable,
+	// user-confirmed recovery coordinator selects RetainAndDrain.
+	QueueRecoveryPolicy domain.ChatQueueRecoveryPolicy
 	// ControllerReady commits the durable controller facts before the provider
 	// event stream is consumed. This prevents an immediate exit from racing a
 	// later MarkSpawned write back to idle.
@@ -359,6 +363,7 @@ func (m *Manager) resumeChatController(
 	ws ports.WorkspaceInfo,
 	requireNativeHistory bool,
 	controllerGeneration string,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
 ) (RestoreResult, error) {
 	if m.chat == nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
@@ -437,6 +442,7 @@ func (m *Manager) resumeChatController(
 		// second restart can still prove exact target ownership.
 		ControllerGeneration: controllerGeneration,
 		RequireNativeHistory: requireNativeHistory,
+		QueueRecoveryPolicy:  queueRecoveryPolicy,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path

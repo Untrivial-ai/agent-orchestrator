@@ -49,6 +49,8 @@ describe("mergeCodexAccounts", () => {
 it("keeps account mutations fenced while recovery is required", () => {
 	const display = codexSwitchDisplay({
 		id: "switch-1",
+		operationKind: "account_switch",
+		scope: "all_running_ao_codex_sessions",
 		sourceAccountId: "account-a",
 		targetAccountId: "account-b",
 		restartRunningSessions: true,
@@ -67,6 +69,8 @@ it("keeps account mutations fenced while recovery is required", () => {
 it("shows active rollback as progress and exposes interrupted rollback recovery", () => {
 	const active = codexSwitchDisplay({
 		id: "switch-1", sourceAccountId: "account-a", targetAccountId: "account-b",
+		operationKind: "account_switch",
+		scope: "all_running_ao_codex_sessions",
 		restartRunningSessions: true,
 		phase: "rollback_required", failureCode: "activation_unconfirmed", canRecover: false,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
@@ -78,6 +82,8 @@ it("shows active rollback as progress and exposes interrupted rollback recovery"
 
 	const interrupted = codexSwitchDisplay({
 		id: "switch-1", sourceAccountId: "account-a", targetAccountId: "account-b",
+		operationKind: "account_switch",
+		scope: "all_running_ao_codex_sessions",
 		restartRunningSessions: true,
 		phase: "rollback_required", failureCode: "activation_unconfirmed", canRecover: true,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
@@ -91,6 +97,8 @@ it("never describes leave-running credential progress as stopping or restarting 
 	for (const phase of ["requested", "checkpointing_source", "activating_target", "verifying_target", "completed"] as const) {
 		const display = codexSwitchDisplay({
 			id: "switch-credential-only", sourceAccountId: "account-a", targetAccountId: "account-b",
+			operationKind: "account_switch",
+			scope: "credentials_only",
 			restartRunningSessions: false, phase, canRecover: false, sessions: [],
 			createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 		} satisfies CodexAccountSwitch);

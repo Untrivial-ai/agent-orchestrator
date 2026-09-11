@@ -284,6 +284,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersCodexAccountSwitchSessionResponse":        "CodexAccountSwitchSessionResponse",
 	"ControllersCodexAccountSwitchPhase":                  "CodexAccountSwitchPhase",
 	"ControllersStartCodexAccountSwitchRequest":           "StartCodexAccountSwitchRequest",
+	"ControllersRecoverConversationAuthRequest":           "RecoverConversationAuthRequest",
 	"ControllersCodexAccountSwitchIDParam":                "CodexAccountSwitchIDParam",
 	"DomainCodexCapacitySummary":                          "CodexCapacitySummary",
 	"ControllersWorkspaceFileResponse":                    "WorkspaceFileResponse",
@@ -767,6 +768,20 @@ func shellTerminalOperations() []operation {
 			reqBody:    controllers.SendConversationMessageRequest{},
 			resps: []respUnit{
 				{http.StatusAccepted, controllers.SendConversationMessageResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/conversation/recover-auth", id: "recoverSessionConversationAuth", tag: "conversations",
+			summary:    "Verify current Codex credentials and reconnect a fenced chat session",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.RecoverConversationAuthRequest{},
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.CodexAccountSwitchResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},

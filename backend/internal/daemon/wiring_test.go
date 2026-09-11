@@ -962,6 +962,10 @@ func (f *fakeSessionLifecycle) CodexAccountSwitchInProgress() bool              
 func (f *fakeSessionLifecycle) StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
 	return domain.CodexAccountSwitch{}, nil
 }
+
+func (f *fakeSessionLifecycle) StartCodexChatAuthRecovery(context.Context, ports.CodexChatAuthRecoveryConfig) (domain.CodexAccountSwitch, error) {
+	return domain.CodexAccountSwitch{}, nil
+}
 func (f *fakeSessionLifecycle) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
 	return domain.CodexAccountSwitch{}, nil
 }

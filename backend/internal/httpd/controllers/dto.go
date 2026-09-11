@@ -1277,6 +1277,12 @@ type StartCodexAccountSwitchRequest struct {
 	RestartRunningSessions  bool   `json:"restartRunningSessions,omitempty"`
 }
 
+// RecoverConversationAuthRequest controls the scope of one user-confirmed
+// external Codex credential recovery.
+type RecoverConversationAuthRequest struct {
+	RestartRunningSessions bool `json:"restartRunningSessions,omitempty"`
+}
+
 // CodexAccountSwitchIDParam describes the durable switch path parameter.
 type CodexAccountSwitchIDParam struct {
 	SwitchID string `path:"switchId" description:"Durable Codex account switch identifier."`
@@ -1288,6 +1294,8 @@ type CodexAccountSwitchPhase string
 // CodexAccountSwitchResponse contains only safe AO identifiers and progress.
 type CodexAccountSwitchResponse struct {
 	ID                     string                              `json:"id"`
+	OperationKind          string                              `json:"operationKind" enum:"account_switch,external_auth_recovery"`
+	Scope                  string                              `json:"scope" enum:"credentials_only,current_chat,all_running_ao_codex_sessions"`
 	SourceAccountID        string                              `json:"sourceAccountId"`
 	TargetAccountID        string                              `json:"targetAccountId"`
 	RestartRunningSessions bool                                `json:"restartRunningSessions"`

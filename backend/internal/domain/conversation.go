@@ -381,6 +381,19 @@ type ConversationAccount struct {
 	ReauthReason string `json:"reauthReason,omitempty"`
 }
 
+// ChatQueueRecoveryPolicy controls what a replacement controller may do with
+// durable messages that never crossed the provider boundary.
+type ChatQueueRecoveryPolicy uint8
+
+const (
+	// ChatQueueRecoveryNormal leaves ordinary crash/startup cleanup semantics in
+	// place and never treats queued work as authorized for redelivery.
+	ChatQueueRecoveryNormal ChatQueueRecoveryPolicy = iota
+	// ChatQueueRecoveryRetainAndDrain is reserved for a verified, user-confirmed
+	// authentication recovery. It clears the durable fence and drains once FIFO.
+	ChatQueueRecoveryRetainAndDrain
+)
+
 // ThreadStatus is the provider's own lifecycle state for a thread. It is NOT AO's
 // session status, which stays derived from durable facts at read time; this is one
 // more such fact.

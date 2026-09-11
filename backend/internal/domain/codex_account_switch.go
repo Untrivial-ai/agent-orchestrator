@@ -2,6 +2,15 @@ package domain
 
 import "time"
 
+// CodexAccountOperationKind distinguishes an intentional account selection from
+// recovery after Codex rejected the credentials used by a live controller.
+type CodexAccountOperationKind string
+
+const (
+	CodexAccountOperationSwitch               CodexAccountOperationKind = "account_switch"
+	CodexAccountOperationExternalAuthRecovery CodexAccountOperationKind = "external_auth_recovery"
+)
+
 // CodexAccountSwitchPhase is the durable global credential-switch phase.
 type CodexAccountSwitchPhase string
 
@@ -37,14 +46,15 @@ func (p CodexAccountSwitchPhase) Terminal() bool {
 
 // CodexAccountSwitchSession records safe restart progress for one AO session.
 type CodexAccountSwitchSession struct {
-	SessionID     SessionID   `json:"sessionId"`
-	InterfaceMode SessionMode `json:"interfaceMode" enum:"tui,chat"`
-	WasRunning    bool        `json:"wasRunning"`
-	StopState     string      `json:"stopState"`
-	RestartState  string      `json:"restartState"`
-	ErrorCode     string      `json:"errorCode,omitempty"`
-	StoppedAt     *time.Time  `json:"stoppedAt,omitempty"`
-	RestartedAt   *time.Time  `json:"restartedAt,omitempty"`
+	SessionID         SessionID   `json:"sessionId"`
+	InterfaceMode     SessionMode `json:"interfaceMode" enum:"tui,chat"`
+	WasRunning        bool        `json:"wasRunning"`
+	StopState         string      `json:"stopState"`
+	RestartState      string      `json:"restartState"`
+	ErrorCode         string      `json:"errorCode,omitempty"`
+	StoppedAt         *time.Time  `json:"stoppedAt,omitempty"`
+	RestartedAt       *time.Time  `json:"restartedAt,omitempty"`
+	RetainQueuedTurns bool        `json:"-"`
 	// Daemon-private fencing and resume identity.
 	NativeSessionID         string `json:"-"`
 	SourceHandleID          string `json:"-"`
@@ -59,6 +69,7 @@ type CodexAccountSwitchSession struct {
 // CodexAccountSwitch is the durable global account-switch operation.
 type CodexAccountSwitch struct {
 	ID                     string                      `json:"id"`
+	OperationKind          CodexAccountOperationKind   `json:"operationKind"`
 	SourceAccountID        string                      `json:"sourceAccountId"`
 	TargetAccountID        string                      `json:"targetAccountId"`
 	RestartRunningSessions bool                        `json:"restartRunningSessions"`

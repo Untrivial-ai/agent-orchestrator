@@ -59,7 +59,8 @@ type Store interface {
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error
-	CleanupOwnedControllerWork(ctx context.Context, session domain.SessionID, conversationID, generation string, now time.Time) (bool, error)
+	CleanupOwnedControllerWork(ctx context.Context, session domain.SessionID, conversationID, generation, reauthReason string, now time.Time) (bool, error)
+	SettleOrphanedRunningTurns(ctx context.Context, session domain.SessionID, now time.Time) error
 	ListVisibleRunningTurnProviderIDs(ctx context.Context, conversationID string) ([]string, error)
 
 	SetConversationSettings(ctx context.Context, conversationID string, settings domain.ConversationSettings, now time.Time) error
@@ -221,7 +222,17 @@ type Controller struct {
 	// auth mode and plan but never a credential demand, a thread-status report says
 	// nothing about archiving, and MCP servers are announced one at a time. Writing
 	// each report straight through would make every field blank the one before it.
-	account     domain.ConversationAccount
+	account domain.ConversationAccount
+	// reauthBlocked is the current controller's provider-delivery fence. It starts
+	// from durable account state, is raised by a live credential demand, and is
+	// lifted only by proven successful work or a verified recovery launch.
+	// Keeping it separate from the banner lets a failed auxiliary clear retain the
+	// warning without unnecessarily stopping a controller whose credentials worked.
+	reauthBlocked bool
+	// reauthReason is kept separately so stream-shutdown cleanup can durably record
+	// the fence even when projection of the provider event rolled back.
+	reauthReason string
+
 	threadState domain.ConversationThreadState
 	// usage is merged in memory because providers may split context occupancy and
 	// cumulative accounting across separate events. Writing either half as a full
@@ -311,6 +322,8 @@ func newController(
 	// account until the provider next mentions one.
 	if conversation.Account != nil {
 		c.account = *conversation.Account
+		c.reauthBlocked = conversation.Account.ReauthRequiredAt != nil
+		c.reauthReason = conversation.Account.ReauthReason
 	}
 	if conversation.ThreadState != nil {
 		c.threadState = *conversation.ThreadState
@@ -953,6 +966,9 @@ func (c *Controller) readRateLimits() {
 	if !ok {
 		return
 	}
+	if err := c.requireProviderAuth(); err != nil {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), rateLimitReadTimeout)
 	defer cancel()
@@ -978,6 +994,22 @@ func (c *Controller) readRateLimits() {
 
 // ProviderConversationID is the handle to persist for resume.
 func (c *Controller) ProviderConversationID() string { return c.conv.ProviderConversationID() }
+
+// conversationForReplacement snapshots launch state together with mutable
+// account state for an edit/branch controller. The durable conversation record
+// stored on the controller is its launch-time seed; account reports are merged in
+// memory afterward. Copying that stale seed directly can resurrect a cleared
+// reauthentication warning when the replacement receives an ordinary account
+// update.
+func (c *Controller) conversationForReplacement() domain.ConversationRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	conversation := c.conversation
+	account := c.account
+	conversation.Account = &account
+	return conversation
+}
 
 // ConversationID is the durable conversation this controller writes to.
 func (c *Controller) ConversationID() string { return c.conversation.ID }
@@ -1050,9 +1082,10 @@ func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domai
 		return domain.ConversationTurn{}, nil
 	}
 
-	if c.busy() {
+	if c.busyOrReauthBlocked() {
 		// AppendUserMessage wrote it as queued, which is exactly where it belongs
-		// until the running turn ends. drain picks it up from there.
+		// until the running turn ends or the user explicitly resumes after fixing
+		// authentication. drain picks it up from there.
 		return domain.ConversationTurn{
 			ID:                 turnID,
 			ConversationID:     c.conversation.ID,
@@ -1127,6 +1160,9 @@ func (c *Controller) RetryTurn(ctx context.Context, turnID string) (domain.Conve
 		return existing, nil
 	}
 
+	if c.reauthenticationBlocksDispatch() {
+		return domain.ConversationTurn{}, ports.ErrChatAuthRequired
+	}
 	if c.busy() {
 		return domain.ConversationTurn{}, ErrTurnRunning
 	}
@@ -1284,6 +1320,55 @@ func (c *Controller) busy() bool {
 	return c.pendingTurnID != ""
 }
 
+func (c *Controller) busyOrReauthBlocked() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pendingTurnID != "" || c.reauthBlocked
+}
+
+func (c *Controller) reauthenticationBlocksDispatch() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reauthBlocked
+}
+
+// requireProviderAuth rejects commands that would contact the stale provider.
+// Callers that also serialize dispatch must hold sendMu before invoking it so an
+// account event cannot arm the fence between this check and the provider call.
+func (c *Controller) requireProviderAuth() error {
+	if c.reauthenticationBlocksDispatch() {
+		return ports.ErrChatAuthRequired
+	}
+	return nil
+}
+
+// resumeRetainedQueue is the explicit user recovery boundary. Starting a
+// replacement controller is installed only after the account coordinator has
+// verified the current credential revision. Clear the durable marker before
+// allowing the oldest retained message to cross the provider boundary.
+func (c *Controller) resumeRetainedQueue(ctx context.Context) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if err := c.clearReauth(ctx, c.now()); err != nil {
+		return fmt.Errorf("clear chat reauthentication warning before queue resume: %w", err)
+	}
+	c.mu.Lock()
+	c.reauthBlocked = false
+	c.reauthReason = ""
+	c.mu.Unlock()
+	c.drainLocked(ctx)
+	return nil
+}
+
+func (c *Controller) reauthCleanupReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.reauthBlocked {
+		return ""
+	}
+	return firstNonEmpty(c.reauthReason, c.account.ReauthReason, "authentication required")
+}
+
 // dispatch hands a recorded turn to the provider. Callers must hold sendMu.
 func (c *Controller) dispatch(
 	ctx context.Context,
@@ -1416,6 +1501,9 @@ func (c *Controller) drainLocked(ctx context.Context) {
 	if handoff != controllerHandoffNone && handoff != controllerHandoffInterfaceDrain {
 		return
 	}
+	if c.reauthenticationBlocksDispatch() {
+		return
+	}
 
 	queued, err := c.store.NextQueuedTurn(ctx, c.conversation.ID)
 	if errors.Is(err, domain.ErrNoQueuedTurn) {
@@ -1473,6 +1561,9 @@ func (c *Controller) ArmHandoff(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := c.requireProviderAuth(); err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	if c.handoff == want {
@@ -1505,6 +1596,11 @@ func (c *Controller) BeginHandoff(
 		// sendMu and the armed gate make dispatch and explicit promotion impossible.
 		// Local durable state is committed before the external provider side effect.
 		c.sendMu.Lock()
+		if err := c.requireProviderAuth(); err != nil {
+			c.sendMu.Unlock()
+			c.AbortHandoff()
+			return err
+		}
 		c.mu.Lock()
 		active := c.pendingTurnID != ""
 		c.mu.Unlock()
@@ -1544,6 +1640,11 @@ func (c *Controller) BeginHandoff(
 		// without sendMu a handoff can observe that narrow middle state as neither
 		// queued nor active and start the target controller too early.
 		c.sendMu.Lock()
+		if err := c.requireProviderAuth(); err != nil {
+			c.sendMu.Unlock()
+			c.AbortHandoff()
+			return err
+		}
 		c.mu.Lock()
 		busy := c.pendingTurnID != ""
 		c.mu.Unlock()
@@ -1580,6 +1681,9 @@ func (c *Controller) BeginHandoff(
 func (c *Controller) BeginIdleBranchHandoff(ctx context.Context) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if err := c.requireProviderAuth(); err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1645,6 +1749,11 @@ func (c *Controller) waitForBranchHandoff() {
 // Resolve answers a pending approval. The provider is told first: if it rejects
 // the decision, AO must not have already recorded the approval as answered.
 func (c *Controller) Resolve(ctx context.Context, requestID string, decision ports.ChatDecision) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if err := c.requireProviderAuth(); err != nil {
+		return err
+	}
 	if err := c.conv.ResolveRequest(ctx, requestID, decision); err != nil {
 		return fmt.Errorf("resolve request %s: %w", requestID, err)
 	}
@@ -1665,6 +1774,11 @@ func (c *Controller) ResolveInput(
 	requestID string,
 	response ports.ChatInputResponse,
 ) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if err := c.requireProviderAuth(); err != nil {
+		return err
+	}
 	responder, ok := c.conv.(ports.ChatInputResponder)
 	if !ok {
 		return fmt.Errorf("%w: structured input", ports.ErrChatUnsupported)
@@ -1727,6 +1841,9 @@ func (c *Controller) Compact(ctx context.Context) (ports.ChatCompactionResult, e
 	if c.handoffActive() {
 		return ports.ChatCompactionResult{}, ErrControllerHandoff
 	}
+	if err := c.requireProviderAuth(); err != nil {
+		return ports.ChatCompactionResult{}, err
+	}
 
 	if c.busy() {
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
@@ -1752,7 +1869,14 @@ func (c *Controller) interruptForHandoff(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	if err := c.conv.Interrupt(ctx, turn); err != nil {
+	c.sendMu.Lock()
+	if err := c.requireProviderAuth(); err != nil {
+		c.sendMu.Unlock()
+		return err
+	}
+	err := c.conv.Interrupt(ctx, turn)
+	c.sendMu.Unlock()
+	if err != nil {
 		if errors.Is(err, ports.ErrChatNoActiveTurn) {
 			// Completion won the race after the dispatch gate was armed. The queue is
 			// already terminal, so there is no remaining source work to release.
@@ -1788,6 +1912,10 @@ func (c *Controller) Interrupt(ctx context.Context) error {
 	// lock first is existing work Stop should cancel; a Send that arrives after
 	// this point waits and is therefore post-Stop work that must survive.
 	c.sendMu.Lock()
+	if err := c.requireProviderAuth(); err != nil {
+		c.sendMu.Unlock()
+		return err
+	}
 	cutoff := c.now()
 	c.mu.Lock()
 	turn := c.pendingTurnID
@@ -1830,7 +1958,17 @@ func (c *Controller) Interrupt(ctx context.Context) error {
 		return nil
 	}
 
-	if err := c.conv.Interrupt(ctx, turn); err != nil {
+	// Authentication can fail while the provider acknowledgement is in flight.
+	// Re-enter the dispatch gate so the account projector either raises the fence
+	// first or waits until this exact provider call has returned.
+	c.sendMu.Lock()
+	if err := c.requireProviderAuth(); err != nil {
+		c.sendMu.Unlock()
+		return err
+	}
+	err := c.conv.Interrupt(ctx, turn)
+	c.sendMu.Unlock()
+	if err != nil {
 		if errors.Is(err, ports.ErrChatNoActiveTurn) {
 			// Serialize durable settlement, memory cleanup, and queue promotion so
 			// a message arriving after Stop cannot slip between those steps.
@@ -1980,6 +2118,9 @@ func (c *Controller) Rollback(ctx context.Context, turnID string) (int, error) {
 	if c.handoffActive() {
 		return 0, ErrControllerHandoff
 	}
+	if err := c.requireProviderAuth(); err != nil {
+		return 0, err
+	}
 
 	if c.busy() {
 		// Not a failure and not permanent: the agent is mid-thought, and the same
@@ -2126,12 +2267,25 @@ func (c *Controller) project() {
 		if preserveProvider && event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped {
 			continue
 		}
-		// A lifecycle event and a concurrent Send must agree on whether the root
-		// conversation is busy. Holding the same lock Send/dispatch use closes the
-		// window between the durable projection and the in-memory ownership update.
+		// Lifecycle and authentication events must agree with a concurrent Send on
+		// whether delivery is allowed. Holding the same lock Send/dispatch use closes
+		// the window between durable projection and the in-memory ownership/fence
+		// update.
 		lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted
-		if lifecycle {
+		reauthFence := event.Kind == ports.ChatEventAccountChanged && event.Account != nil &&
+			event.Account.ReauthRequired
+		locksDispatch := lifecycle || reauthFence
+		if locksDispatch {
 			c.sendMu.Lock()
+		}
+		if reauthFence {
+			// Fence provider delivery before attempting the durable projection. If
+			// projection fails, stream-shutdown cleanup persists the marker and
+			// retains queued work in the same generation-fenced transaction.
+			c.mu.Lock()
+			c.reauthBlocked = true
+			c.reauthReason = event.Account.ReauthReason
+			c.mu.Unlock()
 		}
 		projected, primaryTurn, err := c.projectEvent(ctx, event)
 		if err != nil {
@@ -2143,7 +2297,7 @@ func (c *Controller) project() {
 		} else if projected {
 			c.afterProject(ctx, event, primaryTurn)
 		}
-		if lifecycle {
+		if locksDispatch {
 			c.sendMu.Unlock()
 		}
 	}
@@ -2176,7 +2330,7 @@ func (c *Controller) project() {
 		c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 	}
 	if _, err := c.store.CleanupOwnedControllerWork(
-		ctx, c.sessionID, c.conversation.ID, c.generation, now,
+		ctx, c.sessionID, c.conversation.ID, c.generation, c.reauthCleanupReason(), now,
 	); err != nil {
 		c.log.Error("failed to clean up stopped controller work", "session", c.sessionID, "error", err)
 	}
@@ -2184,7 +2338,10 @@ func (c *Controller) project() {
 
 // projectEvent archives one normalized provider event and applies its durable
 // projection in the same SQLite transaction.
-func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
+func (c *Controller) projectEvent(
+	ctx context.Context,
+	event ports.ChatEvent,
+) (bool, bool, error) {
 	record := map[string]any{
 		"kind":                   event.Kind,
 		"providerEventId":        event.ProviderEventID,
@@ -2640,7 +2797,7 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 	case ports.ChatEventControllerState:
 		if event.ControllerState == ports.ChatControllerStopped {
 			_, err := c.store.CleanupOwnedControllerWork(
-				ctx, c.sessionID, c.conversation.ID, c.generation, now)
+				ctx, c.sessionID, c.conversation.ID, c.generation, c.reauthCleanupReason(), now)
 			return err
 		}
 		return nil
@@ -2666,6 +2823,46 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 	}
 }
 
+// settleControllerOrphans preserves messages that never crossed the provider
+// boundary when this controller stopped for reauthentication. Ordinary crashes
+// keep the existing conservative behavior: queued work is failed because there
+// is no explicit recovery boundary authorizing automatic redelivery.
+func (c *Controller) settleControllerOrphans(ctx context.Context, now time.Time) error {
+	if c.reauthenticationBlocksDispatch() {
+		return c.store.SettleOrphanedRunningTurns(ctx, c.sessionID, now)
+	}
+	return c.store.SettleOrphanedTurns(ctx, c.sessionID, now)
+}
+
+// clearReauth removes the current warning after a controller completes real work.
+// It deliberately runs after the provider-event transaction commits: banner
+// cleanup is auxiliary state and must never roll back authoritative turn
+// settlement or leave the controller busy after the provider finished.
+func (c *Controller) clearReauth(ctx context.Context, now time.Time) error {
+	c.mu.Lock()
+	if c.account.ReauthRequiredAt == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	account := c.account
+	account.ReauthRequiredAt = nil
+	account.ReauthReason = ""
+	c.mu.Unlock()
+
+	if err := c.store.RecordAccount(ctx, c.conversation.ID, account, now); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.account = account
+	// c.conversation is the launch-time seed copied into branch replacement
+	// controllers. Keep it aligned with current account state so an edit or branch
+	// activation cannot resurrect the warning this write just cleared.
+	accountSeed := account
+	c.conversation.Account = &accountSeed
+	c.mu.Unlock()
+	return nil
+}
+
 // afterProject performs effects that intentionally live outside the SQLite
 // archive/projection transaction. Lifecycle writes touch the sessions table and
 // draining may call the provider, so either one inside the store transaction
@@ -2678,6 +2875,26 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)
 		}
 	case ports.ChatEventTurnCompleted:
+		rootConversation := event.ProviderConversationID == "" ||
+			event.ProviderConversationID == c.conv.ProviderConversationID()
+		if rootConversation && event.TurnState == domain.TurnStateCompleted && event.Err == nil {
+			// TurnStarted only proves that the provider accepted the request envelope.
+			// A successful live root completion proves the replacement controller used
+			// valid credentials for real work. Native history never reaches afterProject,
+			// so replayed successes cannot clear current authentication state.
+			if err := c.clearReauth(ctx, now); err != nil {
+				c.log.Error("failed to clear chat reauthentication warning after successful turn",
+					"session", c.sessionID, "error", err)
+			} else {
+				// Durable state is the recovery authority. Keep the volatile fence raised
+				// when that write fails so provider commands cannot outrun the banner and
+				// retained queue that still say authentication is required.
+				c.mu.Lock()
+				c.reauthBlocked = false
+				c.reauthReason = ""
+				c.mu.Unlock()
+			}
+		}
 		if !primaryTurn {
 			return
 		}
@@ -2705,6 +2922,13 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		}
 	case ports.ChatEventAccountChanged:
 		if event.Account != nil && event.Account.ReauthRequired {
+			// This event is projected before the matching completion, on the same
+			// projector goroutine. Raising the fence here makes that completion retain
+			// the queue instead of dispatching into credentials the provider rejected.
+			c.mu.Lock()
+			c.reauthBlocked = true
+			c.reauthReason = event.Account.ReauthReason
+			c.mu.Unlock()
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
 		}
 	}
@@ -2903,6 +3127,9 @@ func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.Conversatio
 	defer c.sendMu.Unlock()
 	if c.handoffActive() {
 		return nil, ErrControllerHandoff
+	}
+	if err := c.requireProviderAuth(); err != nil {
+		return nil, err
 	}
 
 	if c.busy() {

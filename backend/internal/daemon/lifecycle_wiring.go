@@ -186,6 +186,7 @@ type sessionLifecycle interface {
 	SessionMutationInProgress(id domain.SessionID) bool
 	CodexAccountSwitchInProgress() bool
 	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
+	StartCodexChatAuthRecovery(context.Context, ports.CodexChatAuthRecoveryConfig) (domain.CodexAccountSwitch, error)
 	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
 	SetCodexAccountSwitchObserver(func())
@@ -514,6 +515,10 @@ func (c chatLauncher) SupportsChat(harness domain.AgentHarness) bool {
 	return c.svc.SupportsChat(harness)
 }
 
+func (c chatLauncher) ResumeRetainedQueue(ctx context.Context, id domain.SessionID) error {
+	return c.svc.ResumeRetainedQueue(ctx, id)
+}
+
 func (c chatLauncher) PreflightChat(
 	ctx context.Context,
 	harness domain.AgentHarness,
@@ -542,6 +547,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		ControllerGeneration:    cfg.ControllerGeneration,
 		RequireNativeHistory:    cfg.RequireNativeHistory,
 		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
+		QueueRecoveryPolicy:     cfg.QueueRecoveryPolicy,
 		ControllerReady: func(out chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if cfg.ControllerReady == nil {
 				return chatsvc.ControllerCommit{}, nil

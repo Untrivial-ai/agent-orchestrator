@@ -1475,6 +1475,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/conversation/recover-auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify current Codex credentials and reconnect a fenced chat session */
+        post: operations["recoverSessionConversationAuth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation/settings": {
         parameters: {
             query?: never;
@@ -2701,8 +2718,12 @@ export interface components {
             failureCode?: string;
             id: string;
             /** @enum {string} */
+            operationKind: "account_switch" | "external_auth_recovery";
+            /** @enum {string} */
             phase: "requested" | "stopping_sessions" | "sessions_stopped" | "checkpointing_source" | "activating_target" | "verifying_target" | "restarting_sessions" | "rollback_required" | "recovery_required" | "completed" | "failed";
             restartRunningSessions: boolean;
+            /** @enum {string} */
+            scope: "credentials_only" | "current_chat" | "all_running_ao_codex_sessions";
             sessions: components["schemas"]["CodexAccountSwitchSessionResponse"][];
             sourceAccountId: string;
             targetAccountId: string;
@@ -3681,6 +3702,9 @@ export interface components {
             lastSeenAt: string;
             platform?: string;
             token?: string;
+        };
+        RecoverConversationAuthRequest: {
+            restartRunningSessions?: boolean;
         };
         RegisterPushDeviceRequest: {
             /** @description Human-friendly device label. */
@@ -9231,6 +9255,78 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    recoverSessionConversationAuth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverConversationAuthRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexAccountSwitchResponse"];
+                };
             };
             /** @description Bad Request */
             400: {

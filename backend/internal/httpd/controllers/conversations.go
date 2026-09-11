@@ -55,13 +55,21 @@ type pagedConversationService interface {
 	SnapshotPage(ctx context.Context, session domain.SessionID, beforeSequence, limit int64) (chatsvc.Snapshot, error)
 }
 
+// ConversationAuthRecoveryService is the durable lifecycle coordinator used by
+// the recovery action. It intentionally does not live on ConversationService:
+// provider commands and process replacement have different owners.
+type ConversationAuthRecoveryService interface {
+	StartCodexChatAuthRecovery(context.Context, ports.CodexChatAuthRecoveryConfig) (domain.CodexAccountSwitch, error)
+}
+
 // ConversationsController owns the Chat routes for a session.
 //
 // Every route dispatches from the session's persisted mode inside the service, so
 // a client cannot reach the Chat path for a session that was created in TUI mode
 // even by calling these URLs directly. UI visibility is not the boundary.
 type ConversationsController struct {
-	Svc ConversationService
+	Svc      ConversationService
+	Recovery ConversationAuthRecoveryService
 }
 
 // Register mounts the conversation routes under a session.
@@ -88,6 +96,42 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/conversation/branches/{branchId}/activate", c.activateBranch)
 	r.Put("/sessions/{sessionId}/conversation/title", c.setTitle)
 	r.Post("/sessions/{sessionId}/conversation/mcp/reload", c.reloadMCPServers)
+	r.Post("/sessions/{sessionId}/conversation/recover-auth", c.recoverAuth)
+}
+
+func (c *ConversationsController) recoverAuth(w http.ResponseWriter, r *http.Request) {
+	if c.Recovery == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/conversation/recover-auth")
+		return
+	}
+	var request RecoverConversationAuthRequest
+	if !decodeConversationBody(w, r, &request) {
+		return
+	}
+	result, err := c.Recovery.StartCodexChatAuthRecovery(r.Context(), ports.CodexChatAuthRecoveryConfig{
+		SessionID:              domain.SessionID(chi.URLParam(r, "sessionId")),
+		RestartRunningSessions: request.RestartRunningSessions,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ports.ErrCodexChatAuthRecoveryNotRequired):
+			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+				"CHAT_AUTH_RECOVERY_NOT_REQUIRED", "this conversation does not require authentication recovery", nil)
+		case errors.Is(err, ports.ErrCodexAccountSwitchInProgress):
+			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+				"CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "a Codex account operation is already in progress", nil)
+		case errors.Is(err, ports.ErrCodexAccountRevisionConflict), errors.Is(err, ports.ErrCodexGlobalAccountChanged):
+			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+				"CODEX_ACCOUNT_REVISION_CONFLICT", "the active Codex account changed during recovery", nil)
+		case errors.Is(err, ports.ErrCodexRunningSessionNotResumable):
+			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+				"CODEX_RUNNING_SESSION_NOT_RESUMABLE", "the Codex conversation cannot be resumed exactly", nil)
+		default:
+			writeConversationError(w, r, err)
+		}
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, newCodexSwitchResponse(result))
 }
 
 func (c *ConversationsController) editMessage(w http.ResponseWriter, r *http.Request) {

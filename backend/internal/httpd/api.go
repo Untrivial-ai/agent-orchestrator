@@ -40,6 +40,9 @@ type APIDeps struct {
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
 	Conversations controllers.ConversationService
+	// ConversationRecovery coordinates durable Codex process replacement after
+	// an externally changed or expired credential is detected.
+	ConversationRecovery controllers.ConversationAuthRecoveryService
 	// Settings is the daemon-owned preference surface.
 	Settings            controllers.SettingsService
 	DevImport           controllers.DevImportService
@@ -157,7 +160,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
-		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
+		conversations: &controllers.ConversationsController{Svc: deps.Conversations, Recovery: deps.ConversationRecovery},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},

@@ -1171,7 +1171,7 @@ func TestCleanupOwnedControllerWorkIsGenerationFenced(t *testing.T) {
 	}
 
 	owned, err := s.CleanupOwnedControllerWork(
-		ctx, session, conversation, "stale-generation", histClock.Add(time.Minute))
+		ctx, session, conversation, "stale-generation", "", histClock.Add(time.Minute))
 	if err != nil || owned {
 		t.Fatalf("stale CleanupOwnedControllerWork: owned=%v err=%v", owned, err)
 	}
@@ -1203,7 +1203,7 @@ func TestCleanupOwnedControllerWorkIsGenerationFenced(t *testing.T) {
 	assertCleanupState(domain.TurnStateRunning, domain.ActivityStatusPending)
 
 	owned, err = s.CleanupOwnedControllerWork(
-		ctx, session, conversation, "gen-1", histClock.Add(2*time.Minute))
+		ctx, session, conversation, "gen-1", "", histClock.Add(2*time.Minute))
 	if err != nil || !owned {
 		t.Fatalf("owned CleanupOwnedControllerWork: owned=%v err=%v", owned, err)
 	}
@@ -1280,7 +1280,7 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 	seedWork(newSession, "new-generation", "new", histClock.Add(time.Minute))
 
 	owned, err := s.CleanupOwnedControllerWork(ctx, oldSession, conversation.ID,
-		"old-generation", histClock.Add(2*time.Minute))
+		"old-generation", "", histClock.Add(2*time.Minute))
 	if err != nil || !owned {
 		t.Fatalf("CleanupOwnedControllerWork(old): owned=%v err=%v", owned, err)
 	}

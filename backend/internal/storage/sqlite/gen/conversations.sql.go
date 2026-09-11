@@ -456,6 +456,29 @@ func (q *Queries) FailOrphanedConversationActivities(ctx context.Context, arg Fa
 	return err
 }
 
+const failOrphanedRunningConversationActivities = `-- name: FailOrphanedRunningConversationActivities :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = ?1
+WHERE status = 'running'
+  AND turn_id IN (
+      SELECT id FROM conversation_turns
+      WHERE handled_by_session_id = ?2
+        AND state = 'running'
+  )
+`
+
+type FailOrphanedRunningConversationActivitiesParams struct {
+	UpdatedAt          time.Time
+	HandledBySessionID domain.SessionID
+}
+
+// Authentication recovery retains queued turns for an explicit controller
+// resume. Only work that actually reached the stale provider is orphaned.
+func (q *Queries) FailOrphanedRunningConversationActivities(ctx context.Context, arg FailOrphanedRunningConversationActivitiesParams) error {
+	_, err := q.db.ExecContext(ctx, failOrphanedRunningConversationActivities, arg.UpdatedAt, arg.HandledBySessionID)
+	return err
+}
+
 const failPendingConversationApprovals = `-- name: FailPendingConversationApprovals :exec
 UPDATE conversation_activities
 SET status = 'failed', revision = revision + 1, updated_at = ?
@@ -2944,6 +2967,25 @@ type SettleOrphanedConversationTurnsParams struct {
 // completed.
 func (q *Queries) SettleOrphanedConversationTurns(ctx context.Context, arg SettleOrphanedConversationTurnsParams) error {
 	_, err := q.db.ExecContext(ctx, settleOrphanedConversationTurns, arg.CompletedAt, arg.HandledBySessionID)
+	return err
+}
+
+const settleOrphanedRunningConversationTurns = `-- name: SettleOrphanedRunningConversationTurns :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = ?
+WHERE handled_by_session_id = ? AND state = 'running'
+`
+
+type SettleOrphanedRunningConversationTurnsParams struct {
+	CompletedAt        sql.NullTime
+	HandledBySessionID domain.SessionID
+}
+
+// Authentication recovery preserves queued work because it was never delivered.
+func (q *Queries) SettleOrphanedRunningConversationTurns(ctx context.Context, arg SettleOrphanedRunningConversationTurnsParams) error {
+	_, err := q.db.ExecContext(ctx, settleOrphanedRunningConversationTurns, arg.CompletedAt, arg.HandledBySessionID)
 	return err
 }
 

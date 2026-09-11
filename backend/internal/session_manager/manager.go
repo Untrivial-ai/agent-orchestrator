@@ -2174,7 +2174,13 @@ func (m *Manager) resumeAgentRecordWithPolicy(
 	forceFresh bool,
 	requireNativeHistory bool,
 ) (RestoreResult, error) {
-	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, forceFresh, requireNativeHistory, "")
+	queueRecoveryPolicy := domain.ChatQueueRecoveryRetainAndDrain
+	if rec.Harness == domain.HarnessCodex {
+		queueRecoveryPolicy = domain.ChatQueueRecoveryNormal
+	}
+	return m.resumeAgentRecordWithReservedGeneration(
+		ctx, operation, rec, forceFresh, requireNativeHistory, "", queueRecoveryPolicy,
+	)
 }
 
 func (m *Manager) resumeAgentRecordWithReservedGeneration(
@@ -2184,6 +2190,7 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	forceFresh bool,
 	requireNativeHistory bool,
 	reservedGeneration string,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
 ) (RestoreResult, error) {
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
@@ -2202,22 +2209,44 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 		SessionID: rec.ID,
 		ProjectID: rec.ProjectID,
 	}
-	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration)
+	if mode == domain.SessionModeChat {
+		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil,
+			forceFresh, requireNativeHistory, reservedGeneration, queueRecoveryPolicy)
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration)
+	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle,
+		forceFresh, requireNativeHistory, reservedGeneration, domain.ChatQueueRecoveryNormal)
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false, false)
+	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false, false, domain.ChatQueueRecoveryNormal)
 }
 
-func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle, forceFresh, requireNativeHistory, "")
+func (m *Manager) relaunchSessionWithPolicy(
+	ctx context.Context,
+	operation string,
+	rec domain.SessionRecord,
+	project domain.ProjectRecord,
+	ws ports.WorkspaceInfo,
+	restartHandle *ports.RuntimeHandle,
+	forceFresh, requireNativeHistory bool,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
+) (RestoreResult, error) {
+	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle,
+		forceFresh, requireNativeHistory, "", queueRecoveryPolicy)
 }
 
-func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string) (RestoreResult, error) {
+func (m *Manager) relaunchSessionWithPolicyAndGeneration(
+	ctx context.Context,
+	operation string,
+	rec domain.SessionRecord,
+	project domain.ProjectRecord,
+	ws ports.WorkspaceInfo,
+	restartHandle *ports.RuntimeHandle,
+	forceFresh, requireNativeHistory bool,
+	reservedGeneration string,
+	queueRecoveryPolicy domain.ChatQueueRecoveryPolicy,
+) (RestoreResult, error) {
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.
@@ -2227,7 +2256,9 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		} else if strings.TrimSpace(rec.Metadata.ProviderConversationID) == "" {
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
-		return m.resumeChatController(ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration)
+		return m.resumeChatController(
+			ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration, queueRecoveryPolicy,
+		)
 	}
 
 	agent, ok := m.agents.Agent(rec.Harness)

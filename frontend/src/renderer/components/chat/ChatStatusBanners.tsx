@@ -12,30 +12,40 @@
  * stuck.
  */
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { KeyRound, Plug, RefreshCw, TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
 
 /**
  * The provider will not do any more work until someone signs in.
  *
  * The loudest thing on the surface, on purpose: nothing else the user does will
- * help, and every turn they send until they fix it will fail. It names the command
- * because "re-authenticate" is not an action anyone can take — the credentials live
- * with the agent's own CLI, not with AO, which is exactly why the daemon could not
- * fix this itself.
+ * help. Codex recovery normally verifies the device's current credentials and
+ * resumes automatically; the CLI command is withheld unless that verification
+ * proves the user genuinely needs to sign in again.
  */
 export const ReauthBanner = memo(function ReauthBanner({
 	account,
 	harness,
+	onRecover,
+	recovering,
+	needsLogin,
+	error,
 }: {
 	account: ConversationAccount;
 	harness: string;
+	onRecover?: (restartRunningSessions: boolean) => void;
+	recovering?: boolean;
+	needsLogin?: boolean;
+	error?: string;
 }) {
+	const [restartRunningSessions, setRestartRunningSessions] = useState(false);
 	if (!account.reauthRequiredAt) return null;
 	const command = signInCommand(harness);
+	const codexRecovery = harness === "codex" && Boolean(onRecover);
 
 	return (
 		<div
@@ -43,31 +53,68 @@ export const ReauthBanner = memo(function ReauthBanner({
 			className="flex shrink-0 items-start gap-2.5 border-b border-destructive/40 bg-destructive/10 px-4 py-3"
 		>
 			<KeyRound aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
-			<div className="flex min-w-0 flex-col gap-1">
+			<div className="flex min-w-0 flex-1 flex-col gap-1.5">
 				<strong className="text-xs font-semibold text-destructive">
-					Sign in again to keep going
+					{codexRecovery ? "Reconnect Codex to keep going" : "Sign in again to keep going"}
 				</strong>
 				<p className="text-[11px] leading-relaxed text-foreground">
 					{account.reauthReason ??
 						"The provider rejected this session's credentials."}{" "}
-					Nothing will run until it is fixed, and the worktree is untouched.
+					{harness === "codex" ? "The previous Codex process was stopped. " : ""}
+					The failed turn was not retried and may have already changed files or run commands.
+					Inspect the timeline and worktree before using its manual Retry action.
 				</p>
-				<p className="text-[11px] leading-relaxed text-muted-foreground">
-					{command ? (
-						<>
-							Run{" "}
-							<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
-								{command}
-							</code>{" "}
-							in a terminal, then send your message again. AO holds no credentials of its own.
-						</>
-					) : (
-						<>
-							Sign in with the agent&rsquo;s own CLI, then send your message again. AO holds no
-							credentials of its own.
-						</>
-					)}
-				</p>
+				{codexRecovery ? (
+					<>
+						<label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+							<Checkbox
+								checked={restartRunningSessions}
+								disabled={recovering}
+								onCheckedChange={(checked) => setRestartRunningSessions(checked === true)}
+							/>
+							Also restart other running AO Codex sessions
+						</label>
+						<div className="flex items-center gap-2">
+							<Button
+								type="button"
+								size="sm"
+								onClick={() => onRecover?.(restartRunningSessions)}
+								disabled={recovering}
+							>
+								<RefreshCw aria-hidden="true" className={cn("size-3", recovering && "animate-spin")} />
+								{recovering ? "Reconnecting…" : "Reconnect this chat"}
+							</Button>
+							{error ? <span className="text-[11px] text-destructive">{error}</span> : null}
+						</div>
+						{needsLogin ? (
+							<p className="text-[11px] leading-relaxed text-muted-foreground">
+								Current credentials could not be verified. Run{" "}
+								<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
+									codex login
+								</code>{" "}
+								and reconnect again.
+							</p>
+						) : null}
+					</>
+				) : (
+					<p className="text-[11px] leading-relaxed text-muted-foreground">
+						{command ? (
+							<>
+								Run{" "}
+								<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
+									{command}
+								</code>{" "}
+								in a terminal, then inspect the timeline and worktree before deciding whether to
+								send again. AO holds no credentials of its own.
+							</>
+						) : (
+							<>
+								Sign in with the agent&rsquo;s own CLI, then inspect the timeline and worktree before
+								deciding whether to send again. AO holds no credentials of its own.
+							</>
+						)}
+					</p>
+				)}
 			</div>
 		</div>
 	);

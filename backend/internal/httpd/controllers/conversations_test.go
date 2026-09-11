@@ -48,6 +48,101 @@ type fakeConversationService struct {
 	inputResponse  ports.ChatInputResponse
 }
 
+type fakeConversationAuthRecovery struct {
+	config ports.CodexChatAuthRecoveryConfig
+	result domain.CodexAccountSwitch
+	err    error
+}
+
+func (f *fakeConversationAuthRecovery) StartCodexChatAuthRecovery(
+	_ context.Context,
+	config ports.CodexChatAuthRecoveryConfig,
+) (domain.CodexAccountSwitch, error) {
+	f.config = config
+	return f.result, f.err
+}
+
+func TestRecoverConversationAuthStartsScopedDurableOperation(t *testing.T) {
+	recovery := &fakeConversationAuthRecovery{result: domain.CodexAccountSwitch{
+		ID: "recovery-1", OperationKind: domain.CodexAccountOperationExternalAuthRecovery,
+		Phase: domain.CodexAccountSwitchRequested,
+	}}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: newFakeSessionService(), Conversations: &fakeConversationService{}, ConversationRecovery: recovery,
+	}, httpd.ControlDeps{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/chat-1/conversation/recover-auth",
+		bytes.NewBufferString(`{"restartRunningSessions":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if recovery.config.SessionID != "chat-1" || !recovery.config.RestartRunningSessions {
+		t.Fatalf("config = %#v", recovery.config)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["id"] != "recovery-1" || body["operationKind"] != "external_auth_recovery" ||
+		body["scope"] != "all_running_ao_codex_sessions" {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestRecoverConversationAuthRequiresVerifiedCredentials(t *testing.T) {
+	recovery := &fakeConversationAuthRecovery{err: ports.ErrChatAuthRequired}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: newFakeSessionService(), Conversations: &fakeConversationService{}, ConversationRecovery: recovery,
+	}, httpd.ControlDeps{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/chat-1/conversation/recover-auth",
+		bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"CHAT_AUTH_REQUIRED"`)) {
+		t.Fatalf("body = %s", resp.Body.String())
+	}
+}
+
+func TestRecoverConversationAuthDefaultsToCurrentChat(t *testing.T) {
+	recovery := &fakeConversationAuthRecovery{result: domain.CodexAccountSwitch{
+		ID: "recovery-current", OperationKind: domain.CodexAccountOperationExternalAuthRecovery,
+		Phase: domain.CodexAccountSwitchRequested,
+	}}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: newFakeSessionService(), Conversations: &fakeConversationService{}, ConversationRecovery: recovery,
+	}, httpd.ControlDeps{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/chat-1/conversation/recover-auth",
+		bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if recovery.config.RestartRunningSessions {
+		t.Fatalf("restartRunningSessions = true, want default false")
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["scope"] != "current_chat" {
+		t.Fatalf("scope = %#v, want current_chat", body["scope"])
+	}
+}
+
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {
 	return chatsvc.EditMessageResult{}, nil
 }

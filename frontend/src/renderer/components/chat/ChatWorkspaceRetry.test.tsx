@@ -89,6 +89,18 @@ describe("ChatWorkspace retry", () => {
 		expect(screen.getByRole("button", { name: "Retry this turn" })).toBeDisabled();
 	});
 
+	it("keeps the failed turn's retry visible but disabled while authentication is fenced", () => {
+		const snapshot = failedSnapshot();
+		snapshot.account = {
+			reauthRequiredAt: "2026-09-11T12:00:00Z",
+			reauthReason: "The Codex credentials expired.",
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} retryControl={{ retry: vi.fn() }} />);
+
+		expect(screen.getByRole("button", { name: "Retry this turn" })).toBeDisabled();
+	});
+
 	it("shows a retry refusal next to the affected turn", () => {
 		render(
 			<ChatWorkspace

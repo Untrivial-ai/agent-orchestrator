@@ -14,7 +14,7 @@ import (
 const getActiveCodexAccountSwitch = `-- name: GetActiveCodexAccountSwitch :one
 SELECT id, source_account_id, target_account_id, idempotency_key,
        request_fingerprint, expected_account_revision, phase, failure_code,
-       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions
+       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions, operation_kind
 FROM codex_account_switches
 WHERE phase NOT IN ('completed', 'failed')
 ORDER BY created_at LIMIT 1
@@ -37,6 +37,7 @@ func (q *Queries) GetActiveCodexAccountSwitch(ctx context.Context) (CodexAccount
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.RestartRunningSessions,
+		&i.OperationKind,
 	)
 	return i, err
 }
@@ -44,7 +45,7 @@ func (q *Queries) GetActiveCodexAccountSwitch(ctx context.Context) (CodexAccount
 const getCodexAccountSwitch = `-- name: GetCodexAccountSwitch :one
 SELECT id, source_account_id, target_account_id, idempotency_key,
        request_fingerprint, expected_account_revision, phase, failure_code,
-       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions
+       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions, operation_kind
 FROM codex_account_switches WHERE id = ?
 `
 
@@ -65,6 +66,7 @@ func (q *Queries) GetCodexAccountSwitch(ctx context.Context, id string) (CodexAc
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.RestartRunningSessions,
+		&i.OperationKind,
 	)
 	return i, err
 }
@@ -72,7 +74,7 @@ func (q *Queries) GetCodexAccountSwitch(ctx context.Context, id string) (CodexAc
 const getCodexAccountSwitchByIdempotency = `-- name: GetCodexAccountSwitchByIdempotency :one
 SELECT id, source_account_id, target_account_id, idempotency_key,
        request_fingerprint, expected_account_revision, phase, failure_code,
-       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions
+       credentials_committed_at, created_at, updated_at, completed_at, restart_running_sessions, operation_kind
 FROM codex_account_switches WHERE idempotency_key = ?
 `
 
@@ -93,6 +95,7 @@ func (q *Queries) GetCodexAccountSwitchByIdempotency(ctx context.Context, idempo
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.RestartRunningSessions,
+		&i.OperationKind,
 	)
 	return i, err
 }
@@ -124,9 +127,9 @@ func (q *Queries) GetCodexActiveAccount(ctx context.Context) (GetCodexActiveAcco
 const insertCodexAccountSwitch = `-- name: InsertCodexAccountSwitch :execrows
 INSERT INTO codex_account_switches (
     id, source_account_id, target_account_id, idempotency_key,
-    request_fingerprint, expected_account_revision, restart_running_sessions, phase, failure_code,
+    request_fingerprint, expected_account_revision, restart_running_sessions, operation_kind, phase, failure_code,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
 ON CONFLICT DO NOTHING
 `
 
@@ -138,6 +141,7 @@ type InsertCodexAccountSwitchParams struct {
 	RequestFingerprint      string
 	ExpectedAccountRevision int64
 	RestartRunningSessions  bool
+	OperationKind           string
 	Phase                   string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
@@ -152,6 +156,7 @@ func (q *Queries) InsertCodexAccountSwitch(ctx context.Context, arg InsertCodexA
 		arg.RequestFingerprint,
 		arg.ExpectedAccountRevision,
 		arg.RestartRunningSessions,
+		arg.OperationKind,
 		arg.Phase,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -166,8 +171,9 @@ const insertCodexAccountSwitchSession = `-- name: InsertCodexAccountSwitchSessio
 INSERT INTO codex_account_switch_sessions (
     switch_id, session_id, native_session_id, interface_mode, source_handle_id, source_generation,
     was_running, stop_state, restart_state, reviewer_was_running,
-    reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state, reviewer_restart_state
-) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+    reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state, reviewer_restart_state,
+    retain_queued_turns
+) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT DO NOTHING
 `
 
@@ -185,6 +191,7 @@ type InsertCodexAccountSwitchSessionParams struct {
 	ReviewerNativeSessionID string
 	ReviewerStopState       string
 	ReviewerRestartState    string
+	RetainQueuedTurns       bool
 }
 
 func (q *Queries) InsertCodexAccountSwitchSession(ctx context.Context, arg InsertCodexAccountSwitchSessionParams) (int64, error) {
@@ -202,6 +209,7 @@ func (q *Queries) InsertCodexAccountSwitchSession(ctx context.Context, arg Inser
 		arg.ReviewerNativeSessionID,
 		arg.ReviewerStopState,
 		arg.ReviewerRestartState,
+		arg.RetainQueuedTurns,
 	)
 	if err != nil {
 		return 0, err
@@ -233,7 +241,7 @@ const listCodexAccountSwitchSessions = `-- name: ListCodexAccountSwitchSessions 
 SELECT switch_id, session_id, native_session_id, interface_mode,
        source_handle_id, source_generation, was_running, stop_state, restart_state,
        reviewer_was_running, reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state,
-       reviewer_restart_state, error_code, stopped_at, restarted_at
+       reviewer_restart_state, error_code, stopped_at, restarted_at, retain_queued_turns
 FROM codex_account_switch_sessions WHERE switch_id = ? ORDER BY session_id
 `
 
@@ -264,6 +272,7 @@ func (q *Queries) ListCodexAccountSwitchSessions(ctx context.Context, switchID s
 			&i.ErrorCode,
 			&i.StoppedAt,
 			&i.RestartedAt,
+			&i.RetainQueuedTurns,
 		); err != nil {
 			return nil, err
 		}

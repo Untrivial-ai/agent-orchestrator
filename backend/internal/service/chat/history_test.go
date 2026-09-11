@@ -526,17 +526,19 @@ func TestForkClassifiesAProviderRefusal(t *testing.T) {
 }
 
 type editDriverState struct {
-	mu           sync.Mutex
-	startCalls   int
-	startConfigs []ports.ChatStartConfig
-	resumeCalls  []ports.ChatResumeConfig
-	beforeResume func(ports.ChatResumeConfig) error
-	fresh        *fakeConversation
-	resumed      map[string]*fakeConversation
+	mu                  sync.Mutex
+	startCalls          int
+	startConfigs        []ports.ChatStartConfig
+	resumeCalls         []ports.ChatResumeConfig
+	beforeResume        func(ports.ChatResumeConfig) error
+	initialSourceResume bool
+	sourceResumed       bool
+	fresh               *fakeConversation
+	resumed             map[string]*fakeConversation
 }
 
 func newEditHarness(t *testing.T, supportsPromptReplay bool) (*harness, *historyRecorder, *editDriverState) {
-	return newEditHarnessWithControllerEnv(t, supportsPromptReplay, nil)
+	return newEditHarnessFull(t, supportsPromptReplay, nil, nil)
 }
 
 func newEditHarnessWithControllerEnv(
@@ -544,8 +546,35 @@ func newEditHarnessWithControllerEnv(
 	supportsPromptReplay bool,
 	prepare func(context.Context, domain.SessionControllerOwner) (map[string]string, error),
 ) (*harness, *historyRecorder, *editDriverState) {
+	return newEditHarnessFull(t, supportsPromptReplay, prepare, nil)
+}
+
+func newEditHarnessWithAccount(
+	t *testing.T,
+	initialAccount *domain.ConversationAccount,
+) (*harness, *historyRecorder, *editDriverState) {
+	return newEditHarnessFull(t, false, nil, initialAccount)
+}
+
+func newEditHarnessFull(
+	t *testing.T,
+	supportsPromptReplay bool,
+	prepare func(context.Context, domain.SessionControllerOwner) (map[string]string, error),
+	initialAccount *domain.ConversationAccount,
+) (*harness, *historyRecorder, *editDriverState) {
 	t.Helper()
 	st := openStore(t)
+	clock := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
+	if initialAccount != nil {
+		conversation, err := st.CreateConversation(context.Background(), "existing-edit-conversation",
+			domain.ConversationScopeSession, testProject, testSession, clock)
+		if err != nil {
+			t.Fatalf("CreateConversation: %v", err)
+		}
+		if err := st.RecordAccount(context.Background(), conversation.ID, *initialAccount, clock); err != nil {
+			t.Fatalf("RecordAccount: %v", err)
+		}
+	}
 	source := newHistoryRecorder()
 	if supportsPromptReplay {
 		sourceCapabilities := productionCaps()
@@ -566,7 +595,8 @@ func newEditHarnessWithControllerEnv(
 	root.providerConversationID = "thread-1"
 	root.turnSeq = 300
 	state := &editDriverState{
-		fresh: fresh,
+		initialSourceResume: initialAccount != nil,
+		fresh:               fresh,
 		resumed: map[string]*fakeConversation{
 			"thread-forked": forked,
 			"thread-1":      root,
@@ -584,10 +614,11 @@ func newEditHarnessWithControllerEnv(
 		defer state.mu.Unlock()
 		state.startConfigs = append(state.startConfigs, cfg)
 		state.startCalls++
-		if state.startCalls == 1 {
+		if !state.initialSourceResume && state.startCalls == 1 {
 			return initial, nil
 		}
-		if state.startCalls == 2 {
+		if (!state.initialSourceResume && state.startCalls == 2) ||
+			(state.initialSourceResume && state.startCalls == 1) {
 			return state.fresh, nil
 		}
 		freshBranch := newFakeConversation()
@@ -603,6 +634,11 @@ func newEditHarnessWithControllerEnv(
 		state.mu.Lock()
 		state.resumeCalls = append(state.resumeCalls, cfg)
 		beforeResume := state.beforeResume
+		if state.initialSourceResume && !state.sourceResumed && cfg.ProviderConversationID == "thread-1" {
+			state.sourceResumed = true
+			state.mu.Unlock()
+			return source, nil
+		}
 		conv := state.resumed[cfg.ProviderConversationID]
 		state.mu.Unlock()
 		if beforeResume != nil {
@@ -616,7 +652,6 @@ func newEditHarnessWithControllerEnv(
 		return conv, nil
 	}
 
-	clock := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
 	activity := &recordingActivity{}
 	var idMu sync.Mutex
 	nextID := 0
@@ -646,12 +681,20 @@ func newEditHarnessWithControllerEnv(
 		Now: func() time.Time { return clock },
 	})
 	workspace := t.TempDir()
-	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
+	startCfg := chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
 		Harness: domain.HarnessCodex, WorkspacePath: workspace,
 		Env:          map[string]string{"AO_EDIT_TEST": "yes", "AO_BROWSER_CAPABILITY": "stale"},
 		SystemPrompt: "preserved prompt", PrepareControllerEnv: prepare,
-	})
+	}
+	if initialAccount != nil {
+		startCfg.ProviderConversationID = "thread-1"
+		startCfg.SkipNativeHistoryImport = true
+		// This harness is exercising work after the user resumed a controller whose
+		// persisted account warning came from the previous process.
+		startCfg.QueueRecoveryPolicy = domain.ChatQueueRecoveryRetainAndDrain
+	}
+	ctrl, err := svc.Start(context.Background(), startCfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -1440,6 +1483,48 @@ func TestEditMessageForksBeforeMiddlePromptAndReusesStoredContent(t *testing.T) 
 		resumes[0].SystemPrompt != "preserved prompt" || resumes[0].ProviderScopeID == "" ||
 		len(starts) != 1 || resumes[0].ProviderScopeID != starts[0].ProviderScopeID {
 		t.Fatalf("resume config = %#v", resumes)
+	}
+}
+
+func TestEditMessageReplacementDoesNotResurrectClearedReauthState(t *testing.T) {
+	reauthAt := time.Date(2026, 8, 9, 14, 0, 0, 0, time.UTC)
+	h, _, driver := newEditHarnessWithAccount(t, &domain.ConversationAccount{
+		ReauthRequiredAt: &reauthAt,
+		ReauthReason:     "the previous controller used stale credentials",
+	})
+
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt == nil
+	})
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Messages) == 4 && turnStateByText(t, s)["B"] == domain.TurnStateCompleted &&
+			h.ctrl.State() == ports.ChatControllerReady
+	})
+
+	if _, err := h.svc.EditMessage(context.Background(), testSession, second, ports.ChatUserMessage{
+		Text: "B edited", ClientMessageID: "edit-b", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	driver.mu.Lock()
+	replacement := driver.resumed["thread-forked"]
+	driver.mu.Unlock()
+	replacement.emit(ports.ChatEvent{
+		Kind: ports.ChatEventAccountChanged,
+		Account: &ports.ChatAccount{
+			AuthMode: "chatgpt", PlanLabel: "pro",
+		},
+	})
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.AuthMode == "chatgpt"
+	})
+	if snapshot.Conversation.Account.ReauthRequiredAt != nil ||
+		snapshot.Conversation.Account.ReauthReason != "" {
+		t.Fatalf("branch replacement resurrected cleared reauthentication state: %+v",
+			snapshot.Conversation.Account)
 	}
 }
 

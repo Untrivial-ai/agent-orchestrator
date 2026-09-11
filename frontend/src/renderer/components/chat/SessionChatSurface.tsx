@@ -370,6 +370,12 @@ export function SessionChatSurface({
 				}}
 				resumingAgent={commands.resumingAgent}
 				resumeError={commands.resumeError}
+				onRecoverAuth={(restartRunningSessions) => {
+					void commands.recoverAuth(restartRunningSessions).catch(() => {});
+				}}
+				recoveringAuth={commands.recoveringAuth}
+				recoverAuthNeedsLogin={commands.recoverAuthNeedsLogin}
+				recoverAuthError={commands.recoverAuthError}
 				onOpenShell={onOpenShell}
 				openingShell={openingShell}
 				shellError={shellError}
