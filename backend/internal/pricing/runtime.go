@@ -293,18 +293,9 @@ func (s *Snapshot) ProviderVersion(providerID string) string {
 	return provider.version
 }
 
-// ProviderForModel returns the one catalog provider that lists modelID, or ""
-// when no provider does or more than one does.
-//
-// This is the last resort for an event nothing else could attribute: a Claude
-// transcript names no provider, so a session collected before its first hook
-// has only the served model name to go on. That name is a recorded fact — it is
-// what the provider actually answered with — so a lookup is evidence rather
-// than the harness-shaped guess the design forbids.
-//
 // datedModelSuffix matches the trailing dated-snapshot component providers append
 // to a released model name, as in "claude-opus-5-20260115".
-var datedModelSuffix = regexp.MustCompile(`-[0-9]{8}$`)
+var datedModelSuffix = regexp.MustCompile(`-\d{8}$`)
 
 // lookupRates resolves one model against one provider catalog, exactly first and
 // then without a trailing dated-snapshot suffix.
@@ -331,6 +322,15 @@ func lookupRates(provider providerSnapshot, providerID, modelID string) (exactRa
 	return rates, ok
 }
 
+// ProviderForModel returns the one catalog provider that lists modelID, or ""
+// when no provider does or more than one does.
+//
+// This is the last resort for an event nothing else could attribute: a Claude
+// transcript names no provider, so a session collected before its first hook
+// has only the served model name to go on. That name is a recorded fact — it is
+// what the provider actually answered with — so a lookup is evidence rather
+// than the harness-shaped guess the design forbids.
+//
 // Ambiguity resolves to "". Sentinels like "unknown" and "<synthetic>" appear in
 // no catalog and fall out here for free, as does any model AO has no rates for,
 // which is exactly the event that must stay unpriced anyway.
