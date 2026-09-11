@@ -17,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
+	"github.com/aoagents/agent-orchestrator/backend/internal/textutil"
 )
 
 const (
@@ -3202,7 +3203,7 @@ func nativeSessionIDPtr(id domain.AgentNativeSessionID) *domain.AgentNativeSessi
 }
 
 func boundedConversationFact(value string) string {
-	return boundedString(strings.TrimSpace(value), conversationFactBytes)
+	return boundedString(textutil.CanonicalizeConversationFact(value), conversationFactBytes)
 }
 
 func boundedString(value string, maxBytes int) string {

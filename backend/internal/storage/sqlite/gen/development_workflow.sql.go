@@ -201,8 +201,8 @@ func (q *Queries) CreateRunReview(ctx context.Context, arg CreateRunReviewParams
 
 const createTaskRun = `-- name: CreateTaskRun :exec
 
-INSERT INTO task_runs (id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO task_runs (id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, previous_run_id, retry_mode)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateTaskRunParams struct {
@@ -220,6 +220,8 @@ type CreateTaskRunParams struct {
 	ResultSummary       string
 	ErrorMessage        string
 	CreatedAt           time.Time
+	PreviousRunID       string
+	RetryMode           string
 }
 
 // ---- task_runs ----
@@ -239,6 +241,8 @@ func (q *Queries) CreateTaskRun(ctx context.Context, arg CreateTaskRunParams) er
 		arg.ResultSummary,
 		arg.ErrorMessage,
 		arg.CreatedAt,
+		arg.PreviousRunID,
+		arg.RetryMode,
 	)
 	return err
 }
@@ -360,8 +364,29 @@ func (q *Queries) GetRunReview(ctx context.Context, id string) (RunReview, error
 	return i, err
 }
 
+const getRunReviewByRunID = `-- name: GetRunReviewByRunID :one
+SELECT id, run_id, source, status, summary, issues, created_at, completed_at
+FROM run_reviews WHERE run_id = ? LIMIT 1
+`
+
+func (q *Queries) GetRunReviewByRunID(ctx context.Context, runID string) (RunReview, error) {
+	row := q.db.QueryRowContext(ctx, getRunReviewByRunID, runID)
+	var i RunReview
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.Source,
+		&i.Status,
+		&i.Summary,
+		&i.Issues,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const getTaskRun = `-- name: GetTaskRun :one
-SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at, previous_run_id, retry_mode
 FROM task_runs WHERE id = ? LIMIT 1
 `
 
@@ -385,6 +410,8 @@ func (q *Queries) GetTaskRun(ctx context.Context, id string) (TaskRun, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.PreviousRunID,
+		&i.RetryMode,
 	)
 	return i, err
 }
@@ -587,7 +614,7 @@ func (q *Queries) ListRunReviewsByRun(ctx context.Context, runID string) ([]RunR
 }
 
 const listTaskRunsByStatus = `-- name: ListTaskRunsByStatus :many
-SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at, previous_run_id, retry_mode
 FROM task_runs WHERE status = ? ORDER BY created_at
 `
 
@@ -617,6 +644,8 @@ func (q *Queries) ListTaskRunsByStatus(ctx context.Context, status string) ([]Ta
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.PreviousRunID,
+			&i.RetryMode,
 		); err != nil {
 			return nil, err
 		}
@@ -632,7 +661,7 @@ func (q *Queries) ListTaskRunsByStatus(ctx context.Context, status string) ([]Ta
 }
 
 const listTaskRunsByTask = `-- name: ListTaskRunsByTask :many
-SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at, previous_run_id, retry_mode
 FROM task_runs WHERE task_id = ? ORDER BY attempt
 `
 
@@ -662,6 +691,8 @@ func (q *Queries) ListTaskRunsByTask(ctx context.Context, taskID string) ([]Task
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.PreviousRunID,
+			&i.RetryMode,
 		); err != nil {
 			return nil, err
 		}

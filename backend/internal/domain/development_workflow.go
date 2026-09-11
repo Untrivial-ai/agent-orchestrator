@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// Sentinel errors for workflow store operations.
+var (
+	ErrNotFound          = errors.New("resource not found")
+	ErrInvalidTransition = errors.New("invalid status transition")
+	ErrConflict          = errors.New("state conflict")
+)
+
 // ---- ID types ----
 
 type (
@@ -284,6 +291,8 @@ type TaskRun struct {
 	CreatedAt          time.Time        `json:"createdAt"`
 	StartedAt          *time.Time       `json:"startedAt,omitempty"`
 	FinishedAt         *time.Time       `json:"finishedAt,omitempty"`
+	PreviousRunID      TaskRunID        `json:"previousRunId,omitempty"`
+	RetryMode          string           `json:"retryMode,omitempty"`
 }
 
 // ---- RunReview ----

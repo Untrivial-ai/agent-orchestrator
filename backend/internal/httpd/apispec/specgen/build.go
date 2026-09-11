@@ -374,6 +374,13 @@ var schemaNames = map[string]string{
 	"ControllersListTasksResponse":     "ListTasksResponse",
 	"ControllersWorkflowIDParam":       "WorkflowIDParam",
 	"ControllersProjectIDForPlansParam": "ProjectIDForPlansParam",
+	// Workflow (Phase 2.5)
+	"ControllersRunReviewView":          "RunReviewView",
+	"ControllersRunReviewResponse":      "RunReviewResponse",
+	"ControllersListRunReviewsResponse": "ListRunReviewsResponse",
+	"ControllersCreateRunReviewRequest": "CreateRunReviewRequest",
+	"ControllersRejectReviewRequest":    "RejectReviewRequest",
+	"ControllersCreateRetryRunRequest":  "CreateRetryRunRequest",
 }
 
 // markRequestBodyRequired sets requestBody.required: true on the operation's

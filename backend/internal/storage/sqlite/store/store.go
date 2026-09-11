@@ -86,3 +86,21 @@ func (s *Store) inTx(ctx context.Context, what string, fn func(*gen.Queries) err
 	}
 	return tx.Commit()
 }
+
+// inRawTx runs fn inside a single write transaction on the writer connection,
+// rolling back on error. Unlike inTx (which passes *gen.Queries), inRawTx
+// passes the raw *sql.Tx for workflow store operations that use hand-written SQL.
+// It acquires writeMu internally.
+func (s *Store) inRawTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

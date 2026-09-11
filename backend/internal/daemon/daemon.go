@@ -616,3 +616,23 @@ func (a *workflowSessionRuntime) SpawnSession(ctx context.Context, cfg ports.Spa
 func (a *workflowSessionRuntime) KillSession(ctx context.Context, id domain.SessionID) (bool, error) {
 	return a.mgr.Kill(ctx, id)
 }
+
+func (a *workflowSessionRuntime) RestoreSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	result, err := a.mgr.RestoreWithMode(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	return result.Session, nil
+}
+
+func (a *workflowSessionRuntime) ResumeAgentSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	result, err := a.mgr.ResumeAgentWithMode(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	return result.Session, nil
+}
+
+func (a *workflowSessionRuntime) SendSession(ctx context.Context, id domain.SessionID, message string) error {
+	return a.mgr.Send(ctx, id, message, nil)
+}

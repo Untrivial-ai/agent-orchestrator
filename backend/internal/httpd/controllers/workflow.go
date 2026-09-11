@@ -62,6 +62,14 @@ type WorkflowService interface {
 	ListAgentRoles(ctx context.Context) ([]domain.AgentRole, error)
 	UpdateAgentRole(ctx context.Context, id domain.AgentRoleID, in workflow.UpdateAgentRoleInput) (domain.AgentRole, error)
 	SetAgentRoleEnabled(ctx context.Context, id domain.AgentRoleID, enabled bool) error
+	// RunReview (Phase 2.5)
+	CreateRunReview(ctx context.Context, runID domain.TaskRunID, source domain.RunReviewSource, summary, issues string) (domain.RunReview, error)
+	GetRunReview(ctx context.Context, id domain.RunReviewID) (domain.RunReview, error)
+	ListRunReviewsByRun(ctx context.Context, runID domain.TaskRunID) ([]domain.RunReview, error)
+	PassRunReview(ctx context.Context, reviewID domain.RunReviewID) (domain.RunReview, error)
+	RejectRunReview(ctx context.Context, reviewID domain.RunReviewID, rejectIssues string) (domain.RunReview, error)
+	// Retry (Phase 2.5)
+	CreateRetryRun(ctx context.Context, in workflow.CreateRetryRunInput) (domain.TaskRun, error)
 }
 
 // Compile-time check: *workflow.Service must satisfy WorkflowService.
@@ -131,6 +139,16 @@ func (c *WorkflowController) Register(r chi.Router) {
 
 	// Project child route
 	r.Get("/projects/{id}/plans", c.listPlansByProject)
+
+	// RunReview (Phase 2.5)
+	r.Post("/workflow/runs/{id}/reviews", c.createRunReview)
+	r.Get("/workflow/runs/{id}/reviews", c.listReviewsByRun)
+	r.Get("/workflow/reviews/{id}", c.getReview)
+	r.Post("/workflow/reviews/{id}/pass", c.passReview)
+	r.Post("/workflow/reviews/{id}/reject", c.rejectReview)
+
+	// Retry (Phase 2.5)
+	r.Post("/workflow/runs/{id}/retry", c.createRetryRun)
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +235,23 @@ type SetAgentRoleEnabledRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
+// CreateRunReviewRequest is the body of POST /workflow/runs/{id}/reviews.
+type CreateRunReviewRequest struct {
+	Summary string `json:"summary,omitempty" description:"Review summary."`
+	Issues  string `json:"issues,omitempty" description:"Review issues."`
+	Source  string `json:"source" description:"Review source." enum:"ai,human"`
+}
+
+// RejectReviewRequest is the body of POST /workflow/reviews/{id}/reject.
+type RejectReviewRequest struct {
+	Issues string `json:"issues,omitempty" description:"Rejection issues."`
+}
+
+// CreateRetryRunRequest is the body of POST /workflow/runs/{id}/retry.
+type CreateRetryRunRequest struct {
+	Mode string `json:"mode,omitempty" description:"Retry mode." enum:"resume,fresh"`
+}
+
 // ---------------------------------------------------------------------------
 // Response DTOs
 // ---------------------------------------------------------------------------
@@ -299,22 +334,24 @@ type ListTasksResponse struct {
 
 // RunView is the wire representation of a TaskRun.
 type RunView struct {
-	ID                string  `json:"id" description:"Run identifier."`
-	TaskID            string  `json:"taskId" description:"Parent task identifier."`
-	Attempt           int     `json:"attempt"`
-	SessionID         string  `json:"sessionId,omitempty"`
-	AgentRoleID       string  `json:"agentRoleId,omitempty"`
-	ProviderID        string  `json:"providerId,omitempty"`
-	ProviderModelID   string  `json:"providerModelId,omitempty"`
-	ProviderDisplayName string `json:"providerDisplayName,omitempty"`
-	ProviderModelName string  `json:"providerModelName,omitempty"`
-	ExecutorType      string  `json:"executorType,omitempty"`
-	Status            string  `json:"status" enum:"pending,running,succeeded,failed,cancelled"`
-	ResultSummary     string  `json:"resultSummary,omitempty"`
-	ErrorMessage      string  `json:"errorMessage,omitempty"`
-	CreatedAt         string  `json:"createdAt" format:"date-time"`
-	StartedAt         *string `json:"startedAt,omitempty" format:"date-time"`
-	FinishedAt        *string `json:"finishedAt,omitempty" format:"date-time"`
+	ID                  string  `json:"id" description:"Run identifier."`
+	TaskID              string  `json:"taskId" description:"Parent task identifier."`
+	Attempt             int     `json:"attempt"`
+	SessionID           string  `json:"sessionId,omitempty"`
+	AgentRoleID         string  `json:"agentRoleId,omitempty"`
+	ProviderID          string  `json:"providerId,omitempty"`
+	ProviderModelID     string  `json:"providerModelId,omitempty"`
+	ProviderDisplayName string  `json:"providerDisplayName,omitempty"`
+	ProviderModelName   string  `json:"providerModelName,omitempty"`
+	ExecutorType        string  `json:"executorType,omitempty"`
+	Status              string  `json:"status" enum:"pending,running,succeeded,failed,cancelled"`
+	ResultSummary       string  `json:"resultSummary,omitempty"`
+	ErrorMessage        string  `json:"errorMessage,omitempty"`
+	CreatedAt           string  `json:"createdAt" format:"date-time"`
+	StartedAt           *string `json:"startedAt,omitempty" format:"date-time"`
+	FinishedAt          *string `json:"finishedAt,omitempty" format:"date-time"`
+	PreviousRunID       string  `json:"previousRunId,omitempty" description:"ID of the previous run in a retry chain."`
+	RetryMode           string  `json:"retryMode,omitempty" enum:"resume,fresh" description:"Retry mode if this run is a retry."`
 }
 
 // RunResponse wraps a single run.
@@ -325,6 +362,28 @@ type RunResponse struct {
 // ListRunsResponse wraps a list of runs.
 type ListRunsResponse struct {
 	Runs []RunView `json:"runs"`
+}
+
+// RunReviewView is the wire representation of a RunReview.
+type RunReviewView struct {
+	ID          string  `json:"id" description:"Review identifier."`
+	RunID       string  `json:"runId" description:"Parent run identifier."`
+	Source      string  `json:"source" enum:"ai,human"`
+	Status      string  `json:"status" enum:"pending,passed,rejected"`
+	Summary     string  `json:"summary"`
+	Issues      string  `json:"issues"`
+	CreatedAt   string  `json:"createdAt" format:"date-time"`
+	CompletedAt *string `json:"completedAt,omitempty" format:"date-time"`
+}
+
+// RunReviewResponse wraps a single review.
+type RunReviewResponse struct {
+	Review RunReviewView `json:"review"`
+}
+
+// ListRunReviewsResponse wraps a list of reviews.
+type ListRunReviewsResponse struct {
+	Reviews []RunReviewView `json:"reviews"`
 }
 
 // WorkflowIDParam is the {id} path parameter for /workflow/*/{id} routes.
@@ -416,6 +475,8 @@ func runToView(r domain.TaskRun) RunView {
 		CreatedAt:           r.CreatedAt.Format(time.RFC3339),
 		StartedAt:           timePtr(r.StartedAt),
 		FinishedAt:          timePtr(r.FinishedAt),
+		PreviousRunID:       string(r.PreviousRunID),
+		RetryMode:           r.RetryMode,
 	}
 }
 
@@ -1170,4 +1231,129 @@ func agentRoleToView(r domain.AgentRole) AgentRoleView {
 // ListAgentRolesResponse is the wire shape for GET /api/v1/workflow/roles.
 type ListAgentRolesResponse struct {
 	Roles []AgentRoleView `json:"roles"`
+}
+
+// ---------------------------------------------------------------------------
+// RunReview helpers (Phase 2.5)
+// ---------------------------------------------------------------------------
+
+func reviewToView(r domain.RunReview) RunReviewView {
+	return RunReviewView{
+		ID:          string(r.ID),
+		RunID:       string(r.RunID),
+		Source:      string(r.Source),
+		Status:      string(r.Status),
+		Summary:     r.Summary,
+		Issues:      r.Issues,
+		CreatedAt:   r.CreatedAt.Format(time.RFC3339),
+		CompletedAt: timePtr(r.CompletedAt),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunReview handlers (Phase 2.5)
+// ---------------------------------------------------------------------------
+
+func (c *WorkflowController) createRunReview(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/runs/{id}/reviews")
+		return
+	}
+	var in CreateRunReviewRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	review, err := c.Svc.CreateRunReview(r.Context(), domain.TaskRunID(chi.URLParam(r, "id")), domain.RunReviewSource(in.Source), in.Summary, in.Issues)
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, RunReviewResponse{Review: reviewToView(review)})
+}
+
+func (c *WorkflowController) listReviewsByRun(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/workflow/runs/{id}/reviews")
+		return
+	}
+	reviews, err := c.Svc.ListRunReviewsByRun(r.Context(), domain.TaskRunID(chi.URLParam(r, "id")))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	views := make([]RunReviewView, len(reviews))
+	for i, rev := range reviews {
+		views[i] = reviewToView(rev)
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListRunReviewsResponse{Reviews: views})
+}
+
+func (c *WorkflowController) getReview(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/workflow/reviews/{id}")
+		return
+	}
+	review, err := c.Svc.GetRunReview(r.Context(), domain.RunReviewID(chi.URLParam(r, "id")))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RunReviewResponse{Review: reviewToView(review)})
+}
+
+func (c *WorkflowController) passReview(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/reviews/{id}/pass")
+		return
+	}
+	review, err := c.Svc.PassRunReview(r.Context(), domain.RunReviewID(chi.URLParam(r, "id")))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RunReviewResponse{Review: reviewToView(review)})
+}
+
+func (c *WorkflowController) rejectReview(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/reviews/{id}/reject")
+		return
+	}
+	var in RejectReviewRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	review, err := c.Svc.RejectRunReview(r.Context(), domain.RunReviewID(chi.URLParam(r, "id")), in.Issues)
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RunReviewResponse{Review: reviewToView(review)})
+}
+
+// ---------------------------------------------------------------------------
+// Retry handlers (Phase 2.5)
+// ---------------------------------------------------------------------------
+
+func (c *WorkflowController) createRetryRun(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/runs/{id}/retry")
+		return
+	}
+	var in CreateRetryRunRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	run, err := c.Svc.CreateRetryRun(r.Context(), workflow.CreateRetryRunInput{
+		PreviousRunID: domain.TaskRunID(chi.URLParam(r, "id")),
+		Mode:          in.Mode,
+	})
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, RunResponse{Run: runToView(run)})
 }

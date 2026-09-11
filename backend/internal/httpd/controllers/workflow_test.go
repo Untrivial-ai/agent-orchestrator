@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,14 @@ type mockWorkflowService struct {
 	listAgentRolesFn       func(ctx context.Context) ([]domain.AgentRole, error)
 	updateAgentRoleFn      func(ctx context.Context, id domain.AgentRoleID, in workflow.UpdateAgentRoleInput) (domain.AgentRole, error)
 	setAgentRoleEnabledFn  func(ctx context.Context, id domain.AgentRoleID, enabled bool) error
+	// RunReview (Phase 2.5)
+	createRunReviewFn     func(ctx context.Context, runID domain.TaskRunID, source domain.RunReviewSource, summary, issues string) (domain.RunReview, error)
+	getRunReviewFn        func(ctx context.Context, id domain.RunReviewID) (domain.RunReview, error)
+	listRunReviewsByRunFn func(ctx context.Context, runID domain.TaskRunID) ([]domain.RunReview, error)
+	passRunReviewFn       func(ctx context.Context, reviewID domain.RunReviewID) (domain.RunReview, error)
+	rejectRunReviewFn     func(ctx context.Context, reviewID domain.RunReviewID, rejectIssues string) (domain.RunReview, error)
+	// Retry (Phase 2.5)
+	createRetryRunFn func(ctx context.Context, in workflow.CreateRetryRunInput) (domain.TaskRun, error)
 }
 
 func (m *mockWorkflowService) CreatePlan(ctx context.Context, in workflow.CreatePlanInput) (domain.DevelopmentPlan, error) {
@@ -183,6 +192,24 @@ func (m *mockWorkflowService) UpdateAgentRole(ctx context.Context, id domain.Age
 func (m *mockWorkflowService) SetAgentRoleEnabled(ctx context.Context, id domain.AgentRoleID, enabled bool) error {
 	return m.setAgentRoleEnabledFn(ctx, id, enabled)
 }
+func (m *mockWorkflowService) CreateRunReview(ctx context.Context, runID domain.TaskRunID, source domain.RunReviewSource, summary, issues string) (domain.RunReview, error) {
+	return m.createRunReviewFn(ctx, runID, source, summary, issues)
+}
+func (m *mockWorkflowService) GetRunReview(ctx context.Context, id domain.RunReviewID) (domain.RunReview, error) {
+	return m.getRunReviewFn(ctx, id)
+}
+func (m *mockWorkflowService) ListRunReviewsByRun(ctx context.Context, runID domain.TaskRunID) ([]domain.RunReview, error) {
+	return m.listRunReviewsByRunFn(ctx, runID)
+}
+func (m *mockWorkflowService) PassRunReview(ctx context.Context, reviewID domain.RunReviewID) (domain.RunReview, error) {
+	return m.passRunReviewFn(ctx, reviewID)
+}
+func (m *mockWorkflowService) RejectRunReview(ctx context.Context, reviewID domain.RunReviewID, rejectIssues string) (domain.RunReview, error) {
+	return m.rejectRunReviewFn(ctx, reviewID, rejectIssues)
+}
+func (m *mockWorkflowService) CreateRetryRun(ctx context.Context, in workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+	return m.createRetryRunFn(ctx, in)
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -236,6 +263,12 @@ func doJSON(method, path string, body any) *http.Request {
 		json.NewEncoder(&buf).Encode(body)
 	}
 	r := httptest.NewRequest(method, path, &buf)
+	r.Header.Set("Content-Type", "application/json")
+	return r
+}
+
+func doRawJSON(method, path, raw string) *http.Request {
+	r := httptest.NewRequest(method, path, bytes.NewBufferString(raw))
 	r.Header.Set("Content-Type", "application/json")
 	return r
 }
@@ -1056,5 +1089,616 @@ func TestRunAPI_501_WhenServiceNil(t *testing.T) {
 	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/run-1", nil))
 	if rr.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501 for nil service, got %d", rr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2.5 — RunReview + Retry controller tests
+// ---------------------------------------------------------------------------
+
+func sampleRunReview() domain.RunReview {
+	return domain.RunReview{
+		ID:        "review-1",
+		RunID:     "run-1",
+		Source:    domain.RunReviewSourceHuman,
+		Status:    domain.RunReviewStatusPending,
+		Summary:   "test summary",
+		Issues:    "test issues",
+		CreatedAt: testNow,
+	}
+}
+
+func sampleRetryRun() domain.TaskRun {
+	return domain.TaskRun{
+		ID:            "run-2",
+		TaskID:        "task-1",
+		Attempt:       2,
+		Status:        domain.RunStatusPending,
+		PreviousRunID: "run-1",
+		RetryMode:     "resume",
+		CreatedAt:     testNow,
+	}
+}
+
+// --- createRunReview ---
+
+func TestCreateRunReview(t *testing.T) {
+	review := sampleRunReview()
+	mock := &mockWorkflowService{
+		createRunReviewFn: func(_ context.Context, _ domain.TaskRunID, _ domain.RunReviewSource, _, _ string) (domain.RunReview, error) {
+			return review, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/reviews", CreateRunReviewRequest{
+		Source: "human", Summary: "test summary", Issues: "test issues",
+	}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunReviewResponse
+	decodeResp(t, rr, &resp)
+	if resp.Review.ID != "review-1" || resp.Review.Source != "human" || resp.Review.Status != "pending" {
+		t.Fatalf("unexpected response: %+v", resp.Review)
+	}
+}
+
+func TestCreateRunReview_InvalidInput(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRunReviewFn: func(_ context.Context, _ domain.TaskRunID, _ domain.RunReviewSource, _, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrInvalidInput
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/reviews", CreateRunReviewRequest{
+		Source: "invalid", Summary: "s",
+	}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestCreateRunReview_NotFound(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRunReviewFn: func(_ context.Context, _ domain.TaskRunID, _ domain.RunReviewSource, _, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrNotFound
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/nonexistent/reviews", CreateRunReviewRequest{Source: "human"}))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestCreateRunReview_Conflict(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRunReviewFn: func(_ context.Context, _ domain.TaskRunID, _ domain.RunReviewSource, _, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrConflict
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/reviews", CreateRunReviewRequest{Source: "human"}))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
+
+func TestCreateRunReview_InvalidTransition(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRunReviewFn: func(_ context.Context, _ domain.TaskRunID, _ domain.RunReviewSource, _, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrInvalidTransition
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/reviews", CreateRunReviewRequest{Source: "human"}))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
+
+func TestCreateRunReview_UnknownField(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRunReviewFn: func(_ context.Context, _ domain.TaskRunID, _ domain.RunReviewSource, _, _ string) (domain.RunReview, error) {
+			return sampleRunReview(), nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doRawJSON("POST", "/workflow/runs/run-1/reviews", `{"source":"human","extra":"x"}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d", rr.Code)
+	}
+}
+
+// --- listReviewsByRun ---
+
+func TestListReviewsByRun(t *testing.T) {
+	reviews := []domain.RunReview{sampleRunReview(), {ID: "review-2", RunID: "run-1", Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPassed, CreatedAt: testNow}}
+	mock := &mockWorkflowService{
+		listRunReviewsByRunFn: func(_ context.Context, _ domain.TaskRunID) ([]domain.RunReview, error) {
+			return reviews, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/run-1/reviews", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp ListRunReviewsResponse
+	decodeResp(t, rr, &resp)
+	if len(resp.Reviews) != 2 {
+		t.Fatalf("expected 2 reviews, got %d", len(resp.Reviews))
+	}
+}
+
+func TestListReviewsByRun_NotFound(t *testing.T) {
+	mock := &mockWorkflowService{
+		listRunReviewsByRunFn: func(_ context.Context, _ domain.TaskRunID) ([]domain.RunReview, error) {
+			return nil, workflow.ErrNotFound
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/nonexistent/reviews", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestListReviewsByRun_Empty(t *testing.T) {
+	mock := &mockWorkflowService{
+		listRunReviewsByRunFn: func(_ context.Context, _ domain.TaskRunID) ([]domain.RunReview, error) {
+			return []domain.RunReview{}, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/run-1/reviews", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	// Wire format: must be "reviews":[], never "reviews":null.
+	body := rr.Body.String()
+	if !strings.Contains(body, `"reviews":[]`) {
+		t.Fatalf("expected wire format \"reviews\":[], got: %s", body)
+	}
+	var resp ListRunReviewsResponse
+	decodeResp(t, rr, &resp)
+	if resp.Reviews == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(resp.Reviews) != 0 {
+		t.Fatalf("expected 0 reviews, got %d", len(resp.Reviews))
+	}
+}
+
+// --- getReview ---
+
+func TestGetReview(t *testing.T) {
+	review := sampleRunReview()
+	mock := &mockWorkflowService{
+		getRunReviewFn: func(_ context.Context, _ domain.RunReviewID) (domain.RunReview, error) {
+			return review, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/reviews/review-1", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunReviewResponse
+	decodeResp(t, rr, &resp)
+	if resp.Review.ID != "review-1" {
+		t.Fatalf("unexpected ID: %s", resp.Review.ID)
+	}
+}
+
+func TestGetReview_NotFound(t *testing.T) {
+	mock := &mockWorkflowService{
+		getRunReviewFn: func(_ context.Context, _ domain.RunReviewID) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrNotFound
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/reviews/nonexistent", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+// --- passReview ---
+
+func TestPassReview(t *testing.T) {
+	completedAt := testNow
+	review := sampleRunReview()
+	review.Status = domain.RunReviewStatusPassed
+	review.CompletedAt = &completedAt
+	mock := &mockWorkflowService{
+		passRunReviewFn: func(_ context.Context, _ domain.RunReviewID) (domain.RunReview, error) {
+			return review, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/reviews/review-1/pass", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunReviewResponse
+	decodeResp(t, rr, &resp)
+	if resp.Review.Status != "passed" {
+		t.Fatalf("expected status=passed, got %s", resp.Review.Status)
+	}
+	if resp.Review.CompletedAt == nil {
+		t.Fatal("expected completedAt to be set")
+	}
+}
+
+func TestPassReview_InvalidTransition(t *testing.T) {
+	mock := &mockWorkflowService{
+		passRunReviewFn: func(_ context.Context, _ domain.RunReviewID) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrInvalidTransition
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/reviews/review-1/pass", nil))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
+
+// --- rejectReview ---
+
+func TestRejectReview(t *testing.T) {
+	completedAt := testNow
+	review := sampleRunReview()
+	review.Status = domain.RunReviewStatusRejected
+	review.Issues = "fix bugs"
+	review.CompletedAt = &completedAt
+	mock := &mockWorkflowService{
+		rejectRunReviewFn: func(_ context.Context, _ domain.RunReviewID, _ string) (domain.RunReview, error) {
+			return review, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/reviews/review-1/reject", RejectReviewRequest{Issues: "fix bugs"}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunReviewResponse
+	decodeResp(t, rr, &resp)
+	if resp.Review.Status != "rejected" || resp.Review.Issues != "fix bugs" {
+		t.Fatalf("unexpected response: %+v", resp.Review)
+	}
+}
+
+func TestRejectReview_InvalidInput(t *testing.T) {
+	mock := &mockWorkflowService{
+		rejectRunReviewFn: func(_ context.Context, _ domain.RunReviewID, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrInvalidInput
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/reviews/review-1/reject", RejectReviewRequest{}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestRejectReview_NotFound(t *testing.T) {
+	mock := &mockWorkflowService{
+		rejectRunReviewFn: func(_ context.Context, _ domain.RunReviewID, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrNotFound
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/reviews/nonexistent/reject", RejectReviewRequest{Issues: "x"}))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestRejectReview_InvalidTransition(t *testing.T) {
+	mock := &mockWorkflowService{
+		rejectRunReviewFn: func(_ context.Context, _ domain.RunReviewID, _ string) (domain.RunReview, error) {
+			return domain.RunReview{}, workflow.ErrInvalidTransition
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/reviews/review-1/reject", RejectReviewRequest{Issues: "x"}))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
+
+func TestRejectReview_UnknownField(t *testing.T) {
+	mock := &mockWorkflowService{
+		rejectRunReviewFn: func(_ context.Context, _ domain.RunReviewID, _ string) (domain.RunReview, error) {
+			return sampleRunReview(), nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doRawJSON("POST", "/workflow/reviews/review-1/reject", `{"issues":"x","extra":"y"}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d", rr.Code)
+	}
+}
+
+// --- createRetryRun ---
+
+func TestCreateRetryRun(t *testing.T) {
+	run := sampleRetryRun()
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, in workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			if in.Mode != "resume" {
+				t.Fatalf("expected mode=resume, got %s", in.Mode)
+			}
+			return run, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{Mode: "resume"}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunResponse
+	decodeResp(t, rr, &resp)
+	if resp.Run.ID != "run-2" || resp.Run.PreviousRunID != "run-1" || resp.Run.RetryMode != "resume" {
+		t.Fatalf("unexpected response: %+v", resp.Run)
+	}
+}
+
+func TestCreateRetryRun_Fresh(t *testing.T) {
+	run := sampleRetryRun()
+	run.RetryMode = "fresh"
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, in workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			if in.Mode != "fresh" {
+				t.Fatalf("expected mode=fresh, got %s", in.Mode)
+			}
+			return run, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{Mode: "fresh"}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunResponse
+	decodeResp(t, rr, &resp)
+	if resp.Run.RetryMode != "fresh" {
+		t.Fatalf("expected retryMode=fresh, got %s", resp.Run.RetryMode)
+	}
+}
+
+func TestCreateRetryRun_InvalidInput(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, _ workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			return domain.TaskRun{}, workflow.ErrInvalidInput
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{Mode: "invalid"}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestCreateRetryRun_InvalidTransition(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, _ workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			return domain.TaskRun{}, workflow.ErrInvalidTransition
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{Mode: "resume"}))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
+
+func TestCreateRetryRun_EmptyObject_DefaultResume(t *testing.T) {
+	run := sampleRetryRun()
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, in workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			// Controller must pass Mode="" as-is; Service normalizes to "resume".
+			if in.Mode != "" {
+				t.Fatalf("expected Mode=\"\", got %q", in.Mode)
+			}
+			return run, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	// doJSON with CreateRetryRunRequest{} (omitempty) serializes to {}
+	// This is NOT the same as a completely empty HTTP body.
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateRetryRun_EmptyHTTPBody(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, _ workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			return sampleRetryRun(), nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	// Truly empty HTTP body (0 bytes) — must be rejected, distinct from {}.
+	r.ServeHTTP(rr, doRawJSON("POST", "/workflow/runs/run-1/retry", ""))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty HTTP body, got %d", rr.Code)
+	}
+}
+
+func TestCreateRetryRun_UnknownField(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, _ workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			return sampleRetryRun(), nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doRawJSON("POST", "/workflow/runs/run-1/retry", `{"mode":"resume","extra":"x"}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d", rr.Code)
+	}
+}
+
+func TestCreateRetryRun_NotFound(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, _ workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			return domain.TaskRun{}, workflow.ErrNotFound
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/nonexistent/retry", CreateRetryRunRequest{Mode: "resume"}))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestCreateRetryRun_Conflict(t *testing.T) {
+	mock := &mockWorkflowService{
+		createRetryRunFn: func(_ context.Context, _ workflow.CreateRetryRunInput) (domain.TaskRun, error) {
+			return domain.TaskRun{}, workflow.ErrConflict
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{Mode: "resume"}))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
+
+// --- nil-service ---
+
+func TestReviewAPI_501_WhenServiceNil(t *testing.T) {
+	r := chi.NewRouter()
+	ctrl := &WorkflowController{Svc: nil}
+	ctrl.Register(r)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/reviews/review-1", nil))
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for nil service, got %d", rr.Code)
+	}
+}
+
+func TestRetryAPI_501_WhenServiceNil(t *testing.T) {
+	r := chi.NewRouter()
+	ctrl := &WorkflowController{Svc: nil}
+	ctrl.Register(r)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-1/retry", CreateRetryRunRequest{Mode: "resume"}))
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for nil service, got %d", rr.Code)
+	}
+}
+
+// --- RunView retry fields ---
+
+func TestRunView_IncludesRetryFields(t *testing.T) {
+	run := sampleRetryRun()
+	mock := &mockWorkflowService{
+		getRunFn: func(_ context.Context, _ domain.TaskRunID) (domain.TaskRun, error) {
+			return run, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/run-2", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp RunResponse
+	decodeResp(t, rr, &resp)
+	if resp.Run.PreviousRunID != "run-1" {
+		t.Fatalf("expected previousRunId=run-1, got %s", resp.Run.PreviousRunID)
+	}
+	if resp.Run.RetryMode != "resume" {
+		t.Fatalf("expected retryMode=resume, got %s", resp.Run.RetryMode)
+	}
+}
+
+func TestRunView_OmitsRetryFields_ForNormalRun(t *testing.T) {
+	normalRun := domain.TaskRun{
+		ID:        "run-norm",
+		TaskID:    "task-1",
+		Attempt:   1,
+		Status:    domain.RunStatusRunning,
+		CreatedAt: testNow,
+	}
+	mock := &mockWorkflowService{
+		getRunFn: func(_ context.Context, _ domain.TaskRunID) (domain.TaskRun, error) {
+			return normalRun, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/run-norm", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	// Verify omitempty behavior: previousRunId and retryMode should not appear in JSON
+	body := rr.Body.String()
+	if bytes.Contains([]byte(body), []byte("previousRunId")) {
+		t.Fatalf("previousRunId should be omitted for normal run, got: %s", body)
+	}
+	if bytes.Contains([]byte(body), []byte("retryMode")) {
+		t.Fatalf("retryMode should be omitted for normal run, got: %s", body)
+	}
+}
+
+// --- Retry Start compatibility ---
+
+func TestStartRun_RetryCompatibility(t *testing.T) {
+	// Verify that the existing POST /workflow/runs/{id}/start still works
+	// for retry runs (no new /retry/start route exists).
+	retryRun := sampleRetryRun()
+	retryRun.Status = domain.RunStatusRunning
+	mock := &mockWorkflowService{
+		startRunFn: func(_ context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
+			if id != "run-2" {
+				t.Fatalf("expected run-2, got %s", id)
+			}
+			return retryRun, nil
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, doJSON("POST", "/workflow/runs/run-2/start", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp RunResponse
+	decodeResp(t, rr, &resp)
+	if resp.Run.Status != "running" {
+		t.Fatalf("expected status=running, got %s", resp.Run.Status)
+	}
+	if resp.Run.PreviousRunID != "run-1" {
+		t.Fatalf("expected previousRunId=run-1, got %s", resp.Run.PreviousRunID)
 	}
 }

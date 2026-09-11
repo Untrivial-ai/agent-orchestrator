@@ -436,5 +436,79 @@ func workflowOperations() []operation {
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
+
+		// ---- RunReview (Phase 2.5) ----
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/runs/{id}/reviews", id: "createRunReview", tag: "workflow",
+			summary:    "Create a review for a succeeded task run",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			reqBody:    controllers.CreateRunReviewRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.RunReviewResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/workflow/runs/{id}/reviews", id: "listReviewsByRun", tag: "workflow",
+			summary:    "List all reviews for a task run",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListRunReviewsResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/workflow/reviews/{id}", id: "getReview", tag: "workflow",
+			summary:    "Get a run review by ID",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.RunReviewResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/reviews/{id}/pass", id: "passReview", tag: "workflow",
+			summary:    "Pass a run review (atomically transitions parent task to passed)",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.RunReviewResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/reviews/{id}/reject", id: "rejectReview", tag: "workflow",
+			summary:    "Reject a run review (atomically transitions parent task to ready)",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			reqBody:    controllers.RejectReviewRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.RunReviewResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+
+		// ---- Retry (Phase 2.5) ----
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/runs/{id}/retry", id: "createRetryRun", tag: "workflow",
+			summary:    "Create a retry run for a rejected review",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			reqBody:    controllers.CreateRetryRunRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.RunResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
 	}
 }

@@ -83,15 +83,15 @@ UPDATE agent_roles SET enabled = ?, updated_at = ? WHERE id = ?;
 -- ---- task_runs ----
 
 -- name: CreateTaskRun :exec
-INSERT INTO task_runs (id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO task_runs (id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, previous_run_id, retry_mode)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetTaskRun :one
-SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at, previous_run_id, retry_mode
 FROM task_runs WHERE id = ? LIMIT 1;
 
 -- name: ListTaskRunsByTask :many
-SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at, previous_run_id, retry_mode
 FROM task_runs WHERE task_id = ? ORDER BY attempt;
 
 -- name: UpdateTaskRunStatus :exec
@@ -101,7 +101,7 @@ UPDATE task_runs SET status = ?, result_summary = COALESCE(result_summary, ?), e
 UPDATE task_runs SET session_id = ? WHERE id = ? AND session_id = '';
 
 -- name: ListTaskRunsByStatus :many
-SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at, previous_run_id, retry_mode
 FROM task_runs WHERE status = ? ORDER BY created_at;
 
 -- name: UpdateTaskRunSnapshot :exec
@@ -123,3 +123,7 @@ FROM run_reviews WHERE run_id = ? ORDER BY created_at;
 
 -- name: UpdateRunReviewStatus :exec
 UPDATE run_reviews SET status = ?, completed_at = ? WHERE id = ?;
+
+-- name: GetRunReviewByRunID :one
+SELECT id, run_id, source, status, summary, issues, created_at, completed_at
+FROM run_reviews WHERE run_id = ? LIMIT 1;

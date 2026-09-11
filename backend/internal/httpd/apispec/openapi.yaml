@@ -5647,6 +5647,129 @@ paths:
       summary: Start a confirmed plan (requires at least one stage)
       tags:
       - workflow
+  /api/v1/workflow/reviews/{id}:
+    get:
+      operationId: getReview
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReviewResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get a run review by ID
+      tags:
+      - workflow
+  /api/v1/workflow/reviews/{id}/pass:
+    post:
+      operationId: passReview
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReviewResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Pass a run review (atomically transitions parent task to passed)
+      tags:
+      - workflow
+  /api/v1/workflow/reviews/{id}/reject:
+    post:
+      operationId: rejectReview
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectReviewRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReviewResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Reject a run review (atomically transitions parent task to ready)
+      tags:
+      - workflow
   /api/v1/workflow/roles:
     get:
       operationId: listAgentRoles
@@ -5931,6 +6054,140 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Cancel a run and kill the active session if any
+      tags:
+      - workflow
+  /api/v1/workflow/runs/{id}/retry:
+    post:
+      operationId: createRetryRun
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRetryRunRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRunResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a retry run for a rejected review
+      tags:
+      - workflow
+  /api/v1/workflow/runs/{id}/reviews:
+    get:
+      operationId: listReviewsByRun
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRunReviewsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List all reviews for a task run
+      tags:
+      - workflow
+    post:
+      operationId: createRunReview
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunReviewRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReviewResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a review for a succeeded task run
       tags:
       - workflow
   /api/v1/workflow/runs/{id}/start:
@@ -7388,6 +7645,9 @@ components:
         id:
           description: Run identifier.
           type: string
+        previousRunId:
+          description: ID of the previous run in a retry chain.
+          type: string
         providerDisplayName:
           type: string
         providerId:
@@ -7397,6 +7657,12 @@ components:
         providerModelName:
           type: string
         resultSummary:
+          type: string
+        retryMode:
+          description: Retry mode if this run is a retry.
+          enum:
+          - resume
+          - fresh
           type: string
         sessionId:
           type: string
@@ -8260,6 +8526,32 @@ components:
       - projectId
       - title
       type: object
+    CreateRetryRunRequest:
+      properties:
+        mode:
+          description: Retry mode.
+          enum:
+          - resume
+          - fresh
+          type: string
+      type: object
+    CreateRunReviewRequest:
+      properties:
+        issues:
+          description: Review issues.
+          type: string
+        source:
+          description: Review source.
+          enum:
+          - ai
+          - human
+          type: string
+        summary:
+          description: Review summary.
+          type: string
+      required:
+      - source
+      type: object
     CreateStageRequest:
       properties:
         acceptanceCriteria:
@@ -8745,6 +9037,15 @@ components:
       - reviewerHandleId
       - reviews
       - runs
+      type: object
+    ListRunReviewsResponse:
+      properties:
+        reviews:
+          items:
+            $ref: '#/components/schemas/RunReviewView'
+          type: array
+      required:
+      - reviews
       type: object
     ListSessionPRsResponse:
       properties:
@@ -9385,6 +9686,12 @@ components:
             when the phone has no push token yet.'
           type: string
       type: object
+    RejectReviewRequest:
+      properties:
+        issues:
+          description: Rejection issues.
+          type: string
+      type: object
     ReloadConversationMCPServersResponse:
       properties:
         servers:
@@ -9612,6 +9919,53 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    RunReviewResponse:
+      properties:
+        review:
+          $ref: '#/components/schemas/RunReviewView'
+      required:
+      - review
+      type: object
+    RunReviewView:
+      properties:
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          description: Review identifier.
+          type: string
+        issues:
+          type: string
+        runId:
+          description: Parent run identifier.
+          type: string
+        source:
+          enum:
+          - ai
+          - human
+          type: string
+        status:
+          enum:
+          - pending
+          - passed
+          - rejected
+          type: string
+        summary:
+          type: string
+      required:
+      - id
+      - runId
+      - source
+      - status
+      - summary
+      - issues
+      - createdAt
       type: object
     SendConversationMessageRequest:
       properties:

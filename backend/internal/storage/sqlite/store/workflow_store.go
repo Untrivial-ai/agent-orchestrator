@@ -4,10 +4,29 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+// ErrConflict is returned when an INSERT violates a UNIQUE constraint
+// (e.g. duplicate run_id in run_reviews).
+var ErrConflict = domain.ErrConflict
+
+// isUniqueConstraint reports whether err represents a SQLite UNIQUE constraint
+// violation for the given table and column. It does not rely on the index name
+// appearing in the error text — it matches on the canonical SQLite error
+// pattern "UNIQUE constraint failed: <table>.<column>".
+func isUniqueConstraint(err error, table, column string) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") &&
+		strings.Contains(msg, fmt.Sprintf("%s.%s", table, column))
+}
 
 // ---- development_plans ----
 
@@ -279,11 +298,11 @@ func (s *Store) CreateTaskRun(ctx context.Context, r domain.TaskRun) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.writeDB.ExecContext(ctx, `INSERT INTO task_runs
-(id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+(id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,previous_run_id,retry_mode)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.TaskID, r.Attempt, r.SessionID, r.AgentRoleID, r.ProviderID, r.ProviderModelID,
 		r.ProviderDisplayName, r.ProviderModelName, r.ExecutorType, r.Status,
-		r.ResultSummary, r.ErrorMessage, r.CreatedAt)
+		r.ResultSummary, r.ErrorMessage, r.CreatedAt, r.PreviousRunID, r.RetryMode)
 	return err
 }
 
@@ -292,13 +311,13 @@ func scanTaskRun(row *sql.Row) (domain.TaskRun, error) {
 	err := row.Scan(&r.ID, &r.TaskID, &r.Attempt, &r.SessionID, &r.AgentRoleID,
 		&r.ProviderID, &r.ProviderModelID, &r.ProviderDisplayName, &r.ProviderModelName,
 		&r.ExecutorType, &r.Status, &r.ResultSummary, &r.ErrorMessage,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt)
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.PreviousRunID, &r.RetryMode)
 	return r, err
 }
 
 func (s *Store) GetTaskRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, bool, error) {
 	r, err := scanTaskRun(s.readDB.QueryRowContext(ctx,
-		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at
+		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at,previous_run_id,retry_mode
 FROM task_runs WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.TaskRun{}, false, nil
@@ -308,7 +327,7 @@ FROM task_runs WHERE id=?`, id))
 
 func (s *Store) ListTaskRunsByTask(ctx context.Context, taskID domain.DevelopmentTaskID) ([]domain.TaskRun, error) {
 	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at
+		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at,previous_run_id,retry_mode
 FROM task_runs WHERE task_id=? ORDER BY attempt`, taskID)
 	if err != nil {
 		return nil, err
@@ -320,12 +339,22 @@ FROM task_runs WHERE task_id=? ORDER BY attempt`, taskID)
 		if err := rows.Scan(&r.ID, &r.TaskID, &r.Attempt, &r.SessionID, &r.AgentRoleID,
 			&r.ProviderID, &r.ProviderModelID, &r.ProviderDisplayName, &r.ProviderModelName,
 			&r.ExecutorType, &r.Status, &r.ResultSummary, &r.ErrorMessage,
-			&r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
+			&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.PreviousRunID, &r.RetryMode); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetLatestTaskRunByTask(ctx context.Context, taskID domain.DevelopmentTaskID) (domain.TaskRun, bool, error) {
+	r, err := scanTaskRun(s.readDB.QueryRowContext(ctx,
+		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at,previous_run_id,retry_mode
+FROM task_runs WHERE task_id=? ORDER BY attempt DESC LIMIT 1`, taskID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.TaskRun{}, false, nil
+	}
+	return r, true, err
 }
 
 func (s *Store) UpdateTaskRunStatus(ctx context.Context, id domain.TaskRunID, status domain.TaskRunStatus, resultSummary, errorMessage string, startedAt, finishedAt *time.Time) error {
@@ -349,7 +378,7 @@ func (s *Store) BindTaskRunSession(ctx context.Context, id domain.TaskRunID, ses
 // Used by Reconcile to find PENDING/RUNNING runs that may need attention.
 func (s *Store) ListTaskRunsByStatus(ctx context.Context, status domain.TaskRunStatus) ([]domain.TaskRun, error) {
 	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at
+		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at,previous_run_id,retry_mode
 FROM task_runs WHERE status=? ORDER BY created_at`, status)
 	if err != nil {
 		return nil, err
@@ -361,7 +390,7 @@ FROM task_runs WHERE status=? ORDER BY created_at`, status)
 		if err := rows.Scan(&r.ID, &r.TaskID, &r.Attempt, &r.SessionID, &r.AgentRoleID,
 			&r.ProviderID, &r.ProviderModelID, &r.ProviderDisplayName, &r.ProviderModelName,
 			&r.ExecutorType, &r.Status, &r.ResultSummary, &r.ErrorMessage,
-			&r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
+			&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.PreviousRunID, &r.RetryMode); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -390,6 +419,9 @@ func (s *Store) CreateRunReview(ctx context.Context, r domain.RunReview) error {
 (id,run_id,source,status,summary,issues,created_at)
 VALUES(?,?,?,?,?,?,?)`,
 		r.ID, r.RunID, r.Source, r.Status, r.Summary, r.Issues, r.CreatedAt)
+	if err != nil && isUniqueConstraint(err, "run_reviews", "run_id") {
+		return ErrConflict
+	}
 	return err
 }
 
@@ -431,4 +463,123 @@ func (s *Store) UpdateRunReviewStatus(ctx context.Context, id domain.RunReviewID
 	defer s.writeMu.Unlock()
 	_, err := s.writeDB.ExecContext(ctx, `UPDATE run_reviews SET status=?,completed_at=? WHERE id=?`, status, completedAt, id)
 	return err
+}
+
+// GetRunReviewByRunID returns the most recent RunReview for a given run,
+// or (zero, false, nil) if none exists.
+func (s *Store) GetRunReviewByRunID(ctx context.Context, runID domain.TaskRunID) (domain.RunReview, bool, error) {
+	r, err := scanRunReview(s.readDB.QueryRowContext(ctx,
+		`SELECT id,run_id,source,status,summary,issues,created_at,completed_at FROM run_reviews WHERE run_id=? LIMIT 1`, runID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.RunReview{}, false, nil
+	}
+	return r, true, err
+}
+
+// PassRunReviewTx atomically verifies the review is PENDING and the parent
+// task is in "review" status, then transitions the review to PASSED and
+// the task to "passed". Returns ErrInvalidTransition if preconditions fail.
+func (s *Store) PassRunReviewTx(ctx context.Context, reviewID domain.RunReviewID, completedAt time.Time) error {
+	return s.inRawTx(ctx, func(tx *sql.Tx) error {
+		// 1. Verify review is PENDING and get run_id.
+		var runID domain.TaskRunID
+		var status domain.RunReviewStatus
+		err := tx.QueryRowContext(ctx,
+			`SELECT run_id, status FROM run_reviews WHERE id=?`, reviewID,
+		).Scan(&runID, &status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("review %s: %w", reviewID, domain.ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		if status != domain.RunReviewStatusPending {
+			return domain.ErrInvalidTransition
+		}
+
+		// 2. Verify parent task is in "review" status.
+		var taskID domain.DevelopmentTaskID
+		err = tx.QueryRowContext(ctx,
+			`SELECT t.id FROM development_tasks t
+			 JOIN task_runs r ON r.task_id = t.id
+			 WHERE r.id=? AND t.status='review'`, runID,
+		).Scan(&taskID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrInvalidTransition
+		}
+		if err != nil {
+			return err
+		}
+
+		// 3. Transition review → PASSED.
+		res, err := tx.ExecContext(ctx,
+			`UPDATE run_reviews SET status='passed', completed_at=? WHERE id=? AND status='pending'`,
+			completedAt, reviewID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return domain.ErrInvalidTransition
+		}
+
+		// 4. Transition task → PASSED.
+		_, err = tx.ExecContext(ctx,
+			`UPDATE development_tasks SET status='passed', completed_at=? WHERE id=?`,
+			completedAt, taskID)
+		return err
+	})
+}
+
+// RejectRunReviewTx atomically verifies the review is PENDING and the parent
+// task is in "review" status, then transitions the review to REJECTED and
+// the task to "ready". Returns ErrInvalidTransition if preconditions fail.
+func (s *Store) RejectRunReviewTx(ctx context.Context, reviewID domain.RunReviewID, completedAt time.Time, issues string) error {
+	return s.inRawTx(ctx, func(tx *sql.Tx) error {
+		// 1. Verify review is PENDING and get run_id.
+		var runID domain.TaskRunID
+		var status domain.RunReviewStatus
+		err := tx.QueryRowContext(ctx,
+			`SELECT run_id, status FROM run_reviews WHERE id=?`, reviewID,
+		).Scan(&runID, &status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("review %s: %w", reviewID, domain.ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		if status != domain.RunReviewStatusPending {
+			return domain.ErrInvalidTransition
+		}
+
+		// 2. Verify parent task is in "review" status.
+		var taskID domain.DevelopmentTaskID
+		err = tx.QueryRowContext(ctx,
+			`SELECT t.id FROM development_tasks t
+			 JOIN task_runs r ON r.task_id = t.id
+			 WHERE r.id=? AND t.status='review'`, runID,
+		).Scan(&taskID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrInvalidTransition
+		}
+		if err != nil {
+			return err
+		}
+
+		// 3. Transition review → REJECTED.
+		res, err := tx.ExecContext(ctx,
+			`UPDATE run_reviews SET status='rejected', completed_at=?, issues=? WHERE id=? AND status='pending'`,
+			completedAt, issues, reviewID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return domain.ErrInvalidTransition
+		}
+
+		// 4. Transition task → READY.
+		_, err = tx.ExecContext(ctx,
+			`UPDATE development_tasks SET status='ready' WHERE id=?`,
+			taskID)
+		return err
+	})
 }

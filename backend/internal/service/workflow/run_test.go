@@ -14,8 +14,11 @@ import (
 // ---- Mock SessionRuntime ----
 
 type mockRuntime struct {
-	spawnSession func(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error)
-	killSession  func(ctx context.Context, id domain.SessionID) (bool, error)
+	spawnSession        func(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error)
+	killSession         func(ctx context.Context, id domain.SessionID) (bool, error)
+	restoreSession      func(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
+	resumeAgentSession  func(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
+	sendSession         func(ctx context.Context, id domain.SessionID, message string) error
 }
 
 func (m *mockRuntime) SpawnSession(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error) {
@@ -34,6 +37,27 @@ func (m *mockRuntime) KillSession(ctx context.Context, id domain.SessionID) (boo
 		return m.killSession(ctx, id)
 	}
 	return true, nil
+}
+
+func (m *mockRuntime) RestoreSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	if m.restoreSession != nil {
+		return m.restoreSession(ctx, id)
+	}
+	return domain.SessionRecord{ID: id}, nil
+}
+
+func (m *mockRuntime) ResumeAgentSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	if m.resumeAgentSession != nil {
+		return m.resumeAgentSession(ctx, id)
+	}
+	return domain.SessionRecord{ID: id}, nil
+}
+
+func (m *mockRuntime) SendSession(ctx context.Context, id domain.SessionID, message string) error {
+	if m.sendSession != nil {
+		return m.sendSession(ctx, id, message)
+	}
+	return nil
 }
 
 // ---- helpers ----

@@ -623,6 +623,8 @@ type TaskRun struct {
 	CreatedAt           time.Time
 	StartedAt           interface{}
 	FinishedAt          interface{}
+	PreviousRunID       string
+	RetryMode           string
 }
 
 type TelemetryEvent struct {

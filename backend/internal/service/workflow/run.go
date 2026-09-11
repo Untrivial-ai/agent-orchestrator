@@ -64,11 +64,9 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (domain.Task
 // Sequence: Resolve Role → Resolve Provider → Spawn → Bind → snapshot → Task→RUNNING → Run→RUNNING.
 // If Spawn fails, the run stays PENDING and task stays READY (no state change).
 // Phase 2.4: Three-level resolution with fail-first semantics (no silent fallback).
+// Phase 2.5: Dispatches to retry paths for RESUME/FRESH runs.
 func (s *Service) StartRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
-	if s.runtime == nil {
-		return domain.TaskRun{}, fmt.Errorf("workflow: no session runtime configured")
-	}
-
+	// Retry dispatch: check RetryMode before normal path.
 	run, ok, err := s.store.GetTaskRun(ctx, id)
 	if err != nil {
 		return domain.TaskRun{}, err
@@ -76,6 +74,31 @@ func (s *Service) StartRun(ctx context.Context, id domain.TaskRunID) (domain.Tas
 	if !ok {
 		return domain.TaskRun{}, ErrNotFound
 	}
+
+	if run.RetryMode != "" {
+		// Must have a previous run for retry.
+		prevRun, found, err := s.store.GetTaskRun(ctx, run.PreviousRunID)
+		if err != nil {
+			return domain.TaskRun{}, err
+		}
+		if !found {
+			return domain.TaskRun{}, ErrNotFound
+		}
+		switch run.RetryMode {
+		case "resume":
+			return s.startRetryResume(ctx, run, prevRun)
+		case "fresh":
+			return s.startRetryFresh(ctx, run, prevRun)
+		default:
+			return domain.TaskRun{}, ErrInvalidInput
+		}
+	}
+
+	// Normal path (Phase 2.3/2.4).
+	if s.runtime == nil {
+		return domain.TaskRun{}, fmt.Errorf("workflow: no session runtime configured")
+	}
+
 	if run.Status != domain.RunStatusPending {
 		return domain.TaskRun{}, ErrInvalidTransition
 	}
@@ -258,6 +281,7 @@ func TerminationToRunStatus(reason string) domain.TaskRunStatus {
 
 // ReconcileRunningRuns checks all RUNNING (and orphan PENDING+session_id) runs
 // and finalizes those whose session has terminated.
+// Phase 2.5: After finalizing a run, attempts task state convergence.
 func (s *Service) ReconcileRunningRuns(ctx context.Context) (reconciled int, err error) {
 	runs, err := s.store.ListTaskRunsByStatus(ctx, domain.RunStatusRunning)
 	if err != nil {
@@ -291,17 +315,48 @@ func (s *Service) ReconcileRunningRuns(ctx context.Context) (reconciled int, err
 			continue
 		}
 		reconciled++
+
+		// Phase 2.5: attempt task convergence (best-effort, don't rollback run on failure).
+		s.convergeTaskFromRun(ctx, run.TaskID)
 	}
 
 	return reconciled, nil
+}
+
+// convergeTaskFromRun transitions a task based on its latest run's status.
+// Best-effort: failures are logged, not propagated.
+func (s *Service) convergeTaskFromRun(ctx context.Context, taskID domain.DevelopmentTaskID) {
+	task, ok, err := s.store.GetDevelopmentTask(ctx, taskID)
+	if err != nil || !ok {
+		return
+	}
+	// Only converge RUNNING tasks.
+	if task.Status != domain.TaskStatusRunning {
+		return
+	}
+
+	latestRun, ok, err := s.store.GetLatestTaskRunByTask(ctx, taskID)
+	if err != nil || !ok {
+		return
+	}
+
+	now := s.now()
+	switch latestRun.Status {
+	case domain.RunStatusSucceeded:
+		_ = s.store.UpdateDevelopmentTaskStatus(ctx, taskID, domain.TaskStatusReview, nil, nil)
+	case domain.RunStatusFailed:
+		_ = s.store.UpdateDevelopmentTaskStatus(ctx, taskID, domain.TaskStatusReady, nil, nil)
+	case domain.RunStatusCancelled:
+		_ = s.store.UpdateDevelopmentTaskStatus(ctx, taskID, domain.TaskStatusCancelled, nil, &now)
+	}
 }
 
 // ReconcileInterval is the default reconcile tick interval.
 const ReconcileInterval = 30 * time.Second
 
 // StartCompletionObserver starts a background goroutine that periodically
-// calls ReconcileRunningRuns. It returns immediately; the goroutine stops
-// when ctx is cancelled.
+// calls ReconcileRunningRuns and ReconcileWorkflowStateConsistency.
+// It returns immediately; the goroutine stops when ctx is cancelled.
 func (s *Service) StartCompletionObserver(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = ReconcileInterval
@@ -319,6 +374,12 @@ func (s *Service) StartCompletionObserver(ctx context.Context, interval time.Dur
 					slog.Error("workflow: reconcile error", "err", err)
 				} else if n > 0 {
 					slog.Info("workflow: reconciled runs", "count", n)
+				}
+				c, err := s.ReconcileWorkflowStateConsistency(ctx)
+				if err != nil {
+					slog.Error("workflow: consistency reconcile error", "err", err)
+				} else if c > 0 {
+					slog.Info("workflow: consistency compensated", "count", c)
 				}
 			}
 		}
