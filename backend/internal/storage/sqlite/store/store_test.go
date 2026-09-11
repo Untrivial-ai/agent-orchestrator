@@ -1703,6 +1703,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
 		rows = append(rows, row)
 	}

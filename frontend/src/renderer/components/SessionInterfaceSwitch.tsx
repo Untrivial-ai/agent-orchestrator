@@ -53,6 +53,19 @@ const phaseCopy: Record<SessionInterfaceTransition["phase"], string> = {
 	recovery_required: "Interface switch needs attention",
 };
 
+const targetStopUnconfirmedDetail =
+	"AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface.";
+
+function interfaceTransitionNeedsRestart(transition?: SessionInterfaceTransition): boolean {
+	// The daemon retains the active fence until target shutdown is proven;
+	// this is an actionable recovery state, not ongoing progress.
+	return Boolean(
+		transition &&
+			interfaceTransitionIsActive(transition) &&
+			transition.errorCode === "TARGET_STOP_UNCONFIRMED",
+	);
+}
+
 export function SessionInterfaceSwitchButton({
 	target,
 	supported,
@@ -77,10 +90,12 @@ export function SessionInterfaceSwitchButton({
 	className?: string;
 }) {
 	if (transition && interfaceTransitionIsActive(transition)) {
-		const cancellable = interfaceTransitionIsCancellable(transition) && Boolean(onCancel);
-		const statusLabel =
-			cancelError ||
-			`${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`;
+		const needsRestart = interfaceTransitionNeedsRestart(transition);
+		const cancellable = !needsRestart && interfaceTransitionIsCancellable(transition) && Boolean(onCancel);
+		const statusLabel = needsRestart
+			? `Interface switch needs attention. ${transition.errorDetail || targetStopUnconfirmedDetail}`
+			: cancelError ||
+				`${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`;
 		const cancelLabel = `Cancel switch to ${targetTitleLabel(transition.targetMode)}`;
 		return (
 			<div
@@ -91,13 +106,17 @@ export function SessionInterfaceSwitchButton({
 				title={statusLabel}
 			>
 				{/* TerminalTabFrame is a Tailwind `group`; tab hover swaps spinner → cancel. */}
-				<Loader2
-					aria-hidden="true"
-					className={cn(
-						"size-3.5 animate-spin",
-						cancellable && "pointer-events-none group-hover:opacity-0",
-					)}
-				/>
+				{needsRestart ? (
+					<TriangleAlert aria-hidden="true" className="size-3.5 text-warning" />
+				) : (
+					<Loader2
+						aria-hidden="true"
+						className={cn(
+							"size-3.5 animate-spin",
+							cancellable && "pointer-events-none group-hover:opacity-0",
+						)}
+					/>
+				)}
 				{cancellable ? (
 					<button
 						type="button"
@@ -274,10 +293,12 @@ export function SessionInterfaceTransitionNotice({
 	onUseProviderHistory?: () => void;
 	recoveryError?: string;
 }) {
+	const needsRestart = interfaceTransitionNeedsRestart(transition);
 	if (
 		!transition ||
-		transition.noticeAcknowledgedAt ||
-		(transition.phase !== "failed" && transition.phase !== "recovery_required")
+		(!needsRestart &&
+			(transition.noticeAcknowledgedAt ||
+				(transition.phase !== "failed" && transition.phase !== "recovery_required")))
 	) {
 		return null;
 	}
@@ -311,15 +332,21 @@ export function SessionInterfaceTransitionNotice({
 			)}
 			<div className="min-w-0 flex-1">
 				<strong className="block text-xs font-medium text-foreground">
-					{recovered ? "Interface switch recovered" : phaseCopy[transition.phase]}
+					{needsRestart
+						? "Interface switch needs attention"
+						: recovered
+							? "Interface switch recovered"
+							: phaseCopy[transition.phase]}
 				</strong>
 				<p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
 					{transition.errorDetail ||
-						(recovered
-							? "AO restored the session in its last committed interface."
-							: transition.phase === "recovery_required"
-								? "Restart AO to reconcile this session before sending more work."
-								: "The original interface remains available. You can retry the switch.")}
+						(needsRestart
+							? targetStopUnconfirmedDetail
+							: recovered
+								? "AO restored the session in its last committed interface."
+								: transition.phase === "recovery_required"
+									? "Restart AO to reconcile this session before sending more work."
+									: "The original interface remains available. You can retry the switch.")}
 				</p>
 				{transition.phase === "failed" &&
 				(transition.errorCode === "DRAIN_DRAFT_PRESENT" ||
@@ -376,30 +403,32 @@ export function SessionInterfaceTransitionNotice({
 						</Button>
 					</div>
 				) : null}
-				{recoveryError ? (
+				{recoveryError && !needsRestart ? (
 					<p className="mt-1 text-[11px] leading-4 text-destructive">
 						Recovery attempt failed: {recoveryError}
 					</p>
 				) : null}
-				{dismissError ? (
+				{dismissError && !needsRestart ? (
 					<p className="mt-1 text-[11px] leading-4 text-destructive">
 						Could not dismiss this message. Try again.
 					</p>
 				) : null}
 			</div>
-			<button
-				type="button"
-				className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-				onClick={onDismiss}
-				disabled={dismissing}
-				aria-label="Dismiss interface switch message"
-			>
-				{dismissing ? (
-					<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-				) : (
-					<X aria-hidden="true" className="size-3.5" />
-				)}
-			</button>
+			{!needsRestart ? (
+				<button
+					type="button"
+					className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+					onClick={onDismiss}
+					disabled={dismissing}
+					aria-label="Dismiss interface switch message"
+				>
+					{dismissing ? (
+						<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+					) : (
+						<X aria-hidden="true" className="size-3.5" />
+					)}
+				</button>
+			) : null}
 		</div>
 	);
 }

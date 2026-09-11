@@ -112,9 +112,9 @@ func (s *Store) UpdateSessionFromActivitySignal(
 
 // RecordSessionLatestUserPrompt persists pane-delivered user direction without
 // rewriting lifecycle ownership. Because the provider hook may be lost, the
-// same atomic write clears any prior assistant pairing, trusted checkpoint
-// provenance, and older unresolved Stop boundary; a later canonical main-turn
-// hook may promote the new turn.
+// same atomic write clears any prior assistant pairing and trusted checkpoint
+// provenance. An unresolved Stop boundary remains until a canonical main-turn
+// hook supplies the missing boundary evidence.
 func (s *Store) RecordSessionLatestUserPrompt(ctx context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

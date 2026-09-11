@@ -533,6 +533,7 @@ func (m *Manager) runInterfaceTransition(
 	}
 	err = m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true, transition.HistoryPolicy)
 	if errors.Is(err, ports.ErrChatHistoryUnsettled) &&
+		!errors.Is(err, ports.ErrChatRecoveryInconclusive) &&
 		len(ports.ChatHistoryMismatchDimensions(err)) == 0 && transition.TargetMode == domain.SessionModeChat {
 		// An ACP history reader may expose an immutable snapshot for one provider
 		// session. Its unsettled result is authoritative for that controller, but
@@ -540,6 +541,10 @@ func (m *Manager) runInterfaceTransition(
 		// starting the target once more obtains a fresh provider observation. Keep
 		// the retry inside this durable transition, after the source was stopped,
 		// so the source is not relaunched and two target controllers never overlap.
+		if stopErr := m.stopTransitionTargetConclusive(ctx, transition); stopErr != nil {
+			m.retainUnconfirmedTransitionTarget(transition, errors.Join(err, stopErr))
+			return
+		}
 		err = m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true, transition.HistoryPolicy)
 	}
 	if err != nil {
@@ -1134,9 +1139,11 @@ func (m *Manager) rollbackInterfaceTransition(
 	defer cancel()
 	if modeChanged {
 		// A target may have partially started. Stop whatever its committed mode can
-		// identify before restoring the old writer.
-		if current, ok, _ := m.store.GetSession(ctx, transition.SessionID); ok {
-			_ = m.stopSourceController(ctx, current)
+		// identify before restoring the old writer. A detached event stream is not
+		// proof that a persistent provider host stopped.
+		if stopErr := m.stopTransitionTargetConclusive(ctx, transition); stopErr != nil {
+			m.retainUnconfirmedTransitionTarget(transition, errors.Join(cause, stopErr))
+			return
 		}
 		if m.lcm == nil {
 			_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionRecovery,
@@ -1179,6 +1186,31 @@ func (m *Manager) rollbackInterfaceTransition(
 		return
 	}
 	_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionFailed, code, cause.Error())
+}
+
+func (m *Manager) stopTransitionTargetConclusive(ctx context.Context, transition domain.SessionInterfaceTransition) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	current, found, err := m.store.GetSession(ctx, transition.SessionID)
+	if err != nil {
+		return fmt.Errorf("read failed target ownership: %w", err)
+	}
+	if !found || domain.NormalizeSessionMode(current.Mode) != transition.TargetMode {
+		return errors.New("failed target ownership changed before shutdown")
+	}
+	if transition.TargetMode == domain.SessionModeChat && m.chat == nil {
+		return errors.New("cannot confirm target shutdown without Chat service")
+	}
+	return m.stopSourceControllerConclusive(current)
+}
+
+func (m *Manager) retainUnconfirmedTransitionTarget(transition domain.SessionInterfaceTransition, cause error) {
+	// Keep the durable input fence and startup-recovery record. Terminalizing the
+	// saga would let ordinary restore adopt a target that never passed admission.
+	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionTargetStarting,
+		"TARGET_STOP_UNCONFIRMED", "AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface. "+cause.Error()); err != nil {
+		m.logger.Error("interface transition: retain unconfirmed target shutdown", "transition", transition.ID, "error", err)
+	}
 }
 
 func (m *Manager) moveInterfaceTransition(
@@ -1465,7 +1497,8 @@ func (m *Manager) hasActiveInterfaceTransition(ctx context.Context, id domain.Se
 // active by a daemon exit. A TUI -> Chat transition whose mode commit landed is
 // rolled back first: ordinary Chat restore is context-only and cannot satisfy
 // the handoff's mandatory replay barrier. Reconcile can then restore the source
-// TUI, and a later retry performs native replay again idempotently.
+// TUI, and a later retry performs native replay again idempotently. A failed
+// target shutdown retains the same rollback obligation in either direction.
 func (m *Manager) recoverInterruptedInterfaceTransitions(
 	ctx context.Context,
 ) ([]domain.SessionInterfaceTransition, error) {
@@ -1480,12 +1513,17 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 	for i := range active {
 		transition := &active[i]
 		detail := "The daemon restarted during the interface switch; AO recovered the session from its last committed mode."
-		if transition.SourceMode == domain.SessionModeTUI && transition.TargetMode == domain.SessionModeChat {
+		if (transition.SourceMode == domain.SessionModeTUI && transition.TargetMode == domain.SessionModeChat) ||
+			transition.ErrorCode == "TARGET_STOP_UNCONFIRMED" {
 			rec, found, readErr := m.store.GetSession(ctx, transition.SessionID)
 			if readErr != nil {
 				return nil, readErr
 			}
 			if found && !rec.IsTerminated && domain.NormalizeSessionMode(rec.Mode) == transition.TargetMode {
+				if stopErr := m.stopTransitionTargetConclusive(ctx, *transition); stopErr != nil {
+					m.retainUnconfirmedTransitionTarget(*transition, stopErr)
+					return nil, fmt.Errorf("recover transition %s target shutdown: %w", transition.ID, stopErr)
+				}
 				if m.lcm == nil {
 					return nil, fmt.Errorf("recover transition %s: lifecycle manager is unavailable", transition.ID)
 				}
@@ -1503,7 +1541,11 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 				if !changed {
 					return nil, fmt.Errorf("recover transition %s source mode: session changed", transition.ID)
 				}
-				detail = "The daemon restarted during the interface switch; AO restored Terminal so native history can be replayed safely on retry."
+				if transition.SourceMode == domain.SessionModeTUI {
+					detail = "The daemon restarted during the interface switch; AO restored Terminal so native history can be replayed safely on retry."
+				} else {
+					detail = "The daemon restarted during the interface switch; AO confirmed the failed Terminal controller stopped and restored Chat ownership."
+				}
 			}
 		}
 		moved, err := store.AdvanceSessionInterfaceTransition(
