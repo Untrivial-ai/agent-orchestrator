@@ -1,16 +1,17 @@
 import type { NextConfig } from "next";
 
-const usesServerAuth =
+const usesServerRuntime =
+	Boolean(process.env.NEXT_PUBLIC_API_URL) ||
 	process.env.NEXT_PUBLIC_AO_AUTH_MODE === "workos" ||
 	process.env.AO_CLOUD_AUTH_MODE === "workos";
 
 // GitHub Pages serves a static export (see .github/workflows/deploy-landing.yml).
-// Cloud auth runs through live Next route handlers, so local WorkOS testing must
-// opt out of static export.
+// Cloud uses live Next route handlers, so its web app must opt out of static
+// export even when it uses local email/password auth.
 const config: NextConfig = {
-	output: usesServerAuth ? undefined : "export",
+	output: usesServerRuntime ? undefined : "export",
 	reactStrictMode: true,
-	trailingSlash: usesServerAuth ? false : true,
+	trailingSlash: usesServerRuntime ? false : true,
 	images: {
 		unoptimized: true,
 		qualities: [75, 80],
