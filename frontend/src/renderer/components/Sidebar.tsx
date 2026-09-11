@@ -2162,6 +2162,12 @@ function updateVersionLabel(
 	return t(variant === "ready" ? "shell.versionReady" : "shell.versionAvailable", { version });
 }
 
+/** Plain version number for the install cue — base for nightlies, no channel/date. */
+function installVersionNumber(version: string | undefined): string | null {
+	if (!version) return null;
+	return parseNightlyVersion(version)?.base ?? version;
+}
+
 // UpdateStatusRow makes download progress visible in the footer. A staged build
 // ready to install renders as UpdateInstallSlide above Connect mobile / Settings.
 function UpdateStatusRow({
@@ -2238,7 +2244,7 @@ function UpdateStatusRow({
 
 /**
  * Alert-style install cue above Connect mobile / Settings. Muted fill + shadow so
- * it reads apart from nav rows; label only — version details live in the restart dialog.
+ * it reads apart from nav rows; shows the version number only (no Nightly/date).
  */
 function UpdateInstallSlide({
 	availableDismissed,
@@ -2255,6 +2261,7 @@ function UpdateInstallSlide({
 	const action = sidebarUpdateAction(status, availableDismissed);
 	if (action?.kind !== "install") return null;
 
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<button
 			aria-label={
@@ -2273,7 +2280,15 @@ function UpdateInstallSlide({
 			type="button"
 		>
 			<RefreshCw aria-hidden="true" className="size-icon-sm shrink-0 text-muted-foreground" />
-			<span className="min-w-0 flex-1 truncate tracking-tight">{t("shell.restartToUpdate")}</span>
+			<span className="min-w-0 flex-1 truncate tracking-tight">
+				{t("shell.restartToUpdate")}
+				{versionNumber ? (
+					<>
+						{" "}
+						<span className="text-muted-foreground">{versionNumber}</span>
+					</>
+				) : null}
+			</span>
 		</button>
 	);
 }
@@ -2339,6 +2354,7 @@ function UpdateStatusRail({
 		);
 	}
 
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -2358,7 +2374,10 @@ function UpdateStatusRail({
 					<RefreshCw aria-hidden="true" />
 				</button>
 			</TooltipTrigger>
-			<TooltipContent side="right">{t("shell.restartToUpdate")}</TooltipContent>
+			<TooltipContent side="right">
+				{t("shell.restartToUpdate")}
+				{versionNumber ? ` ${versionNumber}` : ""}
+			</TooltipContent>
 		</Tooltip>
 	);
 }

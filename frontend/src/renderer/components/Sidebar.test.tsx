@@ -2214,6 +2214,7 @@ describe("Sidebar", () => {
 		expect(readyRow).toHaveClass("bg-muted", "rounded-xl", "shadow-md", "w-full");
 		expect(readyRow).not.toHaveClass("absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
 		expect(within(readyRow).getByText("Install Update")).toBeVisible();
+		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
 		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();
 		expect(readyRow.querySelector(".rounded-full")).toBeNull();
 		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
@@ -2239,7 +2240,7 @@ describe("Sidebar", () => {
 		expect(screen.getByTestId("sidebar-update-ready")).toBeVisible();
 	});
 
-	it("keeps the install cue label-only for a staged nightly", async () => {
+	it("shows the base version number for a staged nightly without channel or date", async () => {
 		updateStatusMock.mockResolvedValue({
 			state: "downloaded",
 			version: "0.12.11-nightly.202609021713",
@@ -2249,6 +2250,7 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(within(readyRow).getByText("Install Update")).toBeVisible();
+		expect(within(readyRow).getByText("0.12.11")).toBeVisible();
 		expect(within(readyRow).queryByText(/Nightly|Sep/)).not.toBeInTheDocument();
 	});
 
@@ -2278,10 +2280,11 @@ describe("Sidebar", () => {
 			expect(button).not.toHaveClass("text-success");
 		}
 		expect(screen.getByTestId("sidebar-update-ready")).toHaveTextContent("Install Update");
+		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("9.9.9")).toBeVisible();
 		expect(screen.queryByText("v9.9.9 ready")).not.toBeInTheDocument();
 	});
 
-	it("shows only the install label without nightly or version subtext", async () => {
+	it("keeps install label and version number on one line without nightly copy", async () => {
 		updateStatusMock.mockResolvedValue({
 			state: "downloaded",
 			version: "0.12.11-nightly.202609021713",
@@ -2290,7 +2293,7 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveTextContent("Install Update");
+		expect(readyRow.textContent?.replace(/\s+/g, " ").trim()).toMatch(/^Install Update 0\.12\.11$/);
 		expect(within(readyRow).queryByText(/Nightly|ready/)).not.toBeInTheDocument();
 	});
 
