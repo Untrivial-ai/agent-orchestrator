@@ -62,7 +62,7 @@ organization or account and never includes the repository, path, or URL.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address there, it is used to manage that waitlist as described in the
-[privacy policy](https://aoagents.dev/privacy).
+[privacy policy](https://useao.dev/privacy).
 
 ## How AO limits the data
 
@@ -85,10 +85,78 @@ operational events in AO's SQLite database. While local telemetry is active, AO
 periodically prunes records older than 30 days. This data stays under `~/.ao` on
 your machine.
 
+## Agent-switch failure reporting (staged, production disabled)
+
+AO contains a separate, consent-gated reliability path for asynchronous
+agent-switch failures. It is intentionally failure-only: a successful switch,
+an expected validation rejection, an idempotent replay, a stale callback, or a
+transient condition that is proven recovered creates no failure receipt, no
+outbox payload, and no Sentry event.
+
+When enabled in a future release, an eligible failure event is limited to a
+closed set of operational fields: event ID and occurrence time; bounded title,
+level, environment, platform, operating system, release, and channel; report
+kind, subsystem, classifier callsite, durable phase, failure point, broad
+error/fault code, execution and session mode, source and target harness,
+target-start mode, runtime backend, call outcome, ownership, compensation, user
+impact, elapsed-time bucket, and tri-state source-stop, target-owner, and
+recovery-gate facts. The local outbox schema/envelope versions are not exported
+as event fields. Eligible semantic and process events may attach a bounded,
+sanitized stack containing repository-relative filenames, line numbers,
+packages, and function names; panic events require those sanitized frames but
+never include the panic value. The event does not contain prompts, conversation
+content, terminal output, commands, provider payloads, repository or branch
+names, local paths, runtime handles, native identities, switch/session/project
+identifiers, raw errors, or panic values. Local identifiers used to decide
+whether a frontend failure is still current are stripped before event
+construction.
+
+Eligible daemon events are stored in a dedicated local delivery outbox before
+network delivery. Every pending, leased, delivered, or discarded payload row
+has a hard seven-day expiry. An already-consented payload is intentionally
+independent of the switch foreign key, so deleting the switch or session does
+not delete that payload before its TTL. Separate payload-free receipts prevent
+the same incident from being enrolled again. Terminal/run receipts remain for
+seven days; an unresolved receipt may remain while its switch remains
+unresolved and, after resolution, is retained for seven more days. Receipts
+contain only the minimum local deduplication facts and are never sent remotely.
+
+Opting in does not backfill old terminal switch history. It may enroll the
+current state of an unresolved recovery marker as a new incident at opt-in time,
+so AO can report a problem that is still affecting the user without exporting a
+pre-consent occurrence timestamp. Delivery is at-least-once: if the provider
+accepts an event but its response is lost, AO may retry the same event ID. This
+can produce more than one provider occurrence, while the stable fingerprint
+groups the occurrences into one issue.
+
+The required opt-out sequence is: Electron main closes and drains its sender;
+the daemon closes and drains its delivery gate; main durably writes the disabled
+consent generation; the daemon rereads that generation, mirrors it, and purges
+every pending, leased, delivered, or discarded outbox payload; main purges its
+local transport cache and renderer queue; only then may the UI acknowledge the
+change. If the daemon is unavailable or any cleanup cannot be proven, the UI
+reports `cleanup_pending` rather than claiming completion. Payload-free receipts
+remain solely to prevent a later duplicate enrollment. A provider may already
+have accepted a request that was in flight before cancellation; AO cannot recall
+data already received by the provider.
+
+This path uses Sentry as the intended processor. Like any remote endpoint,
+Sentry receives connection metadata such as the source IP address even though
+AO does not place an IP address in the event body. The Sentry organization's IP
+storage/scrubbing setting, data residency, retention, and automatic-context
+settings have not yet received the required dated privacy approval. The
+production feature flag therefore remains disabled and AO does not initialize
+this agent-switch Sentry sender in production. Windows fails closed: event
+consent is treated as disabled and an enable acknowledgement is rejected until
+a tested native write-through replacement satisfies the policy-file durability
+contract.
+
 ## Turn desktop and daemon telemetry off
 
-AO currently provides environment-variable controls rather than an in-app
-desktop setting. Set all three variables in the environment used to launch AO:
+The desktop General Settings page includes an **Event reporting** control for
+the staged agent-switch reliability path. The environment-variable controls
+below continue to govern the existing desktop/daemon product-telemetry paths.
+Set all three variables in the environment used to launch AO:
 
 ```bash
 export AO_TELEMETRY_RENDERER=off
@@ -110,14 +178,17 @@ are already off unless you enable them.
 
 These environment variables do not control the mobile app. The current
 production mobile app does not provide an in-app telemetry opt-out. Turning
-desktop or daemon telemetry off stops new collection there; it does not delete
-events already sent to PostHog, remove the local installation identifier, or
-delete existing local telemetry records. Automatic deletion of local records
-older than 30 days resumes if daemon event capture is enabled again.
+desktop or daemon product telemetry off stops new collection there; it does not
+delete events already sent to PostHog, remove the local installation identifier,
+or delete existing local product-telemetry records. Automatic deletion of those
+local records older than 30 days resumes if daemon event capture is enabled
+again. The separate Event reporting opt-out follows the purge sequence above:
+it deletes agent-switch outbox payloads but retains the durable switch/failure
+state required for product recovery and payload-free deduplication receipts.
 
 ## Questions or corrections
 
 For the broader data policy, retention information, and contact options, see
-the [AO privacy policy](https://aoagents.dev/privacy). You can report a problem
+the [AO privacy policy](https://useao.dev/privacy). You can report a problem
 with this documentation in the
 [GitHub repository](https://github.com/Untrivial-ai/agent-orchestrator).

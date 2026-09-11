@@ -17,6 +17,7 @@ import {
 	npmInvocation,
 	patchClaudeRetryDetails,
 	pruneNodeDistribution,
+	runtimeSourceFiles,
 } from "./build-acp-runtime-helpers.mjs";
 
 const temporaryDirectories = [];
@@ -34,6 +35,15 @@ describe("createWorkDirectory", () => {
 
 		expect(dirname(workDirectory)).toBe(outputRoot);
 		expect(existsSync(workDirectory)).toBe(true);
+	});
+});
+
+describe("runtimeSourceFiles", () => {
+	it("packages and fingerprints the ACP runtime manifest", () => {
+		expect(runtimeSourceFiles()).toEqual([
+			"package.json",
+			"package-lock.json",
+		]);
 	});
 });
 

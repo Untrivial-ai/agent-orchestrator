@@ -16,6 +16,7 @@ import type { components } from "../../api/schema";
 import {
 	agentModelsQueryKey,
 	agentModelsQueryOptions,
+	refreshAgentModels,
 	revalidateAgentModels,
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
@@ -54,14 +55,11 @@ type SettingsSaveResult = {
 };
 
 export type ProjectSettingsSection = "general" | "agents" | "workflow" | "intake";
-export interface ProjectSettingsSaveState {
-	isPending: boolean;
-	showSaving: boolean;
-	validationError: string | null;
-	mutationError: string | null;
-	saved: boolean;
-	replacementError: string | null;
-}
+export type ProjectSettingsSaveState = {
+	phase: "idle" | "pending" | "saving" | "saved" | "failed";
+	error?: string;
+	replacementError?: string;
+};
 
 export function ProjectSettingsForm({
 	projectId,
@@ -251,7 +249,7 @@ function SettingsBody({
 									},
 								]
 							: undefined,
-						trackerIntake: buildIntake(intakeForm),
+						trackerIntake: buildIntake(intakeForm, config.trackerIntake),
 						autoReview: form.autoReview,
 					};
 			const { error } = await apiClient.PUT("/api/v1/projects/{id}", {
@@ -335,18 +333,23 @@ function SettingsBody({
 	}, [mutation.isPending]);
 
 	useEffect(() => {
+		const mutationError = mutation.isError
+			? mutation.error instanceof Error
+				? mutation.error.message
+				: t("settings.project.saveFailed")
+			: undefined;
 		onSaveState?.({
-			isPending: mutation.isPending,
-			showSaving,
-			validationError,
-			mutationError: mutation.isError
-				? mutation.error instanceof Error
-					? mutation.error.message
-					: t("settings.project.saveFailed")
-				: null,
-			saved: savedAt !== null && !mutation.isPending && !mutation.isError,
-			replacementError:
-				replacementError && !mutation.isPending && !mutation.isError ? replacementError : null,
+			phase: validationError || mutationError
+				? "failed"
+				: mutation.isPending
+					? showSaving
+						? "saving"
+						: "pending"
+					: savedAt !== null
+						? "saved"
+						: "idle",
+			error: validationError ?? mutationError,
+			replacementError: !mutation.isPending && !mutation.isError ? replacementError ?? undefined : undefined,
 		});
 	}, [
 		mutation.error,
@@ -554,7 +557,6 @@ function SettingsBody({
 									checked={form.autoReview}
 									id="project-auto-review"
 									onCheckedChange={(checked) => setForm((f) => ({ ...f, autoReview: checked }))}
-									size="sm"
 								/>
 							</div>
 						</div>
@@ -635,7 +637,6 @@ function AgentModelField({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const [customAgentId, setCustomAgentId] = useState<string | null>(null);
 	const query = useQuery(agentModelsQueryOptions(agentId, projectId));
 	const catalog: AgentModelCatalog | undefined = query.data;
 	const revalidationQuery = useQuery({
@@ -652,7 +653,6 @@ function AgentModelField({
 	}, [agentId, projectId, queryClient, revalidationQuery.data]);
 	const isMode = catalog?.selectionMode === "mode";
 	const label = t(`settings.models.${role}${isMode ? "Mode" : "Model"}`);
-	const datalistID = `${role}-model-options`;
 	const warning =
 		(revalidationQuery.isError
 			? revalidationQuery.error instanceof Error
@@ -661,6 +661,16 @@ function AgentModelField({
 			: undefined) ??
 		catalog?.warning ??
 		(query.isError ? (query.error instanceof Error ? query.error.message : t("settings.models.loadFailed")) : undefined);
+
+	if (agentId !== "" && query.isFetching && catalog === undefined) {
+		return (
+			<SettingsRow label={label}>
+				<span className="text-xs text-settings-muted" role="status" aria-label={t("settings.models.loading")}>
+					{t("settings.models.loading")}
+				</span>
+			</SettingsRow>
+		);
+	}
 
 	if (isMode) {
 		const options = [
@@ -688,16 +698,16 @@ function AgentModelField({
 		);
 	}
 
-	const hasCatalog = catalog?.selectionMode === "catalog" && (catalog.models?.length ?? 0) > 0;
-	const modelIsInCatalog = catalog?.models?.some((item) => item.id === model) ?? false;
-	const showCustomInput = hasCatalog && (customAgentId === agentId || (model !== "" && !modelIsInCatalog));
+	const customModelEntry = catalog?.customModelEntry ?? (catalog?.allowCustom ? "direct" : "none");
+	const refreshCatalog = async () => {
+		const refreshed = await refreshAgentModels(agentId, projectId);
+		queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), refreshed);
+	};
 	const selectCatalogModel = (value: string) => {
-		setCustomAgentId(null);
 		onModelChange(value);
 		onModeChange("");
 	};
 	const selectCustomModel = (value: string) => {
-		setCustomAgentId(agentId);
 		onModelChange(value);
 		onModeChange("");
 	};
@@ -705,44 +715,19 @@ function AgentModelField({
 		<>
 			<SettingsRow label={label}>
 				<div className="flex min-w-0 items-center gap-2">
-					{hasCatalog && !showCustomInput ? (
-						<AgentModelCombobox
-							aria-label={label}
-							value={model}
-							models={catalog.models}
-							allowCustom={catalog.allowCustom}
-							onChange={selectCatalogModel}
-							onCustom={selectCustomModel}
-							triggerClassName="justify-end"
-						/>
-					) : (
-						<>
-							<input
-								id={datalistID}
-								aria-label={label}
-								className="settings-inline-input settings-model-control"
-								value={model}
-								disabled={agentId === ""}
-								onChange={(event) => {
-									onModelChange(event.target.value);
-									onModeChange("");
-								}}
-								placeholder={query.isFetching ? t("settings.models.loading") : t("settings.project.agentDefault")}
-							/>
-							{hasCatalog && (
-								<AgentModelCombobox
-									aria-label={t("settings.models.optionsAria", { label })}
-									value={model}
-									models={catalog.models}
-									allowCustom={catalog.allowCustom}
-									onChange={selectCatalogModel}
-									onCustom={selectCustomModel}
-									triggerLabel={t("settings.models.browse")}
-									triggerClassName="shrink-0"
-								/>
-							)}
-						</>
-					)}
+					<AgentModelCombobox
+						aria-label={label}
+						value={model}
+						models={catalog?.models ?? []}
+						allowCustom={catalog?.allowCustom}
+						customModelEntry={customModelEntry}
+						agentLabel={agentId}
+						onRefresh={refreshCatalog}
+						disabled={query.isFetching || agentId === ""}
+						onChange={selectCatalogModel}
+						onCustom={selectCustomModel}
+						triggerClassName="justify-end"
+					/>
 				</div>
 			</SettingsRow>
 			{warning && <p className="px-1 text-xs leading-row text-warning">{warning}</p>}
@@ -753,7 +738,7 @@ function AgentModelField({
 function PermissionModeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
 	const { t } = useTranslation();
 	const options = [
-		{ value: "__default__", label: t("settings.project.default") },
+		{ value: "__default__", label: `${t("settings.project.permissionAuto")} (${t("settings.project.default")})` },
 		...PERMISSION_MODE_VALUES.map((value) => ({
 			value,
 			label:

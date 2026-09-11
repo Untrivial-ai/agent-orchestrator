@@ -1,32 +1,15 @@
-import { lazy, Suspense } from "react";
+import { Fragment, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import type { GlobalSettingsSection as GlobalSettingsPage } from "../stores/ui-store";
-import { GeneralSettingsSection } from "./settings/GeneralSettingsSection";
-import { HarnessSettingsSection } from "./settings/HarnessSettingsSection";
-import { CloudCredentialsSection } from "./settings/CloudCredentialsSection";
-import { ConnectMobileContent } from "./settings/ConnectMobileContent";
-import { KeyboardShortcutsContent } from "./settings/KeyboardShortcutsContent";
-import { MobileDevicesSection } from "./settings/MobileDevicesSection";
-import { ReportProblemContent } from "./settings/ReportProblemContent";
-import { SettingsSection } from "./settings/SettingsSection";
-import { BrowserProfilesSection } from "./settings/BrowserProfilesSection";
-
-const UpdatesSection = lazy(async () => {
-	const module = await import("./settings/UpdatesSection");
-	return { default: module.UpdatesSection };
-});
+import { globalSettingsItemsFor } from "./settings/settingsCatalog";
 
 export type GlobalSettingsSection = GlobalSettingsPage | "all";
 
-/** Full-width panel for page-level content (forms, editors) — matches the
- *  grouped-row surface so pages read as one coherent family. */
-function SettingsContentPanel({ children }: { children: React.ReactNode }) {
-	return <div className="rounded-md bg-[var(--color-bg-settings-row)] px-4 py-4">{children}</div>;
-}
-
 export function GlobalSettingsForm({
+	cloudEnabled = true,
 	section = "all",
 }: {
+	cloudEnabled?: boolean;
 	section?: GlobalSettingsSection;
 }) {
 	const { t } = useTranslation();
@@ -41,43 +24,11 @@ export function GlobalSettingsForm({
 			className="flex w-full flex-col gap-(--size-settings-section-gap)"
 			data-testid="settings-page"
 		>
-			{(all || section === "general") && <GeneralSettingsSection titleHidden={titleHidden} />}
-
-			{(all || section === "harness") && <HarnessSettingsSection titleHidden={titleHidden} />}
-
-			{(all || section === "browserProfiles") && <BrowserProfilesSection titleHidden={titleHidden} />}
-			{(all || section === "cloud") && <CloudCredentialsSection titleHidden={titleHidden} />}
-
-			{(all || section === "mobile") && (
-				<SettingsSection title={t("settings.mobile")} titleHidden={titleHidden}>
-					<div className="rounded-md bg-[var(--color-bg-settings-row)] px-4 pb-4 pt-0">
-						<ConnectMobileContent active />
-						<MobileDevicesSection />
-					</div>
-				</SettingsSection>
-			)}
-
-			{(all || section === "shortcuts") && (
-				<SettingsSection title={t("settings.keyboardShortcuts")} titleHidden={titleHidden}>
-					<SettingsContentPanel>
-						<KeyboardShortcutsContent active />
-					</SettingsContentPanel>
-				</SettingsSection>
-			)}
-
-			{(all || section === "updates") && (
-				<Suspense fallback={null}>
-					<UpdatesSection titleHidden={titleHidden} />
-				</Suspense>
-			)}
-
-			{(all || section === "help") && (
-				<SettingsSection title={t("settings.reportProblem")} titleHidden={titleHidden}>
-					<SettingsContentPanel>
-						<ReportProblemContent active />
-					</SettingsContentPanel>
-				</SettingsSection>
-			)}
+			{globalSettingsItemsFor(section, { cloudEnabled }).map((item) => (
+				<Fragment key={item.id}>
+					<Suspense fallback={null}>{item.render(t, titleHidden)}</Suspense>
+				</Fragment>
+			))}
 		</div>
 	);
 }

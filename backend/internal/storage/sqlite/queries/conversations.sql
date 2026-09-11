@@ -25,6 +25,22 @@ WHERE id = ? AND scope = 'project';
 -- name: SelectConversationByID :one
 SELECT * FROM conversations WHERE id = ? LIMIT 1;
 
+-- name: HasConversationTurns :one
+SELECT EXISTS (SELECT 1 FROM conversation_turns WHERE conversation_id = ?);
+
+-- name: ReleaseUntouchedConversationProvider :execrows
+UPDATE conversation_branches
+SET provider_conversation_id = '', provider_scope_id = sqlc.arg(provider_scope_id)
+WHERE conversation_branches.session_id = sqlc.arg(session_id) AND parent_branch_id IS NULL
+  AND conversation_branches.id = (
+      SELECT c.active_branch_id FROM conversations AS c
+      WHERE c.session_id = sqlc.arg(session_id) AND c.current_session_id = sqlc.arg(session_id)
+        AND c.latest_sequence = 0
+        AND NOT EXISTS (
+            SELECT 1 FROM conversation_turns WHERE conversation_id = c.id
+        )
+  );
+
 -- name: InsertConversationBranch :exec
 INSERT INTO conversation_branches (
     id, conversation_id, session_id, provider_conversation_id,
@@ -326,7 +342,7 @@ WHERE id = ?;
 -- offset, so a multi-byte character here silently corrupts later queries.
 -- name: UpdateConversationTurnSettings :exec
 UPDATE conversations
-SET model = ?, reasoning_effort = ?, approval_mode = ?, updated_at = ?
+SET model = ?, reasoning_effort = ?, approval_mode = ?, opencode_mode = ?, updated_at = ?
 WHERE id = ?;
 
 -- An agent switch starts a new provider/model scope. Clear only the source
@@ -869,16 +885,29 @@ WHERE id = ?
   AND state = 'queued'
   AND promotion_started_at IS NULL;
 
--- Rewrite the durable human prompt for a turn that has not yet dispatched.
+-- Read only an undispatched human prompt for editing.
+-- name: SelectQueuedConversationMessage :one
+SELECT conversation_messages.*
+FROM conversation_messages
+JOIN conversation_turns ON conversation_turns.id = conversation_messages.turn_id
+WHERE conversation_messages.conversation_id = ?
+  AND conversation_messages.turn_id = ?
+  AND conversation_messages.role = 'user'
+  AND conversation_messages.origin = 'human'
+  AND conversation_turns.state = 'queued'
+  AND conversation_turns.promotion_started_at IS NULL;
+
+-- Rewrite text and content together, only if the edited revision is current.
 -- name: UpdateQueuedConversationMessageText :execrows
 UPDATE conversation_messages
 SET text = ?,
     revision = revision + 1,
-    delivery_content_json = '',
+    delivery_content_json = ?,
     updated_at = ?
 WHERE conversation_messages.conversation_id = ?
   AND conversation_messages.turn_id = ?
   AND conversation_messages.role = 'user'
+  AND conversation_messages.revision = ?
   AND EXISTS (
       SELECT 1
       FROM conversation_turns
@@ -1351,3 +1380,114 @@ SELECT CAST(retry_of_turn_id AS TEXT) AS retry_of_turn_id
 FROM conversation_turns
 WHERE conversation_id = sqlc.arg(conversation_id)
   AND retry_of_turn_id IS NOT NULL;
+
+-- name: SelectConversationQueuedEditDelivery :one
+SELECT request_hash FROM conversation_queued_edit_deliveries
+WHERE conversation_id = ? AND client_message_id = ?;
+
+-- name: InsertConversationQueuedEditDelivery :exec
+INSERT INTO conversation_queued_edit_deliveries
+(conversation_id, client_message_id, request_hash, created_at)
+VALUES (?, ?, ?, ?);
+
+-- name: SelectConversationEditDelivery :one
+SELECT * FROM conversation_edit_deliveries
+WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1;
+
+
+-- name: InsertConversationEditDeliveryReservation :execrows
+INSERT OR IGNORE INTO conversation_edit_deliveries (
+    conversation_id, client_message_id, request_json, state, created_at, provider_work_started
+) VALUES (?, ?, ?, 'reserved', ?, 0);
+
+-- name: BeginConversationEditProviderWork :execrows
+UPDATE conversation_edit_deliveries
+SET provider_work_started = 1
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND client_message_id = sqlc.arg(client_message_id)
+  AND state = 'reserved' AND provider_work_started = 0
+  AND EXISTS (
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.session_id
+    WHERE c.id = conversation_edit_deliveries.conversation_id
+      AND s.controller_generation = sqlc.arg(generation)
+      AND s.session_mode = 'chat' AND s.is_terminated = 0
+  );
+
+
+-- name: AcceptConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'accepted',
+    source_branch_id = ?,
+    active_branch_id = ?,
+    turn_id = ?,
+    handled_by_session_id = ?,
+    provider_turn_id = ?,
+    turn_state = ?,
+    turn_requested_at = ?,
+    rejection_kind = '',
+    rejection_message = '',
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+-- name: SelectCompletedEditReplacement :one
+SELECT sqlc.embed(t), b.parent_branch_id
+FROM conversation_messages m
+JOIN conversation_turns t ON t.id = m.turn_id
+JOIN conversation_branches b ON b.id = m.branch_id
+JOIN conversation_edit_deliveries d ON d.conversation_id = m.conversation_id
+  AND d.client_message_id = m.client_message_id
+WHERE d.conversation_id = ? AND d.client_message_id = ?
+  AND d.state = 'reserved' AND t.state = 'completed'
+  AND b.replaced_turn_id = json_extract(d.request_json, '$.sourceTurnId')
+  AND m.role = 'user'
+LIMIT 1;
+
+
+-- name: RejectConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'rejected',
+    rejection_kind = ?,
+    rejection_message = ?,
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+
+-- A steer has no provider-side idempotency guarantee. The row is reserved before
+-- provider I/O and remains reserved when AO cannot prove whether the call landed.
+-- A retry may replay a settled result, but it must never claim a reserved handle.
+-- name: SelectConversationSteerDelivery :one
+SELECT * FROM conversation_steer_deliveries
+WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1;
+
+-- name: InsertConversationSteerDeliveryReservation :execrows
+INSERT OR IGNORE INTO conversation_steer_deliveries (
+    conversation_id, client_message_id, request_json, state, created_at
+) VALUES (?, ?, ?, 'reserved', ?);
+
+-- name: AcceptConversationSteerDelivery :execrows
+UPDATE conversation_steer_deliveries
+SET state = 'accepted',
+    provider_turn_id = ?,
+    activity_id = ?,
+    rejection_kind = '',
+    rejection_message = '',
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+-- name: RejectConversationSteerDelivery :execrows
+UPDATE conversation_steer_deliveries
+SET state = 'rejected',
+    rejection_kind = ?,
+    rejection_message = ?,
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -32,7 +33,7 @@ func devinLocalAuthStatus(ctx context.Context, binary string) (ports.AgentAuthSt
 	if key := strings.TrimSpace(os.Getenv("DEVIN_API_KEY")); strings.HasPrefix(key, "cog_") && len(key) > len("cog_") {
 		return ports.AgentAuthStatusAuthorized, true, nil
 	}
-	status, err := authprobe.CLIStatus(ctx, binary, [][]string{{"auth", "status"}})
+	status, err := authprobe.CLIStatusWithTimeout(ctx, binary, [][]string{{"auth", "status"}}, 8*time.Second)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}

@@ -28,7 +28,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `AO Hackathons | ${COMPANY.NAME}`,
     description:
       "Join upcoming AO hackathons and explore past community build sprints.",

@@ -63,6 +63,7 @@ func startLifecycle(ctx context.Context, store *sqlite.Store, runtime ports.Runt
 		lifecycle.WithContainerReaper(dockerreap.New(), store),
 		lifecycle.WithActiveSteering(activeTurnSteering(agents)),
 		lifecycle.WithStartupSignalGate(startupSignalGatesInput(agents)),
+		lifecycle.WithUrgentNudgeGate(urgentNudgeWaitingInputSafe(agents)),
 	)
 	rp := reaper.New(lcm, store, runtime, reaper.Config{Logger: logger})
 	activityPoller := activityobserver.New(store, lcm, runtime, agents, activityobserver.Config{Logger: logger})
@@ -88,6 +89,27 @@ func startupSignalGatesInput(agents ports.AgentResolver) func(domain.AgentHarnes
 		}
 		signaler, ok := agent.(ports.StartupInputReadinessSignaler)
 		return ok && signaler.FirstSignalProvesInputReady()
+	}
+}
+
+// urgentNudgeWaitingInputSafe resolves whether an adapter reports a permission
+// dialog AS blocked (ports.BlockedActivitySignaler) rather than as
+// waiting_input. Only then is an urgent merge-conflict nudge safe to paste at a
+// waiting_input prompt — a harness like codex, which maps permission-request to
+// waiting_input and opts out of the signal, must not receive that unsolicited
+// write while it could be sitting on a masked decision. Unknown and opted-out
+// adapters answer false, so lifecycle withholds the urgent nudge there.
+func urgentNudgeWaitingInputSafe(agents ports.AgentResolver) func(domain.AgentHarness) bool {
+	return func(harness domain.AgentHarness) bool {
+		if agents == nil {
+			return false
+		}
+		agent, ok := agents.Agent(harness)
+		if !ok {
+			return false
+		}
+		signaler, ok := agent.(ports.BlockedActivitySignaler)
+		return ok && signaler.EmitsBlockedActivity()
 	}
 }
 
@@ -162,6 +184,11 @@ type sessionLifecycle interface {
 	// SessionMutationInProgress suppresses observation-driven termination while
 	// Session Manager deliberately replaces or relaunches a provider process.
 	SessionMutationInProgress(id domain.SessionID) bool
+	CodexAccountSwitchInProgress() bool
+	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
+	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
+	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
+	SetCodexAccountSwitchObserver(func())
 	// SetTerminalInputGate prevents mux input from racing a TUI-to-Chat handoff.
 	SetTerminalInputGate(gate sessionmanager.TerminalInputGate)
 	// SetReviewerTerminator late-binds worker lifecycle teardown to the review
@@ -193,7 +220,7 @@ func (m sessionLifecycleMessenger) Send(ctx context.Context, id domain.SessionID
 // (issue #2685). The returned service is mounted at httpd APIDeps.Sessions.
 // It also returns the manager so the caller can wire Reconcile into the boot
 // sequence.
-func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, tracker ports.Tracker, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -202,6 +229,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		// session spawned for a registered project materialises its worktree off
 		// that repo. Unregistered projects fail loudly.
 		RepoResolver: projectRepoResolver{store: store},
+		Logger:       log,
 	})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("session workspace: %w", err)
@@ -222,6 +250,8 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Agents:              agents,
 		Workspace:           ws,
 		Store:               store,
+		ReportingPolicy:     reportingPolicy,
+		DaemonRunID:         cfg.AppRunID,
 		Messenger:           messenger,
 		Chat:                chat,
 		Defaults:            defaults,
@@ -234,6 +264,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		BackgroundContext:   ctx,
 		Logger:              log,
 		ReconcileWorkers:    startupReconcileWorkers,
+		CodexOperationGate:  codexOperationGate,
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)
@@ -272,6 +303,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithLifecycleReducer(lcm),
 		reviewsvc.WithTelemetry(telemetry),
+		reviewsvc.WithCodexAccountOperationGate(codexOperationGate),
 	}
 	if scmProvider != nil {
 		reviewOpts = append(reviewOpts,

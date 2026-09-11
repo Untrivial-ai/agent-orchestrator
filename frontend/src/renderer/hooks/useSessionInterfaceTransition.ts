@@ -5,7 +5,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { conversationQueryKey } from "./useConversation";
@@ -75,11 +75,10 @@ function summarizeInterfaceTransitionMutations<
 			pending = mutation;
 		}
 	}
+	const errored = !pending && latest?.status === "error" ? latest : undefined;
 	return {
-		error:
-			!pending && latest?.status === "error"
-				? apiErrorMessage(latest.error)
-				: undefined,
+		error: errored ? apiErrorMessage(errored.error) : undefined,
+		errorAt: errored?.submittedAt,
 		isPending: Boolean(pending),
 	};
 }
@@ -318,9 +317,37 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			);
 		});
 	}, [queryClient, sessionId, transitionActive, transitionKey]);
+	// A local start refusal records a durable-free error. If any client then opens
+	// a real transition, that newer durable row supersedes the stale refusal: the
+	// switch is running or done, so the "could not switch" notice must not linger.
+	const transitionCreatedAt = transition ? Date.parse(transition.createdAt) : NaN;
+	const startErrorSuperseded = Boolean(
+		startState.errorAt !== undefined &&
+			Number.isFinite(transitionCreatedAt) &&
+			transitionCreatedAt > startState.errorAt,
+	);
+	useEffect(() => {
+		if (!startErrorSuperseded) return;
+		clearInterfaceTransitionMutationState(
+			queryClient,
+			startInterfaceTransitionMutationKey,
+			sessionId,
+		);
+	}, [queryClient, sessionId, startErrorSuperseded]);
+
+	const refreshStatus = useCallback(
+		async (): Promise<SessionInterfaceTransitionStatus | undefined> => {
+			const refreshed = await query.refetch();
+			if (refreshed.error) throw refreshed.error;
+			return refreshed.data;
+		},
+		[query.refetch],
+	);
+
 	return {
 		status: query.data,
 		transition,
+		refreshStatus,
 		settling,
 		isLoading: query.isLoading,
 		statusError: query.error ? apiErrorMessage(query.error) : undefined,
@@ -329,7 +356,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			return start.mutateAsync({ ...input, targetSessionId: sessionId });
 		},
 		starting: startState.isPending,
-		startError: startState.error,
+		startError: startErrorSuperseded ? undefined : startState.error,
 		resetStartError: () => {
 			clearInterfaceTransitionMutationState(
 				queryClient,

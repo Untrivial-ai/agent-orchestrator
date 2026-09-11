@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dockInset, MIN_DOCK_INSET, screenKeyboardAvoidance } from "./keyboardInset";
+import { dockInset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
 import { CONTROL_KEYS } from "./keys";
 
 describe("dockInset", () => {
@@ -20,14 +20,58 @@ describe("dockInset", () => {
 	});
 });
 
+describe("rootKeyboardPad", () => {
+	// The regression this exists for: React Native's Android keyboard event
+	// reports `imeInsets.bottom - systemBars.bottom` (ReactRootView.java), i.e.
+	// the keyboard height with the navigation bar already subtracted. Our root
+	// view runs edge-to-edge underneath that nav bar, so padding by the reported
+	// height alone left the dock short by exactly the nav-bar inset - half an
+	// input row under gesture nav, a whole one under 3-button nav.
+	it("adds the navigation-bar inset back on Android", () => {
+		expect(rootKeyboardPad("android", 336, 24)).toBe(360);
+		expect(rootKeyboardPad("android", 336, 48)).toBe(384);
+	});
+
+	it("reserves only the reported height on iOS, which already spans the home indicator", () => {
+		expect(rootKeyboardPad("ios", 336, 34)).toBe(336);
+	});
+
+	it("reserves nothing on either platform while the keyboard is down", () => {
+		expect(rootKeyboardPad("android", 0, 48)).toBe(0);
+		expect(rootKeyboardPad("ios", 0, 34)).toBe(0);
+	});
+
+	it("handles a device with the navigation bar hidden", () => {
+		expect(rootKeyboardPad("android", 336, 0)).toBe(336);
+	});
+});
+
 describe("screenKeyboardAvoidance", () => {
-	it("reserves the reported keyboard height using Android's final keyboard events", () => {
-		expect(screenKeyboardAvoidance("android", 336)).toEqual({
+	it("reserves the reported keyboard height plus the nav bar using Android's final keyboard events", () => {
+		expect(screenKeyboardAvoidance("android", 336, 48)).toEqual({
 			showEvent: "keyboardDidShow",
 			hideEvent: "keyboardDidHide",
-			paddingBottom: 336,
-			rootStyle: { paddingBottom: 336 },
+			paddingBottom: 384,
+			rootStyle: { paddingBottom: 384 },
 		});
+	});
+
+	it("collapses to nothing when the keyboard is down", () => {
+		expect(screenKeyboardAvoidance("android", 0, 48).rootStyle).toEqual({ paddingBottom: 0 });
+	});
+});
+
+// The dock sits inside the root view, so the root's padding is the only place
+// the keyboard is accounted for. Together they must clear the keyboard exactly.
+describe("root padding and dock inset together", () => {
+	it("clear the full Android keyboard occupancy without double-counting", () => {
+		const kb = 336; // as reported by RN: ime inset minus nav bar
+		const nav = 48;
+		expect(rootKeyboardPad("android", kb, nav) + dockInset(kb, nav)).toBe(kb + nav);
+	});
+
+	it("fall back to the safe-area inset with the keyboard down", () => {
+		expect(rootKeyboardPad("android", 0, 48) + dockInset(0, 48)).toBe(48);
 	});
 });
 

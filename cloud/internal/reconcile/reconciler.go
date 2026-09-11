@@ -42,6 +42,9 @@ type Resolver interface {
 type Options struct {
 	// PublicURL is the origin a worker dials back to.
 	PublicURL string
+	// TerminalStreamEnabled tells provisioned workers to hold persistent
+	// terminal streams to the control plane.
+	TerminalStreamEnabled bool
 	// WorkerBinary is uploaded into sandboxes whose provider supports it.
 	WorkerBinary []byte
 	// WorkerDestination is where that binary lands inside the sandbox.
@@ -1058,6 +1061,9 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 	}
 	if record.Provider == sandbox.ProviderDocker || r.options.AllowAnonymousCheckout {
 		workerEnvironment["AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT"] = "true"
+	}
+	if r.options.TerminalStreamEnabled {
+		workerEnvironment["AO_CLOUD_TERMINAL_STREAM"] = "1"
 	}
 	return sandbox.Spec{
 		Name:             "ao-" + record.SessionID,

@@ -34,6 +34,7 @@ import type {
 	TerminalUserInputSource,
 } from "../hooks/useTerminalSession";
 import { aoBridge } from "../lib/bridge";
+import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { isMacPlatform } from "../lib/platform";
@@ -44,6 +45,7 @@ import {
 } from "../lib/cursor-color-scheme";
 import {
 	buildOscColorReports,
+	createCursorPositionReportForwarder,
 	createOscColorReportForwarder,
 	type OscTerminalColors,
 } from "../lib/osc-color-report";
@@ -67,7 +69,7 @@ export type XtermTerminalProps = {
 	/** Resize this terminal without changing application zoom. */
 	onChangeFontSize?: (delta: number) => void;
 	/** Enter or exit fullscreen for the terminal pane that owns this xterm. */
-	onToggleFullscreen?: () => void;
+	onToggleFullscreen?: () => void | Promise<void>;
 	/**
 	 * The pane app scrolls its transcript by keyboard (PageUp/PageDown) rather
 	 * than acting on SGR wheel reports — e.g. opencode, which enables mouse
@@ -126,6 +128,7 @@ function loadRenderer(term: Terminal): void {
 const SUPPRESS_NATIVE_PASTE_MS = 100;
 /** Long enough to notice, short enough that a second copy reads as a second copy. */
 const COPY_TOAST_MS = 1400;
+const AUTOFOCUS_RETRY_FRAMES = 2;
 const COLOR_SCHEME_UPDATE_MODE = 2031;
 const COLOR_SCHEME_QUERY = 996;
 
@@ -186,7 +189,24 @@ function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
 }
 
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
-	if (event.metaKey || event.shiftKey) return null;
+	if (event.shiftKey) return null;
+
+	// macOS Command+Left/Right → readline beginning/end of line. Do not treat
+	// the Windows key (metaKey on Win/Linux) as Command, and do not rewrite
+	// Windows Home/End: those must fall through to xterm's native sequences
+	// because Ctrl+A is SelectAll in default PSReadLine (#3093).
+	if (event.metaKey && !event.ctrlKey && !event.altKey && isMacPlatform()) {
+		switch (event.key) {
+			case "ArrowLeft":
+				return "\x01";
+			case "ArrowRight":
+				return "\x05";
+			default:
+				return null;
+		}
+	}
+
+	if (event.metaKey) return null;
 
 	if (event.altKey && !event.ctrlKey) {
 		switch (event.key) {
@@ -224,6 +244,21 @@ function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
 function terminalHasFocus(host: HTMLElement): boolean {
 	const activeElement = document.activeElement;
 	return !!activeElement && host.contains(activeElement);
+}
+
+function canAutoFocusTerminal(host: HTMLElement): boolean {
+	if (isDialogOrMenuOpen()) return false;
+	const activeElement = document.activeElement;
+	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
+	if (host.contains(activeElement)) return true;
+	// Selecting a session in the sidebar deliberately leaves its navigation
+	// button focused. Terminal tabs are the same intentional handoff within the
+	// pane. Every other focused control remains authoritative.
+	return (
+		activeElement.matches("button[aria-current='page']") ||
+		(activeElement.matches("button[role='tab'][aria-current]") &&
+			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
+	);
 }
 
 type XtermInternal = Terminal & {
@@ -352,6 +387,35 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// A retained terminal can be parked between closing search and this frame.
 		}
 	}, []);
+	const restoreFocusFrameIdsRef = useRef<number[]>([]);
+	const cancelPendingFocusRestore = useCallback(() => {
+		for (const id of restoreFocusFrameIdsRef.current) cancelAnimationFrame(id);
+		restoreFocusFrameIdsRef.current = [];
+	}, []);
+	const restoreTerminalFocus = useCallback(() => {
+		cancelPendingFocusRestore();
+		const frameA = requestAnimationFrame(() => {
+			const frameB = requestAnimationFrame(() => {
+				restoreFocusFrameIdsRef.current = [];
+				// The terminal may have been hidden or reassigned to another
+				// session during these two frames (e.g. navigation away from
+				// this pane); re-check before stealing focus back from
+				// whatever now legitimately owns it.
+				const host = hostRef.current;
+				if (!host || callbacksRef.current.isVisible === false || !canAutoFocusTerminal(host)) return;
+				focusTerminal();
+			});
+			restoreFocusFrameIdsRef.current = [frameB];
+		});
+		restoreFocusFrameIdsRef.current = [frameA];
+	}, [cancelPendingFocusRestore, focusTerminal]);
+	const toggleFullscreenAndRestoreFocus = useCallback(async () => {
+		try {
+			await callbacksRef.current.onToggleFullscreen?.();
+		} finally {
+			restoreTerminalFocus();
+		}
+	}, [restoreTerminalFocus]);
 
 	callbacksRef.current = props;
 	showCopiedToastRef.current = () => {
@@ -627,10 +691,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				});
 			return true;
 		};
-		const userInputListeners = new Set<(data: string, source: TerminalUserInputSource) => void>();
+		const userInputListeners = new Set<(data: string, source: TerminalUserInputSource) => boolean | void>();
 		const emitUserInput = (data: string, source: TerminalUserInputSource) => {
-			if (data.length === 0) return;
-			userInputListeners.forEach((listener) => listener(data, source));
+			if (data.length === 0) return false;
+			let accepted = false;
+			userInputListeners.forEach((listener) => {
+				if (listener(data, source) === true) accepted = true;
+			});
+			return accepted;
 		};
 		// xterm 5 does not implement the modern terminal color-scheme protocol.
 		// OpenTUI clients use it to receive live light/dark changes after startup.
@@ -983,15 +1051,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// those bytes through the mux writes dirty input into the real Codex PTY and
 		// corrupts the TUI. Keyboard is the only safe generic text path here; paste,
 		// composition, shortcuts, and wheel reports are emitted explicitly below.
-		// Forward validated OSC 4/10/11/12 color replies only. xterm answers them
-		// on onData; other bytes must not reach the PTY or agent TUIs break.
+		// Forward validated OSC 4/10/11/12 color replies and cursor-position
+		// reports only. Interactive prompts such as `gh auth login` use DSR to ask
+		// xterm for the cursor position and block until the corresponding CPR reaches
+		// the PTY. Other onData bytes must not reach the PTY or agent TUIs break.
 		// Retained terminals can change providers without remounting. Keep the
 		// listener mounted for every provider so standard color replies continue to
 		// reach the PTY after a provider change.
 		const oscColorForwarder = createOscColorReportForwarder((report) => {
 			emitUserInput(report, "protocol");
 		});
-		const oscColorInput = term.onData((data) => oscColorForwarder.push(data));
+		const cursorPositionForwarder = createCursorPositionReportForwarder((report) => {
+			emitUserInput(report, "protocol");
+		});
+		const protocolInput = term.onData((data) => {
+			oscColorForwarder.push(data);
+			cursorPositionForwarder.push(data);
+		});
 		const keyInput = term.onKey(({ key }) => emitUserInput(key, "keyboard"));
 
 		// Translate wheel motion into SGR wheel reports for the pane (see
@@ -1168,7 +1244,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
-			write: (data, done) => {
+			write: (data, done, source = "live") => {
 				let hasEsc = false;
 				for (let i = 0; i < data.length; i++) {
 					if (data[i] === 0x1b) {
@@ -1176,14 +1252,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						break;
 					}
 				}
-				if (hasEsc) {
+				if (source === "replay") {
+					// Existing panes replay historical DSRs through xterm. Clear any old
+					// correlation credits so their generated CPRs cannot reach the live PTY.
+					cursorPositionForwarder.dispose();
+				}
+				if (hasEsc || cursorPositionForwarder.hasPartialRequest()) {
+					// A DSR can be split immediately after ESC. Decode an ESC-free chunk
+					// only while a request prefix from the preceding chunk is incomplete.
 					const chunk = new TextDecoder().decode(data);
-					const reply = callbacksRef.current.supportsCursorColorScheme
-						? cursorColorSchemeReplyForOutput(chunk, callbacksRef.current.theme)
-						: null;
-					if (reply) {
-						announcedCursorSchemeRef.current = null;
-						notifyCursorScheme(callbacksRef.current.theme, true, true);
+					if (source === "live") cursorPositionForwarder.observeOutput(chunk);
+					if (hasEsc) {
+						const reply = callbacksRef.current.supportsCursorColorScheme
+							? cursorColorSchemeReplyForOutput(chunk, callbacksRef.current.theme)
+							: null;
+						if (reply) {
+							announcedCursorSchemeRef.current = null;
+							notifyCursorScheme(callbacksRef.current.theme, true, true);
+						}
 					}
 				}
 				term.write(data, () => {
@@ -1194,11 +1280,16 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
+			// Live buffer discriminator for predictive local echo on cloud panes:
+			// predictions run only while the NORMAL buffer is active (alt-screen
+			// TUIs repaint too aggressively to predict into).
+			bufferType: () => term.buffer.active.type,
 			notifyCursorColorScheme: () => {
 				if (callbacksRef.current.supportsCursorColorScheme) {
 					notifyCursorScheme(callbacksRef.current.theme, false, true);
 				}
 			},
+			sendUserInput: (data, source = "shortcut") => emitUserInput(data, source),
 			onUserInput: (listener) => {
 				userInputListeners.add(listener);
 				return { dispose: () => userInputListeners.delete(listener) };
@@ -1251,29 +1342,56 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			for (const timer of schemeRetryTimers) window.clearTimeout(timer);
 			schemeRetryTimers = [];
 			oscColorForwarder.dispose();
-			oscColorInput.dispose();
+			cursorPositionForwarder.dispose();
+			protocolInput.dispose();
 			keyInput.dispose();
 			notifyCursorSchemeRef.current = () => {};
 			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			try {
-				term.dispose();
-			} catch {
-				// Some renderer addons can throw during dispose in certain GPU
-				// environments; the terminal is being torn down regardless.
-			}
+			// xterm's Viewport queues an untracked zero-delay scroll-area sync during
+			// open(). React StrictMode immediately runs this cleanup once after mount;
+			// disposing the renderer before that queued sync runs makes xterm read the
+			// now-missing renderer dimensions. Queue disposal behind xterm's task so
+			// the terminal remains internally valid until its own initialization work
+			// has drained. All AO listeners and attachment state are already detached.
+			window.setTimeout(() => {
+				try {
+					term.dispose();
+				} catch {
+					// Some renderer addons can throw during dispose in certain GPU
+					// environments; the terminal is being torn down regardless.
+				}
+			}, 0);
 		};
 	}, []);
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
-		try {
-			termRef.current?.focus();
-		} catch {
-			// The retained terminal may have been parked during this effect.
-		}
-		return undefined;
-	}, [props.focusRequested, props.isVisible]);
+		let retryFrame: number | null = null;
+		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
+		let cancelled = false;
+		const focusIfAllowed = () => {
+			if (cancelled) return;
+			const host = hostRef.current;
+			if (!host || !canAutoFocusTerminal(host)) {
+				if (retriesRemaining === 0) return;
+				retriesRemaining -= 1;
+				retryFrame = requestAnimationFrame(() => {
+					retryFrame = null;
+					focusIfAllowed();
+				});
+				return;
+			}
+			focusTerminal();
+		};
+
+		focusIfAllowed();
+
+		return () => {
+			cancelled = true;
+			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
+		};
+	}, [focusTerminal, props.focusRequested, props.isVisible]);
 
 	useLayoutEffect(() => {
 		if (props.isVisible === false) {
@@ -1285,8 +1403,11 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				window.clearTimeout(copiedToastTimerRef.current);
 				copiedToastTimerRef.current = undefined;
 			}
+			cancelPendingFocusRestore();
 		}
-	}, [props.isVisible, setContextMenuOpen]);
+	}, [props.isVisible, setContextMenuOpen, cancelPendingFocusRestore]);
+
+	useEffect(() => cancelPendingFocusRestore, [cancelPendingFocusRestore]);
 
 	const wasVisibleRef = useRef(props.isVisible !== false);
 	useEffect(() => {
@@ -1418,7 +1539,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						<DropdownMenuItem
 							onSelect={() => {
 								setContextMenuOpen(false);
-								callbacksRef.current.onToggleFullscreen?.();
+								void toggleFullscreenAndRestoreFocus();
 							}}
 						>
 							{props.isFullscreen ? t("terminal.exitFullscreen") : t("terminal.fullscreen")}

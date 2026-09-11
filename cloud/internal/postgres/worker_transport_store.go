@@ -746,11 +746,88 @@ func (s *Store) queueTerminalRequest(
 				return nil
 			}
 		}
-		_, err := createWorkerRequest(
+		if _, err := createWorkerRequest(
 			ctx, tx, terminal.OrgID, terminal.SessionID, kind, payload, 15*time.Second, "",
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		if kind == "terminal.input" {
+			// Wake the replica holding this terminal's worker stream so it can
+			// claim and push the keystroke immediately instead of waiting for
+			// the worker's next transport poll. The queue row above stays the
+			// durable fallback either way.
+			if _, err := tx.Exec(ctx,
+				`SELECT pg_notify('ao_terminal_input', $1)`, terminal.ID,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+}
+
+// ClaimTerminalInput claims the oldest pending terminal.input request for one
+// terminal on behalf of its worker, so a control-plane replica holding the
+// worker's terminal stream can push it down immediately. It uses the same
+// lease semantics as ClaimWorkerRequest, so it never races the worker's own
+// transport poll into a double delivery.
+func (s *Store) ClaimTerminalInput(
+	ctx context.Context,
+	orgID, sessionID, workerID string,
+	epoch int64,
+	terminalID string,
+	lease time.Duration,
+) (domain.WorkerRequest, bool, error) {
+	var request domain.WorkerRequest
+	var found bool
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		current, err := workerConnectionCurrent(ctx, tx, orgID, sessionID, workerID, epoch)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return ErrStaleWorker
+		}
+		err = scanWorkerRequest(tx.QueryRow(ctx,
+			`WITH candidate AS (
+				SELECT id
+				FROM ao_worker_requests
+				WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
+				  AND kind = 'terminal.input'
+				  AND payload->>'terminalId' = $4
+				  AND expires_at > now()
+				  AND (
+					status = 'pending'
+					OR (status = 'claimed' AND lease_until < now())
+				  )
+				  AND attempt_count < 3
+				ORDER BY created_at, id
+				FOR UPDATE SKIP LOCKED
+				LIMIT 1
+			)
+			UPDATE ao_worker_requests request
+			SET status = 'claimed',
+				attempt_count = request.attempt_count + 1,
+				lease_until = now() + $5::interval,
+				updated_at = now()
+			FROM candidate
+			WHERE request.id = candidate.id
+			RETURNING request.id, request.org_id, request.session_id,
+				request.worker_epoch, request.kind, request.payload, request.status,
+				request.response, request.error_code, request.error_message,
+				request.attempt_count, request.expires_at`,
+			orgID, sessionID, epoch, terminalID, intervalString(lease),
+		), &request)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	return request, found, err
 }
 
 func (s *Store) CloseTerminal(ctx context.Context, terminal domain.TerminalSession) error {
@@ -831,6 +908,12 @@ func (s *Store) AppendTerminalOutput(
 			) VALUES ($1, $2, $3, $4, $5)`,
 			terminalID, orgID, sessionID, sequence, data,
 		)
+		if err != nil {
+			return err
+		}
+		// Wake any control-plane replica streaming this terminal to a client.
+		// Delivered on commit, so subscribers always find the row.
+		_, err = tx.Exec(ctx, `SELECT pg_notify('ao_terminal_output', $1)`, terminalID)
 		return err
 	})
 	return sequence, err

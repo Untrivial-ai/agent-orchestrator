@@ -4,6 +4,8 @@ package conpty
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -12,6 +14,17 @@ import (
 // loopback address ("127.0.0.1:PORT") and OS pid once it prints READY.
 // Injectable for tests: replace this field on Options before calling New.
 type hostSpawner func(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (addr string, pid int, err error)
+
+// cleanupStartedHostFailure preserves evidence of a child that may still own
+// the session. A successful kill proves the failed spawn left no runtime;
+// otherwise the stable PID and joined cleanup error let Create expose a typed
+// partial-effect result instead of incorrectly claiming no effect.
+func cleanupStartedHostFailure(pid int, cause error, kill func() error) (int, error) {
+	if killErr := kill(); killErr != nil {
+		return pid, errors.Join(cause, fmt.Errorf("kill started pty-host pid %d: %w", pid, killErr))
+	}
+	return 0, cause
+}
 
 // stripEnvAssignments splits a launch argv that may begin with a Unix-style
 // `env NAME=VALUE ...` prefix into the environment assignments ("NAME=VALUE"

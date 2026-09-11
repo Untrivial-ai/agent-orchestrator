@@ -1,6 +1,6 @@
-import { StrictMode, type ReactNode } from "react";
+import { StrictMode, useEffect, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionView } from "./SessionView";
@@ -9,6 +9,9 @@ import { TooltipProvider } from "./ui/tooltip";
 import type { SessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import { useUiStore, type InspectorView } from "../stores/ui-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
+import { chatDraftScopeKey } from "../lib/chat-drafts";
+import { useFileAttachments, type FileAttachment } from "../hooks/useFileAttachments";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const openShellTerminalMock = vi.hoisted(() => vi.fn());
@@ -16,6 +19,7 @@ const closeShellTerminalMock = vi.hoisted(() => vi.fn());
 const nativeFullScreenMock = vi.hoisted(() => vi.fn(() => false));
 const interfaceTransitionMock = vi.hoisted(() => ({
 	start: vi.fn(),
+	refreshStatus: vi.fn(),
 	resetStartError: vi.fn(),
 	cancel: vi.fn(),
 	acknowledgeNotice: vi.fn(),
@@ -23,6 +27,7 @@ const interfaceTransitionMock = vi.hoisted(() => ({
 const interfaceTransitionState = vi.hoisted(() => ({
 	starting: false,
 	settling: false,
+	startError: undefined as string | undefined,
 	status: undefined as SessionInterfaceTransitionStatus | undefined,
 }));
 const reviewGetMock = vi.hoisted(() => vi.fn());
@@ -32,15 +37,29 @@ const chatSurfaceWorkState = vi.hoisted(() => ({
 	hasRunningTurn: false,
 	queuedTurnCount: 0,
 }));
+const codexAccountsQueryState = vi.hoisted(() => ({ data: undefined as unknown }));
+const recoverCodexAccountSwitchMock = vi.hoisted(() => vi.fn());
 
 async function chooseSessionAction(name: string) {
 	const user = userEvent.setup();
 	await user.click(screen.getByRole("button", { name: "Session actions" }));
 	await user.click(await screen.findByRole("menuitem", { name }));
 }
+const routeBlockerState = vi.hoisted(() => ({
+	options: undefined as
+		| {
+				disabled: boolean;
+				enableBeforeUnload: boolean;
+				shouldBlockFn: () => boolean | Promise<boolean>;
+			}
+		| undefined,
+}));
 
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => navigateMock,
+	useBlocker: (options: NonNullable<typeof routeBlockerState.options>) => {
+		routeBlockerState.options = options;
+	},
 }));
 
 vi.mock("../lib/platform", () => ({
@@ -85,9 +104,10 @@ vi.mock("../hooks/useSessionInterfaceTransition", () => ({
 		isLoading: false,
 		statusError: undefined,
 		start: interfaceTransitionMock.start,
+		refreshStatus: interfaceTransitionMock.refreshStatus,
 		starting: interfaceTransitionState.starting,
 		settling: interfaceTransitionState.settling,
-		startError: undefined,
+		startError: interfaceTransitionState.startError,
 		resetStartError: interfaceTransitionMock.resetStartError,
 		cancel: interfaceTransitionMock.cancel,
 		cancelling: false,
@@ -95,6 +115,18 @@ vi.mock("../hooks/useSessionInterfaceTransition", () => ({
 		acknowledgeNotice: interfaceTransitionMock.acknowledgeNotice,
 		acknowledgingNotice: false,
 		acknowledgeNoticeError: undefined,
+	}),
+}));
+
+vi.mock("../hooks/useCodexAccountsQuery", () => ({
+	useCodexAccountsQuery: () => ({ data: codexAccountsQueryState.data, isLoading: false }),
+}));
+
+vi.mock("../hooks/useCodexAccountActions", () => ({
+	useCodexAccountActions: () => ({
+		error: null,
+		recoverPending: false,
+		recoverSwitch: recoverCodexAccountSwitchMock,
 	}),
 }));
 
@@ -204,6 +236,7 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		onOpenReviewerTerminal,
 		reviewerTarget,
 		onSelectChat,
+		controllerTransitioning,
 		shellTerminals = [],
 		shellTarget,
 		onSelectShellTerminal,
@@ -225,6 +258,7 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
 		reviewerTarget?: { kind: "reviewer"; handleId: string; harness: string; sessionId: string };
 		onSelectChat?: () => void;
+		controllerTransitioning?: boolean;
 		shellTerminals?: Array<{ handleId: string; title: string }>;
 		shellTarget?: { kind: "shell"; handleId: string };
 		onSelectShellTerminal?: (handleId: string) => void;
@@ -237,8 +271,9 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		onAuxiliaryTabOrderChange?: (keys: string[]) => void;
 	}) => (
 		<div
-			data-new-work-disabled={newWorkDisabled ? "true" : "false"}
 			data-testid="chat-surface"
+			data-transitioning={controllerTransitioning ? "true" : "false"}
+			data-new-work-disabled={newWorkDisabled ? "true" : "false"}
 		>
 			chat surface
 			<div data-testid={`auxiliary-tab-order-${session.id}`}>
@@ -414,26 +449,48 @@ vi.mock("./SessionFileExplorer", () => ({
 	SessionFileExplorer: ({
 		isMaximized,
 		onOpenFile,
+		onSplitChange,
 		onToggleMaximized,
+		revealRequest,
+		split,
 	}: {
 		isMaximized?: boolean;
-		onOpenFile?: (path: string) => void;
+		onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void;
+		onSplitChange?: (split: boolean) => void;
 		onToggleMaximized?: (next: boolean) => void;
-	}) => (
-		<div>
+		revealRequest?: { path: string; key: number } | null;
+		split?: boolean;
+	}) => {
+		useEffect(() => {
+			if (!isMaximized && revealRequest) onOpenFile?.(revealRequest.path, { mode: "file" });
+		}, [isMaximized, onOpenFile, revealRequest]);
+		return <div>
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
 				{isMaximized ? "files center" : "files rail"}
 			</button>
+			<button type="button" onClick={() => onSplitChange?.(!split)}>
+				{split ? "use unified diff" : "use split diff"}
+			</button>
 			{!isMaximized && onOpenFile ? (
-				<button type="button" onClick={() => onOpenFile("src/App.tsx")}>
-					open src/App.tsx
-				</button>
+				<>
+					<span>file tree</span>
+					{revealRequest ? <span>{`selected ${revealRequest.path}`}</span> : null}
+					<button type="button" onClick={() => onOpenFile("src/App.tsx", { mode: "file" })}>
+						select src/App.tsx
+					</button>
+					<button type="button" onClick={() => onOpenFile("src/App.tsx", { mode: "diff" })}>
+						open diff src/App.tsx in center
+					</button>
+					<button type="button" onClick={() => onOpenFile("src/App.tsx", { editing: true, mode: "file" })}>
+						edit src/App.tsx in center
+					</button>
+				</>
 			) : null}
 		</div>
-	),
+	},
 }));
 vi.mock("./SessionFileWorkspace", () => ({
-	SessionFileWorkspace: ({ path }: { path: string }) => <div data-testid="session-file-workspace">{path}</div>,
+	SessionFileWorkspace: ({ initialEditing, initialMode, path, split }: { initialEditing?: boolean; initialMode?: string; path: string; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-split={String(split)} data-testid="session-file-workspace">{path}</div>,
 }));
 const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
@@ -556,6 +613,22 @@ function workerSession(sessionId: string): WorkspaceSession {
 	return session;
 }
 
+function testInterfaceTransition(
+	id: string,
+	phase: NonNullable<NonNullable<typeof interfaceTransitionState.status>["transition"]>["phase"],
+) {
+	return {
+		id,
+		sessionId: "sess-1",
+		sourceMode: "chat" as const,
+		targetMode: "tui" as const,
+		policy: "interrupt" as const,
+		phase,
+		createdAt: "2026-08-26T09:00:00.000Z",
+		updatedAt: "2026-08-26T09:00:01.000Z",
+	};
+}
+
 function inspectorOpen(sessionId: string): boolean {
 	return useUiStore.getState().inspectorSessions[sessionId]?.isOpen ?? true;
 }
@@ -568,6 +641,16 @@ function inspectorButton(): HTMLElement {
 	const button = screen.getByText("pop browser").closest("button");
 	if (!button) throw new Error("missing inspector button");
 	return button;
+}
+
+async function unsafeChatLeaveDialog(): Promise<HTMLElement> {
+	return screen.findByRole("dialog", { name: "Discard unsafe Chat draft state?" });
+}
+
+async function confirmUnsafeChatLeave(): Promise<HTMLElement> {
+	const dialog = await unsafeChatLeaveDialog();
+	fireEvent.click(within(dialog).getByRole("button", { name: "Leave chat" }));
+	return dialog;
 }
 
 function render(ui: ReactNode) {
@@ -590,6 +673,11 @@ function render(ui: ReactNode) {
 
 describe("SessionView", () => {
 	beforeEach(() => {
+		for (const sessionId of ["sess-1", "sess-2", "sess-orch", "sess-cross-project"]) {
+			setChatDraftBoundary(sessionId, "composer", undefined);
+			setChatDraftBoundary(sessionId, "inline-edit", undefined);
+		}
+		routeBlockerState.options = undefined;
 		inspectorVisibilityRenders.length = 0;
 		nativeFullScreenMock.mockReturnValue(false);
 		window.localStorage.clear();
@@ -598,6 +686,7 @@ describe("SessionView", () => {
 			delete session.previewRevision;
 			delete session.isTerminated;
 			session.status = "working";
+			session.provider = "claude-code";
 			delete session.mode;
 			session.prs = [];
 		}
@@ -607,9 +696,6 @@ describe("SessionView", () => {
 			activeShellTerminalHandleId: null,
 			inspectorSessions: {},
 			isSidebarOpen: true,
-			isSidebarAutoCollapsed: false,
-			sidebarAutoCollapseOverride: false,
-			sidebarWorkspaceDemandPx: null,
 			visibleTerminalKindBySession: {},
 		});
 		browserDestroy.mockReset();
@@ -630,15 +716,22 @@ describe("SessionView", () => {
 		}));
 		closeShellTerminalMock.mockReset();
 		interfaceTransitionMock.start.mockReset();
+		interfaceTransitionMock.refreshStatus.mockReset();
+		interfaceTransitionMock.refreshStatus.mockImplementation(
+			async () => interfaceTransitionState.status,
+		);
 		interfaceTransitionMock.resetStartError.mockReset();
 		interfaceTransitionMock.cancel.mockReset();
 		interfaceTransitionMock.acknowledgeNotice.mockReset();
 		interfaceTransitionState.starting = false;
 		interfaceTransitionState.settling = false;
+		interfaceTransitionState.startError = undefined;
 		interfaceTransitionState.status = undefined;
 		chatSurfaceWorkState.controllerBusy = false;
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
+		codexAccountsQueryState.data = undefined;
+		recoverCodexAccountSwitchMock.mockReset();
 		reviewGetMock.mockReset();
 		reviewGetMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
@@ -656,6 +749,37 @@ describe("SessionView", () => {
 			}
 			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
 		});
+	});
+
+	it("offers recovery directly from a Codex session blocked by a failed account switch", async () => {
+		const session = workerSession("sess-1");
+		session.provider = "codex";
+		codexAccountsQueryState.data = {
+			currentSwitch: {
+				id: "switch-1",
+				sourceAccountId: "account-a",
+				targetAccountId: "account-b",
+				phase: "recovery_required",
+				canRecover: true,
+				sessions: [{
+					sessionId: "sess-1",
+					interfaceMode: "tui",
+					wasRunning: true,
+					stopState: "stopped",
+					restartState: "failed",
+				}],
+				createdAt: "2026-09-02T00:00:00Z",
+				updatedAt: "2026-09-02T00:01:00Z",
+			},
+		};
+		recoverCodexAccountSwitchMock.mockResolvedValue(undefined);
+
+		render(<SessionView sessionId="sess-1" />);
+
+		const retry = screen.getByRole("button", { name: "Retry recovery" });
+		expect(retry).toBeEnabled();
+		await userEvent.click(retry);
+		expect(recoverCodexAccountSwitchMock).toHaveBeenCalledWith("switch-1");
 	});
 
 	// Regression: shell terminals are an app-wide list, so without a per-session
@@ -790,6 +914,7 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
+		await screen.findByText("selected src/panel.tsx");
 		expect(await screen.findByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
 
 		fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
@@ -872,6 +997,7 @@ describe("SessionView", () => {
 		const view = render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder auxiliary tabs" }));
 		expect(screen.getByTestId("auxiliary-tab-order-sess-1")).toHaveTextContent(
@@ -907,6 +1033,7 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder auxiliary tabs" }));
 		fireEvent.click(screen.getByRole("button", { name: "Close panel.tsx" }));
@@ -948,6 +1075,7 @@ describe("SessionView", () => {
 
 		await screen.findByRole("button", { name: "Reviewer" });
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder reviewer tab" }));
 		expect(screen.getByTestId("auxiliary-tab-order-sess-1")).toHaveTextContent(
@@ -986,6 +1114,7 @@ describe("SessionView", () => {
 		const view = render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder auxiliary tabs" }));
 		fireEvent.click(screen.getByRole("button", { name: "session one shell" }));
@@ -1031,7 +1160,12 @@ describe("SessionView", () => {
 		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain" });
+		await waitFor(() =>
+			expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+				targetMode: "tui",
+				policy: "drain",
+			}),
+		);
 	});
 
 	it("keeps the policy dialog closed when an idle direct switch fails", async () => {
@@ -1046,6 +1180,34 @@ describe("SessionView", () => {
 		await chooseSessionAction("Switch to chat UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+	});
+
+	it("shows and dismisses a refused idle switch outside the policy dialog", () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		interfaceTransitionState.startError = "The agent has not exposed a native conversation (NATIVE_SESSION_MISSING)";
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		session.status = "idle";
+		render(<SessionView sessionId="sess-1" />);
+		expect(screen.getByRole("alert")).toHaveTextContent("NATIVE_SESSION_MISSING");
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Dismiss interface switch error" }));
+		expect(interfaceTransitionMock.resetStartError).toHaveBeenCalled();
+	});
+
+	it("prioritizes a new refusal over an older transition notice until dismissed", () => {
+		workerSession("sess-1");
+		interfaceTransitionState.status = { supported: true, targetMode: "chat", transition: {
+			id: "old-transition", sessionId: "sess-1", sourceMode: "tui", targetMode: "chat", policy: "drain", phase: "failed",
+			errorDetail: "Previous switch failed", createdAt: "2026-09-05T00:00:00Z", updatedAt: "2026-09-05T00:00:00Z",
+		} };
+		interfaceTransitionState.startError = "Current request refused";
+		const view = render(<SessionView sessionId="sess-1" />);
+		expect(screen.getByRole("alert")).toHaveTextContent("Current request refused");
+		expect(screen.queryByText("Previous switch failed")).not.toBeInTheDocument();
+		interfaceTransitionState.startError = undefined;
+		view.rerender(<SessionView sessionId="sess-1" />);
+		expect(screen.getByText("Previous switch failed")).toBeInTheDocument();
 	});
 
 	it("keeps the policy dialog open when an explicit busy Chat choice fails", async () => {
@@ -1114,12 +1276,639 @@ describe("SessionView", () => {
 		session.status = status;
 		session.activity = { state: activityState, lastActivityAt: "2026-08-06T00:00:00Z" };
 
-		render(<SessionView sessionId={sessionId} />);
+			render(<SessionView sessionId={sessionId} />);
+
+			await chooseSessionAction("Switch to terminal UI");
+
+			expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
+			expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+		},
+	);
+
+	it("blocks route unload while a Chat draft is unsafe and uses explicit discard copy", async () => {
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: "sess-1",
+					incarnation: "2026-08-26T08:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "route-late.txt", { type: "text/plain" }),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		setChatDraftBoundary("sess-1", "composer", "persistence-failed");
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(routeBlockerState.options).toMatchObject({
+			disabled: false,
+			enableBeforeUnload: true,
+		});
+		let blocked!: Promise<boolean>;
+		act(() => {
+			blocked = Promise.resolve(routeBlockerState.options!.shouldBlockFn());
+		});
+		const cancelled = await unsafeChatLeaveDialog();
+		expect(cancelled).toHaveTextContent("discard the unsaved changes");
+		fireEvent.click(within(cancelled).getByRole("button", { name: "Cancel" }));
+		expect(await blocked).toBe(true);
+
+		let allowed!: Promise<boolean>;
+		act(() => {
+			allowed = Promise.resolve(routeBlockerState.options!.shouldBlockFn());
+		});
+		await confirmUnsafeChatLeave();
+		expect(await allowed).toBe(false);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+		await act(async () => {
+			finishStaging([
+				{
+					id: "route-discarded-late",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "route-late.txt",
+					stagedPath: ".ao/attachments/route-late.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toEqual([]);
+		act(() => setChatDraftBoundary("sess-1", "composer", undefined));
+		expect(routeBlockerState.options).toMatchObject({
+			disabled: true,
+			enableBeforeUnload: false,
+		});
+	});
+
+	it("publishes the full stable native risk set and clears it only on unmount", async () => {
+		const publishRisk = vi.spyOn(window.ao!.app, "setChatDraftRisk");
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(publishRisk).toHaveBeenLastCalledWith([], expect.objectContaining({ stay: "Stay" })));
+
+		act(() => setChatDraftBoundary("sess-1", "composer", "persistence-failed"));
+		await waitFor(() =>
+			expect(publishRisk).toHaveBeenLastCalledWith(["persistence-failed"], expect.objectContaining({ detail: expect.stringContaining("could not be saved locally") })),
+		);
+		publishRisk.mockClear();
+
+		act(() =>
+			setChatDraftBoundary("sess-1", "composer", [
+				"persistence-failed",
+				"pending-attachments",
+			]),
+		);
+		await waitFor(() =>
+			expect(publishRisk).toHaveBeenCalledWith([
+				"persistence-failed",
+				"pending-attachments",
+			], expect.objectContaining({ detail: expect.stringContaining("Attachments are still being saved") })),
+		);
+		expect(publishRisk).not.toHaveBeenCalledWith([]);
+
+		view.unmount();
+		expect(publishRisk).toHaveBeenLastCalledWith([]);
+		publishRisk.mockRestore();
+	});
+
+	it("uses an app-rendered confirmation before leaving unsafe Chat for Terminal", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		setChatDraftBoundary("sess-1", "composer", "pending-attachments");
+		const nativeConfirm = vi.spyOn(window, "confirm");
+		render(<SessionView sessionId="sess-1" />);
 
 		await chooseSessionAction("Switch to terminal UI");
-
-		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
 		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+		const cancelled = await screen.findByRole("dialog", { name: "Discard unsafe Chat draft state?" });
+		expect(cancelled).toHaveTextContent("Attachments are still being saved");
+		fireEvent.click(within(cancelled).getByRole("button", { name: "Cancel" }));
+		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		const confirmed = await screen.findByRole("dialog", { name: "Discard unsafe Chat draft state?" });
+		fireEvent.click(within(confirmed).getByRole("button", { name: "Leave chat" }));
+		await waitFor(() =>
+			expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+				targetMode: "tui",
+				policy: "interrupt",
+			}),
+		);
+		expect(nativeConfirm).not.toHaveBeenCalled();
+		setChatDraftBoundary("sess-1", "composer", undefined);
+		nativeConfirm.mockRestore();
+	});
+
+	it("cancels pending attachments only after the exact interface transition completes", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("discard-after-complete", "requested");
+		interfaceTransitionMock.start.mockResolvedValueOnce({ transition });
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T09:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "discard-late.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await confirmUnsafeChatLeave();
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "tui",
+			policy: "interrupt",
+		});
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		expect(staging.result.current.preparing).toBe(true);
+		await act(async () => undefined);
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: testInterfaceTransition("older-completed-transition", "completed"),
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(staging.result.current.preparing).toBe(true);
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "discarded-late",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "discard-late.txt",
+					stagedPath: ".ao/attachments/discard-late.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toEqual([]);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("preserves attachment work started after the switch confirmation", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("preserve-after-confirmation", "requested");
+		let admitSwitch!: (response: { transition: typeof transition }) => void;
+		interfaceTransitionMock.start.mockReturnValueOnce(
+			new Promise((resolve) => {
+				admitSwitch = resolve;
+			}),
+		);
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		act(() => setChatDraftBoundary(session.id, "composer", "persistence-failed"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true"),
+		);
+
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T09:30:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "after-confirmation.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		await act(async () => admitSwitch({ transition }));
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(staging.result.current.preparing).toBe(true);
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "after-confirmation",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "after-confirmation.txt",
+					stagedPath: ".ao/attachments/after-confirmation.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments.map((attachment) => attachment.name)).toEqual([
+			"after-confirmation.txt",
+		]);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("unlocks Chat when a pending Chat-to-Terminal request is rejected", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let rejectSwitch!: (error: Error) => void;
+		interfaceTransitionMock.start.mockReturnValueOnce(
+			new Promise((_resolve, reject) => {
+				rejectSwitch = reject;
+			}),
+		);
+		render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true"),
+		);
+		await act(async () => rejectSwitch(new Error("switch rejected")));
+		expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1);
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"),
+		);
+	});
+
+	it("keeps Chat locked when a rejected start reconciles to a durable transition", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("admitted-before-response-loss", "requested");
+		interfaceTransitionMock.start.mockRejectedValueOnce(new TypeError("connection closed"));
+		interfaceTransitionMock.refreshStatus.mockResolvedValueOnce({
+			supported: true,
+			targetMode: "tui",
+			transition,
+		});
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await waitFor(() => expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "failed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"),
+		);
+	});
+
+	it("does not let a stale reconciliation response clear a transition already observed by CDC", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("cdc-wins-reconciliation-race", "requested");
+		interfaceTransitionMock.start.mockRejectedValueOnce(new TypeError("connection closed"));
+		let finishRefresh!: (status: { supported: boolean; targetMode: "tui" }) => void;
+		interfaceTransitionMock.refreshStatus.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishRefresh = resolve;
+			}),
+		);
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await waitFor(() => expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1));
+		interfaceTransitionState.status = { supported: true, targetMode: "tui", transition };
+		await act(async () => {
+			view.rerender(<SessionView sessionId={session.id} />);
+			await Promise.resolve();
+		});
+
+		await act(async () => finishRefresh({ supported: true, targetMode: "tui" }));
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "failed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"),
+		);
+	});
+
+	it("retains confirmed attachment capture until CDC resolves an unreadable start outcome", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("admitted-before-status-outage", "requested");
+		interfaceTransitionMock.start.mockRejectedValueOnce(new TypeError("connection closed"));
+		interfaceTransitionMock.refreshStatus.mockRejectedValueOnce(new TypeError("daemon unavailable"));
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T10:30:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "captured-through-outage.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+		expect(staging.result.current.preparing).toBe(true);
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition,
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "discarded-after-outage",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "captured-through-outage.txt",
+					stagedPath: ".ao/attachments/captured-through-outage.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toEqual([]);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("preserves pending attachments when starting the confirmed interface switch rejects", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		interfaceTransitionMock.start.mockRejectedValueOnce(new Error("switch failed"));
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T10:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "preserved-after-rejection.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		expect(staging.result.current.preparing).toBe(true);
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "preserved-after-rejection",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "preserved-after-rejection.txt",
+					stagedPath: ".ao/attachments/preserved-after-rejection.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toHaveLength(1);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("preserves pending attachments when an admitted switch later fails", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("preserve-after-late-failure", "requested");
+		interfaceTransitionMock.start.mockResolvedValueOnce({ transition });
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T11:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "preserved-after-failure.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		session.mode = "tui";
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "chat",
+			transition: { ...transition, phase: "failed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(staging.result.current.preparing).toBe(true);
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "preserved-after-failure",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "preserved-after-failure.txt",
+					stagedPath: ".ao/attachments/preserved-after-failure.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toHaveLength(1);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("cancels hidden attachment work after a confirmed mixed-risk leave without resurrection", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("mixed-risk-complete", "requested");
+		interfaceTransitionMock.start.mockResolvedValueOnce({ transition });
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		const draftKey = chatDraftScopeKey({
+			sessionId: session.id,
+			incarnation: "2026-08-27T09:00:00.000Z",
+		});
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: draftKey,
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "mixed-late.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => {
+			// Inline edit registers first, so the legacy single-kind snapshot hides
+			// the composer's pending attachment work behind a failed draft save.
+			setChatDraftBoundary(session.id, "inline-edit", "persistence-failed");
+			setChatDraftBoundary(session.id, "composer", "pending-attachments");
+		});
+		const view = render(<SessionView sessionId={session.id} />);
+
+		await chooseSessionAction("Switch to terminal UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
+		const dialog = await unsafeChatLeaveDialog();
+		const warning = dialog.textContent ?? "";
+		expect(warning).toContain("could not be saved locally");
+		expect(warning).toContain("Attachments are still being saved");
+		fireEvent.click(within(dialog).getByRole("button", { name: "Leave chat" }));
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "tui",
+			policy: "interrupt",
+		});
+		expect(staging.result.current.preparing).toBe(true);
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+
+		view.unmount();
+		staging.unmount();
+		await act(async () => {
+			finishStaging([
+				{
+					id: "mixed-discarded-late",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "mixed-late.txt",
+					stagedPath: ".ao/attachments/mixed-late.txt",
+				},
+			]);
+			await pending;
+		});
+		const replacement = renderHook(() => useFileAttachments({ initialKey: draftKey }));
+		expect(replacement.result.current.attachments).toEqual([]);
+		expect(replacement.result.current.preparing).toBe(false);
+
+		replacement.unmount();
+		act(() => {
+			setChatDraftBoundary(session.id, "inline-edit", undefined);
+			setChatDraftBoundary(session.id, "composer", undefined);
+		});
 	});
 
 	it.each([
@@ -1785,22 +2574,32 @@ describe("SessionView", () => {
 		expect(toggle).toHaveAttribute("aria-pressed", "false");
 	});
 
-	it("compacts non-primary session chrome when Browser pressure collapses the sidebar", () => {
+	it("keeps session chrome expanded when Browser is active", () => {
 		useUiStore.setState({
 			isSidebarOpen: true,
-			isSidebarAutoCollapsed: true,
-			sidebarAutoCollapseOverride: false,
 			inspectorSessions: { "sess-1": { initialized: true, isOpen: true, view: "browser" } },
 		});
 
 		render(<SessionView sessionId="sess-1" />);
 
 		const topbar = screen.getByTestId("mock-session-topbar");
-		expect(topbar).toHaveAttribute("data-compact-actions", "true");
+		expect(topbar).toHaveAttribute("data-compact-actions", "false");
 		expect(topbar.closest("[data-compact-session-chrome]")).toHaveAttribute(
 			"data-compact-session-chrome",
-			"true",
+			"false",
 		);
+	});
+
+	it("never shrinks the inspector when entering Browser", async () => {
+		window.localStorage.setItem("ao.inspector.widthPx", "720");
+		window.localStorage.setItem("ao.workspace.browser.canvasWidthPx", "460");
+		render(<SessionView sessionId="sess-1" />);
+		expect(document.documentElement.style.getPropertyValue("--ao-inspector-w")).toBe("720px");
+
+		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
+		await waitFor(() => {
+			expect(document.documentElement.style.getPropertyValue("--ao-inspector-w")).toBe("720px");
+		});
 	});
 
 	it("restores and clamps the persisted inspector width in pixels", () => {
@@ -1862,32 +2661,32 @@ describe("SessionView", () => {
 
 		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
 		expect(document.documentElement.style.getPropertyValue("--ao-inspector-w")).toBe("820px");
-		expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBe(1548);
+		expect(useUiStore.getState().isSidebarOpen).toBe(true);
 
 		fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
 		expect(document.documentElement.style.getPropertyValue("--ao-inspector-w")).toBe("500px");
 	});
 
-	it("raises shell pressure only for Browser and clears it for every utility view", async () => {
+	it("never changes the sidebar preference while browser surfaces open and close", async () => {
 		render(<SessionView sessionId="sess-1" />);
-		expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBeNull();
+		expect(useUiStore.getState().isSidebarOpen).toBe(true);
 
 		fireEvent.click(screen.getByRole("tab", { name: "Reviews" }));
-		expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBeNull();
+		expect(useUiStore.getState().isSidebarOpen).toBe(true);
 
 		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
-		expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBe(1628);
+		expect(useUiStore.getState().isSidebarOpen).toBe(true);
 
 		fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
-		expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBeNull();
+		expect(useUiStore.getState().isSidebarOpen).toBe(true);
 
 		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
 		fireEvent.click(screen.getByRole("button", { name: "open files" }));
-		expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBeNull();
+		expect(useUiStore.getState().isSidebarOpen).toBe(true);
 
 		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
 		fireEvent.click(screen.getByRole("button", { name: "Close inspector panel" }));
-		await waitFor(() => expect(useUiStore.getState().sidebarWorkspaceDemandPx).toBeNull());
+		await waitFor(() => expect(useUiStore.getState().isSidebarOpen).toBe(true));
 	});
 
 	it("mounts the inspector in sync when navigating from an orchestrator session", () => {
@@ -2014,15 +2813,17 @@ describe("SessionView", () => {
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 	});
 
-	it("opens docked files as center tabs while preserving the agent surface", () => {
+	it("opens a selected tree file in a center tab while retaining the right-side tree", () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "open files" }));
-		fireEvent.click(screen.getByRole("button", { name: "open src/App.tsx" }));
+		fireEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
 
 		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "true");
 		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/App.tsx");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "file");
+		expect(within(screen.getByTestId("panel-inspector")).getByText("file tree")).toBeInTheDocument();
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: "select agent tab" }));
@@ -2030,16 +2831,33 @@ describe("SessionView", () => {
 		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "false");
 	});
 
-	it("opens a review file target in a center tab and keeps the Files inspector visible", async () => {
+	it("applies the Files split preference to a diff opened in the center", () => {
+		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		fireEvent.click(screen.getByRole("button", { name: "open diff src/App.tsx in center" }));
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "diff");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-split", "false");
+
+		fireEvent.click(screen.getByRole("button", { name: "use split diff" }));
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-split", "true");
+	});
+
+	it("opens a review file target in center while retaining the Files tree", async () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
 
 		await waitFor(() => {
-			expect(screen.getByRole("tab", { name: "panel.tsx" })).toHaveAttribute("aria-selected", "true");
-			expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
+			expect(screen.getByText("selected src/panel.tsx")).toBeInTheDocument();
 		});
+		expect(screen.getByRole("tab", { name: "panel.tsx" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "file");
+		expect(within(screen.getByTestId("panel-inspector")).getByText("file tree")).toBeInTheDocument();
+		expect(screen.getByText("terminal center")).toBeInTheDocument();
 		expect(useUiStore.getState().inspectorSessions["sess-1"]?.view).toBe("files");
 		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
 	});
@@ -2077,8 +2895,10 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "view review basename" }));
 
 		await waitFor(() => {
-			expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("docs/notes.txt");
+			expect(screen.getByText("selected docs/notes.txt")).toBeInTheDocument();
 		});
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("docs/notes.txt");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "file");
 	});
 
 	it("resolves a chat basename against workspace files before opening on a cold cache", async () => {
@@ -2115,8 +2935,9 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "open chat basename" }));
 
 		await waitFor(() => {
-			expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("docs/notes.txt");
+			expect(screen.getByText("selected docs/notes.txt")).toBeInTheDocument();
 		});
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("docs/notes.txt");
 	});
 
 	it("maximizes files over the whole app window and returns to the rail", () => {

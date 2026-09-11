@@ -24,7 +24,7 @@ IMAGE_TAG="${RELEASE//+/-}-linux-amd64"
 # promote. Remove entries as Debian ships fixes; the worker stage's apt-get
 # upgrade then clears them on rebuild. CVE-2026-14456 is a scanner false
 # positive for Debian's OpenSSL 3.0: its QUIC listener was introduced in 3.5.
-SCAN_CVE_ALLOWLIST="${AO_CLOUD_SCAN_CVE_ALLOWLIST:-CVE-2026-57432 CVE-2026-45186 CVE-2026-12087 CVE-2025-15661 CVE-2026-58051 CVE-2026-7017 CVE-2026-48962 CVE-2026-57433 CVE-2026-66032 CVE-2026-48961 CVE-2026-48959 CVE-2026-66034 CVE-2026-58050 CVE-2026-13221 CVE-2026-14456 CVE-2026-66046}"
+SCAN_CVE_ALLOWLIST="${AO_CLOUD_SCAN_CVE_ALLOWLIST:-CVE-2026-57432 CVE-2026-45186 CVE-2026-12087 CVE-2025-15661 CVE-2026-58051 CVE-2026-7017 CVE-2026-48962 CVE-2026-57433 CVE-2026-66032 CVE-2026-48961 CVE-2026-48959 CVE-2026-66034 CVE-2026-58050 CVE-2026-13221 CVE-2026-14456 CVE-2026-66046 CVE-2026-63076 CVE-2026-53615 CVE-2026-54874 CVE-2026-63072}"
 
 AWS_OPTIONS=(--region "$REGION")
 if [[ -n "${AWS_PROFILE:-}" ]]; then
@@ -62,7 +62,7 @@ secret_arn() {
 		--output text
 }
 
-provider_secret_arn="$(secret_arn ao-cloud/staging/provider-secret-key)"
+provider_secret_arn="$(secret_arn "${AO_CLOUD_PROVIDER_SECRET_ID:-ao-cloud/staging/provider-secret-key}")"
 nodeops_secret_arn="$(secret_arn "$NODEOPS_SECRET_ID")"
 worker_secret_arn="$(secret_arn "$WORKER_SECRET_ID")"
 broker_secret_arn="$(secret_arn "${AO_CLOUD_REPOSITORY_BROKER_SECRET_ID:-ao-cloud/repository-broker}")"
@@ -202,7 +202,8 @@ register_task_definition() {
 	if [[ "$container_name" == "control-plane" ]]; then
 		render_args+=(
 			--worker-image "$worker_image"
-			--set-environment AO_CLOUD_PUBLIC_URL=https://staging-api.aoagents.dev
+			--set-environment "AO_CLOUD_PUBLIC_URL=${AO_CLOUD_PUBLIC_URL:-https://staging-api.aoagents.dev}"
+			--set-environment "AO_CLOUD_TERMINAL_STREAM=${AO_CLOUD_TERMINAL_STREAM:-}"
 			--set-environment AO_CLOUD_REPOSITORY_BROKER_URL=https://api.aoagents.dev
 			--set-environment AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT=true
 			--set-environment "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS=${rootfs_by_harness}"
@@ -252,7 +253,7 @@ migration_result="$(
 		--started-by "deploy-${RELEASE:0:28}" \
 		--tags \
 			key=Project,value=ao-cloud \
-			key=Environment,value=staging \
+			key=Environment,value="${AO_CLOUD_DEPLOY_ENVIRONMENT:-staging}" \
 			"key=Release,value=${RELEASE}"
 )"
 migration_arn="$(

@@ -82,6 +82,10 @@ export function TurnSettingsBar({
 	harness,
 	reroute,
 	onChange,
+	onRememberPermissions,
+	rememberPermissionsPending,
+	rememberPermissionsError,
+	rememberedPermissionMode,
 	configOptions,
 	onChangeConfigOption,
 	configPending,
@@ -101,6 +105,10 @@ export function TurnSettingsBar({
 	 */
 	reroute?: ModelReroute;
 	onChange?: (next: TurnSettings) => void;
+	onRememberPermissions?: (mode: ApprovalMode) => Promise<unknown> | void;
+	rememberPermissionsPending?: boolean;
+	rememberPermissionsError?: string;
+	rememberedPermissionMode?: ApprovalMode;
 	/** Controls advertised by an ACP agent for this exact live session. */
 	configOptions?: ChatConfigOption[];
 	onChangeConfigOption?: (
@@ -115,10 +123,11 @@ export function TurnSettingsBar({
 	children?: ReactNode;
 }) {
 	const selected = models.find((model) => model.id === settings.model);
-	const fallback = models.find((model) => model.default);
-	// The label says what will actually be used: the provider's default is a real
-	// answer, not an absence, so it is named rather than shown as "none".
-	const chosenLabel = selected?.displayName ?? fallback?.displayName ?? "Provider default";
+	const fallback = settings.model ? undefined : models.find((model) => model.default);
+	// A catalog miss must not relabel an explicit choice or borrow another model's
+	// effort settings. Custom or newly available models may not be listed yet.
+	const chosenLabel =
+		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Provider default";
 	const rerouted = reroute
 		? models.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
 		: undefined;
@@ -133,19 +142,38 @@ export function TurnSettingsBar({
 		? `${modelLabel} ${capitalize(effortLabel)}`
 		: modelLabel;
 	const grouped = partitionConfigOptions(configOptions ?? []);
-	const optionDisabled = Boolean(disabled || configPending);
+	const optionDisabled = Boolean(disabled || configPending || rememberPermissionsPending);
 	const applyOption = (optionId: string, value: ChatConfigOptionValue) => {
 		if (!onChangeConfigOption) return;
 		void Promise.resolve(onChangeConfigOption(optionId, value)).catch(() => {});
 	};
+	const modeOption = grouped.mode;
+	const inlineExecutionMode =
+		grouped.executionMode && isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
+	const standaloneExecutionMode =
+		grouped.executionMode && !isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
+	const planning = isPlanMode(grouped.executionMode);
 	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
 		grouped.effort.length > 0 ||
-		Boolean(grouped.executionMode) ||
-		grouped.toggles.length > 0;
-	const modeOption = grouped.mode;
-	const planning = isPlanMode(grouped.executionMode);
+		Boolean(inlineExecutionMode) ||
+		grouped.toggles.length > 0 ||
+		grouped.extra.length > 0;
+	const rememberMode = modeOption
+		? modeOption.choices.find((choice) => choice.value === modeOption.currentValue)?.permissionMode
+		: settings.approvalMode ?? "default";
+	const rememberAction = onRememberPermissions && rememberMode && !planning ? (
+		<OptionMenuItem
+			disabled={optionDisabled}
+			onSelect={() => {
+				void Promise.resolve(onRememberPermissions(rememberMode)).catch(() => {});
+			}}
+			className="mt-1 border-t border-border pt-2 text-xs"
+		>
+			Remember for this project
+		</OptionMenuItem>
+	) : null;
 	const showRightDropdown = Boolean(children || (!planning && (onChange || modeOption)));
 
 	return (
@@ -165,7 +193,7 @@ export function TurnSettingsBar({
 							reroute={reroute}
 							rerouted={rerouted}
 							chosenLabel={chosenLabel}
-							executionMode={grouped.executionMode}
+							executionMode={inlineExecutionMode}
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							onChangeConfigOption={onChangeConfigOption ? applyOption : undefined}
@@ -176,9 +204,17 @@ export function TurnSettingsBar({
 						<ClubbedConfigPicker
 							modelOptions={grouped.model}
 							effortOptions={grouped.effort}
-							executionMode={grouped.executionMode}
+							executionMode={inlineExecutionMode}
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
+							disabled={optionDisabled}
+							onChange={applyOption}
+						/>
+					) : null}
+
+					{standaloneExecutionMode && onChangeConfigOption ? (
+						<ExecutionModePicker
+							option={standaloneExecutionMode}
 							disabled={optionDisabled}
 							onChange={applyOption}
 						/>
@@ -193,6 +229,7 @@ export function TurnSettingsBar({
 								option={modeOption}
 								disabled={optionDisabled}
 								onChange={(value) => applyOption(modeOption.id, value)}
+								footer={rememberAction}
 							/>
 						) : onChange ? (
 							<Picker
@@ -203,6 +240,8 @@ export function TurnSettingsBar({
 								{approvalOrder.map((mode) => (
 									<OptionMenuItem
 										key={mode}
+										active={mode === (settings.approvalMode ?? "default")}
+										radio
 										onSelect={() => onChange({ ...settings, approvalMode: mode })}
 										className={cn("text-xs")}
 									>
@@ -218,11 +257,20 @@ export function TurnSettingsBar({
 										</span>
 									</OptionMenuItem>
 								))}
+								{rememberAction}
 							</Picker>
 						) : null}
 					</div>
 				) : null}
 			</div>
+			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
+				<p role="status" className="px-1 text-[11px] text-muted-foreground">
+					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
+				</p>
+			) : null}
+			{rememberPermissionsError ? (
+				<p role="alert" className="px-1 text-[11px] text-destructive">{rememberPermissionsError}</p>
+			) : null}
 			{error ? (
 				<p role="alert" className="px-1 text-[11px] leading-snug text-destructive">
 					{error}
@@ -329,6 +377,7 @@ function ModelEffortPicker({
 									<OptionMenuItem
 									key={model.id}
 									active={model.id === settings.model}
+									radio
 									onSelect={() =>
 										onChange({ ...settings, model: model.id, reasoningEffort: undefined })
 									}
@@ -365,6 +414,7 @@ function ModelEffortPicker({
 								<OptionMenuItem
 									key={effort}
 									active={effort === settings.reasoningEffort}
+									radio
 									onSelect={() => onChange({ ...settings, reasoningEffort: effort })}
 									className={cn("text-xs")}
 								>
@@ -421,7 +471,8 @@ function ClubbedConfigPicker({
 	const leftCount =
 		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length;
 	if (leftCount === 1) {
-		if (executionMode) return <ExecutionModePicker option={executionMode} onChange={onChange} />;
+		if (executionMode)
+			return <ExecutionModePicker option={executionMode} disabled={disabled} onChange={onChange} />;
 		const option = primaryModel ?? primaryEffort ?? executionMode ?? toggles[0] ?? extraOptions[0];
 		if (!option) return null;
 		return (
@@ -463,7 +514,6 @@ function ClubbedConfigPicker({
 	);
 }
 
-/** One toggle inside the model menu, not a competing top-level picker. */
 function PlanModeToggle({
 	option,
 	onChange,
@@ -524,7 +574,6 @@ function MenuToggle({
 		>
 			<span>{label}</span>
 			<Switch
-				size="compact"
 				aria-label={label}
 				checked={checked}
 				onPointerDown={(event) => event.stopPropagation()}
@@ -537,24 +586,32 @@ function MenuToggle({
 
 function ExecutionModePicker({
 	option,
+	disabled,
 	onChange,
 }: {
 	option: ChatConfigOption;
+	disabled?: boolean;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
 }) {
 	return (
 		<OptionMenu>
 			<OptionMenuTrigger
+				disabled={disabled}
 				aria-label="Model mode for the next turn"
 				title="Model mode for the next turn"
 				className={TRIGGER_CLASS}
 			>
-				<span className="min-w-0 max-w-[16ch] truncate">
-					{isPlanMode(option) ? "Plan Mode" : "Agent Mode"}
-				</span>
+				<span className="min-w-0 max-w-[16ch] truncate">{executionModeLabel(option)}</span>
 			</OptionMenuTrigger>
 			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
-				<PlanModeToggle option={option} onChange={onChange} />
+				{isPlanBinary(option) ? (
+					<PlanModeToggle option={option} onChange={onChange} />
+				) : (
+					<ConfigOptionChoices
+						option={option}
+						onChange={(value) => onChange(option.id, value)}
+					/>
+				)}
 			</OptionMenuContent>
 		</OptionMenu>
 	);
@@ -621,11 +678,13 @@ function ConfigOptionPicker({
 	title,
 	onChange,
 	disabled,
+	footer,
 }: {
 	option: ChatConfigOption;
 	title?: string;
 	onChange: (value: ChatConfigOptionValue) => void;
 	disabled?: boolean;
+	footer?: ReactNode;
 }) {
 	return (
 		<Picker
@@ -634,6 +693,7 @@ function ConfigOptionPicker({
 			disabled={disabled}
 		>
 			<ConfigOptionChoices option={option} onChange={onChange} />
+			{footer}
 		</Picker>
 	);
 }
@@ -650,8 +710,9 @@ function ConfigOptionChoices({
 			<>
 				{[true, false].map((enabled) => (
 					<OptionMenuItem
-						key={String(enabled)}
-						active={enabled === option.currentBoolean}
+							key={String(enabled)}
+							active={enabled === option.currentBoolean}
+							radio
 						onSelect={() => onChange({ enabled })}
 						className={cn("text-xs")}
 					>
@@ -683,6 +744,7 @@ function ConfigOptionChoices({
 						) : null}
 						<OptionMenuItem
 							active={choice.value === option.currentValue}
+							radio
 							onSelect={() => onChange({ value: choice.value })}
 							className={cn("text-xs")}
 						>
@@ -812,13 +874,15 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 			continue;
 		}
 		if (isModeOption(option) && !mode) {
-			const permissionChoices = option.choices.filter((choice) => !isExecutionModeChoice(choice));
+			// Classify before synthesizing Claude's Agent choice so it cannot promote approval choices.
+			const executionValues = executionChoiceValues(option.choices);
+			const permissionChoices = option.choices.filter((choice) => !executionValues.has(choice.value));
 			const executionChoices = addAgentModeChoice(
-				option.choices.filter(isExecutionModeChoice),
+				option.choices.filter((choice) => executionValues.has(choice.value)),
 				permissionChoices,
 			);
 			if (executionChoices.length > 0) {
-				executionMode = withChoices(option, executionChoices, "Agent Mode");
+				executionMode = withChoices(option, executionChoices);
 				if (permissionChoices.length > 0) mode = withChoices(option, permissionChoices);
 			} else {
 				mode = option;
@@ -830,14 +894,32 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
 }
 
-/**
- * Some ACP harnesses put both execution posture (Plan/Agent) and approval policy
- * in one `mode` option. They are mutually exclusive in the provider, but they
- * are not the same decision for a person composing a turn. Preserve the provider
- * values while presenting those choices under their respective controls.
- */
-function isExecutionModeChoice(choice: ChatConfigOption["choices"][number]): boolean {
-	return /(?:^|[\s_-])(plan|agent)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`);
+/** Ask is an execution mode only when the same option advertises Agent; otherwise it is an approval policy. */
+function executionChoiceValues(choices: ChatConfigOption["choices"]): Set<string> {
+	const values = new Set<string>();
+	const hasAgent = choices.some((choice) => executionChoiceMatches(choice, "agent"));
+	for (const choice of choices) {
+		if (executionChoiceMatches(choice, "plan|agent|build")) {
+			values.add(choice.value);
+			continue;
+		}
+		if (hasAgent && executionChoiceMatches(choice, "ask")) values.add(choice.value);
+	}
+	return values;
+}
+
+// Match complete mode labels so custom agent names cannot masquerade as native modes.
+function executionChoiceMatches(choice: ChatConfigOption["choices"][number], word: string): boolean {
+	return [choice.value, choice.name].some((value) =>
+		new RegExp(`^(?:${word})(?:[\\s_-]mode)?$`, "i").test(value.trim()),
+	);
+}
+
+function choiceMatches(
+	choice: Pick<ChatConfigOption["choices"][number], "name" | "value">,
+	word: string,
+): boolean {
+	return new RegExp(`(?:^|[\\s_-])(?:${word})(?:[\\s_-]|$)`, "i").test(`${choice.name} ${choice.value}`);
 }
 
 /**
@@ -850,14 +932,23 @@ function addAgentModeChoice(
 	executionChoices: ChatConfigOption["choices"],
 	permissionChoices: ChatConfigOption["choices"],
 ): ChatConfigOption["choices"] {
-	if (executionChoices.some((choice) => /(?:^|[\s_-])agent(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`))) {
+	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent"))) {
 		return executionChoices;
 	}
-	const standard = permissionChoices.find((choice) => /(?:^|[\s_-])manual(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`))
-		?? permissionChoices.find((choice) => /(?:^|[\s_-])(default|standard)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
+	const standard = permissionChoices.find((choice) => choiceMatches(choice, "manual"))
+		?? permissionChoices.find((choice) => choiceMatches(choice, "default|standard"));
 	return standard
 		? [{ ...standard, name: "Agent Mode", description: "Standard agent execution" }, ...executionChoices]
 		: executionChoices;
+}
+
+function isPlanBinary(option: ChatConfigOption): boolean {
+	return option.choices.length === 2 && option.choices.some(isPlanChoice);
+}
+
+function executionModeLabel(option: ChatConfigOption): string {
+	if (isPlanBinary(option)) return isPlanMode(option) ? "Plan Mode" : "Agent Mode";
+	return option.choices.find((choice) => choice.value === option.currentValue)?.name ?? option.name;
 }
 
 function isPlanMode(option: ChatConfigOption | undefined): boolean {
@@ -865,7 +956,8 @@ function isPlanMode(option: ChatConfigOption | undefined): boolean {
 }
 
 function isPlanChoice(choice: Pick<ChatConfigOption["choices"][number], "name" | "value">): boolean {
-	return /(?:^|[\s_-])plan(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`);
+	// Custom agent IDs can contain "plan" without enabling native planning.
+	return [choice.value, choice.name].some((value) => /^plan(?:[\s_-]mode)?$/i.test(value.trim()));
 }
 
 function withChoices(

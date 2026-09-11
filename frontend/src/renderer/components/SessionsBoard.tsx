@@ -39,6 +39,7 @@ import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { demoBoardSessions } from "../lib/demo-board-sessions";
 import { isLinuxPlatform, isMacPlatform, usesBoardActionsInPanel } from "../lib/platform";
+import { formatOrchestratorStartupError } from "../lib/orchestrator-startup-error";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
@@ -128,8 +129,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const isProjectRestarting = projectId ? restartingProjectIds.has(projectId) : false;
+	const isProvisioning = useUiStore((state) =>
+		projectId ? state.provisioningProjectIds.has(projectId) : false,
+	);
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
-	const visibleSpawnError = spawnError ?? orchestratorStartupError;
+	const visibleSpawnError = formatOrchestratorStartupError(spawnError ?? orchestratorStartupError ?? "");
 
 	// The board instance survives project-to-project navigation (same route,
 	// new param), so a spawn failure must not follow the user to another board.
@@ -188,6 +192,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 	const openOrchestrator = async (mode?: "tui") => {
 		if (!projectId || isProjectRestarting) return;
+		// The shell already has a background spawn in flight for this project;
+		// a second spawn would create a duplicate orchestrator.
+		if (isProvisioning) return;
 		if (orchestrator) {
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
@@ -210,7 +217,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				});
 			} catch (error) {
 				console.error("Failed to spawn cloud orchestrator:", error);
-				setSpawnError(error instanceof Error ? error.message : t("shell.couldNotSpawn"));
+				setSpawnError(formatOrchestratorStartupError(error instanceof Error ? error.message : t("shell.couldNotSpawn")));
 			} finally {
 				setIsSpawning(false);
 			}
@@ -238,7 +245,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 			// Never fail silently: the daemon's message (e.g. a worktree/branch
 			// conflict) is the only actionable signal the user gets.
 			console.error("Failed to spawn orchestrator:", error);
-			setSpawnError(error instanceof Error ? error.message : t("shell.couldNotSpawn"));
+			setSpawnError(formatOrchestratorStartupError(error instanceof Error ? error.message : t("shell.couldNotSpawn")));
 			setCanCreateAsTui(isChatPreflightError(error));
 		} finally {
 			setIsSpawning(false);
@@ -264,7 +271,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				</TopbarActionError>
 			)}
 			{visibleSpawnError && canCreateAsTui && !showProjectEmpty ? (
-				<TopbarButton disabled={isSpawning || isProjectRestarting} onClick={() => void openOrchestrator("tui")}>
+				<TopbarButton disabled={isSpawning || isProjectRestarting || isProvisioning} onClick={() => void openOrchestrator("tui")}>
 					{t("newTask.createAsTui")}
 				</TopbarButton>
 			) : null}
@@ -275,7 +282,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 							aria-label={t("shell.newTask")}
 							className="topbar-control--labeled"
 							data-priority="primary"
-							disabled={isProjectRestarting}
+							disabled={isProjectRestarting || isProvisioning}
 							onClick={() => projectId && requestNewTask(projectId)}
 							variant="accent"
 						>
@@ -297,7 +304,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 							}
 							className="topbar-control--labeled"
 							data-priority="secondary"
-							disabled={isSpawning || isProjectRestarting}
+							disabled={isSpawning || isProjectRestarting || isProvisioning}
 							onClick={() => void openOrchestrator()}
 							variant="primary"
 						>
@@ -329,6 +336,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 	return (
 		<div className="relative flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="board">
+			{!boardActionsInPanel && isLoaded && visibleSpawnError && !showProjectEmpty ? (
+				<p role="alert" className="mx-3 my-3 whitespace-pre-wrap break-words text-sm text-destructive">
+					{visibleSpawnError}
+				</p>
+			) : null}
 			{/* macOS: shell topbar is hidden on board routes, so the project/"Board"
 			    crumb + New task / Orchestrator / bell live in this in-panel row.
 			    Win/Linux keep the crumb and actions in the framed ShellTopbar.
@@ -372,15 +384,36 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						) : null}
 					</div>
 				) : null}
-				{workspaceStartupState === "error" || workspaceQuery.isError ? (
-					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
-				) : showWelcome ? (
-					<BoardWelcome />
-				) : showProjectEmpty ? (
-					<ProjectBoardEmpty
-						hasOrchestrator={orchestrator !== undefined}
-						isSpawning={isSpawning}
-						isProjectRestarting={isProjectRestarting}
+			{workspace?.folderMissing ? (
+				<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+					<AlertTriangle className="size-icon-base shrink-0 text-warning" aria-hidden="true" />
+					<span className="min-w-0 flex-1">{t("home.folderMissing")}</span>
+				</div>
+			) : null}
+			{projectId && isProvisioning ? (
+				<div
+					className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground"
+					role="status"
+				>
+					<span
+						className="size-icon-base shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent"
+						aria-hidden="true"
+					/>
+					<span className="min-w-0 flex-1">
+						{t("shell.provisioning", { defaultValue: "Setting up the project — starting the orchestrator…" })}
+					</span>
+				</div>
+			) : null}
+			{workspaceStartupState === "error" || workspaceQuery.isError ? (
+				<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
+			) : showWelcome ? (
+				<BoardWelcome />
+			) : showProjectEmpty ? (
+				<ProjectBoardEmpty
+					hasOrchestrator={orchestrator !== undefined}
+					isSpawning={isSpawning}
+					isProvisioning={isProvisioning}
+					isProjectRestarting={isProjectRestarting}
 						onNewTask={() => projectId && requestNewTask(projectId)}
 						onOpenOrchestrator={() => void openOrchestrator()}
 						onOpenOrchestratorAsTui={canCreateAsTui ? () => void openOrchestrator("tui") : undefined}
@@ -391,11 +424,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						columns={columns}
 						key={projectId ?? "all"}
 						labels={boardLabels}
-						renderSessionCard={(session) => (
-							<BoardSessionCardAdapter
-								onOpenSession={openSession}
-								onTerminateSession={terminateSession.mutate}
-								session={session}
+							renderSessionCard={(session) => (
+								<BoardSessionCardAdapter
+								onOpen={() => openSession(session)}
+									onTerminate={() => terminateSession.mutate(session)}
+									session={session}
 								usage={usageBySession.get(session.id)}
 							/>
 						)}

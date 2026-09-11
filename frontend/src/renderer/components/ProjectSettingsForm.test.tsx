@@ -86,19 +86,13 @@ function TestProjectSettings({
 	section?: ProjectSettingsSection;
 }) {
 	const [saveState, setSaveState] = useState<ProjectSettingsSaveState>({
-		isPending: false,
-		showSaving: false,
-		validationError: null,
-		mutationError: null,
-		saved: false,
-		replacementError: null,
+		phase: "idle",
 	});
 	return (
 		<>
 			<ProjectSettingsForm projectId={projectId} section={section} onSaveState={setSaveState} />
-			{saveState.validationError && <span>{saveState.validationError}</span>}
-			{saveState.mutationError && <span>{saveState.mutationError}</span>}
-			{saveState.saved && <span>{"Saved"}</span>}
+			{saveState.error && <span>{saveState.error}</span>}
+			{saveState.phase === "saved" && <span>{"Saved"}</span>}
 			{saveState.replacementError && <span>{`Orchestrator restart failed: ${saveState.replacementError}`}</span>}
 		</>
 	);
@@ -126,6 +120,12 @@ async function chooseOption(trigger: HTMLElement, optionName: string) {
 	await userEvent.click(trigger);
 	const escaped = optionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	await userEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${escaped}$`, "i") }));
+}
+
+async function chooseCustomModel(label: string, model: string) {
+	await userEvent.click(screen.getByRole("button", { name: label }));
+	await userEvent.type(screen.getByRole("searchbox", { name: `Search ${label.toLowerCase()}` }), model);
+	await userEvent.click(screen.getByRole("menuitem", { name: `Use “${model}” as a custom model` }));
 }
 
 function submitSettings() {
@@ -229,6 +229,7 @@ describe("ProjectSettingsForm", () => {
 			),
 		);
 		expect(ensureAgentReadinessMock).toHaveBeenCalledWith();
+		expect(screen.getByRole("button", { name: "Permission mode" })).toHaveTextContent("Auto (Project default)");
 		expect(screen.queryByRole("button", { name: "Refresh agents" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Refresh worker model list" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Refresh orchestrator model list" })).not.toBeInTheDocument();
@@ -407,6 +408,7 @@ describe("ProjectSettingsForm", () => {
 			repo: "git@github.com:acme/project-one.git",
 			defaultBranch: "main",
 			config: {
+				canonicalRepoURL: "https://github.com/upstream/project-one",
 				defaultBranch: "develop",
 				sessionPrefix: "po",
 				env: { FOO: "bar" },
@@ -428,8 +430,8 @@ describe("ProjectSettingsForm", () => {
 		renderSettings("proj-1", undefined, "agents");
 
 		expect(screen.queryByLabelText("Default branch")).not.toBeInTheDocument();
-		expect(await screen.findByLabelText("Worker model")).toHaveValue("worker-model");
-		expect(screen.getByLabelText("Orchestrator model")).toHaveValue("claude-opus-4-5");
+		expect(await screen.findByRole("button", { name: "Worker model" })).toHaveTextContent("worker-model");
+		expect(screen.getByRole("button", { name: "Orchestrator model" })).toHaveTextContent("claude-opus-4-5");
 
 		const workerAgent = screen.getByRole("button", { name: "Default worker agent" });
 		const orchestratorAgent = screen.getByRole("button", { name: "Default orchestrator agent" });
@@ -443,8 +445,8 @@ describe("ProjectSettingsForm", () => {
 
 		await chooseOption(workerAgent, "OpenCode");
 		await chooseOption(orchestratorAgent, "Goose");
-		await userEvent.type(screen.getByLabelText("Worker model"), "openai/gpt-5.4");
-		await userEvent.type(screen.getByLabelText("Orchestrator model"), "anthropic/claude-sonnet");
+		await chooseCustomModel("Worker model", "openai/gpt-5.4");
+		await chooseCustomModel("Orchestrator model", "anthropic/claude-sonnet");
 		await userEvent.click(permissionMode);
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Bypass permissions" }));
 
@@ -457,6 +459,7 @@ describe("ProjectSettingsForm", () => {
 				displayName: "Project One",
 				config: expect.objectContaining({
 					// Hidden workflow config is preserved
+					canonicalRepoURL: "https://github.com/upstream/project-one",
 					defaultBranch: "develop",
 					sessionPrefix: "po",
 					env: { FOO: "bar" },
@@ -604,15 +607,8 @@ describe("ProjectSettingsForm", () => {
 
 		const workerModel = await screen.findByRole("button", { name: "Worker model" });
 		await userEvent.click(workerModel);
-		expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual([
-			"Agent default",
-			"GPT-5.6 SolDefault",
-			"GPT-5.5",
-			"GPT-5.4",
-			"Custom model…",
-		]);
-		// A compact catalog stays immediately scannable and does not spend a row on search.
-		expect(screen.queryByRole("searchbox", { name: "Search worker model" })).not.toBeInTheDocument();
+		expect(screen.getByRole("searchbox", { name: "Search worker model" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Enter model ID…" })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("menuitem", { name: /GPT-5\.4/ }));
 		expect(workerModel).toHaveTextContent("GPT-5.4");
 
@@ -620,7 +616,50 @@ describe("ProjectSettingsForm", () => {
 		expect(await screen.findByRole("menuitem", { name: /GPT-5\.6 Sol/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /GPT-5\.5/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /GPT-5\.4/ })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Custom model…" })).toBeInTheDocument();
+		expect(screen.getByRole("searchbox", { name: "Search worker model" })).toBeInTheDocument();
+	});
+
+	it("does not allow arbitrary model text for configured-only agents", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents") return agentCatalogResponse;
+			if (path === "/api/v1/agents/{agent}/models") {
+				return {
+					data: {
+						agentId: "opencode",
+						selectionMode: "catalog",
+						models: [],
+						customModelEntry: "configured",
+						allowCustom: false,
+						source: "manual",
+						fetchedAt: "2026-08-29T00:00:00Z",
+						stale: false,
+					},
+					error: undefined,
+				};
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						id: "proj-1",
+						name: "Project One",
+						kind: "single_repo",
+						path: "/repo/project-one",
+						repo: "",
+						defaultBranch: "main",
+						config: { worker: { agent: "opencode" }, orchestrator: { agent: "opencode" } },
+					},
+				},
+				error: undefined,
+			};
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+
+		const workerModel = await screen.findByRole("button", { name: "Worker model" });
+		expect(screen.queryByRole("textbox", { name: "Worker model" })).not.toBeInTheDocument();
+		await userEvent.click(workerModel);
+		expect(screen.getByText("Configure the model in opencode, then refresh.")).toBeInTheDocument();
 	});
 
 
@@ -1085,7 +1124,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(await screen.findByRole("button", { name: "Default reviewer agent" }));
 		const reviewerLabels = (await screen.findAllByRole("menuitem"))
 			.map((option) => option.textContent)
-			.filter((label) => label !== "Project default" && label !== "Custom model…");
+			.filter((label) => label !== "Project default" && label !== "Enter model ID…");
 
 		expect(reviewerLabels).toEqual([
 			"Claude Code",
@@ -1093,7 +1132,6 @@ describe("ProjectSettingsForm", () => {
 			"Cursor",
 			"OpenCode",
 			"GitHub Copilot",
-			"Goose",
 			"Kilo Code",
 			"Pi",
 			"KiroAuth unknown",
@@ -1108,9 +1146,8 @@ describe("ProjectSettingsForm", () => {
 			path: "/repo/project-one",
 			repo: "",
 			defaultBranch: "main",
-			config: { worker: { agent: "qwen" }, orchestrator: { agent: "claude-code" } },
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
 		};
-		const qwen = agentReadiness("qwen", "Qwen Code");
 		const devin = agentReadiness("devin", "Devin");
 		const droid = agentReadiness("droid", "Droid");
 		const kimi = agentReadiness("kimi", "Kimi");
@@ -1121,16 +1158,14 @@ describe("ProjectSettingsForm", () => {
 			agentReadiness("auggie", "Auggie"),
 			agentReadiness("autohand", "Autohand"),
 			agentReadiness("cline", "Cline"),
-			agentReadiness("continue", "Continue"),
 			agentReadiness("crush", "Crush"),
 			agentReadiness("grok", "Grok"),
-			agentReadiness("vibe", "Vibe"),
 		];
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
 					data: {
-						agents: [...agentCatalogResponse.data.agents, qwen, devin, droid, kimi, aider, amp, ...experimental],
+						agents: [...agentCatalogResponse.data.agents, devin, droid, kimi, aider, amp, ...experimental],
 					},
 					error: undefined,
 				};
@@ -1144,11 +1179,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(reviewer);
 		const options = await screen.findAllByRole("menuitem");
 		const labels = options.map((option) => option.textContent);
-		expect(labels).toContain("Qwen Code");
 		expect(labels).toContain("Agy");
-		expect(labels).toContain("Continue");
-		expect(labels).toContain("Goose");
-		expect(labels).toContain("Vibe");
 		expect(labels).toContain("Devin");
 		expect(labels).toContain("Droid");
 		expect(labels).toContain("Kimi");
@@ -1493,6 +1524,48 @@ describe("ProjectSettingsForm", () => {
 		expect(body.config.trackerIntake).toEqual({
 			enabled: true,
 			assignee: "octocat",
+		});
+	});
+
+	it("preserves explicit provider and unmodeled tracker intake fields on save", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				status: "ok",
+				project: {
+					id: "proj-1",
+					name: "Project One",
+					kind: "single_repo",
+					path: "/repo/project-one",
+					repo: "git@gitlab.example.com:acme/project-one.git",
+					defaultBranch: "main",
+					config: {
+						worker: { agent: "codex" },
+						orchestrator: { agent: "claude-code" },
+						trackerIntake: {
+							enabled: true,
+							provider: "gitlab",
+							repo: "acme/project-one",
+							assignee: "octocat",
+							labels: ["agent-ready"],
+						},
+					},
+				},
+			},
+			error: undefined,
+		});
+
+		renderSettings("proj-1", undefined, "general");
+		await screen.findByRole("button", { name: "Edit Project name" });
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const body = putMock.mock.calls[0]?.[1]?.body;
+		expect(body.config.trackerIntake).toEqual({
+			enabled: true,
+			provider: "gitlab",
+			repo: "acme/project-one",
+			assignee: "octocat",
+			labels: ["agent-ready"],
 		});
 	});
 

@@ -26,6 +26,7 @@ export function createWindowComposition(options: {
 	mainWindow: MainWindowHost;
 	WebContentsView: WebContentsViewConstructor;
 	preload: string;
+	platform: NodeJS.Platform;
 }): WindowComposition {
 	const shellView = new options.WebContentsView({
 		webPreferences: {
@@ -79,8 +80,11 @@ export function createWindowComposition(options: {
 		// geometry change rebuilds it. (Symptom: blank on a fresh launch, but
 		// correct at every size once the window has been resized or fullscreened
 		// even once.) Re-applying identical bounds is a no-op, so nudge the height
-		// by a pixel and restore it on the next tick to force a real resize.
-		if (open) forceSurfaceRefresh();
+		// by a pixel and restore it on the next tick to force a real resize. Keep
+		// that workaround macOS-only: on Windows, resizing the transparent shell while a
+		// maximized native browser view is underneath can invalidate that shell
+		// to opaque black for the lifetime of the overlay.
+		if (open && options.platform === "darwin") forceSurfaceRefresh();
 	};
 
 	resize();
@@ -91,8 +95,13 @@ export function createWindowComposition(options: {
 		setOverlayOpen,
 		resize,
 		dispose: () => {
-			options.mainWindow.contentView.removeListener("bounds-changed", resize);
 			try {
+				// Reading `contentView` on an already-destroyed BaseWindow throws
+				// "Object has been destroyed". On window close the `closed` event
+				// fires after the native window is gone, so both calls here can
+				// throw — keep them together and out of the way of the shell
+				// WebContents teardown below, which must always run.
+				options.mainWindow.contentView.removeListener("bounds-changed", resize);
 				options.mainWindow.contentView.removeChildView(shellView);
 			} catch {
 				// The BaseWindow may already have destroyed its content hierarchy.

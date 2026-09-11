@@ -194,7 +194,11 @@ func basePRFixture() *prFixture {
 						"mergeable":        "MERGEABLE",
 						"mergeStateStatus": "CLEAN",
 						"reviewDecision":   "APPROVED",
-						"headRefOid":       "deadbeef",
+						"author": map[string]any{
+							"login":     "octocat",
+							"avatarUrl": "https://avatars.githubusercontent.com/u/583231?v=4",
+						},
+						"headRefOid": "deadbeef",
 						"commits": map[string]any{"nodes": []any{
 							map[string]any{"commit": map[string]any{
 								"oid": "deadbeef",
@@ -307,6 +311,8 @@ func TestRestListPullToSCMCarriesHeadRepo(t *testing.T) {
 	pull.Head.SHA = "deadbeef"
 	pull.Head.Repo.FullName = "forker/hello"
 	pull.Base.Ref = "main"
+	pull.User.Login = "octocat"
+	pull.User.AvatarURL = "https://avatars.githubusercontent.com/u/583231?v=4"
 
 	obs := restListPullToSCM(pull)
 	if obs.SourceBranch != "feat/x" {
@@ -314,6 +320,9 @@ func TestRestListPullToSCMCarriesHeadRepo(t *testing.T) {
 	}
 	if obs.HeadRepo != "forker/hello" {
 		t.Fatalf("HeadRepo = %q, want forker/hello", obs.HeadRepo)
+	}
+	if obs.Author != "octocat" || obs.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/583231?v=4" {
+		t.Fatalf("author = %q avatar = %q", obs.Author, obs.AuthorAvatarURL)
 	}
 }
 
@@ -1294,6 +1303,9 @@ func TestSCMObservationCarriesStableIDAndRequestedURLAlias(t *testing.T) {
 	}
 	if obs.Repo != "new-owner/hello" {
 		t.Fatalf("Repo = %q, want canonical new-owner/hello", obs.Repo)
+	}
+	if obs.PR.Author != "octocat" || obs.PR.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/583231?v=4" {
+		t.Fatalf("author = %q avatar = %q", obs.PR.Author, obs.PR.AuthorAvatarURL)
 	}
 }
 

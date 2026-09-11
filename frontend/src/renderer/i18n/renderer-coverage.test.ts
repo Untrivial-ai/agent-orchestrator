@@ -60,6 +60,7 @@ const deferredLocalizationFiles = new Set([
 	"components/chat/ContextMeter.tsx",
 	"components/chat/CopyButton.tsx",
 	"components/chat/ElicitationCard.tsx",
+	"components/chat/MermaidBlock.tsx",
 	"components/chat/SessionChatSurface.tsx",
 	"components/chat/TurnPlan.tsx",
 	"components/chat/TurnSettingsBar.tsx",

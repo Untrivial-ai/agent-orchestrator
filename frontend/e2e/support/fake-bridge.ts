@@ -69,19 +69,26 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 			// resolves — an incomplete object would throw the moment the app touched
 			// a missing method.
 			const ao = {
-				app: {
-					getVersion: async () => version,
-					chooseDirectory: async () => null,
-					openExternal: async () => undefined,
-					scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
-					checkAncestorRepo: async () => undefined,
-					getPathForFile: () => "",
+					app: {
+						getVersion: async () => version,
+						chooseDirectory: async () => null,
+						checkGitRepository: async () => true,
+						openExternal: async () => undefined,
+						scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
+						checkAncestorRepo: async () => undefined,
+						getRepositoryBranch: async () => undefined,
+						getGitHubLogin: async () => "",
+						getCachedGitHubOwners: async () => [],
+						refreshGitHubOwners: async () => [],
+						checkGitHubRepositoryAvailability: async () => ({ available: true }),
+						getPathForFile: () => "",
 					onOpenFolderPath: () => () => undefined,
 					onNewSessionShortcut: unsubscribe,
 					onKeyboardShortcutsHelp: unsubscribe,
 					onNewShellTerminalShortcut: unsubscribe,
 					onCloseShellTerminalShortcut: unsubscribe,
 					setCloseShellTerminalShortcutEnabled: () => undefined,
+					setChatDraftRisk: () => undefined,
 					onOpenSettingsShortcut: unsubscribe,
 					onPreviousSessionShortcut: unsubscribe,
 					onNextSessionShortcut: unsubscribe,
@@ -133,6 +140,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				telemetry: {
 					getBootstrap: async () => null,
+					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					onPolicy: () => () => false,
+					onClearQueues: () => () => false,
+					capture: async () => false,
+					signalAgentSwitchVisibility: () => false,
 				},
 				browser: {
 					nativeCompositionEnabled: true,
@@ -168,6 +181,14 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					}),
 					getProfile: async (viewId: string) => ({ viewId, profileId: null, temporary: true }),
 					showProfileMenu: async () => undefined,
+					selectProfile: async () => undefined,
+					captureScreenshot: async () => undefined,
+					downloads: {
+						list: async () => ({ downloads: [] }),
+						action: async () => ({ downloads: [] }),
+						clear: async () => ({ downloads: [] }),
+						onChanged: unsubscribe,
+					},
 					notifyPanelUsed: () => undefined,
 					notifyPanelBlur: () => undefined,
 					onFocusLocation: unsubscribe,
@@ -354,9 +375,11 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 	const projectName = opts.projectName ?? "fake-proj";
 	const platform = opts.platform ?? null;
 	const workers = opts.workers ?? [];
+	// Renderer reload does not create a new daemon session incarnation.
+	const nowIso = new Date().toISOString();
 
 	await page.addInitScript(
-		({ version, daemonPort, projectId, projectName, platform, workers }) => {
+		({ version, daemonPort, projectId, projectName, platform, workers, nowIso }) => {
 			if (platform) {
 				try {
 					Object.defineProperty(navigator, "platform", { get: () => platform, configurable: true });
@@ -365,7 +388,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				}
 			}
 
-			const nowIso = new Date().toISOString();
 			type Session = Record<string, unknown>;
 			// The daemon derives the board lane; the fake stands in for it so
 			// driving a spec's status through setStatus still moves the card.
@@ -587,19 +609,26 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				...(error ? { error } : {}),
 			});
 			const ao = {
-				app: {
-					getVersion: async () => version,
-					chooseDirectory: async () => null,
-					openExternal: async () => undefined,
-					scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
-					checkAncestorRepo: async () => undefined,
-					getPathForFile: () => "",
+					app: {
+						getVersion: async () => version,
+						chooseDirectory: async () => null,
+						checkGitRepository: async () => true,
+						openExternal: async () => undefined,
+						scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
+						checkAncestorRepo: async () => undefined,
+						getRepositoryBranch: async () => undefined,
+						getGitHubLogin: async () => "",
+						getCachedGitHubOwners: async () => [],
+						refreshGitHubOwners: async () => [],
+						checkGitHubRepositoryAvailability: async () => ({ available: true }),
+						getPathForFile: () => "",
 					onOpenFolderPath: () => () => undefined,
 					onNewSessionShortcut: unsubscribe,
 					onKeyboardShortcutsHelp: unsubscribe,
 					onNewShellTerminalShortcut: unsubscribe,
 					onCloseShellTerminalShortcut: unsubscribe,
 					setCloseShellTerminalShortcutEnabled: () => undefined,
+					setChatDraftRisk: () => undefined,
 					onOpenSettingsShortcut: unsubscribe,
 					onPreviousSessionShortcut: unsubscribe,
 					onNextSessionShortcut: unsubscribe,
@@ -646,7 +675,15 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					}),
 					open: async () => ({ id: "cursor" as const, name: "Cursor", kind: "editor" as const }),
 				},
-				telemetry: { getBootstrap: async () => null },
+				telemetry: {
+					getBootstrap: async () => null,
+					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					onPolicy: () => () => false,
+					onClearQueues: () => () => false,
+					capture: async () => false,
+					signalAgentSwitchVisibility: () => false,
+				},
 				browser: {
 					nativeCompositionEnabled: true,
 					ensure: async (sessionId: string) => navState(`preview:${sessionId}`),
@@ -682,6 +719,14 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					}),
 					getProfile: async (viewId: string) => ({ viewId, profileId: null, temporary: true }),
 					showProfileMenu: async () => undefined,
+					selectProfile: async () => undefined,
+					captureScreenshot: async () => undefined,
+					downloads: {
+						list: async () => ({ downloads: [] }),
+						action: async () => ({ downloads: [] }),
+						clear: async () => ({ downloads: [] }),
+						onChanged: unsubscribe,
+					},
 					notifyPanelUsed: () => undefined,
 					notifyPanelBlur: () => undefined,
 					onFocusLocation: unsubscribe,
@@ -776,6 +821,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
-		{ version, daemonPort, projectId, projectName, platform, workers },
+		{ version, daemonPort, projectId, projectName, platform, workers, nowIso },
 	);
 }

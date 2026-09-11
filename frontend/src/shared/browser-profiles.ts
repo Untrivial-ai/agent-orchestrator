@@ -75,6 +75,12 @@ export type BrowserProfileMenuInput = {
 	labels: BrowserProfileMenuLabels;
 };
 
+export type BrowserProfileSelectInput = {
+	viewId: string;
+	profileId: BrowserProfileId | null;
+	labels: BrowserProfileMenuLabels;
+};
+
 export function isBrowserProfileId(value: unknown): value is BrowserProfileId {
 	return typeof value === "string" && UUID_PATTERN.test(value);
 }

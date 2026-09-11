@@ -1,5 +1,6 @@
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui";
 import { cn } from "../../lib/utils";
+import { composeMenuCloseAutoFocus, useMenuReturnTarget } from "./menu-focus";
 import {
 	actionMenuContentClass,
 	actionMenuItemClass,
@@ -14,11 +15,15 @@ export const ContextMenuPortal = ContextMenuPrimitive.Portal;
 
 export function ContextMenuContent({
 	className,
+	onCloseAutoFocus,
 	...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+	const rememberReturnTarget = useMenuReturnTarget<HTMLDivElement>();
 	return (
 		<ContextMenuPrimitive.Portal>
 			<ContextMenuPrimitive.Content
+				ref={rememberReturnTarget}
+				onCloseAutoFocus={composeMenuCloseAutoFocus(onCloseAutoFocus)}
 				className={cn(
 					actionMenuContentClass,
 					"origin-(--radix-context-menu-content-transform-origin)",

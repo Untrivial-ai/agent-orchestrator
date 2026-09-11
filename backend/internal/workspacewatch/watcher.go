@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -113,6 +114,31 @@ type gitWorkspace struct {
 }
 
 func discoverGitWorkspace(ctx context.Context, root string) gitWorkspace {
+	// Git searches upward for a repository, so rev-parse can resolve a parent
+	// repo (or a stray .git above the workspace) instead of one that belongs
+	// to this workspace. Trusting that answer watches almost nothing: the git
+	// file list is empty for the workspace, so only the root directory is
+	// registered and the non-recursive fsnotify backends never see changes in
+	// subdirectories. Only use the git-derived watch set when the repository
+	// actually has this workspace as its toplevel.
+	topRaw, err := aoprocess.CommandContext(ctx, "git", "-C", root, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return gitWorkspace{}
+	}
+	// Git prints forward slashes on Windows and canonicalizes the toplevel
+	// through symlinks, so the reported path may differ textually from root
+	// while naming the same directory. Compare the strings first (folding
+	// case on Windows, where the filesystem is case-insensitive), then fall
+	// back to filesystem identity for symlinked roots.
+	toplevel := filepath.Clean(filepath.FromSlash(strings.TrimSpace(string(topRaw))))
+	samePath := toplevel == root || (runtime.GOOS == "windows" && strings.EqualFold(toplevel, root))
+	if !samePath {
+		topInfo, topErr := os.Stat(toplevel)
+		rootInfo, rootErr := os.Stat(root)
+		if topErr != nil || rootErr != nil || !os.SameFile(topInfo, rootInfo) {
+			return gitWorkspace{}
+		}
+	}
 	gitDirRaw, err := aoprocess.CommandContext(ctx, "git", "-C", root, "rev-parse", "--absolute-git-dir").Output()
 	if err != nil {
 		return gitWorkspace{}

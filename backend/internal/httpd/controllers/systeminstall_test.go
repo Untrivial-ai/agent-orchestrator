@@ -205,6 +205,16 @@ func TestPostSystemInstall_UnknownTarget(t *testing.T) {
 	if installer.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0 (unknown target must never reach the service)", installer.startCalls)
 	}
+
+	// Harness-only targets belong to /agents/{agent}/install and must not widen
+	// the legacy /system/install contract beyond its documented enum.
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/system/install/cursor", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("POST /system/install/cursor = %d, want %d, body=%s", status, http.StatusBadRequest, body)
+	}
+	if installer.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 (agent-only target must never reach the system route)", installer.startCalls)
+	}
 }
 
 func TestPostSystemInstall_NotImplemented(t *testing.T) {

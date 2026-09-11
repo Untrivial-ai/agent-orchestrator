@@ -5,6 +5,10 @@ const ROOT_BUILD_TOOLS = ["corepack", "corepack.cmd", "npm", "npm.cmd", "npx", "
 const BIN_BUILD_TOOLS = ["corepack", "npm", "npx"];
 const BUILD_ONLY_CONTENT = ["include", "lib", "node_modules", "share", "CHANGELOG.md", "README.md"];
 
+export function runtimeSourceFiles() {
+	return ["package.json", "package-lock.json"];
+}
+
 export function createWorkDirectory(outputRoot) {
 	// Windows runners commonly keep the checkout on D: and the OS temp directory
 	// on C:. Keep extraction beside its destination so the final rename remains

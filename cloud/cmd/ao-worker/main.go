@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/workerexec"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/workertransport"
@@ -242,6 +244,9 @@ func run(logger *slog.Logger) error {
 		Control: client, Workspace: workspace, Logger: logger,
 		AgentCommand: agentCommand, AgentTerminalID: agentTerminalID,
 		Started: started,
+	}
+	if os.Getenv("AO_CLOUD_TERMINAL_STREAM") == "1" {
+		transportSupervisor.Streams = client
 	}
 	results := make(chan error, 5)
 	go func() { results <- client.heartbeatLoop(runCtx, logger) }()
@@ -539,6 +544,28 @@ func (c *client) PublishTerminalOutput(
 		worker.TerminalOutputRequest{Data: data},
 		nil,
 	)
+}
+
+// DialTerminalStream opens the persistent duplex terminal stream. The token
+// is presented at dial time; the socket then lives until the control plane
+// retires it (worker epoch bump or terminal close).
+func (c *client) DialTerminalStream(
+	ctx context.Context,
+	terminalID string,
+) (*websocket.Conn, error) {
+	streamURL := c.baseURL + "/worker/terminals/" + url.PathEscape(terminalID) + "/stream"
+	if strings.HasPrefix(streamURL, "http") {
+		streamURL = "ws" + strings.TrimPrefix(streamURL, "http")
+	}
+	header := http.Header{}
+	if token := c.currentToken(); token != "" {
+		header.Set("Authorization", "Worker "+token)
+	}
+	conn, _, err := websocket.Dial(ctx, streamURL, &websocket.DialOptions{
+		HTTPClient: c.http,
+		HTTPHeader: header,
+	})
+	return conn, err
 }
 
 func (c *client) ensureAgentTerminal(

@@ -37,6 +37,7 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 // TestSpawnCommand_MissingProjectContext asserts `ao spawn` gives a project
 // setup hint when neither --project, AO_PROJECT_ID, nor cwd can resolve one.
 func TestSpawnCommand_MissingProjectContext(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +275,56 @@ func TestSpawnCommand_RejectsOverlongName(t *testing.T) {
 	}
 }
 
+func TestSpawnConfirmationIncludesDisplayName(t *testing.T) {
+	// Issue #2592: the confirmation line echoed only the session id, forcing a
+	// follow-up lookup to map the id back to the --name just passed.
+	tests := []struct {
+		name        string
+		sessionJSON string
+		want        string
+	}{
+		{
+			name:        "daemon echoes displayName",
+			sessionJSON: `{"id":"demo-11","status":"idle","displayName":"worker"}`,
+			want:        `spawned session demo-11 "worker" (idle)`,
+		},
+		{
+			name:        "daemon omits displayName falls back to --name",
+			sessionJSON: `{"id":"demo-11","status":"idle"}`,
+			want:        `spawned session demo-11 "worker" (idle)`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+					_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo","config":{"worker":{"agent":"codex"}}}}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+					_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+					_, _ = io.WriteString(w, `{"session":`+tt.sessionJSON+`,"promptBytes":0,"systemPromptBytes":0}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+
+			out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+				"spawn", "--project", "demo", "--agent", "codex", "--name", "worker")
+			if err != nil {
+				t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Fatalf("confirmation missing display name:\nwant %q\n got %q", tt.want, out)
+			}
+		})
+	}
+}
+
 func TestSpawnResolvesProjectFromEnvAndDefaultAgent(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
@@ -387,6 +438,7 @@ func TestSpawnAOSessionIDFailureRequiresProject(t *testing.T) {
 }
 
 func TestSpawnResolvesProjectFromCWD(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	repo := filepath.Join(t.TempDir(), "repo")
 	subdir := filepath.Join(repo, "pkg")
@@ -434,6 +486,7 @@ func TestSpawnResolvesProjectFromCWD(t *testing.T) {
 }
 
 func TestSpawnDefaultsToScratchWhenOnlyActiveProject(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest

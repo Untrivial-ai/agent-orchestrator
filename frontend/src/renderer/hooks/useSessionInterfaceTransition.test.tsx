@@ -450,6 +450,62 @@ describe("session-scoped interface transition mutations", () => {
 			});
 		},
 	);
+
+	it("clears a local start refusal once another client opens a newer transition", async () => {
+		getMock.mockResolvedValue({
+			data: { supported: false, targetMode: "tui", reasonCode: "NATIVE_SESSION_MISSING" },
+			error: undefined,
+		});
+		postMock.mockResolvedValue({ data: undefined, error: { code: "NATIVE_SESSION_MISSING" } });
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-a"), {
+			wrapper: HookWrapper,
+		});
+
+		await act(async () => {
+			await result.current.start({ targetMode: "tui", policy: "drain" }).catch(() => {});
+		});
+		await waitFor(() => expect(result.current.startError).toBe("request failed"));
+
+		// Another client starts and progresses the switch; this client's poll picks
+		// up the durable row, whose createdAt is newer than the refused attempt.
+		getMock.mockResolvedValue({
+			data: {
+				supported: true,
+				targetMode: "tui",
+				transition: {
+					id: "transition-remote",
+					sessionId: "session-a",
+					phase: "draining",
+					policy: "drain",
+					sourceMode: "chat",
+					targetMode: "tui",
+					createdAt: "2099-01-01T00:00:00Z",
+					updatedAt: "2099-01-01T00:00:00Z",
+				},
+			},
+			error: undefined,
+		});
+		await act(async () => {
+			await queryClient.invalidateQueries({
+				queryKey: ["session-interface-transition", "session-a"],
+			});
+		});
+
+		await waitFor(() => expect(result.current.transition?.id).toBe("transition-remote"));
+		expect(result.current.startError).toBeUndefined();
+		// The stale mutation state is dropped, so the refusal cannot reappear.
+		expect(
+			queryClient
+				.getMutationCache()
+				.findAll({ mutationKey: ["start-session-interface-transition"] }),
+		).toHaveLength(0);
+	});
 });
 
 describe("interface switch readiness", () => {
@@ -617,6 +673,40 @@ describe("interface switch readiness", () => {
 		await waitFor(() => expect(result.current.status?.supported).toBe(false));
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
 		expect(getMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("forces a durable status read when a start response is ambiguous", async () => {
+		const transition = {
+			id: "transition-after-response-loss",
+			sessionId: "session-1",
+			sourceMode: "chat" as const,
+			targetMode: "tui" as const,
+			policy: "interrupt" as const,
+			phase: "requested" as const,
+			createdAt: "2026-08-26T10:00:00Z",
+			updatedAt: "2026-08-26T10:00:00Z",
+		};
+		getMock
+			.mockResolvedValueOnce({
+				data: { supported: true, targetMode: "tui" },
+				error: undefined,
+			})
+			.mockResolvedValueOnce({
+				data: { supported: true, targetMode: "tui", transition },
+				error: undefined,
+			});
+
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-1"), {
+			wrapper,
+		});
+		await waitFor(() => expect(result.current.status?.supported).toBe(true));
+		let status: Awaited<ReturnType<typeof result.current.refreshStatus>> | undefined;
+		await act(async () => {
+			status = await result.current.refreshStatus();
+		});
+
+		expect(status?.transition?.id).toBe(transition.id);
+		expect(getMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("acknowledges the exact transition and replaces the cached notice with the durable response", async () => {

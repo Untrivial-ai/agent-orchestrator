@@ -243,17 +243,16 @@ func (s requestPlanner) planPiOfficialInstaller() Plan {
 }
 
 func (s requestPlanner) planKiroInstall() Plan {
-	plan := s.officialByOS(TargetKiro,
+	if s.goos == "darwin" {
+		return manualPlan(
+			TargetKiro,
+			"Kiro's official macOS installer writes an app bundle to /Applications and must be run interactively. Follow Kiro's installation guide, then refresh harness status.",
+			agentDocumentationURLs[TargetKiro],
+		)
+	}
+	return s.officialByOS(TargetKiro,
 		"https://cli.kiro.dev/install", "bash",
 		"https://cli.kiro.dev/install.ps1", agentDocumentationURLs[TargetKiro])
-	if s.goos != "darwin" || plan.Unsupported {
-		return plan
-	}
-	if s.capabilities == nil || s.capabilities.MacApplicationsWritableErr != nil || !s.capabilities.MacApplicationsWritable {
-		plan.Unsupported = true
-		plan.Reason = "/Applications is not writable by the current user. AO will not request administrator access; use Kiro's installation instructions."
-	}
-	return plan
 }
 
 func (s requestPlanner) planForOperation(plan Plan, operation AgentOperation) Plan {

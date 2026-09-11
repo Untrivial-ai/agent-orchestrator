@@ -156,6 +156,12 @@ type chatSpawn struct {
 // first so no app-server process is left behind holding the worktree.
 func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domain.SessionRecord, error) {
 	id := in.record.ID
+	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, in.cfg.Harness)
+	if err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
+		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
+	}
+	defer releaseCodexAdmission()
 	agentConfig := applySpawnAgentConfig(
 		effectiveAgentConfig(in.cfg.Kind, in.project.Config),
 		in.cfg.AgentConfig,
@@ -169,12 +175,15 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	// Chat Service retains this unprivileged base environment. The bearer is
 	// minted inside its per-session launch gate and is never cached for reuse.
 	env := m.runtimeEnv(id, in.record.ProjectID, in.record.IssueID, in.project.Config.Env)
+	if agent, ok := m.agents.Agent(in.cfg.Harness); ok {
+		m.augmentAgentRuntimeEnv(agent, env)
+	}
 
 	var (
 		controllerCommitted bool
 		completionErr       error
 	)
-	_, err := m.chat.StartChat(ctx, ChatStart{
+	_, err = m.chat.StartChat(ctx, ChatStart{
 		SessionID:               id,
 		ProjectID:               in.cfg.ProjectID,
 		Kind:                    in.cfg.Kind,
@@ -194,11 +203,15 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			if prepareErr != nil {
 				return nil, fmt.Errorf("%w: %w", ErrSpawnBrowser, prepareErr)
 			}
+			if agent, ok := m.agents.Agent(in.cfg.Harness); ok {
+				m.augmentAgentRuntimeEnv(agent, launchEnv)
+			}
 			in.record = prepared
 			return launchEnv, nil
 		},
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := domain.SessionMetadata{
+				Permissions:       in.record.Metadata.Permissions,
 				Branch:            in.workspace.Branch,
 				WorkspacePath:     in.workspace.Path,
 				WorkspaceRepoPath: in.workspace.RepoPath,
@@ -351,6 +364,11 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
 			operation, rec.ID, ports.ErrChatUnsupported)
 	}
+	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, rec.Harness)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
+	}
+	defer releaseCodexAdmission()
 
 	// Recomputed rather than persisted, matching the terminal path: a restored
 	// session keeps its standing instructions across the relaunch.
@@ -364,11 +382,17 @@ func (m *Manager) resumeChatController(
 	}
 
 	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	if rec.Metadata.Permissions != "" {
+		agentConfig.Permissions = rec.Metadata.Permissions
+	}
 	additionalDirectories, err := m.restoredWorkspaceProjectDirectories(ctx, rec, project, ws.Path)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: workspace roots: %w", operation, rec.ID, err)
 	}
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	if agent, ok := m.agents.Agent(rec.Harness); ok {
+		m.augmentAgentRuntimeEnv(agent, env)
+	}
 	providerScopeID, err := m.historicalChatProviderScopeID(ctx, rec)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
@@ -393,6 +417,9 @@ func (m *Manager) resumeChatController(
 			)
 			if prepareErr != nil {
 				return nil, prepareErr
+			}
+			if agent, ok := m.agents.Agent(rec.Harness); ok {
+				m.augmentAgentRuntimeEnv(agent, launchEnv)
 			}
 			rec = prepared
 			return launchEnv, nil

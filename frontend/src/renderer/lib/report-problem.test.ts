@@ -99,7 +99,8 @@ describe("report problem drafts", () => {
 		const draft = formatReportProblemDraft({ summary: "", details: "" }, diagnostics, "email");
 
 		expect(draft).toContain("AO feedback");
-		expect(draft).toContain("To: prateek@untrivial.ai");
+		expect(draft).toContain("To: prasad@untrivial.ai");
+		expect(draft).toContain("Cc: prateek@untrivial.ai");
 		expect(draft).toContain("Not provided");
 		expect(draft).toContain("Safe diagnostics");
 		expect(draft).toContain("AO version: 1.2.3-test");
@@ -133,7 +134,8 @@ describe("report problem drafts", () => {
 
 		const email = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email")!);
 		expect(email.protocol).toBe("mailto:");
-		expect(email.pathname).toBe("prateek@untrivial.ai");
+		expect(email.pathname).toBe("prasad@untrivial.ai");
+		expect(email.searchParams.get("cc")).toBe("prateek@untrivial.ai");
 		expect(email.searchParams.get("subject")).toBe("AO feedback: Terminal keeps reconnecting after daemon restart");
 		expect(email.searchParams.get("body")).toContain("AO feedback");
 		expect(email.searchParams.get("body")).toContain("AO version: 1.2.3-test");

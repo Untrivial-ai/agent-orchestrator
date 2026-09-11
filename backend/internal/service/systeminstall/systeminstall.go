@@ -90,9 +90,19 @@ var agentTargetSet = func() map[Target]bool {
 	return out
 }()
 
+// systemTargetSet is the stable contract of the legacy /system/install route.
+// Agent-only targets use /agents/{agent}/install instead.
+var systemTargetSet = map[Target]bool{
+	TargetTmux: true, TargetGH: true, TargetClaude: true, TargetCloudflared: true,
+	TargetCodex: true, TargetOpencode: true, TargetCopilot: true,
+}
+
 // knownTargets is the exhaustive allowlist backing Valid.
 var knownTargets = func() map[Target]bool {
-	out := map[Target]bool{TargetTmux: true, TargetGH: true, TargetClaude: true, TargetCloudflared: true}
+	out := make(map[Target]bool, len(systemTargetSet)+len(agentTargets))
+	for target := range systemTargetSet {
+		out[target] = true
+	}
 	for _, target := range agentTargets {
 		out[target] = true
 	}
@@ -101,6 +111,10 @@ var knownTargets = func() map[Target]bool {
 
 // IsAgentTarget reports whether target is a user-facing harness id.
 func IsAgentTarget(target Target) bool { return agentTargetSet[target] }
+
+// IsSystemTarget reports whether target belongs to the legacy system-install
+// route documented by InstallTargetParam.
+func IsSystemTarget(target Target) bool { return systemTargetSet[target] }
 
 // Valid reports whether target is a known prerequisite or agent install target.
 func Valid(target Target) bool {
@@ -118,7 +132,7 @@ func Resolve(goos string, lookPath func(string) (string, error), target Target) 
 	if !Valid(target) {
 		return Plan{Target: target, Unsupported: true, Reason: "unknown install target"}
 	}
-	return (&Service{goos: goos, executables: executableFinderFunc(lookPath)}).planFor(target)
+	return (&Service{goos: goos, executables: executableFinderFunc(lookPath)}).resolvePlan(target)
 }
 
 type executableFinderFunc func(string) (string, error)
@@ -398,6 +412,11 @@ func (s *Service) AgentPlans(ctx context.Context) ([]AgentPlan, error) {
 }
 
 func recommendedPlanIndex(plans []Plan) int {
+	for index, plan := range plans {
+		if plan.Method == "official-installer" && !plan.Unsupported {
+			return index
+		}
+	}
 	for index, plan := range plans {
 		if !plan.Unsupported {
 			return index

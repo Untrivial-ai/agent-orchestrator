@@ -1107,14 +1107,20 @@ func TestStartRefusesLinuxRootInstall(t *testing.T) {
 // Resolve is the seam the CLI consumes; it must agree with the Service's own
 // planner rather than being a second implementation of the same table.
 func TestResolveMatchesServicePlan(t *testing.T) {
-	lookPath := lookPathFound("brew")
-	got := Resolve("darwin", lookPath, TargetTmux)
-	want := (&Service{goos: "darwin", executables: executableFinderFunc(lookPath)}).planFor(TargetTmux)
-	if strings.Join(got.Command, " ") != strings.Join(want.Command, " ") {
-		t.Fatalf("Resolve Command = %v, want %v", got.Command, want.Command)
-	}
-	if got.Unsupported != want.Unsupported {
-		t.Fatalf("Resolve Unsupported = %v, want %v", got.Unsupported, want.Unsupported)
+	lookPath := lookPathFound("brew", "curl", "bash")
+	service := &Service{goos: "darwin", executables: executableFinderFunc(lookPath)}
+	for _, target := range []Target{TargetTmux, TargetCursor} {
+		got := Resolve("darwin", lookPath, target)
+		want := service.resolvePlan(target)
+		if strings.Join(got.Command, " ") != strings.Join(want.Command, " ") {
+			t.Fatalf("Resolve(%q) Command = %v, want %v", target, got.Command, want.Command)
+		}
+		if got.Unsupported != want.Unsupported {
+			t.Fatalf("Resolve(%q) Unsupported = %v, want %v", target, got.Unsupported, want.Unsupported)
+		}
+		if got.Method != want.Method {
+			t.Fatalf("Resolve(%q) Method = %q, want %q", target, got.Method, want.Method)
+		}
 	}
 	if unknown := Resolve("linux", lookPath, Target("nope")); !unknown.Unsupported {
 		t.Fatal("Resolve of an unknown target must be Unsupported")

@@ -523,6 +523,109 @@ describe("SessionsBoard", () => {
 		expect(working.querySelector('[aria-hidden="true"]')).toHaveClass("animate-spin");
 	});
 
+	// A multi-PR session aggregates `status` from its worst open PR while
+	// `displayStatus` comes from its best one, so a settled "Mergeable" card can
+	// carry status `review_pending`. The loader must follow the label the card
+	// actually shows, not the hidden aggregate, or an idle session spins forever.
+	it("does not spin a settled Mergeable card whose worst PR aggregates to review_pending", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-mergeable",
+						title: "mergeable-card-task",
+						status: "review_pending",
+						displayStatus: "Mergeable",
+						kanbanColumn: "ready",
+						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("mergeable-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Mergeable");
+		expect(status.querySelector(".animate-spin")).toBeNull();
+	});
+
+	it("keeps the loader on a Review pending card", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-review-pending",
+						title: "review-pending-card-task",
+						status: "review_pending",
+						displayStatus: "Review pending",
+						kanbanColumn: "needs_review",
+						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("review-pending-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Review pending");
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("keeps the loader on a Mergeable card while its agent is actually working", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-mergeable-active",
+						title: "mergeable-active-task",
+						status: "working",
+						displayStatus: "Mergeable",
+						kanbanColumn: "ready",
+						activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" },
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("mergeable-active-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("paints Closed without merge red while keeping merged status purple", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-closed-without-merge",
+						title: "closed-without-merge-task",
+						status: "idle",
+						displayStatus: "Closed without merge",
+						kanbanColumn: "ready",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("closed-without-merge-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Closed without merge");
+		expect(status).toHaveClass("text-status-exited");
+		expect(status).not.toHaveClass("text-status-ready", "text-status-merged");
+	});
+
 	it("keeps a spawning card labeled Working when raw activity has not become active", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
@@ -810,6 +913,9 @@ describe("SessionsBoard", () => {
 		expect(terminatedCard).not.toHaveClass("min-h-28");
 		expect(within(terminatedCard!).queryByRole("button", { name: "Open dead worker" })).not.toBeInTheDocument();
 		expect(within(terminatedCard!).getByText("Terminated")).toBeInTheDocument();
+		expect(within(terminatedCard!).getByTestId("session-pr-progress")).toHaveTextContent(
+			"1 of 2 PRs merged · 1 open",
+		);
 		// Agent shown as its brand logo with an accessible name (not a text label).
 		expect(within(terminatedCard!).getByRole("img", { name: "claude-code" })).toBeInTheDocument();
 		expect(screen.getByText("ao/dead-worker")).toBeInTheDocument();
@@ -833,6 +939,27 @@ describe("SessionsBoard", () => {
 		expect(screen.getByRole("button", { name: "Restore dead worker" })).toBeInTheDocument();
 
 		expect(screen.queryByRole("group", { name: "Archive layout" })).not.toBeInTheDocument();
+	});
+
+	it("hides PR progress for a live merged session that has not actually terminated", () => {
+		const liveMergedSession = terminatedSession({
+			id: "s-live-merged",
+			title: "live merged worker",
+			status: "merged",
+			isTerminated: false,
+			kanbanColumn: "ready",
+		});
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([liveMergedSession])],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		const card = screen.getByText("live merged worker").closest<HTMLElement>("[data-testid='board-session-card']");
+		expect(card).not.toBeNull();
+		expect(within(card!).queryByTestId("session-pr-progress")).not.toBeInTheDocument();
 	});
 
 	it("keeps archive cards mounted after collapse so reopen does not remount them", async () => {
@@ -1436,6 +1563,22 @@ describe("SessionsBoard", () => {
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(await screen.findByRole("alert")).toHaveTextContent("Failed to terminate session (500)");
 		expect(screen.getByRole("button", { name: "Terminate merged worker" })).toBeEnabled();
+	});
+
+	it("shows a folder-missing banner when the project root no longer exists on disk", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...workspaceWithSessions([]), folderMissing: true }],
+		});
+		renderBoard("p1");
+		expect(screen.getByText(appI18n.t("home.folderMissing"))).toBeInTheDocument();
+	});
+
+	it("does not show the folder-missing banner when the project folder exists", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...workspaceWithSessions([]), folderMissing: false }],
+		});
+		renderBoard("p1");
+		expect(screen.queryByText(appI18n.t("home.folderMissing"))).not.toBeInTheDocument();
 	});
 });
 

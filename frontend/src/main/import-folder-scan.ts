@@ -13,6 +13,8 @@ export type GitRepoScanResult = {
 	branch: string;
 	remote: string;
 	hasRemote: boolean;
+	isRepo: boolean;
+	hasCommit: boolean;
 	status: "ok" | "error";
 	reason?: string;
 	needsGitInit?: boolean;
@@ -118,6 +120,18 @@ async function resolveDefaultBranch(repoPath: string, options: ScanOptions = {})
 	return "auto";
 }
 
+export async function resolveCheckedOutBranch(repoPath: string, options: ScanOptions = {}): Promise<string | undefined> {
+	try {
+		// Git walks up to an ancestor repository for plain nested folders. AO
+		// initializes those workspace roots separately, so do not inherit its branch.
+		if (await gitOutput(repoPath, ["rev-parse", "--show-prefix"], options)) return undefined;
+		const branch = await gitOutput(repoPath, ["symbolic-ref", "--short", "HEAD"], options);
+		return branch || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function scanGitRepo(
 	repoPath: string,
 	rootPath: string,
@@ -135,6 +149,8 @@ async function scanGitRepo(
 				branch: "",
 				remote: "",
 				hasRemote: false,
+				isRepo: false,
+				hasCommit: false,
 				status: "ok",
 				needsGitInit: true,
 			};
@@ -149,6 +165,8 @@ async function scanGitRepo(
 					branch: "HEAD",
 					remote: "",
 					hasRemote: false,
+					isRepo: true,
+					hasCommit: false,
 					status: "error",
 					reason: "Bare repositories cannot be imported.",
 				};
@@ -163,6 +181,8 @@ async function scanGitRepo(
 			branch: "",
 			remote: "",
 			hasRemote: false,
+			isRepo: false,
+			hasCommit: false,
 			status: "ok",
 			needsGitInit: true,
 		};
@@ -183,9 +203,11 @@ async function scanGitRepo(
 		branch: branchResult.status === "fulfilled" && branchResult.value ? branchResult.value : "HEAD",
 		remote: remoteResult.status === "fulfilled" ? remoteResult.value : "",
 		hasRemote,
+		isRepo: true,
+		hasCommit: hasHead,
 		status: validationReason ? "error" : "ok",
 		reason: validationReason,
-		needsGitInit: !validationReason && (!hasHead || !hasRemote),
+		needsGitInit: false,
 	};
 }
 
@@ -224,10 +246,12 @@ export async function scanImportFolder(
 						name: path.basename(rootPath),
 						path: rootPath,
 						relativePath: ".",
-						branch: "HEAD",
-						remote: "",
-						hasRemote: false,
-						status: "error",
+							branch: "HEAD",
+							remote: "",
+							hasRemote: false,
+							isRepo: false,
+							hasCommit: false,
+							status: "error",
 						reason: safetyReason,
 					},
 				],

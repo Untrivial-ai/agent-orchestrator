@@ -52,9 +52,9 @@ INSERT INTO agent_switches (
     source_generation_id, target_generation_id, target_runtime_handle_id,
     target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT DO NOTHING;
 
@@ -67,7 +67,7 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     source_generation_id, target_generation_id, target_runtime_handle_id,
     target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE id = ?;
 
@@ -80,7 +80,7 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     source_generation_id, target_generation_id, target_runtime_handle_id,
     target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ? AND idempotency_key = ?;
 
@@ -93,7 +93,7 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     source_generation_id, target_generation_id, target_runtime_handle_id,
     target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
   AND state NOT IN ('completed', 'failed');
@@ -108,7 +108,7 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
        source_generation_id, target_generation_id,
        target_runtime_handle_id, target_acknowledged_at,
        error_code, requested_at, updated_at,
-       final_handoff_path, final_handoff_hash
+       final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE state NOT IN ('completed', 'failed');
 
@@ -121,7 +121,7 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     source_generation_id, target_generation_id, target_runtime_handle_id,
     target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
 ORDER BY requested_at DESC, id DESC;
@@ -134,6 +134,7 @@ UPDATE agent_switches SET
     target_generation_id = sqlc.arg(next_target_generation_id),
     target_runtime_handle_id = sqlc.arg(next_target_runtime_handle_id),
     error_code = sqlc.arg(error_code),
+    failure_point = sqlc.arg(failure_point),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND session_id = sqlc.arg(session_id)
@@ -153,12 +154,23 @@ WHERE id = sqlc.arg(id)
   AND (
       target_runtime_handle_id = ''
       OR target_runtime_handle_id = sqlc.arg(next_target_runtime_handle_id)
+  )
+  AND NOT (
+      target_native_session_ref IS sqlc.narg(target_native_session_ref)
+      AND target_start_mode = sqlc.arg(target_start_mode)
+      AND state = sqlc.arg(next_state)
+      AND target_generation_id = sqlc.arg(next_target_generation_id)
+      AND target_runtime_handle_id = sqlc.arg(next_target_runtime_handle_id)
+      AND error_code = sqlc.arg(error_code)
+      AND failure_point = sqlc.arg(failure_point)
+      AND updated_at = sqlc.arg(updated_at)
   );
 
 -- name: FailAgentSwitchIfUnacknowledged :execrows
 UPDATE agent_switches SET
     state = 'failed',
     error_code = sqlc.arg(error_code),
+    failure_point = sqlc.arg(failure_point),
     updated_at = sqlc.arg(failed_at)
 WHERE id = sqlc.arg(id)
   AND session_id = sqlc.arg(session_id)
@@ -315,6 +327,7 @@ WHERE id = sqlc.arg(session_id)
 UPDATE agent_switches SET
     state = 'source_stopped',
 	error_code = '',
+	failure_point = '',
     updated_at = sqlc.arg(stopped_at)
 WHERE id = sqlc.arg(id)
   AND session_id = sqlc.arg(session_id)
@@ -347,28 +360,29 @@ WHERE id = sqlc.arg(session_id)
 -- name: ActivateChatSessionAgentSwitchTarget :execrows
 UPDATE sessions SET
     harness = sqlc.arg(target_harness),
+    controller_generation = sqlc.arg(target_controller_generation),
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
+    agent_session_id = sqlc.arg(target_native_session_id),
     activity_state = 'idle',
     activity_last_at = sqlc.arg(activated_at),
     first_signal_at = NULL,
     runtime_handle_id = '',
     runtime_launch_id = '',
-    agent_session_id = sqlc.arg(target_native_session_id),
     agent_session_id_launch_id = '',
     native_transcript_path = '',
-    provider_conversation_id = sqlc.arg(provider_conversation_id),
-    controller_generation = sqlc.arg(controller_generation),
     updated_at = sqlc.arg(activated_at)
 WHERE id = sqlc.arg(session_id)
   AND is_terminated = 0
   AND session_mode = 'chat'
   AND activity_state = 'exited'
   AND harness = sqlc.arg(expected_source_harness)
-  AND controller_generation = sqlc.arg(controller_generation)
+  AND controller_generation = sqlc.arg(expected_source_controller_generation)
   AND activity_last_at <= sqlc.arg(activated_at);
 
 -- name: MarkAgentSwitchTargetReady :execrows
 UPDATE agent_switches SET
     state = 'target_ready',
+	failure_point = '',
     updated_at = sqlc.arg(activated_at)
 WHERE id = sqlc.arg(id)
   AND session_id = sqlc.arg(session_id)

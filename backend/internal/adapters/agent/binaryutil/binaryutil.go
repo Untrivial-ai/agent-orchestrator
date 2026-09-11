@@ -171,6 +171,8 @@ func WindowsPackageManagerBinCandidates(names ...string) []string {
 	home, _ := os.UserHomeDir()
 	appData := os.Getenv("APPDATA")
 	localAppData := os.Getenv("LOCALAPPDATA")
+	programFiles := os.Getenv("ProgramFiles")
+	programFilesX86 := os.Getenv("ProgramFiles(x86)")
 	programData := os.Getenv("ProgramData")
 	if programData == "" {
 		programData = os.Getenv("PROGRAMDATA")
@@ -203,6 +205,9 @@ func WindowsPackageManagerBinCandidates(names ...string) []string {
 		}
 		if localAppData != "" {
 			out = append(out,
+				filepath.Join(localAppData, "npm", name+".cmd"),
+				filepath.Join(localAppData, "npm", name+".exe"),
+				filepath.Join(localAppData, "Microsoft", "WinGet", "Links", name+".exe"),
 				filepath.Join(localAppData, "pnpm", name+".cmd"),
 				filepath.Join(localAppData, "pnpm", name+".exe"),
 				filepath.Join(localAppData, "Yarn", "bin", name+".cmd"),
@@ -212,6 +217,12 @@ func WindowsPackageManagerBinCandidates(names ...string) []string {
 				filepath.Join(localAppData, "mise", "shims", name+".exe"),
 				filepath.Join(localAppData, "mise", "shims", name+".cmd"),
 			)
+		}
+		if programFiles != "" {
+			out = append(out, filepath.Join(programFiles, "WinGet", "Links", name+".exe"))
+		}
+		if programFilesX86 != "" {
+			out = append(out, filepath.Join(programFilesX86, "WinGet", "Links", name+".exe"))
 		}
 		if voltaHome != "" {
 			out = append(out,

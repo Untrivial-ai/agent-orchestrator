@@ -64,6 +64,18 @@ const agentInventory = {
 	],
 };
 
+const directModelCatalog = {
+	agentId: "claude-code",
+	models: [],
+	selectionMode: "catalog",
+	allowCustom: true,
+	customModelEntry: "direct",
+	source: "command",
+	fetchedAt: "2026-08-31T00:00:00Z",
+	refreshRecommended: false,
+	stale: false,
+};
+
 async function waitForAgentCatalog() {
 	await waitFor(() => expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0));
 }
@@ -73,6 +85,9 @@ beforeEach(() => {
 	getMock.mockReset().mockImplementation(async (path: string) => {
 		if (path === "/api/v1/agents/readiness") {
 			return { data: agentInventory, error: undefined };
+		}
+		if (path === "/api/v1/agents/{agent}/models") {
+			return { data: directModelCatalog, error: undefined };
 		}
 		return {
 			data: { status: "ok", project: { id: "proj-1", config: { worker: { agent: "claude-code" } } } },
@@ -99,7 +114,7 @@ describe("NewTaskDialog", () => {
 		expect(screen.queryByRole("button", { name: "Close new task dialog" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Agent" })).toHaveTextContent("Claude Code");
-		expect(await screen.findByLabelText("Model")).toHaveValue("");
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Use Claude Code's default");
 		expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();
 		expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
@@ -123,7 +138,9 @@ describe("NewTaskDialog", () => {
 		await waitForAgentCatalog();
 
 		await user.type(screen.getByLabelText("Task"), brief);
-		await user.type(screen.getByLabelText("Model"), "placeholder-model");
+		await user.click(await screen.findByRole("button", { name: "Model" }));
+		await user.type(screen.getByRole("searchbox", { name: "Search model" }), "placeholder-model");
+		await user.click(screen.getByRole("menuitem", { name: "Use “placeholder-model” as a custom model" }));
 		await user.click(screen.getByRole("button", { name: "Start task" }));
 
 		await waitFor(() => expect(requestBody).not.toThrow());
@@ -235,6 +252,9 @@ describe("NewTaskDialog", () => {
 					error: undefined,
 				};
 			}
+			if (path === "/api/v1/agents/{agent}/models") {
+				return { data: directModelCatalog, error: undefined };
+			}
 			return {
 				data: {
 					status: "ok",
@@ -249,7 +269,7 @@ describe("NewTaskDialog", () => {
 		await waitForAgentCatalog();
 
 		expect(screen.queryByLabelText("Branch")).not.toBeInTheDocument();
-		expect(await screen.findByLabelText("Model")).toHaveValue("");
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Use Claude Code's default");
 
 		await user.type(screen.getByLabelText("Task"), "Build a quick prototype in scratch.");
 		await user.click(screen.getByRole("button", { name: "Start task" }));

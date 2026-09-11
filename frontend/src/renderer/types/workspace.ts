@@ -58,11 +58,14 @@ export type AgentSwitchSummary = {
 	id: string;
 	state: string;
 	targetHarness: string;
+	updatedAt?: string;
 };
 
 export type WorkspaceSession = {
 	id: string;
 	terminalHandleId?: string;
+	/** Opaque controller generation; changes even when a restarted PTY reuses its handle. */
+	terminalGeneration?: string;
 	workspaceId: string;
 	workspaceName: string;
 	title: string;
@@ -110,6 +113,7 @@ export type WorkspaceSession = {
 	displayStatus?: string;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
+	chatProviderPreserved?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
 	/** Whether SCM review feedback is automatically injected into the worker. */
@@ -312,6 +316,7 @@ export type WorkspaceSummary = {
 	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND;
 	/** Local checkout path; empty string for cloud projects (no local folder). */
 	path: string;
+	folderMissing?: boolean;
 	workspaceRepos?: WorkspaceRepoSummary[];
 	type?: "main" | "worktree";
 	orchestratorAgent?: AgentProvider;

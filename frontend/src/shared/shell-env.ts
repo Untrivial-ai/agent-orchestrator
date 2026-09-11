@@ -191,6 +191,18 @@ export function buildDaemonEnv(
 	return { ...merged, ...overrides };
 }
 
+// Credential-management routes accept only explicitly trusted renderer
+// origins. Packaged builds use app://renderer from the daemon defaults; the
+// Vite renderer has a launch-specific HTTP origin that Electron must pass to
+// the dev daemon. An operator-provided allowlist remains authoritative.
+export function devDaemonAllowedOrigins(
+	configuredAllowedOrigins: string | undefined,
+	rendererURL: string,
+): string {
+	if (configuredAllowedOrigins?.trim()) return configuredAllowedOrigins;
+	return `app://renderer,${new URL(rendererURL).origin}`;
+}
+
 export type ShellRunner = (shellPath: string, args: string[]) => Promise<string | null>;
 
 export async function resolveShellEnvWithSpec(spec: ShellEnvProbe, run: ShellRunner): Promise<Record<string, string> | null> {

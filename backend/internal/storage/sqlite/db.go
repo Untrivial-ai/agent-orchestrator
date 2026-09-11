@@ -7,7 +7,10 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +47,71 @@ const readOnlyPragmas = "?mode=ro" +
 // maxReaders caps the reader pool. WAL allows many concurrent readers.
 const maxReaders = 8
 
+// databaseURI preserves filesystem characters instead of interpreting them as
+// SQLite URI parameters/fragments. Both pools and read-only opens must address
+// the same literal file, including percent signs and Windows drive paths.
+func databaseURI(dataDir string) string {
+	file := url.URL{Path: filepath.Join(dataDir, "ao.db")}
+	return "file:" + file.EscapedPath()
+}
+
+// An older raw file: URI may have stored this directory's data elsewhere. Do
+// not silently replace that database with an empty one after fixing the URI.
+func checkLegacyDatabasePath(dataDir string) error {
+	intended := filepath.Join(dataDir, "ao.db")
+	if _, err := os.Stat(intended); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect intended database: %w", err)
+	}
+	raw := intended
+	if end := strings.IndexAny(raw, "?#"); end >= 0 {
+		raw = raw[:end]
+	}
+	var decoded strings.Builder
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '%' && i+2 < len(raw) {
+			if value, err := url.PathUnescape(raw[i : i+3]); err == nil {
+				if value[0] == 0 {
+					break
+				}
+				decoded.WriteString(value)
+				i += 2
+				continue
+			}
+		}
+		decoded.WriteByte(raw[i])
+	}
+	legacy := decoded.String()
+	if legacy == intended {
+		return nil
+	}
+	info, err := os.Stat(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect legacy database path: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	file, err := os.Open(legacy)
+	if err != nil {
+		return fmt.Errorf("inspect legacy database: %w", err)
+	}
+	var header [16]byte
+	n, readErr := io.ReadFull(file, header[:])
+	_ = file.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("inspect legacy database: %w", readErr)
+	}
+	if n == len(header) && string(header[:]) == "SQLite format 3\x00" {
+		return fmt.Errorf("legacy SQLite path parsing stored data at %q; refusing to create an empty database at %q: stop AO and recover the legacy database explicitly before retrying", legacy, intended)
+	}
+	return nil
+}
+
 // Open opens (creating if absent) the SQLite database under dataDir and returns
 // a Store. It uses TWO pools against the same file:
 //
@@ -59,7 +127,10 @@ func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-	dsn := "file:" + filepath.Join(dataDir, "ao.db") + pragmas
+	if err := checkLegacyDatabasePath(dataDir); err != nil {
+		return nil, err
+	}
+	dsn := databaseURI(dataDir) + pragmas
 
 	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -86,7 +157,7 @@ func Open(dataDir string) (*Store, error) {
 // OpenReadOnly opens an existing SQLite database under dataDir without creating
 // the directory, opening a writable connection, or running migrations.
 func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
-	dsn := "file:" + filepath.Join(dataDir, "ao.db") + readOnlyPragmas
+	dsn := databaseURI(dataDir) + readOnlyPragmas
 
 	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -160,6 +231,9 @@ func migrate(db *sql.DB) error {
 	}
 	if err := repairRenumberedAgentSwitchMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered agent-switch migration history: %w", err)
+	}
+	if err := repairRenumberedPRReviewPartialMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered PR review-partial migration history: %w", err)
 	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
@@ -1274,6 +1348,94 @@ SELECT COALESCE((
 	return tx.Commit()
 }
 
+// repairRenumberedPRReviewPartialMigrationHistory preserves databases opened by
+// earlier revisions of this branch: the review_partial column first shipped as
+// 0123, a number main later claimed for agent_install_jobs. On those databases
+// goose would skip main's 0123 (its effects missing) and fail 0130 on the
+// duplicate column. Remap the recorded history — review_partial physically
+// present while agent_install_jobs is not identifies the branch build — and
+// re-initialize certainty conservatively, matching the migration default: rows
+// written before the completeness semantics landed carry no reliable signal, so
+// they stay uncertain until the next successful full review fetch.
+func repairRenumberedPRReviewPartialMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var reviewPartialColumn int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pr') WHERE name = 'review_partial'`,
+	).Scan(&reviewPartialColumn); err != nil {
+		return err
+	}
+	if reviewPartialColumn == 0 {
+		return nil
+	}
+
+	// The branch's 0123 ran only on builds predating main's 0123-0129. If
+	// agent_install_jobs exists, main's 0123 already ran and this database took
+	// the migration through 0130 (or never saw the old numbering) — nothing to
+	// remap.
+	var agentInstallJobsTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_install_jobs'`,
+	).Scan(&agentInstallJobsTable); err != nil {
+		return err
+	}
+	if agentInstallJobsTable != 0 {
+		return nil
+	}
+
+	var applied123 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 123 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied123); err != nil {
+		return err
+	}
+	if applied123 == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Release 123 so goose applies main's agent_install_jobs, and record 130 as
+	// applied so goose does not replay the ALTER on the existing column.
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 123`); err != nil {
+		return err
+	}
+	var applied130 int
+	if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 130 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied130); err != nil {
+		return err
+	}
+	if applied130 == 0 {
+		if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (130, 1)`); err != nil {
+			return err
+		}
+	}
+	// The column predates the conservative default; re-initialize to uncertain
+	// so pre-semantics rows cannot publish exact thread counts.
+	if _, err := tx.Exec(`UPDATE pr SET review_partial = TRUE`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // schemaRepairs lists the column-level effects of migrations that real
 // installs are known to skip. Issue #3475/#3476: profiles exist whose
 // goose_db_version already records versions 40 through 46 (written by a
@@ -1402,6 +1564,11 @@ BEGIN
     ON conversation_turns(conversation_id, retry_of_turn_id)
     WHERE retry_of_turn_id IS NOT NULL`,
 		}},
+	// 0130_pr_review_partial.sql. Generated PR reads select this column, so a
+	// field database that burned version 130 must not lose it. The default
+	// matches the migration: unknown historical certainty stays partial.
+	{version: 130, table: "pr", column: "review_partial",
+		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist

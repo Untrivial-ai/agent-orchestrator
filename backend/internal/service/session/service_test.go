@@ -18,6 +18,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
@@ -696,6 +697,31 @@ func TestListWorkspaceFilesReturnsTrackedAndUntrackedStatus(t *testing.T) {
 	}
 	if byPath["README.md"].Additions == 0 || byPath["README.md"].Deletions == 0 {
 		t.Fatalf("README counts = +%d -%d, want non-zero diff counts", byPath["README.md"].Additions, byPath["README.md"].Deletions)
+	}
+}
+
+func TestListWorkspaceFilesRepoUnavailableWrapsSentinel(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	// Simulate a project whose source repository has been deleted from disk:
+	// the worktree directory still exists, but its git metadata (and so the
+	// owning repo's plumbing) is gone. Every git read against it must fail as
+	// repository-unavailable rather than a raw 500.
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: repo},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	_, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "ao-1")
+	if err == nil {
+		t.Fatal("ListWorkspaceFiles succeeded with a missing repository")
+	}
+	if !errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
+		t.Fatalf("error = %v, want errors.Is(ErrWorkspaceRepoUnavailable)", err)
 	}
 }
 
@@ -1645,6 +1671,12 @@ func TestWorkspaceFileSectionsSplitByGitState(t *testing.T) {
 	if len(files.Commits) != 1 || files.Commits[0].Subject != "agent: add committed.go" {
 		t.Fatalf("commits = %+v, want one commit for agent: add committed.go", files.Commits)
 	}
+	if len(files.Commits[0].Files) != 1 || files.Commits[0].Files[0].Path != "committed.go" || files.Commits[0].Files[0].Status != WorkspaceFileAdded || files.Commits[0].Files[0].Additions != 1 {
+		t.Fatalf("commit files = %+v, want added committed.go with one addition", files.Commits[0].Files)
+	}
+	if files.Commits[0].Files[0].Editable {
+		t.Fatal("historical commit file must not be editable")
+	}
 	if files.Summary.Files == 0 || files.Summary.Additions == 0 {
 		t.Fatalf("summary = %+v, want non-zero files and additions", files.Summary)
 	}
@@ -2046,6 +2078,9 @@ func TestListWorkspaceFilesScratchUsesFilesystem(t *testing.T) {
 	if !byPath["image.bin"].Binary || byPath["image.bin"].Additions != 0 || byPath["image.bin"].Deletions != 0 {
 		t.Fatalf("binary summary = %#v, want binary with zero counts", byPath["image.bin"])
 	}
+	if !byPath["README.md"].Editable || byPath["image.bin"].Editable {
+		t.Fatalf("editable flags = README:%v image:%v, want true/false", byPath["README.md"].Editable, byPath["image.bin"].Editable)
+	}
 	if _, ok := byPath[".git/config"]; ok {
 		t.Fatal(".git content should not be listed for scratch")
 	}
@@ -2138,6 +2173,25 @@ func TestGetWorkspaceFileScratchReturnsContentWithEmptyDiff(t *testing.T) {
 	if got.Diff != "" || got.DiffTruncated {
 		t.Fatalf("scratch diff = %q truncated=%v, want empty", got.Diff, got.DiffTruncated)
 	}
+	if !got.Editable {
+		t.Fatal("Editable = false, want true for a complete UTF-8 text file")
+	}
+}
+
+func TestGetWorkspaceFileMarksOversizedTextAsNotEditable(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "large.yaml", strings.Repeat("a", maxWorkspaceFileBytes+1))
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch}
+	st.sessions["scratch-1"] = domain.SessionRecord{ID: "scratch-1", ProjectID: "scratch", Metadata: domain.SessionMetadata{WorkspacePath: root}}
+
+	got, err := (&Service{store: st}).GetWorkspaceFile(context.Background(), "scratch-1", "large.yaml", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Editable || !got.ContentTruncated {
+		t.Fatalf("editable=%v truncated=%v, want false/true", got.Editable, got.ContentTruncated)
+	}
 }
 
 func TestGetWorkspaceFileRejectsTraversal(t *testing.T) {
@@ -2167,6 +2221,70 @@ func TestGetWorkspaceFileRejectsIntermediateSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestUpdateWorkspaceFileReplacesExistingTextWithOptimisticFingerprint(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "before\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	before, err := svc.GetWorkspaceFile(context.Background(), "ao-1", "notes.txt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "after\n",
+		ExpectedFileFingerprint: before.FileFingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Content != "after\n" || after.FileFingerprint == before.FileFingerprint {
+		t.Fatalf("updated detail = %#v", after)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("workspace content = %q err=%v", data, err)
+	}
+}
+
+func TestUpdateWorkspaceFileRejectsStaleFingerprintWithoutWriting(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "current\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	_, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "replacement\n",
+		ExpectedFileFingerprint: "stale",
+	})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "WORKSPACE_FILE_STALE" {
+		t.Fatalf("err = %v, want conflict WORKSPACE_FILE_STALE", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if readErr != nil || string(data) != "current\n" {
+		t.Fatalf("workspace content = %q err=%v", data, readErr)
+	}
+}
+
+func TestWorkspaceFileSizeDoesNotTreatTruncatedUTF8RuneAsBinary(t *testing.T) {
+	repo := t.TempDir()
+	content := strings.Repeat("a", 8190) + "你tail"
+	writeWorkspaceFile(t, repo, "translated.json", content)
+
+	size, binary := workspaceFileSizeAndBinary(repo, "translated.json", WorkspaceFileModified)
+	if binary {
+		t.Fatal("valid UTF-8 file was classified as binary when the preview ended mid-rune")
+	}
+	if size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", size, len(content))
+	}
+}
+
 func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 	st := newFakeStore()
 
@@ -2182,6 +2300,7 @@ func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 type fakeCommander struct {
 	killed          []domain.SessionID
 	retired         []domain.SessionID
+	exited          []domain.SessionID
 	resumed         []domain.SessionID
 	ready           []domain.SessionID
 	sent            []domain.SessionID
@@ -2245,6 +2364,15 @@ func (f *fakeCommander) ResumeAgentWithMode(_ context.Context, id domain.Session
 		return sessionmanager.RestoreResult{}, f.restoreErr
 	}
 	return f.restoreResult, nil
+}
+func (f *fakeCommander) ExitAgent(_ context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	f.exited = append(f.exited, id)
+	if f.restoreErr != nil {
+		return domain.SessionRecord{}, f.restoreErr
+	}
+	rec := f.restoreResult.Session
+	rec.Activity.State = domain.ActivityExited
+	return rec, nil
 }
 func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, error) {
 	if f.killErr != nil {
@@ -3015,6 +3143,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"invalid branch", fmt.Errorf("spawn mer-1: workspace: %w: \"bad!!\" (exit 1)", ports.ErrWorkspaceBranchInvalid), apierr.KindInvalid, "INVALID_BRANCH"},
 		{"agent binary not found", fmt.Errorf("spawn mer-1: %w", ports.ErrAgentBinaryNotFound), apierr.KindInvalid, "AGENT_BINARY_NOT_FOUND"},
 		{"runtime prerequisite missing", fmt.Errorf("spawn: %w: tmux required on macOS/Linux but not in PATH", ports.ErrRuntimePrerequisite), apierr.KindInvalid, "RUNTIME_PREREQUISITE_MISSING"},
+		{"Windows command line too long", fmt.Errorf("spawn: %w: escaped command line is 32769 UTF-16 code units", ports.ErrRuntimeCommandLineTooLong), apierr.KindInvalid, "WINDOWS_COMMAND_LINE_TOO_LONG"},
 		{"runtime workspace cwd mismatch", fmt.Errorf("spawn mer-1: runtime: %w: session mer-1 started in \"/deleted/shipit\", want \"/tmp/ws\"", ports.ErrRuntimeWorkspaceCwdMismatch), apierr.KindConflict, "WORKSPACE_CWD_MISMATCH"},
 		{"workspace locked", fmt.Errorf("restore mer-1: %w: \"/tmp/ws\" (branch \"ao/mer-1\") is registered but its directory is missing", ports.ErrWorkspaceLocked), apierr.KindConflict, "WORKSPACE_LOCKED"},
 		{"unknown harness", fmt.Errorf("spawn: %w: %q", sessionmanager.ErrUnknownHarness, "bogus"), apierr.KindInvalid, "UNKNOWN_HARNESS"},
@@ -3221,6 +3350,30 @@ func TestToAPIErrorSwitchDeliveryUnconfirmedMessage(t *testing.T) {
 	}
 }
 
+func TestToAPIErrorPreservesReportingOwnerAcrossMapping(t *testing.T) {
+	raw := ownership.Own(
+		fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrSwitchInProgress),
+		ownership.OwnerAgentSwitchSaga,
+	)
+
+	mapped := toAPIError(raw)
+
+	if got := ownership.OwnerOf(mapped); got != ownership.OwnerAgentSwitchSaga {
+		t.Fatalf("OwnerOf(mapped) = %q, want %q", got, ownership.OwnerAgentSwitchSaga)
+	}
+	var apiError *apierr.Error
+	if !errors.As(mapped, &apiError) || apiError.Code != "AGENT_SWITCH_IN_PROGRESS" {
+		t.Fatalf("mapped = %v, want AGENT_SWITCH_IN_PROGRESS", mapped)
+	}
+}
+
+func TestToAPIErrorDefaultsUnownedErrorsToHTTP(t *testing.T) {
+	mapped := toAPIError(errors.New("pre-admission storage unavailable"))
+	if got := ownership.OwnerOf(mapped); got != ownership.OwnerHTTP {
+		t.Fatalf("OwnerOf(mapped) = %q, want %q", got, ownership.OwnerHTTP)
+	}
+}
+
 func TestToAPIErrorPreservesMissingChatCapabilityRecoveryDetails(t *testing.T) {
 	mapped := toAPIError(fmt.Errorf("spawn: %w", &ports.ChatCapabilityError{
 		Harness:                domain.HarnessPi,
@@ -3308,6 +3461,30 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 	}
 	if got.Session.ID != "mer-1" || got.Mode != RestoreModeViewNative {
 		t.Fatalf("resume outcome = %+v", got)
+	}
+}
+
+func TestExitAgentPreservesSessionAndMapsExitedReadModel(t *testing.T) {
+	st := newFakeStore()
+	rec := domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+		Activity:  domain.Activity{State: domain.ActivityIdle},
+	}
+	fc := &fakeCommander{restoreResult: sessionmanager.RestoreResult{Session: rec}}
+	svc := &Service{manager: fc, store: st}
+
+	got, err := svc.ExitAgent(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ExitAgent: %v", err)
+	}
+	if got.Session.ID != "mer-1" || got.Session.IsTerminated || got.Session.Activity.State != domain.ActivityExited {
+		t.Fatalf("exit outcome = %+v", got)
+	}
+	if len(fc.exited) != 1 || fc.exited[0] != "mer-1" {
+		t.Fatalf("exit calls = %v", fc.exited)
 	}
 }
 
@@ -3626,7 +3803,7 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 	}
 	for _, autoInject := range []bool{false, true} {
 		t.Run(fmt.Sprintf("auto_inject_%t", autoInject), func(t *testing.T) {
-			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, now, domain.SessionRecord{AutoInjectReview: autoInject})
+			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, ports.ReviewWriteReplace, now, domain.SessionRecord{AutoInjectReview: autoInject})
 			if len(reviews) != 1 || reviews[0].AutoInjectReview != autoInject {
 				t.Fatalf("reviews = %+v, want policy %t", reviews, autoInject)
 			}
@@ -3635,22 +3812,6 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 			}
 		})
 	}
-}
-
-// noopSCMProvider implements scmProvider but always fails ParseRepository
-// to exercise the scmRepoForClaim fallback path.
-type noopSCMProvider struct{}
-
-func (noopSCMProvider) ParseRepository(string) (ports.SCMRepo, bool) { return ports.SCMRepo{}, false }
-func (noopSCMProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
-	out := make([]ports.SCMObservation, len(refs))
-	for i := range out {
-		out[i].Error = ports.ErrSCMNotFound
-	}
-	return out, nil
-}
-func (noopSCMProvider) FetchReviewThreads(context.Context, ports.SCMPRRef) (ports.SCMReviewObservation, error) {
-	return ports.SCMReviewObservation{}, nil
 }
 
 func (f fakeSCM) ParseRepository(remote string) (ports.SCMRepo, bool) {
@@ -3970,7 +4131,7 @@ func TestRequireSameRepoGitLab(t *testing.T) {
 	}{
 		{"matching gitlab", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "https://gitlab.com/castai/ctxd", nil},
 		{"matching github", "https://github.com/owner/repo/pull/42", "https://github.com/owner/repo", nil},
-		{"empty origin allows any", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "", nil},
+		{"empty origin rejects", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "", ErrProjectMismatch},
 		{"mismatch", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "https://github.com/other/repo", ErrProjectMismatch},
 		{"gitlab mismatch repo", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "https://gitlab.com/other/repo", ErrProjectMismatch},
 		// Cross-provider mismatch: same owner/repo name on GitHub and GitLab
@@ -4001,10 +4162,8 @@ func TestRequireSameRepoGitLab(t *testing.T) {
 }
 
 func TestScmRepoForClaimGitLab(t *testing.T) {
-	// When the provider cannot parse the origin, the fallback should detect
-	// GitLab from the PR URL and set Provider="gitlab".
-	var noopProvider noopSCMProvider
-	repo, err := scmRepoForClaim(noopProvider, "", "https://gitlab.com/castai/ctxd/-/merge_requests/9")
+	// The SCM target comes from the claimed URL, including its provider.
+	repo, err := scmRepoForClaim("https://gitlab.com/castai/ctxd/-/merge_requests/9")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4049,6 +4208,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		Repo:                     "acme/repo",
 		Title:                    "Fix dashboard",
 		Author:                   "ada",
+		AuthorAvatarURL:          "https://avatars.githubusercontent.com/u/123?v=4",
 		SourceBranch:             "fix/dashboard",
 		TargetBranch:             "main",
 		HeadSHA:                  "abc123",
@@ -4071,6 +4231,12 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		{Author: "reviewer-a", File: "main.go", Line: 14, Body: "resolved body", URL: "https://github.com/acme/repo/pull/7#discussion_r4", Resolved: true},
 		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3", AutoInjectReview: true},
 	}
+	stList.threads[prURL] = []domain.PullRequestReviewThread{
+		{ThreadID: "thread-1"},
+		{ThreadID: "thread-2"},
+		{ThreadID: "thread-3", Resolved: true},
+		{ThreadID: "thread-4", IsBot: true},
+	}
 
 	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
 	if err != nil {
@@ -4083,10 +4249,13 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	if pr.Title != "Fix dashboard" || pr.State != domain.PRStateOpen || pr.Provider != "github" || pr.Repo != "acme/repo" || pr.HeadSHA != "abc123" {
 		t.Fatalf("metadata = %+v", pr)
 	}
+	if pr.Author != "ada" || pr.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/123?v=4" {
+		t.Fatalf("author metadata = %+v", pr)
+	}
 	if len(pr.CI.FailingChecks) != 1 || pr.CI.FailingChecks[0].Name != "unit" || pr.CI.FailingChecks[0].URL == "" {
 		t.Fatalf("failing checks = %+v", pr.CI.FailingChecks)
 	}
-	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || len(pr.Review.UnresolvedBy) != 1 {
+	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || pr.Review.UnresolvedThreadCount == nil || *pr.Review.UnresolvedThreadCount != 2 || len(pr.Review.UnresolvedBy) != 1 {
 		t.Fatalf("review = %+v", pr.Review)
 	}
 	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
@@ -4129,6 +4298,127 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 }
 
+func TestListPRSummariesThreadCountKnownOnlyForCompleteObservations(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	unresolved := []domain.PullRequestReviewThread{{ThreadID: "thread-1"}, {ThreadID: "thread-2"}}
+
+	cases := []struct {
+		name string
+		pr   domain.PullRequest
+		want *int // nil means the count must stay unknown
+	}{
+		{
+			name: "complete observation publishes the exact count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/1", SessionID: "mer-1", Number: 1, ReviewObservedAt: now},
+			want: intPtrForTest(2),
+		},
+		{
+			name: "partial observation omits the count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/2", SessionID: "mer-1", Number: 2, ReviewObservedAt: now, ReviewPartial: true},
+			want: nil,
+		},
+		{
+			name: "never-observed reviews omit the count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/3", SessionID: "mer-1", Number: 3},
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+			stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{tc.pr}}
+			stList.threads[tc.pr.URL] = unresolved
+
+			got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("summaries = %+v", got)
+			}
+			count := got[0].Review.UnresolvedThreadCount
+			if tc.want == nil {
+				if count != nil {
+					t.Fatalf("unresolvedThreadCount = %d, want unknown (nil)", *count)
+				}
+				return
+			}
+			if count == nil || *count != *tc.want {
+				t.Fatalf("unresolvedThreadCount = %v, want %d", count, *tc.want)
+			}
+		})
+	}
+}
+
+func TestListPRSummariesThreadCountSerializesObservedZero(t *testing.T) {
+	// An observed zero must survive the DTO round trip as an explicit 0 rather
+	// than being dropped by omitempty.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	prURL := "https://github.com/acme/repo/pull/4"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{{URL: prURL, SessionID: "mer-1", Number: 4, ReviewObservedAt: now}}}
+	stList.threads[prURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", Resolved: true}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 0 {
+		t.Fatalf("unresolvedThreadCount = %v, want explicit 0", count)
+	}
+}
+
+func TestListPRSummariesDedupesAliasReviewThreads(t *testing.T) {
+	// The same provider thread persisted under two repository-URL aliases of
+	// one canonical PR must count once, with the fresher alias record winning
+	// a disagreement.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	oldURL := "https://github.com/acme/repo/pull/9"
+	newURL := "https://github.com/acme-corp/repo/pull/9"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	pr := func(url string) domain.PullRequest {
+		return domain.PullRequest{
+			URL: url, SessionID: "mer-1", Number: 9, Provider: "github",
+			SourceBranch: "fix/alias", HeadSHA: "abc123",
+			ReviewObservedAt: now, UpdatedAt: now,
+		}
+	}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{pr(oldURL), pr(newURL)}}
+	// Same unresolved thread under both aliases: one thread, not two.
+	stList.threads[oldURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now.Add(-time.Hour)}}
+	stList.threads[newURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("aliases did not group: %+v", got)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 1 {
+		t.Fatalf("unresolvedThreadCount = %v, want 1", count)
+	}
+
+	// Conflicting aliases: the old alias still has the thread unresolved, the
+	// newer alias records it resolved. The fresher record wins, so the exact
+	// count is 0.
+	stList.threads[oldURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now.Add(-time.Hour)}}
+	stList.threads[newURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", Resolved: true, UpdatedAt: now}}
+
+	got, err = (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 0 {
+		t.Fatalf("unresolvedThreadCount = %v, want 0", count)
+	}
+}
+
+func intPtrForTest(v int) *int { return &v }
+
 func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	reviews := []domain.PullRequestReview{
@@ -4139,7 +4429,7 @@ func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 		{ID: "c", Author: "charlie", State: domain.ReviewNone, Body: "non-blocking suggestion", URL: "url-c", SubmittedAt: now},
 	}
 
-	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews)
+	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews, nil, false)
 
 	byReviewer := map[string]PRReviewEntry{}
 	for _, entry := range got.Reviews {

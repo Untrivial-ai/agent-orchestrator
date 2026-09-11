@@ -3,6 +3,7 @@
 package conpty
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -54,10 +55,19 @@ func TestLinuxPTYConnStreamsResizesAndReportsExit(t *testing.T) {
 		t.Fatal("Resize accepted a column count that overflows the Linux winsize")
 	}
 
+	reader := bufio.NewReader(conn)
+	ready, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("waiting for PTY readiness: %v", err)
+	}
+	if normalized := strings.ReplaceAll(ready, "\r", ""); normalized != "ready\n" {
+		t.Fatalf("PTY readiness output = %q", normalized)
+	}
+
 	outputC := make(chan []byte, 1)
 	go func() {
 		var output bytes.Buffer
-		_, _ = io.Copy(&output, conn)
+		_, _ = io.Copy(&output, reader)
 		outputC <- output.Bytes()
 	}()
 	if _, err := conn.Write([]byte("hello\n")); err != nil {
@@ -76,7 +86,7 @@ func TestLinuxPTYConnStreamsResizesAndReportsExit(t *testing.T) {
 
 	select {
 	case output := <-outputC:
-		text := strings.ReplaceAll(string(output), "\r", "")
+		text := strings.ReplaceAll(ready+string(output), "\r", "")
 		if !strings.Contains(text, "ready\n") || !strings.Contains(text, "received:hello\n") {
 			t.Fatalf("PTY output = %q", text)
 		}
@@ -401,7 +411,10 @@ func TestLinuxRuntimeDestroyReapsTermIgnoringProcessTreeEndToEnd(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	sess := runtime.resolve(handle.ID)
+	sess, err := runtime.resolveWithEvidence(context.Background(), handle.ID)
+	if err != nil {
+		t.Fatalf("resolve session: %v", err)
+	}
 	if sess == nil {
 		t.Fatal("session not found in runtime")
 	}

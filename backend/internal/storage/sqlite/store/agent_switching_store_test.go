@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -34,7 +35,40 @@ func advanceAgentSwitchFixtureWithMutation(ctx context.Context, t *testing.T, s 
 	}
 }
 
-func TestActivateChatAgentSwitchTargetKeepsRuntimeEmptyAcrossNativeSwitchBack(t *testing.T) {
+func applyReportableAgentSwitchFixture(
+	ctx context.Context,
+	t *testing.T,
+	s ports.AgentSwitchFaultStore,
+	rec domain.AgentSwitch,
+	expectedState domain.AgentSwitchState,
+	expectedTarget domain.AgentGenerationID,
+	unacknowledged bool,
+) bool {
+	t.Helper()
+	// These compatibility fixtures exercise durable saga behavior rather than
+	// enrollment. A deliberately empty typed fault proves observability-local
+	// validation cannot veto the winning core mutation.
+	fault := domain.AgentSwitchFault{}
+	mutation := ports.AgentSwitchMutation{
+		Record: rec, ExpectedState: expectedState,
+		ExpectedSourceGenerationID: rec.SourceGenerationID,
+		ExpectedTargetGenerationID: expectedTarget,
+		Fault:                      &fault,
+	}
+	var result ports.AgentSwitchMutationResult
+	var err error
+	if unacknowledged {
+		result, err = s.FailAgentSwitchIfUnacknowledgedWithFault(ctx, mutation)
+	} else {
+		result, err = s.ApplyAgentSwitchMutation(ctx, mutation)
+	}
+	if err != nil {
+		t.Fatalf("apply reportable switch fixture: %v", err)
+	}
+	return result.CoreChanged
+}
+
+func TestActivateChatAgentSwitchTargetMovesSourceGenerationToTarget(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	seedProject(t, s, "chat-switch")
@@ -141,14 +175,12 @@ func TestActivateChatAgentSwitchTargetKeepsRuntimeEmptyAcrossNativeSwitchBack(t 
 	if err := s.UpdateSession(ctx, credentialed); err != nil {
 		t.Fatalf("persist target Chat verifier: %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "target-chat-generation", now.Add(4*time.Second)); err != nil {
-		t.Fatalf("claim target Chat generation: %v", err)
-	}
 	activatedAt := now.Add(5 * time.Second)
 	if ok, err := s.ActivateChatAgentSwitchTarget(ctx, domain.AgentSwitchChatTargetActivation{
 		SwitchID: sw.ID, SessionID: session.ID,
 		SourceHarness: domain.HarnessClaudeCode, SourceGenerationID: "source-chat-generation",
-		TargetHarness: domain.HarnessCodex, TargetNativeSessionRef: target.ID,
+		ExpectedSourceControllerGeneration: "source-chat-generation",
+		TargetHarness:                      domain.HarnessCodex, TargetNativeSessionRef: target.ID,
 		TargetGenerationID:     "target-chat-generation",
 		ProviderConversationID: "target-chat-native", ControllerGeneration: "target-chat-generation",
 		ActivatedAt: activatedAt,
@@ -292,13 +324,11 @@ func TestActivateChatAgentSwitchTargetKeepsRuntimeEmptyAcrossNativeSwitchBack(t 
 	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &returnSwitch, domain.AgentSwitchStartingTarget, now.Add(13*time.Second), func(next *domain.AgentSwitch) {
 		next.TargetNativeSessionRef = &returnTarget.ID
 	})
-	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "return-chat-generation", now.Add(14*time.Second)); err != nil {
-		t.Fatalf("claim return Chat generation: %v", err)
-	}
 	if ok, err := s.ActivateChatAgentSwitchTarget(ctx, domain.AgentSwitchChatTargetActivation{
 		SwitchID: returnSwitch.ID, SessionID: session.ID,
 		SourceHarness: domain.HarnessCodex, SourceGenerationID: "target-chat-generation",
-		TargetHarness: domain.HarnessClaudeCode, TargetNativeSessionRef: returnTarget.ID,
+		ExpectedSourceControllerGeneration: "target-chat-generation",
+		TargetHarness:                      domain.HarnessClaudeCode, TargetNativeSessionRef: returnTarget.ID,
 		TargetGenerationID:     "return-chat-generation",
 		ProviderConversationID: "source-chat-edited-native", ControllerGeneration: "return-chat-generation",
 		ActivatedAt: now.Add(15 * time.Second),
@@ -327,6 +357,115 @@ func TestActivateChatAgentSwitchTargetKeepsRuntimeEmptyAcrossNativeSwitchBack(t 
 		returnBranch.ProviderConversationID != "source-chat-edited-native" ||
 		returnBranch.ParentBranchID != targetBranch.ID || returnBranch.ReplacedTurnID != "" {
 		t.Fatalf("return provider ownership boundary = %+v, prior target = %+v", returnBranch, targetBranch)
+	}
+}
+
+func TestActivateChatAgentSwitchTargetRejectsMismatchedSourceControllerGeneration(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "chat-switch-source-fence")
+	rec := sampleRecord("chat-switch-source-fence")
+	now := rec.CreatedAt
+	rec.Mode = domain.SessionModeChat
+	rec.Harness = domain.HarnessClaudeCode
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.ProviderConversationID = "source-chat-native"
+	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	session, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create Chat session: %v", err)
+	}
+	conversation, err := s.CreateConversation(ctx, "chat-switch-source-fence-conversation",
+		domain.ConversationScopeSession, "chat-switch-source-fence", session.ID, now)
+	if err != nil {
+		t.Fatalf("create Chat conversation: %v", err)
+	}
+	sw, created, err := s.CreateAgentSwitch(ctx, domain.AgentSwitch{
+		ID: "switch-chat-source-fence", SessionID: session.ID, IdempotencyKey: "switch-chat-source-fence",
+		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+		FromHarness:        domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchPreparingHandoff, TargetStartMode: domain.AgentSwitchTargetStartPending,
+		AgentHandoffStatus: domain.AgentHandoffNotAttempted,
+		SourceGenerationID: "source-chat-generation", RequestedAt: now, UpdatedAt: now,
+	})
+	if err != nil || !created {
+		t.Fatalf("create Chat switch: created=%v err=%v", created, err)
+	}
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &sw, domain.AgentSwitchStoppingSource, now.Add(time.Second), func(next *domain.AgentSwitch) {
+		next.TargetStartMode = domain.AgentSwitchTargetStartFresh
+		next.TargetGenerationID = "target-chat-generation"
+	})
+	if ok, err := s.ConfirmAgentSwitchSourceStopped(ctx, domain.AgentSwitchSourceStopConfirmation{
+		SwitchID: sw.ID, SessionID: session.ID, SourceMode: domain.SessionModeChat,
+		SourceHarness: domain.HarnessClaudeCode, SourceGenerationID: "source-chat-generation",
+		ExpectedSourceControllerGeneration: "source-chat-generation",
+		TargetGenerationID:                 "target-chat-generation", StoppedAt: now.Add(2 * time.Second),
+	}); err != nil || !ok {
+		t.Fatalf("confirm Chat source stopped: ok=%v err=%v", ok, err)
+	}
+	target := domain.AgentNativeSession{
+		ID: "target-chat-source-fence-native-ref", AOSessionID: session.ID, Harness: domain.HarnessCodex,
+		NativeSessionID: "target-chat-native", LastGenerationID: "target-chat-generation",
+		CreatedAt: now.Add(3 * time.Second), LastUsedAt: now.Add(3 * time.Second),
+	}
+	if _, created, err := s.CreateAgentNativeSession(ctx, target); err != nil || !created {
+		t.Fatalf("create target Chat native session: created=%v err=%v", created, err)
+	}
+	sw, _, _ = s.GetAgentSwitch(ctx, sw.ID)
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &sw, domain.AgentSwitchStartingTarget, now.Add(3*time.Second), func(next *domain.AgentSwitch) {
+		next.TargetNativeSessionRef = &target.ID
+	})
+	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "unexpected-chat-generation", now.Add(4*time.Second)); err != nil {
+		t.Fatalf("replace source Chat generation: %v", err)
+	}
+
+	activated, err := s.ActivateChatAgentSwitchTarget(ctx, domain.AgentSwitchChatTargetActivation{
+		SwitchID: sw.ID, SessionID: session.ID,
+		SourceHarness: domain.HarnessClaudeCode, SourceGenerationID: "source-chat-generation",
+		ExpectedSourceControllerGeneration: "source-chat-generation",
+		TargetHarness:                      domain.HarnessCodex, TargetNativeSessionRef: target.ID,
+		TargetGenerationID:     "target-chat-generation",
+		ProviderConversationID: "target-chat-native", ControllerGeneration: "target-chat-generation",
+		ActivatedAt: now.Add(5 * time.Second),
+	})
+	if err != nil || activated {
+		t.Fatalf("activate Chat target with mismatched source generation: activated=%v err=%v", activated, err)
+	}
+	gotSession, ok, err := s.GetSession(ctx, session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get rejected Chat session: ok=%v err=%v", ok, err)
+	}
+	if gotSession.Harness != domain.HarnessClaudeCode || gotSession.Activity.State != domain.ActivityExited ||
+		gotSession.Metadata.ProviderConversationID != "source-chat-native" ||
+		gotSession.Metadata.ControllerGeneration != "unexpected-chat-generation" {
+		t.Fatalf("rejected activation changed source session: %+v", gotSession)
+	}
+	gotSwitch, ok, err := s.GetAgentSwitch(ctx, sw.ID)
+	if err != nil || !ok || gotSwitch.State != domain.AgentSwitchStartingTarget {
+		t.Fatalf("rejected activation changed switch: switch=%+v ok=%v err=%v", gotSwitch, ok, err)
+	}
+	gotConversation, err := s.ConversationForSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get rejected Chat conversation: %v", err)
+	}
+	if gotConversation.ActiveBranchID != conversation.ActiveBranchID {
+		t.Fatalf("rejected activation moved conversation branch from %q to %q",
+			conversation.ActiveBranchID, gotConversation.ActiveBranchID)
+	}
+}
+
+func TestActivateChatAgentSwitchTargetRejectsMismatchedExpectedSourceGeneration(t *testing.T) {
+	s := newTestStore(t)
+	activation := domain.AgentSwitchChatTargetActivation{
+		SwitchID: "switch", SessionID: "session", SourceHarness: domain.HarnessClaudeCode,
+		SourceGenerationID: "source-generation", ExpectedSourceControllerGeneration: "other-generation",
+		TargetHarness: domain.HarnessCodex, TargetNativeSessionRef: "native", TargetGenerationID: "target-generation",
+		ProviderConversationID: "target-provider", ControllerGeneration: "target-generation", ActivatedAt: time.Now().UTC(),
+	}
+	if changed, err := s.ActivateChatAgentSwitchTarget(context.Background(), activation); err == nil || changed {
+		t.Fatalf("mismatched source generation activation = changed %v err %v, want validation failure", changed, err)
 	}
 }
 
@@ -362,8 +501,8 @@ func TestListActiveAgentSwitchesExcludesTerminalRows(t *testing.T) {
 	failed.State = domain.AgentSwitchFailed
 	failed.ErrorCode = domain.AgentSwitchErrorSwitchFailed
 	failed.UpdatedAt = now.Add(time.Second)
-	if updated, err := s.UpdateAgentSwitch(ctx, failed, domain.AgentSwitchPreparingHandoff, failed.SourceGenerationID, ""); err != nil || !updated {
-		t.Fatalf("fail terminal switch: updated=%v err=%v", updated, err)
+	if updated := applyReportableAgentSwitchFixture(ctx, t, s, failed, domain.AgentSwitchPreparingHandoff, "", false); !updated {
+		t.Fatal("fail terminal switch: core mutation did not change")
 	}
 
 	got, err := s.ListActiveAgentSwitches(ctx)
@@ -684,8 +823,8 @@ func TestAgentSwitchTargetStartUnconfirmedMarkerIsNonTerminalAndMonotonic(t *tes
 
 	sw.ErrorCode = domain.AgentSwitchErrorTargetStartUnconfirmed
 	sw.UpdatedAt = now.Add(4 * time.Second)
-	if ok, err := s.UpdateAgentSwitch(ctx, sw, domain.AgentSwitchStartingTarget, "source-generation", "target-generation"); err != nil || !ok {
-		t.Fatalf("persist recovery marker: ok=%v err=%v", ok, err)
+	if ok := applyReportableAgentSwitchFixture(ctx, t, s, sw, domain.AgentSwitchStartingTarget, "target-generation", false); !ok {
+		t.Fatal("persist recovery marker: core mutation did not change")
 	}
 	marked, ok, err := s.GetActiveAgentSwitch(ctx, session.ID)
 	if err != nil || !ok || !marked.RequiresRecovery() || marked.State.Terminal() {
@@ -747,8 +886,8 @@ func TestAgentSwitchSourceStopMarkerCanAdvanceOnlyThroughConfirmedBoundary(t *te
 	})
 	sw.ErrorCode = domain.AgentSwitchErrorSourceStopUnconfirmed
 	sw.UpdatedAt = now.Add(2 * time.Second)
-	if ok, err := s.UpdateAgentSwitch(ctx, sw, domain.AgentSwitchStoppingSource, "source-generation", "target-generation"); err != nil || !ok {
-		t.Fatalf("persist source-stop marker: ok=%v err=%v", ok, err)
+	if ok := applyReportableAgentSwitchFixture(ctx, t, s, sw, domain.AgentSwitchStoppingSource, "target-generation", false); !ok {
+		t.Fatal("persist source-stop marker: core mutation did not change")
 	}
 	marked, ok, err := s.GetActiveAgentSwitch(ctx, session.ID)
 	if err != nil || !ok || !marked.RequiresRecovery() || marked.State.Terminal() {
@@ -771,6 +910,45 @@ func TestAgentSwitchSourceStopMarkerCanAdvanceOnlyThroughConfirmedBoundary(t *te
 	confirmed, ok, err := s.GetAgentSwitch(ctx, marked.ID)
 	if err != nil || !ok || confirmed.State != domain.AgentSwitchSourceStopped || confirmed.ErrorCode != "" {
 		t.Fatalf("confirmed switch = %+v, ok=%v err=%v", confirmed, ok, err)
+	}
+}
+
+func TestAgentSwitchFailedRowRejectsRetainedMarkerCodes(t *testing.T) {
+	for _, code := range []domain.AgentSwitchErrorCode{
+		domain.AgentSwitchErrorSourceStopUnconfirmed,
+		domain.AgentSwitchErrorTargetStartUnconfirmed,
+		domain.AgentSwitchErrorSourceRestoreUnconfirmed,
+	} {
+		t.Run(string(code), func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			projectID := "failed-marker-validation-" + string(code)
+			seedProject(t, s, projectID)
+			rec := sampleRecord(projectID)
+			now := rec.CreatedAt
+			session, err := s.CreateSession(ctx, rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sw, created, err := s.CreateAgentSwitch(ctx, domain.AgentSwitch{
+				ID: domain.AgentSwitchID("switch-" + string(code)), SessionID: session.ID,
+				IdempotencyKey:     "key-" + string(code),
+				RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+				FromHarness:        domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+				State: domain.AgentSwitchPreparingHandoff, TargetStartMode: domain.AgentSwitchTargetStartPending,
+				AgentHandoffStatus: domain.AgentHandoffNotAttempted, SourceGenerationID: "source-generation",
+				RequestedAt: now, UpdatedAt: now,
+			})
+			if err != nil || !created {
+				t.Fatalf("create switch: created=%v err=%v", created, err)
+			}
+			sw.State = domain.AgentSwitchFailed
+			sw.ErrorCode = code
+			sw.UpdatedAt = now.Add(time.Second)
+			if changed, err := s.UpdateAgentSwitch(ctx, sw, domain.AgentSwitchPreparingHandoff, "source-generation", ""); err == nil || changed {
+				t.Fatalf("failed row accepted retained marker %q: changed=%v err=%v", code, changed, err)
+			}
+		})
 	}
 }
 
@@ -810,8 +988,8 @@ func TestAgentSwitchSourceRestoreMarkerCanSettleOnlyAsTerminalFailure(t *testing
 	sw, _, _ = s.GetAgentSwitch(ctx, sw.ID)
 	sw.ErrorCode = domain.AgentSwitchErrorSourceRestoreUnconfirmed
 	sw.UpdatedAt = now.Add(3 * time.Second)
-	if ok, err := s.UpdateAgentSwitch(ctx, sw, domain.AgentSwitchSourceStopped, "source-generation", "target-generation"); err != nil || !ok {
-		t.Fatalf("persist source-restore marker: ok=%v err=%v", ok, err)
+	if ok := applyReportableAgentSwitchFixture(ctx, t, s, sw, domain.AgentSwitchSourceStopped, "target-generation", false); !ok {
+		t.Fatal("persist source-restore marker: core mutation did not change")
 	}
 	marked, ok, err := s.GetActiveAgentSwitch(ctx, session.ID)
 	if err != nil || !ok || !marked.RequiresSourceRestore() || marked.State.Terminal() {
@@ -828,8 +1006,8 @@ func TestAgentSwitchSourceRestoreMarkerCanSettleOnlyAsTerminalFailure(t *testing
 	failed.State = domain.AgentSwitchFailed
 	failed.ErrorCode = domain.AgentSwitchErrorDaemonRestartPostStop
 	failed.UpdatedAt = now.Add(5 * time.Second)
-	if changed, err := s.UpdateAgentSwitch(ctx, failed, domain.AgentSwitchSourceStopped, "source-generation", "target-generation"); err != nil || !changed {
-		t.Fatalf("terminal source-restore settlement: changed=%v err=%v", changed, err)
+	if changed := applyReportableAgentSwitchFixture(ctx, t, s, failed, domain.AgentSwitchSourceStopped, "target-generation", false); !changed {
+		t.Fatal("terminal source-restore settlement: core mutation did not change")
 	}
 }
 
@@ -1174,9 +1352,12 @@ func TestAgentSwitchDeliveryFailureIsAtomicWithAcknowledgement(t *testing.T) {
 			if ok, err := s.UpdateAgentSwitch(ctx, failure, domain.AgentSwitchDelivering, "source-generation", "target-generation"); err == nil || ok {
 				t.Fatalf("generic delivery failure bypassed acknowledgement CAS: ok=%v err=%v", ok, err)
 			}
-			failed, err := s.FailAgentSwitchIfUnacknowledged(ctx, failure)
-			if err != nil || failed != tt.wantFailed {
-				t.Fatalf("fail unacknowledged delivery: failed=%v want=%v err=%v", failed, tt.wantFailed, err)
+			if ok, err := s.FailAgentSwitchIfUnacknowledged(ctx, failure); err == nil || ok {
+				t.Fatalf("legacy delivery failure bypassed typed observability contract: ok=%v err=%v", ok, err)
+			}
+			failed := applyReportableAgentSwitchFixture(ctx, t, s, failure, domain.AgentSwitchDelivering, "target-generation", true)
+			if failed != tt.wantFailed {
+				t.Fatalf("fail unacknowledged delivery: failed=%v want=%v", failed, tt.wantFailed)
 			}
 			if !tt.acknowledgesFirst {
 				if ok, err := s.AcknowledgeAgentSwitchTarget(ctx, sw.ID, session.ID, "target-generation", failedAt.Add(time.Second)); err != nil || ok {

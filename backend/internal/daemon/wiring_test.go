@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -258,6 +259,43 @@ func TestWiring_StartupSignalGateComesFromAdapters(t *testing.T) {
 	}
 }
 
+// TestWiring_UrgentNudgeGateComesFromAdapters asserts the urgent merge-conflict
+// nudge is fail-closed at a waiting_input prompt: it is only safe on a harness
+// that reports a permission dialog AS blocked (ports.BlockedActivitySignaler),
+// so a waiting_input prompt there is a genuine idle composer rather than a
+// masked permission decision. Codex, Droid, and the shared-hook harnesses all
+// fold permission prompts into waiting_input and must stay suppressed; only
+// blocked-signalling adapters (claude-code, kimchi) open the boundary.
+func TestWiring_UrgentNudgeGateComesFromAdapters(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	agents, err := buildAgentResolver(config.DefaultAgent, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	safe := urgentNudgeWaitingInputSafe(agents)
+
+	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessKimchi} {
+		if !safe(harness) {
+			t.Errorf("harness %q reports permission dialogs as blocked; urgent nudge must be allowed at waiting_input", harness)
+		}
+	}
+	// Codex maps permission-request to waiting_input; Droid folds both permission
+	// decisions and idle notifications into waiting_input; Goose/Devin ride the
+	// shared name-only StandardDeriveActivityState with no blocked signal. All
+	// must keep urgent delivery suppressed at a waiting_input prompt.
+	for _, harness := range []domain.AgentHarness{
+		domain.HarnessCodex, domain.HarnessDroid, domain.HarnessGoose, domain.HarnessDevin,
+		"definitely-not-an-agent", "",
+	} {
+		if safe(harness) {
+			t.Errorf("harness %q cannot distinguish a masked permission prompt from an idle composer; urgent nudge must stay fail-closed", harness)
+		}
+	}
+	if urgentNudgeWaitingInputSafe(nil)(domain.HarnessClaudeCode) {
+		t.Error("a nil resolver must fail closed, not open the waiting_input boundary")
+	}
+}
+
 // TestWiring_StartSessionBuildsSessionService asserts the daemon's startSession
 // constructs a real controller-facing session service end to end (resolver +
 // gitworktree workspace + session manager over the shared store/LCM), which is
@@ -279,7 +317,7 @@ func TestWiring_StartSessionBuildsSessionService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAgentResolver: %v", err)
 	}
-	svc, reviewSvc, lc, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, reviewSvc, lc, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -340,7 +378,7 @@ func TestWiring_StartSessionSpawnsScratchWithoutGitRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAgentResolver: %v", err)
 	}
-	svc, _, _, err := startSession(context.Background(), cfg, runtime, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, _, _, err := startSession(context.Background(), cfg, runtime, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -397,7 +435,7 @@ func TestStartSession_SpawnDoesNotPanicWhenNoTrackerToken(t *testing.T) {
 	if agentsErr != nil {
 		t.Fatalf("buildAgentResolver: %v", agentsErr)
 	}
-	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -456,7 +494,7 @@ func TestStartTrackerIntake_RunsEvenWithoutEnabledProjects(t *testing.T) {
 	if agentsErr != nil {
 		t.Fatalf("buildAgentResolver: %v", agentsErr)
 	}
-	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -694,6 +732,97 @@ func TestWiring_StartLifecycleThreadsMessengerIntoLCM(t *testing.T) {
 	}
 }
 
+// TestWiring_MergeConflictNudgeReArmsAfterConflictClears is the end-to-end
+// counterpart to the lifecycle unit tests for #4528, over the real sqlite store
+// the daemon runs on: it drives the SCM observer's entrypoint
+// (ApplySCMObservation) through the full mergeable → conflicting → mergeable →
+// conflicting cycle and asserts the second conflict notifies again. The
+// dedup signature is persisted in pr.last_nudge_signature, so a fake store
+// cannot prove the round trip actually survives the real column.
+func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: "/repo/p", RegisteredAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := store.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: "p",
+		Kind:      domain.KindWorker,
+		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const prURL = "https://github.com/o/r/pull/1"
+	if err := store.WriteSCMObservation(ctx, domain.PullRequest{
+		URL:       prURL,
+		SessionID: rec.ID,
+		Number:    1,
+		UpdatedAt: time.Now(),
+	}, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatalf("persist PR before lifecycle: %v", err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	messenger := &captureMessenger{}
+	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	t.Cleanup(stack.Stop)
+	t.Cleanup(cancel)
+
+	observe := func(state domain.Mergeability) {
+		t.Helper()
+		if err := stack.LCM.ApplySCMObservation(ctx, rec.ID, ports.SCMObservation{
+			Fetched:      true,
+			PR:           ports.SCMPRObservation{URL: prURL, Number: 1},
+			Mergeability: ports.SCMMergeabilityObservation{State: string(state), Conflict: state == domain.MergeConflicting},
+		}); err != nil {
+			t.Fatalf("ApplySCMObservation(%s): %v", state, err)
+		}
+	}
+
+	observe(domain.MergeMergeable)
+	observe(domain.MergeConflicting)
+	if len(messenger.msgs) != 1 {
+		t.Fatalf("first conflict should nudge once, got %d: %v", len(messenger.msgs), messenger.msgs)
+	}
+	observe(domain.MergeConflicting)
+	if len(messenger.msgs) != 1 {
+		t.Fatalf("an unchanged conflict must stay deduplicated, got %d: %v", len(messenger.msgs), messenger.msgs)
+	}
+	observe(domain.MergeMergeable)
+	observe(domain.MergeConflicting)
+	if len(messenger.msgs) != 2 {
+		t.Fatalf("a conflict returning after the PR went mergeable should nudge again, got %d: %v", len(messenger.msgs), messenger.msgs)
+	}
+	if messenger.msgs[1].id != rec.ID || !strings.Contains(messenger.msgs[1].msg, "merge conflicts") {
+		t.Fatalf("second nudge is not the merge-conflict nudge for this session: %+v", messenger.msgs[1])
+	}
+
+	// A daemon restart rebuilds the lifecycle manager with empty in-memory dedup
+	// maps, so only pr.last_nudge_signature carries the state forward. A bare
+	// lifecycle.New over the same store is that rebuild without the background
+	// observers a second startLifecycle would leave running. The still-unresolved
+	// conflict must stay quiet across that boundary.
+	restarted := &captureMessenger{}
+	restartedLCM := lifecycle.New(store, restarted)
+	if err := restartedLCM.ApplySCMObservation(ctx, rec.ID, ports.SCMObservation{
+		Fetched:      true,
+		PR:           ports.SCMPRObservation{URL: prURL, Number: 1},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true},
+	}); err != nil {
+		t.Fatalf("ApplySCMObservation after restart: %v", err)
+	}
+	if len(restarted.msgs) != 0 {
+		t.Fatalf("restart replayed an already-delivered conflict nudge: %v", restarted.msgs)
+	}
+}
+
 // TestProjectRepoResolver_ResolvesRegisteredProject asserts the DB-backed repo
 // resolver turns a registered project into its on-disk repo path (so spawns
 // materialise a worktree), and fails loudly for an unregistered project.
@@ -739,6 +868,57 @@ type fakeSessionLifecycle struct {
 	restoreErr                error
 }
 
+type recordingAgentSwitchDaemonFaultStore struct {
+	inputs []ports.AgentSwitchDaemonFault
+}
+
+func (s *recordingAgentSwitchDaemonFaultStore) EnqueueAgentSwitchDaemonFault(_ context.Context, input ports.AgentSwitchDaemonFault) (ports.AgentSwitchMutationResult, error) {
+	s.inputs = append(s.inputs, input)
+	return ports.AgentSwitchMutationResult{Enrollment: domain.AgentSwitchEnrollmentEnrolled}, nil
+}
+
+type fixedAgentSwitchReportingPolicy struct {
+	authorization domain.AgentSwitchReportingAuthorization
+}
+
+func (p fixedAgentSwitchReportingPolicy) Authorization() domain.AgentSwitchReportingAuthorization {
+	return p.authorization
+}
+
+func TestEnqueueAgentSwitchWorkerShutdownTimeoutCreatesOneDaemonAggregate(t *testing.T) {
+	store := &recordingAgentSwitchDaemonFaultStore{}
+	authorization := domain.AgentSwitchReportingAuthorization{
+		Enabled: true, ConsentGeneration: "consent-generation", DestinationFingerprint: "destination-fingerprint",
+	}
+	at := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
+	if err := enqueueAgentSwitchWorkerShutdownTimeout(context.Background(), store, fixedAgentSwitchReportingPolicy{authorization}, "daemon-run-1", at); err != nil {
+		t.Fatalf("enqueue shutdown timeout: %v", err)
+	}
+	if len(store.inputs) != 1 {
+		t.Fatalf("daemon fault inputs = %d, want 1", len(store.inputs))
+	}
+	got := store.inputs[0]
+	if got.DaemonRunID != "daemon-run-1" || got.Authorization != authorization {
+		t.Fatalf("daemon fault scope = %+v", got)
+	}
+	if got.Fault.ReportKind != domain.AgentSwitchReportDaemonLifecycleFailure ||
+		got.Fault.FailurePoint != domain.AgentSwitchFailureShutdownWorkerTimeout ||
+		got.Fault.FaultCode != domain.AgentSwitchFaultShutdownWorkersTimedOut ||
+		got.Fault.Execution != domain.AgentSwitchExecutionDaemonShutdown ||
+		got.Fault.CallOutcome != domain.AgentSwitchCallTimedOut {
+		t.Fatalf("daemon fault = %+v", got.Fault)
+	}
+}
+
+func TestAgentSwitchWorkerWaitCancellationIsNotReportable(t *testing.T) {
+	if agentSwitchWorkerWaitTimedOut(context.Canceled) {
+		t.Fatal("ordinary shutdown cancellation was classified as a timeout")
+	}
+	if !agentSwitchWorkerWaitTimedOut(context.DeadlineExceeded) {
+		t.Fatal("worker deadline was not classified as a timeout")
+	}
+}
+
 func (f *fakeSessionLifecycle) Send(context.Context, domain.SessionID, string, *ports.SpawnAttachment) error {
 	return nil
 }
@@ -778,6 +958,17 @@ func (f *fakeSessionLifecycle) AcquireSessionInput(domain.SessionID) (func(), bo
 func (f *fakeSessionLifecycle) SessionMutationInProgress(domain.SessionID) bool         { return false }
 func (f *fakeSessionLifecycle) SetReviewerTerminator(sessionmanager.ReviewerTerminator) {}
 func (f *fakeSessionLifecycle) SetHarnessUseGate(sessionmanager.HarnessUseGate)         {}
+func (f *fakeSessionLifecycle) CodexAccountSwitchInProgress() bool                      { return false }
+func (f *fakeSessionLifecycle) StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
+	return domain.CodexAccountSwitch{}, nil
+}
+func (f *fakeSessionLifecycle) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
+	return domain.CodexAccountSwitch{}, nil
+}
+func (f *fakeSessionLifecycle) GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error) {
+	return domain.CodexAccountSwitch{}, false, nil
+}
+func (f *fakeSessionLifecycle) SetCodexAccountSwitchObserver(func()) {}
 
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile
@@ -826,6 +1017,14 @@ func (r *selectableRuntime) GetOutput(context.Context, ports.RuntimeHandle, int)
 
 func (r *selectableRuntime) IsAlive(context.Context, ports.RuntimeHandle) (bool, error) {
 	return true, nil
+}
+
+func (r *selectableRuntime) IsChildAlive(context.Context, ports.RuntimeHandle) (bool, error) {
+	return true, nil
+}
+
+func (r *selectableRuntime) ProbeFencedRuntime(context.Context, ports.FencedRuntimeRef) ports.FencedProbeResult {
+	return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonProbeFailed}
 }
 
 func (r *selectableRuntime) Attach(context.Context, ports.RuntimeHandle, uint16, uint16) (ports.Stream, error) {

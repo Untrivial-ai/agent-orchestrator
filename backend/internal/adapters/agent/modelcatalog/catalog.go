@@ -44,11 +44,10 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[[:alpha:]]`)
 
 var commandSpecs = map[string]commandSpec{
 	"aider":       {args: []string{"--no-check-update", "--no-git", "--no-gitignore", "--no-analytics", "--list-models", "."}, parser: parseIDLines},
-	"autohand":    {args: []string{"models", "list"}, parser: parseIDLines},
 	"opencode":    {args: []string{"--pure", "models"}, parser: parseIDLines},
 	"grok":        {args: []string{"models"}, parser: parseGrokModels},
 	"cursor":      {args: []string{"models"}, parser: parseCursorModels},
-	"agy":         {args: []string{"models"}, parser: parseIDLines},
+	"agy":         {args: []string{"models"}, parser: parseAgyModels},
 	"kilocode":    {args: []string{"models"}, parser: parseIDLines},
 	"pi":          {args: []string{"--list-models"}, parser: parsePiModels},
 	"kimchi":      {args: []string{"--list-models"}, parser: parsePiModels},
@@ -57,36 +56,25 @@ var commandSpecs = map[string]commandSpec{
 	"auggie":      {args: []string{"models", "list", "--json"}, parser: parseJSONModels},
 	"devin":       {args: []string{"models", "list", "--format", "json"}, parser: parseJSONModels},
 	"kiro":        {args: []string{"chat", "--list-models", "--format", "json"}, parser: parseJSONModels},
+	"omp":         {args: []string{"models", "--json"}, parser: parseJSONModels},
+	"copilot":     {args: []string{"help", "config"}, parser: parseCopilotConfigModels},
+	"droid":       {args: []string{"exec", "--help"}, parser: parseDroidHelpModels},
+	"crush":       {args: []string{"models"}, parser: parseIDLines},
 }
 
 // Base returns the picker behavior AO can provide without executing a CLI.
 func Base(agentID string) ports.AgentModelCatalog {
 	now := time.Now().UTC()
+	entryMode := customModelEntryMode(agentID)
 	switch agentID {
-	case "claude-code":
-		return catalog(agentID, "official-aliases", true, now,
-			model("sonnet", "Sonnet", false),
-			model("opus", "Opus", false),
-			model("haiku", "Haiku", false),
-		)
-	case "codex":
-		return catalog(agentID, "official-catalog", true, now,
-			model("gpt-5.6-sol", "GPT-5.6 Sol", true),
-			model("gpt-5.6-terra", "GPT-5.6 Terra", false),
-			model("gpt-5.6-luna", "GPT-5.6 Luna", false),
-			model("gpt-5.5", "GPT-5.5", false),
-			model("gpt-5.4", "GPT-5.4", false),
-			model("gpt-5.4-mini", "GPT-5.4 mini", false),
-			model("gpt-5.3-codex", "GPT-5.3-Codex", false),
-		)
 	case "muse":
-		return catalog(agentID, "official-catalog", true, now,
+		return catalog(agentID, "official-catalog", entryMode, now,
 			model("muse-spark", "Muse Spark", true),
 			model("muse-spark-1.1", "Muse Spark 1.1", false),
 			model("muse-spark-1.2", "Muse Spark 1.2", false),
 		)
 	case "amp":
-		c := catalog(agentID, "official-modes", false, now,
+		c := catalog(agentID, "official-modes", entryMode, now,
 			model("low", "Low", false),
 			model("medium", "Medium", true),
 			model("high", "High", false),
@@ -97,38 +85,129 @@ func Base(agentID string) ports.AgentModelCatalog {
 	default:
 		if hasDiscoverySource(agentID) {
 			return ports.AgentModelCatalog{
-				AgentID:       agentID,
-				SelectionMode: ports.ModelSelectionCatalog,
-				Models:        []ports.AgentModelInfo{},
-				AllowCustom:   true,
-				Source:        "cli",
-				FetchedAt:     now,
+				AgentID:          agentID,
+				SelectionMode:    ports.ModelSelectionCatalog,
+				Models:           []ports.AgentModelInfo{},
+				CustomModelEntry: entryMode,
+				AllowCustom:      entryMode == ports.CustomModelEntryDirect,
+				Source:           "cli",
+				FetchedAt:        now,
 			}
 		}
 		return Manual(agentID)
 	}
 }
 
-// Manual returns the free-text fallback used when an adapter has no reliable
-// catalog or when discovery fails before AO has a successful cached catalog.
+// Manual returns the capability-aware fallback used when an adapter has no
+// reliable catalog or discovery fails before AO has a successful cache.
 func Manual(agentID string) ports.AgentModelCatalog {
+	entryMode := customModelEntryMode(agentID)
+	selectionMode := ports.ModelSelectionCatalog
+	if entryMode == ports.CustomModelEntryDirect {
+		selectionMode = ports.ModelSelectionText
+	}
 	return ports.AgentModelCatalog{
-		AgentID:       agentID,
-		SelectionMode: ports.ModelSelectionText,
-		Models:        []ports.AgentModelInfo{},
-		AllowCustom:   true,
-		Source:        "manual",
-		FetchedAt:     time.Now().UTC(),
+		AgentID:          agentID,
+		SelectionMode:    selectionMode,
+		Models:           []ports.AgentModelInfo{},
+		CustomModelEntry: entryMode,
+		AllowCustom:      entryMode == ports.CustomModelEntryDirect,
+		Source:           "manual",
+		FetchedAt:        time.Now().UTC(),
+	}
+}
+
+// customModelEntryMode is stable adapter capability policy. Model names and
+// availability remain agent-owned and are never listed here.
+func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
+	switch agentID {
+	case "claude-code", "codex", "opencode", "grok", "cursor", "qwen",
+		"kimi", "muse", "aider", "goose", "autohand":
+		return ports.CustomModelEntryDirect
+	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent":
+		return ports.CustomModelEntryConfigured
+	default:
+		return ports.CustomModelEntryNone
 	}
 }
 
 // Discoverer implements the model-discovery port for production daemon wiring.
-type Discoverer struct{}
+type Discoverer struct {
+	CodexModels  CodexModelListFunc
+	ClineOptions ClineConfigOptionListFunc
+}
 
-// Discover executes a documented non-interactive model-list command when the
-// agent exposes one. Static catalogs are returned without executing the binary.
-func (Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+// CodexModelListFunc obtains Codex's account-scoped app-server catalog without
+// opening a provider thread.
+type CodexModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error)
+
+// ClineConfigOptionListFunc obtains Cline's provider-owned model choices from
+// the ACP configuration catalog advertised by session/new.
+type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error)
+
+// Discover uses the agent-owned model surface configured for this adapter.
+func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+	if request.AgentID == "claude-code" {
+		return discoverClaudeCatalog(request), nil
+	}
+	if request.AgentID == "muse" {
+		return Base(request.AgentID), nil
+	}
+	if request.AgentID == "codex" {
+		return discoverCodexCatalog(ctx, request, d.CodexModels)
+	}
+	if request.AgentID == "cline" && d.ClineOptions != nil {
+		if catalog, err := discoverClineCatalog(ctx, request, d.ClineOptions); err == nil {
+			return catalog, nil
+		}
+		// Older Cline releases may not expose ACP config options. Fall back to
+		// the configured provider selections already stored by Cline.
+	}
 	return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir, request.Env)
+}
+
+// claudeCodeModels is the static Claude Code model catalog. It mirrors the
+// model choices a Claude Code ACP session advertises through session/new, so AO
+// can render the picker without spawning the Agent SDK. Claude Code owns the
+// real list; refresh this snapshot when the advertised models change.
+func claudeCodeModels() []ports.AgentModelInfo {
+	return []ports.AgentModelInfo{
+		{ID: "sonnet", Label: "Sonnet"},
+		{ID: "fable", Label: "Fable 5.1"},
+		{ID: "opus", Label: "Opus"},
+		{ID: "haiku", Label: "Haiku"},
+		{ID: "opus[1m]", Label: "Opus (1M context)"},
+	}
+}
+
+// discoverClaudeCatalog returns the static Claude Code catalog, marking the row
+// matching the project/user configured model as default. The list is static, so
+// discovery never fails and never launches the Agent SDK or an interactive
+// Claude client.
+func discoverClaudeCatalog(request ports.AgentModelDiscoveryRequest) ports.AgentModelCatalog {
+	base := Base(request.AgentID)
+	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+	base.Source = "catalog"
+	base.FetchedAt = time.Now().UTC()
+	return base
+}
+
+func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, workingDir string, env map[string]string) []ports.AgentModelInfo {
+	configured := claudeCodeResolvedModel(workingDir, env)
+	if configured == "" {
+		return models
+	}
+	matched := false
+	for i := range models {
+		models[i].IsDefault = strings.EqualFold(models[i].ID, configured)
+		matched = matched || models[i].IsDefault
+	}
+	if !matched {
+		// Claude accepts custom aliases and pinned snapshots beyond the static
+		// picker snapshot. Keep the effective configured model visible.
+		models = append(models, ports.AgentModelInfo{ID: configured, Label: configured, IsDefault: true})
+	}
+	return models
 }
 
 // CatalogFingerprint returns a stable fingerprint of the discovery inputs: the
@@ -146,7 +225,16 @@ func (Discoverer) Manual(agentID string) ports.AgentModelCatalog { return Manual
 func Discover(ctx context.Context, agentID, binary, workingDir string, env map[string]string) (ports.AgentModelCatalog, error) {
 	base := Base(agentID)
 	if agentID == "claude-code" {
-		return withClaudeCodeDefault(base, workingDir, env), nil
+		return discoverClaudeCatalog(ports.AgentModelDiscoveryRequest{AgentID: agentID, WorkingDir: workingDir, Env: env}), nil
+	}
+	if agentID == "muse" {
+		return base, nil
+	}
+	if agentID == "codex" {
+		return base, errors.New("codex model discovery requires app-server")
+	}
+	if hasConfigDiscoverySource(agentID) {
+		return discoverConfigCatalog(agentID, workingDir, env)
 	}
 	spec, ok := commandSpecs[agentID]
 	if !ok {
@@ -176,37 +264,90 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	return base, nil
 }
 
+func discoverCodexCatalog(ctx context.Context, request ports.AgentModelDiscoveryRequest, list CodexModelListFunc) (ports.AgentModelCatalog, error) {
+	base := Base(request.AgentID)
+	if list == nil {
+		return base, errors.New("codex app-server model discovery is unavailable")
+	}
+	models, err := list(ctx, request)
+	if err != nil {
+		return base, fmt.Errorf("codex model discovery: %w", err)
+	}
+	normalized := make([]ports.AgentModelInfo, 0, len(models))
+	for _, item := range models {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		label := strings.TrimSpace(item.DisplayName)
+		if label == "" {
+			label = id
+		}
+		provider := ""
+		if prefix, _, ok := strings.Cut(id, "/"); ok {
+			provider = prefix
+		}
+		normalized = append(normalized, ports.AgentModelInfo{ID: id, Label: label, Provider: provider, IsDefault: item.Default})
+	}
+	if len(normalized) == 0 {
+		return base, errors.New("codex model discovery returned no models")
+	}
+	base.Models = normalize(normalized)
+	base.Source = "cli"
+	base.FetchedAt = time.Now().UTC()
+	return base, nil
+}
+
+func discoverClineCatalog(
+	ctx context.Context,
+	request ports.AgentModelDiscoveryRequest,
+	list ClineConfigOptionListFunc,
+) (ports.AgentModelCatalog, error) {
+	base := Base(request.AgentID)
+	options, err := list(ctx, request)
+	if err != nil {
+		return base, fmt.Errorf("cline ACP model discovery: %w", err)
+	}
+	var models []ports.AgentModelInfo
+	for _, option := range options {
+		if option.Type != ports.ChatConfigOptionSelect ||
+			(option.Category != "model" && option.ID != "model") {
+			continue
+		}
+		for _, choice := range option.Choices {
+			id := strings.TrimSpace(choice.Value)
+			if id == "" {
+				continue
+			}
+			label := strings.TrimSpace(choice.Name)
+			if label == "" {
+				label = id
+			}
+			provider := strings.TrimSpace(choice.Group)
+			if provider == "" {
+				if prefix, _, ok := strings.Cut(id, "/"); ok {
+					provider = prefix
+				}
+			}
+			models = append(models, ports.AgentModelInfo{
+				ID: id, Label: label, Provider: provider,
+				IsDefault: id == strings.TrimSpace(option.Current.Select),
+			})
+		}
+	}
+	models = normalize(models)
+	if len(models) == 0 {
+		return base, errors.New("cline ACP model discovery returned no models")
+	}
+	base.Models = models
+	base.Source = "acp"
+	base.FetchedAt = time.Now().UTC()
+	return base, nil
+}
+
 // claudeCodeSettingsReadLimit bounds how much of a settings file AO parses. The
 // documented files are small; a pathological one must not stall discovery.
 const claudeCodeSettingsReadLimit = 1 << 20
-
-// withClaudeCodeDefault flags the model Claude Code will actually run with.
-// Claude Code exposes no non-interactive command that reports its resolved
-// model, but the value it resolves is readable: AO passes no --model, so the
-// choice comes from ANTHROPIC_MODEL or the "model" key in the settings files,
-// nearest scope first. When none of them set a model the CLI picks internally
-// and AO must not guess, so the catalog keeps no default and the picker keeps
-// showing "Agent default".
-func withClaudeCodeDefault(base ports.AgentModelCatalog, workingDir string, env map[string]string) ports.AgentModelCatalog {
-	resolved := claudeCodeResolvedModel(workingDir, env)
-	if resolved == "" {
-		return base
-	}
-	models := make([]ports.AgentModelInfo, len(base.Models))
-	copy(models, base.Models)
-	base.Models = models
-	for i := range base.Models {
-		if strings.EqualFold(base.Models[i].ID, resolved) {
-			base.Models[i].IsDefault = true
-			return base
-		}
-	}
-	// A configured model that is not one of the published aliases (an explicit
-	// snapshot id, or an alias variant such as "opus[1m]") still has to be
-	// selectable, otherwise the picker would show a default it cannot round-trip.
-	base.Models = append(base.Models, model(resolved, resolved, true))
-	return base
-}
 
 // claudeCodeResolvedModel returns the configured Claude Code model, or "" when
 // no scope sets one. Order mirrors Claude Code's own precedence, narrowed to the
@@ -259,6 +400,13 @@ func claudeCodeSettingsModel(path string) string {
 }
 
 func hasDiscoverySource(agentID string) bool {
+	switch agentID {
+	case "claude-code", "codex":
+		return true
+	}
+	if hasConfigDiscoverySource(agentID) {
+		return true
+	}
 	_, hasCommand := commandSpecs[agentID]
 	return hasCommand
 }
@@ -354,20 +502,24 @@ func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string,
 // discoveryConfigInputs returns the configuration an agent's discovery consults,
 // or "" when the catalog depends on the binary alone.
 func discoveryConfigInputs(agentID, workingDir string, env map[string]string) string {
-	if agentID != "claude-code" {
-		return ""
+	if agentID == "claude-code" {
+		return "model=" + claudeCodeResolvedModel(workingDir, env)
 	}
-	return "model=" + claudeCodeResolvedModel(workingDir, env)
+	if config := configDiscoveryFingerprint(agentID, workingDir, env); config != "" {
+		return "config=" + config
+	}
+	return ""
 }
 
-func catalog(agentID, source string, allowCustom bool, at time.Time, models ...ports.AgentModelInfo) ports.AgentModelCatalog {
+func catalog(agentID, source string, entryMode ports.CustomModelEntryMode, at time.Time, models ...ports.AgentModelInfo) ports.AgentModelCatalog {
 	return ports.AgentModelCatalog{
-		AgentID:       agentID,
-		SelectionMode: ports.ModelSelectionCatalog,
-		Models:        models,
-		AllowCustom:   allowCustom,
-		Source:        source,
-		FetchedAt:     at,
+		AgentID:          agentID,
+		SelectionMode:    ports.ModelSelectionCatalog,
+		Models:           models,
+		CustomModelEntry: entryMode,
+		AllowCustom:      entryMode == ports.CustomModelEntryDirect,
+		Source:           source,
+		FetchedAt:        at,
 	}
 }
 
@@ -393,12 +545,94 @@ func parseIDLines(output []byte) ([]ports.AgentModelInfo, error) {
 	return normalize(models), nil
 }
 
+func parseAgyModels(output []byte) ([]ports.AgentModelInfo, error) {
+	text := ansiPattern.ReplaceAllString(string(output), "")
+	var models []ports.AgentModelInfo
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		id := strings.Trim(fields[0], "`\"'[](),:")
+		if !looksLikeModelID(id) || !strings.ContainsAny(id, "-./:_") {
+			continue
+		}
+		label := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+		if label == "" {
+			label = id
+		}
+		models = append(models, ports.AgentModelInfo{ID: id, Label: label})
+	}
+	return normalize(models), nil
+}
+
 func parseGrokModels(output []byte) ([]ports.AgentModelInfo, error) {
 	return parseSectionModels(string(output), "Available models:", "")
 }
 
 func parseCursorModels(output []byte) ([]ports.AgentModelInfo, error) {
 	return parseSectionModels(string(output), "Available models", "Tip:")
+}
+
+func parseCopilotConfigModels(output []byte) ([]ports.AgentModelInfo, error) {
+	text := ansiPattern.ReplaceAllString(string(output), "")
+	inModels := false
+	var models []ports.AgentModelInfo
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !inModels {
+			if strings.HasPrefix(line, "`model`:") {
+				inModels = true
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "`contextTier`:") {
+			break
+		}
+		if !strings.HasPrefix(line, "-") {
+			continue
+		}
+		id := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		id = strings.Trim(id, "`\"'")
+		if looksLikeModelID(id) {
+			models = append(models, ports.AgentModelInfo{ID: id, Label: id})
+		}
+	}
+	return normalize(models), nil
+}
+
+func parseDroidHelpModels(output []byte) ([]ports.AgentModelInfo, error) {
+	text := ansiPattern.ReplaceAllString(string(output), "")
+	inModels := false
+	var models []ports.AgentModelInfo
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !inModels {
+			if line == "Available Models:" {
+				inModels = true
+			}
+			continue
+		}
+		if line == "" {
+			if len(models) > 0 {
+				break
+			}
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !looksLikeModelID(fields[0]) {
+			break
+		}
+		id := fields[0]
+		label := strings.TrimSpace(strings.TrimPrefix(line, id))
+		isDefault := strings.HasSuffix(strings.ToLower(label), "(default)")
+		if isDefault {
+			label = strings.TrimSpace(label[:len(label)-len("(default)")])
+		}
+		models = append(models, ports.AgentModelInfo{ID: id, Label: label, IsDefault: isDefault})
+	}
+	return normalize(models), nil
 }
 
 func parseSectionModels(output, startMarker, stopMarker string) ([]ports.AgentModelInfo, error) {
@@ -494,7 +728,7 @@ func parseJSONModels(output []byte) ([]ports.AgentModelInfo, error) {
 				walk(item)
 			}
 		case map[string]any:
-			id := firstString(node, "modelId", "model_id", "model_uid", "slug", "model")
+			id := firstString(node, "selector", "modelId", "model_id", "model_uid", "slug", "model")
 			if id == "" {
 				if _, isProviderContainer := node["models"]; !isProviderContainer {
 					id = firstString(node, "id")

@@ -195,7 +195,7 @@ func (c *SystemInstallController) status(w http.ResponseWriter, r *http.Request)
 // being passed through.
 func parseInstallTarget(w http.ResponseWriter, r *http.Request) (systeminstall.Target, bool) {
 	target := systeminstall.Target(chi.URLParam(r, "target"))
-	if !systeminstall.Valid(target) {
+	if !systeminstall.IsSystemTarget(target) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "UNKNOWN_INSTALL_TARGET",
 			"unknown install target", nil)
 		return "", false

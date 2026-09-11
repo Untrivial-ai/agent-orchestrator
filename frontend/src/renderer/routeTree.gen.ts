@@ -11,10 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
-import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellTerminalsRouteImport } from './routes/_shell.terminals'
-import { Route as ShellProjectsProjectIdRouteImport } from './routes/_shell.projects.$projectId'
+import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
+import { Route as ShellSessionsRouteImport } from './routes/_shell.sessions'
+import { Route as ShellSessionsIndexRouteImport } from './routes/_shell.sessions.index'
 import { Route as ShellSessionsSessionIdRouteImport } from './routes/_shell.sessions.$sessionId'
+import { Route as ShellProjectsProjectIdRouteImport } from './routes/_shell.projects.$projectId'
 import { Route as ShellProjectsProjectIdSettingsRouteImport } from './routes/_shell.projects.$projectId_.settings'
 import { Route as ShellProjectsProjectIdSessionsSessionIdRouteImport } from './routes/_shell.projects.$projectId_.sessions.$sessionId'
 
@@ -27,24 +29,34 @@ const ShellIndexRoute = ShellIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ShellRoute,
 } as any)
-const ShellSettingsRoute = ShellSettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => ShellRoute,
-} as any)
 const ShellTerminalsRoute = ShellTerminalsRouteImport.update({
   id: '/terminals',
   path: '/terminals',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellSettingsRoute = ShellSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellSessionsRoute = ShellSessionsRouteImport.update({
+  id: '/sessions',
+  path: '/sessions',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellSessionsIndexRoute = ShellSessionsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ShellSessionsRoute,
+} as any)
+const ShellSessionsSessionIdRoute = ShellSessionsSessionIdRouteImport.update({
+  id: '/$sessionId',
+  path: '/$sessionId',
+  getParentRoute: () => ShellSessionsRoute,
+} as any)
 const ShellProjectsProjectIdRoute = ShellProjectsProjectIdRouteImport.update({
   id: '/projects/$projectId',
   path: '/projects/$projectId',
-  getParentRoute: () => ShellRoute,
-} as any)
-const ShellSessionsSessionIdRoute = ShellSessionsSessionIdRouteImport.update({
-  id: '/sessions/$sessionId',
-  path: '/sessions/$sessionId',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellProjectsProjectIdSettingsRoute =
@@ -62,10 +74,12 @@ const ShellProjectsProjectIdSessionsSessionIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
+  '/sessions': typeof ShellSessionsRouteWithChildren
   '/settings': typeof ShellSettingsRoute
   '/terminals': typeof ShellTerminalsRoute
   '/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
+  '/sessions/': typeof ShellSessionsIndexRoute
   '/projects/$projectId/settings': typeof ShellProjectsProjectIdSettingsRoute
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
 }
@@ -75,17 +89,20 @@ export interface FileRoutesByTo {
   '/': typeof ShellIndexRoute
   '/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
+  '/sessions': typeof ShellSessionsIndexRoute
   '/projects/$projectId/settings': typeof ShellProjectsProjectIdSettingsRoute
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
+  '/_shell/sessions': typeof ShellSessionsRouteWithChildren
   '/_shell/settings': typeof ShellSettingsRoute
   '/_shell/terminals': typeof ShellTerminalsRoute
   '/_shell/': typeof ShellIndexRoute
   '/_shell/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/_shell/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
+  '/_shell/sessions/': typeof ShellSessionsIndexRoute
   '/_shell/projects/$projectId_/settings': typeof ShellProjectsProjectIdSettingsRoute
   '/_shell/projects/$projectId_/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
 }
@@ -93,10 +110,12 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/sessions'
     | '/settings'
     | '/terminals'
     | '/projects/$projectId'
     | '/sessions/$sessionId'
+    | '/sessions/'
     | '/projects/$projectId/settings'
     | '/projects/$projectId/sessions/$sessionId'
   fileRoutesByTo: FileRoutesByTo
@@ -106,16 +125,19 @@ export interface FileRouteTypes {
     | '/'
     | '/projects/$projectId'
     | '/sessions/$sessionId'
+    | '/sessions'
     | '/projects/$projectId/settings'
     | '/projects/$projectId/sessions/$sessionId'
   id:
     | '__root__'
     | '/_shell'
+    | '/_shell/sessions'
     | '/_shell/settings'
     | '/_shell/terminals'
     | '/_shell/'
     | '/_shell/projects/$projectId'
     | '/_shell/sessions/$sessionId'
+    | '/_shell/sessions/'
     | '/_shell/projects/$projectId_/settings'
     | '/_shell/projects/$projectId_/sessions/$sessionId'
   fileRoutesById: FileRoutesById
@@ -140,13 +162,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellIndexRouteImport
       parentRoute: typeof ShellRoute
     }
-    '/_shell/settings': {
-      id: '/_shell/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof ShellSettingsRouteImport
-      parentRoute: typeof ShellRoute
-    }
     '/_shell/terminals': {
       id: '/_shell/terminals'
       path: '/terminals'
@@ -154,18 +169,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellTerminalsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/settings': {
+      id: '/_shell/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof ShellSettingsRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/sessions': {
+      id: '/_shell/sessions'
+      path: '/sessions'
+      fullPath: '/sessions'
+      preLoaderRoute: typeof ShellSessionsRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/sessions/': {
+      id: '/_shell/sessions/'
+      path: '/'
+      fullPath: '/sessions/'
+      preLoaderRoute: typeof ShellSessionsIndexRouteImport
+      parentRoute: typeof ShellSessionsRoute
+    }
+    '/_shell/sessions/$sessionId': {
+      id: '/_shell/sessions/$sessionId'
+      path: '/$sessionId'
+      fullPath: '/sessions/$sessionId'
+      preLoaderRoute: typeof ShellSessionsSessionIdRouteImport
+      parentRoute: typeof ShellSessionsRoute
+    }
     '/_shell/projects/$projectId': {
       id: '/_shell/projects/$projectId'
       path: '/projects/$projectId'
       fullPath: '/projects/$projectId'
       preLoaderRoute: typeof ShellProjectsProjectIdRouteImport
-      parentRoute: typeof ShellRoute
-    }
-    '/_shell/sessions/$sessionId': {
-      id: '/_shell/sessions/$sessionId'
-      path: '/sessions/$sessionId'
-      fullPath: '/sessions/$sessionId'
-      preLoaderRoute: typeof ShellSessionsSessionIdRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/projects/$projectId_/settings': {
@@ -185,22 +221,36 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ShellSessionsRouteChildren {
+  ShellSessionsSessionIdRoute: typeof ShellSessionsSessionIdRoute
+  ShellSessionsIndexRoute: typeof ShellSessionsIndexRoute
+}
+
+const ShellSessionsRouteChildren: ShellSessionsRouteChildren = {
+  ShellSessionsSessionIdRoute: ShellSessionsSessionIdRoute,
+  ShellSessionsIndexRoute: ShellSessionsIndexRoute,
+}
+
+const ShellSessionsRouteWithChildren = ShellSessionsRoute._addFileChildren(
+  ShellSessionsRouteChildren,
+)
+
 interface ShellRouteChildren {
+  ShellSessionsRoute: typeof ShellSessionsRouteWithChildren
   ShellSettingsRoute: typeof ShellSettingsRoute
   ShellTerminalsRoute: typeof ShellTerminalsRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellProjectsProjectIdRoute: typeof ShellProjectsProjectIdRoute
-  ShellSessionsSessionIdRoute: typeof ShellSessionsSessionIdRoute
   ShellProjectsProjectIdSettingsRoute: typeof ShellProjectsProjectIdSettingsRoute
   ShellProjectsProjectIdSessionsSessionIdRoute: typeof ShellProjectsProjectIdSessionsSessionIdRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellSessionsRoute: ShellSessionsRouteWithChildren,
   ShellSettingsRoute: ShellSettingsRoute,
   ShellTerminalsRoute: ShellTerminalsRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellProjectsProjectIdRoute: ShellProjectsProjectIdRoute,
-  ShellSessionsSessionIdRoute: ShellSessionsSessionIdRoute,
   ShellProjectsProjectIdSettingsRoute: ShellProjectsProjectIdSettingsRoute,
   ShellProjectsProjectIdSessionsSessionIdRoute:
     ShellProjectsProjectIdSessionsSessionIdRoute,

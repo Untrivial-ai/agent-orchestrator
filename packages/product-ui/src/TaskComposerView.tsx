@@ -17,6 +17,7 @@ import {
 	PaperclipIcon as Paperclip,
 	XIcon as X,
 } from "./icons";
+import { useOverlayAutoFocus } from "./overlay-auto-focus";
 
 // One fixed-height, non-wrapping row: 56px attachment tiles plus 6px top and
 // 8px bottom padding. Keeping this numeric avoids Motion's auto-height layout
@@ -58,6 +59,7 @@ export type TaskComposerModelOption = {
 
 export type TaskComposerModelCatalog = {
 	allowCustom: boolean;
+	customModelEntry: "none" | "direct" | "configured";
 	models: TaskComposerModelOption[];
 	selectionMode: "catalog" | "text" | "mode";
 };
@@ -147,6 +149,7 @@ const TaskPrompt = memo(function TaskPrompt({
 }: TaskPromptProps) {
 	const [value, setValue] = useState(initialValue);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	useOverlayAutoFocus(textareaRef, autoFocus === true);
 
 	useEffect(() => {
 		const el = textareaRef.current;
@@ -163,7 +166,6 @@ const TaskPrompt = memo(function TaskPrompt({
 			<textarea
 				ref={textareaRef}
 				id={id}
-				autoFocus={autoFocus}
 				className="min-h-[calc(3lh+1.75rem)] max-h-[calc(8lh+1.75rem)] w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-4 text-md leading-relaxed text-foreground outline-none placeholder:text-passive disabled:cursor-not-allowed disabled:opacity-50"
 				disabled={disabled}
 				placeholder={placeholder}

@@ -156,6 +156,31 @@ describe("SwitchAgentDialog", () => {
 		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
+	it("keeps direct model IDs in the same searchable model picker", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(agentModelsQueryKey("codex", worker.workspaceId), {
+			agentId: "codex",
+			allowCustom: true,
+			customModelEntry: "direct",
+			fetchedAt: "2026-06-10T00:00:00Z",
+			models: [{ id: "gpt-5.4", label: "GPT-5.4", isDefault: true }],
+			selectionMode: "catalog",
+			source: "test",
+			stale: false,
+		});
+
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		const model = within(dialog).getByRole("button", { name: "Model" });
+		await userEvent.click(model);
+		await userEvent.type(screen.getByRole("searchbox", { name: "Search model" }), "private/model-id");
+		await userEvent.click(
+			screen.getByRole("menuitem", { name: "Use “private/model-id” as a custom model" }),
+		);
+
+		expect(model).toHaveTextContent("private/model-id");
+		expect(within(dialog).queryByRole("textbox", { name: "Model" })).not.toBeInTheDocument();
+	});
+
 	it("resets the previous target model when the active agent changes", async () => {
 		const { queryClient, rerender } = renderDialog();
 		const dialog = screen.getByRole("dialog", { name: "Switch agent" });

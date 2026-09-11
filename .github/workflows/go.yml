@@ -46,7 +46,45 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race ./...
+        # The SQLite migration package already runs close to Go's default
+        # 10-minute per-package limit under the race detector. Keep deadlock
+        # protection while leaving enough headroom for migration coverage.
+        run: go test -race -timeout=15m ./...
+
+  # The suite above only ever runs on Linux, so the packages whose behaviour is
+  # genuinely platform-specific have never been exercised on Windows: worktree
+  # teardown renames and unlinks directories, and Windows is the platform where
+  # an open handle makes both fail. Scoped to those packages rather than the
+  # whole suite to keep the matrix cheap.
+  windows-workspace:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      # Scoped to teardown and kill by name rather than running these packages
+      # whole: running them on Windows for the first time surfaced ten
+      # pre-existing failures (agent switching, handoff artifacts, spawn PATH
+      # and branch namespacing) that have nothing to do with worktree teardown.
+      # Widening this is worth doing, but as its own change with its own fixes.
+      - name: Test SQLite filesystem path identity
+        run: go test -race -run 'Test(OpenPreservesDataDirectoryCharacters|FragmentPathsKeepDatabasesIsolated|OpenRefusesToHideLegacyDatabase|OpenPrefersExistingIntendedDatabase|DatabaseURIPreservesWindowsPaths)$' ./internal/storage/sqlite
+
+      - name: Test workspace teardown and session kill
+        run: go test -race -v -run 'Destroy|Discard|Sweep|Kill' ./internal/adapters/workspace/... ./internal/session_manager/
+
+      - name: Test Windows Chat environment precedence
+        run: go test -race ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
+
+      - name: Test Windows mobile tunnel subprocesses
+        run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
 
   lint:
     runs-on: ubuntu-latest
@@ -71,6 +109,28 @@ jobs:
           working-directory: backend
           # Blocking on the full ruleset: the tree is clean at zero findings, so
           # any new issue fails CI rather than being grandfathered.
+
+  sqlc-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Regenerate storage queries with pinned sqlc
+        run: npm run sqlc
+
+      - name: Check for generated storage drift
+        run: |
+          git diff --exit-code -- backend/internal/storage/sqlite/gen
+          test -z "$(git ls-files --others --exclude-standard -- backend/internal/storage/sqlite/gen)"
 
   api-drift:
     runs-on: ubuntu-latest

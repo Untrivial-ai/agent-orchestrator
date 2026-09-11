@@ -2,14 +2,16 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import type { WorkspaceSummary } from "../types/workspace";
 
-const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock } = vi.hoisted(
+const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
 		captureRendererEventMock: vi.fn().mockResolvedValue(undefined),
 		cloudState: { ready: false, org: undefined as { id: string } | undefined },
 		getMock: vi.fn(),
 		hasTrustedApiBaseUrlMock: vi.fn(() => true),
 		listProjectsMock: vi.fn(),
+		setQueryHealthyMock: vi.fn(),
 	}),
 );
 
@@ -19,6 +21,7 @@ vi.mock("../lib/api-client", () => ({
 }));
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: captureRendererEventMock }));
+vi.mock("../lib/agent-switch-visibility", () => ({ agentSwitchVisibility: { setQueryHealthy: setQueryHealthyMock } }));
 
 vi.mock("./useCloudCp", () => ({
 	useCloudCp: () => ({
@@ -32,7 +35,7 @@ vi.mock("./useCloudOrg", () => ({
 	useCloudOrg: () => ({ org: cloudState.org, isLoading: false, error: undefined, ready: cloudState.ready }),
 }));
 
-import { useWorkspaceQuery, useWorkspaceTraySessions } from "./useWorkspaceQuery";
+import { useWorkspaceQuery, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey } from "./useWorkspaceQuery";
 
 function wrapper({ children }: { children: ReactNode }) {
 	// The hook pins its own retry policy; retryDelay 0 keeps the error tests fast.
@@ -58,6 +61,7 @@ beforeEach(() => {
 	cloudState.ready = false;
 	cloudState.org = undefined;
 	listProjectsMock.mockReset();
+	setQueryHealthyMock.mockReset();
 });
 
 describe("useWorkspaceQuery", () => {
@@ -93,10 +97,11 @@ describe("useWorkspaceQuery", () => {
 							id: "sess-1",
 							projectId: "proj-1",
 							terminalHandleId: "term-1",
+							terminalGeneration: "launch-2",
 							displayName: "fix-bug",
 							issueId: "github:acme/project-one#42",
 							harness: "claude-code",
-							reviewerHarness: "qwen",
+							reviewerHarness: "agy",
 							branch: "qa/modal-worker",
 							status: "mergeable",
 							scmStatus: "review_pending",
@@ -157,10 +162,11 @@ describe("useWorkspaceQuery", () => {
 		expect(workspace.sessions[0]).toMatchObject({
 			id: "sess-1",
 			terminalHandleId: "term-1",
+			terminalGeneration: "launch-2",
 			title: "fix-bug",
 			issueId: "github:acme/project-one#42",
 			provider: "claude-code",
-			reviewerHarness: "qwen",
+			reviewerHarness: "agy",
 			branch: "qa/modal-worker",
 			status: "mergeable",
 			scmStatus: "review_pending",
@@ -178,6 +184,7 @@ describe("useWorkspaceQuery", () => {
 			id: "switch-1",
 			state: "delivering_context",
 			targetHarness: "codex",
+			updatedAt: "2026-06-10T15:32:00Z",
 		});
 		expect(workspace.sessions[1]).toMatchObject({
 			id: "sess-2",
@@ -241,6 +248,74 @@ describe("useWorkspaceQuery", () => {
 		expect(result.current.data?.[0].sessions[0]).toMatchObject({
 			id: "scratch-worker-1",
 			branch: undefined,
+		});
+	});
+
+	it("falls back to the direct session read while the workspace list has not caught up", async () => {
+		getMock.mockImplementation(async (url: string, options?: { params?: { path?: { sessionId?: string } } }) => {
+			if (url === "/api/v1/projects") {
+				return {
+					data: {
+						projects: [{ id: "proj-1", name: "workspace3", path: "/tmp/workspace3", orchestratorAgent: "codex" }],
+					},
+					error: undefined,
+				};
+			}
+			if (url === "/api/v1/sessions") {
+				return { data: { sessions: [] }, error: undefined };
+			}
+			if (url === "/api/v1/sessions/{sessionId}") {
+				expect(options?.params?.path?.sessionId).toBe("sess-orch");
+				return {
+					data: {
+						session: {
+							id: "sess-orch",
+							projectId: "proj-1",
+							displayName: "orchestrate",
+							harness: "codex",
+							kind: "orchestrator",
+							mode: "tui",
+							status: "working",
+							kanbanColumn: "building",
+							displayStatus: "Working",
+							autoInjectReview: true,
+							autoInjectCI: true,
+							autoReviewEnabled: false,
+							isPinned: false,
+							isTerminated: false,
+							terminateOnPrMerge: false,
+							prs: [],
+							activity: { state: "idle", lastActivityAt: "2026-09-04T10:00:00Z" },
+							createdAt: "2026-09-04T10:00:00Z",
+							updatedAt: "2026-09-04T10:00:01Z",
+						},
+					},
+					error: undefined,
+				};
+			}
+			throw new Error(`unexpected GET ${url}`);
+		});
+
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+		const localWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+
+		const { result } = renderHook(() => useWorkspaceSession("sess-orch"), { wrapper: localWrapper });
+
+		await waitFor(() => expect(result.current.data?.id).toBe("sess-orch"));
+		expect(result.current.data).toMatchObject({
+			id: "sess-orch",
+			workspaceId: "proj-1",
+			workspaceName: "workspace3",
+			title: "orchestrate",
+			provider: "codex",
+			kind: "orchestrator",
+		});
+		await waitFor(() => {
+			const cached = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
+			expect(Array.isArray(cached)).toBe(true);
+			expect(cached?.[0]?.sessions.some((session: { id: string }) => session.id === "sess-orch")).toBe(true);
 		});
 	});
 
@@ -362,6 +437,7 @@ describe("useWorkspaceQuery", () => {
 
 		await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 3_000 });
 		expect(result.current.error).toBe(failure);
+		expect(setQueryHealthyMock).toHaveBeenCalledWith("history", false, "workspaces");
 	});
 
 	it("surfaces a sessions fetch error even when projects load", async () => {

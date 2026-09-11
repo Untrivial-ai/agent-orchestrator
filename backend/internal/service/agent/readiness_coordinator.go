@@ -33,17 +33,18 @@ const (
 )
 
 type readinessCoordinatorConfig struct {
-	Agents         []agentregistry.HarnessAgent
-	Factory        func() []agentregistry.HarnessAgent
-	Context        context.Context
-	Logger         *slog.Logger
-	Now            func() time.Time
-	DisplayTTL     time.Duration
-	LaunchTTL      time.Duration
-	InstallTimeout time.Duration
-	AuthTimeout    time.Duration
-	RetryDelays    []time.Duration
-	Workers        int
+	Agents              []agentregistry.HarnessAgent
+	Factory             func() []agentregistry.HarnessAgent
+	Context             context.Context
+	Logger              *slog.Logger
+	Now                 func() time.Time
+	DisplayTTL          time.Duration
+	LaunchTTL           time.Duration
+	InstallTimeout      time.Duration
+	AuthTimeout         time.Duration
+	RetryDelays         []time.Duration
+	Workers             int
+	AuthenticationCheck func(context.Context, string, domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, bool)
 }
 
 type readinessEntry struct {
@@ -65,16 +66,17 @@ type readinessCall struct {
 }
 
 type readinessCoordinator struct {
-	ctx            context.Context
-	factory        func() []agentregistry.HarnessAgent
-	logger         *slog.Logger
-	now            func() time.Time
-	displayTTL     time.Duration
-	launchTTL      time.Duration
-	installTimeout time.Duration
-	authTimeout    time.Duration
-	retryDelays    []time.Duration
-	workers        int
+	ctx                 context.Context
+	factory             func() []agentregistry.HarnessAgent
+	logger              *slog.Logger
+	now                 func() time.Time
+	displayTTL          time.Duration
+	launchTTL           time.Duration
+	installTimeout      time.Duration
+	authTimeout         time.Duration
+	retryDelays         []time.Duration
+	workers             int
+	authenticationCheck func(context.Context, string, domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, bool)
 
 	mu      sync.Mutex
 	entries map[string]*readinessEntry
@@ -126,7 +128,8 @@ func newReadinessCoordinator(cfg readinessCoordinatorConfig) *readinessCoordinat
 		displayTTL: cfg.DisplayTTL, launchTTL: cfg.LaunchTTL,
 		installTimeout: cfg.InstallTimeout, authTimeout: cfg.AuthTimeout,
 		retryDelays: cfg.RetryDelays, workers: cfg.Workers,
-		entries: make(map[string]*readinessEntry, len(cfg.Agents)), calls: make(map[string]*readinessCall),
+		authenticationCheck: cfg.AuthenticationCheck,
+		entries:             make(map[string]*readinessEntry, len(cfg.Agents)), calls: make(map[string]*readinessCall),
 	}
 	for _, item := range cfg.Agents {
 		id := string(item.Harness)
@@ -410,7 +413,7 @@ func (c *readinessCoordinator) runCheck(id string, purpose domain.AgentReadiness
 			switch state {
 			case domain.AgentInstallationInstalled:
 				if needed&readinessInvalidateAuthentication != 0 {
-					auth, authFailed = c.checkAuthentication(item)
+					auth, authFailed = c.checkAuthentication(item, purpose)
 				}
 			case domain.AgentInstallationNotInstalled:
 				auth = skippedAuthentication(c.now())
@@ -497,8 +500,17 @@ func (c *readinessCoordinator) checkInstallation(item agentregistry.HarnessAgent
 	return failedInstallation(attempted, domain.AgentReadinessReasonInstallCheckFailed, "Installation check failed."), true
 }
 
-func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAgent) (domain.AgentAuthenticationObservation, bool) {
+func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAgent, purpose domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, bool) {
 	attempted := c.now()
+	if c.authenticationCheck != nil {
+		ctx, cancel := context.WithTimeout(c.ctx, c.authTimeout)
+		observation, handled := c.authenticationCheck(ctx, string(item.Harness), purpose)
+		cancel()
+		if handled {
+			failed := isReadinessFailureCode(observation.ReasonCode)
+			return observation, failed
+		}
+	}
 	checker, ok := item.Agent.(ports.AgentAuthChecker)
 	if !ok {
 		return successfulAuthentication(attempted, domain.AgentAuthenticationUnknown, domain.AgentReadinessReasonAuthCheckUnsupported, "Authentication checks are not supported for this harness."), false

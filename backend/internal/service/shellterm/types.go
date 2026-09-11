@@ -42,3 +42,25 @@ type OpenShellTerminalInput struct {
 	SessionID domain.SessionID `json:"sessionId,omitempty"`
 	Shell     string           `json:"shell,omitempty"`
 }
+
+// InitialInputReadyState describes a terminal state that is ready to receive
+// the command's initial input.
+type InitialInputReadyState struct {
+	Text      string
+	RawPrefix string
+}
+
+// OpenCommandTerminalInput is a daemon-trusted command terminal request. It
+// is intentionally separate from OpenShellTerminalInput: public callers may
+// open only the user's login shell, while backend callers provide a reviewed
+// command. InitialInput and InitialInputReadyStates are private backend-only
+// values from the reviewed auth registry; the input is sent only after the
+// harness renders one of its known editor-ready states.
+type OpenCommandTerminalInput struct {
+	Argv                    []string
+	Env                     map[string]string
+	WorkingDir              string
+	Title                   string
+	InitialInput            string
+	InitialInputReadyStates []InitialInputReadyState
+}

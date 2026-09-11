@@ -9,11 +9,17 @@ export const aoBridge: AoBridge =
 		app: {
 			getVersion: async () => "0.0.0-preview",
 			chooseDirectory: async () => null,
+			checkGitRepository: async () => true,
 			openExternal: async (url: string) => {
 				window.open(url, "_blank", "noopener,noreferrer");
 			},
 			scanImportFolder: async ({ path }) => ({ path, repos: [] }),
 			checkAncestorRepo: async () => undefined,
+		getRepositoryBranch: async () => undefined,
+		getGitHubLogin: async (_repoPath?: string) => "",
+		getCachedGitHubOwners: async () => [],
+		refreshGitHubOwners: async () => [],
+		checkGitHubRepositoryAvailability: async () => ({ available: true }),
 			getPathForFile: () => "",
 			onOpenFolderPath: () => () => undefined,
 			onNewSessionShortcut: () => () => undefined,
@@ -21,6 +27,7 @@ export const aoBridge: AoBridge =
 			onNewShellTerminalShortcut: () => () => undefined,
 			onCloseShellTerminalShortcut: () => () => undefined,
 			setCloseShellTerminalShortcutEnabled: () => undefined,
+			setChatDraftRisk: () => undefined,
 			onOpenSettingsShortcut: () => () => undefined,
 			onPreviousSessionShortcut: () => () => undefined,
 			onNextSessionShortcut: () => () => undefined,
@@ -78,6 +85,12 @@ export const aoBridge: AoBridge =
 		},
 		telemetry: {
 			getBootstrap: async () => null,
+			getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "preview", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+			setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "preview", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+			onPolicy: () => () => false,
+			onClearQueues: () => () => false,
+			capture: async () => false,
+			signalAgentSwitchVisibility: () => false,
 		},
 		browser: {
 			nativeCompositionEnabled: false,
@@ -140,12 +153,22 @@ export const aoBridge: AoBridge =
 				canGoForward: false,
 				isLoading: false,
 			}),
+			captureScreenshot: async () => {
+				throw new Error("Desktop app is required to take a browser screenshot.");
+			},
+			downloads: {
+				list: async () => ({ downloads: [] }),
+				action: async () => ({ downloads: [] }),
+				clear: async () => ({ downloads: [] }),
+				onChanged: () => () => { /* preview has no native download events */ },
+			},
 			getTabs: async (viewId: string) => ({ viewId, activeTabId: "t1", tabs: [] }),
 			selectTab: async ({ viewId, tabId }) => ({ viewId, activeTabId: tabId, tabs: [] }),
 			closeTab: async ({ viewId }) => ({ viewId, activeTabId: "", tabs: [] }),
 			openTab: async ({ viewId }) => ({ viewId, activeTabId: "", tabs: [] }),
 			getProfile: async (viewId) => ({ viewId, profileId: null, temporary: true }),
 			showProfileMenu: async () => undefined,
+			selectProfile: async () => undefined,
 			notifyPanelUsed: () => undefined,
 			notifyPanelBlur: () => undefined,
 			onFocusLocation: () => () => undefined,

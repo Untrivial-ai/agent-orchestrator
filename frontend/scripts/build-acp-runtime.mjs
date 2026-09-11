@@ -16,6 +16,7 @@ import {
 	npmInvocation,
 	patchClaudeRetryDetails,
 	pruneNodeDistribution,
+	runtimeSourceFiles,
 } from "./build-acp-runtime-helpers.mjs";
 
 const NODE_VERSION = "22.23.2";
@@ -36,8 +37,12 @@ if (!platform || !arch) {
 const extension = process.platform === "win32" ? "zip" : "tar.gz";
 const archiveName = `node-v${NODE_VERSION}-${platform}-${arch}.${extension}`;
 const baseURL = `https://nodejs.org/dist/v${NODE_VERSION}`;
-const buildSignature = createHash("sha256")
-	.update(readFileSync(join(sourceDir, "package-lock.json")))
+const runtimeSources = runtimeSourceFiles();
+const signature = createHash("sha256");
+for (const source of runtimeSources) {
+	signature.update(readFileSync(join(sourceDir, source)));
+}
+const buildSignature = signature
 	.update(readFileSync(fileURLToPath(import.meta.url)))
 	.update(readFileSync(join(scriptsDir, "build-acp-runtime-helpers.mjs")))
 	.update(`node=${NODE_VERSION};platform=${platform};arch=${arch}`)
@@ -61,8 +66,9 @@ if (existsSync(markerPath) && existsSync(expectedNode) && existsSync(expectedAda
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
-cpSync(join(sourceDir, "package.json"), join(outDir, "package.json"));
-cpSync(join(sourceDir, "package-lock.json"), join(outDir, "package-lock.json"));
+for (const source of runtimeSources) {
+	cpSync(join(sourceDir, source), join(outDir, source));
+}
 
 const npm = npmInvocation(["ci", "--omit=dev", "--omit=optional", "--ignore-scripts"]);
 run(npm.command, npm.args, { cwd: outDir });

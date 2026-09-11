@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildDaemonEnv,
+	devDaemonAllowedOrigins,
 	FALLBACK_PATH_DIRS,
 	parseEnvBlock,
 	resolveShellEnv,
@@ -104,6 +105,20 @@ describe("buildDaemonEnv", () => {
 		expect(env.TERM).toBe("xterm-256color");
 	});
 
+});
+
+describe("devDaemonAllowedOrigins", () => {
+	it("adds the exact Vite renderer origin while retaining the packaged renderer origin", () => {
+		expect(devDaemonAllowedOrigins(undefined, "http://localhost:5173/settings?section=agents")).toBe(
+			"app://renderer,http://localhost:5173",
+		);
+	});
+
+	it("preserves an explicit operator allowlist", () => {
+		expect(devDaemonAllowedOrigins("http://localhost:9999", "http://localhost:5173")).toBe(
+			"http://localhost:9999",
+		);
+	});
 });
 
 describe("resolveShellPath", () => {

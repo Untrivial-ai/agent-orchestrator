@@ -4,6 +4,7 @@
 // must not invalidate session state when they come and go.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { markTerminalHandleFresh } from "../lib/fresh-terminal-handles";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { mockShellTerminals } from "../lib/mock-data";
@@ -152,6 +153,7 @@ export function useOpenShellTerminal() {
 			const { data, error } = await apiClient.POST("/api/v1/shell-terminals", { body });
 			if (error) throw error;
 			if (!data) throw new Error("Daemon returned no shell terminal");
+			markTerminalHandleFresh(data.shellTerminal.handleId);
 			return toShellTerminal(data.shellTerminal);
 		},
 		onMutate: (input) => {
@@ -204,19 +206,23 @@ export function useOpenShellTerminal() {
 }
 
 /** Closes a shell and destroys its PTY. */
+export async function closeShellTerminal(handleId: string): Promise<void> {
+	if (usePreviewData) {
+		previewShellTerminals = previewShellTerminals.filter((shell) => shell.handleId !== handleId);
+		return;
+	}
+	const { error } = await apiClient.DELETE("/api/v1/shell-terminals/{handleId}", {
+		params: { path: { handleId } },
+	});
+	// The desired postcondition is already true when the daemon no longer owns
+	// the record. Treat this as confirmed cleanup, not a failed cancellation.
+	if (error && apiErrorCode(error) !== "SHELL_TERMINAL_NOT_FOUND") throw error;
+}
+
 export function useCloseShellTerminal() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: async (handleId: string): Promise<void> => {
-			if (usePreviewData) {
-				previewShellTerminals = previewShellTerminals.filter((s) => s.handleId !== handleId);
-				return;
-			}
-			const { error } = await apiClient.DELETE("/api/v1/shell-terminals/{handleId}", {
-				params: { path: { handleId } },
-			});
-			if (error) throw error;
-		},
+		mutationFn: closeShellTerminal,
 		onMutate: async (handleId) => {
 			const previous = queryClient.getQueryData<ShellTerminal[]>(shellTerminalsQueryKey);
 			const removeClosedShell = () => {

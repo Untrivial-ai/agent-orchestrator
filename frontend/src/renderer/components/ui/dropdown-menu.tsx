@@ -1,5 +1,6 @@
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import { cn } from "../../lib/utils";
+import { composeMenuCloseAutoFocus, useMenuReturnTarget } from "./menu-focus";
 import {
 	actionMenuContentClass,
 	actionMenuItemClass,
@@ -14,15 +15,19 @@ export const DropdownMenuPortal = DropdownMenuPrimitive.Portal;
 
 export function DropdownMenuContent({
 	className,
+	onCloseAutoFocus,
 	portalContainer,
 	sideOffset = 6,
 	...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content> & {
 	portalContainer?: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>["container"];
 }) {
+	const rememberReturnTarget = useMenuReturnTarget<HTMLDivElement>();
 	return (
 		<DropdownMenuPrimitive.Portal container={portalContainer}>
 			<DropdownMenuPrimitive.Content
+				ref={rememberReturnTarget}
+				onCloseAutoFocus={composeMenuCloseAutoFocus(onCloseAutoFocus)}
 				sideOffset={sideOffset}
 				className={cn(
 					actionMenuContentClass,

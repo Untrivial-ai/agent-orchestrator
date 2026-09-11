@@ -52,8 +52,9 @@ type spawnRequest struct {
 
 type spawnResult struct {
 	Session struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
+		ID          string `json:"id"`
+		Status      string `json:"status"`
+		DisplayName string `json:"displayName"`
 	} `json:"session"`
 	PromptBytes       int `json:"promptBytes,omitempty"`
 	SystemPromptBytes int `json:"systemPromptBytes,omitempty"`
@@ -147,6 +148,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if err := ctx.postJSON(cmd.Context(), "sessions", req, &res); err != nil {
 				return err
 			}
+			if strings.TrimSpace(res.Session.ID) == "" {
+				return fmt.Errorf("daemon returned empty session id for spawn")
+			}
 			claimed := ""
 			if opts.claimPR != "" {
 				var claim claimPRResponse
@@ -169,7 +173,11 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if res.PromptBytes > 0 || res.SystemPromptBytes > 0 {
 				promptSize = fmt.Sprintf(" [prompt %d B, system %d B]", res.PromptBytes, res.SystemPromptBytes)
 			}
-			_, err = fmt.Fprintf(out, "spawned session %s (%s)%s%s\n", res.Session.ID, res.Session.Status, claimLabel, promptSize)
+			displayName := res.Session.DisplayName
+			if displayName == "" {
+				displayName = name
+			}
+			_, err = fmt.Fprintf(out, "spawned session %s %q (%s)%s%s\n", res.Session.ID, displayName, res.Session.Status, claimLabel, promptSize)
 			return err
 		},
 	}

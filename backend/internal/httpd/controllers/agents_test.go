@@ -267,11 +267,12 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			catalog := &fakeAgentCatalog{models: ports.AgentModelCatalog{
-				AgentID:       "codex",
-				SelectionMode: ports.ModelSelectionCatalog,
-				Models:        []ports.AgentModelInfo{{ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}},
-				AllowCustom:   true,
-				Source:        "official-catalog",
+				AgentID:          "codex",
+				SelectionMode:    ports.ModelSelectionCatalog,
+				Models:           []ports.AgentModelInfo{{ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}},
+				CustomModelEntry: ports.CustomModelEntryDirect,
+				AllowCustom:      true,
+				Source:           "official-catalog",
 			}}
 			srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Agents: catalog}, httpd.ControlDeps{}))
 			defer srv.Close()
@@ -280,7 +281,7 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 			if status != http.StatusOK {
 				t.Fatalf("%s %s = %d, body=%s", tc.method, tc.path, status, body)
 			}
-			for _, want := range []string{`"agentId":"codex"`, `"selectionMode":"catalog"`, `"id":"gpt-5.6-sol"`} {
+			for _, want := range []string{`"agentId":"codex"`, `"selectionMode":"catalog"`, `"customModelEntry":"direct"`, `"allowCustom":true`, `"id":"gpt-5.6-sol"`} {
 				if !strings.Contains(string(body), want) {
 					t.Fatalf("body missing %s: %s", want, body)
 				}

@@ -169,7 +169,7 @@ func TestReviewActivityPersistsReviewerNativeSessionID(t *testing.T) {
 	svc := &fakeReviewService{}
 	srv := newReviewTestServer(t, svc)
 
-	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"event":"session-start","agentSessionId":"native-review-1"}`)
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"event":"session-start","agentSessionId":"native-review-1","launchId":"launch-7"}`)
 	assertJSON(t, headers)
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
@@ -177,17 +177,46 @@ func TestReviewActivityPersistsReviewerNativeSessionID(t *testing.T) {
 	if svc.activityID != "review-1" {
 		t.Fatalf("activity id = %q, want review-1", svc.activityID)
 	}
-	if svc.activitySignal.Event != "session-start" || svc.activitySignal.AgentSessionID != "native-review-1" {
+	if svc.activitySignal.Event != "session-start" || svc.activitySignal.AgentSessionID != "native-review-1" || svc.activitySignal.LaunchID != "launch-7" {
 		t.Fatalf("activity signal = %+v", svc.activitySignal)
+	}
+}
+
+func TestReviewActivityPersistsReviewerState(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"event":"stop","state":"idle"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if svc.activitySignal.State != domain.ActivityIdle {
+		t.Fatalf("activity signal = %+v", svc.activitySignal)
+	}
+}
+
+func TestReviewActivityIgnoresUnknownStateWithoutMetadata(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"state":"busy"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if svc.activityID != "" {
+		t.Fatalf("activity should be ignored, got id=%q signal=%+v", svc.activityID, svc.activitySignal)
 	}
 }
 
 func TestReviewsListIncludesReviewStates(t *testing.T) {
 	srv := newReviewTestServer(t, &fakeReviewService{list: reviewcore.SessionReviews{
-		ReviewerHandleID: "review-mer-1",
-		ReviewerHarness:  domain.ReviewerCodex,
-		Runs:             []domain.ReviewRun{{ID: "run-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", AutoInjectReview: false}},
-		Reviews:          []reviewcore.PRReviewState{{PRURL: "https://github.com/o/r/pull/1", PRNumber: 1, TargetSHA: "sha1", Status: reviewcore.ReviewStateUpToDate}},
+		ReviewerHandleID:      "review-mer-1",
+		ReviewerHarness:       domain.ReviewerCodex,
+		ReviewerActivityState: domain.ActivityIdle,
+		Runs:                  []domain.ReviewRun{{ID: "run-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", AutoInjectReview: false}},
+		Reviews:               []reviewcore.PRReviewState{{PRURL: "https://github.com/o/r/pull/1", PRNumber: 1, TargetSHA: "sha1", Status: reviewcore.ReviewStateUpToDate}},
 	}})
 
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions/mer-1/reviews", "")
@@ -195,7 +224,7 @@ func TestReviewsListIncludesReviewStates(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d body=%s", status, body)
 	}
-	if !strings.Contains(string(body), `"reviews"`) || !strings.Contains(string(body), `"up_to_date"`) || !strings.Contains(string(body), `"reviewerHandleId":"review-mer-1"`) || !strings.Contains(string(body), `"reviewerHarness":"codex"`) {
+	if !strings.Contains(string(body), `"reviews"`) || !strings.Contains(string(body), `"up_to_date"`) || !strings.Contains(string(body), `"reviewerHandleId":"review-mer-1"`) || !strings.Contains(string(body), `"reviewerHarness":"codex"`) || !strings.Contains(string(body), `"reviewerActivityState":"idle"`) {
 		t.Fatalf("body missing review states/handle: %s", body)
 	}
 	if !strings.Contains(string(body), `"autoInjectReview":false`) {

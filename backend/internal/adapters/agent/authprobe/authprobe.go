@@ -19,6 +19,12 @@ var CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, e
 // Callers must pass adapter-specific commands; catalog refresh should not run
 // a generic sequence of auth-like commands against every installed binary.
 func CLIStatus(ctx context.Context, binary string, commands [][]string) (ports.AgentAuthStatus, error) {
+	return CLIStatusWithTimeout(ctx, binary, commands, 3*time.Second)
+}
+
+// CLIStatusWithTimeout is CLIStatus with an adapter-specific per-command
+// timeout for CLIs whose native status command has documented startup work.
+func CLIStatusWithTimeout(ctx context.Context, binary string, commands [][]string, timeout time.Duration) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
@@ -29,7 +35,7 @@ func CLIStatus(ctx context.Context, binary string, commands [][]string) (ports.A
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	for _, args := range commands {
-		status, err := commandStatus(ctx, binary, args)
+		status, err := commandStatus(ctx, binary, args, timeout)
 		if err != nil {
 			return ports.AgentAuthStatusUnknown, err
 		}
@@ -40,8 +46,8 @@ func CLIStatus(ctx context.Context, binary string, commands [][]string) (ports.A
 	return ports.AgentAuthStatusUnknown, nil
 }
 
-func commandStatus(ctx context.Context, binary string, args []string) (ports.AgentAuthStatus, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+func commandStatus(ctx context.Context, binary string, args []string, timeout time.Duration) (ports.AgentAuthStatus, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	out, err := CmdRunner(probeCtx, binary, args...)

@@ -4,6 +4,8 @@ import { cn } from "../lib/utils";
 type TerminalTabFrameProps = {
 	active: boolean;
 	action?: ReactNode;
+	/** overlay = absolute over the label (close buttons). inline = reserves width so status never covers the title. */
+	actionLayout?: "overlay" | "inline";
 	actionPosition?: "leading" | "trailing";
 	trailingAction?: ReactNode;
 	buttonRef?: Ref<HTMLButtonElement>;
@@ -21,6 +23,7 @@ type TerminalTabFrameProps = {
 export function TerminalTabFrame({
 	active,
 	action,
+	actionLayout = "overlay",
 	actionPosition = "trailing",
 	trailingAction,
 	buttonRef,
@@ -32,6 +35,19 @@ export function TerminalTabFrame({
 	"data-terminal-role": terminalRole,
 }: TerminalTabFrameProps) {
 	const { className: buttonClassName, ...restButtonProps } = buttonProps ?? {};
+	const overlayTrailing = actionLayout === "overlay" && actionPosition === "trailing" && action;
+	const inlineAction =
+		action && actionLayout === "inline" ? (
+			<div
+				className={cn(
+					"flex shrink-0 items-center self-stretch",
+					actionPosition === "leading" ? "pl-1" : "pr-1",
+				)}
+				data-terminal-tab-action
+			>
+				{action}
+			</div>
+		) : null;
 	return (
 		<span
 			className={cn(
@@ -46,23 +62,25 @@ export function TerminalTabFrame({
 				restButtonProps.onClick?.(event as unknown as ReactMouseEvent<HTMLButtonElement>);
 			}}
 		>
-			<span className="relative inline-flex h-[calc(100%-2px)] min-w-0 flex-1 self-stretch">
+			<span className="relative inline-flex h-[calc(100%-2px)] min-w-0 self-stretch">
+				{actionPosition === "leading" ? inlineAction : null}
 				{editingContent ?? (
 					<button
 						ref={buttonRef}
 						className={cn(
-							"inline-flex h-full min-w-0 flex-1 cursor-pointer items-center px-2 text-left text-control leading-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
-							((actionPosition === "trailing" && action) || trailingAction) && "pr-9",
+							"inline-flex h-full max-w-full min-w-0 flex-1 cursor-pointer items-center overflow-hidden px-2 text-left text-control leading-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
+							overlayTrailing && "pr-7",
 							buttonClassName,
 						)}
 						{...restButtonProps}
 					>
-						<span className={cn("inline-flex min-w-0 items-center gap-2", contentClassName)}>
+						<span className={cn("inline-flex max-w-full min-w-0 items-center gap-2 overflow-hidden", contentClassName)}>
 							{children}
 						</span>
 					</button>
 				)}
-				{action ? (
+				{actionPosition === "trailing" ? inlineAction : null}
+				{action && actionLayout === "overlay" ? (
 					<div
 						className={cn(
 							"absolute inset-y-0 z-20 flex items-center",
@@ -75,7 +93,7 @@ export function TerminalTabFrame({
 				) : null}
 				{trailingAction ? (
 					<div
-						className="absolute inset-y-0 right-1 z-10 flex items-center"
+						className="flex shrink-0 items-center pr-1"
 						data-terminal-tab-action
 					>
 						{trailingAction}

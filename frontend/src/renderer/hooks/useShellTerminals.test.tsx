@@ -214,9 +214,7 @@ describe("useCloseShellTerminal", () => {
 		const queryClient = queryClientWithShells();
 		const { result } = renderHook(() => useCloseShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await expect(result.current.mutateAsync(shells[0].handleId)).rejects.toEqual({
-			code: "SHELL_TERMINAL_NOT_FOUND",
-		});
+		await expect(result.current.mutateAsync(shells[0].handleId)).resolves.toBeUndefined();
 		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shells[1]]);
 	});
 });

@@ -322,6 +322,10 @@ func (r *unstyledTransitionRuntime) IsAlive(ctx context.Context, handle ports.Ru
 	return r.runtime.IsAlive(ctx, handle)
 }
 
+func (r *unstyledTransitionRuntime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
+	return r.runtime.ProbeFencedRuntime(ctx, ref)
+}
+
 func (r *transitionRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
 	*r.log = append(*r.log, "interrupt:tui:"+handle.ID)
 	return nil

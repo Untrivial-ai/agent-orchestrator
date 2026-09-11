@@ -18,6 +18,9 @@ import (
 // yet exist (tracker/SCM per-project config) are intentionally absent and land in
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
+	// CanonicalRepoURL explicitly trusts one upstream repository for PR claims.
+	// Numeric PR references use this repository when set; checkout/push stays on origin.
+	CanonicalRepoURL string `json:"canonicalRepoURL,omitempty"`
 	// DefaultBranch is the base branch new session worktrees are created from.
 	// Empty and DefaultBranchAuto both mean infer each repository's Git default.
 	DefaultBranch string `json:"defaultBranch,omitempty"`
@@ -170,6 +173,11 @@ func (c ProjectConfig) IsZero() bool {
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than surfacing at spawn.
 func (c ProjectConfig) Validate() error {
+	if c.CanonicalRepoURL != "" {
+		if err := c.ValidateCanonicalRepository(c.CanonicalRepoURL); err != nil {
+			return err
+		}
+	}
 	if err := c.AgentConfig.Validate(); err != nil {
 		return err
 	}

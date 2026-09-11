@@ -140,6 +140,7 @@ func newSandboxReconciler(
 	}
 	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider), reconcile.Options{
 		PublicURL:              cfg.PublicURL,
+		TerminalStreamEnabled:  cfg.TerminalStreamEnabled,
 		WorkerBinary:           workerBinary,
 		WorkerHelperBinary:     workerHelperBinary,
 		Interval:               cfg.ReconcileInterval,
@@ -316,6 +317,7 @@ func run(logger *slog.Logger) error {
 		EnvironmentControlToken: cfg.EnvironmentControlToken,
 		SecretCipher:            providerCipher,
 		WebhookMaxBody:          cfg.GitHub.WebhookMaxBody,
+		TerminalStreamEnabled:   cfg.TerminalStreamEnabled,
 	}
 	if cfg.Environment == "development" &&
 		os.Getenv("AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION") == "true" {
@@ -323,6 +325,12 @@ func run(logger *slog.Logger) error {
 		apiOptions.CredentialValidator = developmentCredentialValidator{}
 	}
 	api := httpapi.New(apiOptions)
+	if cfg.TerminalStreamEnabled {
+		notifyListener := postgres.NewListener(cfg.DatabaseURL, logger)
+		notifyListener.Handle("ao_terminal_output", api.HandleTerminalOutputNotify)
+		notifyListener.Handle("ao_terminal_input", api.HandleTerminalInputNotify)
+		go func() { _ = notifyListener.Run(ctx) }()
+	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
 		Handler:           api.Handler(),

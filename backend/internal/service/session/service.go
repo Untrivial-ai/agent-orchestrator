@@ -14,6 +14,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -86,6 +87,12 @@ type interfaceTransitionCommander interface {
 	AcknowledgeInterfaceTransitionNotice(context.Context, domain.SessionID, string) (domain.SessionInterfaceTransition, error)
 }
 
+// exitAgentCommander keeps the process-only lifecycle optional for focused
+// service fakes while production delegates to Session Manager.
+type exitAgentCommander interface {
+	ExitAgent(context.Context, domain.SessionID) (domain.SessionRecord, error)
+}
+
 // RollbackOutcome reports what happened in a rollback: either the seed row was
 // deleted, or the partially-spawned session was killed (runtime+workspace torn
 // down, row marked terminated).
@@ -96,8 +103,9 @@ type RollbackOutcome struct {
 
 // CleanupOutcome reports what session cleanup reclaimed and what it preserved.
 type CleanupOutcome struct {
-	Cleaned []domain.SessionID `json:"cleaned"`
-	Skipped []CleanupSkipped   `json:"skipped"`
+	Cleaned     []domain.SessionID `json:"cleaned"`
+	AlreadyGone []domain.SessionID `json:"alreadyGone"`
+	Skipped     []CleanupSkipped   `json:"skipped"`
 }
 
 // CleanupSkipped is one terminal session whose workspace was preserved by
@@ -129,6 +137,12 @@ type RestoreOutcome struct {
 type ResumeAgentOutcome struct {
 	Session domain.Session  `json:"session"`
 	Mode    RestoreModeView `json:"resumeMode"`
+}
+
+// ExitAgentOutcome reports the still-live AO session after only its agent
+// controller has exited.
+type ExitAgentOutcome struct {
+	Session domain.Session `json:"session"`
 }
 
 // InterfaceTransitionStatus describes whether this session can cross between
@@ -166,6 +180,7 @@ type Service struct {
 	orchestratorLocksMu sync.Mutex
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
 	workspaceCache      *workspaceCache
+	workspaceEditsMu    sync.Mutex
 	// workspaceGroup coalesces concurrent cache-miss compare/status lookups
 	// for the same (session, root): "Expand All" on many files fires that
 	// many GetWorkspaceFile calls at once, and without this each one would
@@ -175,7 +190,14 @@ type Service struct {
 	// deliver activity signals at all. Only capable harnesses are eligible for
 	// the no_signal downgrade: a hook-less harness staying silent forever is
 	// normal, not a broken pipeline. nil means "unknown": never downgrade.
-	signalCapable func(domain.AgentHarness) bool
+	signalCapable         func(domain.AgentHarness) bool
+	chatProviderPreserved func(domain.SessionID) bool
+}
+
+// SetChatProviderPreserver wires the live Chat lifetime observation after both
+// services have been constructed. It performs no provider or filesystem probes.
+func (s *Service) SetChatProviderPreserver(preserves func(domain.SessionID) bool) {
+	s.chatProviderPreserved = preserves
 }
 
 // New wires a controller-facing session service over an internal session Manager.
@@ -257,6 +279,11 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 		if readiness.Installation.State == domain.AgentInstallationNotInstalled {
 			return domain.Session{}, 0, 0, apierr.Invalid("AGENT_BINARY_NOT_FOUND", "The selected agent harness is not installed", map[string]any{"agentId": cfg.Harness})
+		}
+		if cfg.Harness == domain.HarnessCodex &&
+			readiness.Authentication.State == domain.AgentAuthenticationUnauthorized &&
+			readiness.Authentication.Freshness == domain.AgentReadinessFresh {
+			return domain.Session{}, 0, 0, apierr.Conflict("CODEX_ACCOUNT_AUTH_UNVERIFIED", "Add or sign in to a Codex account in Settings before starting a Codex session", nil)
 		}
 	}
 	start := s.now()
@@ -562,6 +589,25 @@ func (s *Service) Restore(ctx context.Context, id domain.SessionID) (RestoreOutc
 	return RestoreOutcome{Session: session, Mode: restoreModeView(res.Mode)}, nil
 }
 
+// ExitAgent stops only the agent controller while preserving the AO session,
+// worktree, terminal identity, and provider-native conversation.
+func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgentOutcome, error) {
+	manager, ok := s.manager.(exitAgentCommander)
+	if !ok {
+		return ExitAgentOutcome{}, apierr.Conflict(
+			"AGENT_EXIT_UNSUPPORTED", "This build cannot exit an agent independently", nil)
+	}
+	rec, err := manager.ExitAgent(ctx, id)
+	if err != nil {
+		return ExitAgentOutcome{}, toAPIError(err)
+	}
+	session, err := s.toSession(ctx, rec)
+	if err != nil {
+		return ExitAgentOutcome{}, err
+	}
+	return ExitAgentOutcome{Session: session}, nil
+}
+
 // ResumeAgent relaunches an exited agent without restoring a terminated
 // session or recreating its workspace.
 func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeAgentOutcome, error) {
@@ -819,9 +865,16 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
-	out := CleanupOutcome{Cleaned: res.Cleaned, Skipped: make([]CleanupSkipped, 0, len(res.Skipped))}
+	out := CleanupOutcome{
+		Cleaned:     res.Cleaned,
+		AlreadyGone: res.AlreadyGone,
+		Skipped:     make([]CleanupSkipped, 0, len(res.Skipped)),
+	}
 	if out.Cleaned == nil {
 		out.Cleaned = []domain.SessionID{}
+	}
+	if out.AlreadyGone == nil {
+		out.AlreadyGone = []domain.SessionID{}
 	}
 	for _, skip := range res.Skipped {
 		out.Skipped = append(out.Skipped, CleanupSkipped{SessionID: skip.SessionID, Reason: skip.Reason})
@@ -954,7 +1007,9 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	now := s.now()
 	presentation := deriveKanbanPresentation(rec, prs, runs, now, s.harnessSignals(rec.Harness))
 	return domain.Session{
-		SessionRecord:    rec,
+		SessionRecord: rec,
+		ChatProviderPreserved: rec.Mode == domain.SessionModeChat && !rec.IsTerminated &&
+			s.chatProviderPreserved != nil && s.chatProviderPreserved(rec.ID),
 		Status:           deriveStatus(rec, prs, now, s.harnessSignals(rec.Harness)),
 		SCMStatus:        deriveSCMStatus(prs),
 		KanbanColumn:     presentation.Column,
@@ -967,6 +1022,11 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 // toAPIError maps the session engine's sentinel errors to their REST API
 // equivalents; an unrecognized error passes through and surfaces as a 500.
 func toAPIError(err error) error {
+	original := ownership.Own(err, ownership.OwnerHTTP)
+	return ownership.Preserve(original, mapSessionError(original))
+}
+
+func mapSessionError(err error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -985,6 +1045,12 @@ func toAPIError(err error) error {
 	case errors.Is(err, sessionmanager.ErrResumeInProgress):
 		return apierr.Conflict("AGENT_RESUME_IN_PROGRESS",
 			"The agent is already being resumed", nil)
+	case errors.Is(err, sessionmanager.ErrAgentExitInProgress):
+		return apierr.Conflict("AGENT_EXIT_IN_PROGRESS",
+			"The agent is already exiting", nil)
+	case errors.Is(err, ports.ErrCodexAccountSwitchInProgress):
+		return apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS",
+			"AO is switching the global Codex account; Codex session mutations are temporarily blocked", nil)
 	case errors.Is(err, sessionmanager.ErrInterfaceTransitionInProgress):
 		return apierr.Conflict("INTERFACE_TRANSITION_IN_PROGRESS",
 			"This session is already switching interfaces", nil)
@@ -1083,6 +1149,9 @@ func toAPIError(err error) error {
 		return apierr.Invalid("AGENT_BINARY_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimePrerequisite):
 		return apierr.Invalid("RUNTIME_PREREQUISITE_MISSING", err.Error(), nil)
+	case errors.Is(err, ports.ErrRuntimeCommandLineTooLong):
+		return apierr.Invalid("WINDOWS_COMMAND_LINE_TOO_LONG",
+			"The agent launch command exceeds the Windows size limit. Shorten the task or project instructions.", nil)
 	case errors.Is(err, ports.ErrChatUnsupported):
 		var capabilityErr *ports.ChatCapabilityError
 		if errors.As(err, &capabilityErr) {

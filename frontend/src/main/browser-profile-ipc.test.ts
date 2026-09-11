@@ -125,6 +125,19 @@ describe("browser profile IPC", () => {
 		expect(host.isRendererOwned).toHaveBeenCalledWith(expect.objectContaining({ sender: renderer }), "1:worker-1");
 	});
 
+	it("switches profiles through the renderer-owned AO menu endpoint", async () => {
+		const { invoke, renderer, store, host } = await setup();
+		const profile = await store.createProfile("Work");
+
+		await invoke("browser:profile:select", renderer, {
+			viewId: "1:worker-1",
+			profileId: profile.id,
+			labels,
+		});
+
+		expect(host.switchProfile).toHaveBeenCalledWith("1:worker-1", profile.id);
+	});
+
 	it("requires confirmation for a loaded page and refuses switching during agent activity", async () => {
 		const confirmSwitch = vi.fn(async () => false);
 		const { invoke, renderer, store, host, menuItems: getMenuItems } = await setup(confirmSwitch);

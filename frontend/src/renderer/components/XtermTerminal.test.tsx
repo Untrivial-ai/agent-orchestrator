@@ -1,13 +1,18 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttachableTerminal } from "../hooks/useTerminalSession";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { TerminalMux } from "../lib/terminal-mux";
+import { markTerminalHandleFresh } from "../lib/fresh-terminal-handles";
+import { useTerminalSession, type AttachableTerminal } from "../hooks/useTerminalSession";
 import { useUiStore } from "../stores/ui-store";
 import { safeTerminalFind } from "./TerminalSearch";
 import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
 	fit: vi.fn(),
+	lifecycle: [] as string[],
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
+	queueViewportSyncOnOpen: false,
 	searchAddon: null as null | {
 		clearDecorations: ReturnType<typeof vi.fn>;
 		findNext: ReturnType<typeof vi.fn>;
@@ -15,6 +20,7 @@ const state = vi.hoisted(() => ({
 		resultListeners: Set<(results: { resultCount: number; resultIndex: number }) => void>;
 	},
 	lastTerminal: null as null | {
+		write(data: Uint8Array, done?: () => void): void;
 		keyHandler?: (event: KeyboardEvent) => boolean;
 		wheelHandler?: (event: WheelEvent) => boolean;
 		selection: string;
@@ -26,6 +32,7 @@ const state = vi.hoisted(() => ({
 		scrollToLine: ReturnType<typeof vi.fn>;
 		refresh: ReturnType<typeof vi.fn>;
 		clear: ReturnType<typeof vi.fn>;
+		dispose: ReturnType<typeof vi.fn>;
 		focus: ReturnType<typeof vi.fn>;
 		selectAll: ReturnType<typeof vi.fn>;
 		dataListeners: Set<(data: string) => void>;
@@ -86,6 +93,7 @@ vi.mock("@xterm/xterm", () => ({
 		keyListeners = new Set<(event: { key: string }) => void>();
 		selectionListeners = new Set<() => void>();
 		scrollListeners = new Set<() => void>();
+		writeBuffer = "";
 		_core = {
 			element: { classList: { add: vi.fn(), remove: vi.fn() } },
 			viewport: { scrollBarWidth: 15 },
@@ -103,10 +111,22 @@ vi.mock("@xterm/xterm", () => ({
 		loadAddon() {}
 		open(host: HTMLElement) {
 			host.appendChild(document.createElement("textarea"));
+			if (state.queueViewportSyncOnOpen) {
+				window.setTimeout(() => state.lifecycle.push("viewport-sync"), 0);
+			}
 		}
-		write() {}
+		write(data: Uint8Array, done?: () => void) {
+			this.writeBuffer += new TextDecoder().decode(data);
+			if (this.writeBuffer.includes("\x1b[6n")) {
+				this.dataListeners.forEach((listener) => listener("\x1b[7;21R"));
+				this.writeBuffer = "";
+			}
+			done?.();
+		}
 		writeln() {}
-		dispose() {}
+		dispose = vi.fn(() => {
+			state.lifecycle.push("dispose");
+		});
 		onData(listener: (data: string) => void) {
 			this.dataListeners.add(listener);
 			return { dispose: () => this.dataListeners.delete(listener) };
@@ -208,8 +228,10 @@ function setNavigatorPlatform(platform: string) {
 describe("XtermTerminal", () => {
 	beforeEach(() => {
 		state.fit.mockReset();
+		state.lifecycle.length = 0;
 		state.lastTerminal = null;
 		state.linkHandler = null;
+		state.queueViewportSyncOnOpen = false;
 		state.searchAddon = null;
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
@@ -263,6 +285,7 @@ describe("XtermTerminal", () => {
 		try {
 			let terminal: AttachableTerminal | undefined;
 			render(<XtermTerminal theme="dark" onReady={(ready) => { terminal = ready; }} />);
+			state.lastTerminal!.buffer.active.baseY = 1;
 			const preparation = terminal!.prepareForActivation();
 			await act(async () => {
 				vi.advanceTimersByTime(250);
@@ -277,6 +300,26 @@ describe("XtermTerminal", () => {
 		}
 	});
 
+	it.each([true, false])("lets xterm drain viewport initialization before disposal (DEV=%s)", (development) => {
+		vi.stubEnv("DEV", development);
+		vi.useFakeTimers();
+		state.queueViewportSyncOnOpen = true;
+		try {
+			const view = render(<XtermTerminal theme="dark" />);
+			const terminal = state.lastTerminal!;
+			view.unmount();
+
+			expect(terminal.dispose).not.toHaveBeenCalled();
+			expect(state.lifecycle).toEqual([]);
+			act(() => vi.runOnlyPendingTimers());
+			expect(state.lifecycle).toEqual(["viewport-sync", "dispose"]);
+			expect(terminal.dispose).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("preserves the agent TUI palette without contrast remapping", () => {
 		render(<XtermTerminal theme="dark" />);
 
@@ -288,6 +331,101 @@ describe("XtermTerminal", () => {
 		const { rerender } = render(<XtermTerminal theme="dark" />);
 
 		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+	});
+
+	it("does not steal focus from an open dialog or another control", () => {
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+		const dialog = document.createElement("div");
+		dialog.setAttribute("role", "dialog");
+		dialog.dataset.state = "open";
+		const dialogInput = document.createElement("input");
+		dialog.appendChild(dialogInput);
+		document.body.appendChild(dialog);
+		dialogInput.focus();
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+
+		dialog.remove();
+		const control = document.createElement("button");
+		document.body.appendChild(control);
+		control.focus();
+		rerender(<XtermTerminal theme="dark" />);
+		state.lastTerminal!.focus.mockClear();
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+		control.remove();
+	});
+
+	it("allows the session navigation button to hand focus to the destination TUI", async () => {
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+		const sessionButton = document.createElement("button");
+		sessionButton.setAttribute("aria-current", "page");
+		document.body.appendChild(sessionButton);
+		sessionButton.focus();
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+		sessionButton.remove();
+	});
+
+	it("allows an in-pane terminal tab to hand focus to the destination TUI", async () => {
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+		const topbar = document.createElement("div");
+		topbar.dataset.testid = "session-workspace-topbar";
+		const tab = document.createElement("button");
+		tab.setAttribute("aria-current", "true");
+		tab.setAttribute("role", "tab");
+		topbar.appendChild(tab);
+		document.body.appendChild(topbar);
+		tab.focus();
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+		topbar.remove();
+	});
+
+	it("retries terminal focus after a closing dialog releases focus", async () => {
+		const frames: FrameRequestCallback[] = [];
+		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			frames.push(callback);
+			return frames.length;
+		});
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+		frames.length = 0;
+		const dialog = document.createElement("div");
+		dialog.setAttribute("role", "dialog");
+		dialog.dataset.state = "open";
+		const dialogInput = document.createElement("input");
+		dialog.appendChild(dialogInput);
+		document.body.appendChild(dialog);
+		dialogInput.focus();
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+		dialogInput.blur();
+		dialog.remove();
+		expect(frames).toHaveLength(1);
+		act(() => frames.shift()?.(performance.now()));
+
+		expect(state.lastTerminal!.focus).toHaveBeenCalled();
+		requestAnimationFrameSpy.mockRestore();
+	});
+
+	it("focuses a retained terminal when it becomes visible", async () => {
+		const { rerender } = render(<XtermTerminal focusRequested isVisible={false} theme="dark" />);
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested isVisible theme="dark" />);
 
 		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
 	});
@@ -709,6 +847,89 @@ describe("XtermTerminal", () => {
 		Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
 	});
 
+
+	it.each([true, false])("preserves newer focus after deferred fullscreen completion when visible=%s", async (isVisible) => {
+		let complete!: () => void;
+		const onToggleFullscreen = vi.fn(() => new Promise<void>((resolve) => { complete = resolve; }));
+		const frames: FrameRequestCallback[] = [];
+		const frameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			frames.push(callback);
+			return frames.length;
+		});
+		const { container, rerender } = render(<XtermTerminal onToggleFullscreen={onToggleFullscreen} theme="dark" />);
+		const control = document.createElement("button");
+		document.body.appendChild(control);
+		try {
+			fireEvent.contextMenu(container.firstElementChild!);
+			fireEvent.click(await screen.findByText("Fullscreen terminal"));
+			rerender(<XtermTerminal isVisible={isVisible} onToggleFullscreen={onToggleFullscreen} theme="dark" />);
+			control.focus();
+			state.lastTerminal!.focus.mockClear();
+			frames.length = 0;
+			await act(async () => complete());
+			expect(control).toHaveFocus();
+			act(() => { while (frames.length) frames.shift()!(performance.now()); });
+			expect(control).toHaveFocus();
+			expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+		} finally {
+			control.remove();
+			frameSpy.mockRestore();
+		}
+	});
+	it("returns focus to xterm after entering and exiting fullscreen from the menu", async () => {
+		const onToggleFullscreen = vi.fn(async () => undefined);
+		const frames: FrameRequestCallback[] = [];
+		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			frames.push(callback);
+			return frames.length;
+		});
+		const { container, rerender } = render(
+			<div className="terminal-pane-frame">
+				<XtermTerminal onToggleFullscreen={onToggleFullscreen} theme="dark" />
+			</div>,
+		);
+		const trigger = document.createElement("button");
+		document.body.appendChild(trigger);
+		state.lastTerminal!.focus.mockClear();
+		frames.length = 0;
+
+		try {
+			fireEvent.contextMenu(container.querySelector(".terminal-pane-frame")!.firstElementChild!);
+			fireEvent.click(await screen.findByText("Fullscreen terminal"));
+			await act(async () => undefined);
+
+			expect(onToggleFullscreen).toHaveBeenCalledOnce();
+			expect(frames).toHaveLength(1);
+			act(() => frames.shift()?.(performance.now()));
+			expect(frames).toHaveLength(1);
+			act(() => frames.shift()?.(performance.now()));
+			expect(state.lastTerminal!.focus).toHaveBeenCalledOnce();
+
+			const pane = container.querySelector(".terminal-pane-frame")!;
+			Object.defineProperty(document, "fullscreenElement", { configurable: true, value: pane });
+			rerender(
+				<div className="terminal-pane-frame">
+					<XtermTerminal isFullscreen onToggleFullscreen={onToggleFullscreen} theme="dark" />
+				</div>,
+			);
+			frames.length = 0;
+			state.lastTerminal!.focus.mockClear();
+
+			fireEvent.contextMenu(pane.querySelector("div")!);
+			fireEvent.click(await screen.findByText("Exit fullscreen"));
+			await act(async () => undefined);
+			expect(onToggleFullscreen).toHaveBeenCalledTimes(2);
+			expect(frames).toHaveLength(1);
+			act(() => frames.shift()?.(performance.now()));
+			act(() => frames.shift()?.(performance.now()));
+			expect(state.lastTerminal!.focus).toHaveBeenCalledOnce();
+		} finally {
+			Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+			requestAnimationFrameSpy.mockRestore();
+			trigger.remove();
+		}
+	});
+
 	it("runs context menu copy and select all against the xterm instance", async () => {
 		const { container } = render(<XtermTerminal theme="dark" />);
 		const host = container.firstElementChild!;
@@ -1039,6 +1260,119 @@ describe("XtermTerminal", () => {
 		expect(onInput).toHaveBeenCalledWith(expected, "shortcut");
 	});
 
+	it.each([
+		["Cmd+Left", { key: "ArrowLeft", metaKey: true }, "\x01"],
+		["Cmd+Right", { key: "ArrowRight", metaKey: true }, "\x05"],
+	])("normalizes macOS %s into beginning/end-of-line input", (_name, init, expected) => {
+		setNavigatorPlatform("MacIntel");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const event = {
+			type: "keydown",
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+			...init,
+		} as unknown as KeyboardEvent;
+		const allowed = state.lastTerminal!.keyHandler!(event);
+
+		expect(allowed).toBe(false);
+		expect(event.preventDefault).toHaveBeenCalled();
+		expect(event.stopPropagation).toHaveBeenCalled();
+		expect(onInput).toHaveBeenCalledWith(expected, "shortcut");
+	});
+
+	it("does not re-fire macOS Cmd+Left on the following keyup", () => {
+		setNavigatorPlatform("MacIntel");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const keyDown = {
+			type: "keydown",
+			key: "ArrowLeft",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(keyDown)).toBe(false);
+		expect(onInput).toHaveBeenCalledTimes(1);
+
+		const keyUp = { ...keyDown, type: "keyup" } as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(keyUp)).toBe(true);
+		expect(onInput).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves Windows Home and End to xterm instead of rewriting them to Ctrl+A/E", () => {
+		setNavigatorPlatform("Win32");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		for (const key of ["Home", "End"]) {
+			const event = {
+				type: "keydown",
+				key,
+				metaKey: false,
+				ctrlKey: false,
+				shiftKey: false,
+				altKey: false,
+				preventDefault: vi.fn(),
+				stopPropagation: vi.fn(),
+			} as unknown as KeyboardEvent;
+			expect(state.lastTerminal!.keyHandler!(event)).toBe(true);
+			expect(event.preventDefault).not.toHaveBeenCalled();
+			expect(onInput).not.toHaveBeenCalled();
+		}
+	});
+
+	it("keeps Windows Ctrl+Left and Ctrl+Right as word movement", () => {
+		setNavigatorPlatform("Win32");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const left = {
+			type: "keydown",
+			key: "ArrowLeft",
+			ctrlKey: true,
+			metaKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(left)).toBe(false);
+		expect(onInput).toHaveBeenCalledWith("\x1b[1;5D", "shortcut");
+
+		const right = { ...left, key: "ArrowRight", preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(right)).toBe(false);
+		expect(onInput).toHaveBeenCalledWith("\x1b[1;5C", "shortcut");
+	});
+
+	it("does not treat the Windows key plus arrows as macOS line-boundary shortcuts", () => {
+		setNavigatorPlatform("Win32");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const event = {
+			type: "keydown",
+			key: "ArrowLeft",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(event)).toBe(true);
+		expect(event.preventDefault).not.toHaveBeenCalled();
+		expect(onInput).not.toHaveBeenCalled();
+	});
+
 	it("does not re-fire a shortcut on the keyup that follows its keydown", () => {
 		// xterm.js invokes attachCustomKeyEventHandler on keydown, keyup, AND
 		// keypress for the same physical key press. Without gating on event.type,
@@ -1203,6 +1537,149 @@ describe("XtermTerminal", () => {
 			listener("\x1b]4;196;rgb:ffff/0000/8000\x07"),
 		);
 		expect(onInput).toHaveBeenCalledWith("\x1b]4;196;rgb:ffff/0000/8000\x07", "protocol");
+	});
+
+	it("forwards the cursor-position reply generated for a PTY request", () => {
+		const onInput = vi.fn();
+		let terminal: AttachableTerminal | undefined;
+		render(<XtermTerminal theme="dark" onReady={(ready) => {
+			terminal = ready;
+			return ready.onUserInput(onInput);
+		}} />);
+
+		terminal!.write(new TextEncoder().encode("prompt\x1b"));
+		terminal!.write(new TextEncoder().encode("[6n"));
+
+		expect(onInput).toHaveBeenCalledWith("\x1b[7;21R", "protocol");
+	});
+
+	it("keeps pending cursor credits when more output is queued before parsing", () => {
+		const onInput = vi.fn();
+		let terminal: AttachableTerminal | undefined;
+		render(<XtermTerminal theme="dark" onReady={(ready) => {
+			terminal = ready;
+			return ready.onUserInput(onInput);
+		}} />);
+		vi.spyOn(state.lastTerminal!, "write").mockImplementation(() => {});
+		terminal!.write(new TextEncoder().encode("\x1b[6n"));
+		terminal!.write(new TextEncoder().encode("tail"));
+		state.lastTerminal!.dataListeners.forEach((listener) => listener("\x1b[7;21R"));
+		expect(onInput).toHaveBeenCalledWith("\x1b[7;21R", "protocol");
+	});
+
+	it("answers Cursor color-scheme output queries", () => {
+		const onInput = vi.fn();
+		let terminal: AttachableTerminal | undefined;
+		render(<XtermTerminal theme="light" supportsCursorColorScheme onReady={(ready) => {
+			terminal = ready;
+			return ready.onUserInput(onInput);
+		}} />);
+		onInput.mockClear();
+		terminal!.write(new TextEncoder().encode("\x1b[?2031h"));
+		expect(onInput).toHaveBeenCalledWith(expect.stringContaining("\x1b[?997;2n"), "protocol");
+	});
+
+	it("returns a CPR to a fresh shell PTY through coverInitialReplay", async () => {
+		markTerminalHandleFresh("fresh-login");
+		let output: (data: Uint8Array) => void = () => {};
+		let opened: () => void = () => {};
+		const sendInput = vi.fn();
+		const mux: TerminalMux = {
+			open: vi.fn(), close: vi.fn(), resize: vi.fn(), dispose: vi.fn(), sendInput,
+			onData: (_id, listener) => { output = listener; return () => {}; },
+			onOpened: (_id, listener) => { opened = listener; return () => {}; },
+			onExit: () => () => {}, onError: () => () => {}, onConnectionChange: () => () => {},
+		};
+		function Shell() {
+			const session = useTerminalSession(undefined, { daemonReady: true, coverInitialReplay: true, shellTerminalHandleId: "fresh-login", createMux: () => mux });
+			return <XtermTerminal theme="dark" onReady={session.attach} />;
+		}
+		render(<QueryClientProvider client={new QueryClient()}><Shell /></QueryClientProvider>);
+		act(() => {
+			opened();
+			output(new TextEncoder().encode("prompt\x1b"));
+			output(new TextEncoder().encode("[6n"));
+		});
+		await waitFor(() => expect(sendInput).toHaveBeenCalledWith("fresh-login", "\x1b[7;21R"));
+	});
+
+	it("stops treating covered output as live after a fresh handle reconnects", async () => {
+		markTerminalHandleFresh("fresh-then-reconnected");
+		const outputs: Array<(data: Uint8Array) => void> = [];
+		const opened: Array<() => void> = [];
+		const connectionChanges: Array<(state: "open" | "closed") => void> = [];
+		const sendInputs = [vi.fn(), vi.fn()];
+		const createMux = vi.fn((): TerminalMux => {
+			const index = outputs.length;
+			return {
+				open: vi.fn(), close: vi.fn(), resize: vi.fn(), dispose: vi.fn(), sendInput: sendInputs[index],
+				onData: (_id, listener) => { outputs[index] = listener; return () => {}; },
+				onOpened: (_id, listener) => { opened[index] = listener; return () => {}; },
+				onExit: () => () => {}, onError: () => () => {},
+				onConnectionChange: (listener) => { connectionChanges[index] = listener; return () => {}; },
+			};
+		});
+		function Shell() {
+			const session = useTerminalSession(undefined, { daemonReady: true, coverInitialReplay: true, shellTerminalHandleId: "fresh-then-reconnected", createMux });
+			return <XtermTerminal theme="dark" onReady={session.attach} />;
+		}
+		render(<QueryClientProvider client={new QueryClient()}><Shell /></QueryClientProvider>);
+		act(() => {
+			opened[0]();
+			connectionChanges[0]("closed");
+		});
+		await waitFor(() => expect(createMux).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+		const xtermWrite = vi.spyOn(state.lastTerminal!, "write");
+		act(() => {
+			opened[1]();
+			outputs[1](new TextEncoder().encode("history\x1b[6n"));
+		});
+		await waitFor(() => expect(xtermWrite).toHaveBeenCalled());
+		expect(sendInputs[1]).not.toHaveBeenCalled();
+	});
+
+	it.each(["remount", "existing"])("discards historical CPRs on %s pane mount", async (scenario) => {
+		const outputs: Array<(data: Uint8Array) => void> = [];
+		const opened: Array<() => void> = [];
+		const sendInputs = [vi.fn(), vi.fn()];
+		const createMux = vi.fn((): TerminalMux => {
+			const index = outputs.length;
+			return {
+				open: vi.fn(), close: vi.fn(), resize: vi.fn(), dispose: vi.fn(), sendInput: sendInputs[index],
+				onData: (_id, listener) => { outputs[index] = listener; return () => {}; },
+				onOpened: (_id, listener) => { opened[index] = listener; return () => {}; },
+				onExit: () => () => {}, onError: () => () => {},
+				onConnectionChange: () => () => {},
+			};
+		});
+		function Shell() {
+			const session = useTerminalSession(undefined, { daemonReady: true, coverInitialReplay: true, shellTerminalHandleId: "mounted-existing", createMux });
+			return <XtermTerminal theme="dark" onReady={session.attach} />;
+		}
+		if (scenario === "remount") {
+			markTerminalHandleFresh("mounted-existing");
+			const first = render(<QueryClientProvider client={new QueryClient()}><Shell /></QueryClientProvider>);
+			act(() => opened[0]());
+			first.unmount();
+		}
+		render(<QueryClientProvider client={new QueryClient()}><Shell /></QueryClientProvider>);
+		const index = outputs.length - 1;
+		const xtermWrite = vi.spyOn(state.lastTerminal!, "write");
+		act(() => {
+			opened[index]();
+			outputs[index](new TextEncoder().encode("history\x1b[6n"));
+		});
+		await waitFor(() => expect(xtermWrite).toHaveBeenCalled());
+		expect(sendInputs[index]).not.toHaveBeenCalled();
+	});
+
+	it("does not forward an unsolicited cursor-position-shaped input", () => {
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		state.lastTerminal!.dataListeners.forEach((listener) => listener("\x1b[7;21R"));
+
+		expect(onInput).not.toHaveBeenCalled();
 	});
 
 	it("updates protocol handling when a retained terminal becomes a Cursor terminal", () => {

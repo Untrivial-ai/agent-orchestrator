@@ -1,6 +1,7 @@
 import {
 	ArrowRight,
 	CheckCircle2,
+	Pencil,
 	TriangleAlert,
 	X,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
 	findActiveAgentSwitch,
@@ -22,7 +24,10 @@ import {
 	useAgentSwitches,
 } from "../hooks/useAgentSwitches";
 import { useObservedAgentSwitchLifecycle } from "../hooks/useObservedAgentSwitchLifecycle";
+import { useAgentSwitchPresentationVisibility, useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useTabScrollEdges } from "../hooks/useTabScrollEdges";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
 import { useSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useTruncatedText } from "../hooks/useTruncatedText";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
@@ -30,6 +35,7 @@ import { TERMINAL_FONT_SIZE_DEFAULT, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_
 import { getAgentActivityView } from "../lib/session-presentation";
 import {
 	deriveAgentSwitchPresentation,
+	agentSwitchVisibilityPresentationKind,
 	type AgentSwitchPresentation,
 } from "../lib/agent-switch-presentation";
 import { agentLabel } from "../lib/agent-options";
@@ -50,6 +56,7 @@ import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalTabFrame } from "./TerminalTabFrame";
 import { TerminalPane } from "./TerminalPane";
 import { SessionTopbarPortal } from "./SessionTopbarPortal";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "./ui/context-menu";
 
 type CenterPaneProps = {
 	session?: WorkspaceSession;
@@ -68,12 +75,16 @@ type CenterPaneProps = {
 	topbarActions?: ReactNode;
 	/** Agent-session actions (interface switch, handoff) on the primary session tab. */
 	sessionTabAction?: ReactNode;
+	/** Widen the primary tab's action slot while an interface switch spinner is showing. */
+	sessionTabActionWide?: boolean;
 	/** Pinned beside the tab strip, before the workspace topbar actions. */
 	tabStripAction?: ReactNode;
 	handoffDialogOpen?: boolean;
 	workspaceTabs?: CenterPaneWorkspaceTab[];
 	workspaceTabActions?: ReactNode;
 	workspaceActiveTabKey?: string;
+	/** A file overlay hides the pane, so it must not acknowledge switch UI. */
+	workspaceFileActive?: boolean;
 	/** Session-owned order shared with the Chat surface. */
 	auxiliaryTabOrder?: string[];
 	onAuxiliaryTabOrderChange?: (keys: string[]) => void;
@@ -85,6 +96,7 @@ export type CenterPaneWorkspaceTab = {
 	key: string;
 	content: ReactNode;
 	onSelect: () => void;
+	onClose?: () => void;
 };
 
 type AuxiliaryTab =
@@ -147,11 +159,13 @@ export function CenterPane({
 	onRenameShellTerminal,
 	topbarActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	handoffDialogOpen = false,
 	workspaceTabs,
 	workspaceTabActions,
 	workspaceActiveTabKey,
+	workspaceFileActive = false,
 	auxiliaryTabOrder,
 	onAuxiliaryTabOrderChange,
 	agentInputDisabled = false,
@@ -164,6 +178,11 @@ export function CenterPane({
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const [terminalBounds, setTerminalBounds] = useState({ leftInset: 0, rightInset: 0, width: 0 });
 	const [tabOrderBySession, setTabOrderBySession] = useState<Record<string, string[]>>({});
+	const queryClient = useQueryClient();
+	const refreshWorkspaces = useCallback(
+		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+		[queryClient],
+	);
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const sessionId = session?.id;
 	const auxiliaryTabs = useMemo<AuxiliaryTab[]>(
@@ -262,6 +281,7 @@ export function CenterPane({
 		admissionAgentSwitch ??
 		latestCompletedSwitch ??
 		observedTerminalSwitch;
+	useAgentSwitchRouteVisibility(`session/${session?.id ?? "unavailable"}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
 	const presentation =
 		agentSwitch && session
 			? deriveAgentSwitchPresentation({
@@ -286,6 +306,9 @@ export function CenterPane({
 	);
 	const displayedSuccessNotice = presentation ? undefined : transientSuccessNotice;
 	const target = terminalTarget ?? { kind: "worker" };
+	const activeWorkspaceTab = workspaceActiveTabKey
+		? workspaceTabs?.find((tab) => tab.key === workspaceActiveTabKey)
+		: undefined;
 	const switchLocksWorkerInput = Boolean(
 		presentation?.lockAgentTerminal && !presentation.allowSourceInput,
 	);
@@ -300,6 +323,13 @@ export function CenterPane({
 				: undefined
 			: presentation ?? displayedSuccessNotice?.presentation;
 	const shownAgentSwitch = agentSwitch ?? displayedSuccessNotice?.agentSwitch;
+	const visibilityPresentationKind = agentSwitchVisibilityPresentationKind(shownPresentation);
+	useAgentSwitchPresentationVisibility({
+		localRouteKey: `session/${session?.id ?? "unavailable"}`,
+		agentSwitch: shownAgentSwitch,
+		presentationKind: visibilityPresentationKind,
+		visible: Boolean(shownPresentation && shownAgentSwitch && !workspaceFileActive && !handoffDialogOpen),
+	});
 	const sessionTabLabel = session
 		? isOrchestratorSession(session)
 			? t("shell.orchestrator")
@@ -437,9 +467,10 @@ export function CenterPane({
 	useEffect(
 		() =>
 			aoBridge.app.onCloseShellTerminalShortcut(() => {
-				if (target.kind === "shell") onCloseShellTerminal?.(target.handleId);
+				if (activeWorkspaceTab?.onClose) activeWorkspaceTab.onClose();
+				else if (target.kind === "shell") onCloseShellTerminal?.(target.handleId);
 			}),
-		[target, onCloseShellTerminal],
+		[activeWorkspaceTab, target, onCloseShellTerminal],
 	);
 
 	useEffect(() => {
@@ -453,10 +484,10 @@ export function CenterPane({
 
 	useEffect(() => {
 		aoBridge.app.setCloseShellTerminalShortcutEnabled(
-			target.kind === "shell" && Boolean(onCloseShellTerminal),
+			Boolean(activeWorkspaceTab?.onClose) || (target.kind === "shell" && Boolean(onCloseShellTerminal)),
 		);
 		return () => aoBridge.app.setCloseShellTerminalShortcutEnabled(false);
-	}, [target.kind, onCloseShellTerminal]);
+	}, [activeWorkspaceTab, target.kind, onCloseShellTerminal]);
 
 	useEffect(() => {
 		const element = tabsOverflowRef.current;
@@ -603,8 +634,10 @@ export function CenterPane({
 											isActive={target.kind === "worker" && !workspaceActiveTabKey}
 											label={sessionTabLabel}
 											onSelect={onSelectSessionTerminal}
+											onRenamed={refreshWorkspaces}
 											session={session}
 											tabAction={sessionTabAction}
+											tabActionWide={sessionTabActionWide}
 										/>
 									) : (
 										<SessionPaneTab isActive={target.kind === "worker"} label={sessionTabLabel} />
@@ -693,11 +726,13 @@ export function CenterPane({
 					<TerminalPane
 						daemonReady={daemonReady}
 						fontSize={fontSize}
-						focusRequested={
-							target.kind === "shell" ||
-							(target.kind === "worker" &&
-								(Boolean(presentation?.allowSourceInput) || Boolean(displayedSuccessNotice)))
-						}
+						// A terminal you can type into should already hold the caret when you
+						// open or switch to the session, the same way the chat composer does.
+						// Worker input is off during an interface transition or a locked agent
+						// switch; every other target is interactive as soon as it is on screen.
+						// Without this a worker terminal was only focused mid agent-switch, so
+						// switching sessions left keystrokes going nowhere until you clicked it.
+						focusRequested={target.kind !== "worker" || !workerInputDisabled}
 						isFullscreen={isFullscreen}
 						inputDisabled={workerInputDisabled}
 						onChangeFontSize={updateFontSize}
@@ -894,11 +929,14 @@ type SessionPaneTabProps = {
 	isActive: boolean;
 	appearance?: "primary" | "connected";
 	onSelect?: () => void;
+	onRenamed?: () => void | Promise<void>;
 	session?: WorkspaceSession;
 	icon?: ReactNode;
 	title?: string;
 	/** Session-scoped controls (interface switch, handoff) beside the tab label. */
 	tabAction?: ReactNode;
+	/** Only while switching: reserve action width so the spinner does not cover the title. */
+	tabActionWide?: boolean;
 };
 
 // Shared tab chrome: the open tab is highlighted with the same rounded
@@ -910,10 +948,12 @@ export function SessionPaneTab({
 	isActive,
 	appearance = "primary",
 	onSelect,
+	onRenamed,
 	session,
 	icon,
 	title,
 	tabAction,
+	tabActionWide = false,
 }: SessionPaneTabProps) {
 	const { t } = useTranslation();
 	const { ref, isTruncated } = useTruncatedText<HTMLButtonElement>(label);
@@ -921,15 +961,64 @@ export function SessionPaneTab({
 	const providerLabel = session ? agentLabel(session.provider) : undefined;
 	const tabIcon = session ? <AgentAvatar className="size-terminal-agent-icon" decorative provider={session.provider} /> : icon;
 	const connected = appearance === "connected";
-	return (
+	// A session object supplies the tab presentation; refresh wiring explicitly
+	// opts the owning surface into rename so shared preview/cloud tabs cannot
+	// persist a title without updating their query cache.
+	const renameSession = onRenamed ? session : undefined;
+	const rename = useSessionRename(renameSession, onRenamed);
+	const editingContent = renameSession && rename.isEditing ? (
+		<div className="flex h-full min-w-0 flex-1 items-center gap-2 px-2">
+			{tabIcon}
+			<input
+				aria-label={t("shell.renameSession", { title: renameSession.title })}
+				autoFocus
+				className="min-w-0 flex-1 rounded-xs border border-accent bg-background px-1 text-control text-foreground outline-none ring-1 ring-accent"
+				maxLength={MAX_SESSION_DISPLAY_NAME_LEN}
+				onBlur={() => void rename.commit()}
+				onChange={(event) => rename.setDraft(event.target.value)}
+				onFocus={(event) => event.currentTarget.select()}
+				onKeyDown={(event) => {
+					if (event.key === "Enter") {
+						event.preventDefault();
+						event.currentTarget.blur();
+					} else if (event.key === "Escape") {
+						event.preventDefault();
+						rename.cancel();
+					}
+				}}
+				value={rename.draft}
+			/>
+		</div>
+	) : undefined;
+	const tabFrame = (
 		<TerminalTabFrame
-			action={tabAction ? <span data-testid="session-tab-action">{tabAction}</span> : undefined}
+			action={!rename.isEditing && tabAction ? <span data-testid="session-tab-action">{tabAction}</span> : undefined}
+			// Idle tabs keep the overlay ⋮ slot (title looks like before). Only while
+			// switching do we reserve width so the spinner cannot cover the label.
+			actionLayout={tabActionWide ? "inline" : "overlay"}
 			active={isActive}
 			buttonProps={{
 				"aria-current": isActive,
+				"aria-keyshortcuts": renameSession ? "F2" : undefined,
 				"aria-label": [label, providerLabel, activityLabel].filter(Boolean).join(" · "),
 				"aria-selected": isActive,
-				onClick: onSelect,
+				onClick: (event) => {
+					if (event.detail > 1) return;
+					onSelect?.();
+				},
+				onDoubleClick: renameSession
+					? (event) => {
+							event.preventDefault();
+							rename.begin();
+						}
+					: undefined,
+				onKeyDown: renameSession
+					? (event) => {
+							if (event.key !== "F2") return;
+							event.preventDefault();
+							rename.begin();
+						}
+					: undefined,
 				role: "tab",
 				tabIndex: isActive ? 0 : -1,
 				title: title ?? (isTruncated ? label : t("terminal.sessionAria")),
@@ -938,9 +1027,24 @@ export function SessionPaneTab({
 			buttonRef={ref}
 			className="w-shell-tab-connected min-w-shell-tab-min"
 			data-terminal-role={connected ? undefined : "primary"}
+			editingContent={editingContent}
 		>
 			{tabIcon}
 			<span className="truncate">{label}</span>
 		</TerminalTabFrame>
+	);
+	if (!renameSession || rename.isEditing) return tabFrame;
+	return (
+		<ContextMenu>
+			<ContextMenuTrigger asChild>
+				<span className="contents">{tabFrame}</span>
+			</ContextMenuTrigger>
+			<ContextMenuContent className="min-w-44">
+				<ContextMenuItem aria-label={t("shell.renameSession", { title: renameSession.title })} onSelect={rename.begin}>
+					<Pencil aria-hidden="true" />
+					{t("shell.rename")}
+				</ContextMenuItem>
+			</ContextMenuContent>
+		</ContextMenu>
 	);
 }

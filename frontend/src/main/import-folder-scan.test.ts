@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scanImportFolder } from "./import-folder-scan";
+import { resolveCheckedOutBranch, scanImportFolder } from "./import-folder-scan";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,6 +48,19 @@ afterEach(async () => {
 });
 
 describe("scanImportFolder", () => {
+	it("only preserves a branch owned by the selected repository root", async () => {
+		const root = await tempDir();
+		const parent = path.join(root, "parent");
+		await committedRepo(parent);
+		await git(["branch", "-m", "trunk"], parent);
+		await git(["remote", "remove", "origin"], parent);
+		const nested = path.join(parent, "new-workspace");
+		await mkdir(nested);
+		expect(await resolveCheckedOutBranch(parent)).toBe("trunk");
+		// AO will initialize this folder on main; an ancestor's trunk must not
+		// become an explicit default that the new workspace root cannot resolve.
+		expect(await resolveCheckedOutBranch(nested)).toBeUndefined();
+	});
 	it("leaves a plain project folder nested inside a parent repo setup-ready with a warning", async () => {
 		const root = await tempDir();
 		const parent = path.join(root, "parent");
@@ -86,6 +99,27 @@ describe("scanImportFolder", () => {
 				branch: "auto",
 				hasRemote: true,
 				status: "ok",
+			}),
+		]);
+	});
+
+	it("distinguishes an unborn repository from a plain folder", async () => {
+		const root = await tempDir();
+		const parent = path.join(root, "workspace");
+		const repo = path.join(parent, "app");
+		await mkdir(parent);
+		await git(["init", "-b", "main", repo]);
+		await git(["remote", "add", "origin", "https://example.com/repo.git"], repo);
+
+		const scan = await scanImportFolder(parent, "workspace");
+
+		expect(scan.repos).toEqual([
+			expect.objectContaining({
+				name: "app",
+				isRepo: true,
+				hasCommit: false,
+				hasRemote: true,
+				needsGitInit: false,
 			}),
 		]);
 	});

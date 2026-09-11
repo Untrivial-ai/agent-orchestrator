@@ -21,6 +21,9 @@ var (
 	// revalidate in the background. Long, because rediscovery runs an agent CLI:
 	// this covers drift a fingerprint cannot see, not routine correctness.
 	modelCatalogTrustWindow = 6 * time.Hour
+	// Suppress repeated successful catalog refreshes across rapid daemon restarts.
+	// Failed validations are stale and remain eligible for the next startup.
+	modelCatalogStartupGuard = 10 * time.Minute
 )
 
 // catalogNeedsRevalidation reports whether a cached catalog is old enough to
@@ -47,25 +50,44 @@ type modelCatalogCall struct {
 // Service owns normalized harness readiness and the unchanged model catalog.
 // Consumers share coordinator checks instead of probing adapters directly.
 type Service struct {
-	agents      []agentregistry.HarnessAgent
-	readiness   *readinessCoordinator
-	cache       ports.AgentModelCatalogCache
-	discoverer  ports.AgentModelDiscoverer
-	projects    ProjectLookup
-	sessions    SessionUsageLookup
-	resolverMu  map[string]*sync.Mutex
-	modelCallMu sync.Mutex
-	modelCalls  map[string]*modelCatalogCall
+	agents        []agentregistry.HarnessAgent
+	readiness     *readinessCoordinator
+	cache         ports.AgentModelCatalogCache
+	discoverer    ports.AgentModelDiscoverer
+	projects      ProjectLookup
+	sessions      SessionUsageLookup
+	resolverMu    map[string]*sync.Mutex
+	modelCallMu   sync.Mutex
+	modelCalls    map[string]*modelCatalogCall
+	codexAccounts *codexAccountManager
+	codexSwitches CodexAccountSwitchCoordinator
+}
+
+// CodexAccountSwitchCoordinator owns global switch execution and recovery.
+type CodexAccountSwitchCoordinator interface {
+	CodexAccountSwitchInProgress() bool
+	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
+	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
+	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
 }
 
 // Deps contains optional durable dependencies for the agent catalog service.
 type Deps struct {
-	Cache      ports.AgentModelCatalogCache
-	Discoverer ports.AgentModelDiscoverer
-	Projects   ProjectLookup
-	Sessions   SessionUsageLookup
-	Context    context.Context
-	Logger     *slog.Logger
+	Cache                  ports.AgentModelCatalogCache
+	Discoverer             ports.AgentModelDiscoverer
+	Projects               ProjectLookup
+	Sessions               SessionUsageLookup
+	Context                context.Context
+	Logger                 *slog.Logger
+	CodexAccountRoot       string
+	CodexPendingRoot       string
+	CodexSwitchStagingRoot string
+	CodexGlobalHome        string
+	CodexAccounts          ports.CodexAccountClientFactory
+	CodexAccountState      CodexAccountStateStore
+	CodexOperationGate     ports.CodexOperationGate
+	// Clock overrides time.Now for deterministic account-bootstrap retry tests.
+	Clock func() time.Time
 }
 
 // ProjectLookup resolves the registered working directory used for model
@@ -90,8 +112,15 @@ func New() *Service {
 func NewWithDeps(deps Deps) *Service {
 	agents := agentregistry.Harnessed()
 	svc := newService(agents, deps.Cache, deps.Projects, deps.Discoverer)
+	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
+		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.CodexAccountState, deps.Logger, deps.CodexOperationGate)
+		if deps.Clock != nil {
+			svc.codexAccounts.now = deps.Clock
+		}
+	}
 	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
+		AuthenticationCheck: svc.structuredCodexAuthentication,
 	})
 	svc.sessions = deps.Sessions
 	return svc
@@ -111,6 +140,38 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 		resolverMu[string(item.Harness)] = &sync.Mutex{}
 	}
 	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}}
+}
+
+// WarmModelCatalogs starts a non-blocking, sequential refresh of the Claude
+// Code and Muse scopes that already have durable cache records. Unseen scopes
+// remain lazy and are discovered only when their picker is first opened.
+func (s *Service) WarmModelCatalogs(ctx context.Context) {
+	if s.cache == nil || s.discoverer == nil {
+		return
+	}
+	go s.warmModelCatalogs(ctx)
+}
+
+func (s *Service) warmModelCatalogs(ctx context.Context) {
+	for _, agentID := range []string{"claude-code", "muse"} {
+		records, err := s.cache.ListAgentModelCatalogsByAgent(ctx, agentID)
+		if err != nil {
+			continue
+		}
+		for _, record := range records {
+			if err := ctx.Err(); err != nil {
+				return
+			}
+			var cached ports.AgentModelCatalog
+			if err := json.Unmarshal([]byte(record.CatalogJSON), &cached); err != nil {
+				continue
+			}
+			if !cached.Stale && !cached.ValidatedAt.IsZero() && time.Since(cached.ValidatedAt) < modelCatalogStartupGuard {
+				continue
+			}
+			_, _ = s.RevalidateModels(ctx, agentID, record.ProjectID)
+		}
+	}
 }
 
 // Models returns one normalized model catalog. Cached values survive daemon
@@ -187,6 +248,10 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	if err != nil {
 		return ports.AgentModelCatalog{}, err
 	}
+	policy := s.discoverer.Manual(agentID)
+	if hasCached {
+		cached.Catalog = applyCustomModelEntryPolicy(cached.Catalog, policy)
+	}
 	var binary string
 	if resolver, ok := item.Agent.(ports.AgentBinaryResolver); ok {
 		lock := s.resolverMu[agentID]
@@ -214,15 +279,13 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	}
 
 	discovered, discoverErr := s.discoverer.Discover(ctx, request)
+	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
-	discovered.ValidatedAt = time.Now().UTC()
-	discovered.RefreshRecommended = false
 	if discoverErr != nil {
 		if hasCached && len(cached.Catalog.Models) > len(discovered.Models) {
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
-			cached.Catalog.ValidatedAt = time.Now().UTC()
-			cached.Catalog.RefreshRecommended = false
+			cached.Catalog.RefreshRecommended = true
 			if err := s.saveCatalog(ctx, projectID, cached.Catalog); err != nil {
 				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
 			}
@@ -231,6 +294,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		if len(discovered.Models) > 0 {
 			discovered.Stale = true
 			discovered.Warning = discoverErr.Error()
+			discovered.RefreshRecommended = true
 			if err := s.saveCatalog(ctx, projectID, discovered); err != nil {
 				discovered.Warning = appendCacheWarning(discovered.Warning)
 			}
@@ -239,24 +303,79 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		if hasCached {
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
-			cached.Catalog.ValidatedAt = time.Now().UTC()
-			cached.Catalog.RefreshRecommended = false
+			cached.Catalog.RefreshRecommended = true
 			if err := s.saveCatalog(ctx, projectID, cached.Catalog); err != nil {
 				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
 			}
 			return cached.Catalog, nil
 		}
-		fallback := s.discoverer.Manual(agentID)
+		if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID); ok {
+			shared = applyCustomModelEntryPolicy(shared, policy)
+			shared.Stale = true
+			shared.Warning = discoverErr.Error()
+			shared.RefreshRecommended = true
+			return shared, nil
+		}
+		fallback := policy
 		fallback.BinaryVersion = version
-		fallback.ValidatedAt = time.Now().UTC()
 		fallback.Stale = true
 		fallback.Warning = discoverErr.Error()
+		fallback.RefreshRecommended = true
 		return fallback, nil
 	}
+	discovered.ValidatedAt = time.Now().UTC()
+	discovered.RefreshRecommended = false
 	if err := s.saveCatalog(ctx, projectID, discovered); err != nil {
 		discovered.Warning = appendCacheWarning(discovered.Warning)
 	}
 	return discovered, nil
+}
+
+// latestAgentCatalog returns a last-known-good catalog from another project as
+// a display-only fallback. Discovery remains project-scoped and this result is
+// deliberately not persisted under the requested project key.
+func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID string) (ports.AgentModelCatalog, bool) {
+	if s.cache == nil {
+		return ports.AgentModelCatalog{}, false
+	}
+	records, err := s.cache.ListAgentModelCatalogsByAgent(ctx, agentID)
+	if err != nil {
+		return ports.AgentModelCatalog{}, false
+	}
+	var best ports.AgentModelCatalog
+	var bestAt time.Time
+	for _, record := range records {
+		if record.ProjectID == projectID {
+			continue
+		}
+		var candidate ports.AgentModelCatalog
+		if err := json.Unmarshal([]byte(record.CatalogJSON), &candidate); err != nil || len(candidate.Models) == 0 {
+			continue
+		}
+		at := record.FetchedAt
+		if at.IsZero() {
+			at = candidate.FetchedAt
+		}
+		if best.Models == nil || at.After(bestAt) {
+			best = candidate
+			bestAt = at
+		}
+	}
+	return best, best.Models != nil
+}
+
+func applyCustomModelEntryPolicy(catalog, policy ports.AgentModelCatalog) ports.AgentModelCatalog {
+	entryMode := policy.CustomModelEntry
+	if entryMode == "" {
+		if policy.AllowCustom {
+			entryMode = ports.CustomModelEntryDirect
+		} else {
+			entryMode = ports.CustomModelEntryNone
+		}
+	}
+	catalog.CustomModelEntry = entryMode
+	catalog.AllowCustom = entryMode == ports.CustomModelEntryDirect
+	return catalog
 }
 
 func appendCacheWarning(current string) string {
@@ -334,4 +453,22 @@ func (s *Service) agent(agentID string) (agentregistry.HarnessAgent, bool) {
 		}
 	}
 	return agentregistry.HarnessAgent{}, false
+}
+
+// ResolveAgentBinary resolves one harness through its shipped adapter. This is
+// the shared boundary for features that must launch the same executable normal
+// session startup recognizes, including managed locations outside PATH.
+func (s *Service) ResolveAgentBinary(ctx context.Context, agentID string) (string, error) {
+	item, ok := s.agent(agentID)
+	if !ok {
+		return "", apierr.Invalid("AGENT_UNKNOWN", fmt.Sprintf("unknown agent %q", agentID), nil)
+	}
+	resolver, ok := item.Agent.(ports.AgentBinaryResolver)
+	if !ok {
+		return "", fmt.Errorf("agent %s: %w", agentID, ports.ErrAgentBinaryNotFound)
+	}
+	lock := s.resolverMu[agentID]
+	lock.Lock()
+	defer lock.Unlock()
+	return resolver.ResolveBinary(ctx)
 }

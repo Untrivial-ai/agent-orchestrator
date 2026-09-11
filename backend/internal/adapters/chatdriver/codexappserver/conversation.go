@@ -80,6 +80,7 @@ type conversation struct {
 
 	pumpDone  chan struct{}
 	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
@@ -312,7 +313,27 @@ func turnSandboxPolicy(sandbox string) map[string]any {
 // account, and gated by entitlement that AO cannot see. A table in AO would be
 // wrong within a week.
 func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error) {
-	var resp struct {
+	models, err := listModels(ctx, c.conn)
+	if err != nil {
+		return nil, err
+	}
+	// Thread settings include the user's config; model/list only has generic defaults.
+	for i := range models {
+		// An omitted turn model inherits thread/start (including config.toml),
+		// not model/list's generic catalog default. If the configured model is
+		// absent, leave no catalog default rather than advertise another model.
+		if c.threadModel != "" {
+			models[i].Default = models[i].ID == c.threadModel
+		}
+		if models[i].ID == c.threadModel && c.threadEffort != "" {
+			models[i].DefaultEffort = c.threadEffort
+		}
+	}
+	return models, nil
+}
+
+func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error) {
+	type modelListResponse struct {
 		Data []struct {
 			ID          string `json:"id"`
 			Model       string `json:"model"`
@@ -325,50 +346,56 @@ func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error
 				ReasoningEffort string `json:"reasoningEffort"`
 			} `json:"supportedReasoningEfforts"`
 		} `json:"data"`
-	}
-	if err := c.conn.request(ctx, "model/list", map[string]any{}, &resp); err != nil {
-		return nil, fmt.Errorf("model/list: %w", err)
+		NextCursor *string `json:"nextCursor"`
 	}
 
-	models := make([]ports.ChatModel, 0, len(resp.Data))
-	for _, entry := range resp.Data {
-		if entry.Hidden {
-			// The provider marks a model hidden when the account should not be
-			// offered it. Showing it anyway would offer a choice that then fails.
-			continue
+	var models []ports.ChatModel
+	var cursor string
+	for {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
 		}
-		id := entry.ID
-		if id == "" {
-			id = entry.Model
+		var resp modelListResponse
+		if err := connection.request(ctx, "model/list", params, &resp); err != nil {
+			return nil, fmt.Errorf("model/list: %w", err)
 		}
-		if id == "" {
-			continue
-		}
-		efforts := make([]string, 0, len(entry.Efforts))
-		for _, effort := range entry.Efforts {
-			if effort.ReasoningEffort != "" {
-				efforts = append(efforts, effort.ReasoningEffort)
+		for _, entry := range resp.Data {
+			if entry.Hidden {
+				// The provider marks a model hidden when the account should not be
+				// offered it. Showing it anyway would offer a choice that then fails.
+				continue
 			}
+			id := entry.ID
+			if id == "" {
+				id = entry.Model
+			}
+			if id == "" {
+				continue
+			}
+			efforts := make([]string, 0, len(entry.Efforts))
+			for _, effort := range entry.Efforts {
+				if effort.ReasoningEffort != "" {
+					efforts = append(efforts, effort.ReasoningEffort)
+				}
+			}
+			display := entry.DisplayName
+			if display == "" {
+				display = id
+			}
+			models = append(models, ports.ChatModel{
+				ID:            id,
+				DisplayName:   display,
+				Description:   entry.Description,
+				Default:       entry.IsDefault,
+				Efforts:       efforts,
+				DefaultEffort: entry.DefaultEff,
+			})
 		}
-		display := entry.DisplayName
-		if display == "" {
-			display = id
-		}
-		models = append(models, ports.ChatModel{
-			ID:            id,
-			DisplayName:   display,
-			Description:   entry.Description,
-			Default:       entry.IsDefault,
-			Efforts:       efforts,
-			DefaultEffort: entry.DefaultEff,
-		})
-	}
-	// Thread settings include the user's config; model/list only has generic defaults.
-	for i := range models {
-		if models[i].ID == c.threadModel && c.threadEffort != "" {
-			models[i].DefaultEffort = c.threadEffort
+		if resp.NextCursor == nil || *resp.NextCursor == "" {
 			break
 		}
+		cursor = *resp.NextCursor
 	}
 	return models, nil
 }
@@ -380,15 +407,12 @@ func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error
 // wants to know whether they have quota BEFORE spending a turn finding out. The
 // controller reads once at startup for exactly that reason.
 func (c *conversation) ReadRateLimits(ctx context.Context) (ports.ChatRateLimits, error) {
-	var resp rateLimitsEnvelope
+	var resp capacityReadEnvelope
 	if err := c.conn.request(ctx, "account/rateLimits/read", map[string]any{}, &resp); err != nil {
 		return ports.ChatRateLimits{}, fmt.Errorf("account/rateLimits/read: %w", err)
 	}
-	// The read result also carries rateLimitsByLimitId, a per-model breakdown, and
-	// rateLimitResetCredits. Neither is read: the meter's job is to say whether the
-	// account is near a wall, and a per-model table would be a second, finer answer
-	// to a question the user has not asked yet.
-	return rateLimitsFrom(resp, time.Now()), nil
+	observedAt := time.Now().UTC()
+	return chatRateLimitsFromCapacity(capacityObservationFromEnvelope(resp, observedAt, false), observedAt), nil
 }
 
 // Compact asks the provider to summarize earlier history and reclaim context.
@@ -806,10 +830,10 @@ func (c *conversation) Close() error {
 			c.failPendingApprovals()
 		}
 		if c.proc.stop != nil {
-			_ = c.proc.stop()
+			c.closeErr = c.proc.stop()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // Terminate destroys the provider host. Close only detaches and is used by
@@ -818,12 +842,12 @@ func (c *conversation) Terminate() error {
 	c.closeOnce.Do(func() {
 		c.failPendingApprovals()
 		if c.proc.terminate != nil {
-			_ = c.proc.terminate()
+			c.closeErr = c.proc.terminate()
 		} else if c.proc.stop != nil {
-			_ = c.proc.stop()
+			c.closeErr = c.proc.stop()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // approvalPayload is the subset of an approval request AO renders.

@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, PanelLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
-import { sidebarIsCompact, sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
+import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const isMac = isMacPlatform();
@@ -51,15 +51,12 @@ export function TitlebarNav({
   const { t } = useTranslation();
   const toggleSidebar = useUiStore((state) => state.toggleSidebar);
   const isSidebarOpen = useUiStore(sidebarIsVisible);
-  const isSidebarCompact = useUiStore(sidebarIsCompact);
   const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
   const router = useRouter();
   const canGoBack = useCanGoBack();
   const canGoForward = useCanGoForward();
 
   if (!isMac && !isLinux) return null;
-  if (isSidebarCompact) return null;
-
   // macOS: pinned beside the traffic lights. Native dots sit at y: 12 with a
   // 12px hit target (centerline 18); the 40px clearance band is items-centered,
   // so top: -2px puts the toggle/arrows on that same centerline. Linux: no
