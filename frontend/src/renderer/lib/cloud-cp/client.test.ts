@@ -2,6 +2,27 @@ import { describe, expect, it, vi } from "vitest";
 import { createCloudCpClient } from "./client";
 
 describe("cloud control-plane session lifecycle", () => {
+	it("uses the cloud review endpoints for an encoded session", async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(JSON.stringify({ sessionId: "session/1", reviews: [], runs: [] }), {
+				status: 201,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		const client = createCloudCpClient({
+			baseUrl: "https://cloud.example.test/",
+			getToken: async () => "token",
+			fetchImpl: fetchMock as typeof fetch,
+		});
+
+		await client.triggerSessionReviews("org/1", "session/1");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/reviews/trigger",
+			expect.objectContaining({ method: "POST" }),
+		);
+	});
+
 	it("posts explicit resume intent for one encoded session", async () => {
 		const fetchMock = vi.fn(async () =>
 			new Response(

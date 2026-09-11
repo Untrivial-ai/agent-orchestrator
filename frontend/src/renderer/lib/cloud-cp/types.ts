@@ -239,6 +239,72 @@ export interface CloudCpSessionChildrenResponse {
 	page: CloudCpPageInfo;
 }
 
+// ---------------------------------------------------------------------------
+// Pull requests and AO reviews (`pull_request_handlers.go`)
+// ---------------------------------------------------------------------------
+
+export interface CloudCpPullRequestSummary {
+	url: string;
+	htmlUrl?: string;
+	number: number;
+	title: string;
+	state: "draft" | "open" | "merged" | "closed";
+	provider: string;
+	repository: string;
+	author: string;
+	sourceBranch: string;
+	targetBranch: string;
+	headSha: string;
+	additions: number;
+	deletions: number;
+	changedFiles: number;
+	updatedAt: string;
+}
+
+export interface CloudCpSessionPullRequestsResponse {
+	sessionId: string;
+	pullRequests: CloudCpPullRequestSummary[];
+}
+
+export type CloudCpAOReviewRunStatus = "running" | "complete" | "delivered" | "failed" | "cancelled";
+export type CloudCpAOReviewVerdict = "" | "approved" | "changes_requested";
+export type CloudCpAOReviewState = "needs_review" | "running" | "up_to_date" | "changes_requested" | "ineligible";
+
+export interface CloudCpAOReviewRun {
+	id: string;
+	reviewId: string;
+	sessionId: string;
+	batchId: string;
+	harness: string;
+	pullRequestUrl: string;
+	targetSha: string;
+	status: CloudCpAOReviewRunStatus;
+	verdict: CloudCpAOReviewVerdict;
+	body: string;
+	providerReviewId: string;
+	createdAt: string;
+	deliveredAt?: string;
+	autoInjectReview: boolean;
+}
+
+export interface CloudCpPRReviewState {
+	pullRequestUrl: string;
+	pullRequestNumber: number;
+	title: string;
+	targetSha: string;
+	status: CloudCpAOReviewState;
+	latestRun?: CloudCpAOReviewRun;
+	previousRun?: CloudCpAOReviewRun;
+}
+
+export interface CloudCpSessionReviewState {
+	sessionId: string;
+	reviewerHandleId?: string;
+	reviewerHarness?: string;
+	reviews: CloudCpPRReviewState[];
+	runs: CloudCpAOReviewRun[];
+}
+
 export interface CloudCpListSessionsQuery extends CloudCpListQuery {
 	/** Restrict the listing to one project. */
 	projectId?: string;

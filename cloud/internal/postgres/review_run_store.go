@@ -143,6 +143,53 @@ func (s *Store) CloseReviewTerminal(ctx context.Context, orgID, sessionID, revie
 	})
 }
 
+// CancelRunningReviewRunsBySession records user cancellation before any
+// terminal teardown. A worker can be disconnected, but its review must never
+// remain rendered as running merely because it missed the close request.
+func (s *Store) CancelRunningReviewRunsBySession(
+	ctx context.Context,
+	orgID, sessionID string,
+) ([]domain.ReviewRun, error) {
+	var runs []domain.ReviewRun
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE ao_review_runs run
+			SET status = 'cancelled', completed_at = now(), last_error = 'cancelled by user'
+			WHERE run.org_id = $1
+				AND run.review_session_id = $2
+				AND run.status = 'running'
+			RETURNING `+reviewRunColumns, orgID, sessionID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			run, err := scanReviewRun(rows)
+			if err != nil {
+				return err
+			}
+			runs = append(runs, run)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, run := range runs {
+			if _, err := tx.Exec(ctx, `
+				UPDATE ao_pull_requests
+				SET ao_review_state = 'needs_review', updated_at = now()
+				WHERE org_id = $1 AND id = $2 AND head_sha = $3`, orgID, run.PullRequestID, run.TargetSHA); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, normalizeConstraintError(err)
+	}
+	return runs, nil
+}
+
 // CompleteAndDeliverReviewRun records a delivered verdict from the owning session.
 func (s *Store) CompleteAndDeliverReviewRun(
 	ctx context.Context,
@@ -231,7 +278,7 @@ func (s *Store) ReviewRunPullRequest(
 			ctx,
 			`SELECT run.id, run.org_id, run.pull_request_id, run.review_session_id,
 				run.target_sha, run.status, run.verdict, run.body,
-				run.provider_review_id, run.last_error, run.created_at,
+				run.provider_review_id, run.review_terminal_id, run.last_error, run.created_at,
 				run.completed_at, run.delivered_at,
 				pr.provider, pr.repository, pr.number, pr.url, pr.title, pr.ao_review_state
 			FROM ao_review_runs run
@@ -243,7 +290,7 @@ func (s *Store) ReviewRunPullRequest(
 		if err := row.Scan(
 			&out.ID, &out.OrgID, &out.PullRequestID, &out.ReviewSessionID,
 			&out.TargetSHA, &status, &verdict, &out.Body,
-			&out.ProviderReviewID, &out.LastError, &out.CreatedAt,
+			&out.ProviderReviewID, &out.ReviewTerminalID, &out.LastError, &out.CreatedAt,
 			&out.CompletedAt, &out.DeliveredAt,
 			&out.PullRequestProvider, &out.PullRequestRepository, &out.PullRequestNumber,
 			&out.PullRequestURL, &out.PullRequestTitle, &aoReviewState,
@@ -276,7 +323,7 @@ func (s *Store) ListReviewRunsBySession(
 			ctx,
 			`SELECT run.id, run.org_id, run.pull_request_id, run.review_session_id,
 				run.target_sha, run.status, run.verdict, run.body,
-				run.provider_review_id, run.last_error, run.created_at,
+				run.provider_review_id, run.review_terminal_id, run.last_error, run.created_at,
 				run.completed_at, run.delivered_at,
 				pr.provider, pr.repository, pr.number, pr.url, pr.title, pr.ao_review_state
 			FROM ao_review_runs run
@@ -307,7 +354,7 @@ func (s *Store) ListReviewRunsBySession(
 			if err := rows.Scan(
 				&run.ID, &run.OrgID, &run.PullRequestID, &run.ReviewSessionID,
 				&run.TargetSHA, &status, &verdict, &run.Body,
-				&run.ProviderReviewID, &run.LastError, &run.CreatedAt,
+				&run.ProviderReviewID, &run.ReviewTerminalID, &run.LastError, &run.CreatedAt,
 				&run.CompletedAt, &run.DeliveredAt,
 				&run.PullRequestProvider, &run.PullRequestRepository, &run.PullRequestNumber,
 				&run.PullRequestURL, &run.PullRequestTitle, &aoReviewState,
@@ -328,7 +375,7 @@ func (s *Store) ListReviewRunsBySession(
 }
 
 const reviewRunColumns = `id, org_id, pull_request_id, review_session_id, target_sha,
-	status, verdict, body, provider_review_id, last_error, created_at, completed_at, delivered_at`
+	status, verdict, body, provider_review_id, review_terminal_id, last_error, created_at, completed_at, delivered_at`
 
 type reviewRunRow interface {
 	Scan(dest ...any) error
@@ -339,7 +386,7 @@ func scanReviewRun(row reviewRunRow) (domain.ReviewRun, error) {
 	var status, verdict string
 	err := row.Scan(
 		&run.ID, &run.OrgID, &run.PullRequestID, &run.ReviewSessionID, &run.TargetSHA,
-		&status, &verdict, &run.Body, &run.ProviderReviewID, &run.LastError,
+		&status, &verdict, &run.Body, &run.ProviderReviewID, &run.ReviewTerminalID, &run.LastError,
 		&run.CreatedAt, &run.CompletedAt, &run.DeliveredAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
