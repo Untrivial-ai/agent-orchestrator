@@ -2,8 +2,10 @@
 
 AO Cloud can use a customer-operated Coder deployment as its sandbox compute
 provider. AO creates one Coder workspace per AO session, installs `ao-worker`
-through the workspace's existing `coder_agent`, and keeps the rest of the
-session lifecycle behind the same provider-neutral reconciler used by NodeOps.
+in the approved template image, launches it through the workspace's existing
+`coder_agent`, and keeps the rest of the session lifecycle behind the same
+provider-neutral reconciler used by NodeOps. Older templates remain compatible:
+AO verifies the baked binaries and falls back to the PTY upload on a hash miss.
 
 The first implementation is deployment-scoped: every AO organization on that
 control plane uses the same Coder connection and approved template. It does not
@@ -28,7 +30,7 @@ AO calls these Coder API surfaces:
 | Inspect | `GET /api/v2/workspaces/{id}` |
 | Recover by AO session | `GET /api/v2/users/{owner}/workspace/{name}` |
 | Start, stop, delete | `POST /api/v2/workspaces/{id}/builds` |
-| Install or repair worker | `GET /api/v2/workspaceagents/{agent}/pty` (WebSocket) |
+| Launch or repair worker | `GET /api/v2/workspaceagents/{agent}/pty` (WebSocket) |
 
 For a quick Community Edition pilot, an API token with `coder:all` is bounded by
 the permissions of this ordinary user and is the simplest setup. On Coder
@@ -75,6 +77,14 @@ A first bootstrap writes a session identity marker; a bootstrap after
 stop/start must find the same marker or it fails instead of silently launching
 a fresh agent against an empty filesystem.
 
+For normal startup latency, bake `/usr/local/bin/ao-worker` and
+`/usr/local/bin/ao` from the exact control-plane image into the approved
+workspace image. The reference Dockerfile and Terraform template live under
+`cloud/coder/`. At launch AO compares SHA-256 hashes for both executables with
+the binaries embedded in its own release. A match transfers only the small,
+one-time launch environment; a missing or stale binary uses the full PTY upload
+so template and control-plane rollouts do not have to be perfectly atomic.
+
 Because the worker runs as a separate OS user, bootstrap preserves the durable
 root's existing mode bits while adding traversal-only (`o+x`) access to that
 mount point. It does not make the root listable or readable. Only the derived
@@ -84,8 +94,8 @@ The normal workspace user must have passwordless `sudo` for the pilot
 bootstrap. AO uses it to:
 
 - create the unprivileged `ao-worker` OS user;
-- install the release-pinned `ao-worker` and AO helper binaries under
-  `/usr/local/bin`;
+- install the release-pinned binaries only when the template hash does not
+  match the active control-plane release;
 - create and assign only the derived repository and `.ao` directories to the
   worker user; and
 - launch the worker, which then dials the AO service plane and sends its own
@@ -97,9 +107,10 @@ Code or Codex). Those tools are baked into AO's NodeOps image today; the Coder
 provider deliberately does not mutate a customer's template by installing
 third-party harnesses at session startup.
 
-No worker credential is placed in the PTY URL or command. AO streams a private
-archive over terminal input, writes the launch environment with mode `0600`,
-and deletes that environment file when the worker starts.
+No worker credential is placed in the PTY URL or command. Even on the baked
+fast path, AO streams the private launch environment over terminal input,
+writes it with mode `0600`, and deletes that environment file when the worker
+starts.
 
 For a production rollout, prefer baking the OS user and directories into the
 template or a narrowly scoped install helper over unrestricted passwordless

@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,6 +172,7 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 
 	const secret = "TOP_SECRET_WORKER_TOKEN"
 	archiveResult := make(chan map[string]string, 1)
+	preinstalledChecks := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.URL.Path == "/api/v2/workspaces/"+testWorkspaceID:
@@ -185,6 +188,19 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 				t.Errorf("PTY backend_type = %q, want buffered", got)
 			}
 			command := request.URL.Query().Get("command")
+			if strings.Contains(command, preinstalledMiss) {
+				connection, err := websocket.Accept(writer, request, nil)
+				if err != nil {
+					t.Errorf("accept preinstalled probe websocket: %v", err)
+					return
+				}
+				defer connection.CloseNow()
+				output := websocket.NetConn(context.Background(), connection, websocket.MessageBinary)
+				defer output.Close()
+				preinstalledChecks <- struct{}{}
+				_, _ = io.WriteString(output, preinstalledMiss+"\r\n")
+				return
+			}
 			for _, expected := range []string{
 				"/mnt/ao/repository",
 				"/mnt/ao/.ao/worker",
@@ -287,6 +303,11 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 	if files["ao-worker"] != "worker-binary" || files["ao"] != "helper-binary" {
 		t.Fatalf("unexpected binaries in archive: %+v", files)
 	}
+	select {
+	case <-preinstalledChecks:
+	default:
+		t.Fatal("bootstrap did not probe the preinstalled worker before uploading binaries")
+	}
 	if !strings.Contains(files["worker.env"], secret) {
 		t.Fatalf("worker environment missing from archive")
 	}
@@ -295,6 +316,48 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 	}
 	if err := <-bootstrapResult; err != nil {
 		t.Fatalf("bootstrap: %v", err)
+	}
+}
+
+func TestPreinstalledBootstrapUsesExactHashesAndLaunchOnlyArchive(t *testing.T) {
+	t.Parallel()
+	bootstrap := sandbox.WorkerBootstrap{
+		Binary: []byte("worker-binary"), Destination: "/usr/local/bin/ao-worker",
+		HelperBinary: []byte("helper-binary"), HelperDestination: "/usr/local/bin/ao",
+		User: "ao-worker", Environment: map[string]string{"AO_WORKER_TOKEN": "secret"},
+		DurableRoot: "/mnt/ao", DurableIdentity: "session-1",
+	}
+	archive, err := bootstrapLaunchArchive(bootstrap)
+	if err != nil {
+		t.Fatalf("build launch archive: %v", err)
+	}
+	files := readArchive(t, archive)
+	if _, ok := files["ao-worker"]; ok {
+		t.Fatal("launch-only archive unexpectedly contains ao-worker")
+	}
+	if _, ok := files["ao"]; ok {
+		t.Fatal("launch-only archive unexpectedly contains ao helper")
+	}
+	if !strings.Contains(files["worker.env"], "secret") || files["launch.sh"] == "" {
+		t.Fatalf("launch-only archive is missing launch configuration: %+v", files)
+	}
+
+	command := bootstrapCommandForArchive(bootstrap, len(base64.StdEncoding.EncodeToString(archive)), true)
+	workerHash := sha256.Sum256(bootstrap.Binary)
+	helperHash := sha256.Sum256(bootstrap.HelperBinary)
+	for _, expected := range []string{
+		preinstalledMiss,
+		hex.EncodeToString(workerHash[:]),
+		hex.EncodeToString(helperHash[:]),
+		"/usr/local/bin/ao-worker",
+		"/usr/local/bin/ao",
+	} {
+		if !strings.Contains(command, expected) {
+			t.Errorf("preinstalled bootstrap command missing %q", expected)
+		}
+	}
+	if strings.Contains(command, `install -m 0755 "$stage/ao-worker"`) {
+		t.Fatal("preinstalled bootstrap command unexpectedly reinstalls the worker binary")
 	}
 }
 

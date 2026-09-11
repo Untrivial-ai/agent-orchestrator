@@ -42,10 +42,14 @@ const (
 	bootstrapFailed     = "__AO_BOOTSTRAP_FAILED__"
 	bootstrapUploadACK  = "__AO_UPLOAD_ACK__"
 	bootstrapUploadDone = "__AO_UPLOAD_DONE__"
+	preinstalledMiss    = "__AO_PREINSTALLED_MISS__"
 	bootstrapResultWait = 2 * time.Minute
 )
 
-var userPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+var (
+	userPattern                       = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	errPreinstalledWorkerDoesNotMatch = errors.New("coder: preinstalled AO worker does not match")
+)
 
 // Config describes one Coder deployment and the template AO is allowed to use.
 type Config struct {
@@ -389,31 +393,61 @@ func (c *Client) BootstrapWorker(ctx context.Context, id sandbox.ID, bootstrap s
 	if !ok || agent.ID == "" || agent.Status != "connected" || !agent.Health.Healthy {
 		return errors.New("coder: workspace agent is not connected and healthy")
 	}
-	payload, err := bootstrapArchive(bootstrap)
+	// Fast path: an approved template can bake the exact worker and helper from
+	// the control-plane image. Verify both hashes inside the workspace, then send
+	// only the small launch environment through the PTY. A stale or unmodified
+	// customer template explicitly falls through to the full binary upload.
+	launchPayload, err := bootstrapLaunchArchive(bootstrap)
 	if err != nil {
 		return err
 	}
-	encoded := base64.StdEncoding.EncodeToString(payload)
-	command := bootstrapCommand(bootstrap, len(encoded))
 	ptyURL, err := url.Parse(c.baseURL + "/api/v2/workspaceagents/" + url.PathEscape(agent.ID) + "/pty")
 	if err != nil {
 		return fmt.Errorf("coder: build PTY URL: %w", err)
 	}
-	query := ptyURL.Query()
+	if err := c.bootstrapWorkerThroughPTY(ctx, ptyURL, bootstrap, launchPayload, true); err == nil {
+		return nil
+	} else if !errors.Is(err, errPreinstalledWorkerDoesNotMatch) {
+		return fmt.Errorf("coder: launch preinstalled worker: %w", err)
+	}
+
+	payload, err := bootstrapArchive(bootstrap)
+	if err != nil {
+		return err
+	}
+	if err := c.bootstrapWorkerThroughPTY(ctx, ptyURL, bootstrap, payload, false); err != nil {
+		return fmt.Errorf("coder: bootstrap worker after PTY retries: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) bootstrapWorkerThroughPTY(
+	ctx context.Context,
+	ptyURL *url.URL,
+	bootstrap sandbox.WorkerBootstrap,
+	payload []byte,
+	preinstalled bool,
+) error {
+	encoded := base64.StdEncoding.EncodeToString(payload)
+	attemptURL := *ptyURL
+	query := attemptURL.Query()
 	query.Set("width", "120")
 	query.Set("height", "40")
-	query.Set("command", command)
+	query.Set("command", bootstrapCommandForArchive(bootstrap, len(encoded), preinstalled))
 	// Bootstrap is a short-lived, non-interactive command. The buffered backend
 	// preserves the final result after the upload while AO keeps the PTY open.
 	query.Set("backend_type", "buffered")
-	ptyURL.RawQuery = query.Encode()
+	attemptURL.RawQuery = query.Encode()
 	const bootstrapAttempts = 5
 	var lastErr error
 	for attempt := 0; attempt < bootstrapAttempts; attempt++ {
-		if err := c.bootstrapThroughPTY(ctx, ptyURL, encoded); err == nil {
+		if err := c.bootstrapThroughPTY(ctx, &attemptURL, encoded); err == nil {
 			return nil
 		} else {
 			lastErr = err
+		}
+		if errors.Is(lastErr, errPreinstalledWorkerDoesNotMatch) {
+			return lastErr
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -428,7 +462,7 @@ func (c *Client) BootstrapWorker(ctx context.Context, id sandbox.ID, bootstrap s
 			}
 		}
 	}
-	return fmt.Errorf("coder: bootstrap worker after PTY retries: %w", lastErr)
+	return lastErr
 }
 
 func (c *Client) bootstrapThroughPTY(ctx context.Context, ptyURL *url.URL, encoded string) error {
@@ -517,6 +551,9 @@ func waitForBootstrapReady(ctx context.Context, output <-chan ptyOutput) error {
 			}
 			if strings.Contains(response.data, bootstrapReady) {
 				return nil
+			}
+			if strings.Contains(response.data, preinstalledMiss) {
+				return errPreinstalledWorkerDoesNotMatch
 			}
 			if strings.Contains(response.data, bootstrapFailed) {
 				return fmt.Errorf("coder: worker bootstrap failed before upload: %s", sanitizePTYOutput(response.data))
@@ -624,6 +661,14 @@ func safeAbsolutePath(value string) bool {
 }
 
 func bootstrapArchive(bootstrap sandbox.WorkerBootstrap) ([]byte, error) {
+	return buildBootstrapArchive(bootstrap, true)
+}
+
+func bootstrapLaunchArchive(bootstrap sandbox.WorkerBootstrap) ([]byte, error) {
+	return buildBootstrapArchive(bootstrap, false)
+}
+
+func buildBootstrapArchive(bootstrap sandbox.WorkerBootstrap, includeBinaries bool) ([]byte, error) {
 	var compressed bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressed)
 	tarWriter := tar.NewWriter(gzipWriter)
@@ -632,11 +677,17 @@ func bootstrapArchive(bootstrap sandbox.WorkerBootstrap) ([]byte, error) {
 		mode int64
 		data []byte
 	}{
-		{name: "ao-worker", mode: 0o700, data: bootstrap.Binary},
 		{name: "worker.env", mode: 0o600, data: []byte(environmentFile(bootstrap.Environment))},
 		{name: "launch.sh", mode: 0o700, data: []byte("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$$\" >\"$3\"\nset -a\n. \"$1\"\nset +a\nrm -f \"$1\"\nexec \"$2\"\n")},
 	}
-	if len(bootstrap.HelperBinary) > 0 {
+	if includeBinaries {
+		files = append(files, struct {
+			name string
+			mode int64
+			data []byte
+		}{name: "ao-worker", mode: 0o700, data: bootstrap.Binary})
+	}
+	if includeBinaries && len(bootstrap.HelperBinary) > 0 {
 		files = append(files, struct {
 			name string
 			mode int64
@@ -677,6 +728,14 @@ func environmentFile(environment map[string]string) string {
 }
 
 func bootstrapCommand(bootstrap sandbox.WorkerBootstrap, encodedLength int) string {
+	return bootstrapCommandForArchive(bootstrap, encodedLength, false)
+}
+
+func bootstrapCommandForArchive(
+	bootstrap sandbox.WorkerBootstrap,
+	encodedLength int,
+	preinstalled bool,
+) string {
 	workerUser := strings.TrimSpace(bootstrap.User)
 	workerDestination := strings.TrimSpace(bootstrap.Destination)
 	layout, _ := sandbox.NewCoderWorkspaceLayout(bootstrap.DurableRoot)
@@ -684,15 +743,34 @@ func bootstrapCommand(bootstrap sandbox.WorkerBootstrap, encodedLength int) stri
 	if bootstrap.RequireDurableIdentity {
 		requireIdentity = "1"
 	}
-	helperInstall := ""
+	binaryPreparation := "sudo -n install -m 0755 \"$stage/ao-worker\" " + shellQuote(workerDestination) + "\n"
 	if len(bootstrap.HelperBinary) > 0 {
-		helperInstall = "sudo -n install -m 0755 \"$stage/ao\" " + shellQuote(bootstrap.HelperDestination) + "\n"
+		binaryPreparation += "sudo -n install -m 0755 \"$stage/ao\" " + shellQuote(bootstrap.HelperDestination) + "\n"
+	}
+	preinstalledCheck := ""
+	if preinstalled {
+		binaryPreparation = ""
+		workerHash := sha256.Sum256(bootstrap.Binary)
+		guards := []string{
+			"[ -x " + shellQuote(workerDestination) + " ]",
+			"[ \"$(sha256sum " + shellQuote(workerDestination) + " | cut -d' ' -f1)\" = " +
+				shellQuote(hex.EncodeToString(workerHash[:])) + " ]",
+		}
+		if len(bootstrap.HelperBinary) > 0 {
+			helperHash := sha256.Sum256(bootstrap.HelperBinary)
+			guards = append(guards,
+				"[ -x "+shellQuote(bootstrap.HelperDestination)+" ]",
+				"[ \"$(sha256sum "+shellQuote(bootstrap.HelperDestination)+" | cut -d' ' -f1)\" = "+
+					shellQuote(hex.EncodeToString(helperHash[:]))+" ]",
+			)
+		}
+		preinstalledCheck = "if ! { " + strings.Join(guards, " && ") + "; }; then echo " + preinstalledMiss + "; exit 0; fi\n"
 	}
 	workerEnvironment := path.Join(layout.WorkerData, "worker.env")
 	workerLauncher := path.Join(layout.WorkerData, "launch.sh")
 	workerLog := path.Join(layout.WorkerData, "worker.log")
 	workerPID := path.Join(layout.WorkerData, "worker.pid")
-	script := "set -eu\n" +
+	script := "set -eu\n" + preinstalledCheck +
 		"stage=$(mktemp -d)\nencoded=\"$stage/payload.b64\"\n" +
 		"trap 'code=$?; stty echo icanon 2>/dev/null || true; echo " + bootstrapFailed + ":$code' EXIT\n" +
 		"target=" + strconv.Itoa(encodedLength) + "\nexpected=0\nreceived=0\n: >\"$encoded\"\nstty -echo icanon 2>/dev/null || true\necho " + bootstrapReady + "\n" +
@@ -720,7 +798,7 @@ func bootstrapCommand(bootstrap sandbox.WorkerBootstrap, encodedLength int) stri
 		"else\n" +
 		"  printf '%s\\n' " + shellQuote(strings.TrimSpace(bootstrap.DurableIdentity)) + " | sudo -n tee \"$identity_file\" >/dev/null\nfi\n" +
 		"sudo -n chown -R " + shellQuote(workerUser+":"+workerUser) + " " + shellQuote(layout.Repository) + " " + shellQuote(path.Dir(layout.WorkerData)) + "\n" +
-		"sudo -n install -m 0755 \"$stage/ao-worker\" " + shellQuote(workerDestination) + "\n" + helperInstall +
+		binaryPreparation +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0600 \"$stage/worker.env\" " + shellQuote(workerEnvironment) + "\n" +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0700 \"$stage/launch.sh\" " + shellQuote(workerLauncher) + "\n" +
 		"sudo -n pkill -u " + shellQuote(workerUser) + " -f " + shellQuote(workerDestination) + " 2>/dev/null || true\n" +
