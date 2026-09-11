@@ -3,6 +3,17 @@ import type { DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-po
 
 const agentSwitchFailureProductionEnabled = false;
 
+const RETRY_BACKOFF_INIT_MS = 2_000;
+const RETRY_BACKOFF_MAX_MS = 60_000;
+const RETRY_BACKOFF_MAX_EXPONENT = 31;
+
+// No jitter, unlike renderer/lib/sse-backoff: one desktop process retries its
+// own loopback daemon, so there are no concurrent callers to desynchronise.
+export function telemetryRetryDelayMs(failures: number): number {
+	const attempt = Number.isFinite(failures) ? Math.min(Math.max(Math.floor(failures), 1), RETRY_BACKOFF_MAX_EXPONENT) : 1;
+	return Math.min(RETRY_BACKOFF_INIT_MS * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS);
+}
+
 export type DesktopTelemetryTransport = {
 	closeAndDrain(): Promise<void>;
 	clearCache(): Promise<void>;
@@ -27,6 +38,8 @@ export class DesktopTelemetryController {
 	private transport: DesktopTelemetryTransport | null = null;
 	private operation: Promise<TelemetryPolicyView>;
 	private pendingDesktopCleanup: (() => Promise<boolean>) | null = null;
+	private retryFailures = 0;
+	private nextRetryAtMs = 0;
 
 	constructor(private readonly options: {
 		authority: Authority;
@@ -34,6 +47,7 @@ export class DesktopTelemetryController {
 		transportFactory: () => Promise<DesktopTelemetryTransport | null>;
 		environmentAllowsEvents: boolean;
 		productionEnabled?: boolean;
+		now?: () => number;
 		broadcast?: (view: TelemetryPolicyView) => void;
 		clearRendererQueues?: () => Promise<void>;
 		visibility?: { setPolicy(enabled: boolean, consentGeneration: string): void; disableAndDrain(): Promise<void>; closeAndDrain(): Promise<void> };
@@ -64,6 +78,7 @@ export class DesktopTelemetryController {
 	setEventsEnabled(enabled: boolean, expectedGeneration: string): Promise<TelemetryPolicyView> {
 		return this.serialize(async () => {
 			if (expectedGeneration !== this.view.consentGeneration) throw new Error("stale telemetry consent generation");
+			this.resetRetryBackoff();
 			return enabled ? this.enable() : this.disable();
 		});
 	}
@@ -73,6 +88,10 @@ export class DesktopTelemetryController {
 			// Without durable replacement retryPendingReplacement always throws, so a
 			// retry is a guaranteed no-op that also relabels the reason (#5196).
 			if (this.view.state === "applied" || !this.options.authority.durabilitySupported) return this.snapshot();
+			// A daemon that is merely unreachable may recover, so this path stays
+			// retryable — but paced, not once a second for the process lifetime.
+			const now = (this.options.now ?? Date.now)();
+			if (now < this.nextRetryAtMs) return this.snapshot();
 			let desktopCleanupFailed = false;
 			let authorityVerified = false;
 			try {
@@ -88,7 +107,10 @@ export class DesktopTelemetryController {
 				this.pendingDesktopCleanup = null;
 				this.view = this.toView(snapshot, "applied", this.baseReason());
 				if (this.captureEnabled(this.view) && !this.transport) this.transport = await this.options.transportFactory();
+				this.resetRetryBackoff();
 			} catch {
+				this.retryFailures += 1;
+				this.nextRetryAtMs = now + telemetryRetryDelayMs(this.retryFailures);
 				this.view = {
 					...this.view,
 					state: authorityVerified ? "cleanup_pending" : "cleanup_failed",
@@ -209,6 +231,11 @@ export class DesktopTelemetryController {
 		if (ack.consentGeneration !== generation) return false;
 		if (!enabled) return !ack.eventsEnabled && ack.gateDrained && ack.purgeConfirmed;
 		return ack.eventsEnabled || !(this.options.productionEnabled ?? agentSwitchFailureProductionEnabled);
+	}
+
+	private resetRetryBackoff(): void {
+		this.retryFailures = 0;
+		this.nextRetryAtMs = 0;
 	}
 
 	private publish(): void {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { telemetryPolicyRetryable, type TelemetryPolicySnapshot } from "../shared/telemetry-policy";
 import { DaemonTelemetryPolicyClient } from "./daemon-telemetry-policy-client";
-import { DesktopTelemetryController } from "./desktop-telemetry-controller";
+import { DesktopTelemetryController, telemetryRetryDelayMs } from "./desktop-telemetry-controller";
 import { nodeTelemetryPolicyFileSystem, TelemetryPolicyAuthority } from "./telemetry-policy-file";
 
 describe("DesktopTelemetryController", () => {
@@ -264,6 +264,82 @@ describe("DesktopTelemetryController", () => {
 		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending", acknowledged: false });
 	});
 
+	it("paces retries against an unreachable daemon instead of once a second", async () => {
+		const authority = new AuthorityFake(true, "generation-on");
+		let clock = 0;
+		const attempts: number[] = [];
+		const daemon = {
+			prepareDisable: vi.fn(),
+			applyPolicy: vi.fn().mockImplementation(async () => { attempts.push(clock); throw new Error("connect ECONNREFUSED 127.0.0.1"); }),
+		};
+		const controller = new DesktopTelemetryController({
+			authority, daemon,
+			transportFactory: async () => null,
+			environmentAllowsEvents: true, productionEnabled: false,
+			now: () => clock,
+		});
+
+		await controller.initialize();
+		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending" });
+		expect(telemetryPolicyRetryable(controller.snapshot())).toBe(true);
+		attempts.length = 0;
+
+		// An hour of the 1s tick main.ts drives this with.
+		for (clock = 1_000; clock <= 3_600_000; clock += 1_000) await controller.retryPendingCleanup();
+
+		expect(attempts.slice(0, 6)).toEqual([1_000, 3_000, 7_000, 15_000, 31_000, 63_000]);
+		expect(attempts.length).toBeLessThan(70);
+		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending" });
+	});
+
+	it("settles as soon as a transiently unreachable daemon answers again", async () => {
+		const authority = new AuthorityFake(true, "generation-on");
+		let clock = 0;
+		let reachable = false;
+		const daemon = {
+			prepareDisable: vi.fn(),
+			applyPolicy: vi.fn().mockImplementation(async (generation: string) => {
+				if (!reachable) throw new Error("connect ECONNREFUSED 127.0.0.1");
+				return { status: "applied", consentGeneration: generation, eventsEnabled: false, gateDrained: true, purgeConfirmed: true };
+			}),
+		};
+		const controller = new DesktopTelemetryController({
+			authority, daemon,
+			transportFactory: async () => null,
+			environmentAllowsEvents: true, productionEnabled: false,
+			now: () => clock,
+		});
+
+		await controller.initialize();
+		for (clock = 1_000; clock <= 20_000; clock += 1_000) await controller.retryPendingCleanup();
+		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending" });
+
+		reachable = true;
+		for (clock = 21_000; clock <= 90_000; clock += 1_000) await controller.retryPendingCleanup();
+		expect(controller.snapshot()).toMatchObject({ state: "applied", reason: "release_blocked" });
+
+		const settled = daemon.applyPolicy.mock.calls.length;
+		for (clock = 91_000; clock <= 150_000; clock += 1_000) await controller.retryPendingCleanup();
+		expect(daemon.applyPolicy).toHaveBeenCalledTimes(settled);
+	});
+
+});
+
+describe("telemetryRetryDelayMs", () => {
+	it("doubles from 2s to a 60s ceiling", () => {
+		expect([1, 2, 3, 4, 5, 6, 7].map(telemetryRetryDelayMs)).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
+	});
+
+	it("treats a non-positive or non-finite failure count as the first failure", () => {
+		expect(telemetryRetryDelayMs(0)).toBe(2_000);
+		expect(telemetryRetryDelayMs(-5)).toBe(2_000);
+		expect(telemetryRetryDelayMs(Number.NaN)).toBe(2_000);
+		expect(telemetryRetryDelayMs(Number.POSITIVE_INFINITY)).toBe(2_000);
+	});
+
+	it("stays at the ceiling for a failure count that would overflow the exponent", () => {
+		expect(telemetryRetryDelayMs(1_000)).toBe(60_000);
+	});
 });
 
 class AuthorityFake {
