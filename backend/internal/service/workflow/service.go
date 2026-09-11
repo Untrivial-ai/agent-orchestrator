@@ -12,11 +12,11 @@ import (
 
 // Sentinel errors for workflow service operations.
 var (
-	ErrNotFound           = errors.New("resource not found")
-	ErrInvalidTransition  = errors.New("invalid status transition")
+	ErrNotFound           = domain.ErrNotFound
+	ErrInvalidTransition  = domain.ErrInvalidTransition
 	ErrInvalidInput       = errors.New("invalid input")
 	ErrChildrenIncomplete = errors.New("children entities incomplete")
-	ErrConflict           = errors.New("state conflict")
+	ErrConflict           = domain.ErrConflict
 )
 
 // SessionRuntime abstracts session spawn/kill for the workflow service.
@@ -24,6 +24,10 @@ var (
 type SessionRuntime interface {
 	SpawnSession(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error)
 	KillSession(ctx context.Context, id domain.SessionID) (bool, error)
+	// Phase 2.5: retry runtime support
+	RestoreSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
+	ResumeAgentSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
+	SendSession(ctx context.Context, id domain.SessionID, message string) error
 }
 
 // Store defines the persistence surface needed by the workflow service.
@@ -57,9 +61,12 @@ type Store interface {
 	UpdateTaskRunStatus(ctx context.Context, id domain.TaskRunID, status domain.TaskRunStatus, resultSummary, errorMessage string, startedAt, finishedAt *time.Time) error
 	UpdateTaskRunSnapshot(ctx context.Context, id domain.TaskRunID, sessionID domain.SessionID, providerID domain.ProviderID, providerModelID domain.ProviderModelID, providerDisplayName, providerModelName, executorType string) error
 	BindTaskRunSession(ctx context.Context, id domain.TaskRunID, sessionID domain.SessionID) error
+	// GetLatestTaskRunByTask returns the run with the highest attempt for a task. Phase 2.5.
+	GetLatestTaskRunByTask(ctx context.Context, taskID domain.DevelopmentTaskID) (domain.TaskRun, bool, error)
 
 	// Session (read-only, used by Reconcile)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
+	RecordSessionLatestUserPrompt(ctx context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error)
 
 	// Project validation (read-only)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
@@ -70,6 +77,17 @@ type Store interface {
 	ListAgentRoles(ctx context.Context) ([]domain.AgentRole, error)
 	UpdateAgentRole(ctx context.Context, r domain.AgentRole) error
 	SetAgentRoleEnabled(ctx context.Context, id domain.AgentRoleID, enabled bool, updatedAt time.Time) error
+
+	// RunReview (Phase 2.5)
+	CreateRunReview(ctx context.Context, r domain.RunReview) error
+	GetRunReview(ctx context.Context, id domain.RunReviewID) (domain.RunReview, bool, error)
+	GetRunReviewByRunID(ctx context.Context, runID domain.TaskRunID) (domain.RunReview, bool, error)
+	ListRunReviewsByRun(ctx context.Context, runID domain.TaskRunID) ([]domain.RunReview, error)
+	UpdateRunReviewStatus(ctx context.Context, id domain.RunReviewID, status domain.RunReviewStatus, completedAt *time.Time) error
+
+	// RunReview transactions (Phase 2.5)
+	PassRunReviewTx(ctx context.Context, reviewID domain.RunReviewID, completedAt time.Time) error
+	RejectRunReviewTx(ctx context.Context, reviewID domain.RunReviewID, completedAt time.Time, issues string) error
 
 	// Provider metadata (read-only, for validation — no secret access)
 	GetProvider(ctx context.Context, id domain.ProviderID) (domain.Provider, bool, error)

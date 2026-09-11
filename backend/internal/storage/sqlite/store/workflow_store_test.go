@@ -2,10 +2,12 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 func TestWorkflowPlanCRUD(t *testing.T) {
@@ -500,7 +502,7 @@ func TestRunReviewStatusUpdate(t *testing.T) {
 	}
 }
 
-func TestRunReviewMultiplePerRun(t *testing.T) {
+func TestRunReviewOnePerRun(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	seedProject(t, s, "wf")
@@ -511,11 +513,17 @@ func TestRunReviewMultiplePerRun(t *testing.T) {
 	s.CreateDevelopmentTask(ctx, domain.DevelopmentTask{ID: "t1", StageID: "s1", Sequence: 1, Title: "T", Status: domain.TaskStatusPending, CreatedAt: now})
 	s.CreateTaskRun(ctx, domain.TaskRun{ID: "r1", TaskID: "t1", Attempt: 1, Status: domain.RunStatusPending, CreatedAt: now})
 
-	s.CreateRunReview(ctx, domain.RunReview{ID: "rev-ai", RunID: "r1", Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPending, CreatedAt: now})
-	s.CreateRunReview(ctx, domain.RunReview{ID: "rev-human", RunID: "r1", Source: domain.RunReviewSourceHuman, Status: domain.RunReviewStatusPending, CreatedAt: now})
+	if err := s.CreateRunReview(ctx, domain.RunReview{ID: "rev-ai", RunID: "r1", Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPending, CreatedAt: now}); err != nil {
+		t.Fatalf("first review: %v", err)
+	}
+
+	// Second review for the same run must fail with ErrConflict.
+	if err := s.CreateRunReview(ctx, domain.RunReview{ID: "rev-human", RunID: "r1", Source: domain.RunReviewSourceHuman, Status: domain.RunReviewStatusPending, CreatedAt: now}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict for duplicate run_id, got %v", err)
+	}
 
 	list, err := s.ListRunReviewsByRun(ctx, "r1")
-	if err != nil || len(list) != 2 {
+	if err != nil || len(list) != 1 {
 		t.Fatalf("list reviews: len=%d err=%v", len(list), err)
 	}
 }
@@ -571,5 +579,278 @@ func TestExistingReviewTableUntouched(t *testing.T) {
 	run := domain.ReviewRun{ID: "old-run", ReviewID: "old-rev", SessionID: rec.ID, Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunRunning, CreatedAt: now}
 	if err := s.InsertReviewRun(ctx, run); err != nil {
 		t.Fatalf("insert old review run: %v", err)
+	}
+}
+
+// ---- Phase 2.5: RunReview + Retry field tests ----
+
+// seedReviewReadyChain creates a plan→stage→task→run→review chain where the
+// task is in "review" status and the review is "pending". Returns (taskID, runID, reviewID).
+func seedReviewReadyChain(t *testing.T, s *sqlite.Store, prefix string) (domain.DevelopmentTaskID, domain.TaskRunID, domain.RunReviewID) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	plan := domain.DevelopmentPlan{ID: domain.DevelopmentPlanID(prefix + "-plan"), ProjectID: "wf", Title: "P", Status: domain.PlanStatusDraft, CreatedAt: now}
+	if err := s.CreateDevelopmentPlan(ctx, plan); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	stage := domain.DevelopmentStage{ID: domain.DevelopmentStageID(prefix + "-stage"), PlanID: plan.ID, Sequence: 1, Title: "S", Status: domain.StageStatusPending, CreatedAt: now}
+	if err := s.CreateDevelopmentStage(ctx, stage); err != nil {
+		t.Fatalf("seed stage: %v", err)
+	}
+	task := domain.DevelopmentTask{ID: domain.DevelopmentTaskID(prefix + "-task"), StageID: stage.ID, Sequence: 1, Title: "T", Status: domain.TaskStatusReview, CreatedAt: now}
+	if err := s.CreateDevelopmentTask(ctx, task); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	run := domain.TaskRun{ID: domain.TaskRunID(prefix + "-run"), TaskID: task.ID, Attempt: 1, Status: domain.RunStatusSucceeded, CreatedAt: now}
+	if err := s.CreateTaskRun(ctx, run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	review := domain.RunReview{ID: domain.RunReviewID(prefix + "-review"), RunID: run.ID, Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPending, CreatedAt: now}
+	if err := s.CreateRunReview(ctx, review); err != nil {
+		t.Fatalf("seed review: %v", err)
+	}
+	return task.ID, run.ID, review.ID
+}
+
+func TestPassRunReviewTx_HappyPath(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	_, _, reviewID := seedReviewReadyChain(t, s, "pass")
+	completedAt := time.Now().UTC().Truncate(time.Second)
+
+	if err := s.PassRunReviewTx(context.Background(), reviewID, completedAt); err != nil {
+		t.Fatalf("PassRunReviewTx: %v", err)
+	}
+
+	review, ok, err := s.GetRunReview(context.Background(), reviewID)
+	if err != nil || !ok {
+		t.Fatalf("get review: ok=%v err=%v", ok, err)
+	}
+	if review.Status != domain.RunReviewStatusPassed {
+		t.Fatalf("review status = %s, want passed", review.Status)
+	}
+	if review.CompletedAt == nil || !review.CompletedAt.Equal(completedAt) {
+		t.Fatalf("review completedAt = %v, want %v", review.CompletedAt, completedAt)
+	}
+
+	task, ok, err := s.GetDevelopmentTask(context.Background(), domain.DevelopmentTaskID("pass-task"))
+	if err != nil || !ok {
+		t.Fatalf("get task: ok=%v err=%v", ok, err)
+	}
+	if task.Status != domain.TaskStatusPassed {
+		t.Fatalf("task status = %s, want passed", task.Status)
+	}
+}
+
+func TestRejectRunReviewTx_HappyPath(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	_, _, reviewID := seedReviewReadyChain(t, s, "reject")
+	completedAt := time.Now().UTC().Truncate(time.Second)
+
+	if err := s.RejectRunReviewTx(context.Background(), reviewID, completedAt, "needs rework"); err != nil {
+		t.Fatalf("RejectRunReviewTx: %v", err)
+	}
+
+	review, ok, err := s.GetRunReview(context.Background(), reviewID)
+	if err != nil || !ok {
+		t.Fatalf("get review: ok=%v err=%v", ok, err)
+	}
+	if review.Status != domain.RunReviewStatusRejected {
+		t.Fatalf("review status = %s, want rejected", review.Status)
+	}
+	if review.Issues != "needs rework" {
+		t.Fatalf("review issues = %q, want %q", review.Issues, "needs rework")
+	}
+
+	task, ok, err := s.GetDevelopmentTask(context.Background(), domain.DevelopmentTaskID("reject-task"))
+	if err != nil || !ok {
+		t.Fatalf("get task: ok=%v err=%v", ok, err)
+	}
+	if task.Status != domain.TaskStatusReady {
+		t.Fatalf("task status = %s, want ready", task.Status)
+	}
+}
+
+func TestPassRunReviewTx_ReviewNotPending(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	_, _, reviewID := seedReviewReadyChain(t, s, "np")
+	completedAt := time.Now().UTC().Truncate(time.Second)
+
+	// Pass once.
+	if err := s.PassRunReviewTx(context.Background(), reviewID, completedAt); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	// Pass again → should fail.
+	if err := s.PassRunReviewTx(context.Background(), reviewID, completedAt); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+func TestPassRunReviewTx_TaskNotInReview(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Create a chain where the task is NOT in review status (it's "running").
+	if err := s.CreateDevelopmentPlan(ctx, domain.DevelopmentPlan{ID: "nr-plan", ProjectID: "wf", Title: "P", Status: domain.PlanStatusDraft, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDevelopmentStage(ctx, domain.DevelopmentStage{ID: "nr-stage", PlanID: "nr-plan", Sequence: 1, Title: "S", Status: domain.StageStatusPending, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDevelopmentTask(ctx, domain.DevelopmentTask{ID: "nr-task", StageID: "nr-stage", Sequence: 1, Title: "T", Status: domain.TaskStatusRunning, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	run := domain.TaskRun{ID: "nr-run", TaskID: "nr-task", Attempt: 1, Status: domain.RunStatusSucceeded, CreatedAt: now}
+	if err := s.CreateTaskRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	review := domain.RunReview{ID: "nr-review", RunID: run.ID, Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPending, CreatedAt: now}
+	if err := s.CreateRunReview(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	completedAt := now.Add(time.Minute)
+	if err := s.PassRunReviewTx(ctx, review.ID, completedAt); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+func TestRejectRunReviewTx_ReviewNotPending(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	_, _, reviewID := seedReviewReadyChain(t, s, "rnp")
+	completedAt := time.Now().UTC().Truncate(time.Second)
+
+	// Reject once.
+	if err := s.RejectRunReviewTx(context.Background(), reviewID, completedAt, "issue"); err != nil {
+		t.Fatalf("first reject: %v", err)
+	}
+
+	// Reject again → should fail.
+	if err := s.RejectRunReviewTx(context.Background(), reviewID, completedAt, "issue2"); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+func TestCreateRunReview_Uniqueness(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := s.CreateDevelopmentPlan(ctx, domain.DevelopmentPlan{ID: "u-plan", ProjectID: "wf", Title: "P", Status: domain.PlanStatusDraft, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDevelopmentStage(ctx, domain.DevelopmentStage{ID: "u-stage", PlanID: "u-plan", Sequence: 1, Title: "S", Status: domain.StageStatusPending, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDevelopmentTask(ctx, domain.DevelopmentTask{ID: "u-task", StageID: "u-stage", Sequence: 1, Title: "T", Status: domain.TaskStatusReview, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	run := domain.TaskRun{ID: "u-run", TaskID: "u-task", Attempt: 1, Status: domain.RunStatusSucceeded, CreatedAt: now}
+	if err := s.CreateTaskRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	rev1 := domain.RunReview{ID: "u-rev-1", RunID: run.ID, Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPending, CreatedAt: now}
+	if err := s.CreateRunReview(ctx, rev1); err != nil {
+		t.Fatalf("first review: %v", err)
+	}
+
+	rev2 := domain.RunReview{ID: "u-rev-2", RunID: run.ID, Source: domain.RunReviewSourceAI, Status: domain.RunReviewStatusPending, CreatedAt: now}
+	if err := s.CreateRunReview(ctx, rev2); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func TestGetRunReviewByRunID(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	_, runID, _ := seedReviewReadyChain(t, s, "byrun")
+
+	got, ok, err := s.GetRunReviewByRunID(context.Background(), runID)
+	if err != nil || !ok {
+		t.Fatalf("GetRunReviewByRunID: ok=%v err=%v", ok, err)
+	}
+	if got.RunID != runID {
+		t.Fatalf("got run_id=%s, want %s", got.RunID, runID)
+	}
+	if got.Status != domain.RunReviewStatusPending {
+		t.Fatalf("got status=%s, want pending", got.Status)
+	}
+}
+
+func TestGetRunReviewByRunID_NotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	_, ok, err := s.GetRunReviewByRunID(context.Background(), domain.TaskRunID("nonexistent"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected ok=false")
+	}
+}
+
+func TestTaskRun_RetryFields(t *testing.T) {
+	s := newTestStore(t)
+	seedProject(t, s, "wf")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := s.CreateDevelopmentPlan(ctx, domain.DevelopmentPlan{ID: "rf-plan", ProjectID: "wf", Title: "P", Status: domain.PlanStatusDraft, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDevelopmentStage(ctx, domain.DevelopmentStage{ID: "rf-stage", PlanID: "rf-plan", Sequence: 1, Title: "S", Status: domain.StageStatusPending, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDevelopmentTask(ctx, domain.DevelopmentTask{ID: "rf-task", StageID: "rf-stage", Sequence: 1, Title: "T", Status: domain.TaskStatusReady, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create first run (no previous).
+	run1 := domain.TaskRun{ID: "rf-run-1", TaskID: "rf-task", Attempt: 1, Status: domain.RunStatusSucceeded, CreatedAt: now}
+	if err := s.CreateTaskRun(ctx, run1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create second run (references first, FRESH mode).
+	run2 := domain.TaskRun{ID: "rf-run-2", TaskID: "rf-task", Attempt: 2, Status: domain.RunStatusPending, PreviousRunID: "rf-run-1", RetryMode: "fresh", CreatedAt: now}
+	if err := s.CreateTaskRun(ctx, run2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back and verify.
+	got, ok, err := s.GetTaskRun(ctx, "rf-run-2")
+	if err != nil || !ok {
+		t.Fatalf("GetTaskRun: ok=%v err=%v", ok, err)
+	}
+	if got.PreviousRunID != "rf-run-1" {
+		t.Fatalf("PreviousRunID = %s, want rf-run-1", got.PreviousRunID)
+	}
+	if got.RetryMode != "fresh" {
+		t.Fatalf("RetryMode = %s, want fresh", got.RetryMode)
+	}
+
+	// Verify first run has empty retry fields.
+	got1, _, _ := s.GetTaskRun(ctx, "rf-run-1")
+	if got1.PreviousRunID != "" || got1.RetryMode != "" {
+		t.Fatalf("run1 retry fields should be empty: previousRunId=%q retryMode=%q", got1.PreviousRunID, got1.RetryMode)
+	}
+
+	// Verify ListTaskRunsByTask returns both with correct fields.
+	list, err := s.ListTaskRunsByTask(ctx, "rf-task")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListTaskRunsByTask: len=%d err=%v", len(list), err)
+	}
+	if list[1].PreviousRunID != "rf-run-1" || list[1].RetryMode != "fresh" {
+		t.Fatalf("list[1] retry fields: previousRunId=%q retryMode=%q", list[1].PreviousRunID, list[1].RetryMode)
 	}
 }
