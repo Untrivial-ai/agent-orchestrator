@@ -290,17 +290,52 @@ describe("DesktopTelemetryController", () => {
 
 			const first = boot();
 			await first.controller.initialize();
-			expect(first.controller.snapshot()).toMatchObject({ eventsEnabled: false, state: "applied", acknowledged: true, consentGeneration: gatedGeneration });
+			expect(first.controller.snapshot()).toMatchObject({ eventsEnabled: false, consentRenewalRequired: true, state: "applied", acknowledged: true, consentGeneration: gatedGeneration });
 			expect(first.daemon.applyPolicy).toHaveBeenCalledWith(gatedGeneration, false);
 			expect(first.controller.capture({ consentGeneration: gatedGeneration, kind: "message", message: "not sent" })).toBe(false);
 
 			const optedIn = await first.controller.setEventsEnabled(true, gatedGeneration);
-			expect(optedIn).toMatchObject({ eventsEnabled: true, state: "applied" });
+			expect(optedIn).toMatchObject({ eventsEnabled: true, consentRenewalRequired: false, state: "applied" });
 
 			const second = boot();
 			await second.controller.initialize();
 			expect(second.controller.snapshot()).toMatchObject({ eventsEnabled: true, state: "applied", consentGeneration: optedIn.consentGeneration });
 			expect(second.daemon.applyPolicy).toHaveBeenCalledWith(optedIn.consentGeneration, true);
+		} finally {
+			await rm(dataDir, { recursive: true, force: true });
+		}
+	});
+
+	it("stops asking once the user declines the renewed opt-in, and keeps it off", async () => {
+		const dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-controller-renewal-declined-"));
+		try {
+			const gatedGeneration = "7f80c8a9-ec67-4a16-a067-a444ffcc5cca";
+			await writeFile(path.join(dataDir, "telemetry_policy.json"), `${JSON.stringify({
+				schema_version: 1,
+				events_enabled: true,
+				consent_generation: gatedGeneration,
+				updated_at: "2026-08-28T10:15:30.000Z",
+			})}\n`, { mode: 0o600 });
+			const boot = () => new DesktopTelemetryController({
+				authority: new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: true }),
+				daemon: {
+					prepareDisable: vi.fn().mockImplementation(async () => ({ status: "applied", consentGeneration: gatedGeneration, eventsEnabled: false, gateDrained: true, purgeConfirmed: false })),
+					applyPolicy: vi.fn().mockImplementation(async (generation: string, enabled: boolean) => ({ status: "applied", consentGeneration: generation, eventsEnabled: enabled, gateDrained: !enabled, purgeConfirmed: !enabled })),
+				},
+				transportFactory: async () => ({ closeAndDrain: async () => {}, capture: () => {}, clearCache: async () => {} }),
+				environmentAllowsEvents: true, productionEnabled: true,
+			});
+
+			const first = boot();
+			await first.initialize();
+			expect(first.snapshot()).toMatchObject({ eventsEnabled: false, consentRenewalRequired: true });
+
+			const declined = await first.setEventsEnabled(false, gatedGeneration);
+			expect(declined).toMatchObject({ eventsEnabled: false, consentRenewalRequired: false, state: "applied" });
+
+			const second = boot();
+			await second.initialize();
+			expect(second.snapshot()).toMatchObject({ eventsEnabled: false, consentRenewalRequired: false, consentGeneration: declined.consentGeneration });
 		} finally {
 			await rm(dataDir, { recursive: true, force: true });
 		}
@@ -423,10 +458,10 @@ class AuthorityFake {
 	failWrites = false;
 	writeSpy = vi.fn();
 	private current: TelemetryPolicySnapshot;
-	constructor(enabled: boolean, generation: string) { this.current = { eventsEnabled: enabled, consentGeneration: generation, updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true }; }
+	constructor(enabled: boolean, generation: string) { this.current = { eventsEnabled: enabled, consentGeneration: generation, updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false }; }
 	snapshot() { return { ...this.current }; }
 	async load() { return this.snapshot(); }
-	async setEventsEnabled(enabled: boolean) { this.writes.push(enabled); this.writeSpy(); if (this.failWrites) throw new Error("write failed"); this.current = { eventsEnabled: enabled, consentGeneration: `generation-${this.writes.length}`, updatedAt: "2026-08-28T10:15:31.000Z", acknowledged: true }; return this.snapshot(); }
+	async setEventsEnabled(enabled: boolean) { this.writes.push(enabled); this.writeSpy(); if (this.failWrites) throw new Error("write failed"); this.current = { eventsEnabled: enabled, consentGeneration: `generation-${this.writes.length}`, updatedAt: "2026-08-28T10:15:31.000Z", acknowledged: true, consentRenewalRequired: false }; return this.snapshot(); }
 	async retryPendingReplacement() { if (this.failWrites) throw new Error("write failed"); this.current = { ...this.current, acknowledged: true }; return this.snapshot(); }
 	readonly durabilitySupported = true;
 }

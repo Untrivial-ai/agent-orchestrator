@@ -70,6 +70,13 @@ describe("telemetryPolicySnapshot", () => {
 		expect(telemetryPolicySnapshot(record(true, true), true, true).eventsEnabled).toBe(true);
 	});
 
+	it("flags an opt-in that has to be asked for again only once the gate opens", () => {
+		expect(telemetryPolicySnapshot(record(true, false), true, true).consentRenewalRequired).toBe(true);
+		expect(telemetryPolicySnapshot(record(true, false), true, false).consentRenewalRequired).toBe(false);
+		expect(telemetryPolicySnapshot(record(true, true), true, true).consentRenewalRequired).toBe(false);
+		expect(telemetryPolicySnapshot(record(false, false), true, true).consentRenewalRequired).toBe(false);
+	});
+
 	it("never turns an opt-out on", () => {
 		expect(telemetryPolicySnapshot(record(false, true), true, true).eventsEnabled).toBe(false);
 		expect(telemetryPolicySnapshot(record(false, false), true, false).eventsEnabled).toBe(false);
@@ -82,6 +89,7 @@ describe("telemetryPolicyRetryable", () => {
 		consentGeneration: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
 		updatedAt: "2026-08-28T10:15:30.000Z",
 		acknowledged: false,
+		consentRenewalRequired: false,
 		state: "cleanup_pending",
 		environmentVeto: false,
 		durabilitySupported: true,

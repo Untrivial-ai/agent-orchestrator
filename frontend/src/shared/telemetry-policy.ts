@@ -13,6 +13,8 @@ export type TelemetryPolicySnapshot = {
 	consentGeneration: string;
 	updatedAt: string;
 	acknowledged: boolean;
+	/** The stored opt-in was given while the release gate was closed and the gate is now open. */
+	consentRenewalRequired: boolean;
 };
 
 export type TelemetryPolicyApplyState = "applied" | "cleanup_pending" | "cleanup_failed";
@@ -99,6 +101,7 @@ function isCanonicalTimestamp(value: string): boolean {
 export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, acknowledged: boolean, productionEnabled: boolean): TelemetryPolicySnapshot {
 	return {
 		eventsEnabled: record.events_enabled && (!productionEnabled || record.consent_production_enabled),
+		consentRenewalRequired: record.events_enabled && productionEnabled && !record.consent_production_enabled,
 		consentGeneration: record.consent_generation,
 		updatedAt: record.updated_at,
 		acknowledged,
