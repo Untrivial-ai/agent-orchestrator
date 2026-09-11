@@ -92,6 +92,13 @@ func TestBuildSystemPrompt_OrchestratorRequiresConfirmationAndAOOnlyDelegation(t
 		"Add `--model <id>` when the human or task explicitly requests a specific model",
 		"Never drop an explicitly requested `--model` or substitute another model automatically",
 		"ask the human to choose an alternative",
+		"ao review request <worker-session-id> [--reviewer <harness>] [--model <id>]",
+		"AO uses the project's configured reviewer and model",
+		"ao review status <worker-session-id> [--json]",
+		"ao review cancel <worker-session-id>",
+		"When a worker reports its PR ready for AO review",
+		"route any AO findings back to the originating worker",
+		"provider PR checks and reviews remain authoritative for merge readiness",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("orchestrator prompt missing %q:\n%s", want, got)
