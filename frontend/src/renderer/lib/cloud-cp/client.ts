@@ -11,6 +11,7 @@ import { CloudCpAuthError, CloudCpError } from "./errors";
 import { createSseFrameParser } from "./sse";
 import type {
 	CloudCpAgentProvider,
+	CloudCpAvailableAgentsResponse,
 	CloudCpCancelTurnResponse,
 	CloudCpChatEventsQuery,
 	CloudCpChatEventsResponse,
@@ -160,6 +161,10 @@ export interface CloudCpClient {
 		orgId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpProviderConnectionsResponse>;
+	getAvailableAgents(
+		orgId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpAvailableAgentsResponse>;
 	putAgentConnection(
 		orgId: string,
 		agent: CloudCpAgentProvider,
@@ -391,6 +396,8 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 
 		listProviderConnections: (orgId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/provider-connections`, { signal: o?.signal }),
+		getAvailableAgents: (orgId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/agents/available`, { signal: o?.signal }),
 		putAgentConnection: (orgId, agent, body, o) =>
 			requestJson("PUT", `/orgs/${seg(orgId)}/provider-connections/agents/${seg(agent)}`, {
 				body,
