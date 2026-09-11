@@ -408,6 +408,8 @@ it("uses safe fallback headings and preserves stale values without exposing raw 
 		capacity: {
 			...capacity,
 			freshness: "stale",
+			reasonCode: "capacity_provider_rejected",
+			reason: "raw provider text must not be rendered",
 			checkedAt: "2026-08-31T10:00:00Z",
 			overall: null,
 			additionalBuckets: [{
@@ -426,8 +428,35 @@ it("uses safe fallback headings and preserves stale values without exposing raw 
 
 	expect(await screen.findByText("Additional usage limits")).toBeInTheDocument();
 	expect(screen.queryByText("provider-secret-bucket-id")).not.toBeInTheDocument();
-	expect(screen.getByRole("status")).toHaveTextContent(/Usage information may be out of date/);
+	expect(screen.getByRole("status")).toHaveTextContent("Codex could not provide usage limits for this account.");
+	expect(screen.getByRole("status")).toHaveTextContent(/Showing information last checked/);
+	expect(screen.getByRole("status")).not.toHaveTextContent("raw provider text");
 	expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
+});
+
+it("shows a safe provider-unavailable reason when no previous usage limits exist", async () => {
+	const unavailableAccount = {
+		...activeAccount,
+		capacity: {
+			...capacity,
+			state: "unknown",
+			freshness: "stale",
+			reasonCode: "capacity_provider_unavailable",
+			reason: "raw transport error must not be rendered",
+			checkedAt: null,
+			overall: null,
+			additionalBuckets: [],
+		},
+	};
+	const unavailableResponse = { ...accountResponse, accounts: [unavailableAccount] };
+	getMock.mockResolvedValue({ data: unavailableResponse });
+	postMock.mockResolvedValue({ data: unavailableResponse });
+	const { container } = renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(container.querySelector(`[data-account-id="${activeAccount.id}"] button`) as HTMLButtonElement);
+
+	expect(await screen.findByRole("status")).toHaveTextContent("Codex usage limits are temporarily unavailable.");
+	expect(screen.getByRole("status")).not.toHaveTextContent("raw transport error");
 });
 
 it("collapses the provider while rotating only its chevron", async () => {

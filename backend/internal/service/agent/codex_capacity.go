@@ -197,14 +197,14 @@ func staticCodexCapacity(state domain.CodexCapacityState, code, reason string) d
 
 func (c *codexCapacityCoordinator) runRead(record codexAccountRecord, call *capacityReadCall, attemptedAt time.Time) {
 	if c.manager.factory == nil {
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check failed.", call)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonClientStartFailed, "Codex could not be started to check usage limits.", call)
 		return
 	}
 	select {
 	case c.manager.processes <- struct{}{}:
 		defer func() { <-c.manager.processes }()
 	case <-c.ctx.Done():
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check stopped.", call)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckStopped, "The usage-limit check was interrupted.", call)
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, codexCapacityReadTimeout)
@@ -212,27 +212,40 @@ func (c *codexCapacityCoordinator) runRead(record codexAccountRecord, call *capa
 	account := c.manager.accountContext(record)
 	releaseGlobal, err := c.manager.acquireGlobalRead(ctx, account)
 	if err != nil {
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check stopped.", call)
+		code, reason := classifyCodexCapacityReadFailure(err)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, code, reason, call)
 		return
 	}
 	defer releaseGlobal()
 	client, err := c.manager.factory.Open(ctx, account)
 	if err != nil {
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check failed.", call)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonClientStartFailed, "Codex could not be started to check usage limits.", call)
 		return
 	}
 	defer func() { _ = client.Close() }()
 	observation, err := client.ReadCapacity(ctx)
 	if err != nil {
-		code, reason := domain.CodexCapacityReasonCheckFailed, "Codex capacity check failed."
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			code, reason = domain.CodexCapacityReasonCheckTimeout, "Codex capacity check timed out."
-		}
+		code, reason := classifyCodexCapacityReadFailure(err)
 		c.finishFailure(record.Snapshot.ID, attemptedAt, code, reason, call)
 		return
 	}
 	observation.Partial = false
 	c.finishSuccess(record.Snapshot.ID, observation, attemptedAt, call, "direct")
+}
+
+func classifyCodexCapacityReadFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return domain.CodexCapacityReasonCheckTimeout, "The usage-limit check timed out."
+	case errors.Is(err, context.Canceled):
+		return domain.CodexCapacityReasonCheckStopped, "The usage-limit check was interrupted."
+	case errors.Is(err, ports.ErrCodexCapacityRequestRejected):
+		return domain.CodexCapacityReasonProviderRejected, "Codex could not provide usage limits for this account."
+	case errors.Is(err, ports.ErrCodexCapacityProviderUnavailable):
+		return domain.CodexCapacityReasonProviderUnavailable, "Codex usage limits are temporarily unavailable."
+	default:
+		return domain.CodexCapacityReasonCheckFailed, "Usage limits could not be checked."
+	}
 }
 
 func (c *codexCapacityCoordinator) finishSuccess(accountID string, observation ports.CodexCapacityObservation, attemptedAt time.Time, call *capacityReadCall, source string) {

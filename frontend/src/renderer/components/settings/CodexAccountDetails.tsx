@@ -82,7 +82,8 @@ function capacityNoticeFor(account: CodexAccount, t: TFunction, locale: string):
 	if (account.capacity.freshness === "checking") return { reason: t(codexAccountReasonKey(account.capacity.reasonCode)), tone: "muted", checking: true };
 	if (account.capacity.freshness === "stale") {
 		const checked = account.capacity.checkedAt ? formatObservedTime(account.capacity.checkedAt, locale) : null;
-		return { reason: checked ? t("settings.codexAccounts.capacityStaleChecked", { value: checked }) : t("settings.codexAccounts.capacityStale"), tone: "warning" };
+		const reason = t(codexAccountReasonKey(account.capacity.reasonCode));
+		return { reason: checked ? t("settings.codexAccounts.capacityStaleReasonChecked", { reason, value: checked }) : reason, tone: "warning" };
 	}
 	if (account.capacity.state === "unknown" || account.capacity.state === "unsupported") return { reason: t(codexAccountReasonKey(account.capacity.reasonCode)), tone: "muted" };
 	return null;

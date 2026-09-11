@@ -1,13 +1,18 @@
 package codexappserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestCapacityNormalizationIncludesBucketsAndRejectsMalformedWindows(t *testing.T) {
@@ -54,6 +59,34 @@ func TestSparseCapacityNormalizationKeepsUnknownReachedState(t *testing.T) {
 	observed := capacityObservationFromEnvelope(envelope, time.Now(), true)
 	if observed.Overall == nil || observed.Overall.Reached != domain.CodexCapacityReachUnknown {
 		t.Fatalf("reached = %#v", observed.Overall)
+	}
+}
+
+func TestSafeCapacityReadErrorRedactsProviderMessage(t *testing.T) {
+	raw := fmt.Errorf("rate limit read failed: %w", &rpcError{
+		Code:    -32000,
+		Message: "request rejected for secret-account@example.com with token secret-token",
+	})
+
+	got := safeCapacityReadError(raw)
+
+	if !errors.Is(got, ports.ErrCodexCapacityRequestRejected) {
+		t.Fatalf("error = %v, want safe provider rejection", got)
+	}
+	if strings.Contains(got.Error(), "secret-account") || strings.Contains(got.Error(), "secret-token") {
+		t.Fatalf("safe error leaked provider details: %v", got)
+	}
+}
+
+func TestSafeCapacityReadErrorClassifiesTransportAndContextFailures(t *testing.T) {
+	if got := safeCapacityReadError(errors.New("connection failed with private details")); !errors.Is(got, ports.ErrCodexCapacityProviderUnavailable) {
+		t.Fatalf("transport error = %v, want provider unavailable", got)
+	}
+	if got := safeCapacityReadError(context.DeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("deadline error = %v, want deadline exceeded", got)
+	}
+	if got := safeCapacityReadError(context.Canceled); !errors.Is(got, context.Canceled) {
+		t.Fatalf("cancelled error = %v, want context cancelled", got)
 	}
 }
 

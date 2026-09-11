@@ -168,9 +168,20 @@ func resetsAtIn(resetsAt *time.Time, now time.Time) int64 {
 func (c *accountClient) ReadCapacity(ctx context.Context) (ports.CodexCapacityObservation, error) {
 	var response capacityReadEnvelope
 	if err := c.conn.request(ctx, codexproto.MethodAccountRateLimitsRead, map[string]any{}, &response); err != nil {
-		return ports.CodexCapacityObservation{}, err
+		return ports.CodexCapacityObservation{}, safeCapacityReadError(err)
 	}
 	return capacityObservationFromEnvelope(response, time.Now().UTC(), false), nil
+}
+
+func safeCapacityReadError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	var providerError *rpcError
+	if errors.As(err, &providerError) {
+		return ports.ErrCodexCapacityRequestRejected
+	}
+	return ports.ErrCodexCapacityProviderUnavailable
 }
 
 func (c *accountClient) ReadUsage(ctx context.Context) (ports.CodexUsageObservation, error) {

@@ -137,6 +137,56 @@ func TestCodexCapacityFailurePreservesLastKnownStateAsStale(t *testing.T) {
 	}
 }
 
+func TestCodexCapacityFailureClassificationIsSpecificAndSafe(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"timeout", context.DeadlineExceeded, domain.CodexCapacityReasonCheckTimeout},
+		{"interrupted", context.Canceled, domain.CodexCapacityReasonCheckStopped},
+		{"provider rejected", ports.ErrCodexCapacityRequestRejected, domain.CodexCapacityReasonProviderRejected},
+		{"provider unavailable", ports.ErrCodexCapacityProviderUnavailable, domain.CodexCapacityReasonProviderUnavailable},
+		{"unknown", errors.New("private provider response with secret-token"), domain.CodexCapacityReasonCheckFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			code, reason := classifyCodexCapacityReadFailure(test.err)
+			if code != test.wantCode {
+				t.Fatalf("code = %q, want %q", code, test.wantCode)
+			}
+			if reason == "" || reason == test.err.Error() {
+				t.Fatalf("reason was empty or retained the raw error: %q", reason)
+			}
+		})
+	}
+}
+
+func TestCodexCapacityClientStartFailureDoesNotExposeRawError(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	supported := domain.CodexCapabilityObservation{State: domain.CodexCapabilitySupported}
+	factory := &fakeCodexAccountFactory{
+		capabilities: domain.CodexAccountCapabilities{CapacityRead: supported},
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			return nil, errors.New("failed to start with secret-token")
+		},
+	}
+	manager := newTestCodexAccountManager(t, factory, nil)
+	manager.now = func() time.Time { return now }
+	manager.capacity.now = manager.now
+	record := codexCapacityTestRecord(t.TempDir(), "existing", domain.CodexAccountSourceManaged, now)
+
+	snapshot, err := manager.capacity.ensureOne(context.Background(), record, factory.capabilities, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ReasonCode != domain.CodexCapacityReasonClientStartFailed {
+		t.Fatalf("reason code = %q, want %q", snapshot.ReasonCode, domain.CodexCapacityReasonClientStartFailed)
+	}
+	if snapshot.Reason == "" || snapshot.Reason == "failed to start with secret-token" {
+		t.Fatalf("reason was empty or retained the raw error: %q", snapshot.Reason)
+	}
+}
+
 func codexCapacityTestRecord(home, id string, source domain.CodexAccountSource, now time.Time) codexAccountRecord {
 	return codexAccountRecord{Home: home, Snapshot: domain.CodexAccountSnapshot{
 		ID: id, Source: source, Status: domain.CodexAccountStatusValid,
