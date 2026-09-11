@@ -292,6 +292,40 @@ describe("DesktopTelemetryController", () => {
 		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending" });
 	});
 
+	it("measures the retry delay from when a hung attempt gives up, not from when it started", async () => {
+		const authority = new AuthorityFake(true, "generation-on");
+		let clock = 0;
+		const starts: number[] = [];
+		const ends: number[] = [];
+		const daemon = {
+			prepareDisable: vi.fn(),
+			applyPolicy: vi.fn().mockImplementation(async () => {
+				starts.push(clock);
+				clock += 2_000;
+				ends.push(clock);
+				throw new Error("This operation was aborted");
+			}),
+		};
+		const controller = new DesktopTelemetryController({
+			authority, daemon,
+			transportFactory: async () => null,
+			environmentAllowsEvents: true, productionEnabled: false,
+			now: () => clock,
+		});
+
+		await controller.initialize();
+		starts.length = 0;
+		ends.length = 0;
+
+		for (let tick = 0; tick < 30; tick += 1) {
+			clock += 1_000;
+			await controller.retryPendingCleanup();
+		}
+
+		const idleGaps = starts.slice(1).map((start, index) => start - ends[index]);
+		expect(idleGaps.slice(0, 3)).toEqual([2_000, 4_000, 8_000]);
+	});
+
 	it("settles as soon as a transiently unreachable daemon answers again", async () => {
 		const authority = new AuthorityFake(true, "generation-on");
 		let clock = 0;

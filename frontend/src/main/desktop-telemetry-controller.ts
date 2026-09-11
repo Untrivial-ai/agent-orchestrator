@@ -90,8 +90,7 @@ export class DesktopTelemetryController {
 			if (this.view.state === "applied" || !this.options.authority.durabilitySupported) return this.snapshot();
 			// A daemon that is merely unreachable may recover, so this path stays
 			// retryable — but paced, not once a second for the process lifetime.
-			const now = (this.options.now ?? Date.now)();
-			if (now < this.nextRetryAtMs) return this.snapshot();
+			if (this.clock() < this.nextRetryAtMs) return this.snapshot();
 			let desktopCleanupFailed = false;
 			let authorityVerified = false;
 			try {
@@ -110,7 +109,7 @@ export class DesktopTelemetryController {
 				this.resetRetryBackoff();
 			} catch {
 				this.retryFailures += 1;
-				this.nextRetryAtMs = now + telemetryRetryDelayMs(this.retryFailures);
+				this.nextRetryAtMs = this.clock() + telemetryRetryDelayMs(this.retryFailures);
 				this.view = {
 					...this.view,
 					state: authorityVerified ? "cleanup_pending" : "cleanup_failed",
@@ -231,6 +230,10 @@ export class DesktopTelemetryController {
 		if (ack.consentGeneration !== generation) return false;
 		if (!enabled) return !ack.eventsEnabled && ack.gateDrained && ack.purgeConfirmed;
 		return ack.eventsEnabled || !(this.options.productionEnabled ?? agentSwitchFailureProductionEnabled);
+	}
+
+	private clock(): number {
+		return (this.options.now ?? Date.now)();
 	}
 
 	private resetRetryBackoff(): void {
