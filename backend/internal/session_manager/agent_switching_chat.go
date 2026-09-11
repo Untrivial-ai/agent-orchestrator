@@ -383,6 +383,7 @@ func (m *Manager) executeChatAgentSwitch(
 		WorkspacePath:           rec.Metadata.WorkspacePath,
 		Env:                     targetLaunchEnv,
 		Model:                   agentConfig.Model,
+		Effort:                  agentConfig.Effort,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            finalSystemPrompt,
 		AdditionalDirectories:   additionalDirectories,
