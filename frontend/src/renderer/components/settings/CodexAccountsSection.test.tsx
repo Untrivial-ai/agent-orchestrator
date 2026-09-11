@@ -654,7 +654,7 @@ it("deletes a signed-out account after confirmation", async () => {
 	const { container } = renderSection();
 	await screen.findByText("other@example.com");
 	fireEvent.click(container.querySelector(`[data-account-id="${signedOutAccount.id}"] button`) as HTMLButtonElement);
-	expect(screen.queryByText("Your Codex sign-in has expired. Sign in again.")).not.toBeInTheDocument();
+	expect(screen.queryByText("Login expired.")).not.toBeInTheDocument();
 	expect(screen.queryByText("Usage details are not available for this account.")).not.toBeInTheDocument();
 	expect(await screen.findByRole("button", { name: "Delete account" })).toBeEnabled();
 	fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
@@ -698,7 +698,7 @@ it("explains an invalid sign-in and deletes it after local logout", async () => 
 	const { container } = renderSection();
 	await screen.findByText("active@example.com");
 	fireEvent.click(container.querySelector(`[data-account-id="${invalidAccount.id}"] button`) as HTMLButtonElement);
-	expect(await screen.findByText("Your Codex sign-in has expired. Sign in again.")).toBeInTheDocument();
+	expect(await screen.findByText("Login expired.")).toBeInTheDocument();
 	expect(screen.queryByText("Codex reports this account as signed out.")).not.toBeInTheDocument();
 	fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
 	const dialog = await screen.findByRole("dialog");

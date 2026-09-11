@@ -772,7 +772,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "找不到此账户的凭据目录。",
 	"settings.codexAccounts.reason.accountUnsafePath": "此账户使用了不安全的凭据路径。",
 	"settings.codexAccounts.reason.authAuthorized": "Codex 已登录。",
-	"settings.codexAccounts.reason.authUnauthorized": "你的 Codex 登录已过期。请重新登录。",
+	"settings.codexAccounts.reason.authUnauthorized": "登录已过期。",
 	"settings.codexAccounts.reason.authNotApplicable": "此账户不需要身份验证。",
 	"settings.codexAccounts.reason.authNotChecked": "尚未检查身份验证。",
 	"settings.codexAccounts.reason.authCheckFailed": "无法检查身份验证。",

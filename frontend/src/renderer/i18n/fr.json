@@ -808,7 +808,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "Le dossier d’identifiants de ce compte est introuvable.",
 	"settings.codexAccounts.reason.accountUnsafePath": "Ce compte utilise un chemin d’identifiants non sécurisé.",
 	"settings.codexAccounts.reason.authAuthorized": "Codex est connecté.",
-	"settings.codexAccounts.reason.authUnauthorized": "Votre connexion à Codex a expiré. Reconnectez-vous.",
+	"settings.codexAccounts.reason.authUnauthorized": "Connexion expirée.",
 	"settings.codexAccounts.reason.authNotApplicable": "Ce compte ne nécessite pas d’authentification.",
 	"settings.codexAccounts.reason.authNotChecked": "L’authentification n’a pas encore été vérifiée.",
 	"settings.codexAccounts.reason.authCheckFailed": "Impossible de vérifier l’authentification.",

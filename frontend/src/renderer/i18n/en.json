@@ -776,7 +776,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "This account's credential directory is missing.",
 	"settings.codexAccounts.reason.accountUnsafePath": "This account uses an unsafe credential path.",
 	"settings.codexAccounts.reason.authAuthorized": "Codex is signed in.",
-	"settings.codexAccounts.reason.authUnauthorized": "Your Codex sign-in has expired. Sign in again.",
+	"settings.codexAccounts.reason.authUnauthorized": "Login expired.",
 	"settings.codexAccounts.reason.authNotApplicable": "Authentication is not required for this account.",
 	"settings.codexAccounts.reason.authNotChecked": "Authentication has not been checked yet.",
 	"settings.codexAccounts.reason.authCheckFailed": "Authentication could not be checked.",

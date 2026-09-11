@@ -790,7 +790,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "このアカウントの認証情報ディレクトリが見つかりません。",
 	"settings.codexAccounts.reason.accountUnsafePath": "このアカウントは安全でない認証情報パスを使用しています。",
 	"settings.codexAccounts.reason.authAuthorized": "Codex にサインインしています。",
-	"settings.codexAccounts.reason.authUnauthorized": "Codex のサインインの有効期限が切れました。もう一度サインインしてください。",
+	"settings.codexAccounts.reason.authUnauthorized": "ログインの有効期限が切れました。",
 	"settings.codexAccounts.reason.authNotApplicable": "このアカウントでは認証は不要です。",
 	"settings.codexAccounts.reason.authNotChecked": "認証はまだ確認されていません。",
 	"settings.codexAccounts.reason.authCheckFailed": "認証を確認できませんでした。",

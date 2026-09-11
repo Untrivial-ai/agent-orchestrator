@@ -808,7 +808,7 @@
 	"settings.codexAccounts.reason.accountCredentialHomeMissing": "O diretório de credenciais desta conta não foi encontrado.",
 	"settings.codexAccounts.reason.accountUnsafePath": "Esta conta usa um caminho de credenciais não seguro.",
 	"settings.codexAccounts.reason.authAuthorized": "O Codex está conectado.",
-	"settings.codexAccounts.reason.authUnauthorized": "Seu login no Codex expirou. Entre novamente.",
+	"settings.codexAccounts.reason.authUnauthorized": "Login expirado.",
 	"settings.codexAccounts.reason.authNotApplicable": "Esta conta não exige autenticação.",
 	"settings.codexAccounts.reason.authNotChecked": "A autenticação ainda não foi verificada.",
 	"settings.codexAccounts.reason.authCheckFailed": "Não foi possível verificar a autenticação.",
