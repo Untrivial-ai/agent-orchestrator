@@ -299,7 +299,7 @@ func (m *codexAccountManager) accountContext(record codexAccountRecord) ports.Co
 	return ports.CodexAccountContext{Home: home, Managed: true}
 }
 
-func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeUsage bool, installation domain.AgentInstallationState) (CodexAccounts, error) {
+func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeUsage, forceAuthentication bool, installation domain.AgentInstallationState) (CodexAccounts, error) {
 	if err := m.catalog.refresh(); err != nil {
 		return CodexAccounts{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account discovery is unavailable")
 	}
@@ -308,11 +308,23 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 		return CodexAccounts{}, mapUnknownCodexAccount(err)
 	}
 	if installation == domain.AgentInstallationNotInstalled {
+		m.recordAuthenticationUnavailable(records, domain.AgentReadinessReasonAuthSkippedNotInstalled, "Authentication was not checked because Codex is not installed.")
 		return m.view(ids)
 	}
 	capabilities := m.detectCapabilities(ctx)
+	if capabilities.AccountRead.State != domain.CodexCapabilitySupported {
+		code, reason := domain.AgentReadinessReasonAuthCheckInconclusive, "Authentication could not be checked."
+		if capabilities.AccountRead.State == domain.CodexCapabilityUnsupported {
+			code, reason = domain.AgentReadinessReasonAuthCheckUnsupported, "This Codex version cannot check authentication."
+		}
+		m.recordAuthenticationUnavailable(records, code, reason)
+		return m.view(ids)
+	}
+	if forceAuthentication {
+		m.forceAuthenticationRetry(records)
+	}
 	for _, record := range records {
-		if record.Snapshot.Status == domain.CodexAccountStatusValid && capabilities.AccountRead.State == domain.CodexCapabilitySupported {
+		if record.Snapshot.Status == domain.CodexAccountStatusValid {
 			if _, err := m.ensureAuthentication(ctx, record, domain.AgentReadinessPurposeDisplay); err != nil {
 				return CodexAccounts{}, err
 			}
@@ -322,7 +334,7 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	if err != nil {
 		return CodexAccounts{}, mapUnknownCodexAccount(err)
 	}
-	if err := m.capacity.ensure(ctx, records, capabilities); err != nil && !errors.Is(err, context.Canceled) {
+	if err := m.capacity.ensure(ctx, records, capabilities, forceAuthentication); err != nil && !errors.Is(err, context.Canceled) {
 		m.logger.Debug("Codex account capacity ensure degraded", "failure_category", "capacity_read")
 	}
 	if includeUsage && capabilities.UsageRead.State == domain.CodexCapabilitySupported {
@@ -337,6 +349,42 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	result, err := m.view(ids)
 	m.publish()
 	return result, err
+}
+
+func (m *codexAccountManager) recordAuthenticationUnavailable(records []codexAccountRecord, code, reason string) {
+	attempted := m.now()
+	observation := failedAuthentication(attempted, code, reason)
+	for _, record := range records {
+		if record.Snapshot.Status != domain.CodexAccountStatusValid {
+			continue
+		}
+		m.catalog.updateSnapshot(record.Snapshot.ID, func(snapshot *domain.CodexAccountSnapshot) {
+			preserveAuthenticationFailure(&snapshot.Authentication, observation)
+		})
+	}
+	m.publish()
+}
+
+func (m *codexAccountManager) forceAuthenticationRetry(records []codexAccountRecord) {
+	m.mu.Lock()
+	for _, record := range records {
+		if record.Snapshot.Status != domain.CodexAccountStatusValid {
+			continue
+		}
+		state := m.auth[record.Snapshot.ID]
+		if state == nil {
+			state = &accountAuthState{}
+			m.auth[record.Snapshot.ID] = state
+		}
+		state.invalidated = true
+		state.nextRetryAt = time.Time{}
+	}
+	m.mu.Unlock()
+	for _, record := range records {
+		if record.Snapshot.Status == domain.CodexAccountStatusValid {
+			m.capacity.invalidate(record.Snapshot.ID, false)
+		}
+	}
 }
 
 func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record codexAccountRecord, purpose domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, error) {
@@ -539,6 +587,29 @@ func (m *codexAccountManager) confirmAuthentication(id string) {
 	m.catalog.updateSnapshot(id, func(snapshot *domain.CodexAccountSnapshot) {
 		snapshot.Authentication = successfulAuthentication(now, domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, "Codex is signed in.")
 	})
+	m.authenticationChanged()
+}
+
+func (m *codexAccountManager) recordProtectedAuthenticationFailure(id string, attempted time.Time, code, reason string) {
+	m.mu.Lock()
+	state := m.auth[id]
+	if state == nil {
+		state = &accountAuthState{}
+		m.auth[id] = state
+	}
+	if state.reauthenticationRequired {
+		m.mu.Unlock()
+		return
+	}
+	m.catalog.updateSnapshot(id, func(snapshot *domain.CodexAccountSnapshot) {
+		preserveAuthenticationFailure(&snapshot.Authentication, failedAuthentication(attempted, code, reason))
+	})
+	state.invalidated = true
+	state.failures++
+	if state.failures <= len(defaultReadinessRetryDelays) {
+		state.nextRetryAt = m.now().Add(defaultReadinessRetryDelays[state.failures-1])
+	}
+	m.mu.Unlock()
 	m.authenticationChanged()
 }
 

@@ -106,7 +106,7 @@ func (s *Service) CachedCodexAccounts(ctx context.Context) (CodexAccounts, error
 }
 
 // EnsureCodexAccounts rediscovers requested accounts and refreshes eligible observations.
-func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, includeUsage bool) (CodexAccounts, error) {
+func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, includeUsage, forceAuthentication bool) (CodexAccounts, error) {
 	if s.codexAccounts == nil {
 		return CodexAccounts{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
@@ -129,7 +129,7 @@ func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, include
 	if err != nil {
 		return CodexAccounts{}, err
 	}
-	result, err := s.codexAccounts.ensure(ctx, ids, includeUsage, installation[0].Installation.State)
+	result, err := s.codexAccounts.ensure(ctx, ids, includeUsage, forceAuthentication, installation[0].Installation.State)
 	if err == nil && s.codexSwitches != nil {
 		if sw, ok, switchErr := s.codexSwitches.GetActiveCodexAccountSwitch(ctx); switchErr == nil && ok {
 			result.CurrentSwitch = &sw
@@ -392,7 +392,7 @@ func (s *Service) WarmCodexAccounts() {
 				}
 			}
 		}
-		_ = s.codexAccounts.capacity.ensure(s.codexAccounts.ctx, records, capabilities)
+		_ = s.codexAccounts.capacity.ensure(s.codexAccounts.ctx, records, capabilities, false)
 	}()
 }
 

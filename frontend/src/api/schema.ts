@@ -3249,6 +3249,7 @@ export interface components {
         };
         EnsureCodexAccountsRequest: {
             accountIds?: string[];
+            forceAuthentication?: boolean;
             includeUsage?: boolean;
         };
         EstimatedCostResponse: {

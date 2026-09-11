@@ -22,7 +22,7 @@ import (
 // CodexAccountService is the HTTP controller's account-management boundary.
 type CodexAccountService interface {
 	CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error)
-	EnsureCodexAccounts(context.Context, []string, bool) (agentsvc.CodexAccounts, error)
+	EnsureCodexAccounts(context.Context, []string, bool, bool) (agentsvc.CodexAccounts, error)
 	ConsumeCodexAccountResetCredit(context.Context, string, string) (agentsvc.CodexAccounts, error)
 	SubscribeCodexAccounts(context.Context) (<-chan agentsvc.CodexAccounts, error)
 	OpenCodexAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error)
@@ -165,7 +165,7 @@ func (c *CodexAccountsController) ensure(w http.ResponseWriter, r *http.Request)
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	result, err := c.Svc.EnsureCodexAccounts(r.Context(), request.AccountIDs, request.IncludeUsage)
+	result, err := c.Svc.EnsureCodexAccounts(r.Context(), request.AccountIDs, request.IncludeUsage, request.ForceAuthentication)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return

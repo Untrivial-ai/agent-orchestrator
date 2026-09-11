@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CodexAccountsResponse } from "./useCodexAccountsQuery";
 import { catalogFor } from "../i18n/messages";
 import type { AppLocale } from "../i18n/locales";
-import { codexAccountReasonCodes, codexAccountReasonKey, codexSwitchDisplay, mergeCodexAccounts } from "./codex-accounts-state";
+import { codexAccountReasonCodes, codexAccountReasonKey, codexAuthenticationDisplay, codexSwitchDisplay, mergeCodexAccounts } from "./codex-accounts-state";
 import type { CodexAccountSwitch } from "./useCodexAccountsQuery";
 
 const account = (id: string, createdAt: string, active = false) => ({ id, createdAt, active });
@@ -43,6 +43,32 @@ describe("mergeCodexAccounts", () => {
 		expect(mergeCodexAccounts(current, incoming, "replace").accounts).toEqual([
 			expect.objectContaining({ id: "b", active: true }),
 		]);
+	});
+});
+
+describe("codexAuthenticationDisplay", () => {
+	const display = (state: string, freshness: string, reasonCode: string, status = "valid") => codexAuthenticationDisplay({
+		status,
+		authentication: { state, freshness, reasonCode },
+	} as Parameters<typeof codexAuthenticationDisplay>[0]);
+
+	it("turns inconclusive authentication into an actionable retry", () => {
+		expect(display("unknown", "stale", "auth_check_failed")).toEqual({
+			key: "settings.codexAccounts.authenticationCheckFailed",
+			action: "retry",
+			checking: false,
+		});
+		expect(display("unknown", "stale", "auth_check_timeout").key).toBe("settings.codexAccounts.authenticationCheckTimeout");
+	});
+
+	it("keeps checking, unsupported, and rejected credentials distinct", () => {
+		expect(display("unknown", "checking", "checking").key).toBe("settings.codexAccounts.authenticationChecking");
+		expect(display("unknown", "stale", "auth_check_unsupported").key).toBe("settings.codexAccounts.authenticationUpdateRequired");
+		expect(display("unauthorized", "fresh", "unauthorized")).toEqual({
+			key: "settings.codexAccounts.reason.authUnauthorized",
+			action: "reauthenticate",
+			checking: false,
+		});
 	});
 });
 
@@ -90,6 +116,14 @@ it("maps every account reason to complete native locale copy with a safe unknown
 	const keys = [
 		...codexAccountReasonCodes.map(codexAccountReasonKey),
 		...switchKeys,
+		"settings.codexAccounts.authenticationChecking",
+		"settings.codexAccounts.authenticationCheckFailed",
+		"settings.codexAccounts.authenticationCheckTimeout",
+		"settings.codexAccounts.authenticationUpdateRequired",
+		"settings.codexAccounts.authenticationCodexNotInstalled",
+		"settings.codexAccounts.authenticationRetryFailed",
+		"settings.codexAccounts.retryingAuthentication",
+		"settings.codexAccounts.tryAgain",
 		"settings.codexAccounts.switch.restored",
 		"settings.codexAccounts.retryRecovery",
 	];

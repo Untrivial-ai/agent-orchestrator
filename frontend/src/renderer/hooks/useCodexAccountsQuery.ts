@@ -19,8 +19,9 @@ export async function fetchCodexAccounts(): Promise<CodexAccountsResponse> {
 	return data as CodexAccountsResponse;
 }
 
-export async function ensureCodexAccounts(accountIds: string[] = [], includeUsage = false): Promise<CodexAccountsResponse> {
-	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/ensure", { body: { accountIds, includeUsage } });
+export async function ensureCodexAccounts(accountIds: string[] = [], includeUsage = false, forceAuthentication = false): Promise<CodexAccountsResponse> {
+	const body = forceAuthentication ? { accountIds, includeUsage, forceAuthentication } : { accountIds, includeUsage };
+	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/ensure", { body });
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountsResponse;
 }

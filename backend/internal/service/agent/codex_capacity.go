@@ -83,14 +83,14 @@ func (c *codexCapacityCoordinator) ensureStateLocked(accountID string) *accountC
 	return state
 }
 
-func (c *codexCapacityCoordinator) ensure(ctx context.Context, records []codexAccountRecord, capabilities domain.CodexAccountCapabilities) error {
+func (c *codexCapacityCoordinator) ensure(ctx context.Context, records []codexAccountRecord, capabilities domain.CodexAccountCapabilities, bypassBackoff bool) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(records))
 	for _, record := range records {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := c.ensureOne(ctx, record, capabilities, false); err != nil {
+			if _, err := c.ensureOne(ctx, record, capabilities, bypassBackoff); err != nil {
 				errCh <- err
 			}
 		}()
@@ -373,6 +373,13 @@ func (c *codexCapacityCoordinator) finishFailure(accountID string, attemptedAt t
 	}
 	result := state.snapshot
 	c.mu.Unlock()
+	authCode, authReason := domain.AgentReadinessReasonAuthCheckFailed, "Could not verify Codex sign-in."
+	if code == domain.CodexCapacityReasonCheckTimeout {
+		authCode, authReason = domain.AgentReadinessReasonAuthCheckTimeout, "The Codex sign-in check timed out."
+	} else if code == domain.CodexCapacityReasonCheckInconclusive {
+		authCode, authReason = domain.AgentReadinessReasonAuthCheckInconclusive, "Could not verify Codex sign-in."
+	}
+	c.manager.recordProtectedAuthenticationFailure(accountID, attemptedAt, authCode, authReason)
 	c.publish(accountID, &result)
 	c.logger.Info("Codex account capacity read completed", "account_id", accountID, "trigger", "capacity", "source", "direct", "duration_ms", c.now().Sub(attemptedAt).Milliseconds(), "outcome", result.State, "failure_category", code, "next_retry_at", nextRetryAt)
 }

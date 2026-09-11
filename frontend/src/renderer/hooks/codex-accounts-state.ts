@@ -48,6 +48,51 @@ export function codexAccountSignedOut(account: Pick<CodexAccount, "authenticatio
 	return account.authentication.state === "unauthorized" || account.status === "signed_out";
 }
 
+export type CodexAuthenticationDisplay = {
+	key:
+		| "settings.codexAccounts.signedIn"
+		| "settings.codexAccounts.signedOut"
+		| "settings.codexAccounts.reason.authUnauthorized"
+		| "settings.codexAccounts.authenticationChecking"
+		| "settings.codexAccounts.authenticationCheckFailed"
+		| "settings.codexAccounts.authenticationCheckTimeout"
+		| "settings.codexAccounts.authenticationUpdateRequired"
+		| "settings.codexAccounts.authenticationCodexNotInstalled";
+	action: "retry" | "reauthenticate" | null;
+	checking: boolean;
+};
+
+export function codexAuthenticationDisplay(account: Pick<CodexAccount, "authentication" | "status">): CodexAuthenticationDisplay {
+	const authentication = account.authentication;
+	if (account.status === "signed_out") {
+		return { key: "settings.codexAccounts.signedOut", action: "reauthenticate", checking: false };
+	}
+	if (authentication.freshness === "checking") {
+		return { key: "settings.codexAccounts.authenticationChecking", action: null, checking: true };
+	}
+	if (authentication.state === "unauthorized") {
+		return { key: "settings.codexAccounts.reason.authUnauthorized", action: "reauthenticate", checking: false };
+	}
+	switch (authentication.reasonCode) {
+		case "auth_skipped_not_installed":
+			return { key: "settings.codexAccounts.authenticationCodexNotInstalled", action: null, checking: false };
+		case "auth_check_unsupported":
+			return { key: "settings.codexAccounts.authenticationUpdateRequired", action: null, checking: false };
+		case "auth_check_timeout":
+			return { key: "settings.codexAccounts.authenticationCheckTimeout", action: "retry", checking: false };
+		case "auth_check_failed":
+		case "auth_check_inconclusive":
+			return { key: "settings.codexAccounts.authenticationCheckFailed", action: "retry", checking: false };
+	}
+	if (codexAccountAuthorized(account)) {
+		return { key: "settings.codexAccounts.signedIn", action: null, checking: false };
+	}
+	if (authentication.reasonCode === "not_checked") {
+		return { key: "settings.codexAccounts.authenticationChecking", action: null, checking: true };
+	}
+	return { key: "settings.codexAccounts.authenticationCheckFailed", action: "retry", checking: false };
+}
+
 const reasonKeys = {
 	account_valid: "settings.codexAccounts.reason.accountValid",
 	account_signed_out: "settings.codexAccounts.reason.accountSignedOut",

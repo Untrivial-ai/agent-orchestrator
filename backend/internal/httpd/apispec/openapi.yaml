@@ -9150,6 +9150,8 @@ components:
           items:
             type: string
           type: array
+        forceAuthentication:
+          type: boolean
         includeUsage:
           type: boolean
       type: object

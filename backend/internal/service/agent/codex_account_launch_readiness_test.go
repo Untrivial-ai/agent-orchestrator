@@ -130,7 +130,16 @@ func (f *codexLaunchReadinessFixture) protectedReads() int {
 
 func (f *codexLaunchReadinessFixture) ensureSettings() CodexAccounts {
 	f.t.Helper()
-	result, err := f.manager.ensure(context.Background(), nil, false, domain.AgentInstallationInstalled)
+	result, err := f.manager.ensure(context.Background(), nil, false, false, domain.AgentInstallationInstalled)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return result
+}
+
+func (f *codexLaunchReadinessFixture) forceAuthenticationCheck() CodexAccounts {
+	f.t.Helper()
+	result, err := f.manager.ensure(context.Background(), []string{f.active.Snapshot.ID}, false, true, domain.AgentInstallationInstalled)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -195,6 +204,9 @@ func TestLaunchFallsBackToNativeReadinessOnTransientProtectedFailure(t *testing.
 	latest, _ := fixture.manager.catalog.record(fixture.active.Snapshot.ID)
 	if latest.Snapshot.Authentication.State == domain.AgentAuthenticationUnauthorized {
 		t.Fatalf("transient provider failure signed the account out = %#v", latest.Snapshot.Authentication)
+	}
+	if latest.Snapshot.Authentication.Freshness != domain.AgentReadinessStale || latest.Snapshot.Authentication.ReasonCode != domain.AgentReadinessReasonAuthCheckFailed {
+		t.Fatalf("transient provider failure was not exposed as a retryable verification failure = %#v", latest.Snapshot.Authentication)
 	}
 }
 
@@ -283,6 +295,21 @@ func TestRepeatedSettingsEnsuresReuseProtectedConfirmation(t *testing.T) {
 	active := fixture.account(second, fixture.active.Snapshot.ID)
 	if checkedAt == nil || active.Authentication.CheckedAt == nil || !active.Authentication.CheckedAt.Equal(*checkedAt) {
 		t.Fatalf("observation timestamp moved: %v then %v", checkedAt, active.Authentication.CheckedAt)
+	}
+}
+
+func TestUserAuthenticationRetryBypassesFreshCachesAndBackoff(t *testing.T) {
+	fixture := newCodexLaunchReadinessFixture(t)
+	fixture.ensureSettings()
+	reads := fixture.protectedReads()
+
+	view := fixture.forceAuthenticationCheck()
+
+	if got := fixture.protectedReads(); got <= reads {
+		t.Fatalf("forced authentication retry reused cached protected result: reads %d then %d", reads, got)
+	}
+	if active := fixture.account(view, fixture.active.Snapshot.ID); active.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("forced authentication result = %#v", active.Authentication)
 	}
 }
 

@@ -29,6 +29,7 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 	const [loginPending, setLoginPending] = useState(false);
 	const [loginOperationPending, setLoginOperationPending] = useState(false);
 	const [recoverPending, setRecoverPending] = useState(false);
+	const [authenticationRetryAccountId, setAuthenticationRetryAccountId] = useState<string | null>(null);
 	const verifyingRef = useRef<string | null>(null);
 
 	const current = useCallback(() => queryClient.getQueryData<CodexAccountsResponse>(codexAccountsQueryKey), [queryClient]);
@@ -139,6 +140,20 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 		writeCodexAccounts(queryClient, next, "preserveMissing");
 	}, [queryClient]);
 
+	const retryAuthentication = useCallback(async (accountId: string) => {
+		setError(null);
+		setAuthenticationRetryAccountId(accountId);
+		try {
+			const next = await ensureCodexAccounts([accountId], false, true);
+			writeCodexAccounts(queryClient, next, "preserveMissing");
+		} catch (cause) {
+			setError(errorMessage(cause, t("settings.codexAccounts.authenticationRetryFailed")));
+			throw cause;
+		} finally {
+			setAuthenticationRetryAccountId(null);
+		}
+	}, [queryClient, t]);
+
 	const switchAccount = useCallback(async (account: CodexAccount, revision: number, idempotencyKey: string) => {
 		setError(null);
 		try {
@@ -192,11 +207,13 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 		loginPending,
 		loginOperationPending,
 		recoverPending,
+		authenticationRetryAccountId,
 		beginLogin,
 		verifyLogin,
 		closeLogin,
 		retryLogin,
 		ensureAccount,
+		retryAuthentication,
 		switchAccount,
 		recoverSwitch,
 		resetAccount,

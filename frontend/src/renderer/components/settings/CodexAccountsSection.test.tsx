@@ -162,6 +162,39 @@ it("keeps saved accounts and local actions available while device reconciliation
 	expect(within(inactiveRow).getByRole("button", { name: "Log out" })).toBeEnabled();
 });
 
+it("retries an inconclusive sign-in check without opening the login terminal", async () => {
+	const unknownAccount = {
+		...activeAccount,
+		authentication: {
+			...authentication,
+			state: "unknown",
+			freshness: "stale",
+			reasonCode: "auth_check_failed",
+			reason: "Authentication check failed.",
+		},
+	};
+	const unknownResponse = { ...accountResponse, accounts: [unknownAccount, inactiveAccount] };
+	getMock.mockResolvedValue({ data: unknownResponse });
+	postMock.mockImplementation((path: string, request?: { body?: { forceAuthentication?: boolean } }) => {
+		if (path !== "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: {} });
+		return Promise.resolve({ data: request?.body?.forceAuthentication ? accountResponse : unknownResponse });
+	});
+	const { container } = renderSection();
+
+	expect((await screen.findAllByText("Couldn’t verify sign-in.")).length).toBeGreaterThan(0);
+	expect(screen.queryByText("Authentication unknown")).not.toBeInTheDocument();
+	const row = container.querySelector(`[data-account-id="${activeAccount.id}"]`) as HTMLElement;
+	fireEvent.click(within(row).getByRole("button", { name: /active@example.com/i }));
+	fireEvent.click(within(row).getByRole("button", { name: "Try again" }));
+
+	await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+		"/api/v1/agents/codex/accounts/ensure",
+		{ body: { accountIds: [activeAccount.id], includeUsage: false, forceAuthentication: true } },
+	));
+	expect(screen.queryByRole("button", { name: "Codex sign-in" })).not.toBeInTheDocument();
+	expect((await screen.findAllByText("Signed in")).length).toBeGreaterThan(0);
+});
+
 it("announces when device reconciliation recovers", async () => {
 	const degraded = {
 		...accountResponse,
@@ -698,7 +731,7 @@ it("explains an invalid sign-in and deletes it after local logout", async () => 
 	const { container } = renderSection();
 	await screen.findByText("active@example.com");
 	fireEvent.click(container.querySelector(`[data-account-id="${invalidAccount.id}"] button`) as HTMLButtonElement);
-	expect(await screen.findByText("Login expired.")).toBeInTheDocument();
+	expect((await screen.findAllByText("Login expired.")).length).toBeGreaterThan(0);
 	expect(screen.queryByText("Codex reports this account as signed out.")).not.toBeInTheDocument();
 	fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
 	const dialog = await screen.findByRole("dialog");
@@ -754,7 +787,7 @@ it("shows the active account's reauthentication state and CTA as soon as a faile
 
 	expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
 	expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
-	expect(screen.getByText("active@example.com · Signed out")).toBeInTheDocument();
+	expect(screen.getByText("active@example.com · Login expired.")).toBeInTheDocument();
 	expect(getMock.mock.calls.length).toBe(reads);
 });
 
@@ -763,10 +796,10 @@ it("does not let an authorized inactive account mask the active account's reauth
 	postMock.mockImplementation((path: string) => path === "/api/v1/agents/codex/accounts/ensure" ? Promise.resolve({ data: launchFailureResponse }) : Promise.resolve({ data: {} }));
 	const { container } = renderSection();
 
-	expect(await screen.findByText("active@example.com · Signed out")).toBeInTheDocument();
+	expect(await screen.findByText("active@example.com · Login expired.")).toBeInTheDocument();
 	const activeRow = container.querySelector(`[data-account-id="${activeAccount.id}"]`) as HTMLElement;
 	const inactiveRow = container.querySelector(`[data-account-id="${inactiveAccount.id}"]`) as HTMLElement;
-	expect(within(activeRow).getByText("Signed out")).toBeInTheDocument();
+	expect(within(activeRow).getByText("Login expired.")).toBeInTheDocument();
 	expect(within(inactiveRow).getByText("Signed in")).toBeInTheDocument();
 	expect(within(activeRow).queryByText("Signed in")).not.toBeInTheDocument();
 });
@@ -775,7 +808,7 @@ it("restores the signed-in state after a successful reauthentication", async () 
 	getMock.mockResolvedValue({ data: launchFailureResponse });
 	postMock.mockImplementation((path: string) => path === "/api/v1/agents/codex/accounts/ensure" ? Promise.resolve({ data: launchFailureResponse }) : Promise.resolve({ data: {} }));
 	const { container, queryClient } = renderSection();
-	expect(await screen.findByText("active@example.com · Signed out")).toBeInTheDocument();
+	expect(await screen.findByText("active@example.com · Login expired.")).toBeInTheDocument();
 	fireEvent.click(container.querySelector(`[data-account-id="${activeAccount.id}"] button`) as HTMLButtonElement);
 	expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
 

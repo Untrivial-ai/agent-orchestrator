@@ -1221,8 +1221,9 @@ type CodexUnmanagedGlobalAccountResponse struct {
 
 // EnsureCodexAccountsRequest selects accounts for display reads.
 type EnsureCodexAccountsRequest struct {
-	AccountIDs   []string `json:"accountIds,omitempty"`
-	IncludeUsage bool     `json:"includeUsage,omitempty"`
+	AccountIDs          []string `json:"accountIds,omitempty"`
+	IncludeUsage        bool     `json:"includeUsage,omitempty"`
+	ForceAuthentication bool     `json:"forceAuthentication,omitempty"`
 }
 
 // ConsumeCodexAccountResetCreditRequest identifies one idempotent provider

@@ -24,6 +24,7 @@ type fakeCodexAccounts struct {
 	result              agentsvc.CodexAccounts
 	ensureIDs           []string
 	includeUsage        bool
+	forceAuthentication bool
 	resetAccountID      string
 	resetIdempotencyKey string
 	events              chan agentsvc.CodexAccounts
@@ -41,8 +42,8 @@ type fakeCodexAccounts struct {
 func (f *fakeCodexAccounts) CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error) {
 	return f.result, nil
 }
-func (f *fakeCodexAccounts) EnsureCodexAccounts(_ context.Context, ids []string, includeUsage bool) (agentsvc.CodexAccounts, error) {
-	f.ensureIDs, f.includeUsage = ids, includeUsage
+func (f *fakeCodexAccounts) EnsureCodexAccounts(_ context.Context, ids []string, includeUsage, forceAuthentication bool) (agentsvc.CodexAccounts, error) {
+	f.ensureIDs, f.includeUsage, f.forceAuthentication = ids, includeUsage, forceAuthentication
 	return f.result, nil
 }
 func (f *fakeCodexAccounts) ConsumeCodexAccountResetCredit(_ context.Context, accountID, idempotencyKey string) (agentsvc.CodexAccounts, error) {
@@ -173,11 +174,11 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	if response.DeviceReconciliation.Status != string(domain.CodexDeviceReconciliationVerified) || !response.DeviceReconciliation.ActiveAccountVerified {
 		t.Fatalf("decoded device reconciliation = %#v", response.DeviceReconciliation)
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true}`)
-	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage {
-		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v body=%s", status, fake.ensureIDs, fake.includeUsage, body)
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true,"forceAuthentication":true}`)
+	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage || !fake.forceAuthentication {
+		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v forceAuthentication=%v body=%s", status, fake.ensureIDs, fake.includeUsage, fake.forceAuthentication, body)
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"force":true}`)
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"unknown":true}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
 		t.Fatalf("strict ensure status=%d body=%s", status, body)
 	}
