@@ -62,6 +62,7 @@
 	"browser.deviceFit": "パネルに合わせる",
 	"browser.devicePreset": "デバイスプリセット",
 	"browser.emptyUrl": "URL を入力するか、ターミナル内のリンクをクリックしてください。",
+	"browser.sessionEnded": "Session ended — browser preview unavailable.",
 	"browser.forward": "進む",
 	"browser.newTab": "新しいタブ",
 	"browser.onlyTab": "最後のタブは閉じられません",

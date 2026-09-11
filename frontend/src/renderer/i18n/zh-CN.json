@@ -62,6 +62,7 @@
 	"browser.deviceFit": "适应面板",
 	"browser.devicePreset": "设备预设",
 	"browser.emptyUrl": "输入网址，或在终端中点击链接。",
+	"browser.sessionEnded": "Session ended — browser preview unavailable.",
 	"browser.forward": "前进",
 	"browser.newTab": "新标签",
 	"browser.onlyTab": "无法关闭唯一标签",
