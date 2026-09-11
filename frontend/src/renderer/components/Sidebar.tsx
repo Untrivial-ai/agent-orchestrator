@@ -2243,8 +2243,8 @@ function UpdateStatusRow({
 }
 
 /**
- * Alert-style install cue above Connect mobile / Settings. Muted fill + shadow so
- * it reads apart from nav rows; shows the version number only (no Nightly/date).
+ * Alert-style install cue above Connect mobile / Settings. Muted fill so it
+ * reads apart from nav rows; shows the version number only (no Nightly/date).
  */
 function UpdateInstallSlide({
 	availableDismissed,
@@ -2265,12 +2265,12 @@ function UpdateInstallSlide({
 	return (
 		<button
 			aria-label={
-				action.version
-					? t("shell.restartInstallUpdateVersion", { version: action.version })
+				versionNumber
+					? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-xl bg-muted px-3 text-left text-sm font-normal text-foreground shadow-md",
+				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-lg bg-muted px-3 text-left text-sm font-normal text-foreground",
 				"transition-colors hover:bg-interactive-hover",
 				"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200",
 			)}
@@ -2360,8 +2360,8 @@ function UpdateStatusRail({
 			<TooltipTrigger asChild>
 				<button
 					aria-label={
-						action.version
-							? t("shell.restartInstallUpdateVersion", { version: action.version })
+						versionNumber
+							? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 							: t("shell.restartInstallUpdate")
 					}
 					className={cn(

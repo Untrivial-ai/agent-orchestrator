@@ -2211,8 +2211,8 @@ describe("Sidebar", () => {
 		// A build ready to install is more actionable than "checks are failing".
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveClass("bg-muted", "rounded-xl", "shadow-md", "w-full");
-		expect(readyRow).not.toHaveClass("absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
+		expect(readyRow).toHaveClass("bg-muted", "rounded-lg", "w-full");
+		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
 		expect(within(readyRow).getByText("Install Update")).toBeVisible();
 		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
 		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();
@@ -2252,6 +2252,8 @@ describe("Sidebar", () => {
 		expect(within(readyRow).getByText("Install Update")).toBeVisible();
 		expect(within(readyRow).getByText("0.12.11")).toBeVisible();
 		expect(within(readyRow).queryByText(/Nightly|Sep/)).not.toBeInTheDocument();
+		expect(screen.getAllByLabelText("Restart to install update v0.12.11")).not.toHaveLength(0);
+		expect(screen.queryByLabelText(/nightly/i)).not.toBeInTheDocument();
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {
@@ -2295,6 +2297,7 @@ describe("Sidebar", () => {
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(readyRow.textContent?.replace(/\s+/g, " ").trim()).toMatch(/^Install Update 0\.12\.11$/);
 		expect(within(readyRow).queryByText(/Nightly|ready/)).not.toBeInTheDocument();
+		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11");
 	});
 
 	it("commits a project drop", () => {
