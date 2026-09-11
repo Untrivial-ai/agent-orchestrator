@@ -9,6 +9,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestQueuedEditAttachmentChanges(t *testing.T) {
@@ -148,7 +149,7 @@ func TestQueuedEditRetryAfterCommittedResponseIsLost(t *testing.T) {
 		t.Run(change.name, func(t *testing.T) {
 			changed := edit
 			change.mutate(&changed)
-			if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, changed); !errors.Is(err, chatsvc.ErrQueuedEditConflict) {
+			if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, changed); !errors.Is(err, store.ErrQueuedEditDeliveryConflict) {
 				t.Fatalf("changed request with reused key = %v, want conflict", err)
 			}
 		})

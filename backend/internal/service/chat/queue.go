@@ -77,7 +77,7 @@ func (s *Service) EditQueuedTurn(
 		}
 		if found {
 			if hash != delivery.RequestHash {
-				return ErrQueuedEditConflict
+				return store.ErrQueuedEditDeliveryConflict
 			}
 			return nil
 		}
@@ -133,7 +133,7 @@ func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit Que
 		}
 		if found {
 			if hash != delivery.RequestHash {
-				return ErrQueuedEditConflict
+				return store.ErrQueuedEditDeliveryConflict
 			}
 			return nil
 		}

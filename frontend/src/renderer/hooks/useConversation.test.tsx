@@ -42,6 +42,13 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
+it("preserves queued-edit API error codes for delivery recovery", async () => {
+	const refusal = { code: "CHAT_QUEUED_EDIT_CONFLICT", message: "Queued message changed" };
+	postMock.mockResolvedValue({ data: undefined, error: refusal });
+	const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+	await expect(result.current.editQueuedTurn("queued-1", "edited")).rejects.toBe(refusal);
+});
+
 /** The provider state the daemon now serves, in wire shape. */
 const WIRE = {
 	conversationId: "conv-1",

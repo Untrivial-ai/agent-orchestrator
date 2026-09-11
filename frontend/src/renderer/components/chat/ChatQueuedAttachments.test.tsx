@@ -94,6 +94,33 @@ async function pasteImage(field: HTMLElement, name = "shot.png") {
 }
 
 describe("queued message attachments", () => {
+	it("keeps a reused delivery key locked for recovery", async () => {
+		const { edit } = setup();
+		edit.mockRejectedValue({ code: "CHAT_QUEUED_EDIT_IDEMPOTENCY_CONFLICT", message: "Recovery key conflict" });
+		await beginEdit();
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await screen.findByText("Recovery key conflict");
+		expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit?.clientMessageId).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Cancel edit" })).toBeDisabled();
+	});
+
+	it.each(["CHAT_TURN_NOT_QUEUED", "CHAT_QUEUED_EDIT_CONFLICT", "CHAT_QUEUED_CONTENT_INVALID", "CHAT_QUEUED_TEXT_REQUIRED"])("unlocks a recovered queued edit after definitive %s", async (code) => {
+		const { edit } = setup();
+		edit.mockRejectedValueOnce(new Error("response lost"));
+		await beginEdit();
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await screen.findByText("response lost");
+		const pending = readChatSessionDraft(chatFixture.sessionId).queuedEdit;
+		edit.mockRejectedValueOnce({ code, message: "Edit was not accepted" });
+		await userEvent.click(screen.getByRole("button", { name: "Retry edit safely" }));
+		await screen.findByText("Edit was not accepted");
+		expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toMatchObject({ text: pending?.text, ownerId: pending?.ownerId });
+		expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit?.clientMessageId).toBeUndefined();
+		expect(screen.getByRole("button", { name: "Cancel edit" })).toBeEnabled();
+		await userEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+		expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toBeUndefined();
+	});
+
 	it.each(["cancel", "escape", "replace", "delete"])("preserves an unresolved queued receipt through %s and remount", async (exit) => {
 		const { edit, cancel, unmount } = setup();
 		edit.mockRejectedValue(new Error("response lost"));
@@ -102,6 +129,8 @@ describe("queued message attachments", () => {
 		await screen.findByText("response lost");
 		const pending = readChatSessionDraft(chatFixture.sessionId).queuedEdit;
 		expect(pending?.clientMessageId).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Edit queued message" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Delete queued message" })).toBeDisabled();
 		if (exit === "cancel") await userEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
 		if (exit === "escape") fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
 		if (exit === "replace") await beginEdit();

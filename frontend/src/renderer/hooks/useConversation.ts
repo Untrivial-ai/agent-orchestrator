@@ -623,7 +623,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 					body: { text, ...options },
 				},
 			);
-			if (error) throw new Error(apiErrorMessage(error, "Could not save queued message edit"));
+			if (error) throw error;
 		},
 		onSuccess: invalidate,
 	});

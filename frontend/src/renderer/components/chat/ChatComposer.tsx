@@ -550,14 +550,14 @@ export const ChatComposer = memo(function ChatComposer({
 		},
 		[boundarySessionId],
 	);
-	const queuedDockWithSteer = isValidElement(queuedDock)
+	const queuedDockWithSteer = isValidElement<{
+		canSteerNext?: boolean;
+		steerNextRequest?: number;
+		disabled?: boolean;
+	}>(queuedDock)
 		? cloneElement(
-				queuedDock as ReactElement<{
-					canSteerNext?: boolean;
-					steerNextRequest?: number;
-					disabled?: boolean;
-				}>,
-				{ canSteerNext, steerNextRequest, disabled: submitting },
+				queuedDock,
+				{ canSteerNext, steerNextRequest, disabled: submitting || queuedDock.props.disabled },
 			)
 		: queuedDock;
 

@@ -49,7 +49,7 @@ import { purgeFileAttachments, purgeFileAttachmentsForSession } from "../../hook
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
 import { sameContent, useStableList } from "../../lib/stable-list";
 import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
-import { getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
+import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
 import {
@@ -779,12 +779,29 @@ function ChatWorkspaceContent({
 					nativeImages: currentEdit.nativeImages ?? Boolean(nativeImages),
 				}, currentEdit.revision);
 				if (!prepared.ok || !prepared.draft.queuedEdit) throw new Error("chat.draft.queuePrepareFailed");
-				await onEditQueuedTurn(queueEdit.turnId, text, {
-					clientMessageId: prepared.draft.queuedEdit.clientMessageId,
-					...(attachments?.length ? { attachments } : {}),
-					retainedContent: queueEdit.attachments === undefined ? undefined : retainedContent,
-					expectedRevision: queueEdit.expectedRevision,
-				});
+				try {
+					await onEditQueuedTurn(queueEdit.turnId, text, {
+						clientMessageId: prepared.draft.queuedEdit.clientMessageId,
+						...(attachments?.length ? { attachments } : {}),
+						retainedContent: queueEdit.attachments === undefined ? undefined : retainedContent,
+						expectedRevision: queueEdit.expectedRevision,
+					});
+				} catch (error) {
+					// These outcomes follow the daemon's atomic receipt lookup, so even
+					// a recovered retry proves this exact edit was never accepted.
+					if ([
+						"CHAT_TURN_NOT_QUEUED",
+						"CHAT_QUEUED_EDIT_CONFLICT",
+						"CHAT_QUEUED_CONTENT_INVALID",
+						"CHAT_QUEUED_TEXT_REQUIRED",
+					].includes(apiErrorCode(error) ?? "")) {
+						updateQueueDraft({
+							...prepared.draft.queuedEdit,
+							clientMessageId: undefined, saving: undefined, nativeImages: undefined,
+						}, prepared.draft.queuedEdit.revision);
+					}
+					throw error;
+				}
 				if (queueEditRef.current?.ownerId === queueEdit.ownerId) {
 					if (!updateQueueDraft(undefined, prepared.draft.queuedEdit.revision).ok) throw new Error("chat.draft.queueClearFailed");
 				}
