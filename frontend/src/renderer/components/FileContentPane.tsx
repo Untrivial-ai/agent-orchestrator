@@ -33,6 +33,8 @@ import { MarkdownFileView } from "./markdown/MarkdownFileView";
 export type FileViewMode = "diff" | "file" | "rendered";
 export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
 
+const DEFAULT_FILES_SOURCE: FilesSource = { kind: "workspace" };
+
 const createReviewEditor: EditorFactory<"feedback", undefined> = (editorType, options, editStateKey) =>
 	new Editor(editorType, options, editStateKey);
 
@@ -51,7 +53,7 @@ export function FileContentPane({
 	sessionId,
 	split,
 	scope = "combined",
-	source = { kind: "workspace" },
+	source = DEFAULT_FILES_SOURCE,
 }: {
 	annotation: FileAnnotationModel;
 	initialEditing?: boolean;

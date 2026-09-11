@@ -4855,6 +4855,12 @@ paths:
           - unstaged
           - untracked
           type: string
+      - description: Exact commit SHA to read as an immutable committed-scope snapshot.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact commit SHA to read as an immutable committed-scope snapshot.
+          type: string
       responses:
         "200":
           content:
