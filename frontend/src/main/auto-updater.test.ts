@@ -4033,4 +4033,57 @@ describe("getLinuxInstallBlocker", () => {
       restore();
     }
   });
+
+  // startAutoUpdates refusing the timer is not enough on its own: a settings
+  // change or a manual check re-arms the periodic scheduler through
+  // reconcileAutomaticUpdateSchedule, which never goes through startAutoUpdates.
+  it("keeps the periodic check off after a settings change or manual check", async () => {
+    vi.useFakeTimers();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const root = mkdtempSync(nodePath.join(os.tmpdir(), "ao-updater-pkg-"));
+    const appDir = nodePath.join(root, "agent-orchestrator");
+    mkdirSync(appDir, { recursive: true });
+    chmodSync(appDir, 0o555);
+    const restore = stubProcess("linux", nodePath.join(appDir, "agent-orchestrator"));
+    delete process.env.APPIMAGE;
+    let current: UpdateSettings = {
+      enabled: false,
+      channel: "latest",
+      nightlyAck: false,
+      feature: null,
+    };
+    try {
+      const { module, autoUpdater, writeUpdateSettings } = await importAutoUpdater(
+        vi.fn(() => Promise.resolve(current)),
+      );
+      writeUpdateSettings.mockImplementation(
+        async (_stateDir: string, next: UpdateSettings) => {
+          current = next;
+        },
+      );
+
+      await module.startAutoUpdates(stateDir);
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+
+      await module.setUpdateSettings(stateDir, { ...current, enabled: true });
+      await module.setUpdateSettings(stateDir, {
+        ...current,
+        channel: "nightly",
+        nightlyAck: true,
+      });
+      await module.checkForUpdatesNow(stateDir);
+      const manualChecks = autoUpdater.checkForUpdates.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(manualChecks);
+      expect(
+        setIntervalSpy.mock.calls.some(([, delay]) => delay === 15 * 60 * 1000 || delay === 60 * 60 * 1000),
+      ).toBe(false);
+    } finally {
+      restore();
+      vi.useRealTimers();
+      chmodSync(appDir, 0o755);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

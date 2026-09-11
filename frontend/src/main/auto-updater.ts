@@ -1826,6 +1826,15 @@ function schedulePeriodicAutomaticUpdateCheck(
   stateDir: string,
   intervalMs: number,
 ): void {
+  // Every path that arms the periodic timer lands here: startup, a settings
+  // change, a manual check, and the timer re-arming itself. A package-managed
+  // install can never apply a discovered build, so the timer is refused at
+  // the choke point rather than only at startup, or a later settings write
+  // would quietly start the polling startAutoUpdates declined.
+  if (getLinuxInstallBlocker() !== undefined) {
+    stopPeriodicAutomaticUpdateCheck();
+    return;
+  }
   if (
     automaticUpdateTimer !== undefined &&
     automaticUpdateTimerIntervalMs === intervalMs
@@ -1882,7 +1891,9 @@ export async function startAutoUpdates(stateDir: string): Promise<void> {
   // check itself is waste: a periodic timer plus a ~180MB download, discarded.
   // Set before the guard: the escalation paths read it regardless of whether
   // this process goes on to check. Nothing was ever staged from here either, so
-  // the staged-build restore is skipped along with the check.
+  // the staged-build restore is skipped along with the check. The periodic
+  // timer is refused again in schedulePeriodicAutomaticUpdateCheck, which
+  // covers the settings-change and manual-check paths that never pass here.
   const blocker = getLinuxInstallBlocker();
   if (blocker !== undefined) {
     console.info("auto-updates disabled:", blocker);
