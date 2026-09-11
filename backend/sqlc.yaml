@@ -265,10 +265,18 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "SessionInterfaceTransitionPolicy"
+          - column: "session_interface_transitions.history_policy"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionInterfaceTransitionHistoryPolicy"
           - column: "session_interface_transitions.phase"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "SessionInterfaceTransitionPhase"
+          - column: "sessions.conversation_checkpoint_state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "ConversationCheckpointState"
           - column: "conversations.project_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

@@ -53,6 +53,46 @@ func TestMigrateDefaultsSessionInterfaceToChat(t *testing.T) {
 	}
 }
 
+func TestMigrateCheckpointProvenanceAfterLatestPromptTimestamp(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	upTo(t, db, 109)
+
+	var promptTimestampColumns, checkpointColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'latest_user_prompt_at'`).Scan(&promptTimestampColumns); err != nil {
+		t.Fatalf("read prompt timestamp column: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name LIKE 'conversation_checkpoint_%'`).Scan(&checkpointColumns); err != nil {
+		t.Fatalf("read pre-upgrade checkpoint columns: %v", err)
+	}
+	if promptTimestampColumns != 1 || checkpointColumns != 0 {
+		t.Fatalf("version 109 schema timestamp=%d checkpoint=%d, want 1 and 0", promptTimestampColumns, checkpointColumns)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate version 109 database: %v", err)
+	}
+	var applied, steerTables, editTables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id BETWEEN 109 AND 112 AND is_applied = 1`).Scan(&applied); err != nil {
+		t.Fatalf("read migration ledger: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_steer_deliveries'`).Scan(&steerTables); err != nil {
+		t.Fatalf("read steer delivery table: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_edit_deliveries'`).Scan(&editTables); err != nil {
+		t.Fatalf("read edit delivery table: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name LIKE 'conversation_checkpoint_%'`).Scan(&checkpointColumns); err != nil {
+		t.Fatalf("read checkpoint columns: %v", err)
+	}
+	if applied != 4 || steerTables != 1 || editTables != 1 || checkpointColumns != 4 {
+		t.Fatalf("upgraded schema applied=%d steer=%d edit=%d checkpoint=%d, want 4,1,1,4", applied, steerTables, editTables, checkpointColumns)
+	}
+}
+
 func TestMigrateUpdatesExistingSessionInterfaceDefaultToChat(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
 	if err != nil {

@@ -283,6 +283,34 @@ func TestSessionsAPI_ActivityThreadsCorrelationFields(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_ActivityThreadsConversationCheckpointOrigin(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"coordination"}`)
+	if status != http.StatusOK {
+		t.Fatalf("activity = %d, want 200; body=%s", status, body)
+	}
+	if rec.gotSignal.ConversationCheckpointOrigin != domain.ConversationCheckpointOriginCoordination {
+		t.Fatalf("checkpoint origin = %q, want coordination", rec.gotSignal.ConversationCheckpointOrigin)
+	}
+}
+
+func TestSessionsAPI_ActivityRejectsUnknownConversationCheckpointOrigin(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"provider"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("activity = %d, want 400; body=%s", status, body)
+	}
+	if !strings.Contains(string(body), `"code":"INVALID_CONVERSATION_CHECKPOINT_ORIGIN"`) {
+		t.Fatalf("body = %s, want stable checkpoint-origin error code", body)
+	}
+}
+
 func TestSessionsAPI_ActivityAcceptsMetadataOnlyAgentSessionID(t *testing.T) {
 	rec := &fakeActivityRecorder{}
 	srv := newActivityTestServer(t, rec)

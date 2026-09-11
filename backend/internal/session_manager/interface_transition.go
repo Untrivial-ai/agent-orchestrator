@@ -37,6 +37,10 @@ var (
 // Production's SQLite store implements the full capability.
 type interfaceTransitionStore interface {
 	CreateSessionInterfaceTransition(context.Context, domain.SessionInterfaceTransition) (domain.SessionInterfaceTransition, bool, error)
+	// CreateSessionInterfaceTransitionAfter atomically verifies the exact latest
+	// terminal predecessor and claims the next transition. predecessorMatched is
+	// false when another saga superseded the user's recovery consent.
+	CreateSessionInterfaceTransitionAfter(context.Context, domain.SessionInterfaceTransition, string) (domain.SessionInterfaceTransition, bool, bool, error)
 	GetSessionInterfaceTransition(context.Context, string) (domain.SessionInterfaceTransition, bool, error)
 	GetActiveSessionInterfaceTransition(context.Context, domain.SessionID) (domain.SessionInterfaceTransition, bool, error)
 	GetLatestSessionInterfaceTransition(context.Context, domain.SessionID) (domain.SessionInterfaceTransition, bool, error)
@@ -136,12 +140,16 @@ func (m *Manager) StartInterfaceTransition(
 	id domain.SessionID,
 	target domain.SessionMode,
 	policy domain.SessionInterfaceTransitionPolicy,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (domain.SessionInterfaceTransition, error) {
 	if !target.Valid() {
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("target mode %q is invalid", target)
 	}
 	if !policy.Valid() {
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("transition policy %q is invalid", policy)
+	}
+	if !historyPolicy.Valid() {
+		return domain.SessionInterfaceTransition{}, fmt.Errorf("transition history policy %q is invalid", historyPolicy)
 	}
 	store, ok := m.store.(interfaceTransitionStore)
 	if !ok {
@@ -173,12 +181,37 @@ func (m *Manager) StartInterfaceTransition(
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, err
 	}
+	expectedPredecessorID := ""
+	if historyPolicy == domain.SessionInterfaceTransitionHistoryProvider {
+		latest, found, latestErr := store.GetLatestSessionInterfaceTransition(ctx, id)
+		if latestErr != nil {
+			return domain.SessionInterfaceTransition{}, latestErr
+		}
+		if source != domain.SessionModeTUI || target != domain.SessionModeChat ||
+			!providerHistoryRecoveryAuthorized(id, nativeID, latest, found) {
+			return domain.SessionInterfaceTransition{}, ErrInterfaceProviderHistoryRecoveryUnavailable
+		}
+		expectedPredecessorID = latest.ID
+	}
 	now := m.clock()
-	transition, created, err := store.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+	pending := domain.SessionInterfaceTransition{
 		ID: m.newLaunchID(), SessionID: id, SourceMode: source, TargetMode: target,
-		Policy: policy, Phase: domain.SessionInterfaceTransitionRequested,
+		Policy: policy, HistoryPolicy: historyPolicy, Phase: domain.SessionInterfaceTransitionRequested,
 		NativeConversationID: nativeID, CreatedAt: now, UpdatedAt: now,
-	})
+	}
+	var transition domain.SessionInterfaceTransition
+	var created bool
+	if expectedPredecessorID != "" {
+		var predecessorMatched bool
+		transition, created, predecessorMatched, err = store.CreateSessionInterfaceTransitionAfter(
+			ctx, pending, expectedPredecessorID,
+		)
+		if err == nil && !predecessorMatched {
+			return domain.SessionInterfaceTransition{}, ErrInterfaceProviderHistoryRecoveryUnavailable
+		}
+	} else {
+		transition, created, err = store.CreateSessionInterfaceTransition(ctx, pending)
+	}
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, err
 	}
@@ -214,6 +247,32 @@ func (m *Manager) StartInterfaceTransition(
 	m.transitionMu.Unlock()
 	go m.runInterfaceTransition(runCtx, transition, run)
 	return transition, nil
+}
+
+func providerHistoryRecoveryAuthorized(
+	sessionID domain.SessionID,
+	nativeConversationID string,
+	latest domain.SessionInterfaceTransition,
+	found bool,
+) bool {
+	nativeConversationID = strings.TrimSpace(nativeConversationID)
+	if !found || latest.SessionID != sessionID ||
+		latest.SourceMode != domain.SessionModeTUI || latest.TargetMode != domain.SessionModeChat ||
+		nativeConversationID == "" ||
+		strings.TrimSpace(latest.NativeConversationID) != nativeConversationID {
+		return false
+	}
+	if latest.Phase == domain.SessionInterfaceTransitionFailed &&
+		latest.ErrorCode == "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH" {
+		return true
+	}
+	// Boot recovery deliberately restores the source controller instead of
+	// continuing target startup. Retain only the explicit provider-history
+	// consent carried by that exact interrupted saga so the user can retry it;
+	// a strict or unrelated DAEMON_RESTARTED row must never manufacture consent.
+	return latest.Phase == domain.SessionInterfaceTransitionRecovery &&
+		latest.ErrorCode == "DAEMON_RESTARTED" &&
+		latest.HistoryPolicy == domain.SessionInterfaceTransitionHistoryProvider
 }
 
 // CancelInterfaceTransition cancels only while the source controller is still
@@ -389,13 +448,13 @@ func (m *Manager) runInterfaceTransition(
 		return
 	}
 	sourcePrepared = true
-	// A promptless session may not persist a provider conversation until its first
-	// submitted turn. When admitted from untouched-conversation proof, resolve
-	// again after input is frozen and drain is complete.
-	// This closes the race where a turn starts between the admission snapshot and
-	// the input gate: the new native id is transferred, or the switch
-	// fails before stopping the source if identity still cannot be proven.
-	if transition.NativeConversationID == "" {
+	// Re-resolve every TUI conversation after input is frozen and drain is
+	// complete. A promptless TUI may create its first conversation, and an
+	// existing provider may change identity (for example after /clear) between
+	// admission and the gate. The target must receive the current identity, never
+	// the stale admission snapshot. A promptless Chat source must likewise prove
+	// it is still untouched after fencing, or transfer its newly created native ID.
+	if transition.SourceMode == domain.SessionModeTUI || transition.NativeConversationID == "" {
 		current, found, refreshErr := m.store.GetSession(ctx, rec.ID)
 		if refreshErr != nil || !found {
 			if refreshErr == nil {
@@ -416,6 +475,13 @@ func (m *Manager) runInterfaceTransition(
 		}
 		if refreshErr != nil {
 			fail(interfaceTransitionErrorCode(refreshErr), refreshErr)
+			return
+		}
+		if transition.HistoryPolicy == domain.SessionInterfaceTransitionHistoryProvider &&
+			resolvedID != transition.NativeConversationID {
+			recoveryErr := fmt.Errorf("%w: native conversation changed after recovery admission",
+				ErrInterfaceProviderHistoryRecoveryUnavailable)
+			fail(interfaceTransitionErrorCode(recoveryErr), recoveryErr)
 			return
 		}
 		transition.NativeConversationID = resolvedID
@@ -465,11 +531,24 @@ func (m *Manager) runInterfaceTransition(
 		fail("TRANSITION_STATE_FAILED", err)
 		return
 	}
-	if err := m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true); err != nil {
+	err = m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true, transition.HistoryPolicy)
+	if errors.Is(err, ports.ErrChatHistoryUnsettled) &&
+		len(ports.ChatHistoryMismatchDimensions(err)) == 0 && transition.TargetMode == domain.SessionModeChat {
+		// An ACP history reader may expose an immutable snapshot for one provider
+		// session. Its unsettled result is authoritative for that controller, but
+		// not a permanent verdict on the native conversation: closing it and
+		// starting the target once more obtains a fresh provider observation. Keep
+		// the retry inside this durable transition, after the source was stopped,
+		// so the source is not relaunched and two target controllers never overlap.
+		err = m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true, transition.HistoryPolicy)
+	}
+	if err != nil {
 		code := "TARGET_RESUME_FAILED"
 		switch {
 		case errors.Is(err, ports.ErrChatHistoryUnavailable):
 			code = "TARGET_HISTORY_UNAVAILABLE"
+		case ports.ChatHistoryMismatchOnlyUntrustedText(err):
+			code = "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH"
 		case errors.Is(err, ports.ErrChatHistoryUnsettled):
 			code = "TARGET_HISTORY_UNSETTLED"
 		}
@@ -1014,7 +1093,12 @@ func (m *Manager) stopSourceControllerConclusive(rec domain.SessionRecord) error
 	return fmt.Errorf("could not prove the source controller stopped after retry: %w", errors.Join(failures...))
 }
 
-func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID, fresh, requireNativeHistory bool) error {
+func (m *Manager) startTransitionTarget(
+	ctx context.Context,
+	id domain.SessionID,
+	fresh, requireNativeHistory bool,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
+) error {
 	ctx, cancel := context.WithTimeout(ctx, interfaceTransitionStepLimit)
 	defer cancel()
 	rec, ok, err := m.store.GetSession(ctx, id)
@@ -1034,7 +1118,7 @@ func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID
 	// daemon restore deliberately use the normal context-resume policy.
 	_, err = m.relaunchSessionWithPolicy(
 		ctx, "switch interface", rec, project, ws, nil,
-		fresh, requireNativeHistory && !fresh,
+		fresh, requireNativeHistory && !fresh, historyPolicy,
 	)
 	return err
 }
@@ -1059,7 +1143,7 @@ func (m *Manager) rollbackInterfaceTransition(
 				"RECOVERY_REQUIRED", cause.Error()+"; rollback mode: lifecycle manager is unavailable")
 			return
 		}
-		changed, err := m.lcm.CommitControllerEpoch(ctx, transition.SessionID,
+		changed, err := m.lcm.RestoreControllerEpoch(ctx, transition.SessionID,
 			transition.TargetMode, transition.SourceMode, transition.NativeConversationID,
 			transition.NativeConversationID == "")
 		if err != nil || !changed {
@@ -1083,7 +1167,13 @@ func (m *Manager) rollbackInterfaceTransition(
 			return
 		}
 	}
-	if err := m.startTransitionTarget(ctx, transition.SessionID, transition.NativeConversationID == "", false); err != nil {
+	if err := m.startTransitionTarget(
+		ctx,
+		transition.SessionID,
+		transition.NativeConversationID == "",
+		false,
+		domain.SessionInterfaceTransitionHistoryStrict,
+	); err != nil {
 		_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionRecovery,
 			"RECOVERY_REQUIRED", cause.Error()+"; source restore: "+err.Error())
 		return
@@ -1399,7 +1489,7 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 				if m.lcm == nil {
 					return nil, fmt.Errorf("recover transition %s: lifecycle manager is unavailable", transition.ID)
 				}
-				changed, rollbackErr := m.lcm.CommitControllerEpoch(
+				changed, rollbackErr := m.lcm.RestoreControllerEpoch(
 					ctx,
 					transition.SessionID,
 					transition.TargetMode,
@@ -1458,6 +1548,8 @@ func interfaceTransitionErrorCode(err error) string {
 		return "TARGET_INCOMPATIBLE"
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return "TARGET_AUTH_REQUIRED"
+	case errors.Is(err, ErrInterfaceProviderHistoryRecoveryUnavailable):
+		return "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"
 	case errors.Is(err, ErrNativeConversationMissing):
 		return "NATIVE_SESSION_MISSING"
 	case errors.Is(err, ErrNativeConversationUnverified):

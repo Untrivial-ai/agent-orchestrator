@@ -1586,6 +1586,11 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	agentSessionID := capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.AgentSessionID)))
+	checkpointOrigin := domain.ConversationCheckpointOrigin(strings.TrimSpace(string(in.ConversationCheckpointOrigin)))
+	if !checkpointOrigin.Valid() {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_CONVERSATION_CHECKPOINT_ORIGIN", "Conversation checkpoint origin must be human or coordination", nil)
+		return
+	}
 	if state == "" && agentSessionID == "" && in.Usage == nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "ACTIVITY_OR_SESSION_ID_REQUIRED", "Activity state or agent session ID is required", nil)
 		return
@@ -1596,16 +1601,17 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 	// never match its pre/post counterpart, so overlong values are dropped by
 	// the CLI; the cap here is defense against non-AO callers).
 	sig := ports.ActivitySignal{
-		Valid:                 state != "",
-		State:                 state,
-		Event:                 capActivityMeta(domain.SanitizeControlChars(in.Event)),
-		ToolName:              capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
-		ToolUseID:             capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
-		AgentSessionID:        agentSessionID,
-		LatestUserPrompt:      capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestUserPrompt)), 16<<10),
-		LatestAssistantUpdate: capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestAssistantUpdate)), 16<<10),
-		TranscriptPath:        capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
-		LaunchID:              capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
+		Valid:                        state != "",
+		State:                        state,
+		Event:                        capActivityMeta(domain.SanitizeControlChars(in.Event)),
+		ToolName:                     capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
+		ToolUseID:                    capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
+		AgentSessionID:               agentSessionID,
+		LatestUserPrompt:             capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestUserPrompt)), 16<<10),
+		LatestAssistantUpdate:        capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestAssistantUpdate)), 16<<10),
+		ConversationCheckpointOrigin: checkpointOrigin,
+		TranscriptPath:               capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
+		LaunchID:                     capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
 	}
 	if c.Activity != nil && (sig.Valid || sig.AgentSessionID != "") {
 		if err := c.Activity.ApplyActivitySignal(r.Context(), sessionID(r), sig); err != nil {

@@ -88,6 +88,10 @@ type fakeInterfaceTransitionSessionService struct {
 	transition             domain.SessionInterfaceTransition
 	acknowledgedSessionID  domain.SessionID
 	acknowledgedTransition string
+	startedSessionID       domain.SessionID
+	startedTarget          domain.SessionMode
+	startedPolicy          domain.SessionInterfaceTransitionPolicy
+	startedHistoryPolicy   domain.SessionInterfaceTransitionHistoryPolicy
 }
 
 func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
@@ -98,11 +102,16 @@ func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
 }
 
 func (f *fakeInterfaceTransitionSessionService) StartInterfaceTransition(
-	context.Context,
-	domain.SessionID,
-	domain.SessionMode,
-	domain.SessionInterfaceTransitionPolicy,
+	_ context.Context,
+	sessionID domain.SessionID,
+	target domain.SessionMode,
+	policy domain.SessionInterfaceTransitionPolicy,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (domain.SessionInterfaceTransition, error) {
+	f.startedSessionID = sessionID
+	f.startedTarget = target
+	f.startedPolicy = policy
+	f.startedHistoryPolicy = historyPolicy
 	return f.transition, nil
 }
 
@@ -1039,6 +1048,75 @@ func TestSessionsAPI_AcknowledgeInterfaceTransitionNotice(t *testing.T) {
 	if !response.OK || response.Transition.NoticeAcknowledgedAt == nil ||
 		!response.Transition.NoticeAcknowledgedAt.Equal(acknowledgedAt) {
 		t.Fatalf("acknowledgement response = %+v", response)
+	}
+}
+
+func TestSessionsAPI_StartInterfaceTransitionCarriesExplicitHistoryPolicy(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-provider-history", SessionID: "ao-1",
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Policy:        domain.SessionInterfaceTransitionDrain,
+			HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
+			Phase:         domain.SessionInterfaceTransitionRequested, CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/interface-transition",
+		`{"targetMode":"chat","policy":"drain","historyPolicy":"provider_history"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("start transition = %d, want 202; body=%s", status, body)
+	}
+	if svc.startedSessionID != "ao-1" || svc.startedTarget != domain.SessionModeChat ||
+		svc.startedPolicy != domain.SessionInterfaceTransitionDrain ||
+		svc.startedHistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("start input = session:%q target:%q policy:%q history:%q", svc.startedSessionID,
+			svc.startedTarget, svc.startedPolicy, svc.startedHistoryPolicy)
+	}
+	var response controllers.StartSessionInterfaceTransitionResponse
+	mustJSON(t, body, &response)
+	if response.Transition.HistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("response history policy = %q", response.Transition.HistoryPolicy)
+	}
+}
+
+func TestSessionsAPI_StartInterfaceTransitionDefaultsOmittedHistoryPolicyToStrict(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-strict", SessionID: "ao-1",
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Policy: domain.SessionInterfaceTransitionDrain, Phase: domain.SessionInterfaceTransitionRequested,
+			CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/interface-transition", `{"targetMode":"chat","policy":"drain"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("start transition = %d, want 202; body=%s", status, body)
+	}
+	if svc.startedHistoryPolicy != domain.SessionInterfaceTransitionHistoryStrict {
+		t.Fatalf("omitted history policy = %q, want strict", svc.startedHistoryPolicy)
+	}
+	var response controllers.StartSessionInterfaceTransitionResponse
+	mustJSON(t, body, &response)
+	if response.Transition.HistoryPolicy != domain.SessionInterfaceTransitionHistoryStrict {
+		t.Fatalf("response history policy = %q, want strict", response.Transition.HistoryPolicy)
 	}
 }
 

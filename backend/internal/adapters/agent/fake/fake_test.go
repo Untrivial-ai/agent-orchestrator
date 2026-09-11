@@ -222,7 +222,7 @@ func (s *lifecycleStore) UpdateSession(_ context.Context, rec domain.SessionReco
 	return nil
 }
 
-func (s *lifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord) (bool, error) {
+func (s *lifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, _ time.Time) (bool, error) {
 	s.sessions[rec.ID] = rec
 	return true, nil
 }

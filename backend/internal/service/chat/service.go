@@ -172,6 +172,10 @@ type StartConfig struct {
 	// handoff sets it because provider context without a visible transcript would
 	// make completed Terminal work disappear from Chat.
 	RequireNativeHistory bool
+	// HistoryPolicy carries explicit, attempt-scoped consent to ignore only
+	// legacy/untrusted hook text during a TUI-to-Chat replay. Trusted checkpoints
+	// and AO high-water facts remain mandatory.
+	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy
 	// SkipNativeHistoryImport resumes provider context without projecting its old
 	// events before ControllerReady. Agent switching uses this because its atomic
 	// provider boundary does not exist until ControllerReady commits; AO already
@@ -291,8 +295,51 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		if !found {
 			return nil, ports.ErrSessionNotFound
 		}
-		replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
-		replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
+		checkpointState := rec.Metadata.ConversationCheckpointState
+		if checkpointState == "" {
+			checkpointState = domain.ConversationCheckpointLegacy
+		}
+		trustedProvenance := checkpointState.Trusted() &&
+			rec.Metadata.ConversationCheckpointGeneration != "" &&
+			rec.Metadata.ConversationCheckpointNativeID != ""
+		trusted := trustedProvenance &&
+			rec.Metadata.ConversationCheckpointNativeID == cfg.ProviderConversationID
+		if rec.Metadata.ConversationCheckpointUnsettled ||
+			(checkpointState == domain.ConversationCheckpointComplete &&
+				strings.TrimSpace(rec.Metadata.LatestUserPrompt) == "" &&
+				strings.TrimSpace(rec.Metadata.LatestAssistantUpdate) != "") {
+			// A Stop without its prompt/turn identity cannot be matched safely by
+			// text: two turns may have identical answers. This hard gate is never
+			// waived by provider-history recovery.
+			replayCheckpoint.hardMismatches = append(replayCheckpoint.hardMismatches,
+				ports.ChatHistoryMismatchUnsettledBoundary)
+		}
+		switch {
+		case checkpointState == domain.ConversationCheckpointCoordination:
+			// AO-authored handoff/continuation turns are present in provider
+			// history but are never human replay evidence. The durable state is
+			// what carries this decision across a promptless Stop and restart.
+		case trustedProvenance && !trusted:
+			// A trusted checkpoint belongs to one exact provider-native thread.
+			// Explicit provider-history consent can waive ambiguous legacy text,
+			// never an identity boundary such as /clear selecting a new thread.
+			replayCheckpoint.hardMismatches = append(replayCheckpoint.hardMismatches,
+				ports.ChatHistoryMismatchNativeIdentity)
+		case trusted:
+			replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
+			replayCheckpoint.userMismatch = ports.ChatHistoryMismatchTrustedUserText
+			if checkpointState == domain.ConversationCheckpointComplete {
+				replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
+				replayCheckpoint.assistantMismatch = ports.ChatHistoryMismatchTrustedAssistantText
+			}
+		case cfg.HistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider:
+			// Zero/legacy/malformed provenance remains a strict gate by default,
+			// but only these dimensions can be waived by explicit recovery.
+			replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
+			replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
+			replayCheckpoint.userMismatch = ports.ChatHistoryMismatchUntrustedUserText
+			replayCheckpoint.assistantMismatch = ports.ChatHistoryMismatchUntrustedAssistantText
+		}
 	}
 
 	s.mu.RLock()
@@ -1266,6 +1313,7 @@ type StartRequest struct {
 	ProviderScopeID         string
 	ControllerGeneration    string
 	RequireNativeHistory    bool
+	HistoryPolicy           domain.SessionInterfaceTransitionHistoryPolicy
 	SkipNativeHistoryImport bool
 	// ControllerReady runs after the provider and generation exist but before
 	// live event projection starts.

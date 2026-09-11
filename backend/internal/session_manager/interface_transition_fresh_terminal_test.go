@@ -58,7 +58,7 @@ func TestInterfaceTransitionReservedTranscriptRequiresUntouchedTerminal(t *testi
 				target = domain.SessionModeTUI
 			}
 			transition, err := manager.StartInterfaceTransition(context.Background(), rec.ID,
-				target, domain.SessionInterfaceTransitionDrain)
+				target, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
 			if name == "absent" || name == "chat" {
 				if err != nil {
 					t.Fatal(err)
@@ -96,7 +96,7 @@ func TestInterfaceTransitionReservedTranscriptRechecksAfterFencing(t *testing.T)
 		return idleTerminalOutput
 	}
 	transition, err := manager.StartInterfaceTransition(context.Background(), rec.ID,
-		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
 	if err != nil {
 		t.Fatal(err)
 	}

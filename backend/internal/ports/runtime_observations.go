@@ -48,11 +48,16 @@ type ActivitySignal struct {
 	ToolUseID         string
 	AgentSessionID    string
 	// LatestUserPrompt and LatestAssistantUpdate are provider hook facts used
-	// to build a deterministic handoff. They are never promoted to system
-	// instructions and internal <ao-...> coordination turns are filtered by
-	// the hook client before submission.
+	// to build a deterministic handoff. Lifecycle accepts them only from their
+	// main-turn event boundaries (UserPromptSubmit and Stop) under the current
+	// runtime/controller generation. They are never promoted to system instructions,
+	// and internal <ao-...> coordination turns are filtered by the hook client.
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
+	// ConversationCheckpointOrigin distinguishes real human turns from AO's
+	// own coordination. Lifecycle persists coordination provenance across the
+	// prompt-submit/Stop boundary; an empty value is an older hook client.
+	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin
 	// TranscriptPath is a read-only provider-native transcript reference when
 	// the hook exposes one. AO stores the path, never rewrites the transcript.
 	TranscriptPath string

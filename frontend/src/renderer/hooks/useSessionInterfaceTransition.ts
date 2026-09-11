@@ -15,11 +15,13 @@ export type SessionInterfaceTransition = components["schemas"]["SessionInterface
 export type SessionInterfaceTransitionStatus =
 	components["schemas"]["SessionInterfaceTransitionStatusResponse"];
 export type SessionInterfaceTransitionPolicy = "drain" | "interrupt";
+export type SessionInterfaceTransitionHistoryPolicy = "strict" | "provider_history";
 export type SessionInterfaceMode = "chat" | "tui";
 
 type StartInterfaceTransitionInput = {
 	targetMode: SessionInterfaceMode;
 	policy: SessionInterfaceTransitionPolicy;
+	historyPolicy?: SessionInterfaceTransitionHistoryPolicy;
 };
 
 type StartInterfaceTransitionMutationInput = StartInterfaceTransitionInput & {

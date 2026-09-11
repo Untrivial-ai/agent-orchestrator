@@ -27,6 +27,7 @@ function transition(phase: SessionInterfaceTransition["phase"]): SessionInterfac
 		sourceMode: "tui",
 		targetMode: "chat",
 		policy: "drain",
+		historyPolicy: "strict",
 		phase,
 		createdAt: "2026-08-05T10:00:00Z",
 		updatedAt: "2026-08-05T10:00:01Z",
@@ -178,6 +179,123 @@ describe("SessionInterfaceSwitchDialog", () => {
 });
 
 describe("SessionInterfaceTransitionNotice", () => {
+	it("announces unsettled history and offers retry or stay actions", () => {
+		const onRetry = vi.fn();
+		const onDismiss = vi.fn();
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "TARGET_HISTORY_UNSETTLED",
+					errorDetail: "Interface switch failed (AO-2L): target history is not settled.",
+				}}
+				onDismiss={onDismiss}
+				onRetry={onRetry}
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("AO-2L");
+		fireEvent.click(screen.getByRole("button", { name: "Retry switch to Chat UI" }));
+		expect(onRetry).toHaveBeenCalledOnce();
+		expect(screen.queryByRole("button", { name: "Use provider history and switch" })).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Stay in Terminal" }));
+		expect(onDismiss).toHaveBeenCalledOnce();
+	});
+
+	it("offers provider-history recovery only for a legacy text mismatch", () => {
+		const onRetry = vi.fn();
+		const onUseProviderHistory = vi.fn();
+		const onDismiss = vi.fn();
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+					errorDetail: "Interface switch failed (AO-2L): legacy checkpoint text did not match.",
+				}}
+				onDismiss={onDismiss}
+				onRetry={onRetry}
+				onUseProviderHistory={onUseProviderHistory}
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("AO-2L");
+		fireEvent.click(screen.getByRole("button", { name: "Retry switch to Chat UI" }));
+		fireEvent.click(screen.getByRole("button", { name: "Use provider history and switch" }));
+		fireEvent.click(screen.getByRole("button", { name: "Stay in Terminal" }));
+		expect(onRetry).toHaveBeenCalledOnce();
+		expect(onUseProviderHistory).toHaveBeenCalledOnce();
+		expect(onDismiss).toHaveBeenCalledOnce();
+	});
+
+	it("retains explicit provider-history recovery after daemon restart", () => {
+		const onRetry = vi.fn();
+		const onUseProviderHistory = vi.fn();
+		const onDismiss = vi.fn();
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("recovery_required"),
+					historyPolicy: "provider_history",
+					errorCode: "DAEMON_RESTARTED",
+					errorDetail: "AO restored Terminal after the daemon restarted.",
+				}}
+				onDismiss={onDismiss}
+				onRetry={onRetry}
+				onUseProviderHistory={onUseProviderHistory}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("AO restored Terminal");
+		fireEvent.click(screen.getByRole("button", { name: "Retry switch to Chat UI" }));
+		fireEvent.click(screen.getByRole("button", { name: "Use provider history and switch" }));
+		fireEvent.click(screen.getByRole("button", { name: "Stay in Terminal" }));
+		expect(onRetry).toHaveBeenCalledOnce();
+		expect(onUseProviderHistory).toHaveBeenCalledOnce();
+		expect(onDismiss).toHaveBeenCalledOnce();
+	});
+
+	it("announces a rejected recovery attempt once inside AO-2L", () => {
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+					errorDetail: "Interface switch failed (AO-2L).",
+				}}
+				onDismiss={vi.fn()}
+				onRetry={vi.fn()}
+				recoveryError="Terminal history changed; retry with a fresh choice."
+			/>,
+		);
+
+		const [announcement] = screen.getAllByRole("alert");
+		expect(screen.getAllByRole("alert")).toHaveLength(1);
+		expect(announcement).toHaveTextContent("Interface switch failed (AO-2L).");
+		expect(announcement).toHaveTextContent(
+			"Recovery attempt failed: Terminal history changed; retry with a fresh choice.",
+		);
+	});
+
+	it("announces a notice dismissal failure once inside AO-2L", () => {
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "TARGET_HISTORY_UNSETTLED",
+					errorDetail: "Interface switch failed (AO-2L).",
+				}}
+				onDismiss={vi.fn()}
+				dismissError="Dismiss request was rejected."
+			/>,
+		);
+
+		const [announcement] = screen.getAllByRole("alert");
+		expect(screen.getAllByRole("alert")).toHaveLength(1);
+		expect(announcement).toHaveTextContent("Interface switch failed (AO-2L).");
+		expect(announcement).toHaveTextContent("Could not dismiss this message. Try again.");
+	});
+
 	it("offers an explicit discard action when drain preserves a draft", () => {
 		const onSwitchWithInterrupt = vi.fn();
 		render(

@@ -134,6 +134,11 @@ var (
 	// ErrInterfaceTransitionNoticeNotAcknowledgeable rejects acknowledgements for
 	// active/successful rows that have no failure or recovery notice to dismiss.
 	ErrInterfaceTransitionNoticeNotAcknowledgeable = errors.New("session: interface transition has no acknowledgeable notice")
+	// ErrInterfaceProviderHistoryRecoveryUnavailable rejects broad or stale
+	// recovery requests. AO permits provider authority only for the latest exact
+	// TUI-to-Chat saga after it proved every mismatch was legacy text, including
+	// the same explicit recovery saga after startup reconciliation interrupted it.
+	ErrInterfaceProviderHistoryRecoveryUnavailable = errors.New("session: provider-history recovery is unavailable")
 	// ErrResumeInProgress prevents concurrent resume requests from replacing the
 	// same runtime twice.
 	ErrResumeInProgress = errors.New("session: agent resume already in progress")
@@ -233,6 +238,7 @@ type lifecycleRecorder interface {
 	MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error
 	MarkChatSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata, boundary domain.ConversationBranch) error
 	CommitControllerEpoch(ctx context.Context, id domain.SessionID, source, target domain.SessionMode, nativeConversationID string, startFresh bool) (bool, error)
+	RestoreControllerEpoch(ctx context.Context, id domain.SessionID, source, target domain.SessionMode, nativeConversationID string, startFresh bool) (bool, error)
 	ConfirmAgentSwitchSourceStopped(ctx context.Context, confirmation domain.AgentSwitchSourceStopConfirmation) (bool, error)
 	ActivateAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchTargetActivation) (bool, error)
 	ActivateChatAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchChatTargetActivation) (bool, error)
@@ -501,9 +507,10 @@ func (m *Manager) beginHarnessUse(harness domain.AgentHarness) (func(), error) {
 	return release, nil
 }
 
-// latestUserPromptRecorder narrows the post-delivery write to the single fact
-// Send owns. A full SessionRecord update here could race a provider switch and
-// resurrect stale harness/runtime ownership read before the pane write.
+// latestUserPromptRecorder narrows the post-delivery write to the pane prompt's
+// coherent fallback checkpoint. A full SessionRecord update here could race a
+// provider switch and resurrect stale harness/runtime ownership read before the
+// pane write.
 type latestUserPromptRecorder interface {
 	RecordSessionLatestUserPrompt(context.Context, domain.SessionID, string, time.Time) (bool, error)
 }
@@ -2203,21 +2210,40 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 		ProjectID: rec.ProjectID,
 	}
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration)
+		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict)
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration)
+	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict)
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false, false)
+	return m.relaunchSessionWithPolicy(
+		ctx,
+		operation,
+		rec,
+		project,
+		ws,
+		restartHandle,
+		false,
+		false,
+		domain.SessionInterfaceTransitionHistoryStrict,
+	)
 }
 
-func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle, forceFresh, requireNativeHistory, "")
+func (m *Manager) relaunchSessionWithPolicy(
+	ctx context.Context,
+	operation string,
+	rec domain.SessionRecord,
+	project domain.ProjectRecord,
+	ws ports.WorkspaceInfo,
+	restartHandle *ports.RuntimeHandle,
+	forceFresh, requireNativeHistory bool,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
+) (RestoreResult, error) {
+	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle, forceFresh, requireNativeHistory, "", historyPolicy)
 }
 
-func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string) (RestoreResult, error) {
+func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy) (RestoreResult, error) {
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.
@@ -2227,7 +2253,9 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		} else if strings.TrimSpace(rec.Metadata.ProviderConversationID) == "" {
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
-		return m.resumeChatController(ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration)
+		return m.resumeChatController(
+			ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration, historyPolicy,
+		)
 	}
 
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -2338,12 +2366,14 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 	}
 	// Bind an exact native resume to the target launch immediately. Passive Codex
-	// resumes do not necessarily emit SessionStart until the next user turn, but
-	// `codex resume <id>` cannot silently select a different conversation. The
-	// interface coordinator provides the same guarantee after it freezes Chat and
-	// transfers the required native history. Fresh and fallback launches still
-	// require current-generation identity proof from their hooks.
-	bindNativeIdentity := mode == RestoreModeNative && rec.Harness == domain.HarnessCodex
+	// resumes do not necessarily emit SessionStart until the next user turn, and
+	// Claude emits SessionStart after its resume process is already running, but
+	// both adapters' explicit resume commands name the exact stored conversation.
+	// The interface coordinator provides the same guarantee after it freezes Chat
+	// and transfers the required native history. Fresh and fallback launches
+	// still require current-generation identity proof from their hooks.
+	bindNativeIdentity := mode == RestoreModeNative &&
+		(rec.Harness == domain.HarnessCodex || rec.Harness == domain.HarnessClaudeCode)
 	if (bindNativeIdentity || (requireNativeHistory && !forceFresh)) && strings.TrimSpace(metadata.AgentSessionID) != "" {
 		metadata.AgentSessionIDLaunchID = launchID
 	}
