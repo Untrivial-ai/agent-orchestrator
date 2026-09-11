@@ -53,7 +53,7 @@
 			"package": "aoagents.dev",
 			"googleServicesFile": "./google-services.json",
 			"adaptiveIcon": {
-				"backgroundColor": "#0a0b0d",
+				"backgroundImage": "./assets/android-icon-background.png",
 				"foregroundImage": "./assets/android-icon-foreground.png",
 				"monochromeImage": "./assets/android-icon-monochrome.png"
 			},
