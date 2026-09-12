@@ -288,7 +288,6 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 		return nil, false, fmt.Errorf("%w: invalid cursor", ErrInvalidQuery)
 	}
 	read := func(rows *sql.Rows) ([]Result, error) {
-		defer func() { _ = rows.Close() }()
 		out := make([]Result, 0, limit)
 		for rows.Next() {
 			var r Result
@@ -301,15 +300,19 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 			}
 			out = append(out, r)
 		}
-		return out, rows.Err()
+		return out, nil
 	}
 	if q == "" {
 		rows, err := i.db.QueryContext(ctx, `SELECT id,data FROM results ORDER BY activity DESC,id LIMIT ? OFFSET ?`, limit+1, offset)
 		if err != nil {
 			return nil, false, err
 		}
+		defer func() { _ = rows.Close() }()
 		out, err := read(rows)
 		if err != nil {
+			return nil, false, err
+		}
+		if err := rows.Err(); err != nil {
 			return nil, false, err
 		}
 		more := len(out) > limit
@@ -336,8 +339,12 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 		if err != nil {
 			return nil, false, err
 		}
+		defer func() { _ = rows.Close() }()
 		out, err = read(rows)
 		if err != nil {
+			return nil, false, err
+		}
+		if err := rows.Err(); err != nil {
 			return nil, false, err
 		}
 		if len(out) > limit {
@@ -360,8 +367,12 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 	if err != nil {
 		return nil, false, err
 	}
+	defer func() { _ = rows.Close() }()
 	pool, err := read(rows)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := rows.Err(); err != nil {
 		return nil, false, err
 	}
 	fuzzy := pool[:0]

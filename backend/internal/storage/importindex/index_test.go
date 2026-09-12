@@ -179,3 +179,20 @@ func TestSearchExplicitTitleSuffix(t *testing.T) {
 		t.Fatal(rows, err)
 	}
 }
+
+func TestSearchStrongAndFuzzyWithSingleConnection(t *testing.T) {
+	i, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = i.Close() }()
+	i.db.SetMaxOpenConns(1)
+	put(t, i, "strong", "Payment processing", "root", "one", 1)
+	put(t, i, "fuzzy", "Payment procesing", "root", "one", 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, more, err := i.Search(ctx, "payment processing", 50, 0)
+	if err != nil || more || len(rows) != 2 || rows[0].Session.NativeSessionID != "strong" || rows[1].Session.NativeSessionID != "fuzzy" {
+		t.Fatalf("rows=%+v more=%v err=%v", rows, more, err)
+	}
+}
