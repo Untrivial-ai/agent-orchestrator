@@ -175,12 +175,12 @@ export function GeneralSettingsSection({
 		<>
 			{/* Appearance */}
 			<SettingsSection title={t("settings.appearance")} titleHidden={titleHidden} grouped>
-				<SettingsRow label={t("settings.theme")}>
+				<SettingsRow label={t("settings.theme")} description={t("settings.theme.automaticDescription")} className="[&>div:first-child]:max-w-[55%]">
 					<div className="flex items-center gap-1.5">
 						<SettingsOptionMenu
 							aria-label={t("settings.colorTheme")}
 							value={themeStyle}
-							options={COLOR_THEME_OPTIONS}
+							options={[{ value: "automatic", label: t("settings.theme.automatic") }, ...COLOR_THEME_OPTIONS]}
 							onChange={setThemeStyle}
 						/>
 						<SettingsOptionMenu

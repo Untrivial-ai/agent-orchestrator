@@ -1,3 +1,4 @@
+import { readOmarchyPalette } from "./main/omarchy-theme";
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import {
@@ -1949,6 +1950,8 @@ ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
 // preview WebContentsViews (which follow prefers-color-scheme) flip in step with
 // the shell. The three preference values map 1:1 onto themeSource; "system" keeps
 // both the preview and the shell's own matchMedia following the OS.
+ipcMain.handle("theme:omarchy", () => readOmarchyPalette());
+
 ipcMain.handle("theme:set", (_event, preference: "light" | "dark" | "system") => {
 	if (preference === "light" || preference === "dark" || preference === "system") {
 		nativeTheme.themeSource = preference;

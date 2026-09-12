@@ -136,6 +136,7 @@ if (typeof window !== "undefined") {
 			onFullScreen: () => () => undefined,
 		},
 		theme: {
+			getOmarchy: async () => null,
 			set: async () => undefined,
 			persistTerminal: async () => undefined,
 		},

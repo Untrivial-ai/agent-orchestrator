@@ -1,3 +1,5 @@
+import type { OmarchyPalette } from "../../shared/omarchy-theme";
+import { setOmarchyPalette } from "../lib/theme";
 import { create } from "zustand";
 import type { TerminalTarget } from "../types/terminal";
 import {
@@ -7,7 +9,6 @@ import {
 	readStoredThemeStyle,
 	resolveTheme,
 	runThemeTransition,
-	systemTheme,
 	themeStorageKey,
 	themeStyleStorageKey,
 	type Theme,
@@ -77,6 +78,8 @@ export type UiState = {
 	resolvedTheme: Theme;
 	/** Named color style theme (e.g. "catppuccin", "nord") — independent of light/dark mode. */
 	themeStyle: ThemeStyle;
+	omarchyRevision: number;
+	updateOmarchy: (palette: OmarchyPalette | null) => void;
 	/** When true, developer-only release controls are available. Default off. */
 	developerMode: boolean;
 	restartingProjectIds: ReadonlySet<string>;
@@ -210,6 +213,14 @@ export const useUiStore = create<UiState>((set, get) => ({
 	themePreference: initialThemePreference,
 	resolvedTheme: resolveTheme(initialThemePreference),
 	themeStyle: initialThemeStyle,
+	omarchyRevision: 0,
+	updateOmarchy: (palette) => {
+		setOmarchyPalette(palette);
+		const resolvedTheme = resolveTheme(get().themePreference);
+		applyDocumentTheme(resolvedTheme);
+		applyDocumentThemeStyle(get().themeStyle);
+		set({ resolvedTheme, omarchyRevision: get().omarchyRevision + 1 });
+	},
 	developerMode: initialDeveloperMode(),
 	restartingProjectIds: new Set<string>(),
 	provisioningProjectIds: new Set<string>(),
@@ -228,8 +239,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 	setThemePreference: (themePreference) => {
 		if (get().themePreference === themePreference) return;
 		runThemeTransition(() => {
-			const resolvedTheme = resolveTheme(themePreference);
 			getLocalStorage()?.setItem(themeStorageKey, themePreference);
+			const resolvedTheme = resolveTheme(themePreference);
+			applyDocumentThemeStyle(get().themeStyle);
 			applyDocumentTheme(resolvedTheme);
 			set({ themePreference, resolvedTheme });
 		});
@@ -239,7 +251,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 		runThemeTransition(() => {
 			getLocalStorage()?.setItem(themeStyleStorageKey, themeStyle);
 			applyDocumentThemeStyle(themeStyle);
-			set({ themeStyle });
+			const resolvedTheme = resolveTheme(get().themePreference);
+			applyDocumentTheme(resolvedTheme);
+			set({ themeStyle, resolvedTheme });
 		});
 	},
 	setDeveloperMode: (developerMode) => {
@@ -255,7 +269,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 	syncSystemTheme: () => {
 		const { themePreference, resolvedTheme } = get();
 		if (themePreference !== "system") return;
-		const next = systemTheme();
+		const next = resolveTheme(themePreference);
 		if (next === resolvedTheme) return;
 		runThemeTransition(() => {
 			applyDocumentTheme(next);

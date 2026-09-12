@@ -1027,6 +1027,8 @@
 	"settings.theme.dark": "Dunkel",
 	"settings.theme.light": "Hell",
 	"settings.theme.system": "System",
+	"settings.theme.automatic": "Automatisch (Omarchy)",
+	"settings.theme.automaticDescription": "Automatisch folgt Omarchy bei der Darstellung System; andernfalls wird Orchestrate verwendet.",
 	"settings.title": "Einstellungen",
 	"update.restart.title": "Neu starten und aktualisieren",
 	"update.restart.whatsNew": "Neu in dieser Version",

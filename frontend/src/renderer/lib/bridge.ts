@@ -47,6 +47,7 @@ export const aoBridge: AoBridge =
 			onFullScreen: () => () => undefined,
 		},
 		theme: {
+			getOmarchy: async () => null,
 			set: async () => undefined,
 			persistTerminal: async () => undefined,
 		},
