@@ -2737,10 +2737,7 @@ func TestSessionsAPI_StreamWorkspaceChanges_BlockedClientExits(t *testing.T) {
 		close(handlerDone)
 	}()
 
-	deadline := time.Now().Add(time.Second)
-	for !tw.Flushed && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	time.Sleep(20 * time.Millisecond)
 
 	writeDeadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(writeDeadline) {
