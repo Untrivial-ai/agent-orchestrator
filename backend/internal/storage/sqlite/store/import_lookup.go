@@ -28,24 +28,25 @@ func (s *Store) FindImportedSessions(ctx context.Context, identities []ports.Imp
 	found := make([]bool, len(identities))
 	after := ""
 	for len(out) < len(identities) {
-		rows, err := s.readDB.QueryContext(ctx, `WITH targets AS (SELECT json_extract(value,'$.Provider') provider,json_extract(value,'$.NativeSessionID') native FROM json_each(?))
+		batch, err := func() ([]domain.SessionRecord, error) {
+			rows, err := s.readDB.QueryContext(ctx, `WITH targets AS (SELECT json_extract(value,'$.Provider') provider,json_extract(value,'$.NativeSessionID') native FROM json_each(?))
  SELECT DISTINCT s.id,s.project_id,s.harness,s.provider_conversation_id,s.agent_session_id,s.native_transcript_path
  FROM targets t JOIN sessions s ON s.harness=t.provider AND (s.provider_conversation_id=t.native OR s.agent_session_id=t.native)
  WHERE s.is_terminated=0 AND s.id>? ORDER BY s.id LIMIT 128`, string(raw), after)
-		if err != nil {
-			return nil, err
-		}
-		batch := make([]domain.SessionRecord, 0, 128)
-		for rows.Next() {
-			var r domain.SessionRecord
-			if err = rows.Scan(&r.ID, &r.ProjectID, &r.Harness, &r.Metadata.ProviderConversationID, &r.Metadata.AgentSessionID, &r.Metadata.NativeTranscriptPath); err != nil {
-				_ = rows.Close()
+			if err != nil {
 				return nil, err
 			}
-			batch = append(batch, r)
-		}
-		err = rows.Err()
-		_ = rows.Close()
+			defer func() { _ = rows.Close() }()
+			batch := make([]domain.SessionRecord, 0, 128)
+			for rows.Next() {
+				var r domain.SessionRecord
+				if err := rows.Scan(&r.ID, &r.ProjectID, &r.Harness, &r.Metadata.ProviderConversationID, &r.Metadata.AgentSessionID, &r.Metadata.NativeTranscriptPath); err != nil {
+					return nil, err
+				}
+				batch = append(batch, r)
+			}
+			return batch, rows.Err()
+		}()
 		if err != nil {
 			return nil, err
 		}

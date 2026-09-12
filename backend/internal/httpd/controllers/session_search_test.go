@@ -3,13 +3,14 @@ package controllers
 import (
 	"context"
 	"errors"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimportsvc"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimportsvc"
 )
 
 type searchAPIFake struct {

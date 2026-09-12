@@ -3,12 +3,13 @@ package importindex
 import (
 	"context"
 	"fmt"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 )
 
 func put(t testing.TB, i *Index, id, title, root, generation string, activity int64) {

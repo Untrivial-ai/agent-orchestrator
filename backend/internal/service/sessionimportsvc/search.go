@@ -19,9 +19,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/importindex"
 )
 
+// ErrInvalidSearch reports an invalid title query or continuation cursor.
 var ErrInvalidSearch = importindex.ErrInvalidQuery
+
+// ErrDestinationConfirmation requires a fresh, explicit destination confirmation.
 var ErrDestinationConfirmation = errors.New("destination confirmation required")
 
+// SearchStatus describes the current shared metadata refresh.
 type SearchStatus struct {
 	Running     bool     `json:"running"`
 	Scanned     int      `json:"scanned"`
@@ -30,6 +34,8 @@ type SearchStatus struct {
 	CompletedAt string   `json:"completedAt,omitempty"`
 	Errors      []string `json:"errors"`
 }
+
+// SearchResult exposes one title match and its durable import marker.
 type SearchResult struct {
 	ID           string `json:"id"`
 	Title        string `json:"title"`
@@ -39,11 +45,15 @@ type SearchResult struct {
 	SessionID    string `json:"sessionId,omitempty"`
 	ProjectID    string `json:"projectId,omitempty"`
 }
+
+// SearchPage contains a bounded result page and refresh status.
 type SearchPage struct {
 	Results    []SearchResult `json:"results"`
 	NextCursor string         `json:"nextCursor,omitempty"`
 	Status     SearchStatus   `json:"status"`
 }
+
+// Destination previews the action and repository for one selected conversation.
 type Destination struct {
 	ID                string `json:"id"`
 	Title             string `json:"title"`
@@ -56,11 +66,15 @@ type Destination struct {
 	Reason            string `json:"reason,omitempty"`
 	ConfirmationToken string `json:"confirmationToken,omitempty"`
 }
+
+// SelectedInput confirms the previewed destination and optional project registration.
 type SelectedInput struct {
 	ConfirmationToken string `json:"confirmationToken"`
 	AddProject        bool   `json:"addProject"`
 	LocateFolder      string `json:"locateFolder,omitempty"`
 }
+
+// SelectedResult reports a dormant import, including retryable partial registration.
 type SelectedResult struct {
 	SessionID       string `json:"sessionId,omitempty"`
 	ProjectID       string `json:"projectId,omitempty"`
@@ -96,6 +110,8 @@ func (s *Service) EnableSearch(ctx context.Context, dir string) error {
 	}
 	return nil
 }
+
+// CloseSearch cancels discovery and closes its cache after all refresh work ends.
 func (s *Service) CloseSearch() error {
 	if s.search == nil {
 		return nil
@@ -106,6 +122,8 @@ func (s *Service) CloseSearch() error {
 	s.search.wg.Wait()
 	return s.search.index.Close()
 }
+
+// SearchStatus returns a snapshot of the shared refresh state.
 func (s *Service) SearchStatus() SearchStatus {
 	if s.search == nil {
 		return SearchStatus{Errors: []string{"Search is unavailable"}}
@@ -117,6 +135,8 @@ func (s *Service) SearchStatus() SearchStatus {
 	status.Errors = append([]string{}, status.Errors...)
 	return status
 }
+
+// RefreshSearch starts or joins a daemon-lifecycle metadata refresh.
 func (s *Service) RefreshSearch() SearchStatus {
 	state := s.search
 	if state == nil {
@@ -203,6 +223,8 @@ func (s *Service) refreshSearch() {
 	state.status.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	state.mu.Unlock()
 }
+
+// Search reads a bounded cached page without starting provider discovery.
 func (s *Service) Search(ctx context.Context, query string, limit int, cursor string) (SearchPage, error) {
 	if s.search == nil {
 		return SearchPage{}, fmt.Errorf("search unavailable")
@@ -331,6 +353,8 @@ func (s *Service) selected(ctx context.Context, id string) (sessionimport.Import
 	}
 	return sessionimport.ImportableSession{}, ErrImportSessionNotFound
 }
+
+// Destination previews a selected source or returns its already-imported session.
 func (s *Service) Destination(ctx context.Context, id, locate string) (Destination, error) {
 	if existing, ok, err := s.existingSelected(ctx, id); err != nil {
 		return Destination{}, err
@@ -393,9 +417,8 @@ func (s *Service) destination(ctx context.Context, id string, target sessionimpo
 		}
 		if info, err := os.Stat(locate); err != nil || !info.IsDir() {
 			d.Reason = "Choose an existing repository folder."
-			return d, nil
+			return d, nil //nolint:nilerr // An invalid user-selected folder is an unavailable destination, not an API failure.
 		}
-		cwd = locate
 	}
 
 	projects, err := s.projects.List(ctx)
@@ -430,6 +453,8 @@ func (s *Service) destination(ctx context.Context, id string, target sessionimpo
 	d.ConfirmationToken = importindex.ID(id, common, d.Path)
 	return d, nil
 }
+
+// ImportSelected registers one confirmed dormant history with idempotent retries.
 func (s *Service) ImportSelected(ctx context.Context, id string, in SelectedInput) (SelectedResult, error) {
 	if err := s.imports.Acquire(ctx, 1); err != nil {
 		return SelectedResult{}, err
@@ -501,11 +526,11 @@ func (s *Service) refreshTitles(ctx context.Context, src sessionimport.MetadataS
 	if err != nil || unchanged {
 		return err
 	}
-	if err = s.search.index.BeginTitles(ctx, key); err != nil {
+	if err := s.search.index.BeginTitles(ctx, key); err != nil {
 		return err
 	}
 	if info != nil {
-		if err = src.VisitTitles(ctx, func(id, title string) error {
+		if err := src.VisitTitles(ctx, func(id, title string) error {
 			if err := s.search.index.SeenTitle(ctx, key, id); err != nil {
 				return err
 			}
@@ -514,7 +539,7 @@ func (s *Service) refreshTitles(ctx context.Context, src sessionimport.MetadataS
 			return err
 		}
 	}
-	if err = s.search.index.CompleteTitles(ctx, key); err != nil {
+	if err := s.search.index.CompleteTitles(ctx, key); err != nil {
 		return err
 	}
 	return s.search.index.MarkTitles(ctx, key, size, mtime)

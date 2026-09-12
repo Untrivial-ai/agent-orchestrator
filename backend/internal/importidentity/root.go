@@ -3,15 +3,17 @@
 package importidentity
 
 import (
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"path/filepath"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// Matches compares provider roots, resolving aliases without requiring the transcript.
 func Matches(provider domain.AgentHarness, root, transcript string) bool {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(transcript) {
 		return false
 	}
-	depth := 0
+	var depth int
 	switch provider {
 	case domain.HarnessClaudeCode:
 		depth = 3

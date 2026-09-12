@@ -7,11 +7,13 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimportsvc"
-	"github.com/go-chi/chi/v5"
 )
 
+// SessionSearchService exposes cached search, destination preview, and selected import.
 type SessionSearchService interface {
 	Search(context.Context, string, int, string) (sessionimportsvc.SearchPage, error)
 	RefreshSearch() sessionimportsvc.SearchStatus

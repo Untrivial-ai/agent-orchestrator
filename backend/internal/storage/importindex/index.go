@@ -16,25 +16,33 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 	"golang.org/x/text/unicode/norm"
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // Register the repository SQLite driver for this independent cache.
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 )
 
+// ErrInvalidQuery reports invalid search text or pagination input.
 var ErrInvalidQuery = errors.New("invalid search query")
 
+// Index stores rebuildable provider metadata in a separate SQLite cache.
 type Index struct{ db *sql.DB }
+
+// Result binds an opaque identity to cached conversation metadata.
 type Result struct {
 	ID      string
 	Session sessionimport.ImportableSession
 }
 
+// ID derives an opaque identity from provider, canonical root, and native ID.
 func ID(provider, root, native string) string {
 	sum := sha256.Sum256([]byte(provider + "\x00" + root + "\x00" + native))
 	return hex.EncodeToString(sum[:])
 }
+
+// Open creates or reopens a versioned metadata cache under the configured data directory.
 func Open(dir string) (*Index, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	u := url.URL{Scheme: "file", Path: filepath.Join(dir, "session-search-v1.db")}
@@ -73,6 +81,8 @@ func Open(dir string) (*Index, error) {
 	}
 	return &Index{db: db}, nil
 }
+
+// Close releases the cache database connections.
 func (i *Index) Close() error { return i.db.Close() }
 
 // Normalize folds compatibility Unicode and whitespace while preserving readable letters.
@@ -94,6 +104,8 @@ func grams(s string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// Seen marks an unchanged file present in the current scan generation.
 func (i *Index) Seen(ctx context.Context, root, path string, size, mtime int64, generation string) (bool, error) {
 	result, err := i.db.ExecContext(ctx, `UPDATE files SET generation=? WHERE root=? AND path=? AND size=? AND mtime=?`, generation, root, path, size, mtime)
 	if err != nil {
@@ -102,6 +114,8 @@ func (i *Index) Seen(ctx context.Context, root, path string, size, mtime int64, 
 	n, err := result.RowsAffected()
 	return n > 0, err
 }
+
+// Put persists changed file metadata and rebuilds its grouped conversation.
 func (i *Index) Put(ctx context.Context, root, path string, size, mtime int64, generation string, s sessionimport.ImportableSession) error {
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -122,11 +136,11 @@ func (i *Index) Put(ctx context.Context, root, path string, size, mtime int64, g
 	if err != nil {
 		return err
 	}
-	if err = rebuild(ctx, tx, id); err != nil {
+	if err := rebuild(ctx, tx, id); err != nil {
 		return err
 	}
 	if previous != "" && previous != id {
-		if err = rebuild(ctx, tx, previous); err != nil {
+		if err := rebuild(ctx, tx, previous); err != nil {
 			return err
 		}
 	}
@@ -147,7 +161,7 @@ func rebuild(ctx context.Context, tx *sql.Tx, id string) error {
 		return err
 	}
 	var s sessionimport.ImportableSession
-	if err = json.Unmarshal(data, &s); err != nil {
+	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
 	var title string
@@ -177,6 +191,8 @@ func rebuild(ctx context.Context, tx *sql.Tx, id string) error {
 	}
 	return nil
 }
+
+// Title persists a provider title override and updates the corresponding result.
 func (i *Index) Title(ctx context.Context, root, native, title string) error {
 	tx, err := i.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -201,21 +217,22 @@ func (i *Index) Title(ctx context.Context, root, native, title string) error {
 // Complete deletes stale rows only after the caller reports an error-free traversal.
 func (i *Index) Complete(ctx context.Context, root, generation string) error {
 	for {
-		rows, err := i.db.QueryContext(ctx, `SELECT DISTINCT id FROM files WHERE root=? AND generation!=? LIMIT 64`, root, generation)
-		if err != nil {
-			return err
-		}
-		var ids []string
-		for rows.Next() {
-			var id string
-			if err = rows.Scan(&id); err != nil {
-				_ = rows.Close()
-				return err
+		ids, err := func() ([]string, error) {
+			rows, err := i.db.QueryContext(ctx, `SELECT DISTINCT id FROM files WHERE root=? AND generation!=? LIMIT 64`, root, generation)
+			if err != nil {
+				return nil, err
 			}
-			ids = append(ids, id)
-		}
-		err = rows.Err()
-		_ = rows.Close()
+			defer func() { _ = rows.Close() }()
+			ids := make([]string, 0, 64)
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					return nil, err
+				}
+				ids = append(ids, id)
+			}
+			return ids, rows.Err()
+		}()
 		if err != nil {
 			return err
 		}
@@ -239,11 +256,13 @@ func (i *Index) Complete(ctx context.Context, root, generation string) error {
 			_ = tx.Rollback()
 			return err
 		}
-		if err = tx.Commit(); err != nil {
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
 }
+
+// Get retrieves one cached conversation by opaque identity.
 func (i *Index) Get(ctx context.Context, id string) (Result, error) {
 	var data []byte
 	err := i.db.QueryRowContext(ctx, `SELECT data FROM results WHERE id=?`, id).Scan(&data)
@@ -270,7 +289,7 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 	}
 	read := func(rows *sql.Rows) ([]Result, error) {
 		defer func() { _ = rows.Close() }()
-		out := []Result{}
+		out := make([]Result, 0, limit)
 		for rows.Next() {
 			var r Result
 			var data []byte
@@ -308,10 +327,11 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 	if err := i.db.QueryRowContext(ctx, `SELECT count(*) FROM results WHERE `+where, filterArgs...).Scan(&strongCount); err != nil {
 		return nil, false, err
 	}
-	out := []Result{}
+	out := make([]Result, 0, limit)
 	if offset < strongCount {
 		args := append([]any{}, filterArgs...)
 		args = append(args, q, q, q, limit+1, offset)
+		//nolint:gosec // Only fixed predicates are concatenated; all query values are bound parameters.
 		rows, err := i.db.QueryContext(ctx, `SELECT id,data FROM results WHERE `+where+` ORDER BY CASE WHEN normalized=? THEN 0 WHEN instr(normalized,?)=1 THEN 1 WHEN instr(normalized,?)>0 THEN 2 ELSE 3 END,activity DESC,id LIMIT ? OFFSET ?`, args...)
 		if err != nil {
 			return nil, false, err
@@ -335,6 +355,7 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 		args = append(args, g)
 	}
 	args = append(args, filterArgs...)
+	//nolint:gosec // Concatenation contains only fixed predicates and question-mark placeholders.
 	rows, err := i.db.QueryContext(ctx, `SELECT r.id,r.data FROM results r JOIN (SELECT id,count(*) hits FROM grams WHERE gram IN (`+strings.Join(marks, ",")+`) GROUP BY id) g ON g.id=r.id WHERE NOT (`+where+`) ORDER BY g.hits DESC,r.activity DESC,r.id LIMIT 1000`, args...)
 	if err != nil {
 		return nil, false, err
@@ -439,29 +460,39 @@ func (i *Index) TitlesUnchanged(ctx context.Context, root string, size, mtime in
 	}
 	return found == 1, err
 }
+
+// MarkTitles records the fingerprint of a successfully visited title index.
 func (i *Index) MarkTitles(ctx context.Context, root string, size, mtime int64) error {
 	_, err := i.db.ExecContext(ctx, `INSERT INTO title_fingerprints VALUES(?,?,?) ON CONFLICT(root) DO UPDATE SET size=excluded.size,mtime=excluded.mtime`, root, size, mtime)
 	return err
 }
 
+// MarkScan persists whether a provider scan still requires completion.
 func (i *Index) MarkScan(ctx context.Context, root string, incomplete bool) error {
 	_, err := i.db.ExecContext(ctx, `INSERT INTO scan_state VALUES(?,?) ON CONFLICT(root) DO UPDATE SET incomplete=excluded.incomplete`, root, incomplete)
 	return err
 }
+
+// Incomplete reports whether an interrupted provider scan remains in the cache.
 func (i *Index) Incomplete(ctx context.Context) (bool, error) {
 	var n int
 	err := i.db.QueryRowContext(ctx, `SELECT count(*) FROM scan_state WHERE incomplete=1`).Scan(&n)
 	return n > 0, err
 }
 
+// BeginTitles resets the visited-title set for a provider root.
 func (i *Index) BeginTitles(ctx context.Context, root string) error {
 	_, err := i.db.ExecContext(ctx, `DELETE FROM seen_titles WHERE root=?`, root)
 	return err
 }
+
+// SeenTitle marks a native identity present in the current title scan.
 func (i *Index) SeenTitle(ctx context.Context, root, native string) error {
 	_, err := i.db.ExecContext(ctx, `INSERT OR IGNORE INTO seen_titles VALUES(?,?)`, root, native)
 	return err
 }
+
+// CompleteTitles removes overrides missing from a successfully completed title scan.
 func (i *Index) CompleteTitles(ctx context.Context, root string) error {
 	for {
 		var native string
@@ -490,7 +521,7 @@ func (i *Index) CompleteTitles(ctx context.Context, root string) error {
 			_ = tx.Rollback()
 			return err
 		}
-		if err = tx.Commit(); err != nil {
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}

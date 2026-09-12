@@ -13,6 +13,7 @@ import (
 	"strings"
 )
 
+// ErrInvalidMetadataSource reports a transcript outside its provider source boundary.
 var ErrInvalidMetadataSource = errors.New("invalid provider source")
 
 // MetadataSource provides bounded metadata reads without usage scans or an in-memory inventory.
@@ -41,9 +42,17 @@ func canonicalRoot(path string, err error) (string, error) {
 	}
 	return filepath.Clean(path), nil
 }
-func (s *ClaudeSource) MetadataRoot() (string, error)                                 { return canonicalRoot(s.resolveConfigDir()) }
-func (s *CodexSource) MetadataRoot() (string, error)                                  { return canonicalRoot(s.resolveHome()) }
+
+// MetadataRoot returns the canonical Claude state root.
+func (s *ClaudeSource) MetadataRoot() (string, error) { return canonicalRoot(s.resolveConfigDir()) }
+
+// MetadataRoot returns the canonical Codex state root.
+func (s *CodexSource) MetadataRoot() (string, error) { return canonicalRoot(s.resolveHome()) }
+
+// VisitTitles does nothing because Claude titles live in transcript metadata.
 func (s *ClaudeSource) VisitTitles(context.Context, func(string, string) error) error { return nil }
+
+// VisitTitles streams Codex title overrides without retaining a history-sized map.
 func (s *CodexSource) VisitTitles(ctx context.Context, visit func(string, string) error) error {
 	root, err := s.MetadataRoot()
 	if err != nil {
@@ -68,6 +77,8 @@ func (s *CodexSource) VisitTitles(ctx context.Context, visit func(string, string
 	}
 	return errors.Join(err, visitErr)
 }
+
+// VisitMetadata visits Claude transcript files in bounded directory batches.
 func (s *ClaudeSource) VisitMetadata(ctx context.Context, visit func(string, os.FileInfo) error) error {
 	root, err := s.MetadataRoot()
 	if err != nil {
@@ -75,6 +86,8 @@ func (s *ClaudeSource) VisitMetadata(ctx context.Context, visit func(string, os.
 	}
 	return walkMetadata(ctx, filepath.Join(root, "projects"), 2, isClaudeTranscript, visit, true)
 }
+
+// VisitMetadata visits Codex transcripts in newest-first date order.
 func (s *CodexSource) VisitMetadata(ctx context.Context, visit func(string, os.FileInfo) error) error {
 	root, err := s.MetadataRoot()
 	if err != nil {
@@ -200,6 +213,8 @@ func metadataBytes(ctx context.Context, root, path string) ([]byte, []byte, os.F
 	}
 	return head, tail, info, ctx.Err()
 }
+
+// ReadMetadata reads bounded Claude metadata without scanning token usage.
 func (s *ClaudeSource) ReadMetadata(ctx context.Context, path string) (ImportableSession, bool, error) {
 	root, err := s.MetadataRoot()
 	if err != nil {
@@ -240,6 +255,8 @@ func (s *ClaudeSource) ReadMetadata(ctx context.Context, path string) (Importabl
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	return ImportableSession{Provider: s.Provider(), ConfigDir: root, NativeSessionID: id, TranscriptPath: path, CWD: meta.cwd, Branch: meta.gitBranch, Title: metadataTitle(title, meta.firstUserText, id), LastActivity: last, SizeBytes: info.Size(), TokenCount: -1}, true, nil
 }
+
+// ReadMetadata reads bounded Codex metadata without scanning token usage.
 func (s *CodexSource) ReadMetadata(ctx context.Context, path string) (ImportableSession, bool, error) {
 	root, err := s.MetadataRoot()
 	if err != nil {
