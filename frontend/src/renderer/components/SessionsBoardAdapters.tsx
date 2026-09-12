@@ -283,40 +283,37 @@ function pullRequestProgressLabel(
 		.join(" · ");
 }
 
-// Keep the board metric scannable by showing cost only. The full cost/token
-// summary remains available from the hover tooltip and to screen readers.
+// Show the token count on the board so each card surfaces how much it has
+// processed. The exact figure and the dollar estimate (when known) stay in the
+// hover tooltip and the accessible label. When the provider reported no token
+// count, keep a known dollar estimate rather than blanking the chip; render
+// nothing only when neither is known, so an empty card never shows a
+// misleading zero. `processedTokens` and `estimatedCost` are independently
+// nullable: tokens need both input and output counts, cost is derived from
+// nano-USD values.
 function toUsagePresentation(
 	usage: SessionUsageSummary | undefined,
 	t: TFunction,
 ): BoardUsagePresentation | undefined {
-	const processedTokens = usage?.processedTokens ?? null;
 	if (!usage) {
 		return undefined;
 	}
+	const processedTokens = usage.processedTokens ?? null;
 	const cost = formatEstimatedCost(usage.estimatedCost);
-	if (!cost) {
-		if (processedTokens === null || processedTokens <= 0) {
-			return undefined;
-		}
+	if (processedTokens !== null && processedTokens > 0) {
 		const compactTokens = formatTokenCount(processedTokens).replace(/ tok$/, "");
 		const accessibleTokens = t("shell.usageTokens", {
 			count: processedTokens.toLocaleString("en-US"),
 		});
 		return {
-			accessibleLabel: accessibleTokens,
+			accessibleLabel: cost ? `${cost} · ${accessibleTokens}` : accessibleTokens,
 			compactLabel: compactTokens,
 		};
 	}
-	if (processedTokens === null) {
+	if (cost) {
 		return { accessibleLabel: cost, compactLabel: cost };
 	}
-	const accessibleTokens = t("shell.usageTokens", {
-		count: processedTokens.toLocaleString("en-US"),
-	});
-	return {
-		accessibleLabel: `${cost} · ${accessibleTokens}`,
-		compactLabel: cost,
-	};
+	return undefined;
 }
 
 function ArchiveRestoreButton({

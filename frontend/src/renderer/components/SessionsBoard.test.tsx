@@ -316,7 +316,7 @@ describe("SessionsBoard", () => {
 		expect(within(idleCard).getByText("brand-font-pipeline")).toHaveClass("font-semibold", "line-clamp-2");
 	});
 
-	it("shows coverage-aware cost with tokens on active and archived cards", async () => {
+	it("shows token counts with cost in the accessible label on active and archived cards", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -390,9 +390,9 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		// The card shows dollar cost by default; the token count remains in the
-		// hover tooltip and accessible label.
-		const activeUsage = screen.getByText("$1.24", { selector: "span" });
+		// The card shows the token count; the dollar cost stays in the hover
+		// tooltip and accessible label.
+		const activeUsage = screen.getByText("12.3K", { selector: "span" });
 		expect(activeUsage).toHaveAttribute("aria-hidden", "true");
 		expect(screen.getByText("$1.24 · 12,300 tokens")).toHaveClass("sr-only");
 		expect(screen.queryByText(/processed/i)).not.toBeInTheDocument();
@@ -407,11 +407,11 @@ describe("SessionsBoard", () => {
 		expect(usageQueryMock).toHaveBeenCalledWith("p1");
 
 		const archive = await expandArchive();
-		expect(within(archive).getByText("$0.02")).toHaveAttribute("aria-hidden", "true");
+		expect(within(archive).getByText("1.9K")).toHaveAttribute("aria-hidden", "true");
 		expect(within(archive).getByText("$0.02 · 1,900 tokens")).toHaveClass("sr-only");
 	});
 
-	it("shows cost by default and cost plus tokens on hover without a tab stop", async () => {
+	it("shows the token count with cost plus tokens on hover without a tab stop", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -446,7 +446,7 @@ describe("SessionsBoard", () => {
 		renderBoard("p1");
 
 		const card = screen.getByText("keyboard worker").closest('[data-testid="board-session-card"]') as HTMLElement;
-		const usage = within(card).getByText("$1.24", { selector: "span" });
+		const usage = within(card).getByText("12.4K", { selector: "span" });
 		expect(usage.tagName).toBe("SPAN");
 		// The compact text is decorative; the full label is real off-screen text
 		// rather than an aria-label on a generic span, which is not reliably
@@ -496,6 +496,48 @@ describe("SessionsBoard", () => {
 
 		await userEvent.hover(usage);
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("12,400 tokens");
+	});
+
+	it("falls back to the dollar estimate when the token count is unknown", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "s-cost-only", title: "cost worker", status: "idle" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		usageQueryMock.mockReturnValue({
+			data: new Map([
+				[
+					"s-cost-only",
+					{
+						estimatedCost: {
+							cachedInputNanos: null,
+							coverage: "partial",
+							inputNanos: 400_000_000,
+							outputNanos: 340_000_000,
+							providerAttribution: "inferred",
+							totalNanos: 740_000_000,
+						},
+						incomplete: false,
+						sessionId: "s-cost-only",
+						// The provider dropped one component, so tokens are unknown while
+						// the cost estimate still stands.
+						processedTokens: null,
+						totalTokens: null,
+					},
+				],
+			]),
+		});
+
+		renderBoard("p1");
+
+		const card = screen.getByText("cost worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(card).getByText("$0.74", { selector: "span[aria-hidden='true']" })).toBeInTheDocument();
+		expect(within(card).getByText("$0.74", { selector: "span.sr-only" })).toBeInTheDocument();
+		expect(within(card).queryByText(/tokens/i)).not.toBeInTheDocument();
 	});
 
 	it("styles a working card from its building lane without inferring from runtime activity", () => {
