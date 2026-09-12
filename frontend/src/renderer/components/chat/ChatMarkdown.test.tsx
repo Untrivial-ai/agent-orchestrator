@@ -27,6 +27,18 @@ function renderWithLinkHandler(text: string, onLinkOpen: (url: string) => void) 
 	);
 }
 
+function renderWithFileHandler(
+	text: string,
+	onFileOpen: (path: string) => void,
+	filePaths: string[] = [],
+) {
+	return render(
+		<ChatLinkProvider filePaths={filePaths} onFileOpen={onFileOpen}>
+			<ChatMarkdown text={text} />
+		</ChatLinkProvider>,
+	);
+}
+
 describe("ChatMarkdown", () => {
 	it("renders headings as headings rather than literal hashes", () => {
 		render(<ChatMarkdown text={"## Findings\n\nTwo files changed."} />);
@@ -108,6 +120,57 @@ describe("ChatMarkdown", () => {
 		render(<ChatMarkdown text={"Compare `README.md` with `backend/service.go:42`."} />);
 		expect(screen.getByText("README.md")).toHaveClass("text-markdown-code");
 		expect(screen.getByText("backend/service.go:42")).toHaveClass("text-markdown-code");
+	});
+
+	it("opens a known inline-code file path in Files", async () => {
+		const onFileOpen = vi.fn();
+		renderWithFileHandler(
+			"Open `backend/service.go:42` but keep `--resume` as code.",
+			onFileOpen,
+			["backend/service.go"],
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Open backend/service.go in Files" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("backend/service.go");
+		expect(screen.getByText("--resume").closest("button")).toBeNull();
+	});
+
+	it("opens an absolute markdown file link in Files instead of externally", async () => {
+		const onFileOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithFileHandler(
+			"See [the component](/Users/me/project/frontend/src/App.tsx:42).",
+			onFileOpen,
+			["frontend/src/App.tsx"],
+		);
+
+		await userEvent.click(screen.getByRole("link", { name: "the component" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("frontend/src/App.tsx");
+		expect(openExternal).not.toHaveBeenCalled();
+		expect(screen.getByRole("link", { name: "the component" })).not.toHaveAttribute("target");
+		openExternal.mockRestore();
+	});
+
+	it("does not nest a file-path button inside a markdown file link", () => {
+		renderWithFileHandler(
+			"See [`frontend/src/App.tsx`](frontend/src/App.tsx).",
+			vi.fn(),
+			["frontend/src/App.tsx"],
+		);
+
+		const link = screen.getByRole("link", { name: "frontend/src/App.tsx" });
+		expect(link.querySelector("button")).toBeNull();
+	});
+
+	it("opens an explicit relative file link before the workspace catalog catches up", async () => {
+		const onFileOpen = vi.fn();
+		renderWithFileHandler("See [the new file](src/generated/new-file.ts#L8).", onFileOpen);
+
+		await userEvent.click(screen.getByRole("link", { name: "the new file" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("src/generated/new-file.ts");
 	});
 
 	it("escapes raw HTML instead of rendering it", () => {

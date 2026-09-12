@@ -31,6 +31,7 @@ import {
 	Fragment,
 	memo,
 	useContext,
+	useMemo,
 	useState,
 	type ReactNode,
 } from "react";
@@ -42,6 +43,10 @@ import { aoBridge } from "../../lib/bridge";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
+import {
+	explicitWorkspaceFilePath,
+	findWorkspaceFilePath,
+} from "../../lib/workspace-file-path";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -79,16 +84,33 @@ const PLUGINS = [remarkGfm];
  * and re-parse every message on every poll.
  */
 const StreamingProse = createContext(false);
-const OpenChatLink = createContext<((url: string) => void) | undefined>(undefined);
+const InsideMarkdownLink = createContext(false);
+const ChatNavigation = createContext<{
+	filePaths: readonly string[];
+	onFileOpen?: (path: string) => void;
+	onLinkOpen?: (url: string) => void;
+}>({ filePaths: [] });
 
 export function ChatLinkProvider({
 	onLinkOpen,
+	onFileOpen,
+	filePaths = [],
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
+	onFileOpen?: (path: string) => void;
+	filePaths?: readonly string[];
 	children: ReactNode;
 }) {
-	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
+	const navigation = useMemo(
+		() => ({ filePaths, onFileOpen, onLinkOpen }),
+		[filePaths, onFileOpen, onLinkOpen],
+	);
+	return (
+		<ChatNavigation.Provider value={navigation}>
+			{children}
+		</ChatNavigation.Provider>
+	);
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
@@ -214,15 +236,22 @@ function compactEmoji(children: ReactNode): ReactNode {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
-	const onLinkOpen = useContext(OpenChatLink);
+	const { filePaths, onFileOpen, onLinkOpen } = useContext(ChatNavigation);
+	const filePath = href && onFileOpen
+		? findWorkspaceFilePath(href, filePaths) ?? explicitWorkspaceFilePath(href)
+		: undefined;
 	const anchor = (
 		<a
 			href={href}
-			target="_blank"
-			rel="noreferrer noopener"
+			target={filePath ? undefined : "_blank"}
+			rel={filePath ? undefined : "noreferrer noopener"}
 			onClick={(event) => {
 				if (!href) return;
 				event.preventDefault();
+				if (filePath && onFileOpen) {
+					onFileOpen(filePath);
+					return;
+				}
 				// Cmd/Ctrl-click (the VS Code/Slack convention) and Option/Alt-click
 				// escape the in-app panel and go straight to the system browser.
 				const toSystemBrowser = event.metaKey || event.ctrlKey || event.altKey;
@@ -234,7 +263,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 			}}
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
-			{children}
+			<InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider>
 		</a>
 	);
 	if (!href) return anchor;
@@ -242,6 +271,11 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 		<ContextMenu>
 			<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
+				{filePath && onFileOpen ? (
+					<ContextMenuItem onSelect={() => onFileOpen(filePath)}>
+						Open in Files
+					</ContextMenuItem>
+				) : null}
 				{/* Only http(s) may reach shell.openExternal from here; other schemes
 				    still get their address copied. */}
 				{isWebLink(href) ? (
@@ -249,8 +283,8 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 						Open in system browser
 					</ContextMenuItem>
 				) : null}
-				<ContextMenuItem onSelect={() => void aoBridge.clipboard.writeText(href)}>
-					Copy link address
+				<ContextMenuItem onSelect={() => void aoBridge.clipboard.writeText(filePath ?? href)}>
+					{filePath ? "Copy file path" : "Copy link address"}
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>
@@ -266,8 +300,31 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
  */
 function MermaidFence({ code }: { code: string }) {
 	const streaming = useContext(StreamingProse);
-	const onLinkOpen = useContext(OpenChatLink);
+	const { onLinkOpen } = useContext(ChatNavigation);
 	return <MermaidBlock code={code} streaming={streaming} onLinkOpen={onLinkOpen} />;
+}
+
+function InlineCode({ children }: { children?: ReactNode }) {
+	const { filePaths, onFileOpen } = useContext(ChatNavigation);
+	const insideLink = useContext(InsideMarkdownLink);
+	const text = typeof children === "string" ? children : undefined;
+	const filePath = text && onFileOpen ? findWorkspaceFilePath(text, filePaths) : undefined;
+	const code = (
+		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
+			{children}
+		</code>
+	);
+	if (!filePath || !onFileOpen || insideLink) return code;
+	return (
+		<button
+			type="button"
+			onClick={() => onFileOpen(filePath)}
+			aria-label={`Open ${filePath} in Files`}
+			className="inline rounded text-left transition-colors hover:bg-interactive-hover"
+		>
+			{code}
+		</button>
+	);
 }
 
 const COMPONENTS: Components = {
@@ -332,11 +389,7 @@ const COMPONENTS: Components = {
 		return <CodeBlock code={fence.code} language={fence.language} />;
 	},
 	// Only inline code reaches here; `pre` above takes every fence.
-	code: ({ children }) => (
-		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
-			{children}
-		</code>
-	),
+	code: InlineCode,
 
 	// Wide tables scroll inside their own container so the conversation column
 	// never scrolls sideways.
