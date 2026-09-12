@@ -569,7 +569,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		update.ToolCall != nil ||
 		update.Plan != nil
 	if providerOutputResumed {
-		c.completeProviderFailure(turnID, emit)
+		c.completeProviderFailure(turnID, false, emit)
 	}
 	switch {
 	case update.AgentMessageChunk != nil:
@@ -984,11 +984,9 @@ func promptResponseFailure(meta map[string]any) error {
 	return ports.NewChatProviderFailure(title, details, cause)
 }
 
-// completeProviderFailure removes a stale retry warning as soon as the provider
-// produces substantive output again. The AIR extension advances failures but
-// deliberately sends no recovery update, so AO closes its normalized activity
-// on the first message, thought, tool call, or plan after the failure.
-func (c *conversation) completeProviderFailure(turnID string, emit func(ports.ChatEvent)) {
+// AIR sends no recovery update, so output completes the active retry episode.
+// A terminal error additionally supersedes it, preserving earlier diagnostics.
+func (c *conversation) completeProviderFailure(turnID string, superseded bool, emit func(ports.ChatEvent)) {
 	c.mu.Lock()
 	if c.providerFailure == nil || c.providerFailure.ProviderTurnID != turnID {
 		c.mu.Unlock()
@@ -1000,6 +998,12 @@ func (c *conversation) completeProviderFailure(turnID string, emit func(ports.Ch
 
 	event.Kind = ports.ChatEventActivityCompleted
 	event.ActivityStatus = domain.ActivityStatusCompleted
+	if superseded {
+		var detail map[string]any
+		_ = json.Unmarshal(event.Detail, &detail)
+		detail["superseded"] = true
+		event.Detail, _ = json.Marshal(detail)
+	}
 	emit(event)
 }
 

@@ -574,21 +574,6 @@ func (c *conversation) finishPrompt(
 			state != domain.TurnStateInterrupted && !interruptedLocally {
 			state = domain.TurnStateFailed
 			turnErr = failure
-			// Supersede only the still-active retry in this turn. The provider may
-			// advance its incident ID; recovered warnings have already been cleared.
-			c.mu.Lock()
-			matched := false
-			if c.providerFailure != nil && c.providerFailure.ProviderTurnID == turnID {
-				var detail map[string]any
-				_ = json.Unmarshal(c.providerFailure.Detail, &detail)
-				matched = true
-				detail["superseded"] = true
-				c.providerFailure.Detail, _ = json.Marshal(detail)
-			}
-			c.mu.Unlock()
-			if matched {
-				c.completeProviderFailure(turnID, c.emit)
-			}
 		}
 		if resp.Usage != nil {
 			cached := 0
@@ -604,6 +589,9 @@ func (c *conversation) finishPrompt(
 				TotalsKnown: true,
 			}})
 		}
+	}
+	if turnErr != nil {
+		c.completeProviderFailure(turnID, true, c.emit)
 	}
 	c.mu.Lock()
 	c.terminalEventID = eventID

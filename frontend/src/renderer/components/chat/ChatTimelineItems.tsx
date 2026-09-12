@@ -272,16 +272,14 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 function TwoRowTimelineMarker({
 	message,
 	detail,
-	detailTitle,
-	detailClassName,
+	fullDetail = false,
 	tone = "text-muted-foreground/70",
 	detailTone = "text-muted-foreground/70",
 	action,
 }: {
 	message: string;
-	detail?: ReactNode;
-	detailTitle?: string;
-	detailClassName?: string;
+	detail?: string;
+	fullDetail?: boolean;
 	tone?: string;
 	detailTone?: string;
 	action?: ReactNode;
@@ -292,10 +290,10 @@ function TwoRowTimelineMarker({
 				<span className="shrink-0">{message}</span>
 				{detail ? (
 					<span
-						className={cn("min-w-0", detailClassName ?? "truncate", detailTone)}
-						title={detailTitle ?? (typeof detail === "string" ? detail : undefined)}
+						className={cn("min-w-0", fullDetail ? "wrap-anywhere whitespace-pre-wrap" : "truncate", detailTone)}
+						title={detail}
 					>
-						{detail}
+						{fullDetail ? linkifiedProviderErrorText(detail) : detail}
 					</span>
 				) : null}
 				{action}
@@ -347,16 +345,12 @@ export function TurnOutcome({
 		},
 		failed: { label: "The agent ran into a problem", tone: "text-destructive" },
 	}[state];
-	const failed = state === "failed" && Boolean(error);
 
 	return (
 		<TwoRowTimelineMarker
 			message={copy.label}
-			detail={
-				failed ? <span className="whitespace-pre-wrap">{linkifiedProviderErrorText(error ?? "")}</span> : error
-			}
-			detailTitle={error}
-			detailClassName={failed ? "wrap-anywhere whitespace-normal" : undefined}
+			detail={error}
+			fullDetail={state === "failed"}
 			tone={copy.tone}
 			detailTone={state === "failed" ? "text-destructive" : undefined}
 			action={

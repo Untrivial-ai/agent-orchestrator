@@ -154,7 +154,7 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			TurnState:              turnStateFrom(string(p.Turn.Status)),
 		}
 		if p.Turn.Error != nil {
-			ev.Err = codexProviderFailure(p.Turn.Error)
+			ev.Err = codexProviderFailure(*p.Turn.Error)
 		}
 		return []ports.ChatEvent{ev}
 
@@ -650,19 +650,18 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		if err := json.Unmarshal(n.Params, &p); err == nil &&
 			(strings.TrimSpace(p.Error.Message) != "" || p.Error.AdditionalDetails != nil) {
 			if p.WillRetry && p.TurnID != "" {
-				detail, _ := json.Marshal(map[string]string{"event": "provider.failure"})
 				return []ports.ChatEvent{{
 					Kind: ports.ChatEventActivityStarted, ProviderConversationID: p.ThreadID,
 					ProviderTurnID: p.TurnID, ProviderItemID: "codex-retry:" + p.ThreadID + ":" + p.TurnID,
 					ActivityKind: domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusRunning,
-					Summary: codexProviderFailure(&p.Error).Error(), Detail: detail,
+					Summary: codexProviderFailure(p.Error).Error(), Detail: json.RawMessage(`{"event":"provider.failure"}`),
 				}}
 			}
 			return []ports.ChatEvent{{
 				Kind:                   ports.ChatEventError,
 				ProviderTurnID:         p.TurnID,
 				ProviderConversationID: p.ThreadID,
-				Err:                    codexProviderFailure(&p.Error),
+				Err:                    codexProviderFailure(p.Error),
 			}}
 		}
 		return []ports.ChatEvent{{
@@ -693,10 +692,7 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 
 // codexErrorInfo is metadata, not display copy. Only an explicit unauthorized
 // reason invokes the existing authentication path; other errors remain readable.
-func codexProviderFailure(turnErr *codexproto.TurnError) error {
-	if turnErr == nil {
-		return ports.NewChatProviderFailure("", "", nil)
-	}
+func codexProviderFailure(turnErr codexproto.TurnError) error {
 	detail := ""
 	if turnErr.AdditionalDetails != nil {
 		detail = *turnErr.AdditionalDetails

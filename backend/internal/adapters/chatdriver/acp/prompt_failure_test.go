@@ -129,11 +129,14 @@ func TestPromptFailureSupersedesOnlyItsActiveIncident(t *testing.T) {
 	for _, tc := range []struct {
 		name, incident string
 		recovered      bool
+		promptErr      error
 		wantSuperseded bool
 	}{
-		{"same incident", "failure-1", false, true},
-		{"provider advances incident ID", "earlier-warning", false, true},
-		{"already recovered", "failure-1", true, false},
+		{"same incident", "failure-1", false, nil, true},
+		{"provider advances incident ID", "earlier-warning", false, nil, true},
+		{"already recovered", "failure-1", true, nil, false},
+		{"RPC failure", "failure-1", false, errors.New("connection closed"), true},
+		{"cancelled RPC", "failure-1", false, context.Canceled, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conv := &conversation{activeTurn: "turn-1", events: make(chan ports.ChatEvent, 16), log: slog.New(slog.DiscardHandler)}
@@ -144,11 +147,11 @@ func TestPromptFailureSupersedesOnlyItsActiveIncident(t *testing.T) {
 				t.Fatal("missing retry activity")
 			}
 			if tc.recovered {
-				conv.completeProviderFailure("turn-1", conv.emit)
+				conv.completeProviderFailure("turn-1", false, conv.emit)
 			}
 			conv.finishPrompt("turn-1", acpsdk.PromptResponse{StopReason: acpsdk.StopReasonEndTurn, Meta: testPromptFailureMeta(map[string]any{
 				"id": "failure-1", "severity": "error", "title": "Provider unavailable",
-			})}, nil)
+			})}, tc.promptErr)
 			close(conv.events)
 			superseded := false
 			for event := range conv.events {
@@ -196,7 +199,7 @@ func TestRetryEpisodesKeepRecoveredDiagnosticsAndReplayIdentity(t *testing.T) {
 		meta := testPromptFailureMeta(map[string]any{"id": "reused-incident", "severity": "warning", "title": "Retrying"})
 		first, _ := conv.sessionFailureEvent("turn-1", "host:1", meta)
 		attempt, _ := conv.sessionFailureEvent("turn-1", "host:2", meta)
-		conv.completeProviderFailure("turn-1", conv.emit)
+		conv.completeProviderFailure("turn-1", false, conv.emit)
 		second, _ := conv.sessionFailureEvent("turn-1", "host:4", meta)
 		if first.ProviderItemID != "session-failure:host:1" || attempt.ProviderItemID != first.ProviderItemID || second.ProviderItemID != "session-failure:host:4" {
 			t.Fatalf("episode identities: first=%q attempt=%q second=%q", first.ProviderItemID, attempt.ProviderItemID, second.ProviderItemID)
