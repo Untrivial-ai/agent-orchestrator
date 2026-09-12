@@ -1,0 +1,82 @@
+---
+title: "Agent Orchestrator 0.13.0"
+description: "99 commits since 0.12.12. Diffs and files big enough to lag before now scroll smoothly, chat providers stay alive across daemon restarts, ao doctor checks every installed harness, and project import can create the GitHub repo for you. 74 fixes behind that."
+date: "2026-09-12T11:50:00+05:30"
+---
+
+> Covers everything since **v0.12.12**. If you are on 0.12.x and updating in place, this is all you skipped.
+
+0.12.12 was a patch train that never got its own changelog, so the smaller releases between 0.12.0 and now are folded in below only where a 0.13.0 feature builds on them. Everything else here shipped in this cycle: 99 commits from 28 authors, 18 features and 74 fixes, no breaking changes.
+
+---
+
+## Highlights
+
+### A diff viewer that keeps up
+
+The diff and file viewers are virtualized now. Only the rows on screen render, so a 5,000-line diff or a minified bundle scrolls instead of freezing the inspector, and file previews got the same treatment with selectable text and proper close buttons. (#5175, #5012)
+
+### Chat providers survive daemon restarts
+
+Codex and the ACP chat providers already survived the desktop app closing. Now they survive the daemon restarting underneath them: the provider process is detached and re-adopted after the daemon comes back, the conversation snapshot and pending approvals are restored, and an in-flight turn keeps its place instead of dying mid-stream. (#4766)
+
+### ao doctor knows every harness
+
+`ao doctor` now probes all 26 registered agent harness binaries — installed, on PATH, authenticated — instead of the handful it knew about, so "why is this agent missing from the picker" is a one-command answer. Session list status got richer alongside it, and finished sessions show PR progress instead of going quiet at merge time. (#5025, #4028, #4916)
+
+### Import a project, create the repo too
+
+Project import can now create the GitHub repository as part of onboarding instead of bouncing you to github.com, with a simpler import setup and finalized workspace import flows behind it. (#5092, #5118, #4945)
+
+### Browser screenshots and downloads
+
+Agents can capture what the browser shows and save files from it, so "screenshot this page" and "download the artifact" are things the session can actually do. (#4994)
+
+### Editor handoff and terminal shortcuts
+
+`Open in editor` hands the file to Neovim cross-platform, not just GUI editors, and macOS terminals gained line-boundary shortcuts (option/shift-arrow word and line movement) that match Terminal.app. (#4723, #5199)
+
+### Updates that finish the job
+
+The sidebar download row became a live install flow — pick a release, watch it download, install from there — with a macOS repair installer for machines where a staged build was rejected, and the updater now owns a download it started instead of dropping it mid-flight. (#5047, #5002, #4981, #5032)
+
+### Also new
+
+- The all-sessions board is back, across every project in one view (#5249)
+- Cursor's Ask and Agent show as execution modes, and tool calls render as readable cards in chat (#4978, #5027)
+- App icons on every platform derive from the desktop Ruto icon (#5079, #5238)
+- Closed sessions that never merged show in red on the board (#5165)
+
+---
+
+## Reliability
+
+**Queued messages became durable.** Edits to queued messages persist with atomic delivery receipts, inline edits recover from durable branch receipts on reconnect, attachments survive editing and restarts, and a failed turn holds the queue instead of draining it into the same error. Composer text itself persists across lifecycle boundaries. (#5109, #5110, #5006, #5107, #5188, #5106, #5274)
+
+**Terminals stop dying at the wrong moment.** PTY output is back-pressured instead of killing the WebSocket on a burst, the shell renderer is no longer leaked when the window closes, user shells are preserved across relaunches, and terminal focus is restored after fullscreen and restart. (#4552, #5150, #5040, #4988)
+
+**Mobile tunnels behave.** LAN connections close when mobile access is disabled, bridge state transitions are serialized, and Windows terminal popups no longer fire through mobile tunnels. Codex model routes no longer block on the LAN listener. (#5087, #5084, #5205, #5152)
+
+**Restore checks before it restores.** `--resume` verifies the persisted session before attaching, sessions can switch to terminal until they have real work, and OpenCode keeps its Plan Mode selection across switches. (#5214, #5053, #5015)
+
+**Smaller fixes that mattered:** change log retention is bounded so the CDC table stops growing forever, nightly build stamps parse as UTC instead of local wall time, percent-encoded ACP approval ids decode instead of failing approval, the resolve-comments route validates its PR number, GitLab responses keep cache consistency, and the board re-renders on change events instead of on poll ticks. (#5103, #5115, #5193, #5239, #5148, #4854)
+
+---
+
+## Site and housekeeping
+
+The public site migrated to useao.dev, the bug report form got shorter, and session and reviewer avatars render through one path. (#5133, #5153, #4764)
+
+---
+
+## Upgrading
+
+GitHub Releases and Homebrew are the supported install paths. Existing installs update in place. If a previous macOS update left a staged build that will not install, the repair installer in this release rebuilds in place. No migrations are destructive and no configuration changes are required.
+
+---
+
+## Contributors
+
+28 authors landed work in this range. Thanks to prateek, Dhruv Sharma, ronish, Ayash, NIKHIL ACHALE, Pulkit Saraf, Aditi, Maaz, Prasad Ware, Vaibhaav Tiwari, Harshit Singh Bhandari, Just_Anniee, Sundaram Kumar Jha, vicky prasad, Aniket Vishwakarma, Khushi Diwan, Misbah Ansari, Piyush Mudgal, Rishet Mehra, Yash Kumar Saini, Anusha, Hendrixx, Soubhagya Sadhukhan, Vansh Singhal, Yash Maheshwari, axisrow, pikachu and vanshx999.
+
+**Full changelog:** https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.12.12...v0.13.0
