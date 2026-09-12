@@ -24,6 +24,8 @@ Start with [architecture.md](architecture.md) for the current backend model and
 | [stack.md](stack.md)                                   | Accepted library/runtime choices, pending stack decisions, and dependencies explicitly avoided for V1.                |
 | [telemetry.md](telemetry.md)                           | User-facing overview of product telemetry, privacy safeguards, and opt-out controls.                                    |
 | [posthog-cost-controls.md](posthog-cost-controls.md)   | PostHog event-name migration, ingestion drop rules, and dashboard queries for reducing telemetry spend.              |
+| [research/2026-09-13-local-device-runtime-prerequisites.md](research/2026-09-13-local-device-runtime-prerequisites.md) | Evidence, dependency/license audit, compatibility findings, and release gates for local iOS/Android virtual-device support. |
+| [superpowers/specs/2026-09-13-local-device-support-design.md](superpowers/specs/2026-09-13-local-device-support-design.md) | Proposed AO architecture, CLI/skill contract, security model, test plan, and stacked rollout for local virtual devices. |
 
 ## Mental model
 
