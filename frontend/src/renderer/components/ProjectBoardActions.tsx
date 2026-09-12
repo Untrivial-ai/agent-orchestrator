@@ -1,3 +1,4 @@
+import { type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import type { ProjectOrchestratorAction } from "../hooks/useProjectOrchestratorAction";
@@ -7,10 +8,11 @@ import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
 import { OrchestratorIcon } from "./icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-export function ProjectBoardActions({ actions, placement, quiet = false }: {
+export function ProjectBoardActions({ actions, placement, quiet = false, style }: {
 	actions: ProjectOrchestratorAction;
 	placement: "header" | "empty";
 	quiet?: boolean;
+	style?: CSSProperties;
 }) {
 	const { t } = useTranslation();
 	const { orchestrator, isSpawning, isProjectRestarting, isProvisioning, spawnError, canCreateAsTui,
@@ -24,7 +26,7 @@ export function ProjectBoardActions({ actions, placement, quiet = false }: {
 	const orchestratorButton = (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<span className="inline-flex">
+				<span className="inline-flex" style={style}>
 					<TopbarButton
 						aria-label={activity ? t("shell.orchestratorWithActivity", { activity }) : actionLabel}
 						aria-busy={busy}
@@ -46,7 +48,7 @@ export function ProjectBoardActions({ actions, placement, quiet = false }: {
 	const newTaskButton = (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<span className="inline-flex">
+				<span className="inline-flex" style={style}>
 					<TopbarButton
 						aria-label={t("shell.newTask")}
 						className={header ? "topbar-control--labeled" : undefined}
@@ -68,7 +70,7 @@ export function ProjectBoardActions({ actions, placement, quiet = false }: {
 			<TopbarActionError role={header ? "alert" : "status"} className={header ? "max-w-content-max truncate" : "text-caption leading-body"} title={spawnError}>
 				{spawnError}
 			</TopbarActionError>
-			{canCreateAsTui ? <TopbarButton disabled={busy} onClick={() => openOrchestrator("tui")}>{t("newTask.createAsTui")}</TopbarButton> : null}
+			{canCreateAsTui ? <TopbarButton disabled={busy} onClick={() => openOrchestrator("tui")} style={style}>{t("newTask.createAsTui")}</TopbarButton> : null}
 		</div>
 	) : null;
 	return header ? <>{feedback}{newTaskButton}{orchestratorButton}</> : <>

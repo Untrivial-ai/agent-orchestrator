@@ -185,7 +185,7 @@ export function ShellTopbar({
 				data-testid="workspace-topbar-actions"
 			>
 				{!boardActionsInPanel && isProjectBoardRoute ? (
-					<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} />
+					<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} style={noDragStyle} />
 				) : null}
 				{isSessionRoute ? (
 					<>
