@@ -70,6 +70,7 @@ export type BrowserViewModel = {
 	selectTab: (tabId: string) => Promise<void>;
 	closeTab: (tabId: string) => Promise<void>;
 	openTab: (url?: string) => Promise<void>;
+	openLink: (url: string) => Promise<void>;
 	reorderTabs: (orderedIds: string[]) => void;
 	closedTabs: ClosedBrowserTab[];
 	reopenClosedTab: (tabId?: string) => Promise<void>;
@@ -691,6 +692,33 @@ export function useBrowserView({
 		},
 		[hasNativeBrowser, sessionId],
 	);
+	const openLink = useCallback(
+		async (url: string) => {
+			if (!hasNativeBrowser) return;
+			let id = viewIdRef.current;
+			if (!id) {
+				const ensured = await window.ao!.browser.ensure(sessionId);
+				id = ensured.viewId;
+				viewIdRef.current = id;
+				setViewId(id);
+				setNavState(ensured);
+			}
+			let tabs = tabsStateRef.current.tabs;
+			if (tabs.length === 0) {
+				const next = await window.ao!.browser.getTabs(id);
+				tabs = next.tabs;
+				if (viewIdRef.current === id) setTabsState(next);
+			}
+			const activeTab = tabs.find((tab) => tab.active);
+			if (activeTab && isBlankTabUrl(activeTab.url)) {
+				const state = await window.ao!.browser.navigate({ viewId: id, url });
+				if (viewIdRef.current === state.viewId) setNavState(state);
+				return;
+			}
+			await openTab(url);
+		},
+		[hasNativeBrowser, openTab, sessionId],
+	);
 
 	const reopenClosedTab = useCallback(
 		async (tabId?: string) => {
@@ -839,6 +867,7 @@ export function useBrowserView({
 		selectTab,
 		closeTab,
 		openTab,
+		openLink,
 		reorderTabs,
 		closedTabs: stateBelongsToSession ? closedTabs : [],
 		reopenClosedTab,
