@@ -203,4 +203,74 @@ describe("selected session import", () => {
 		expect(screen.getByRole("combobox")).toHaveValue("payment");
 		expect(screen.getByRole("combobox")).toHaveFocus();
 	});
+	it("does not select an old result while a different query is pending", async () => {
+		const next = deferred<object>();
+		get.mockImplementation(
+			(path: string, options: { params: { query?: { query?: string } } }) =>
+				path.endsWith("destination")
+					? Promise.resolve({ data: destination })
+					: options.params.query?.query === "new"
+						? next.promise
+						: Promise.resolve({ data: page }),
+		);
+		render(<FindSessionToImport initialQuery="old" onOpen={vi.fn()} />);
+		await screen.findByRole("option");
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "new" },
+		});
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(screen.queryByRole("option")).not.toBeInTheDocument();
+		expect(
+			get.mock.calls.filter(([path]) => path.endsWith("destination")),
+		).toHaveLength(0);
+		await act(async () =>
+			next.resolve({
+				data: {
+					...page,
+					results: [{ ...result, id: "new", title: "New result" }],
+				},
+			}),
+		);
+		expect(await screen.findByRole("option")).toHaveTextContent("New result");
+	});
+	it("recovers automatically after a failed index poll and clears the error", async () => {
+		vi.useFakeTimers();
+		try {
+			get.mockResolvedValue({
+				data: { ...page, status: { ...page.status, running: true } },
+			});
+			render(<FindSessionToImport initialQuery="" onOpen={vi.fn()} />);
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(10);
+			});
+			expect(screen.getByRole("option")).toBeInTheDocument();
+			get.mockRejectedValueOnce(new Error("temporary search failure"));
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1600);
+			});
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"temporary search failure",
+			);
+			expect(screen.getByRole("option")).toBeInTheDocument();
+			get.mockResolvedValue({ data: page });
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1600);
+			});
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(screen.getByRole("option")).toBeInTheDocument();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("offers retry after the initial search fails", async () => {
+		get.mockRejectedValue(new Error("search unavailable"));
+		render(<FindSessionToImport initialQuery="" onOpen={vi.fn()} />);
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"search unavailable",
+		);
+		get.mockResolvedValue({ data: page });
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		await screen.findByRole("option");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
 });

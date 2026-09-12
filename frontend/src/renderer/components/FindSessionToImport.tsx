@@ -20,11 +20,13 @@ export function FindSessionToImport({
 	const { t, i18n } = useTranslation();
 	const [query, setQuery] = useState(initialQuery);
 	const [page, setPage] = useState<Page>();
+	const [pageQuery, setPageQuery] = useState<string>();
 	const [selected, setSelected] = useState("");
 	const [previewId, setPreviewId] = useState<string>();
 	const [destination, setDestination] = useState<Destination>();
 	const [folder, setFolder] = useState("");
 	const [error, setError] = useState("");
+	const [searchError, setSearchError] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [pending, setPending] = useState(false);
 	const [revision, setRevision] = useState(0);
@@ -53,11 +55,12 @@ export function FindSessionToImport({
 			.POST("/api/v1/session-import/refresh", { signal: controller.signal })
 			.then(({ data, error: failure }) => {
 				if (controller.signal.aborted) return;
-				if (failure) setError(apiErrorMessage(failure, t("command.failed")));
+				if (failure)
+					setSearchError(apiErrorMessage(failure, t("command.failed")));
 				if (data) setRevision((value) => value + 1);
 			})
 			.catch((failure: unknown) => {
-				if (!controller.signal.aborted) setError(String(failure));
+				if (!controller.signal.aborted) setSearchError(String(failure));
 			});
 		return () => {
 			alive.current = false;
@@ -89,7 +92,9 @@ export function FindSessionToImport({
 					if (failure)
 						throw new Error(apiErrorMessage(failure, t("command.failed")));
 					if (data) {
+						setSearchError("");
 						setPage(data);
+						setPageQuery(query);
 						setSelected((id) =>
 							data.results.some((row) => row.id === id)
 								? id
@@ -99,7 +104,7 @@ export function FindSessionToImport({
 				})
 				.catch((failure: unknown) => {
 					if (current === generation.current && !controller.signal.aborted)
-						setError(String(failure));
+						setSearchError(String(failure));
 				})
 				.finally(() => {
 					if (current === generation.current && !controller.signal.aborted)
@@ -113,13 +118,13 @@ export function FindSessionToImport({
 	}, [query, pageCursor, revision, t]);
 
 	useEffect(() => {
-		if (!page?.status.running) return;
+		if (!page?.status.running || loading) return;
 		const timer = window.setTimeout(
 			() => setRevision((value) => value + 1),
 			1500,
 		);
 		return () => window.clearTimeout(timer);
-	}, [page]);
+	}, [page, loading]);
 
 	async function preview(id: string, locateFolder = "", preserveError = false) {
 		const current = ++previewGeneration.current;
@@ -195,7 +200,8 @@ export function FindSessionToImport({
 			if (alive.current) setPending(false);
 		}
 	}
-	const rows = page?.results ?? [];
+	const currentPage = pageQuery === query ? page : undefined;
+	const rows = currentPage?.results ?? [];
 	return (
 		<div
 			onKeyDown={(event) => event.stopPropagation()}
@@ -297,7 +303,9 @@ export function FindSessionToImport({
 						onChange={(event) => {
 							generation.current++;
 							searchAbort.current?.abort();
+							setSearchError("");
 							setQuery(event.target.value);
+							setSelected("");
 							setPageCursor(undefined);
 							setError("");
 						}}
@@ -320,7 +328,10 @@ export function FindSessionToImport({
 										?.scrollIntoView({ block: "nearest" });
 								}
 							}
-							if (event.key === "Enter" && selected) {
+							if (
+								event.key === "Enter" &&
+								rows.some((row) => row.id === selected)
+							) {
 								event.preventDefault();
 								void preview(selected);
 							}
@@ -374,19 +385,19 @@ export function FindSessionToImport({
 							</button>
 						))}
 					</div>
-					{loading && (
+					{(loading || (pageQuery !== query && !searchError)) && (
 						<p role="status" className="text-xs">
 							{t("importSearch.loading")}
 						</p>
 					)}
-					{!loading && page && !rows.length && (
+					{!loading && currentPage && !rows.length && (
 						<p className="text-sm">{t("importSearch.empty")}</p>
 					)}
-					{page?.nextCursor && (
+					{currentPage?.nextCursor && (
 						<Button
 							variant="ghost"
 							disabled={loading}
-							onClick={() => setPageCursor(page.nextCursor)}
+							onClick={() => setPageCursor(currentPage.nextCursor)}
 						>
 							{t("importSearch.more")}
 						</Button>
@@ -404,6 +415,20 @@ export function FindSessionToImport({
 					{page.status.errors.map((message, index) => (
 						<p key={index}>{message}</p>
 					))}
+				</div>
+			)}
+			{searchError && (
+				<div role="alert" className="text-xs text-destructive break-words">
+					<p>{searchError}</p>
+					{!previewId && (
+						<Button
+							variant="ghost"
+							disabled={loading}
+							onClick={() => setRevision((value) => value + 1)}
+						>
+							{t("importSearch.retry")}
+						</Button>
+					)}
 				</div>
 			)}
 			{error && (
