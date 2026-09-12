@@ -71,6 +71,7 @@ export function SessionChatSurface({
 	shellError,
 	onOpenFiles,
 	onOpenFile,
+	onOpenLinkInBrowser,
 	headerActions,
 	sessionTabAction,
 	sessionTabActionWide = false,
@@ -108,6 +109,8 @@ export function SessionChatSurface({
 	onOpenFiles?: () => void;
 	/** Opens the Files inspector focused on one changed path. */
 	onOpenFile?: (path: string) => void;
+	/** Opens a chat link in a new tab in this session's AO Browser. */
+	onOpenLinkInBrowser?: (uri: string) => Promise<void>;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
 	sessionTabActionWide?: boolean;
@@ -280,7 +283,7 @@ export function SessionChatSurface({
 	);
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
-	const openLinkInBrowser = useSessionBrowserLink(session);
+	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser);
 	const observedSuccessfulSwitch = Boolean(
 		agentSwitch &&
 			observedSettledSwitchId === agentSwitch.id &&

@@ -677,12 +677,19 @@ export function useBrowserView({
 
 	const openTab = useCallback(
 		async (url?: string) => {
-			const viewId = viewIdRef.current;
-			if (!viewId || !hasNativeBrowser) return;
+			if (!hasNativeBrowser) return;
+			let viewId = viewIdRef.current;
+			if (!viewId) {
+				const ensured = await window.ao!.browser.ensure(sessionId);
+				viewId = ensured.viewId;
+				viewIdRef.current = viewId;
+				setViewId(viewId);
+				setNavState(ensured);
+			}
 			const state = await window.ao!.browser.openTab({ viewId, url });
 			if (viewIdRef.current === state.viewId) setTabsState(state);
 		},
-		[hasNativeBrowser],
+		[hasNativeBrowser, sessionId],
 	);
 
 	const reopenClosedTab = useCallback(

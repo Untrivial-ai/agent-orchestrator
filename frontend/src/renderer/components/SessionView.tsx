@@ -1925,6 +1925,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									}
 									onOpenFiles={handleOpenFiles}
 									onOpenFile={handleOpenFile}
+									onOpenLinkInBrowser={browserView.openTab}
 								/>
 							) : (
 								<CenterPane

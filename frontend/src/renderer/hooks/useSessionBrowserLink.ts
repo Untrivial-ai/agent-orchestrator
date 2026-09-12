@@ -6,7 +6,10 @@ import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
 /** Open an HTTP(S) link in the active worker session's AO Browser panel. */
-export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string) => void {
+export function useSessionBrowserLink(
+	session?: WorkspaceSession,
+	openInNewTab?: (uri: string) => Promise<void>,
+): (uri: string) => void {
 	const queryClient = useQueryClient();
 	const setInspectorView = useUiStore((state) => state.setInspectorView);
 	const setInspectorOpen = useUiStore((state) => state.setInspectorOpen);
@@ -25,6 +28,12 @@ export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string)
 			const sessionId = session.id;
 			setInspectorView(sessionId, "browser");
 			setInspectorOpen(sessionId, true);
+			if (openInNewTab) {
+				void openInNewTab(uri).catch((error) => {
+					console.warn("Unable to open link in Browser tab", error);
+				});
+				return;
+			}
 			void (async () => {
 				try {
 					const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/preview", {
@@ -41,6 +50,6 @@ export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string)
 				}
 			})();
 		},
-		[active, queryClient, session?.id, session?.kind, setInspectorOpen, setInspectorView],
+		[active, openInNewTab, queryClient, session?.id, session?.kind, setInspectorOpen, setInspectorView],
 	);
 }

@@ -412,6 +412,24 @@ describe("SessionChatSurface link routing", () => {
 		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: workspaceQueryKey }));
 	});
 
+	it("opens each plain Chat link in a new AO Browser tab", async () => {
+		const user = userEvent.setup();
+		const openInNewTab = vi.fn().mockResolvedValue(undefined);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+
+		render(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={openInNewTab} />
+			</Wrapper>,
+		);
+		await user.click(screen.getByRole("button", { name: "Open chat link" }));
+
+		expect(openInNewTab).toHaveBeenCalledWith(LINK);
+		expect(postMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", expect.anything());
+	});
+
 	// SessionView owns the switch-agent control on the primary session tab; the chat
 	// surface forwards it into ChatWorkspace.
 	it("forwards session tab actions into the chat workspace", () => {
