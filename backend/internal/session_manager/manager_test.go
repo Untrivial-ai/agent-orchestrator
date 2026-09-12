@@ -2061,7 +2061,7 @@ func TestSpawn_ReturnsFinalPromptByteMetrics(t *testing.T) {
 	}
 }
 
-func TestSpawn_DeliversPromptAfterStartWhenAgentRequestsIt(t *testing.T) {
+func TestSpawn_DeliversDelegatedPromptOnceAndPreservesLatestUserPrompt(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
 	rt := &fakeRuntime{}
@@ -2078,17 +2078,64 @@ func TestSpawn_DeliversPromptAfterStartWhenAgentRequestsIt(t *testing.T) {
 		LookPath:  func(string) (string, error) { return "/bin/true", nil },
 	})
 
-	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "fix the button"}); err != nil {
+	const brief = "fix the button"
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:           "mer",
+		Kind:                domain.KindWorker,
+		Prompt:              brief,
+		StartupSystemPrompt: DelegatedTaskTitleStartupPrompt,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if agent.lastLaunch.Prompt != "" {
 		t.Fatalf("launch prompt = %q, want empty for after-start delivery", agent.lastLaunch.Prompt)
 	}
-	if len(msg.msgs) != 1 || msg.msgs[0] != "fix the button" {
+	if len(msg.msgs) != 1 || msg.msgs[0] != brief {
 		t.Fatalf("delivered prompts = %#v, want one original prompt", msg.msgs)
 	}
-	if st.sessions["mer-1"].Metadata.Prompt != "fix the button" {
+	if st.sessions["mer-1"].Metadata.Prompt != brief {
 		t.Fatalf("stored prompt = %q, want original prompt", st.sessions["mer-1"].Metadata.Prompt)
+	}
+	if st.sessions["mer-1"].Metadata.LatestUserPrompt != brief {
+		t.Fatalf("latest user prompt = %q, want original prompt", st.sessions["mer-1"].Metadata.LatestUserPrompt)
+	}
+	for _, want := range []string{"$AO_SESSION_ID", "at most 20 characters", `ao session rename "$AO_SESSION_ID" "<title>"`} {
+		if !strings.Contains(agent.lastLaunch.SystemPrompt, want) {
+			t.Fatalf("startup system prompt missing %q:\n%s", want, agent.lastLaunch.SystemPrompt)
+		}
+	}
+	if strings.Contains(agent.lastLaunch.SystemPrompt, brief) {
+		t.Fatalf("task brief must remain in the task prompt, not trusted startup instructions:\n%s", agent.lastLaunch.SystemPrompt)
+	}
+}
+
+func TestBuildSpawnTextsOmitsDelegatedTitleInstructionOutsideDirectDelegation(t *testing.T) {
+	m, _, _, _ := newManager()
+	for _, tt := range []struct {
+		name string
+		cfg  ports.SpawnConfig
+	}{
+		{name: "ordinary worker", cfg: ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "ordinary task"}},
+		{name: "promptless worker", cfg: ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}},
+		{name: "orchestrator", cfg: ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator, Prompt: "orchestrator task", StartupSystemPrompt: DelegatedTaskTitleStartupPrompt}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, systemPrompt, err := m.buildSpawnTexts(ctx, tt.cfg)
+			if err != nil {
+				t.Fatalf("buildSpawnTexts: %v", err)
+			}
+			if strings.Contains(systemPrompt, `ao session rename "$AO_SESSION_ID"`) || strings.Contains(systemPrompt, "at most 20 characters") {
+				t.Fatalf("system prompt unexpectedly contains delegated title instruction:\n%s", systemPrompt)
+			}
+		})
+	}
+
+	restored, err := m.buildSystemPrompt(ctx, domain.KindWorker, "mer")
+	if err != nil {
+		t.Fatalf("buildSystemPrompt: %v", err)
+	}
+	if strings.Contains(restored, `ao session rename "$AO_SESSION_ID"`) || strings.Contains(restored, "at most 20 characters") {
+		t.Fatalf("restored system prompt unexpectedly contains delegated title instruction:\n%s", restored)
 	}
 }
 

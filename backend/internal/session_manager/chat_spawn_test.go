@@ -983,6 +983,47 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 	}
 }
 
+func TestChatSpawnDelegatedTaskUsesOneTaskTurnAndStartupTitleInstruction(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, st, runtime := newChatManager(launcher)
+	const brief = "repair the delegated worker"
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID:           chatTestProject,
+		Kind:                domain.KindWorker,
+		Harness:             domain.HarnessCodex,
+		Prompt:              brief,
+		StartupSystemPrompt: DelegatedTaskTitleStartupPrompt,
+		RequestedMode:       domain.SessionModeChat,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("chat spawn created %d terminal runtimes, want 0", runtime.created)
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("started %d controllers, want one", len(launcher.started))
+	}
+	for _, want := range []string{"$AO_SESSION_ID", "at most 20 characters"} {
+		if !strings.Contains(launcher.started[0].SystemPrompt, want) {
+			t.Fatalf("startup system prompt missing %q:\n%s", want, launcher.started[0].SystemPrompt)
+		}
+	}
+	if strings.Contains(launcher.started[0].SystemPrompt, brief) {
+		t.Fatalf("task brief must not be copied into the startup system prompt:\n%s", launcher.started[0].SystemPrompt)
+	}
+	if len(launcher.turns) != 1 || launcher.turns[0] != brief {
+		t.Fatalf("provider task turns = %#v, want exactly one original brief", launcher.turns)
+	}
+	if len(launcher.relayed) != 0 {
+		t.Fatalf("automation/provider relay turns = %#v, want none", launcher.relayed)
+	}
+	if st.sessions[rec.ID].Metadata.Prompt != brief {
+		t.Fatalf("stored chat prompt = %q, want original brief", st.sessions[rec.ID].Metadata.Prompt)
+	}
+}
+
 func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, runtime := newChatManager(launcher)
