@@ -137,30 +137,32 @@ export function SessionFileExplorer({
 						</Button>
 					</div>
 				) : null}
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
-							aria-pressed={split}
-							className="shrink-0"
-							onClick={() => {
-								const next = !split;
-								if (controlledSplit === undefined) setInternalSplit(next);
-								onSplitChange?.(next);
-							}}
-							size="icon-sm"
-							type="button"
-							variant="ghost"
-						>
-							{split ? (
-								<Columns2 className="size-icon-sm" aria-hidden="true" />
-							) : (
-								<Rows3 className="size-icon-sm" aria-hidden="true" />
-							)}
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
-				</Tooltip>
+				{showChanges ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
+								aria-pressed={split}
+								className="shrink-0"
+								onClick={() => {
+									const next = !split;
+									if (controlledSplit === undefined) setInternalSplit(next);
+									onSplitChange?.(next);
+								}}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								{split ? (
+									<Columns2 className="size-icon-sm" aria-hidden="true" />
+								) : (
+									<Rows3 className="size-icon-sm" aria-hidden="true" />
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
+					</Tooltip>
+				) : null}
 				{onToggleMaximized ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
