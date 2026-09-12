@@ -445,6 +445,48 @@ func TestProjectsAPI_RejectsUnknownConfigKeys(t *testing.T) {
 	}
 }
 
+// TestProjectsAPI_RequestDecoding verifies that project request decoding is bounded,
+// enforces single-document semantics, and rejects empty, concatenated, trailing junk,
+// and oversized payloads with 400 INVALID_JSON.
+func TestProjectsAPI_RequestDecoding(t *testing.T) {
+	srv := newTestServer(t)
+	repo := gitRepo(t, "decoding-bounds")
+
+	// 1. Trailing non-JSON junk is rejected.
+	payloadWithJunk := `{"path":` + quote(repo) + `,"projectId":"dec-junk"} trailing garbage`
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects", payloadWithJunk)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+
+	// 2. Concatenated second JSON document is rejected.
+	payloadWithConcat := `{"path":` + quote(repo) + `,"projectId":"dec-concat"} {"second":"doc"}`
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects", payloadWithConcat)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+
+	// 3. Whitespace-only body is rejected.
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects", "   \r\n\t  ")
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+
+	// 4. Empty body is rejected.
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects", "")
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+
+	// 5. Oversized body (> defaultMaxBodyBytes = 1 MiB) is rejected.
+	oversized := `{"path":` + quote(repo) + `,"projectId":"dec-oversized","name":"` + strings.Repeat("A", 2<<20) + `"}`
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects", oversized)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+
+	// 6. Valid single document with trailing whitespace is accepted.
+	validWithTrailingWhitespace := `{"path":` + quote(repo) + `,"projectId":"dec-ws"}   ` + "\r\n  "
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects", validWithTrailingWhitespace)
+	if status != http.StatusCreated {
+		t.Fatalf("expected 201 Created for valid payload with trailing whitespace, got %d: %s", status, body)
+	}
+
+	// 7. PUT settings with trailing junk is rejected.
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/dec-ws", `{"displayName":"Updated"} trailing junk`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+}
+
 func TestProjectsRoutes_LegacyUnregistered(t *testing.T) {
 
 	srv := newTestServer(t)
