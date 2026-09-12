@@ -2284,6 +2284,12 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrNotResumable)
 	}
+	if mode != RestoreModeNative {
+		if err := m.protectChatHistoryOnFreshRestore(ctx, rec); err != nil {
+			m.cleanupSystemPromptDir(rec.ID)
+			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
+		}
+	}
 	if err := m.validateAgentBinary(argv); err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)

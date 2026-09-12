@@ -78,6 +78,7 @@ type preparedChatSpawnStore interface {
 		context.Context,
 		domain.SessionRecord,
 		domain.ConversationBranch,
+		*domain.ChatProviderHandoff,
 		func(context.Context) error,
 	) error
 }
@@ -1100,7 +1101,7 @@ func (m *Manager) resolveNotifications(ctx context.Context, resolutions ...ports
 
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.
 func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
-	return m.markSpawned(ctx, id, metadata, nil, nil)
+	return m.markSpawned(ctx, id, metadata, nil, nil, nil)
 }
 
 // MarkChatSpawned atomically marks a Chat controller live and publishes the
@@ -1117,7 +1118,7 @@ func (m *Manager) MarkChatSpawned(
 		strings.TrimSpace(metadata.ControllerGeneration) == "" {
 		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
 	}
-	return m.markSpawned(ctx, id, metadata, &boundary, nil)
+	return m.markSpawned(ctx, id, metadata, &boundary, nil, nil)
 }
 
 // MarkChatSpawnedPrepared publishes native history together with its reserved
@@ -1129,6 +1130,7 @@ func (m *Manager) MarkChatSpawnedPrepared(
 	id domain.SessionID,
 	metadata domain.SessionMetadata,
 	boundary domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	if prepare == nil {
@@ -1140,7 +1142,7 @@ func (m *Manager) MarkChatSpawnedPrepared(
 		strings.TrimSpace(metadata.ControllerGeneration) == "" {
 		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
 	}
-	return m.markSpawned(ctx, id, metadata, &boundary, prepare)
+	return m.markSpawned(ctx, id, metadata, &boundary, handoff, prepare)
 }
 
 func (m *Manager) markSpawned(
@@ -1148,6 +1150,7 @@ func (m *Manager) markSpawned(
 	id domain.SessionID,
 	metadata domain.SessionMetadata,
 	boundary *domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	launchID := strings.TrimSpace(metadata.RuntimeLaunchID)
@@ -1196,7 +1199,7 @@ func (m *Manager) markSpawned(
 			if !ok {
 				return nil, errors.New("lifecycle: atomic Chat provider-history persistence is unavailable")
 			}
-			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, prepare); err != nil {
+			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, handoff, prepare); err != nil {
 				return nil, err
 			}
 		}
@@ -1517,6 +1520,14 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 
 func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySignal, receivedAt time.Time) {
 	if signal.AgentSessionID != "" {
+		if meta.AgentSessionID != "" && meta.AgentSessionID != signal.AgentSessionID {
+			// Identity-scoped facts must not leak from A into a new native B. The
+			// caller has already fenced this signal to the current launch.
+			meta.LatestUserPrompt = ""
+			meta.LatestUserPromptAt = time.Time{}
+			meta.LatestAssistantUpdate = ""
+			meta.NativeTranscriptPath = ""
+		}
 		meta.AgentSessionID = signal.AgentSessionID
 		meta.AgentSessionIDLaunchID = signal.LaunchID
 	}

@@ -539,6 +539,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		PrepareControllerEnv:    cfg.PrepareControllerEnv,
 		ProviderConversationID:  cfg.ProviderConversationID,
 		ProviderScopeID:         cfg.ProviderScopeID,
+		ProviderHandoff:         cfg.ProviderHandoff,
 		ControllerGeneration:    cfg.ControllerGeneration,
 		RequireNativeHistory:    cfg.RequireNativeHistory,
 		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,

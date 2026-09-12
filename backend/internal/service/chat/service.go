@@ -165,6 +165,7 @@ type StartConfig struct {
 	// that ControllerReady will commit. Empty derives the namespace from the
 	// active branch, which is the ordinary initial-start and resume path.
 	ProviderScopeID string
+	ProviderHandoff *domain.ChatProviderHandoff
 	// ControllerGeneration is supplied by a durable replacement saga that must
 	// fence the target before starting it. Ordinary starts leave it empty.
 	ControllerGeneration string
@@ -278,6 +279,14 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		return nil, err
 	}
 	defer gate.unlock()
+	if handoff := cfg.ProviderHandoff; handoff != nil {
+		if handoff.BoundaryID == "" || cfg.ProviderConversationID == "" || cfg.ControllerReady == nil ||
+			cfg.SkipNativeHistoryImport || (cfg.ProviderScopeID != "" && cfg.ProviderScopeID != handoff.BoundaryID) {
+			return nil, errors.New("incomplete native Chat handoff reservation")
+		}
+		cfg.ProviderScopeID = handoff.BoundaryID
+		cfg.RequireNativeHistory = true
+	}
 
 	replayCheckpoint := nativeHistoryCheckpoint{}
 	if cfg.RequireNativeHistory {
@@ -360,7 +369,16 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	conversationID := s.newID()
 	var conversation domain.ConversationRecord
-	if freshProjectContext {
+	if cfg.ProviderHandoff != nil {
+		// Read the observed owner without rebinding it. Provider I/O can fail;
+		// ownership changes only with the prepared history's lifecycle commit.
+		handoff := cfg.ProviderHandoff
+		conversation, err = s.store.ConversationForSession(ctx, handoff.PreviousSessionID)
+		if err == nil && (conversation.ID != handoff.ConversationID ||
+			conversation.ActiveBranchID != handoff.PreviousBranchID || conversation.LatestSequence != handoff.PreviousSequence) {
+			err = errors.New("native Chat handoff conversation changed")
+		}
+	} else if freshProjectContext {
 		conversation, err = s.store.CreateProjectConversationWithContextReset(
 			ctx, conversationID, cfg.ProjectID, cfg.SessionID, resetBoundary, now)
 	} else if scope == domain.ConversationScopeProject &&
@@ -370,6 +388,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		// Require the durable current_session_id proof the coordinator observed;
 		// ControllerReady/CommitChatSpawn rechecks it after provider I/O.
 		conversation, err = s.store.ConversationForSession(ctx, cfg.SessionID)
+	} else if cfg.ProviderConversationID != "" {
+		conversation, err = s.store.OpenNativeConversation(
+			ctx, conversationID, scope, cfg.ProjectID, cfg.SessionID, now)
 	} else {
 		conversation, err = s.store.CreateConversation(
 			ctx, conversationID, scope, cfg.ProjectID, cfg.SessionID, now)
@@ -377,10 +398,14 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, fmt.Errorf("open conversation: %w", err)
 	}
-	repairedBranch, restoredProviderOwner, err := s.store.RepairIncompleteConversationEdit(
-		ctx, cfg.SessionID, conversation.ID, s.now())
-	if err != nil {
-		return nil, fmt.Errorf("repair incomplete conversation edit: %w", err)
+	var repairedBranch domain.ConversationBranch
+	var restoredProviderOwner bool
+	if cfg.ProviderHandoff == nil {
+		repairedBranch, restoredProviderOwner, err = s.store.RepairIncompleteConversationEdit(
+			ctx, cfg.SessionID, conversation.ID, s.now())
+		if err != nil {
+			return nil, fmt.Errorf("repair incomplete conversation edit: %w", err)
+		}
 	}
 	if repairedBranch.ID != "" {
 		conversation.ActiveBranchID = repairedBranch.ID
@@ -504,6 +529,10 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
 		liveReconnect = reconnected.ReconnectedLive()
 	}
+	if liveReconnect && cfg.ProviderHandoff != nil {
+		cleanupUnpublishedConversation(conv, false)
+		return nil, fmt.Errorf("%w: independent native handoff requires a stable history replay", ports.ErrChatRecoveryInconclusive)
+	}
 	if cfg.ProviderConversationID != "" {
 		// Resume owns live-host adoption before installation/auth discovery. A
 		// desktop update can move a binary while its old process is still running.
@@ -573,7 +602,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// behind a controller that no longer existed. Nothing would ever have corrected
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
-	if !liveReconnect {
+	if !liveReconnect && cfg.ProviderHandoff == nil {
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
 	// A fresh generation per launch, so events from the controller this one
@@ -608,6 +637,16 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 				return nil, fmt.Errorf("load conversation before native history import: %w", err)
 			}
 		}
+		if cfg.ProviderHandoff != nil {
+			// Independent context: retain only the current Terminal hook proof.
+			existing = ConversationRows{}
+		} else {
+			existing, err = s.nativeReplayRows(ctx, activeBranch, existing)
+			if err != nil {
+				cleanupUnpublishedConversation(conv, false)
+				return nil, err
+			}
+		}
 		if cfg.RequireNativeHistory {
 			replayCheckpoint.captureAOHighWater(
 				cfg.SessionID, existing.Turns, existing.Messages, existing.Activities,
@@ -622,6 +661,18 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, historyErr
 		}
 		if providerBoundary != nil {
+			if cfg.ProviderHandoff != nil {
+				// Visible, boundary-keyed provenance: earlier rows are retained but
+				// are not represented as context inherited by this native provider.
+				events = append([]ports.ChatEvent{{
+					Kind:            ports.ChatEventActivityCompleted,
+					ProviderEventID: providerBoundary.ID + ":context-boundary",
+					ProviderItemID:  providerBoundary.ID + ":context-boundary",
+					ActivityKind:    domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusCompleted,
+					Summary: "Native conversation changed. Earlier messages are retained; continuity with this agent's context is not verified.",
+					Detail:  []byte(`{"event":"context.boundary","reason":"native_terminal_handoff"}`),
+				}}, events...)
+			}
 			// The pending branch does not exist yet. Carry its stable replay into
 			// ControllerReady so SQLite can insert/activate the boundary, stage the
 			// generation, project every event onto that branch, and publish the
@@ -685,6 +736,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	s.mu.Lock()
 	s.controllers[cfg.SessionID] = controller
+	// A committed reservation is consumed. Internal controller restarts must
+	// resume the now-current branch, not retry its old ownership snapshot.
+	cfg.ProviderHandoff = nil
 	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
@@ -1264,6 +1318,7 @@ type StartRequest struct {
 	// ProviderConversationID resumes a stored conversation. Empty starts fresh.
 	ProviderConversationID  string
 	ProviderScopeID         string
+	ProviderHandoff         *domain.ChatProviderHandoff
 	ControllerGeneration    string
 	RequireNativeHistory    bool
 	SkipNativeHistoryImport bool

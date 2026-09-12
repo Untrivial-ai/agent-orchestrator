@@ -101,3 +101,73 @@ func TestCheckpointStillGatesOnCompletedPrompt(t *testing.T) {
 		t.Fatal("a settled prompt the replay has not reached must keep gating the import")
 	}
 }
+
+func TestCheckpointRetiresOnlySupersededHookFacts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*nativeHistoryCheckpoint, []domain.ConversationTurn, []domain.ConversationMessage)
+		want bool
+	}{
+		{name: "known older prompt and answer", want: true},
+		{name: "unknown terminal answer", edit: func(p *nativeHistoryCheckpoint, _ []domain.ConversationTurn, _ []domain.ConversationMessage) {
+			p.latestAssistantUpdate = "New work AO has not imported"
+		}},
+		{name: "unknown terminal prompt", edit: func(p *nativeHistoryCheckpoint, _ []domain.ConversationTurn, _ []domain.ConversationMessage) {
+			p.latestUserPrompt = "New request AO has not imported"
+		}},
+		{name: "newest repeated answer must still match", edit: func(_ *nativeHistoryCheckpoint, _ []domain.ConversationTurn, messages []domain.ConversationMessage) {
+			messages[3].Text = "Old answer"
+		}},
+		{name: "newer interrupted turn cannot supersede", edit: func(_ *nativeHistoryCheckpoint, turns []domain.ConversationTurn, _ []domain.ConversationMessage) {
+			turns[1].State = domain.TurnStateInterrupted
+		}},
+		{name: "newer rolled back turn cannot supersede", edit: func(_ *nativeHistoryCheckpoint, turns []domain.ConversationTurn, _ []domain.ConversationMessage) {
+			at := turns[1].RequestedAt.Add(time.Second)
+			turns[1].RolledBackAt = &at
+		}},
+		{name: "other session cannot establish provenance", edit: func(_ *nativeHistoryCheckpoint, turns []domain.ConversationTurn, _ []domain.ConversationMessage) {
+			turns[0].HandledBySessionID = "other-session"
+		}},
+		{name: "streaming text cannot establish settled provenance", edit: func(_ *nativeHistoryCheckpoint, _ []domain.ConversationTurn, messages []domain.ConversationMessage) {
+			messages[1].Streaming = true
+		}},
+		{name: "legacy provider boundary cannot supersede predecessor facts", edit: func(_ *nativeHistoryCheckpoint, _ []domain.ConversationTurn, messages []domain.ConversationMessage) {
+			messages[2].Text = "<ao-handoff-request>new provider</ao-handoff-request>"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := time.Date(2026, 9, 12, 11, 8, 0, 0, time.UTC)
+			turns := []domain.ConversationTurn{
+				{ID: "old", HandledBySessionID: testCheckpointSession, ProviderTurnID: "native-old", State: domain.TurnStateCompleted, RequestedAt: base},
+				{ID: "new", HandledBySessionID: testCheckpointSession, ProviderTurnID: "native-new", State: domain.TurnStateCompleted, RequestedAt: base.Add(time.Minute)},
+			}
+			messages := []domain.ConversationMessage{
+				{TurnID: "old", Sequence: 1, Role: domain.MessageRoleUser, Text: "Old prompt", ProviderItemID: "old-user"},
+				{TurnID: "old", Sequence: 2, Role: domain.MessageRoleAssistant, Text: "Old answer", ProviderItemID: "old-answer"},
+				{TurnID: "new", Sequence: 3, Role: domain.MessageRoleUser, Text: "New prompt", ProviderItemID: "new-user"},
+				{TurnID: "new", Sequence: 4, Role: domain.MessageRoleAssistant, Text: "New answer", ProviderItemID: "new-answer"},
+			}
+			oldReplay := []ports.ChatEvent{
+				{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "native-old", ProviderItemID: "old-user", Text: "Old prompt"},
+				{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "native-old", ProviderItemID: "old-answer", Text: "Old answer"},
+				{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "native-old"},
+			}
+			fullReplay := append(append([]ports.ChatEvent(nil), oldReplay...),
+				ports.ChatEvent{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "native-new", ProviderItemID: "new-user", Text: "New prompt"},
+				ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "native-new", ProviderItemID: "new-answer", Text: "New answer"},
+				ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "native-new"},
+			)
+			checkpoint := nativeHistoryCheckpoint{latestUserPrompt: "Old prompt", latestAssistantUpdate: "Old answer"}
+			if tc.edit != nil {
+				tc.edit(&checkpoint, turns, messages)
+			}
+			checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+			if got := checkpoint.reached(fullReplay); got != tc.want {
+				t.Fatalf("complete replay reached = %v, want %v", got, tc.want)
+			}
+			if tc.want && checkpoint.reached(oldReplay) {
+				t.Fatal("retiring older hook facts must not admit a replay missing the newer completed Chat turn")
+			}
+		})
+	}
+}

@@ -40,12 +40,13 @@ var ErrNoQueuedTurn = domain.ErrNoQueuedTurn
 var ErrQueuedTurnNotAvailable = errors.New("queued turn is not available for promotion")
 
 type conversationCreateOptions struct {
-	id           string
-	scope        domain.ConversationScope
-	project      domain.ProjectID
-	session      domain.SessionID
-	contextReset *domain.ConversationActivity
-	now          time.Time
+	id            string
+	scope         domain.ConversationScope
+	project       domain.ProjectID
+	session       domain.SessionID
+	contextReset  *domain.ConversationActivity
+	preserveOwner bool
+	now           time.Time
 }
 
 // CreateConversation opens a worker's session-scoped conversation or rebinds an
@@ -66,6 +67,16 @@ func (s *Store) CreateConversation(
 		project: project,
 		session: session,
 		now:     now,
+	})
+}
+
+// OpenNativeConversation opens the AO projection for an existing native
+// conversation without adopting another session's project narrative. A first
+// Terminal -> Chat handoff may create its root, but existing project ownership
+// must match; only a prepared provider handoff can transfer that ownership.
+func (s *Store) OpenNativeConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error) {
+	return s.createConversation(ctx, conversationCreateOptions{
+		id: id, scope: scope, project: project, session: session, now: now, preserveOwner: true,
 	})
 }
 
@@ -101,6 +112,12 @@ func (s *Store) createConversation(
 	scope := options.scope
 	if scope == domain.ConversationScopeProject {
 		if existing, err := s.qw.SelectProjectConversation(ctx, options.project); err == nil {
+			if options.preserveOwner {
+				if existing.CurrentSessionID == nil || *existing.CurrentSessionID != options.session {
+					return domain.ConversationRecord{}, fmt.Errorf("project conversation %s is no longer owned by session %s", existing.ID, options.session)
+				}
+				return conversationToDomain(existing), nil
+			}
 			transactionName := "rebind project conversation"
 			if options.contextReset != nil {
 				transactionName += " with reset"
@@ -362,7 +379,7 @@ func (s *Store) CommitChatSpawn(
 	rec domain.SessionRecord,
 	branch domain.ConversationBranch,
 ) error {
-	return s.commitChatSpawn(ctx, rec, branch, nil)
+	return s.commitChatSpawn(ctx, rec, branch, nil, nil)
 }
 
 // CommitChatSpawnPrepared stages the reserved boundary and controller generation,
@@ -373,18 +390,20 @@ func (s *Store) CommitChatSpawnPrepared(
 	ctx context.Context,
 	rec domain.SessionRecord,
 	branch domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	if prepare == nil {
 		return errors.New("commit Chat spawn: provider-history preparation is missing")
 	}
-	return s.commitChatSpawn(ctx, rec, branch, prepare)
+	return s.commitChatSpawn(ctx, rec, branch, handoff, prepare)
 }
 
 func (s *Store) commitChatSpawn(
 	ctx context.Context,
 	rec domain.SessionRecord,
 	branch domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	if rec.ID == "" || branch.ID == "" || branch.ConversationID == "" ||
@@ -405,17 +424,53 @@ func (s *Store) commitChatSpawn(
 		if domain.NormalizeSessionMode(owner.SessionMode) != domain.SessionModeChat {
 			return fmt.Errorf("session %s is not in Chat mode", rec.ID)
 		}
+		if handoff != nil && (handoff.BoundaryID != branch.ID || handoff.ConversationID != branch.ConversationID ||
+			handoff.PreviousBranchID != branch.ParentBranchID ||
+			rowToRecord(owner).ControllerOwner() != handoff.ExpectedControllerOwner) {
+			return errors.New("native Chat handoff controller ownership changed")
+		}
 		conversation, err := q.SelectConversationByID(ctx, branch.ConversationID)
 		if err != nil {
 			return fmt.Errorf("select conversation %s: %w", branch.ConversationID, err)
 		}
-		if conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != rec.ID {
+		expectedSession := rec.ID
+		if handoff != nil {
+			expectedSession = handoff.PreviousSessionID
+			if conversation.LatestSequence != handoff.PreviousSequence {
+				return errors.New("native Chat handoff history changed")
+			}
+		}
+		if conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != expectedSession {
 			return fmt.Errorf("conversation %s is no longer owned by session %s",
 				branch.ConversationID, rec.ID)
 		}
 		if conversation.ActiveBranchID != branch.ParentBranchID {
 			return fmt.Errorf("conversation %s active branch changed from %s to %s",
 				branch.ConversationID, branch.ParentBranchID, conversation.ActiveBranchID)
+		}
+		if expectedSession != rec.ID {
+			previous, err := q.GetSession(ctx, expectedSession)
+			if err != nil {
+				return err
+			}
+			if conversation.Scope != domain.ConversationScopeProject || previous.ProjectID != rec.ProjectID ||
+				!previous.IsTerminated || !rec.CreatedAt.After(previous.CreatedAt) {
+				return errors.New("native Chat handoff project owner is not a retired predecessor")
+			}
+			sessions, err := q.ListSessionsByProject(ctx, rec.ProjectID)
+			if err != nil {
+				return err
+			}
+			for _, session := range sessions {
+				if session.Kind == domain.KindOrchestrator && session.ID != rec.ID && !session.IsTerminated {
+					return errors.New("native Chat handoff has a competing live orchestrator")
+				}
+			}
+			if err := q.BindProjectConversationSession(ctx, gen.BindProjectConversationSessionParams{
+				CurrentSessionID: &rec.ID, UpdatedAt: rec.UpdatedAt, ID: conversation.ID,
+			}); err != nil {
+				return err
+			}
 		}
 		if err := insertConversationBranchTx(ctx, q, branch, branch.CreatedAt); err != nil {
 			return err
@@ -725,6 +780,19 @@ func (s *Store) ActivateConversationBranch(
 		}
 		return nil
 	})
+}
+
+// ProjectConversation is a read-only lookup; unlike CreateConversation it does
+// not transfer ownership before a replacement provider has connected.
+func (s *Store) ProjectConversation(ctx context.Context, project domain.ProjectID) (domain.ConversationRecord, error) {
+	row, err := s.qr.SelectProjectConversation(ctx, project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationRecord{}, ErrConversationNotFound
+	}
+	if err != nil {
+		return domain.ConversationRecord{}, fmt.Errorf("select project conversation: %w", err)
+	}
+	return conversationToDomain(row), nil
 }
 
 // ConversationForSession looks up a session's conversation.
