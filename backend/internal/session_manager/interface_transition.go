@@ -104,7 +104,7 @@ func (m *Manager) InterfaceTransitionStatus(
 	} else if target == domain.SessionModeChat && (m.chat == nil || !m.chat.SupportsChat(rec.Harness)) {
 		status.ReasonCode = "CHAT_UNSUPPORTED"
 		status.Reason = fmt.Sprintf("%s does not support Chat UI.", rec.Harness)
-	} else if _, _, err := m.handoffNativeConversationID(ctx, rec); err != nil {
+	} else if _, err := m.handoffNativeConversationID(ctx, rec); err != nil {
 		if errors.Is(err, ErrInterfaceHandoffUnsupported) {
 			status.ReasonCode = "INTERFACE_HANDOFF_UNSUPPORTED"
 		} else if errors.Is(err, ErrNativeConversationMissing) {
@@ -167,7 +167,7 @@ func (m *Manager) StartInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("%w: session %s is already in %s mode",
 			ErrInterfaceAlreadySelected, id, source)
 	}
-	nativeID, _, err := m.handoffNativeConversationID(ctx, rec)
+	nativeID, err := m.handoffNativeConversationID(ctx, rec)
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, err
 	}
@@ -495,16 +495,12 @@ func (m *Manager) runInterfaceTransition(
 func (m *Manager) handoffNativeConversationID(
 	ctx context.Context,
 	rec domain.SessionRecord,
-) (string, ports.AgentInterfaceHandoff, error) {
+) (string, error) {
 	id, handoff, err := m.nativeConversationID(ctx, rec)
 	if err != nil {
-		return "", handoff, err
+		return "", err
 	}
-	id, err = m.persistedNativeConversationID(ctx, rec, id, handoff)
-	if err != nil {
-		return "", handoff, err
-	}
-	return id, handoff, nil
+	return m.persistedNativeConversationID(ctx, rec, id, handoff)
 }
 
 // nativeConversationID resolves the adapter's native conversation id for the
