@@ -1248,5 +1248,16 @@
 	"status.run.running": "Running",
 	"status.run.succeeded": "Succeeded",
 	"status.run.failed": "Failed",
-	"status.run.cancelled": "Cancelled"
+	"status.run.cancelled": "Cancelled",
+	"workflow.run.create": "Create Run",
+	"workflow.run.start": "Start",
+	"workflow.run.cancel": "Cancel",
+	"workflow.run.reExecute": "Re-execute",
+	"workflow.run.viewSession": "View Session",
+	"workflow.run.startFailed": "Start failed",
+	"workflow.run.createFailed": "Create run failed",
+	"workflow.run.cancelFailed": "Cancel failed",
+	"workflow.run.recovering": "Recovering task state...",
+	"workflow.run.waitingReview": "Waiting for review",
+	"workflow.run.statusConflict": "Status conflict"
 }

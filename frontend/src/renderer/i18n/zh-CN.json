@@ -1248,5 +1248,16 @@
 	"status.run.running": "运行中",
 	"status.run.succeeded": "成功",
 	"status.run.failed": "失败",
-	"status.run.cancelled": "已取消"
+	"status.run.cancelled": "已取消",
+	"workflow.run.create": "创建执行",
+	"workflow.run.start": "开始执行",
+	"workflow.run.cancel": "取消执行",
+	"workflow.run.reExecute": "重新执行",
+	"workflow.run.viewSession": "查看执行会话",
+	"workflow.run.startFailed": "启动失败",
+	"workflow.run.createFailed": "创建执行失败",
+	"workflow.run.cancelFailed": "取消失败",
+	"workflow.run.recovering": "正在恢复任务状态…",
+	"workflow.run.waitingReview": "等待审核",
+	"workflow.run.statusConflict": "状态冲突"
 }

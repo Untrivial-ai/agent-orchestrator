@@ -7,19 +7,33 @@ import { Skeleton } from "../ui/skeleton";
 import { useWorkflowTask } from "../../hooks/useWorkflowTasks";
 import { StatusBadge } from "./StatusBadge";
 import { RunEntry } from "./RunEntry";
-import { useWorkflowRuns } from "../../hooks/useWorkflowRuns";
+import { useWorkflowRuns, useCreateRun, useStartRun, useCancelRun } from "../../hooks/useWorkflowRuns";
 
 type TaskDetailPanelProps = {
 	taskId: string;
+	projectId?: string;
 	onClose: () => void;
+	onNavigateSession?: (sessionId: string) => void;
 };
 
-export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
+export function TaskDetailPanel({ taskId, projectId, onClose, onNavigateSession }: TaskDetailPanelProps) {
 	const { t } = useTranslation();
 	const taskQuery = useWorkflowTask(taskId);
 	const runsQuery = useWorkflowRuns(taskId);
+	const createRun = useCreateRun(taskId);
+	const startRun = useStartRun(taskId);
+	const cancelRun = useCancelRun(taskId);
 	const task = taskQuery.data;
 	const runs = (runsQuery.data ?? []).sort((a, b) => b.attempt - a.attempt);
+	const latestRun = runs[0] ?? null;
+	const hasActiveRun = runs.some((r) => r.status === "pending" || r.status === "running");
+	const isTransientRecovery = task?.status === "running" && latestRun?.status === "failed";
+
+	function handleViewSession(sessionId: string) {
+		if (projectId && onNavigateSession) {
+			onNavigateSession(sessionId);
+		}
+	}
 
 	return (
 		<div
@@ -93,13 +107,47 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
 								<Skeleton className="h-16 w-full" />
 								<Skeleton className="h-16 w-full" />
 							</div>
-						) : runs.length === 0 ? (
-							<p className="py-4 text-center text-xs text-muted-foreground">{t("workflow.empty.noRuns")}</p>
 						) : (
 							<div className="flex flex-col gap-2">
-								{runs.map((run) => (
-									<RunEntry key={run.id} run={run} />
-								))}
+								{task.status === "ready" && !hasActiveRun && (
+									<Button
+										size="sm"
+										onClick={() => createRun.mutate()}
+										disabled={createRun.isPending}
+										data-testid="create-run"
+									>
+										{t("workflow.run.create")}
+									</Button>
+								)}
+
+								{createRun.isError && (
+									<p className="text-xs text-destructive">{t("workflow.run.createFailed")}</p>
+								)}
+
+								{isTransientRecovery && (
+									<p className="text-xs text-muted-foreground">{t("workflow.run.recovering")}</p>
+								)}
+
+								{runs.length === 0 && task.status !== "ready" ? (
+									<p className="py-4 text-center text-xs text-muted-foreground">{t("workflow.empty.noRuns")}</p>
+								) : runs.length === 0 ? null : (
+									runs.map((run, i) => (
+										<RunEntry
+											key={run.id}
+											run={run}
+											isLatest={i === 0}
+											onStart={i === 0 && run.status === "pending" ? () => startRun.mutate(run.id) : undefined}
+											onCancel={i === 0 && (run.status === "pending" || run.status === "running") ? () => cancelRun.mutate(run.id) : undefined}
+											onViewSession={i === 0 && run.status === "running" && run.sessionId ? handleViewSession : undefined}
+											startPending={i === 0 && startRun.isPending}
+											cancelPending={i === 0 && cancelRun.isPending}
+										/>
+									))
+								)}
+
+								{task.status === "review" && (
+									<p className="text-xs text-muted-foreground">{t("workflow.run.waitingReview")}</p>
+								)}
 							</div>
 						)}
 					</TabsContent>
