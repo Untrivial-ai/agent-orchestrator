@@ -37,6 +37,7 @@ type APIDeps struct {
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
 	ShellTerminals     controllers.ShellTerminalService
+	Cues               controllers.CueService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
 	Conversations controllers.ConversationService
@@ -118,6 +119,7 @@ type API struct {
 	push          *controllers.PushController
 	imports       *controllers.ImportController
 	shellTerms    *controllers.ShellTerminalsController
+	cues          *controllers.CuesController
 	conversations *controllers.ConversationsController
 	settings      *controllers.SettingsController
 	dev           *controllers.DevController
@@ -161,6 +163,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
+		cues:          &controllers.CuesController{Svc: deps.Cues},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
@@ -201,6 +204,7 @@ func (a *API) Register(root chi.Router) {
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.shellTerms.Register(r)
+			a.cues.Register(r)
 			a.conversations.Register(r)
 			a.settings.Register(r)
 			a.dev.Register(r)

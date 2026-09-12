@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { Folder, LayoutDashboard, Plus, Trash2 } from "lucide-react";
+import { Folder, LayoutDashboard, Plus, Trash2, Zap } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { animate, LayoutGroup, motion, useMotionValue, useReducedMotion } from "motion/react";
 import { NotificationCenter } from "./NotificationCenter";
@@ -41,6 +41,7 @@ import {
 	deriveSessionAgentSwitchPresentation,
 } from "../lib/agent-switch-presentation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { useCuesDialogStore } from "../stores/cues-dialog-store";
 
 const isMac = isMacPlatform();
 const dragStyle = isMac ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
@@ -81,6 +82,7 @@ export function ShellTopbar({
 	compactActions?: boolean;
 } = {}) {
 	const { t } = useTranslation();
+	const openCuesDialog = useCuesDialogStore((s) => s.openCuesDialog);
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
 	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
@@ -197,7 +199,27 @@ export function ShellTopbar({
 				data-testid="workspace-topbar-actions"
 			>
 				{!boardActionsInPanel && isProjectBoardRoute ? (
-					<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} style={noDragStyle} />
+					<>
+						<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} style={noDragStyle} />
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<span className="inline-flex" style={noDragStyle}>
+									<TopbarButton
+										aria-label={t("cues.title")}
+										className="topbar-control--labeled"
+										data-priority="secondary"
+										disabled={isProjectRestarting || isProvisioning}
+										onClick={openCuesDialog}
+										variant="primary"
+									>
+										<Zap className="size-icon-md" aria-hidden="true" />
+										<span data-compact-label>{t("cues.title")}</span>
+									</TopbarButton>
+								</span>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">{t("cues.title")}</TooltipContent>
+						</Tooltip>
+					</>
 				) : null}
 				{isSessionRoute ? (
 					<>

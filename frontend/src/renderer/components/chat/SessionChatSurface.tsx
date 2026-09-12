@@ -47,6 +47,7 @@ import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace
 import { AgentSwitchProgressTrack } from "../AgentSwitchProgressTrack";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { hasProviderPermissionMode } from "./TurnSettingsBar";
+import { CueComposerMenu } from "./CueComposerMenu";
 
 export interface ConversationWorkState {
 	controllerBusy: boolean;
@@ -480,6 +481,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				sessionTitle={session.title}
 				sessionRole={session.kind}
 				session={session}
+				cueTrigger={<CueComposerMenu projectId={session.workspaceId} sessionId={session.id} />}
 				onSessionRenamed={onSessionRenamed}
 				reviewerTerminal={reviewerTerminal}
 				onOpenReviewerTerminal={onOpenReviewerTerminal}

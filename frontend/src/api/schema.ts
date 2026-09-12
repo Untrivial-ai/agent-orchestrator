@@ -464,6 +464,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cues/{cueId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one cue */
+        get: operations["getCue"];
+        put?: never;
+        post?: never;
+        /** Delete a cue */
+        delete: operations["deleteCue"];
+        options?: never;
+        head?: never;
+        /** Replace a cue's definition */
+        patch: operations["updateCue"];
+        trace?: never;
+    };
+    "/api/v1/cues/{cueId}/invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run a cue: message the active session, or spawn a worker when none could be messaged */
+        post: operations["invokeCue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/desktop/sessions/{sessionId}/workspace": {
         parameters: {
             query?: never;
@@ -946,6 +982,24 @@ export interface paths {
         head?: never;
         /** Remember project permissions for future sessions */
         patch: operations["setProjectPermissions"];
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/cues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a project's cues in name order */
+        get: operations["listProjectCues"];
+        put?: never;
+        /** Create a cue for a project */
+        post: operations["createCue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/clone": {
@@ -3299,6 +3353,34 @@ export interface components {
             /** Format: int64 */
             totalTokens: number;
         };
+        CreateCueRequest: {
+            /** @description Shell command for a command cue. Ignored for agent cues. */
+            command?: string;
+            /** @description Optional human note about the cue, at most 240 bytes. */
+            description?: string;
+            /** @description Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes. */
+            name: string;
+            /** @description Agent instruction for an agent cue. Ignored for command cues. */
+            prompt?: string;
+            /** @description Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent. */
+            type: string;
+        };
+        CueEnvelope: {
+            cue: components["schemas"]["CueResponse"];
+        };
+        CueResponse: {
+            command?: string;
+            /** Format: date-time */
+            createdAt: string;
+            description: string;
+            id: string;
+            name: string;
+            projectId: string;
+            prompt?: string;
+            type: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
         DegradedProject: {
             id: string;
             /** @enum {string} */
@@ -3524,6 +3606,14 @@ export interface components {
             /** Format: date-time */
             updatedAt?: null | string;
         };
+        InvokeCueRequest: {
+            /** @description Active session to message. Omit to spawn a worker session for the cue's project; a stale or unusable session also falls back to spawning. */
+            sessionId?: string;
+        };
+        InvokeCueResponse: {
+            /** @description Session that received the cue: the messaged session, or the newly spawned worker. */
+            sessionId: string;
+        };
         KillReviewResponse: {
             reviewerHandleId: string;
             reviewerHarness?: string;
@@ -3559,6 +3649,9 @@ export interface components {
         };
         ListCompactSessionUsageResponse: {
             sessions: components["schemas"]["CompactSessionUsageResponse"][];
+        };
+        ListCuesResponse: {
+            cues: components["schemas"]["CueResponse"][];
         };
         ListNotificationsResponse: {
             nextCursor?: string;
@@ -4457,6 +4550,18 @@ export interface components {
         UnregisterPushDeviceResponse: {
             deleted: boolean;
             token: string;
+        };
+        UpdateCueRequest: {
+            /** @description Shell command for a command cue. Ignored for agent cues. */
+            command?: string;
+            /** @description Optional human note about the cue, at most 240 bytes. */
+            description?: string;
+            /** @description Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes. */
+            name: string;
+            /** @description Agent instruction for an agent cue. Ignored for command cues. */
+            prompt?: string;
+            /** @description Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent. */
+            type: string;
         };
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
@@ -6065,6 +6170,266 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getCue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cue identifier. */
+                cueId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CueEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    deleteCue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cue identifier. */
+                cueId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateCue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cue identifier. */
+                cueId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCueRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CueEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    invokeCue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cue identifier. */
+                cueId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokeCueRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvokeCueResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7714,6 +8079,128 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listProjectCues: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project whose cues are listed or extended. */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListCuesResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createCue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project whose cues are listed or extended. */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCueRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CueEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -52,6 +52,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	cuesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/cue"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
@@ -790,6 +791,7 @@ func Run() error {
 		DeviceLive:         presenceTracker,
 		Import:             importsvc.New(importsvc.Deps{Store: store}),
 		ShellTerminals:     shellTermSvc,
+		Cues:               cuesvc.New(cuesvc.Deps{Store: store, Sessions: sessionSvc}),
 		AgentAuth:          agentAuthSvc,
 		Conversations:      chatSvc,
 		Settings:           settingsSvc,

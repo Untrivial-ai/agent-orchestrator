@@ -335,6 +335,18 @@ type ConversationTurn struct {
 	RetryOfTurnID        sql.NullString
 }
 
+type Cue struct {
+	ID          domain.CueID
+	ProjectID   domain.ProjectID
+	Name        string
+	Description string
+	Type        domain.CueType
+	Command     string
+	Prompt      string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type ModelUsageEvent struct {
 	ID                    int64
 	BindingID             int64

@@ -1691,6 +1691,68 @@ type ShellTerminalEnvelope struct {
 	ShellTerminal ShellTerminalResponse `json:"shellTerminal"`
 }
 
+// CueIDParam is the {cueId} path parameter of the /cues/{cueId} routes.
+type CueIDParam struct {
+	CueID string `path:"cueId" description:"Cue identifier."`
+}
+
+// CueProjectIDParam is the {projectId} path parameter of the project-scoped
+// /projects/{projectId}/cues routes.
+type CueProjectIDParam struct {
+	ProjectID string `path:"projectId" description:"Project whose cues are listed or extended."`
+}
+
+// CreateCueRequest is the body of POST /api/v1/projects/{projectId}/cues.
+type CreateCueRequest struct {
+	Name        string `json:"name" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
+	Description string `json:"description,omitempty" description:"Optional human note about the cue, at most 240 bytes."`
+	Type        string `json:"type" description:"Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent."`
+	Command     string `json:"command,omitempty" description:"Shell command for a command cue. Ignored for agent cues."`
+	Prompt      string `json:"prompt,omitempty" description:"Agent instruction for an agent cue. Ignored for command cues."`
+}
+
+// UpdateCueRequest is the body of PATCH /api/v1/cues/{cueId}.
+type UpdateCueRequest struct {
+	Name        string `json:"name" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
+	Description string `json:"description,omitempty" description:"Optional human note about the cue, at most 240 bytes."`
+	Type        string `json:"type" description:"Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent."`
+	Command     string `json:"command,omitempty" description:"Shell command for a command cue. Ignored for agent cues."`
+	Prompt      string `json:"prompt,omitempty" description:"Agent instruction for an agent cue. Ignored for command cues."`
+}
+
+// CueResponse is one project-scoped reusable quick action.
+type CueResponse struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"projectId"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Type        string    `json:"type"`
+	Command     string    `json:"command,omitempty"`
+	Prompt      string    `json:"prompt,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// ListCuesResponse is the body of GET /api/v1/projects/{projectId}/cues.
+type ListCuesResponse struct {
+	Cues []CueResponse `json:"cues"`
+}
+
+// InvokeCueRequest is the optional body of POST /api/v1/cues/{cueId}/invoke.
+type InvokeCueRequest struct {
+	SessionID string `json:"sessionId,omitempty" description:"Active session to message. Omit to spawn a worker session for the cue's project; a stale or unusable session also falls back to spawning."`
+}
+
+// InvokeCueResponse is the body of POST /api/v1/cues/{cueId}/invoke.
+type InvokeCueResponse struct {
+	SessionID string `json:"sessionId" description:"Session that received the cue: the messaged session, or the newly spawned worker."`
+}
+
+// CueEnvelope is the { cue } response body for cue reads and mutations.
+type CueEnvelope struct {
+	Cue CueResponse `json:"cue"`
+}
+
 // MarkAllNotificationsReadRequest is the optional body of
 // POST /api/v1/notifications/read-all.
 type MarkAllNotificationsReadRequest struct {

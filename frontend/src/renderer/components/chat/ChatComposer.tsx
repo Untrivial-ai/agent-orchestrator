@@ -144,6 +144,7 @@ export const ChatComposer = memo(function ChatComposer({
 	disabled,
 	disabledPlaceholder,
 	settings,
+	cueTrigger,
 	approval,
 	elicitation,
 	skills = [],
@@ -186,6 +187,8 @@ export const ChatComposer = memo(function ChatComposer({
 		retainedContent?: number[],
 	) => void | Promise<unknown>;
 	settings?: ReactNode;
+	/** Extra message-tools controls rendered ahead of settings. */
+	cueTrigger?: ReactNode;
 	/** A provider decision that temporarily replaces ordinary message entry. */
 	approval?: ReactNode;
 	/** A provider question, docked above the composer until it is answered. */
@@ -1590,6 +1593,7 @@ export const ChatComposer = memo(function ChatComposer({
 								</Tooltip>
 							</>
 						) : null}
+						{cueTrigger}
 						{settings}
 					</div>
 
