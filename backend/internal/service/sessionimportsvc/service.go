@@ -59,6 +59,7 @@ type Service struct {
 	store    SessionStore
 	projects ProjectService
 	imports  *semaphore.Weighted
+	search   *searchState
 }
 
 // New builds the import service over the given provider sources. Discovery flags

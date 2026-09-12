@@ -39,6 +39,8 @@ type ImportableSession struct {
 	// CWD is the working directory the conversation ran in, read from the
 	// transcript itself (never reverse-engineered from a slugified dir name).
 	CWD string
+	// RepositoryCommonDir is a rebuildable repository identity captured by explicit search.
+	RepositoryCommonDir string
 	// Branch is the git branch recorded in the transcript, when present.
 	Branch string
 	// Title is a human label: the provider's own title if it recorded one,

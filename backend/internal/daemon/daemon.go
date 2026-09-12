@@ -753,6 +753,11 @@ func Run() error {
 		sessionimport.NewCodexSource(),
 	)
 
+	if err := sessionImportSvc.EnableSearch(ctx, cfg.DataDir); err != nil {
+		log.Warn("session search unavailable", "error", err)
+	}
+	defer func() { _ = sessionImportSvc.CloseSearch() }()
+
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Projects:           projectSvc,
 		SessionImport:      sessionImportSvc,

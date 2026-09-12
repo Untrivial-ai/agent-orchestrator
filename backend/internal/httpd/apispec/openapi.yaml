@@ -2583,6 +2583,173 @@ paths:
       summary: Report a reviewer-owned hook signal
       tags:
       - reviews
+  /api/v1/session-import/refresh:
+    post:
+      operationId: refreshSessionSearch
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportSearchStatus'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: refreshSessionSearch
+      tags:
+      - sessions
+  /api/v1/session-import/search:
+    get:
+      operationId: searchImportableSessions
+      parameters:
+      - description: Title query, at most 120 Unicode characters. Empty returns a
+          bounded recent page.
+        in: query
+        name: query
+        schema:
+          description: Title query, at most 120 Unicode characters. Empty returns
+            a bounded recent page.
+          type: string
+      - description: Page size from 1 to 100; defaults to 50.
+        in: query
+        name: limit
+        schema:
+          description: Page size from 1 to 100; defaults to 50.
+          type: integer
+      - description: Continuation cursor returned by the preceding page.
+        in: query
+        name: cursor
+        schema:
+          description: Continuation cursor returned by the preceding page.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportSearchPage'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: searchImportableSessions
+      tags:
+      - sessions
+  /api/v1/session-import/search/{resultId}/destination:
+    get:
+      operationId: getSessionImportDestination
+      parameters:
+      - in: path
+        name: resultId
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: locateFolder
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportDestination'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: getSessionImportDestination
+      tags:
+      - sessions
+  /api/v1/session-import/search/{resultId}/import:
+    post:
+      operationId: importSelectedSession
+      parameters:
+      - in: path
+        name: resultId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionImportSelectedInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportSelectedResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: importSelectedSession
+      tags:
+      - sessions
   /api/v1/sessions:
     get:
       operationId: listSessions
@@ -11176,6 +11343,125 @@ components:
       - ok
       - sessionId
       - message
+      type: object
+    SessionImportDestination:
+      properties:
+        action:
+          enum:
+          - import
+          - add_project
+          - open
+          - unavailable
+          type: string
+        confirmationToken:
+          type: string
+        id:
+          type: string
+        path:
+          type: string
+        projectId:
+          type: string
+        provider:
+          type: string
+        reason:
+          type: string
+        sessionId:
+          type: string
+        sourceCwd:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - title
+      - provider
+      - action
+      type: object
+    SessionImportSearchPage:
+      properties:
+        nextCursor:
+          type: string
+        results:
+          items:
+            $ref: '#/components/schemas/SessionImportSearchResult'
+          type: array
+        status:
+          $ref: '#/components/schemas/SessionImportSearchStatus'
+      required:
+      - results
+      - status
+      type: object
+    SessionImportSearchResult:
+      properties:
+        folderHint:
+          type: string
+        id:
+          type: string
+        lastActivity:
+          type: string
+        projectId:
+          type: string
+        provider:
+          type: string
+        sessionId:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - title
+      - provider
+      - lastActivity
+      type: object
+    SessionImportSearchStatus:
+      properties:
+        completedAt:
+          type: string
+        errors:
+          items:
+            type: string
+          type: array
+        running:
+          type: boolean
+        scanned:
+          type: integer
+        startedAt:
+          type: string
+        updated:
+          type: integer
+      required:
+      - running
+      - scanned
+      - updated
+      - errors
+      type: object
+    SessionImportSelectedInput:
+      properties:
+        addProject:
+          type: boolean
+        confirmationToken:
+          type: string
+        locateFolder:
+          type: string
+      required:
+      - confirmationToken
+      - addProject
+      type: object
+    SessionImportSelectedResult:
+      properties:
+        alreadyImported:
+          type: boolean
+        error:
+          type: string
+        projectCreated:
+          type: boolean
+        projectId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - alreadyImported
+      - projectCreated
       type: object
     SessionInterfaceTransition:
       properties:
