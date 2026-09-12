@@ -768,7 +768,11 @@ describe("terminal restore", () => {
 			terminalHandleId: "term-1",
 		});
 		try {
-			expect(screen.getByRole("button", { name: "Restore session" })).toBeInTheDocument();
+			const restore = screen.getByRole("button", { name: "Restore session" });
+			expect(restore).toBeInTheDocument();
+			// The restore action must be a visible labeled CTA, not an icon-only
+			// button floating in the corner of the strip (issue #3300).
+			expect(restore).toHaveTextContent("Restore session");
 		} finally {
 			view.restore();
 		}

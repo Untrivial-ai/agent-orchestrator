@@ -62,6 +62,7 @@
 	"browser.deviceFit": "Ajustar al panel",
 	"browser.devicePreset": "Preajuste de dispositivo",
 	"browser.emptyUrl": "Introduce una URL o haz clic en una en el terminal.",
+	"browser.sessionEnded": "Session ended — browser preview unavailable.",
 	"browser.forward": "Adelante",
 	"browser.newTab": "Nueva pestaña",
 	"browser.onlyTab": "No se puede cerrar la única pestaña",

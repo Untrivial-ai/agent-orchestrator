@@ -62,6 +62,7 @@
 	"browser.deviceFit": "Ajuster au panneau",
 	"browser.devicePreset": "Préréglage d'appareil",
 	"browser.emptyUrl": "Saisissez une URL ou cliquez-en une dans le terminal.",
+	"browser.sessionEnded": "Session ended — browser preview unavailable.",
 	"browser.forward": "Suivant",
 	"browser.newTab": "Nouvel onglet",
 	"browser.onlyTab": "L'unique onglet ne peut pas être fermé",

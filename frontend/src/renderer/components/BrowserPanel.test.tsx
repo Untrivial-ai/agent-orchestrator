@@ -1212,6 +1212,21 @@ describe("BrowserPanel", () => {
 		expect(screen.getByText("Connection refused")).toBeInTheDocument();
 	});
 
+	it("shows a session-ended state with disabled controls for terminated sessions", () => {
+		const terminated = { ...session, status: "terminated", isTerminated: true } as const;
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={terminated} />);
+
+		expect(screen.getByText("Session ended — browser preview unavailable.")).toBeInTheDocument();
+		expect(screen.queryByText("Enter a URL or click one in the terminal.")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Forward" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Reload" })).toBeDisabled();
+		expect(screen.getByRole("textbox", { name: "Browser URL" })).toBeDisabled();
+		for (const button of screen.getAllByRole("button", { name: "Open new tab" })) {
+			expect(button).toBeDisabled();
+		}
+	});
+
 	it("toggles pop-out mode", async () => {
 		const onTogglePopOut = vi.fn();
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };

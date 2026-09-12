@@ -32,6 +32,7 @@
 	"browser.deviceFit": "Fit panel",
 	"browser.devicePreset": "Device preset",
 	"browser.emptyUrl": "Enter a URL or click one in the terminal.",
+	"browser.sessionEnded": "Session ended — browser preview unavailable.",
 	"browser.forward": "Forward",
 	"browser.newTab": "New tab",
 	"browser.onlyTab": "The only tab cannot be closed",

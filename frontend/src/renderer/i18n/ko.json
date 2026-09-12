@@ -62,6 +62,7 @@
 	"browser.deviceFit": "패널에 맞추기",
 	"browser.devicePreset": "기기 사전 설정",
 	"browser.emptyUrl": "URL을 입력하거나 터미널에서 링크를 클릭하세요.",
+	"browser.sessionEnded": "Session ended — browser preview unavailable.",
 	"browser.forward": "앞으로",
 	"browser.newTab": "새 탭",
 	"browser.onlyTab": "마지막 탭은 닫을 수 없습니다",
