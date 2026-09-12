@@ -320,8 +320,8 @@ func TestAnonymousFallsBackToNoAuthHeader(t *testing.T) {
 	defer srv.Close()
 	// EnvTokenSource with no matching env vars yields ErrNoToken on this machine.
 	p, err := NewProvider(ProviderOptions{
-		Token:      EnvTokenSource{EnvVars: []string{"AO_GITCODE_TOKEN_UNIT_TEST_UNSET_VAR"}},
-		RESTBase:   srv.URL,
+		Token:          EnvTokenSource{EnvVars: []string{"AO_GITCODE_TOKEN_UNIT_TEST_UNSET_VAR"}},
+		RESTBase:       srv.URL,
 		AllowAnonymous: true,
 	})
 	if err != nil {

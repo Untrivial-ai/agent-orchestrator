@@ -16,12 +16,12 @@ import (
 )
 
 const (
-	defaultRESTBase   = "https://gitcode.com/api/v5"
-	defaultUserAgent  = "ao-gitcode-scm"
-	defaultPageSize   = 100
-	maxPages          = 1000
-	requestTimeout    = 30 * time.Second
-	maxResponseBytes  = 32 << 20
+	defaultRESTBase  = "https://gitcode.com/api/v5"
+	defaultUserAgent = "ao-gitcode-scm"
+	defaultPageSize  = 100
+	maxPages         = 1000
+	requestTimeout   = 30 * time.Second
+	maxResponseBytes = 32 << 20
 )
 
 // HTTPClient is the HTTP client type the adapter accepts; declared as a
@@ -266,8 +266,8 @@ func rateLimited(resp *http.Response, body []byte) error {
 
 func gitcodeMessage(body []byte) string {
 	var v struct {
-		Message     string `json:"message"`
-		Error       string `json:"error"`
+		Message      string `json:"message"`
+		Error        string `json:"error"`
 		ErrorMessage string `json:"error_message"`
 	}
 	if json.Unmarshal(body, &v) == nil {

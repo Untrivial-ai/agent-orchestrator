@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	scmgithub "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/github"
 	scmgitcode "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitcode"
+	scmgithub "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/github"
 	scmgitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitlab"
 	scmmulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/multi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -86,9 +86,9 @@ func newGitCodeSCMProvider(logger *slog.Logger) (*scmgitcode.Provider, error) {
 		scmgitcode.EnvTokenSource{EnvVars: []string{"AO_GITCODE_TOKEN"}},
 	}
 	return scmgitcode.NewProvider(scmgitcode.ProviderOptions{
-		Token:      tokens,
+		Token:          tokens,
 		AllowAnonymous: true,
-		Logger:     logger,
+		Logger:         logger,
 	})
 }
 
