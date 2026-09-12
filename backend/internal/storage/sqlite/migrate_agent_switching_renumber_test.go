@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -54,16 +53,6 @@ func TestMigrateRepairsLegacyAgentSwitchSchemas(t *testing.T) {
 			assertAgentSwitchMigrationHistoryRepaired(t, db)
 		})
 	}
-}
-
-func openAgentSwitchMigrationTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
 }
 
 func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, handoffPath string) {
