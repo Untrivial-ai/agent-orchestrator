@@ -80,6 +80,7 @@ import {
 	finishChatComposerMutation,
 	getChatComposerMutation,
 	isChatComposerMutationCurrent,
+	loadChatSessionDraft,
 	markChatComposerDeliveryAccepted,
 	prepareChatComposerDelivery,
 	readChatSessionDraft,
@@ -684,11 +685,6 @@ export const ChatComposer = memo(function ChatComposer({
 				);
 				return false;
 			}
-			const acceptedDelivery = accepted.draft.composer.delivery ?? {
-				...delivery,
-				state: "accepted" as const,
-			};
-			setDurableDelivery(acceptedDelivery);
 			return clearAcceptedDraft(delivery.revision, mutationToken);
 		},
 		[clearAcceptedDraft, draftScope],
@@ -790,16 +786,28 @@ export const ChatComposer = memo(function ChatComposer({
 
 	useEffect(() => {
 		if (!durableDelivery || !draftScope) return;
+		// The live send owns completion until its receipt has been applied.
+		if (composerMutation.pending || composerMutation.accepted) return;
+		// A replacement can commit after another surface cleared its rendered seed.
+		const current = loadChatSessionDraft(draftScope);
+		// A failed read cannot prove that the delivery was cleared.
+		const delivery = current.ok ? current.draft.composer.delivery : durableDelivery;
+		if (!delivery || delivery.clientMessageId !== durableDelivery.clientMessageId) {
+			setDurableDelivery(delivery);
+			return;
+		}
 		const observedSteer =
-			durableDelivery.kind === "steer" &&
-			acceptedClientMessageIds?.has(durableDelivery.clientMessageId);
-		if (durableDelivery.state !== "accepted" && !observedSteer) return;
-		if (automaticDeliveryRecoveryAttempted.current === durableDelivery.clientMessageId) return;
-		automaticDeliveryRecoveryAttempted.current = durableDelivery.clientMessageId;
-		acceptAndClearDurableDelivery(durableDelivery);
+			delivery.kind === "steer" &&
+			acceptedClientMessageIds?.has(delivery.clientMessageId);
+		if (delivery.state !== "accepted" && !observedSteer) return;
+		if (automaticDeliveryRecoveryAttempted.current === delivery.clientMessageId) return;
+		automaticDeliveryRecoveryAttempted.current = delivery.clientMessageId;
+		acceptAndClearDurableDelivery(delivery);
 	}, [
 		acceptAndClearDurableDelivery,
 		acceptedClientMessageIds,
+		composerMutation.pending,
+		composerMutation.accepted,
 		draftScope,
 		durableDelivery,
 	]);
