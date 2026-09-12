@@ -1622,7 +1622,7 @@ const (
 	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'qm', 'fake'))`
 
 	// The Qoder CLI variants insert 'qodercli' immediately after 'omp', exactly
-	// where migration 0136 puts it. Both are textual replacements, so the two
+	// where migration 0140 puts it. Both are textual replacements, so the two
 	// must agree byte for byte or a repaired database and a migrated one would
 	// end up with different constraint text.
 	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPQodercli   = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'qodercli', 'fake'))`

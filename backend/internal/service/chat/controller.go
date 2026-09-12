@@ -74,11 +74,22 @@ type Store interface {
 	ReserveQueuedTurnForPromotion(ctx context.Context, conversationID, turnID string, now time.Time) (domain.QueuedTurn, error)
 	ReleaseQueuedTurnPromotion(ctx context.Context, conversationID, turnID string) error
 	CompleteQueuedTurnPromotion(ctx context.Context, conversationID, sourceTurnID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
+	SteerDelivery(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationSteerDelivery, bool, error)
+	ReserveSteerDelivery(ctx context.Context, conversationID, clientMessageID, requestJSON string, now time.Time) (domain.ConversationSteerDelivery, bool, error)
+	CompleteSteerDelivery(ctx context.Context, conversationID, clientMessageID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
+	RejectSteerDelivery(ctx context.Context, conversationID, clientMessageID string, kind domain.ConversationSteerRejectionKind, message string, now time.Time) error
+	EditDelivery(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationEditDelivery, bool, error)
+	ReserveEditDelivery(ctx context.Context, conversationID, clientMessageID, requestJSON string, now time.Time) (domain.ConversationEditDelivery, bool, error)
+	BeginEditProviderWork(ctx context.Context, conversationID, clientMessageID, generation string) error
+	RecoverCompletedEditDelivery(ctx context.Context, conversationID, clientMessageID string, now time.Time) error
+	CompleteEditDelivery(ctx context.Context, conversationID, clientMessageID, sourceBranchID, activeBranchID string, turn domain.ConversationTurn, now time.Time) error
+	RejectEditDelivery(ctx context.Context, conversationID, clientMessageID string, kind domain.ConversationEditRejectionKind, message string, now time.Time) error
 	CancelQueuedTurns(ctx context.Context, conversationID string, cutoff, now time.Time) error
 	CancelAllQueuedTurns(ctx context.Context, conversationID string, now time.Time) error
 	CancelQueuedTurnByID(ctx context.Context, conversationID, turnID string, now time.Time) error
 	QueuedTurnMessage(ctx context.Context, conversationID, turnID string) (domain.ConversationMessage, error)
-	UpdateQueuedTurnMessage(ctx context.Context, conversationID, turnID, text, contentJSON string, revision int64, now time.Time) error
+	QueuedEditDelivery(ctx context.Context, conversationID, clientMessageID string) (string, bool, error)
+	UpdateQueuedTurnMessage(ctx context.Context, conversationID, turnID, text, contentJSON string, revision int64, now time.Time, delivery domain.ConversationQueuedEditDelivery) error
 	ReorderQueuedTurns(ctx context.Context, conversationID string, turnIDs []string) error
 
 	RetryPrompt(ctx context.Context, conversationID, turnID string) (domain.RetryPrompt, error)
@@ -383,6 +394,50 @@ type nativeHistoryCheckpoint struct {
 	aoHighWater           nativeHistoryHighWater
 }
 
+// dropUnsettledHookFacts retires checkpoint text that AO durably recorded on a
+// turn the provider never settled. A provider promises to reproduce settled work
+// during history load, but a cancelled, interrupted or failed turn carries no
+// such promise: Claude forks its next prompt from the pre-failure transcript
+// entry, so `session/load` never replays that prompt as a completed user
+// message. Requiring one is unsatisfiable — the settle loop then spends its full
+// `nativeHistorySettleLimit` and the interface transition rolls back to Terminal
+// on every future attempt, which is the same trap the high-water anchor below
+// already avoids by only anchoring on completed turns.
+//
+// Evidence is required to drop a fact. A checkpoint AO cannot tie to any of its
+// own turns is left in place: absence of a row is not proof the work was
+// unsettled, and these facts are what stop a stale replay from being imported as
+// if it were current.
+func (p *nativeHistoryCheckpoint) dropUnsettledHookFacts(
+	turnsByID map[string]*domain.ConversationTurn,
+	messages []domain.ConversationMessage,
+) {
+	settled := func(text string, role domain.MessageRole) bool {
+		var newest *domain.ConversationTurn
+		for _, message := range messages {
+			if message.Role != role || !nativeHistoryTextMatches(text, message.Text) {
+				continue
+			}
+			turn := turnsByID[message.TurnID]
+			if turn == nil {
+				continue
+			}
+			// The newest matching turn decides: the same prompt can be sent again
+			// after a cancellation, and that later completed turn is replayable.
+			if newest == nil || turn.RequestedAt.After(newest.RequestedAt) {
+				newest = turn
+			}
+		}
+		return newest == nil || newest.State == domain.TurnStateCompleted
+	}
+	if p.latestUserPrompt != "" && !settled(p.latestUserPrompt, domain.MessageRoleUser) {
+		p.latestUserPrompt = ""
+	}
+	if p.latestAssistantUpdate != "" && !settled(p.latestAssistantUpdate, domain.MessageRoleAssistant) {
+		p.latestAssistantUpdate = ""
+	}
+}
+
 func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	sessionID domain.SessionID,
 	turns []domain.ConversationTurn,
@@ -393,6 +448,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	for i := range turns {
 		turnsByID[turns[i].ID] = &turns[i]
 	}
+	p.dropUnsettledHookFacts(turnsByID, messages)
 	// An agent switch starts a new provider-native thread with an AO coordination
 	// turn. Completed turns before it belong to the previous provider: their
 	// opaque ids remain useful timeline facts, but the new provider cannot replay

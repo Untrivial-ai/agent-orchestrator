@@ -47,7 +47,7 @@ export type InspectorSessionState = {
 	browserContentRevealed?: boolean;
 	/** Real browser activity occurred while Browser was not visible. */
 	browserUnseen?: boolean;
-	/** Files tab: show only files the agent has touched. Defaults to false (full tree). */
+	/** Files tab: review changed files directly. Defaults to true; false shows the full tree. */
 	filesChangedOnly?: boolean;
 	/** The session-entry defaulting (Summary tab, baseline browser reveal) has already run once for this session's lifetime. */
 	initialized?: boolean;
@@ -348,7 +348,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 	setFilesChangedOnly: (sessionId, filesChangedOnly) =>
 		set((state) => {
 			const current = inspectorState(state.inspectorSessions, sessionId);
-			if (Boolean(current.filesChangedOnly) === filesChangedOnly) return state;
+			if ((current.filesChangedOnly ?? true) === filesChangedOnly) return state;
 			return {
 				inspectorSessions: {
 					...state.inspectorSessions,

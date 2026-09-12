@@ -1036,14 +1036,14 @@ func TestMigrateRepairsQodercliHarnessConstraint(t *testing.T) {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 135)
-	// Record 0136 as applied without its effect, the shape a database picks up
+	upTo(t, db, 139)
+	// Record 0140 as applied without its effect, the shape a database picks up
 	// when the migration ran on a schema its replace() did not match.
 	if _, err := db.Exec(
 		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`,
-		136,
+		140,
 	); err != nil {
-		t.Fatalf("seed migration 136: %v", err)
+		t.Fatalf("seed migration 140: %v", err)
 	}
 
 	if err := migrate(db); err != nil {

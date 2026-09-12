@@ -1348,23 +1348,20 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			notifyCursorSchemeRef.current = () => {};
 			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			const disposeTerminal = () => {
+			// xterm's Viewport queues an untracked zero-delay scroll-area sync during
+			// open(). React StrictMode immediately runs this cleanup once after mount;
+			// disposing the renderer before that queued sync runs makes xterm read the
+			// now-missing renderer dimensions. Queue disposal behind xterm's task so
+			// the terminal remains internally valid until its own initialization work
+			// has drained. All AO listeners and attachment state are already detached.
+			window.setTimeout(() => {
 				try {
 					term.dispose();
 				} catch {
 					// Some renderer addons can throw during dispose in certain GPU
 					// environments; the terminal is being torn down regardless.
 				}
-			};
-			if (import.meta.env.DEV) {
-				// xterm's Viewport constructor queues an untracked zero-delay
-				// syncScrollArea(). React StrictMode immediately runs this cleanup after
-				// its development probe mount; queue disposal behind that callback so it
-				// cannot read the already-cleared renderer dimensions.
-				window.setTimeout(disposeTerminal, 0);
-			} else {
-				disposeTerminal();
-			}
+			}, 0);
 		};
 	}, []);
 

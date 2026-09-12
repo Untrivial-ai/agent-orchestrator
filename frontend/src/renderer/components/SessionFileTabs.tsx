@@ -1,6 +1,7 @@
 import { Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionFileTabState } from "../lib/session-file-tabs";
+import { cn } from "../lib/utils";
 import { TerminalTabFrame } from "./TerminalTabFrame";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { WorkspaceEntryIcon } from "./WorkspaceEntryIcon";
@@ -14,11 +15,13 @@ export function SessionFileTabs({
 	onAddFeedback,
 	onActivateFile,
 	onCloseFile,
+	dirtyPaths,
 }: {
 	state: SessionFileTabState;
 	onAddFeedback: (path: string) => void;
 	onActivateFile: (path: string) => void;
 	onCloseFile: (path: string) => void;
+	dirtyPaths?: ReadonlySet<string>;
 }) {
 	if (state.openPaths.length === 0) return null;
 	return (
@@ -26,6 +29,7 @@ export function SessionFileTabs({
 			{state.openPaths.map((path) => (
 				<SessionFileTab
 					active={state.activePath === path}
+					dirty={dirtyPaths?.has(path)}
 					key={path}
 					onActivate={() => onActivateFile(path)}
 					onAddFeedback={() => onAddFeedback(path)}
@@ -39,12 +43,14 @@ export function SessionFileTabs({
 
 export function SessionFileTab({
 	active,
+	dirty = false,
 	onActivate,
 	onAddFeedback,
 	onClose,
 	path,
 }: {
 	active: boolean;
+	dirty?: boolean;
 	onActivate: () => void;
 	onAddFeedback: () => void;
 	onClose: () => void;
@@ -57,14 +63,21 @@ export function SessionFileTab({
 			<TooltipTrigger asChild>
 				<button
 					aria-label={t("files.closeTab", { name })}
-					className="grid size-icon-sm place-items-center rounded-sm text-passive opacity-0 pointer-events-none hover:bg-interactive-hover hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
+					className={cn(
+						"grid size-icon-sm place-items-center rounded-sm text-passive hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50",
+						dirty
+							? "pointer-events-auto opacity-100"
+							: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",
+					)}
 					onClick={(event) => {
 						event.stopPropagation();
 						onClose();
 					}}
 					type="button"
 				>
-					<X className="size-icon-sm" aria-hidden="true" />
+					{dirty ? (
+						<span aria-hidden="true" className="size-2 rounded-full bg-foreground" data-testid="unsaved-tab-indicator" />
+					) : <X className="size-icon-sm" aria-hidden="true" />}
 				</button>
 			</TooltipTrigger>
 			<TooltipContent side="bottom">{t("files.closeTab", { name })}</TooltipContent>
@@ -90,13 +103,13 @@ export function SessionFileTab({
 	) : undefined;
 	return (
 		<TerminalTabFrame
-			action={closeAction}
+			action={feedbackAction}
+			actionLayout="inline"
 			actionPosition="leading"
 			active={active}
 			buttonProps={{
 				"aria-label": name,
 				"aria-selected": active,
-				className: "pr-9",
 				onClick: onActivate,
 				role: "tab",
 				tabIndex: active ? 0 : -1,
@@ -105,10 +118,13 @@ export function SessionFileTab({
 			}}
 			className="max-w-shell-tab-max"
 			contentClassName="font-medium"
-			trailingAction={feedbackAction}
+			trailingAction={closeAction}
 		>
-			<WorkspaceEntryIcon
-				className="size-icon-base shrink-0 group-hover:opacity-0 group-focus-within:opacity-0"
+				<WorkspaceEntryIcon
+					className={cn(
+						"size-icon-base shrink-0 group-hover:opacity-0 group-focus-within:opacity-0",
+						dirty && "opacity-0",
+					)}
 				kind="file"
 				name={name}
 			/>

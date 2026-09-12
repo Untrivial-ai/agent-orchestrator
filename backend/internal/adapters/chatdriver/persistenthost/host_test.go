@@ -75,6 +75,9 @@ func TestProviderHelper(t *testing.T) {
 		}
 		_, _ = fmt.Fprintf(os.Stdout, `{"id":%d,"result":{"pid":%d}}`+"\n", frame.ID, os.Getpid())
 	}
+	if os.Getenv("AO_CHAT_HOST_DELAY_EXIT") == "1" {
+		time.Sleep(300 * time.Millisecond)
+	}
 	os.Exit(0)
 }
 
@@ -269,6 +272,33 @@ func readFrame(t *testing.T, reader *bufio.Reader) []byte {
 		t.Fatalf("read frame: %v", err)
 	}
 	return line
+}
+
+func TestShutdownReleasesHostBeforeFreshReplacement(t *testing.T) {
+	cfg := Config{SessionID: "replace", DataDir: t.TempDir(), Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1", "AO_CHAT_HOST_DELAY_EXIT=1"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	first, err := ConnectOrStart(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Shutdown(context.Background(), cfg.DataDir, cfg.SessionID) })
+	oldPID := requestProviderPID(t, first, 1, "pid")
+	_ = first.Stdin.Close()
+	if err := Shutdown(context.Background(), cfg.DataDir, cfg.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("shutdown returned before host released descriptor: %v", err)
+	}
+	next, err := ConnectOrStart(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = next.Stdin.Close() }()
+	if next.Reconnected || requestProviderPID(t, next, 1, "pid") == oldPID {
+		t.Fatal("fresh replacement reconnected to the retired provider")
+	}
 }
 
 func TestHostReconnectsSameProviderAndReplaysDetachedOutput(t *testing.T) {

@@ -13,6 +13,11 @@ function spawnSpec(
 	platform: NodeJS.Platform,
 	env: NodeJS.ProcessEnv,
 ): { command: string; args: readonly string[]; windowsVerbatimArguments?: boolean } {
+	// Direct cmd.exe launches already contain cmd-quoted command strings.
+	// Node's default CRT escaping adds backslashes that cmd.exe treats literally.
+	if (platform === "win32" && path.win32.basename(command).toLowerCase() === "cmd.exe") {
+		return { command, args, windowsVerbatimArguments: true };
+	}
 	const extension = path.extname(command).toLowerCase();
 	if (platform !== "win32" || (extension !== ".cmd" && extension !== ".bat")) return { command, args };
 	const interpreter = env.ComSpec || env.COMSPEC || "cmd.exe";

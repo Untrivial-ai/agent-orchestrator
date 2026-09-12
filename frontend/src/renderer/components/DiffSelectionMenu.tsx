@@ -23,6 +23,9 @@ export type DiffSelectionMenuProps = {
 	/** Viewport coordinates for the fixed, cursor-positioned trigger. */
 	position: { x: number; y: number };
 	onOpenChange: (open: boolean) => void;
+	scope?: string;
+	workspaceVersion?: string;
+	fileFingerprint?: string;
 };
 
 type Mode = "actions" | "input";
@@ -39,6 +42,9 @@ export function DiffSelectionMenu({
 	open,
 	position,
 	onOpenChange,
+	scope,
+	workspaceVersion,
+	fileFingerprint,
 }: DiffSelectionMenuProps) {
 	const { t } = useTranslation();
 	const [mode, setMode] = useState<Mode>("actions");
@@ -94,7 +100,7 @@ export function DiffSelectionMenu({
 			clearSentTimer();
 			setStatus("sending");
 			setErrorMessage("");
-			const message = formatDiffSelectionMessage({ instruction, filePath, lines });
+			const message = formatDiffSelectionMessage({ instruction, filePath, lines, scope, workspaceVersion, fileFingerprint });
 			try {
 				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId } },
@@ -117,7 +123,7 @@ export function DiffSelectionMenu({
 				setErrorMessage(apiErrorMessage(thrown, t("diffSelection.error.send")));
 			}
 		},
-		[clearSentTimer, filePath, lines, onOpenChange, sessionId, t],
+		[clearSentTimer, fileFingerprint, filePath, lines, onOpenChange, scope, sessionId, t, workspaceVersion],
 	);
 
 	const handleCopy = useCallback(() => {
