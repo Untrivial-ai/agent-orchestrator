@@ -812,26 +812,32 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
+	project := func(next domain.SessionRecord) (applied, retry bool, err error) {
+		applied, err = m.store.UpdateSessionFromActivitySignal(ctx, next, observedUpdatedAt)
+		if err != nil || applied || projectionAttempts >= maxActivitySignalProjectionRetries {
+			return applied, false, err
+		}
+		// Only revision misses may retry; unchanged ownership fences still reject
+		// the signal. Restore tool correlation before reducing the same signal again.
+		current, found, err := m.store.GetSession(ctx, id)
+		if err != nil || !found || current.UpdatedAt.Equal(observedUpdatedAt) {
+			return false, false, err
+		}
+		m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
+		projectionAttempts++
+		return false, true, nil
+	}
 	if !s.Valid {
 		rec.Metadata = checkpoint
 		applyActivityMetadata(&rec.Metadata, s)
 		rec.UpdatedAt = now
-		applied, err := m.store.UpdateSessionFromActivitySignal(ctx, rec, observedUpdatedAt)
+		_, retry, err := project(rec)
 		if err != nil {
 			m.mu.Unlock()
 			return err
 		}
-		if !applied && projectionAttempts < maxActivitySignalProjectionRetries {
-			advanced, err := m.activityProjectionRevisionAdvanced(ctx, id, observedUpdatedAt)
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			if advanced {
-				m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
-				projectionAttempts++
-				goto retryProjection
-			}
+		if retry {
+			goto retryProjection
 		}
 		m.mu.Unlock()
 		return nil
@@ -854,24 +860,15 @@ retryProjection:
 	if sameState && !rec.FirstSignalAt.IsZero() {
 		if metadataChanged || s.Event == "user-prompt-submit" {
 			rec.UpdatedAt = now
-			applied, err := m.store.UpdateSessionFromActivitySignal(ctx, rec, observedUpdatedAt)
+			applied, retry, err := project(rec)
 			if err != nil {
 				m.mu.Unlock()
 				return err
 			}
+			if retry {
+				goto retryProjection
+			}
 			if !applied {
-				if projectionAttempts < maxActivitySignalProjectionRetries {
-					advanced, err := m.activityProjectionRevisionAdvanced(ctx, id, observedUpdatedAt)
-					if err != nil {
-						m.mu.Unlock()
-						return err
-					}
-					if advanced {
-						m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
-						projectionAttempts++
-						goto retryProjection
-					}
-				}
 				m.mu.Unlock()
 				return nil
 			}
@@ -894,24 +891,15 @@ retryProjection:
 		delete(m.flights, id)
 	}
 	next.UpdatedAt = now
-	applied, err := m.store.UpdateSessionFromActivitySignal(ctx, next, observedUpdatedAt)
+	applied, retry, err := project(next)
 	if err != nil {
 		m.mu.Unlock()
 		return err
 	}
+	if retry {
+		goto retryProjection
+	}
 	if !applied {
-		if projectionAttempts < maxActivitySignalProjectionRetries {
-			advanced, err := m.activityProjectionRevisionAdvanced(ctx, id, observedUpdatedAt)
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			if advanced {
-				m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
-				projectionAttempts++
-				goto retryProjection
-			}
-		}
 		m.mu.Unlock()
 		return nil
 	}
@@ -941,22 +929,6 @@ retryProjection:
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
 	return nil
-}
-
-// activityProjectionRevisionAdvanced distinguishes an optimistic revision
-// miss from the other storage fences (owner generation, termination, active
-// switch). Caller holds m.mu; an advanced revision is safe to reread/reduce,
-// while an unchanged revision means the signal no longer owns the row.
-func (m *Manager) activityProjectionRevisionAdvanced(
-	ctx context.Context,
-	id domain.SessionID,
-	expectedUpdatedAt time.Time,
-) (bool, error) {
-	current, ok, err := m.store.GetSession(ctx, id)
-	if err != nil || !ok {
-		return false, err
-	}
-	return !current.UpdatedAt.Equal(expectedUpdatedAt), nil
 }
 
 // stagePendingAgentSwitchNativeMetadata persists provider-assigned startup

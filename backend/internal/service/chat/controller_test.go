@@ -1589,115 +1589,64 @@ func TestInterfaceHandoffRejectsSettledReplayBeforeLatestSessionCheckpoint(t *te
 	}
 }
 
-func TestInterfaceHandoffExplicitProviderHistoryIgnoresOnlyLegacyText(t *testing.T) {
-	st := openStore(t)
-	rec, found, err := st.GetSession(context.Background(), testSession)
-	if err != nil || !found {
-		t.Fatalf("load session: found=%v err=%v", found, err)
-	}
-	// Empty provenance models a checkpoint written before scoped main-turn
-	// capture. Its poisoned text remains a strict gate until explicit consent.
-	rec.Metadata.LatestUserPrompt = "poisoned user checkpoint"
-	rec.Metadata.LatestAssistantUpdate = "poisoned assistant checkpoint"
-	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointLegacy
-	if err := st.UpdateSession(context.Background(), rec); err != nil {
-		t.Fatalf("seed legacy checkpoint: %v", err)
-	}
-	conv := &nativeHistoryConversation{fakeConversation: newFakeConversation()}
-	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
-		Log:     slog.New(slog.DiscardHandler),
-		NewID:   func() string { return fmt.Sprintf("provider-history-%d", time.Now().UnixNano()) },
-	})
-	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
-
-	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
-		HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
-	})
-	if err != nil {
-		t.Fatalf("Start with explicit provider history: %v", err)
-	}
-	if ctrl == nil {
-		t.Fatal("provider-history recovery returned no controller")
-	}
-}
-
-func TestInterfaceHandoffStrictReplayExcludesCoordinationCheckpoint(t *testing.T) {
-	st := openStore(t)
-	rec, found, err := st.GetSession(context.Background(), testSession)
-	if err != nil || !found {
-		t.Fatalf("load session: found=%v err=%v", found, err)
-	}
-	rec.Metadata.LatestUserPrompt = "last real user direction before AO coordination"
-	rec.Metadata.LatestAssistantUpdate = "AO continuation acknowledged"
-	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointCoordination
-	rec.Metadata.ConversationCheckpointGeneration = "terminal-generation"
-	rec.Metadata.ConversationCheckpointNativeID = "thread-1"
-	if err := st.UpdateSession(context.Background(), rec); err != nil {
-		t.Fatalf("seed coordination checkpoint: %v", err)
-	}
-	conv := &nativeHistoryConversation{fakeConversation: newFakeConversation()}
-	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
-		Log:     slog.New(slog.DiscardHandler),
-		NewID:   func() string { return fmt.Sprintf("coordination-history-%d", time.Now().UnixNano()) },
-	})
-	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
-
-	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
-		HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
-	})
-	if err != nil {
-		t.Fatalf("strict replay enforced AO coordination text: %v", err)
-	}
-	if ctrl == nil {
-		t.Fatal("strict replay returned no controller")
-	}
-}
-
-func TestInterfaceHandoffProviderHistoryCannotWaiveTrustedText(t *testing.T) {
-	st := openStore(t)
-	rec, found, err := st.GetSession(context.Background(), testSession)
-	if err != nil || !found {
-		t.Fatalf("load session: found=%v err=%v", found, err)
-	}
-	rec.Metadata.LatestUserPrompt = "trusted current user checkpoint"
-	rec.Metadata.LatestAssistantUpdate = "trusted current assistant checkpoint"
-	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
-	rec.Metadata.ConversationCheckpointGeneration = "terminal-generation"
-	rec.Metadata.ConversationCheckpointNativeID = "thread-1"
-	if err := st.UpdateSession(context.Background(), rec); err != nil {
-		t.Fatalf("seed trusted checkpoint: %v", err)
-	}
-	conv := &nativeHistoryConversation{fakeConversation: newFakeConversation()}
-	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
-		Log:     slog.New(slog.DiscardHandler),
-		NewID:   func() string { return fmt.Sprintf("trusted-history-%d", time.Now().UnixNano()) },
-	})
-
-	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
-		HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
-	})
-	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
-		t.Fatalf("Start error = %v, want trusted checkpoint mismatch", err)
-	}
-	if ports.ChatHistoryMismatchOnlyUntrustedText(err) {
-		t.Fatalf("trusted mismatch was marked recoverable: %v", err)
-	}
-	dimensions := ports.ChatHistoryMismatchDimensions(err)
-	if !slices.Contains(dimensions, ports.ChatHistoryMismatchTrustedUserText) ||
-		!slices.Contains(dimensions, ports.ChatHistoryMismatchTrustedAssistantText) {
-		t.Fatalf("trusted mismatch dimensions = %v", dimensions)
+func TestInterfaceHandoffCheckpointHistoryPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		state          domain.ConversationCheckpointState
+		policy         domain.SessionInterfaceTransitionHistoryPolicy
+		wantTrustedErr bool
+	}{
+		{"explicit provider history ignores legacy text", domain.ConversationCheckpointLegacy, domain.SessionInterfaceTransitionHistoryProvider, false},
+		{"strict replay excludes coordination text", domain.ConversationCheckpointCoordination, domain.SessionInterfaceTransitionHistoryStrict, false},
+		{"provider history cannot waive trusted text", domain.ConversationCheckpointComplete, domain.SessionInterfaceTransitionHistoryProvider, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			rec, found, err := st.GetSession(context.Background(), testSession)
+			if err != nil || !found {
+				t.Fatalf("load session: found=%v err=%v", found, err)
+			}
+			rec.Metadata.LatestUserPrompt = "user checkpoint absent from provider history"
+			rec.Metadata.LatestAssistantUpdate = "assistant checkpoint absent from provider history"
+			rec.Metadata.ConversationCheckpointState = tc.state
+			if tc.state != domain.ConversationCheckpointLegacy {
+				rec.Metadata.ConversationCheckpointGeneration = "terminal-generation"
+				rec.Metadata.ConversationCheckpointNativeID = "thread-1"
+			}
+			if err := st.UpdateSession(context.Background(), rec); err != nil {
+				t.Fatalf("seed checkpoint: %v", err)
+			}
+			conv := &nativeHistoryConversation{fakeConversation: newFakeConversation()}
+			svc := chatsvc.New(chatsvc.Options{
+				Store: st, Sessions: st,
+				Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+				Log:     slog.New(slog.DiscardHandler),
+				NewID:   func() string { return fmt.Sprintf("checkpoint-history-%d", time.Now().UnixNano()) },
+			})
+			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+			ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
+				HistoryPolicy: tc.policy,
+			})
+			if !tc.wantTrustedErr {
+				if err != nil || ctrl == nil {
+					t.Fatalf("Start = %v, %v; want a live controller", ctrl, err)
+				}
+				return
+			}
+			if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+				t.Fatalf("Start error = %v, want trusted checkpoint mismatch", err)
+			}
+			if ports.ChatHistoryMismatchOnlyUntrustedText(err) {
+				t.Fatalf("trusted mismatch was marked recoverable: %v", err)
+			}
+			dimensions := ports.ChatHistoryMismatchDimensions(err)
+			if !slices.Contains(dimensions, ports.ChatHistoryMismatchTrustedUserText) ||
+				!slices.Contains(dimensions, ports.ChatHistoryMismatchTrustedAssistantText) {
+				t.Fatalf("trusted mismatch dimensions = %v", dimensions)
+			}
+		})
 	}
 }
 

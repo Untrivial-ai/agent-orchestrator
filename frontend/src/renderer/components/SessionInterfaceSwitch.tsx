@@ -249,16 +249,20 @@ export function SessionInterfaceSwitchDialog({
 }
 
 export function interfaceTransitionOffersHistoryRecovery(transition?: SessionInterfaceTransition): boolean {
-	return Boolean(
-		transition?.sourceMode === "tui" &&
-			transition.targetMode === "chat" &&
-			((transition.phase === "failed" &&
-				(transition.errorCode === "TARGET_HISTORY_UNSETTLED" ||
-					transition.errorCode === "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH")) ||
-				(transition.phase === "recovery_required" &&
-					transition.errorCode === "DAEMON_RESTARTED" &&
-					transition.historyPolicy === "provider_history")),
-	);
+	return interfaceTransitionHistoryRecoveryPolicy(transition) !== undefined;
+}
+
+function interfaceTransitionHistoryRecoveryPolicy(
+	transition?: SessionInterfaceTransition,
+): "strict" | "provider_history" | undefined {
+	if (transition?.sourceMode !== "tui" || transition.targetMode !== "chat") return undefined;
+	if (
+		(transition.phase === "failed" && transition.errorCode === "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH") ||
+		(transition.phase === "recovery_required" && transition.errorCode === "DAEMON_RESTARTED" &&
+			transition.historyPolicy === "provider_history")
+	) return "provider_history";
+	if (transition.phase === "failed" && transition.errorCode === "TARGET_HISTORY_UNSETTLED") return "strict";
+	return undefined;
 }
 
 export function SessionInterfaceTransitionNotice({
@@ -295,17 +299,7 @@ export function SessionInterfaceTransitionNotice({
 	}
 	const recovered =
 		transition.phase === "recovery_required" && transition.errorCode === "DAEMON_RESTARTED";
-	const legacyTextMismatch =
-		transition.phase === "failed" &&
-		transition.errorCode === "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH" &&
-		transition.sourceMode === "tui" &&
-		transition.targetMode === "chat";
-	const interruptedProviderRecovery =
-		recovered &&
-		transition.historyPolicy === "provider_history" &&
-		transition.sourceMode === "tui" &&
-		transition.targetMode === "chat";
-	const historyUnsettled = interfaceTransitionOffersHistoryRecovery(transition);
+	const historyRecoveryPolicy = interfaceTransitionHistoryRecoveryPolicy(transition);
 	return (
 		<div
 			role={recovered ? "status" : "alert"}
@@ -357,7 +351,7 @@ export function SessionInterfaceTransitionNotice({
 							: "Cancel request and switch"}
 					</Button>
 				) : null}
-				{historyUnsettled && onRetry ? (
+				{historyRecoveryPolicy && onRetry ? (
 					<div className="mt-2 flex flex-wrap items-center gap-2">
 						<Button
 							type="button"
@@ -370,7 +364,7 @@ export function SessionInterfaceTransitionNotice({
 							{retrying ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : null}
 							Retry switch to Chat UI
 						</Button>
-						{(legacyTextMismatch || interruptedProviderRecovery) && onUseProviderHistory ? (
+						{historyRecoveryPolicy === "provider_history" && onUseProviderHistory ? (
 							<Button
 								type="button"
 								size="sm"
