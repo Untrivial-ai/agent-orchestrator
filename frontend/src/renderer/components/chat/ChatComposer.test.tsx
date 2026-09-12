@@ -6,10 +6,13 @@ import userEvent from "@testing-library/user-event";
 import { Activity, Profiler } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
+import { attachmentURL } from "./messageAttachments";
+import { getApiBaseUrl } from "../../lib/api-client";
 import { TooltipProvider } from "../ui/tooltip";
 import type { ChatSkill } from "../../types/conversation";
 import {
 	activateChatDraftScope,
+	markChatComposerDeliveryAccepted,
 	prepareChatComposerDelivery,
 	readChatSessionDraft,
 	writeChatComposerText,
@@ -326,6 +329,30 @@ describe("send keys", () => {
 		expect(field.textContent).toBe("do not lose this task");
 	});
 
+	it.each([false, true])("keeps the composer editable after a successful live send (queued: %s)", async (willQueue) => {
+		const sessionId = `composer-live-send-acceptance-${willQueue}`;
+		const pending = deferred<void>();
+		const onSend = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
+		render(<ChatComposer draftSessionId={sessionId} onSend={onSend} willQueue={willQueue} />);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "send this once");
+		fireEvent.keyDown(field, { key: "Enter" });
+
+		await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+		expect(field).toHaveAttribute("contenteditable", "false");
+		await act(async () => pending.resolve());
+		await waitFor(() => expect(field.textContent).toBe(""));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(field).toHaveAttribute("contenteditable", "true");
+		expect(readChatSessionDraft(sessionId).composer.delivery).toBeUndefined();
+
+		await typeInComposer(field, "send a second message");
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(field).toHaveAttribute("contenteditable", "true"));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
 	it("unlocks a definitively rejected first send and gives the edited send a new identity", async () => {
 		const sessionId = "composer-first-send-refused";
 		const onSend = vi.fn()
@@ -417,6 +444,80 @@ describe("send keys", () => {
 			await typeInComposer(field, "a new message after recovery");
 			fireEvent.keyDown(field, { key: "Enter" });
 			await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		} finally {
+			view.unmount();
+			localStorage.mockRestore();
+		}
+	});
+
+	it.each([false, true])("finishes a restored accepted delivery without sending again (delayed mount: %s)", async (delayedMount) => {
+		const sessionId = `composer-restarted-accepted-delivery-${delayedMount}`;
+		const prepared = prepareChatComposerDelivery(sessionId, {
+			kind: "send",
+			composerText: "already sent before restart",
+			attachments: [],
+			requestText: "already sent before restart",
+			clientMessageId: "restarted-accepted-delivery",
+		});
+		if (!prepared.ok) throw new Error("Failed to prepare test delivery");
+		markChatComposerDeliveryAccepted(sessionId, prepared.mutation.clientMessageId, prepared.mutation.revision);
+		const onSend = vi.fn();
+		const surface = (mode: "hidden" | "visible") => (
+			<Activity mode={mode}>
+				<ChatComposer draftSessionId={sessionId} onSend={onSend} />
+			</Activity>
+		);
+		const view = render(surface(delayedMount ? "hidden" : "visible"));
+		if (delayedMount) {
+			await screen.findByLabelText("Message the agent");
+			const active = render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+			await waitFor(() => expect(readChatSessionDraft(sessionId).composer.delivery).toBeUndefined());
+			active.unmount();
+			view.rerender(surface("visible"));
+		}
+
+		const field = screen.getByLabelText("Message the agent");
+		await waitFor(() => expect(field).toHaveAttribute("contenteditable", "true"));
+		expect(field.textContent).toBe("");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(readChatSessionDraft(sessionId).composer.delivery).toBeUndefined();
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it.each(["read", "write"])("preserves safe retry when recording acceptance fails to %s storage", async (failure) => {
+		const sessionId = `composer-live-acceptance-storage-failure-${failure}`;
+		const durableStorage = window.localStorage;
+		let failAcceptance = false;
+		const storage = {
+			getItem: (key: string) => {
+				if (failAcceptance && failure === "read") throw new DOMException("blocked", "SecurityError");
+				return durableStorage.getItem(key);
+			},
+			removeItem: durableStorage.removeItem.bind(durableStorage),
+			setItem: (key: string, value: string) => {
+				if (failAcceptance && failure === "write" && key.includes(sessionId) && JSON.parse(value).composer?.delivery?.state === "accepted") {
+					throw new DOMException("full", "QuotaExceededError");
+				}
+				durableStorage.setItem(key, value);
+			},
+		} as Storage;
+		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+		const onSend = vi.fn().mockImplementationOnce(async () => { failAcceptance = true; }).mockResolvedValue(undefined);
+		const view = render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+		try {
+			const field = screen.getByLabelText("Message the agent");
+			await typeInComposer(field, "accepted but not recorded");
+			fireEvent.keyDown(field, { key: "Enter" });
+			expect(await screen.findByRole("alert")).toHaveTextContent("acceptance couldn’t be recorded");
+			expect(field).toHaveAttribute("contenteditable", "false");
+
+			failAcceptance = false;
+			expect(readChatSessionDraft(sessionId).composer.delivery?.state).toBe("dispatching");
+			await userEvent.click(screen.getByRole("button", { name: "Retry message safely" }));
+			await waitFor(() => expect(field).toHaveAttribute("contenteditable", "true"));
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(onSend).toHaveBeenCalledTimes(2);
+			expect(onSend.mock.calls[1]).toEqual(onSend.mock.calls[0]);
 		} finally {
 			view.unmount();
 			localStorage.mockRestore();
@@ -812,6 +913,125 @@ describe("steering", () => {
 		expect(onSteer).toHaveBeenCalledTimes(1);
 	});
 
+	it("restores an unresolved steer and retries with its original client id", async () => {
+		const sessionId = "steer-stable-retry";
+		const onSteer = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("outcome unknown"))
+			.mockResolvedValueOnce(undefined);
+		const first = render(
+			<ChatComposer
+				onSend={vi.fn()}
+				onSteer={onSteer}
+				canSteer
+				willQueue
+				draftSessionId={sessionId}
+			/>,
+		);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "persist this steer");
+		fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+		await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
+		const clientMessageId = onSteer.mock.calls[0]?.[2];
+		expect(clientMessageId).toEqual(expect.any(String));
+		first.unmount();
+
+		render(
+			<ChatComposer
+				onSend={vi.fn()}
+				onSteer={onSteer}
+				canSteer
+				willQueue
+				draftSessionId={sessionId}
+			/>,
+		);
+		expect(screen.getByLabelText("Message the agent")).toHaveAttribute(
+			"contenteditable",
+			"false",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Retry message safely" }));
+		await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(2));
+		expect(onSteer.mock.calls[1]?.[2]).toBe(clientMessageId);
+		await waitFor(() => expect(screen.getByLabelText("Message the agent")).toHaveTextContent(""));
+	});
+
+	it("warns before explicitly abandoning uncertain steer recovery across a remount", async () => {
+		const sessionId = "steer-explicit-abandon";
+		const incarnation = "2026-08-26T10:00:00.000Z";
+		const onSteer = vi.fn().mockRejectedValue(new Error("outcome unknown"));
+		const props = {
+			onSend: vi.fn(),
+			onSteer,
+			canSteer: true,
+			willQueue: true,
+			draftSessionId: sessionId,
+			draftSessionIncarnation: incarnation,
+		};
+		const first = render(<ChatComposer {...props} />);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "possibly delivered guidance");
+		fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+
+		await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"may already have received this guidance",
+			),
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("may duplicate it");
+		expect(field).toHaveAttribute("contenteditable", "false");
+		first.unmount();
+
+		render(<ChatComposer {...props} />);
+		const restored = screen.getByLabelText("Message the agent");
+		expect(restored).toHaveTextContent("possibly delivered guidance");
+		expect(restored).toHaveAttribute("contenteditable", "false");
+		expect(onSteer).toHaveBeenCalledTimes(1);
+
+		await userEvent.click(screen.getByRole("button", { name: "Abandon recovery" }));
+
+		await waitFor(() => expect(restored).toHaveAttribute("contenteditable", "true"));
+		expect(restored).toHaveTextContent("possibly delivered guidance");
+		expect(onSteer).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole("button", { name: "Retry message safely" })).not.toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("may already have been delivered");
+		const draft = readChatSessionDraft({ sessionId, incarnation });
+		expect(draft.composer.text).toBe("possibly delivered guidance");
+		expect(draft.composer.delivery).toBeUndefined();
+	});
+
+	it.each([false, true])("keeps live steer completion owned until its response settles (response lost: %s)", async (responseLost) => {
+		const sessionId = `steer-live-snapshot-${responseLost}`;
+		const pending = deferred<void>();
+		const onSteer = vi.fn(async () => {
+			await pending.promise;
+			if (responseLost) throw new Error("response lost");
+		});
+		const props = {
+			onSend: vi.fn().mockResolvedValue(undefined),
+			onSteer,
+			canSteer: true,
+			willQueue: true,
+			draftSessionId: sessionId,
+		};
+		const view = render(<ChatComposer {...props} />);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "steer exactly once");
+		fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+		await waitFor(() => expect(onSteer).toHaveBeenCalledOnce());
+		const clientMessageId = readChatSessionDraft(sessionId).composer.delivery!.clientMessageId;
+
+		view.rerender(<ChatComposer {...props} acceptedClientMessageIds={new Set([clientMessageId])} />);
+		expect(field).toHaveAttribute("contenteditable", "false");
+		expect(readChatSessionDraft(sessionId).composer.delivery?.state).toBe("dispatching");
+		await act(async () => pending.resolve());
+
+		await waitFor(() => expect(field).toHaveAttribute("contenteditable", "true"));
+		expect(field.textContent).toBe("");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(readChatSessionDraft(sessionId).composer.delivery).toBeUndefined();
+		expect(onSteer).toHaveBeenCalledOnce();
+	});
 
 	it("reconciles a restored steer from the daemon snapshot without redispatch", async () => {
 		const sessionId = "steer-snapshot-reconciliation";
@@ -1326,6 +1546,21 @@ describe("attachments", () => {
 		]);
 	});
 
+	// A message claiming an attachment the agent cannot open is worse than a refusal.
+	it("does not accept a chip when durable staging fails, and says so", async () => {
+		const stage = vi.fn().mockRejectedValue(new Error("disk full"));
+		const { onSend, field } = renderComposer({ onStageAttachments: stage });
+
+		fireEvent.paste(field, { clipboardData: clipboardData([png()]) });
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Files couldn’t be saved. Nothing was attached.",
+		);
+		expect(stage).toHaveBeenCalledTimes(1);
+		expect(onSend).not.toHaveBeenCalled();
+		expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+		expect(field.textContent).toBe("");
+	});
+
 	it("keeps attachments after a failed send and reuses their staged paths on retry", async () => {
 		const stage = vi.fn().mockResolvedValue([".ao/attachments/attachment-retry.png"]);
 		const onSend = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
@@ -1464,6 +1699,53 @@ describe("attachments", () => {
 			fireEvent.paste(field, { clipboardData: clipboardData([png("safe-attachment.png")]) });
 			await screen.findByLabelText("Remove safe-attachment.png");
 			expect(getChatDraftBoundary(sessionId)).toBe("persistence-failed");
+		} finally {
+			view.unmount();
+			localStorage.mockRestore();
+		}
+	});
+
+	it("reports failed text persistence and pending attachment staging together", async () => {
+		const sessionId = "composer-mixed-storage-failure";
+		const durableStorage = window.localStorage;
+		let failTextWrite = true;
+		let finishStaging!: (paths: string[]) => void;
+		const storage = {
+			getItem: durableStorage.getItem.bind(durableStorage),
+			removeItem: durableStorage.removeItem.bind(durableStorage),
+			setItem: (key: string, value: string) => {
+				if (failTextWrite && key.includes(encodeURIComponent(sessionId))) {
+					failTextWrite = false;
+					throw new DOMException("full", "QuotaExceededError");
+				}
+				durableStorage.setItem(key, value);
+			},
+		} as Storage;
+		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+		const view = render(
+			<ChatComposer
+				onSend={vi.fn()}
+				draftSessionId={sessionId}
+				onStageAttachments={() =>
+					new Promise<string[]>((resolve) => {
+						finishStaging = resolve;
+					})
+				}
+			/>,
+		);
+		try {
+			const field = screen.getByLabelText("Message the agent");
+			await typeInComposer(field, "unsafe text");
+			await waitFor(() => expect(getChatDraftBoundary(sessionId)).toBe("persistence-failed"));
+
+			fireEvent.paste(field, { clipboardData: clipboardData([png("pending.png")]) });
+			await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+			expect(getChatDraftBoundaries(sessionId)).toEqual([
+				"persistence-failed",
+				"pending-attachments",
+			]);
+
+			await act(async () => finishStaging([".ao/attachments/pending.png"]));
 		} finally {
 			view.unmount();
 			localStorage.mockRestore();
@@ -1730,33 +2012,48 @@ it("reserves a restored image draft before asynchronous native-byte reads", asyn
 	}
 });
 
-it("keeps a filename reminder after restart and never sends without its unavailable bytes", async () => {
-	const sessionId = "composer-missing-file";
-	writeChatComposerText(sessionId, "keep this context");
-	writeChatAttachments(sessionId, [{ id: "missing", path: "", name: "context.png", mimeType: "image/png", bytes: 4 }]);
-	const onSend = vi.fn();
-	render(<ChatComposer onSend={onSend} draftSessionId={sessionId} onStageAttachments={vi.fn()} />);
-	expect(screen.getByLabelText("Message the agent")).toHaveTextContent("keep this context");
-	expect(screen.getByRole("alert")).toHaveTextContent("not durably available");
-	fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter" });
-	await act(async () => { await Promise.resolve(); });
-	expect(onSend).not.toHaveBeenCalled();
-	await userEvent.click(screen.getByLabelText("Remove context.png"));
-	await userEvent.click(screen.getByRole("button", { name: "Send message" }));
-	await waitFor(() => expect(onSend).toHaveBeenCalledWith("keep this context", undefined, expect.any(String)));
+it("reserves the composer before pending staging yields to a replacement surface", async () => {
+	const sessionId = "composer-stage-reservation";
+	const pending = deferred<string[]>();
+	const stage = vi.fn(() => pending.promise);
+	const send = vi.fn().mockResolvedValue(undefined);
+	let view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	let field = screen.getByLabelText("Message the agent");
+	await typeInComposer(field, "original request");
+	fireEvent.paste(field, { clipboardData: clipboardData([png("pending.png")]) });
+	await waitFor(() => expect(stage).toHaveBeenCalledOnce());
+	fireEvent.keyDown(field, { key: "Enter" });
+	view.unmount();
+	view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	field = screen.getByLabelText("Message the agent");
+	expect(field).toHaveAttribute("contenteditable", "false");
+	expect(send).not.toHaveBeenCalled();
+	await act(async () => { pending.resolve([".ao/attachments/pending.png"]); });
+	await waitFor(() => expect(send).toHaveBeenCalledOnce());
+	await waitFor(() => expect(field).toHaveTextContent(/^$/));
+	expect(readChatSessionDraft(sessionId).composer.text).toBe("");
+	view.unmount();
 });
 
-it("locks an uncertain steer after restart until the user explicitly abandons recovery", async () => {
-	const sessionId = "composer-steer-lock";
-	prepareChatComposerDelivery(sessionId, { kind: "steer", composerText: "guidance", attachments: [], requestText: "guidance", clientMessageId: "prior-steer" });
-	const onSteer = vi.fn();
-	const onSend = vi.fn();
-	render(<ChatComposer onSend={onSend} onSteer={onSteer} canSteer draftSessionId={sessionId} />);
-	expect(screen.getByRole("button", { name: "Retry message safely" })).toBeDisabled();
-	fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter", metaKey: true });
+it("does not let Enter omit an image still staging on the previous surface", async () => {
+	const sessionId = "composer-shared-pending-image";
+	const pending = deferred<string[]>();
+	const stage = vi.fn(() => pending.promise);
+	const send = vi.fn().mockResolvedValue(undefined);
+	let view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	await typeInComposer(screen.getByLabelText("Message the agent"), "inspect the image");
+	fireEvent.paste(screen.getByLabelText("Message the agent"), { clipboardData: clipboardData([png("pending.png")]) });
+	await waitFor(() => expect(stage).toHaveBeenCalledOnce());
+	view.unmount();
+	view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter" });
 	await act(async () => { await Promise.resolve(); });
-	expect(onSteer).not.toHaveBeenCalled();
-	expect(onSend).not.toHaveBeenCalled();
+	expect(send).not.toHaveBeenCalled();
+	await act(async () => { pending.resolve([".ao/attachments/pending.png"]); });
+	await screen.findByLabelText("Remove pending.png");
+	await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+	await waitFor(() => expect(send).toHaveBeenCalledWith(expect.stringContaining(".ao/attachments/pending.png"), undefined, expect.any(String)));
+	view.unmount();
 });
 
 it("keeps staged paths authoritative across a remount until acceptance clears the exact draft", async () => {
@@ -1825,4 +2122,24 @@ it("does not dispatch a restored image after its session incarnation was replace
 		fetch.mockRestore();
 		reader.mockRestore();
 	}
+});
+
+
+it("restores an image thumbnail from its durable path after the composer remounts", async () => {
+	const sessionId = "composer-restored-thumbnail";
+	const path = ".ao/attachments/restored-thumbnail.png";
+	const props = { onSend: vi.fn(), draftSessionId: sessionId,
+		onStageAttachments: vi.fn().mockResolvedValue([path]) };
+	const view = render(<ChatComposer {...props} />);
+	fireEvent.paste(screen.getByLabelText("Message the agent"), { clipboardData: clipboardData([png()]) });
+	await screen.findByLabelText("Remove shot.png");
+	expect(screen.getByRole("list", { name: "Attached files" }).querySelector("img"))
+		.toHaveAttribute("src", expect.stringContaining("data:image/png;base64,"));
+	view.unmount();
+	// A new renderer only has persisted descriptors, never cached image bytes.
+	purgeFileAttachmentsForSession(sessionId);
+	render(<ChatComposer {...props} />);
+	expect(screen.getByRole("list", { name: "Attached files" }).querySelector("img"))
+		.toHaveAttribute("src", attachmentURL(getApiBaseUrl(), sessionId, path));
+	expect(props.onStageAttachments).toHaveBeenCalledOnce();
 });

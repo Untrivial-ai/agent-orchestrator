@@ -46,6 +46,14 @@ func (f *fakeChatService) Steer(
 	return chatsvc.SteerResult{}, nil
 }
 
+func (f *fakeConversationService) RecoverSteer(context.Context, domain.SessionID, string) (chatsvc.SteerResult, error) {
+	return chatsvc.SteerResult{}, nil
+}
+
+func (f *fakeChatService) RecoverSteer(context.Context, domain.SessionID, string) (chatsvc.SteerResult, error) {
+	return chatsvc.SteerResult{}, nil
+}
+
 func (f *fakeConversationService) PromoteQueuedTurn(
 	context.Context,
 	domain.SessionID,
@@ -108,9 +116,10 @@ func (s *promoteQueuedStub) PromoteQueuedTurn(
 type steerStub struct {
 	*fakeConversationService
 
-	result chatsvc.SteerResult
-	err    error
-	seen   []ports.ChatUserMessage
+	result    chatsvc.SteerResult
+	err       error
+	seen      []ports.ChatUserMessage
+	recovered []string
 }
 
 func (s *steerStub) Steer(
@@ -120,6 +129,22 @@ func (s *steerStub) Steer(
 ) (chatsvc.SteerResult, error) {
 	s.seen = append(s.seen, msg)
 	return s.result, s.err
+}
+
+func (s *steerStub) RecoverSteer(_ context.Context, _ domain.SessionID, id string) (chatsvc.SteerResult, error) {
+	s.recovered = append(s.recovered, id)
+	return s.result, s.err
+}
+
+func TestSteerRecoveryRouteOnlyReadsReceipt(t *testing.T) {
+	svc := &steerStub{fakeConversationService: &fakeConversationService{}, result: chatsvc.SteerResult{ProviderTurnID: "original-turn"}}
+	status, body, _ := postSteer(t, svc, map[string]any{"clientMessageId": "image-steer", "recoverOnly": true})
+	if status != http.StatusAccepted || body["providerTurnId"] != "original-turn" {
+		t.Fatalf("recovery status=%d body=%v", status, body)
+	}
+	if len(svc.seen) != 0 || len(svc.recovered) != 1 || svc.recovered[0] != "image-steer" {
+		t.Fatalf("recovery dispatched: %+v", svc)
+	}
 }
 
 func steerRouter(t *testing.T, svc *steerStub) *httptest.Server {
@@ -271,6 +296,21 @@ func TestSteerRouteRefusalsAreTypedAndCoded(t *testing.T) {
 			name:       "empty guidance",
 			err:        chatsvc.ErrSteerTextRequired,
 			wantStatus: http.StatusBadRequest, wantCode: "CHAT_STEER_TEXT_REQUIRED",
+		},
+		{
+			name:       "delivery outcome uncertain",
+			err:        chatsvc.ErrSteerDeliveryUncertain,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_STEER_UNCERTAIN",
+		},
+		{
+			name:       "client handle reused for different guidance",
+			err:        chatsvc.ErrSteerIdempotencyConflict,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_STEER_IDEMPOTENCY_CONFLICT",
+		},
+		{
+			name:       "interface transition",
+			err:        chatsvc.ErrControllerHandoff,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_INTERFACE_TRANSITION",
 		},
 		{
 			name:       "terminal-mode session",

@@ -502,6 +502,14 @@ export function Sidebar({
 		onExpand: () => setOpen(true),
 	});
 
+	// Suppress layout animations for the first 500ms so background session
+	// re-sorts during daemon settle don't cause visible row shuffling.
+	const [layoutSettled, setLayoutSettled] = useState(false);
+	useEffect(() => {
+		const timer = window.setTimeout(() => setLayoutSettled(true), 500);
+		return () => window.clearTimeout(timer);
+	}, []);
+
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
@@ -742,6 +750,7 @@ export function Sidebar({
 									key={session.id}
 									session={session}
 									active={selection.activeSessionId === session.id}
+									layoutSettled={layoutSettled}
 									onOpenSession={selection.goSession}
 								/>
 								))}
@@ -800,6 +809,7 @@ export function Sidebar({
 											selection={selection}
 											draggingProjectId={draggingProjectId}
 											consumeDragClick={projectDragClickGuard.consumeClick}
+											layoutSettled={layoutSettled}
 											onSessionOrderChange={recordSessionOrder}
 											onToggle={toggleProjectDisclosure}
 											onRemoveProject={onRemoveProject}
@@ -850,12 +860,18 @@ export function Sidebar({
 					<UpdateStatusRow
 						availableDismissed={updateDismissal.dismissed}
 						onDismissAvailable={updateDismissal.dismiss}
-						onRequestInstall={requestUpdateInstall}
 						status={updateStatus}
 						tabIndex={isCollapsed ? -1 : 0}
 					/>
 					<CloudSignInRow tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
+					{/* Install cue sits above Connect mobile / Settings — never overlays them. */}
+					<UpdateInstallSlide
+						availableDismissed={updateDismissal.dismissed}
+						onRequestInstall={requestUpdateInstall}
+						status={updateStatus}
+						tabIndex={isCollapsed ? -1 : 0}
+					/>
 					<button
 						aria-label={t("settings.connectMobile")}
 						className={cn(
@@ -951,6 +967,7 @@ type ProjectItemProps = {
 	selection: Selection;
 	draggingProjectId?: string | null;
 	consumeDragClick: (id: string) => boolean;
+	layoutSettled: boolean;
 	onSessionOrderChange: (projectId: string, order: string[]) => void;
 	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
@@ -1017,6 +1034,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	selection,
 	draggingProjectId,
 	consumeDragClick,
+	layoutSettled,
 	onSessionOrderChange,
 	onToggle,
 	onRemoveProject,
@@ -1042,14 +1060,14 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [isSpawning, setIsSpawning] = useState(false);
 	const [projectPressed, setProjectPressed] = useState(false);
-	// Skip enter animation on first mount — sessions arrive async and we don't
-	// want them to slide in on every sidebar load. Only animate on subsequent
-	// expand/collapse toggles.
+	// Skip enter animation until the sidebar has settled (~500ms). Sessions
+	// arrive async and their timestamps shift as the daemon starts, causing
+	// visible re-sort animations if enabled too early.
 	const [animReady, setAnimReady] = useState(false);
 	const hasInteractedWithDisclosure = useRef(false);
 	useEffect(() => {
-		const id = requestAnimationFrame(() => setAnimReady(true));
-		return () => cancelAnimationFrame(id);
+		const id = window.setTimeout(() => setAnimReady(true), 500);
+		return () => window.clearTimeout(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
@@ -1229,7 +1247,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-					layout={draggingProjectId ? false : "position"}
+					layout={!layoutSettled || draggingProjectId ? false : "position"}
 					ref={setDroppableNodeRef}
 					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>
@@ -1509,6 +1527,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																	active={selection.activeSessionId === session.id}
 																	consumeDragClick={sessionDragClickGuard.consumeClick}
 																	layoutDependency={sessionLayoutDependency}
+																	layoutSettled={layoutSettled}
 																	listIsDragging={sessionDragging}
 																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
 																	onOpen={openSession}
@@ -1615,14 +1634,16 @@ const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expande
 const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
+	layoutSettled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	layoutSettled: boolean;
 	onOpenSession: (projectId: string, sessionId: string) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
-	return <SessionRow session={session} active={active} indented={false} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders
@@ -1632,6 +1653,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	active,
 	consumeDragClick,
 	layoutDependency,
+	layoutSettled,
 	listIsDragging,
 	dropTransitionDisabled,
 	onOpen,
@@ -1640,6 +1662,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
 	layoutDependency: string;
+	layoutSettled: boolean;
 	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
 	onOpen: (sessionId: string) => void;
@@ -1651,6 +1674,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 		<SessionRow
 			session={session}
 			active={active}
+			disableLayout={!layoutSettled}
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
@@ -2138,28 +2162,29 @@ function updateVersionLabel(
 	return t(variant === "ready" ? "shell.versionReady" : "shell.versionAvailable", { version });
 }
 
-// UpdateStatusRow makes update activity visible and actionable from the
-// sidebar: an available build downloads on click, progress reports itself, and
-// a staged build becomes the restart action. Idle/checking states stay quiet so
-// routine background checks do not flash in the sidebar.
+/** Plain version number for the install cue — base for nightlies, no channel/date. */
+function installVersionNumber(version: string | undefined): string | null {
+	if (!version) return null;
+	return parseNightlyVersion(version)?.base ?? version;
+}
+
+// UpdateStatusRow makes download progress visible in the footer. A staged build
+// ready to install renders as UpdateInstallSlide above Connect mobile / Settings.
 function UpdateStatusRow({
 	availableDismissed,
 	onDismissAvailable,
-	onRequestInstall,
 	status,
 	tabIndex,
 }: {
 	availableDismissed: boolean;
 	onDismissAvailable: () => void;
-	/** Opens the restart confirmation; installing outright would quit the app. */
-	onRequestInstall: () => void;
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
 	const { t, i18n } = useTranslation();
 	const locale = i18n.resolvedLanguage ?? i18n.language;
 	const action = sidebarUpdateAction(status, availableDismissed);
-	if (action === null) return null;
+	if (action === null || action.kind === "install") return null;
 
 	if (action.kind === "download") {
 		const versionLabel = updateVersionLabel(action.version, "available", t, locale);
@@ -2201,43 +2226,68 @@ function UpdateStatusRow({
 		);
 	}
 
-	if (action.kind === "downloading") {
-		return (
-			<div
-				aria-live="polite"
-				className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-				data-testid="sidebar-update-downloading"
-				role="status"
-			>
-				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1 truncate tabular-nums">
-					{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
-					{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
-				</span>
-			</div>
-		);
-	}
+	return (
+		<div
+			aria-live="polite"
+			className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+			data-testid="sidebar-update-downloading"
+			role="status"
+		>
+			<Download aria-hidden="true" className="size-icon-lg shrink-0" />
+			<span className="min-w-0 flex-1 truncate tabular-nums">
+				{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
+				{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
+			</span>
+		</div>
+	);
+}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
+/**
+ * Alert-style install cue above Connect mobile / Settings. Muted fill so it
+ * reads apart from nav rows; shows the version number only (no Nightly/date).
+ */
+function UpdateInstallSlide({
+	availableDismissed,
+	onRequestInstall,
+	status,
+	tabIndex,
+}: {
+	availableDismissed: boolean;
+	onRequestInstall: () => void;
+	status: UpdateStatus;
+	tabIndex: number;
+}) {
+	const { t } = useTranslation();
+	const action = sidebarUpdateAction(status, availableDismissed);
+	if (action?.kind !== "install") return null;
+
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<button
 			aria-label={
-				action.version
-					? t("shell.restartInstallUpdateVersion", { version: action.version })
+				versionNumber
+					? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"flex w-full items-center gap-2.5 rounded-lg border border-success/35 bg-success/12 p-2.5 text-left text-control font-medium text-success transition-colors hover:bg-success/18 [&_svg]:text-success",
+				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-lg bg-muted px-3 text-left text-sm font-normal text-foreground",
+				"transition-colors hover:bg-interactive-hover",
+				"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200",
 			)}
 			data-testid="sidebar-update-ready"
 			onClick={onRequestInstall}
 			tabIndex={tabIndex}
 			type="button"
 		>
-			<RefreshCw aria-hidden="true" className="size-icon-lg shrink-0" />
-			<span className="min-w-0 flex-1">
-				<span className="block truncate tracking-tight">{t("shell.restartToUpdate")}</span>
-				{versionLabel && <span className="block truncate text-caption font-normal">{versionLabel}</span>}
+			<RefreshCw aria-hidden="true" className="size-icon-sm shrink-0 text-muted-foreground" />
+			<span className="min-w-0 flex-1 truncate tracking-tight">
+				{t("shell.restartToUpdate")}
+				{versionNumber ? (
+					<>
+						{" "}
+						<span className="text-muted-foreground">{versionNumber}</span>
+					</>
+				) : null}
 			</span>
 		</button>
 	);
@@ -2257,8 +2307,7 @@ function UpdateStatusRail({
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
-	const { t, i18n } = useTranslation();
-	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const { t } = useTranslation();
 	const action = sidebarUpdateAction(status, availableDismissed);
 	if (action === null) return null;
 
@@ -2305,19 +2354,18 @@ function UpdateStatusRail({
 		);
 	}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<button
 					aria-label={
-						action.version
-							? t("shell.restartInstallUpdateVersion", { version: action.version })
+						versionNumber
+							? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 							: t("shell.restartInstallUpdate")
 					}
 					className={cn(
-						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						"bg-success/12 text-success hover:bg-success/18",
+						"grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4",
 					)}
 					onClick={onRequestInstall}
 					tabIndex={tabIndex}
@@ -2328,7 +2376,7 @@ function UpdateStatusRail({
 			</TooltipTrigger>
 			<TooltipContent side="right">
 				{t("shell.restartToUpdate")}
-				{versionLabel ? ` · ${versionLabel}` : ""}
+				{versionNumber ? ` ${versionNumber}` : ""}
 			</TooltipContent>
 		</Tooltip>
 	);

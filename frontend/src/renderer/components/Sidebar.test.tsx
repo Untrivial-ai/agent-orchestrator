@@ -2211,10 +2211,16 @@ describe("Sidebar", () => {
 		// A build ready to install is more actionable than "checks are failing".
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveClass("border", "border-success/35", "bg-success/12", "text-success");
-		expect(within(readyRow).getByText("v9.9.9 ready")).toBeVisible();
+		expect(readyRow).toHaveClass("bg-muted", "rounded-lg", "w-full");
+		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
+		expect(within(readyRow).getByText("Install Update")).toBeVisible();
+		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
+		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();
 		expect(readyRow.querySelector(".rounded-full")).toBeNull();
 		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+		// Stays above Connect mobile / Settings — not overlaid on them.
+		const connectMobile = screen.getByRole("button", { name: "Connect mobile" });
+		expect(readyRow.compareDocumentPosition(connectMobile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 		expect(screen.queryByLabelText(/Hide update/)).not.toBeInTheDocument();
 	});
 
@@ -2234,9 +2240,7 @@ describe("Sidebar", () => {
 		expect(screen.getByTestId("sidebar-update-ready")).toBeVisible();
 	});
 
-	it("names the channel and build date for a staged nightly", async () => {
-		// A raw nightly string truncates to noise in the sidebar, and two
-		// consecutive nightlies differ only in the trailing digits.
+	it("shows the base version number for a staged nightly without channel or date", async () => {
 		updateStatusMock.mockResolvedValue({
 			state: "downloaded",
 			version: "0.12.11-nightly.202609021713",
@@ -2245,27 +2249,11 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
-		expect(within(readyRow).getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
-	});
-
-	it("shows the device-local calendar day for a UTC-day-boundary nightly", async () => {
-		// 03:00 UTC on Sep 7 is already Sep 7 in Kolkata but still Sep 6 in Los
-		// Angeles. The date-only label must follow the device-local calendar day
-		// of the correct instant, not the stamp digits re-read as local wall
-		// time (issue #5059). The expected label is derived from the absolute
-		// instant, so this holds in every timezone.
-		updateStatusMock.mockResolvedValue({
-			state: "downloaded",
-			version: "0.12.11-nightly.202609070300",
-			stagedAt: Date.now(),
-		});
-		renderSidebar();
-
-		const readyRow = await screen.findByTestId("sidebar-update-ready");
-		const expected = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(
-			new Date(Date.UTC(2026, 8, 7, 3, 0)),
-		);
-		expect(within(readyRow).getByText(`Nightly 0.12.11 · ${expected}`)).toBeVisible();
+		expect(within(readyRow).getByText("Install Update")).toBeVisible();
+		expect(within(readyRow).getByText("0.12.11")).toBeVisible();
+		expect(within(readyRow).queryByText(/Nightly|Sep/)).not.toBeInTheDocument();
+		expect(screen.getAllByLabelText("Restart to install update v0.12.11")).not.toHaveLength(0);
+		expect(screen.queryByLabelText(/nightly/i)).not.toBeInTheDocument();
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {
@@ -2277,7 +2265,7 @@ describe("Sidebar", () => {
 		expect(screen.queryByText("Update check failed")).not.toBeInTheDocument();
 	});
 
-	it("renders the restart-to-update row with the green treatment even when escalated", async () => {
+	it("keeps the muted install cue when the staged update is escalated", async () => {
 		updateStatusMock.mockResolvedValue({
 			state: "downloaded",
 			version: "9.9.9",
@@ -2290,9 +2278,26 @@ describe("Sidebar", () => {
 		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
 		for (const button of buttons) {
-		expect(button).toHaveClass("text-success");
+			expect(button).toHaveClass("bg-muted");
+			expect(button).not.toHaveClass("text-success");
 		}
-		expect(screen.getByText("v9.9.9 ready")).toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-update-ready")).toHaveTextContent("Install Update");
+		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("9.9.9")).toBeVisible();
+		expect(screen.queryByText("v9.9.9 ready")).not.toBeInTheDocument();
+	});
+
+	it("keeps install label and version number on one line without nightly copy", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "downloaded",
+			version: "0.12.11-nightly.202609021713",
+			stagedAt: Date.now(),
+		});
+		renderSidebar();
+
+		const readyRow = await screen.findByTestId("sidebar-update-ready");
+		expect(readyRow.textContent?.replace(/\s+/g, " ").trim()).toMatch(/^Install Update 0\.12\.11$/);
+		expect(within(readyRow).queryByText(/Nightly|ready/)).not.toBeInTheDocument();
+		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11");
 	});
 
 	it("commits a project drop", () => {

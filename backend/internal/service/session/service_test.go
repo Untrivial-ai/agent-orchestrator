@@ -1671,6 +1671,12 @@ func TestWorkspaceFileSectionsSplitByGitState(t *testing.T) {
 	if len(files.Commits) != 1 || files.Commits[0].Subject != "agent: add committed.go" {
 		t.Fatalf("commits = %+v, want one commit for agent: add committed.go", files.Commits)
 	}
+	if len(files.Commits[0].Files) != 1 || files.Commits[0].Files[0].Path != "committed.go" || files.Commits[0].Files[0].Status != WorkspaceFileAdded || files.Commits[0].Files[0].Additions != 1 {
+		t.Fatalf("commit files = %+v, want added committed.go with one addition", files.Commits[0].Files)
+	}
+	if files.Commits[0].Files[0].Editable {
+		t.Fatal("historical commit file must not be editable")
+	}
 	if files.Summary.Files == 0 || files.Summary.Additions == 0 {
 		t.Fatalf("summary = %+v, want non-zero files and additions", files.Summary)
 	}
@@ -2072,6 +2078,9 @@ func TestListWorkspaceFilesScratchUsesFilesystem(t *testing.T) {
 	if !byPath["image.bin"].Binary || byPath["image.bin"].Additions != 0 || byPath["image.bin"].Deletions != 0 {
 		t.Fatalf("binary summary = %#v, want binary with zero counts", byPath["image.bin"])
 	}
+	if !byPath["README.md"].Editable || byPath["image.bin"].Editable {
+		t.Fatalf("editable flags = README:%v image:%v, want true/false", byPath["README.md"].Editable, byPath["image.bin"].Editable)
+	}
 	if _, ok := byPath[".git/config"]; ok {
 		t.Fatal(".git content should not be listed for scratch")
 	}
@@ -2164,6 +2173,25 @@ func TestGetWorkspaceFileScratchReturnsContentWithEmptyDiff(t *testing.T) {
 	if got.Diff != "" || got.DiffTruncated {
 		t.Fatalf("scratch diff = %q truncated=%v, want empty", got.Diff, got.DiffTruncated)
 	}
+	if !got.Editable {
+		t.Fatal("Editable = false, want true for a complete UTF-8 text file")
+	}
+}
+
+func TestGetWorkspaceFileMarksOversizedTextAsNotEditable(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "large.yaml", strings.Repeat("a", maxWorkspaceFileBytes+1))
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch}
+	st.sessions["scratch-1"] = domain.SessionRecord{ID: "scratch-1", ProjectID: "scratch", Metadata: domain.SessionMetadata{WorkspacePath: root}}
+
+	got, err := (&Service{store: st}).GetWorkspaceFile(context.Background(), "scratch-1", "large.yaml", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Editable || !got.ContentTruncated {
+		t.Fatalf("editable=%v truncated=%v, want false/true", got.Editable, got.ContentTruncated)
+	}
 }
 
 func TestGetWorkspaceFileRejectsTraversal(t *testing.T) {
@@ -2190,6 +2218,70 @@ func TestGetWorkspaceFileRejectsIntermediateSymlinkEscape(t *testing.T) {
 	var e *apierr.Error
 	if !errors.As(err, &e) || e.Kind != apierr.KindInvalid || e.Code != "INVALID_WORKSPACE_PATH" {
 		t.Fatalf("err = %v, want bad request INVALID_WORKSPACE_PATH", err)
+	}
+}
+
+func TestUpdateWorkspaceFileReplacesExistingTextWithOptimisticFingerprint(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "before\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	before, err := svc.GetWorkspaceFile(context.Background(), "ao-1", "notes.txt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "after\n",
+		ExpectedFileFingerprint: before.FileFingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Content != "after\n" || after.FileFingerprint == before.FileFingerprint {
+		t.Fatalf("updated detail = %#v", after)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("workspace content = %q err=%v", data, err)
+	}
+}
+
+func TestUpdateWorkspaceFileRejectsStaleFingerprintWithoutWriting(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "current\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	_, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "replacement\n",
+		ExpectedFileFingerprint: "stale",
+	})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "WORKSPACE_FILE_STALE" {
+		t.Fatalf("err = %v, want conflict WORKSPACE_FILE_STALE", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if readErr != nil || string(data) != "current\n" {
+		t.Fatalf("workspace content = %q err=%v", data, readErr)
+	}
+}
+
+func TestWorkspaceFileSizeDoesNotTreatTruncatedUTF8RuneAsBinary(t *testing.T) {
+	repo := t.TempDir()
+	content := strings.Repeat("a", 8190) + "你tail"
+	writeWorkspaceFile(t, repo, "translated.json", content)
+
+	size, binary := workspaceFileSizeAndBinary(repo, "translated.json", WorkspaceFileModified)
+	if binary {
+		t.Fatal("valid UTF-8 file was classified as binary when the preview ended mid-rune")
+	}
+	if size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", size, len(content))
 	}
 }
 

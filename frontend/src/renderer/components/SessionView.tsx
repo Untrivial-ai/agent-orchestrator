@@ -20,6 +20,7 @@ import type { components } from "../../api/schema";
 import { defaultShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
 import { BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { CenterPane } from "./CenterPane";
+import type { FileOpenOptions, FileViewMode } from "./FileContentPane";
 import {
 	SessionChatSurface,
 	type ConversationWorkState,
@@ -114,6 +115,7 @@ const CHAT_READABLE_MIN_PX = 560;
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
 const WORKSPACE_ABSOLUTE_MIN_PX = 300;
+type CenterFileOpenRequest = { commitSha?: string; editing: boolean; key: number; mode: FileViewMode; scope?: FileOpenOptions["scope"] };
 const INSPECTOR_SEPARATOR_RESERVE_PX = 8;
 const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
@@ -538,11 +540,29 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		phase: "docked",
 	});
 	const [filesPoppedOut, setFilesPoppedOut] = useState(false);
+	const [filesSplit, setFilesSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const [filePreviewRequestsBySession, setFilePreviewRequestsBySession] = useState<
 		Record<string, { path: string; key: number }>
 	>({});
 	const [fileTabsBySession, setFileTabsBySession] = useState<Record<string, SessionFileTabState>>({});
 	const fileTabs = fileTabsBySession[sessionId] ?? EMPTY_SESSION_FILE_TABS;
+	const [dirtyFilesBySession, setDirtyFilesBySession] = useState<Record<string, Record<string, true>>>({});
+	const dirtyFiles = dirtyFilesBySession[sessionId] ?? {};
+	const [centerFileRequestsBySession, setCenterFileRequestsBySession] = useState<
+		Record<string, Record<string, CenterFileOpenRequest>>
+	>({});
+	const consumedCenterEditingRequestsRef = useRef(new Set<string>());
+	const activeCenterFileRequest = fileTabs.activePath
+		? centerFileRequestsBySession[sessionId]?.[fileTabs.activePath]
+		: undefined;
+	const activeCenterFileRequestToken = fileTabs.activePath && activeCenterFileRequest
+		? `${sessionId}:${fileTabs.activePath}:${activeCenterFileRequest.key}`
+		: undefined;
+	const activeCenterFileInitialEditing = Boolean(
+		activeCenterFileRequest?.editing
+		&& activeCenterFileRequestToken
+		&& !consumedCenterEditingRequestsRef.current.has(activeCenterFileRequestToken),
+	);
 	const [auxiliaryTabOrderBySession, setAuxiliaryTabOrderBySession] = useState<Record<string, string[]>>({});
 	const auxiliaryTabOrder = auxiliaryTabOrderBySession[sessionId] ?? EMPTY_AUXILIARY_TAB_ORDER;
 	const setAuxiliaryTabOrder = useCallback(
@@ -992,11 +1012,43 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 		}));
 	}, [sessionId, setActiveShellTerminal]);
-	const openCenterFile = useCallback((path: string) => {
+	const openCenterFile = useCallback((path: string, options?: FileOpenOptions) => {
+		setCenterFileRequestsBySession((current) => {
+			const sessionRequests = current[sessionId] ?? {};
+			return {
+				...current,
+				[sessionId]: {
+					...sessionRequests,
+					[path]: {
+						commitSha: options?.commitSha,
+						editing: options?.editing ?? false,
+						key: (sessionRequests[path]?.key ?? 0) + 1,
+						mode: options?.mode ?? "file",
+						scope: options?.scope,
+					},
+				},
+			};
+		});
 		setFileTabsBySession((current) => ({
 			...current,
 			[sessionId]: openSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
 		}));
+	}, [sessionId]);
+	const markCenterFileEditingConsumed = useCallback((path: string, requestKey: number) => {
+		consumedCenterEditingRequestsRef.current.add(`${sessionId}:${path}:${requestKey}`);
+	}, [sessionId]);
+	const setCenterFileDirty = useCallback((path: string, dirty: boolean) => {
+		setDirtyFilesBySession((current) => {
+			const sessionFiles = current[sessionId] ?? {};
+			if (dirty) {
+				if (sessionFiles[path]) return current;
+				return { ...current, [sessionId]: { ...sessionFiles, [path]: true } };
+			}
+			if (!sessionFiles[path]) return current;
+			const nextSessionFiles = { ...sessionFiles };
+			delete nextSessionFiles[path];
+			return { ...current, [sessionId]: nextSessionFiles };
+		});
 	}, [sessionId]);
 	const activateCenterFile = useCallback((path: string) => {
 		setFileTabsBySession((current) => ({
@@ -1304,6 +1356,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				content: (
 					<SessionFileTab
 						active={fileTabs.activePath === path}
+						dirty={Boolean(dirtyFiles[path])}
 						onActivate={() => activateCenterFile(path)}
 						onAddFeedback={() => fileAnnotation.begin({ path, side: "file" })}
 						onClose={() => closeCenterFile(path)}
@@ -1313,7 +1366,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				onSelect: () => activateCenterFile(path),
 				onClose: () => closeCenterFile(path),
 			})),
-		[activateCenterFile, closeCenterFile, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
+		[activateCenterFile, closeCenterFile, dirtyFiles, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
 	);
 	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
@@ -1904,7 +1957,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							</div>
 							{fileTabs.activePath ? (
 								<div className="absolute inset-0">
-									<SessionFileWorkspace annotation={fileAnnotation} path={fileTabs.activePath} sessionId={sessionId} />
+									<SessionFileWorkspace
+										annotation={fileAnnotation}
+										commitSha={activeCenterFileRequest?.commitSha}
+										initialEditing={activeCenterFileInitialEditing}
+										initialMode={activeCenterFileRequest?.mode ?? "file"}
+										initialRequestKey={activeCenterFileRequest?.key ?? 0}
+										onDirtyChange={setCenterFileDirty}
+										onInitialEditingConsumed={markCenterFileEditingConsumed}
+										path={fileTabs.activePath}
+										sessionId={sessionId}
+										split={filesSplit}
+										scope={activeCenterFileRequest?.scope}
+									/>
 								</div>
 							) : null}
 							{interfaceSwitch.startError && !interfaceSwitchDialogOpen ? (
@@ -1955,9 +2020,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								session ? (
 									<SessionFileExplorer
 										onOpenFile={openCenterFile}
+										onSplitChange={setFilesSplit}
 										onToggleMaximized={handleToggleFilesPopOut}
 										revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
 										sessionId={session.id}
+										split={filesSplit}
 									/>
 								) : null
 							}
@@ -2032,8 +2099,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						>
 							<SessionFileExplorer
 								isMaximized
+								onSplitChange={setFilesSplit}
 								onToggleMaximized={handleToggleFilesPopOut}
 								sessionId={session.id}
+								split={filesSplit}
 							/>
 						</div>,
 						document.body,

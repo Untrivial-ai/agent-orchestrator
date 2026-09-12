@@ -275,6 +275,25 @@ type ConversationBranch struct {
 	ProviderScopeID        string
 }
 
+type ConversationEditDelivery struct {
+	ConversationID      string
+	ClientMessageID     string
+	RequestJson         string
+	State               string
+	SourceBranchID      string
+	ActiveBranchID      string
+	TurnID              string
+	HandledBySessionID  string
+	ProviderTurnID      string
+	TurnState           string
+	TurnRequestedAt     sql.NullTime
+	RejectionKind       string
+	RejectionMessage    string
+	CreatedAt           time.Time
+	SettledAt           sql.NullTime
+	ProviderWorkStarted int64
+}
+
 type ConversationMessage struct {
 	ID                  string
 	ConversationID      string
@@ -302,6 +321,26 @@ type ConversationProviderEvent struct {
 	PayloadJson     string
 	ReceivedAt      time.Time
 	BranchID        string
+}
+
+type ConversationQueuedEditDelivery struct {
+	ConversationID  string
+	ClientMessageID string
+	RequestHash     string
+	CreatedAt       time.Time
+}
+
+type ConversationSteerDelivery struct {
+	ConversationID   string
+	ClientMessageID  string
+	RequestJson      string
+	State            string
+	ProviderTurnID   string
+	ActivityID       string
+	RejectionKind    string
+	RejectionMessage string
+	CreatedAt        time.Time
+	SettledAt        sql.NullTime
 }
 
 type ConversationTurn struct {

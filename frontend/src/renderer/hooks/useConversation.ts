@@ -1,4 +1,3 @@
-import type { ChatSteerOutcome } from "../types/conversation";
 /**
  * Live conversation data for a Chat session.
  *
@@ -40,6 +39,8 @@ import type {
 	ChatConfigOptionValue,
 	ChatModel,
 	ChatSkill,
+	ChatEditOutcome,
+	ChatSteerOutcome,
 	PlanStep,
 	PlanStepStatus,
 	QueuedMessageEditOptions,
@@ -56,10 +57,11 @@ type WireImageContent = components["schemas"]["ConversationImageContentRequest"]
 type WireResourceContent = components["schemas"]["ConversationResourceContentRequest"];
 
 export interface ConversationSendInput {
-	clientMessageId?: string;
 	text: string;
 	attachments?: WireImageContent[];
 	resources?: WireResourceContent[];
+	/** Caller-owned durable idempotency key used for crash-safe retries. */
+	clientMessageId?: string;
 }
 
 interface ConversationSendMutationInput {
@@ -567,7 +569,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string }) => {
+		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string; recoverOnly?: boolean }) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
@@ -623,7 +625,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 					body: { text, ...options },
 				},
 			);
-			if (error) throw new Error(apiErrorMessage(error, "Could not save queued message edit"));
+			if (error) throw error;
 		},
 		onSuccess: invalidate,
 	});
@@ -882,18 +884,25 @@ export function useConversationCommands(sessionId: string | undefined) {
 						? retryTurn.variables?.sourceTurnId
 						: undefined,
 		},
-		editMessage: (turnId: string, text: string) => {
+		editMessage: async (turnId: string, text: string, clientMessageId?: string): Promise<ChatEditOutcome> => {
 			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
-			const requestId = crypto.randomUUID();
+			const requestId = clientMessageId ?? crypto.randomUUID();
 			if (!claimConversationDispatch(queryClient, sessionId, requestId, "edit", turnId)) {
 				return Promise.reject(new Error("Conversation work is already being sent for this session."));
 			}
-			return editMessage.mutateAsync({
+			try {
+			await editMessage.mutateAsync({
 				requestId,
 				sourceTurnId: turnId,
 				targetSessionId: sessionId,
 				text,
 			});
+			return { status: "accepted" };
+			} catch (error) {
+				const outcome = editNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
 		},
 		editMessagePending:
 			trackedDispatch?.operation === "edit" ||
@@ -905,9 +914,9 @@ export function useConversationCommands(sessionId: string | undefined) {
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
 		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
-		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string): Promise<ChatSteerOutcome> => {
+		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean): Promise<ChatSteerOutcome> => {
 			try {
-				await steer.mutateAsync({ text, attachments, clientMessageId });
+				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly });
 				return { status: "accepted" };
 			} catch (error) {
 				const outcome = steerNonAcceptance(error);
@@ -985,6 +994,8 @@ function steerRefusal(error: unknown): string | undefined {
 	switch (code) {
 		case "CHAT_NO_ACTIVE_TURN":
 			return "The turn finished before this landed. Send it as a message instead.";
+		case "CHAT_INTERFACE_TRANSITION":
+			return "The session is switching interfaces. This guidance was not delivered; send it after the switch finishes.";
 		case "CHAT_TURN_NOT_STEERABLE":
 			return `${apiErrorMessage(error)} Try again once it finishes.`;
 		case "CHAT_STEER_UNSUPPORTED":
@@ -995,6 +1006,47 @@ function steerRefusal(error: unknown): string | undefined {
 		default:
 			return apiErrorMessage(error);
 	}
+}
+
+const DEFINITIVE_STEER_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_NO_ACTIVE_TURN",
+	"CHAT_INTERFACE_TRANSITION",
+	"CHAT_TURN_NOT_STEERABLE",
+	"CHAT_STEER_UNSUPPORTED",
+	"CHAT_STEER_TEXT_REQUIRED",
+	"CHAT_UNSUPPORTED_STEER_CONTENT",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_STEER_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return {
+		status: "not-accepted",
+		reason: steerRefusal(error) ?? apiErrorMessage(error),
+	};
+}
+
+const DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_EDIT_REJECTED",
+	"CHAT_EDIT_UNSUPPORTED",
+	"CHAT_EDIT_BUSY",
+	"CHAT_EDIT_TURN_INVALID",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function editNonAcceptance(error: unknown): ChatEditOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return { status: "not-accepted", reason: apiErrorMessage(error) };
 }
 
 /**
@@ -1495,27 +1547,4 @@ function isDecisionKind(value: unknown): value is NonNullable<DecisionOption["ki
 		value === "reject_once" ||
 		value === "reject_always"
 	);
-}
-
-const DEFINITIVE_STEER_NON_ACCEPTANCE_CODES = new Set([
-	"CHAT_NO_ACTIVE_TURN",
-	"CHAT_INTERFACE_TRANSITION",
-	"CHAT_TURN_NOT_STEERABLE",
-	"CHAT_STEER_UNSUPPORTED",
-	"CHAT_STEER_TEXT_REQUIRED",
-	"CHAT_UNSUPPORTED_STEER_CONTENT",
-	"CHAT_PROVIDER_REFUSED",
-	"SESSION_MODE_MISMATCH",
-	"SESSION_NOT_FOUND",
-	"CHAT_CONTROLLER_NOT_READY",
-	"CHAT_AUTH_REQUIRED",
-]);
-
-function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
-	const code = apiErrorCode(error);
-	if (!code || !DEFINITIVE_STEER_NON_ACCEPTANCE_CODES.has(code)) return undefined;
-	return {
-		status: "not-accepted",
-		reason: steerRefusal(error) ?? apiErrorMessage(error),
-	};
 }

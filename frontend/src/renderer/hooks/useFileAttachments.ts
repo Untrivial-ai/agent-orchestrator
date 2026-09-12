@@ -80,12 +80,12 @@ export type PendingFileAttachmentCapture = {
 };
 
 function sharedAttachmentDescriptors(attachments: FileAttachment[]): FileAttachment[] {
-	return attachments.map(({ id, mimeType, bytes, name, stagedPath, data, dataUrl }) => ({
+	return attachments.map(({ id, mimeType, bytes, name, stagedPath }) => ({
 		id,
 		mimeType,
 		bytes,
 		name,
-		...(stagedPath ? { stagedPath } : { data, dataUrl }),
+		...(stagedPath ? { stagedPath } : {}),
 	}));
 }
 
@@ -236,13 +236,19 @@ export function discardPendingFileAttachmentsForSession(sessionId: string): void
  * durable worktree bytes are intentionally outside this registry and untouched.
  */
 export function purgeFileAttachmentsForSession(sessionId: string): void {
-	for (const [key, entry] of [...sharedAttachmentEntries]) {
-		if (!attachmentKeyBelongsToSession(key, sessionId)) continue;
-		entry.generation += 1;
-		entry.pending.clear();
-		notifySharedAttachmentEntry(key, { attachments: [], error: null });
-		if (entry.listeners.size === 0) sharedAttachmentEntries.delete(key);
+	for (const key of [...sharedAttachmentEntries.keys()]) {
+		if (attachmentKeyBelongsToSession(key, sessionId)) purgeFileAttachments(key);
 	}
+}
+
+/** Retire one completed owner without touching other drafts or staged bytes. */
+export function purgeFileAttachments(key: string): void {
+	const entry = sharedAttachmentEntries.get(key);
+	if (!entry) return;
+	entry.generation += 1;
+	entry.pending.clear();
+	notifySharedAttachmentEntry(key, { attachments: [], error: null });
+	if (entry.listeners.size === 0) sharedAttachmentEntries.delete(key);
 }
 
 // Client-side mirror of the backend image-preview allowlist. Non-image files can
@@ -492,21 +498,6 @@ export function useFileAttachments(options: FileAttachmentOptions = {}) {
 		setError(null);
 	}, [initialKey, onAttachmentsChange]);
 
-	const recordStagedPaths = useCallback((paths: ReadonlyMap<string, string>): FileAttachment[] => {
-		const next = attachmentsRef.current.map((attachment) => {
-			const path = paths.get(attachment.id);
-			return path ? { ...attachment, stagedPath: path } : attachment;
-		});
-		attachmentsRef.current = next;
-		setAttachments(next);
-		onAttachmentsChange?.(next);
-		if (initialKey) {
-			notifySharedAttachmentEntry(initialKey,
-				{ attachments: sharedAttachmentDescriptors(next) }, listenerTokenRef.current);
-		}
-		return next;
-	}, [initialKey, onAttachmentsChange]);
-
 	const clear = useCallback(() => {
 		generationRef.current++;
 		pendingReadsRef.current.clear();
@@ -575,7 +566,6 @@ export function useFileAttachments(options: FileAttachmentOptions = {}) {
 		preparing,
 		addFiles,
 		remove,
-		recordStagedPaths,
 		clear,
 		reconcilePersistedAttachments,
 		getAttachments: () => attachmentsRef.current,

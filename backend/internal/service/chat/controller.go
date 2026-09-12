@@ -40,6 +40,7 @@ const (
 // the SQLite store.
 type Store interface {
 	CreateConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
+	OpenNativeConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
 	CreateProjectConversationWithContextReset(ctx context.Context, id string, project domain.ProjectID, session domain.SessionID, reset domain.ConversationActivity, now time.Time) (domain.ConversationRecord, error)
 	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
 	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string, now time.Time) error
@@ -74,11 +75,22 @@ type Store interface {
 	ReserveQueuedTurnForPromotion(ctx context.Context, conversationID, turnID string, now time.Time) (domain.QueuedTurn, error)
 	ReleaseQueuedTurnPromotion(ctx context.Context, conversationID, turnID string) error
 	CompleteQueuedTurnPromotion(ctx context.Context, conversationID, sourceTurnID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
+	SteerDelivery(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationSteerDelivery, bool, error)
+	ReserveSteerDelivery(ctx context.Context, conversationID, clientMessageID, requestJSON string, now time.Time) (domain.ConversationSteerDelivery, bool, error)
+	CompleteSteerDelivery(ctx context.Context, conversationID, clientMessageID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
+	RejectSteerDelivery(ctx context.Context, conversationID, clientMessageID string, kind domain.ConversationSteerRejectionKind, message string, now time.Time) error
+	EditDelivery(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationEditDelivery, bool, error)
+	ReserveEditDelivery(ctx context.Context, conversationID, clientMessageID, requestJSON string, now time.Time) (domain.ConversationEditDelivery, bool, error)
+	BeginEditProviderWork(ctx context.Context, conversationID, clientMessageID, generation string) error
+	RecoverCompletedEditDelivery(ctx context.Context, conversationID, clientMessageID string, now time.Time) error
+	CompleteEditDelivery(ctx context.Context, conversationID, clientMessageID, sourceBranchID, activeBranchID string, turn domain.ConversationTurn, now time.Time) error
+	RejectEditDelivery(ctx context.Context, conversationID, clientMessageID string, kind domain.ConversationEditRejectionKind, message string, now time.Time) error
 	CancelQueuedTurns(ctx context.Context, conversationID string, cutoff, now time.Time) error
 	CancelAllQueuedTurns(ctx context.Context, conversationID string, now time.Time) error
 	CancelQueuedTurnByID(ctx context.Context, conversationID, turnID string, now time.Time) error
 	QueuedTurnMessage(ctx context.Context, conversationID, turnID string) (domain.ConversationMessage, error)
-	UpdateQueuedTurnMessage(ctx context.Context, conversationID, turnID, text, contentJSON string, revision int64, now time.Time) error
+	QueuedEditDelivery(ctx context.Context, conversationID, clientMessageID string) (string, bool, error)
+	UpdateQueuedTurnMessage(ctx context.Context, conversationID, turnID, text, contentJSON string, revision int64, now time.Time, delivery domain.ConversationQueuedEditDelivery) error
 	ReorderQueuedTurns(ctx context.Context, conversationID string, turnIDs []string) error
 
 	RetryPrompt(ctx context.Context, conversationID, turnID string) (domain.RetryPrompt, error)
@@ -383,6 +395,68 @@ type nativeHistoryCheckpoint struct {
 	aoHighWater           nativeHistoryHighWater
 }
 
+// dropObsoleteHookFacts retires checkpoint text that AO durably recorded on a
+// turn the provider never settled. A provider promises to reproduce settled work
+// during history load, but a cancelled, interrupted or failed turn carries no
+// such promise: Claude forks its next prompt from the pre-failure transcript
+// entry, so `session/load` never replays that prompt as a completed user
+// message. Requiring one is unsatisfiable — the settle loop then spends its full
+// `nativeHistorySettleLimit` and the interface transition rolls back to Terminal
+// on every future attempt, which is the same trap the high-water anchor below
+// already avoids by only anchoring on completed turns.
+//
+// Evidence is required to drop a fact. A checkpoint AO cannot tie to any of its
+// own turns is left in place: absence of a row is not proof the work was
+// unsettled, and these facts are what stop a stale replay from being imported as
+// if it were current.
+//
+// A completed hook fact also becomes obsolete when a newer completed AO turn
+// supersedes it in this provider scope. Chat updates do not necessarily emit TUI
+// hooks, so requiring the older hook text to remain the replay's latest answer
+// would reject complete history. The newer AO high-water mark remains required.
+func (p *nativeHistoryCheckpoint) dropObsoleteHookFacts(
+	turnsByID map[string]*domain.ConversationTurn,
+	messages []domain.ConversationMessage,
+	latestSettled *domain.ConversationTurn,
+	providerBoundary time.Time,
+) {
+	obsolete := func(text string, role domain.MessageRole) bool {
+		var newest *domain.ConversationTurn
+		var streaming bool
+		for _, message := range messages {
+			if message.Role != role || !nativeHistoryTextMatches(text, message.Text) {
+				continue
+			}
+			turn := turnsByID[message.TurnID]
+			if turn == nil {
+				continue
+			}
+			// The newest matching turn decides: the same prompt can be sent again
+			// after a cancellation, and that later completed turn is replayable.
+			if newest == nil || turn.RequestedAt.After(newest.RequestedAt) {
+				newest = turn
+				streaming = message.Streaming
+			}
+		}
+		if newest == nil {
+			return false
+		}
+		if newest.State != domain.TurnStateCompleted {
+			return true
+		}
+		return latestSettled != nil && !streaming && newest.RolledBackAt == nil &&
+			newest.HandledBySessionID == latestSettled.HandledBySessionID &&
+			(providerBoundary.IsZero() || newest.RequestedAt.After(providerBoundary)) &&
+			latestSettled.RequestedAt.After(newest.RequestedAt)
+	}
+	if p.latestUserPrompt != "" && obsolete(p.latestUserPrompt, domain.MessageRoleUser) {
+		p.latestUserPrompt = ""
+	}
+	if p.latestAssistantUpdate != "" && obsolete(p.latestAssistantUpdate, domain.MessageRoleAssistant) {
+		p.latestAssistantUpdate = ""
+	}
+}
+
 func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	sessionID domain.SessionID,
 	turns []domain.ConversationTurn,
@@ -418,7 +492,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		// pre-failure transcript entry, leaving the failed turn (e.g. a synthetic
 		// auth-error message) on a dead branch that session/load never replays.
 		// Requiring one of those items would make every future switch time out.
-		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" ||
+		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" || turn.RolledBackAt != nil ||
 			(!providerBoundary.IsZero() && !turn.RequestedAt.After(providerBoundary)) {
 			continue
 		}
@@ -426,6 +500,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 			latest = turn
 		}
 	}
+	p.dropObsoleteHookFacts(turnsByID, messages, latest, providerBoundary)
 	if latest == nil {
 		return
 	}

@@ -73,6 +73,16 @@ describe("TurnOutcome", () => {
 	});
 });
 
+it("shows a native context boundary without implying inherited context", () => {
+	const summary = "Native conversation changed. Earlier messages are retained; continuity with this agent's context is not verified.";
+	render(<ActivityRow activity={{
+		kind: "activity", id: "native-context-boundary", sequence: 3, revision: 0,
+		createdAt: "2026-09-12T00:00:00Z", activityKind: "system",
+		status: "completed", summary, detail: { event: "context.boundary" },
+	}} />);
+	expect(screen.getByText(summary)).toBeInTheDocument();
+});
+
 describe("AssistantMessage streaming", () => {
 	it("shows the first durable snapshot and a replacement message immediately", () => {
 		const text = "A first snapshot 👨‍👩‍👧‍👦";

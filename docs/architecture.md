@@ -326,6 +326,27 @@ protocol id are proven to name the same native conversation. Claude Code and
 Codex currently satisfy that contract. Merely having a Chat/ACP driver is not
 enough to enable switching for another harness.
 
+The native ID handed over is the current Terminal conversation, which can differ
+from the last Chat provider (for example after replacing an orchestrator). This
+does not prove that the new provider inherited the old context. Session Manager
+reserves a `ChatProviderHandoff` only from a matching durable TUI→Chat transition;
+ordinary resumes retain the exact-handle check. Chat resumes the verified target,
+reconciles only its provider scope, and prepares a visible context boundary.
+Lifecycle and SQLite atomically publish that boundary, native history, controller
+generation, and any project-narrative ownership transfer, checking the observed
+owner, head, sequence, and controller fence again after provider I/O. Prior rows
+remain intact, but are not represented as context inherited by the new provider.
+A missing transcript during ordinary Terminal restore must not silently start a
+fresh provider when durable Chat history exists. Restore fails before launching
+another runtime, so the transcript can be restored without losing continuity.
+
+The native-history barrier combines Terminal hook facts with the latest completed
+AO turn in the active provider scope. A newer completed turn can supersede a
+hook fact tied to an older settled turn; otherwise a Chat answer followed by an
+immediate round trip would keep waiting for the older Terminal answer to be last.
+Unknown hook facts still gate replay, and superseding an older fact never removes
+the requirement to replay the newer settled AO high-water mark.
+
 ```mermaid
 sequenceDiagram
     participant Client
