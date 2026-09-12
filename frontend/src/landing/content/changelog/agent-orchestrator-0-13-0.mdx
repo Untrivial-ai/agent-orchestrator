@@ -1,82 +1,111 @@
 ---
 title: "Agent Orchestrator 0.13.0"
-description: "99 commits since 0.12.12. Diffs and files big enough to lag before now scroll smoothly, chat providers stay alive across daemon restarts, ao doctor checks every installed harness, and project import can create the GitHub repo for you. 74 fixes behind that."
-date: "2026-09-12T11:50:00+05:30"
+description: "668 commits and 635 merged PRs from 51 authors since 0.12.0. AO Cloud's control plane landed in the monorepo, chat became a first-class surface whose providers survive daemon restarts, a wave of new agent harnesses joined the roster, and the terminal went real-time."
+date: "2026-09-12T11:55:00+05:30"
 ---
 
-> Covers everything since **v0.12.12**. If you are on 0.12.x and updating in place, this is all you skipped.
+> Covers everything since **v0.12.0**. The 0.12.1–0.12.12 patch releases carried most of the fixes but never got their own entries, so the whole cycle is folded into this one. If you are on 0.12.0, this is everything you skipped.
 
-0.12.12 was a patch train that never got its own changelog, so the smaller releases between 0.12.0 and now are folded in below only where a 0.13.0 feature builds on them. Everything else here shipped in this cycle: 99 commits from 28 authors, 18 features and 74 fixes, no breaking changes.
+0.12.0 was polish on the foundation: languages, palette, pins, notifications. 0.13.0 is the cycle where the product grew new limbs. A cloud control plane now lives in the repo behind a flag. Chat stopped being a view and became a durable surface. The agent roster roughly doubled. And the two ugliest classes of failure left — a restart taking your in-flight turn with it, and a big diff freezing the inspector — both got structural fixes.
+
+668 commits from 51 authors, 174 features and 409 fixes, no breaking changes.
 
 ---
 
 ## Highlights
 
+### AO Cloud is in the repo
+
+The private control plane — a separate Go service with a 28-table PostgreSQL schema, WorkOS sign-in, GitHub App installations and webhooks, organization-scoped projects and sessions, durable message queues, event replay and cluster-safe SSE reconnects — now lives in this monorepo, wired to an authenticated Next.js Cloud UI through new `@aoagents/cloud-client` and `@aoagents/product-ui` packages and a public cloud contract. Desktop sign-in gained native WorkOS auth. Everything is flag-gated; nothing changes for local-only users yet. (#4434, #3692, #4722)
+
+### Chat is first-class, and it survives restarts
+
+The composer was redesigned around resolved agent and model defaults, with a queued message dock that supports editing, cancel, drag-to-reorder and attachments that survive restarts. Queued turns can be promoted to steer the active turn. Claude Code conversations gained message editing, failed turns retry without retyping the prompt, and tool calls render as readable cards instead of raw dumps.
+
+Under it all, Codex and the ACP chat providers are owned by authenticated detached hosts now: close the desktop app, restart the daemon, and the provider is re-adopted with its conversation snapshot, pending approvals and in-flight turn intact. (#3657, #4649, #4684, #4715, #3838, #3858, #4256, #5027, #4529, #4766)
+
+### The agent roster grew
+
+New harnesses and drivers landed across the cycle: Kimchi, Kimi, Pi, OMP, Prime Agent, Muse Code, and a Cursor ACP chat driver, with adapter-aware model selection, per-provider model catalogs and discovery, `--model` on `ao spawn` with per-session scoping, and an `act` primitive that resolves instructions and retries stale references. `ao doctor` now probes all 26 registered harness binaries, so "why is this agent missing" is a one-command answer. (#2649, #4193, #4194, #4196, #3736, #3647, #4201, #3386, #4610, #4102, #4244, #5025)
+
+### Real-time terminal
+
+The terminal is a duplex stream with predictive local echo now, backed by native PTY hosts on macOS and Linux, selectable Windows shells, line-boundary editing shortcuts on macOS, and tab cycling shortcuts. Output bursts are back-pressured instead of killing the WebSocket. (#4763, #4768, #4473, #4727, #4517, #5199, #3658, #4552)
+
 ### A diff viewer that keeps up
 
-The diff and file viewers are virtualized now. Only the rows on screen render, so a 5,000-line diff or a minified bundle scrolls instead of freezing the inspector, and file previews got the same treatment with selectable text and proper close buttons. (#5175, #5012)
+Diff and file viewers are virtualized — only the rows on screen render — so a 5,000-line diff scrolls instead of freezing. Alongside them: a full-tree file explorer next to the changed-files view, GitHub-style Markdown rendering, mermaid fences drawn as diagrams, before/after previews for image files, and file previews you can select text in and close. (#5175, #4252, #4251, #4892, #4173, #5012)
 
-### Chat providers survive daemon restarts
+### Reviews, end to end
 
-Codex and the ACP chat providers already survived the desktop app closing. Now they survive the daemon restarting underneath them: the provider process is detached and re-adopted after the daemon comes back, the conversation snapshot and pending approvals are restored, and an in-flight turn keeps its place instead of dying mid-stream. (#4766)
+Interactive reviewer panes work for every agent harness, review passes can auto-start for pull requests, and the project can carry its own auto-review config. The Reviews inspector merged into one list with pagination for unresolved comments, external reviews support inline comments, PR readiness cards were redesigned, and the review funnel is instrumented end to end. (#3384, #3338, #4128, #3664, #4032, #4131, #4055, #4255)
 
-### ao doctor knows every harness
+### Mobile ships
 
-`ao doctor` now probes all 26 registered agent harness binaries — installed, on PATH, authenticated — instead of the handful it knew about, so "why is this agent missing from the picker" is a one-command answer. Session list status got richer alongside it, and finished sessions show PR progress instead of going quiet at merge time. (#5025, #4028, #4916)
+AO Mobile went live on both app stores, with a TestFlight flow, over-the-air updates via EAS, Connect Mobile pairing over Tailscale including iOS, a device roster to see, mute and remove paired phones, PostHog analytics and Sentry-ready error capture. (#4761, #3689, #4474, #3707, #3674, #3661, #4181)
 
-### Import a project, create the repo too
+### Agent switching you can trust
 
-Project import can now create the GitHub repository as part of onboarding instead of bouncing you to github.com, with a simpler import setup and finalized workspace import flows behind it. (#5092, #5118, #4945)
+Switching a session between TUI and Chat became durable, responsive and phase-aware, with failure-only observability capturing exactly where a switch dies. Interfaces without a Chat UI hide the switch instead of offering it. (#3548, #3770, #4598, #3966)
 
-### Browser screenshots and downloads
+### The desktop got a facelift
 
-Agents can capture what the browser shows and save files from it, so "screenshot this page" and "download the artifact" are things the session can actually do. (#4994)
+A focused home page, a vertical tabs rail replacing the tab dropdown, Nord, Gruvbox and Solarized themes, drag-to-reorder for projects and sessions, session renaming from navigation surfaces, and app icons derived from the Ruto mascot on every platform. (#4549, #4781, #3668, #3585, #4274, #4874, #5079, #5238)
 
-### Editor handoff and terminal shortcuts
+### Browser that agents can actually use
 
-`Open in editor` hands the file to Neovim cross-platform, not just GUI editors, and macOS terminals gained line-boundary shortcuts (option/shift-arrow word and line movement) that match Terminal.app. (#4723, #5199)
+Per-session browser profiles persist cookies and history across sessions, agents can capture screenshots and save downloads from the page, and annotation gained multi-element select with contextual shortcuts. (#4135, #4994, #3549, #4643)
 
-### Updates that finish the job
+### GitLab joins GitHub
 
-The sidebar download row became a live install flow — pick a release, watch it download, install from there — with a macOS repair installer for machines where a staged build was rejected, and the updater now owns a download it started instead of dropping it mid-flight. (#5047, #5002, #4981, #5032)
+A GitLab SCM integration landed behind a multi-provider dispatcher, with response and cache consistency handled per provider. (#2773, #5148)
+
+### Onboarding without the dead ends
+
+Import from a Git URL, a full project import flow with validation APIs and optimistic loading, GitHub repository creation during import, folder drag-and-drop, flags for projects whose local folder went missing, remembered permission defaults, and a startup gate that checks real system requirements (git, tmux, harness, gh) with one-click install. (#4104, #4872, #4760, #5127, #5092, #4065, #4894, #4956, #3825)
 
 ### Also new
 
-- The all-sessions board is back, across every project in one view (#5249)
-- Cursor's Ask and Agent show as execution modes, and tool calls render as readable cards in chat (#4978, #5027)
-- App icons on every platform derive from the desktop Ruto icon (#5079, #5238)
-- Closed sessions that never merged show in red on the board (#5165)
+- **Editor handoff**: cross-platform Neovim support next to the GUI editors, plus an Open-in-editor button beside Kill (#4723, #3284)
+- **Attention sound**: a beep when an agent needs input or a PR is ready, and the macOS Dock bounces on notifications (#4051, #4115)
+- **Harness setup in settings**: installer settings and harness login actions in one place (#4221, #4523)
+- **Usage and cost**: event-driven per-session token usage, Kimi usage observability, estimated costs (#2928, #4311, #4168)
+- **Updates**: sidebar downloads became a live install flow, with a macOS repair installer for machines where a staged build was rejected (#5047, #5002, #4981)
+- **Board**: the all-sessions board is back, finished sessions show PR progress, closed-without-merge shows in red (#5249, #4916, #5165)
+- **Connectivity**: the mobile client races every advertised endpoint to connect from any network (#4615)
 
 ---
 
 ## Reliability
 
-**Queued messages became durable.** Edits to queued messages persist with atomic delivery receipts, inline edits recover from durable branch receipts on reconnect, attachments survive editing and restarts, and a failed turn holds the queue instead of draining it into the same error. Composer text itself persists across lifecycle boundaries. (#5109, #5110, #5006, #5107, #5188, #5106, #5274)
+The 409 fixes were mostly grind work, but a few groups deserve their name in lights.
 
-**Terminals stop dying at the wrong moment.** PTY output is back-pressured instead of killing the WebSocket on a burst, the shell renderer is no longer leaked when the window closes, user shells are preserved across relaunches, and terminal focus is restored after fullscreen and restart. (#4552, #5150, #5040, #4988)
+**Queued messages became durable.** Edits persist with atomic delivery receipts, inline edits recover from durable branch receipts on reconnect, attachments survive editing and restarts, and a failed turn holds the queue instead of draining it into the same error. (#5109, #5110, #5006, #5107, #5188, #5106, #5274)
 
-**Mobile tunnels behave.** LAN connections close when mobile access is disabled, bridge state transitions are serialized, and Windows terminal popups no longer fire through mobile tunnels. Codex model routes no longer block on the LAN listener. (#5087, #5084, #5205, #5152)
+**Terminals stop dying at the wrong moment.** Back-pressured PTY output, no more leaked shell renderer on window close, user shells preserved across relaunches, and focus restored after fullscreen and restart. (#4552, #5150, #5040, #4988)
 
-**Restore checks before it restores.** `--resume` verifies the persisted session before attaching, sessions can switch to terminal until they have real work, and OpenCode keeps its Plan Mode selection across switches. (#5214, #5053, #5015)
+**Restore checks before it restores.** `--resume` verifies the persisted session before attaching, sessions can switch to terminal until they have real work, and OpenCode keeps its Plan Mode selection. (#5214, #5053, #5015)
 
-**Smaller fixes that mattered:** change log retention is bounded so the CDC table stops growing forever, nightly build stamps parse as UTC instead of local wall time, percent-encoded ACP approval ids decode instead of failing approval, the resolve-comments route validates its PR number, GitLab responses keep cache consistency, and the board re-renders on change events instead of on poll ticks. (#5103, #5115, #5193, #5239, #5148, #4854)
+**Smaller fixes that mattered:** change log retention is bounded so the CDC table stops growing forever, nightly build stamps parse as UTC, percent-encoded ACP approval ids decode instead of failing, the resolve-comments route validates its PR number, and the board re-renders on change events instead of poll ticks. (#5103, #5115, #5193, #5239, #4854)
+
+<p class="note">Note: the chat explore command (#4262) shipped and was reverted (#4289) in this window — it needs more work before it is ready. The settings and mobile pairing restructure (#4315) was briefly reverted and re-landed as #4322.</p>
 
 ---
 
-## Site and housekeeping
+## Under the hood
 
-The public site migrated to useao.dev, the bug report form got shorter, and session and reviewer avatars render through one path. (#5133, #5153, #4764)
+Sentry capture with Go stacks and triage classification landed on the daemon, renderer and mobile, wired through build DSNs. Every surface stamps a uniform client tag on telemetry. The daemon reports 5xx and panics with stacks. On the site: the public site migrated to useao.dev, the bug report form got shorter, and reviewer avatars render through one path. (#4346, #4180, #4181, #4394, #3663, #5133, #5153, #4764)
 
 ---
 
 ## Upgrading
 
-GitHub Releases and Homebrew are the supported install paths. Existing installs update in place. If a previous macOS update left a staged build that will not install, the repair installer in this release rebuilds in place. No migrations are destructive and no configuration changes are required.
+GitHub Releases and Homebrew are the supported install paths. Existing installs update in place. No migrations in this cycle are destructive and no configuration changes are required. Cloud remains flag-gated — local-only setups see nothing new there yet.
 
 ---
 
 ## Contributors
 
-28 authors landed work in this range. Thanks to prateek, Dhruv Sharma, ronish, Ayash, NIKHIL ACHALE, Pulkit Saraf, Aditi, Maaz, Prasad Ware, Vaibhaav Tiwari, Harshit Singh Bhandari, Just_Anniee, Sundaram Kumar Jha, vicky prasad, Aniket Vishwakarma, Khushi Diwan, Misbah Ansari, Piyush Mudgal, Rishet Mehra, Yash Kumar Saini, Anusha, Hendrixx, Soubhagya Sadhukhan, Vansh Singhal, Yash Maheshwari, axisrow, pikachu and vanshx999.
+51 authors landed work in this range. Thanks to Dhruv Sharma, NIKHIL ACHALE, prateek, Just_Anniee, Nihal, Pulkit Saraf, Vaibhaav Tiwari, ronish, Aditi, Prasad Ware, Khushi Diwan, Adil Shaikh, Harshit Singh Bhandari, Yash Maheshwari, Apoorv Singh, JAYATI AHUJA, Maaz, Ayash, vicky prasad, Piyush Mudgal, Pritom Mazumdar, VenkataSakethDakuri, Yash Kumar Saini, axisrow, vanshx999, Anmol, Vansh Singhal, vytautas-petrikas, Aniket Vishwakarma, N!hal, Sundaram Kumar Jha, i-trytoohard, Heet, Hendrixx, Misbah Ansari, OllieinCanada, Rishet Mehra, krish rathi, pikachu, Aniket Shukla, Anusha, Atul Upadhyay, Keshav Varshney, LaibaFirdouse, Mukul Katewa, Phan Nguyen Quoc Minh, Priyanshu Ranjan, Rishet11, Rugved Mavidipalli, Soubhagya Sadhukhan and mknayam.
 
-**Full changelog:** https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.12.12...v0.13.0
+**Full changelog:** https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.12.0...v0.13.0
