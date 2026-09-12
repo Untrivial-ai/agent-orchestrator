@@ -116,11 +116,11 @@ export function TaskComposer({
 	// Cloud vs local is decided here and nowhere else: a cloud project routes task
 	// creation to the control plane (which provisions a sandbox), while a local
 	// project keeps the existing daemon flow untouched.
- 	const { client: cloudClient, ready: cloudReady } = useCloudCp();
- 	const { org: cloudOrg } = useCloudOrg();
- 	const cloudProjects = useCloudProjectsQuery();
- 	const isCloudProject =
- 		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+	const { client: cloudClient, ready: cloudReady } = useCloudCp();
+	const { org: cloudOrg } = useCloudOrg();
+	const cloudProjects = useCloudProjectsQuery();
+	const isCloudProject =
+		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
 	// and the model dropdown spins forever. Local projects keep their scope.
@@ -238,7 +238,7 @@ export function TaskComposer({
 		projectQuery.data?.config?.worker?.agentConfig?.mode ?? projectQuery.data?.config?.agentConfig?.mode ?? "";
 	const projectModelForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerModel : "";
 	const projectModeForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerMode : "";
- 	const agentCatalog = agentsQuery.data;
+	const agentCatalog = agentsQuery.data;
 	const providerConnections = useProviderConnections(isCloudProject ? cloudOrg?.id : undefined);
 	const availableAgentsQuery = useQuery({
 		queryKey: ["cloud", "agents", "available", cloudOrg?.id],
