@@ -1,0 +1,73 @@
+# Maintainer: Agent Orchestrator <https://github.com/Untrivial-ai/agent-orchestrator>
+
+pkgname=agent-orchestrator-bin
+pkgver=0.12.12
+pkgrel=1
+pkgdesc="Orchestrate coding agents across parallel sessions and worktrees"
+arch=('x86_64')
+url="https://github.com/Untrivial-ai/agent-orchestrator"
+license=('Apache-2.0')
+depends=(
+	'alsa-lib'
+	'at-spi2-core'
+	'cairo'
+	'dbus'
+	'expat'
+	'gtk3'
+	'libcups'
+	'libdrm'
+	'libnotify'
+	'libxkbcommon'
+	'mesa'
+	'nspr'
+	'nss'
+	'pango'
+	'systemd-libs'
+	'xdg-utils'
+)
+optdepends=(
+	'libappindicator-gtk3: tray icon on desktops without StatusNotifier'
+	'libsecret: store cloud credentials in the system keyring'
+)
+provides=('agent-orchestrator' 'ao')
+conflicts=('agent-orchestrator' 'agent-orchestrator-appimage')
+# Electron ships prebuilt: stripping its binaries breaks the packaged app, and
+# there are no separate debug symbols to split out.
+options=('!strip' '!debug' '!emptydirs')
+source=("${pkgname}-${pkgver}.deb::${url}/releases/download/v${pkgver}/agent-orchestrator-linux-x64.deb")
+sha256sums=('e89d18de5b10bf85a51dcf2927d08274b3ae02d7ab65c901d7df601b9f64e00e')
+
+# The upstream deb already lays out /usr the way Arch wants it, so this repacks
+# rather than rebuilds. Three things it does not carry are added below.
+package() {
+	bsdtar -xf data.tar.zst -C "$pkgdir"
+
+	# 1. `ao` on PATH. The CLI and the daemon are one Go binary shipped inside
+	# the app, and the deb links only the Electron entry point, so `ao preview`
+	# and `ao start` are unavailable on a system install (upstream #4232).
+	ln -s /usr/lib/agent-orchestrator/resources/daemon/ao "$pkgdir/usr/bin/ao"
+
+	# 2. A scalable menu icon. The deb ships one pixmap, which launchers upscale
+	# into a blurry entry; hicolor is where they look first.
+	install -Dm644 "$pkgdir/usr/share/pixmaps/agent-orchestrator.png" \
+		"$pkgdir/usr/share/icons/hicolor/1024x1024/apps/agent-orchestrator.png"
+
+	# 3. A desktop entry that reads as an application. Upstream's Comment is the
+	# package's build description ("Electron + TypeScript frontend for the
+	# agent-orchestrator rewrite") and its category is Utility, so the launcher
+	# shows internal wording under the wrong heading.
+	local desktop="$pkgdir/usr/share/applications/agent-orchestrator.desktop"
+	sed -i \
+		-e "s|^Comment=.*|Comment=${pkgdesc}|" \
+		-e 's|^Categories=.*|Categories=Development;IDE;|' \
+		"$desktop"
+
+	# chrome-sandbox must stay SUID root or Electron aborts at startup with
+	# "The SUID sandbox helper binary was found, but is not configured
+	# correctly". bsdtar preserves the bit; assert it rather than trust it.
+	local sandbox="$pkgdir/usr/lib/agent-orchestrator/chrome-sandbox"
+	chmod 4755 "$sandbox"
+
+	install -Dm644 "$pkgdir/usr/share/doc/agent-orchestrator/copyright" \
+		"$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

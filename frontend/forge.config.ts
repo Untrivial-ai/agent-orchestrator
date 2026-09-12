@@ -322,8 +322,10 @@ const config: ForgeConfig = {
 			config: {
 				options: {
 					icon: "assets/icon.png",
-					// rpmbuild rejects a spec with an empty License field.
-					license: "MIT",
+					// rpmbuild rejects a spec with an empty License field. Must match
+					// the repo's LICENSE (Apache-2.0), or the published rpm declares
+					// a licence the project is not under.
+					license: "Apache-2.0",
 					homepage: "https://github.com/aoagents/agent-orchestrator",
 					mimeType: [AUTH_PROTOCOL_MIME_TYPE],
 				},

@@ -229,7 +229,11 @@ func knownAppLocations() []string {
 		if home, err := os.UserHomeDir(); err == nil {
 			paths = append(paths, filepath.Join(home, "Applications", "agent-orchestrator.AppImage"))
 		}
-		return paths
+		// A distro package (deb, rpm, Arch) installs the app under /usr, where no
+		// AppImage ever appears. Without these, `ao start` on a machine that
+		// already has AO installed system-wide finds nothing and downloads a
+		// second copy of the app it is standing on.
+		return append(paths, systemInstalledLinuxApp...)
 	default:
 		return nil
 	}
@@ -239,6 +243,13 @@ func knownAppLocations() []string {
 // target for the app exe under %LOCALAPPDATA%.
 func windowsInstalledExe(localAppData string) string {
 	return filepath.Join(localAppData, "Programs", "Agent Orchestrator", "agent-orchestrator.exe")
+}
+
+// systemInstalledLinuxApp is where a distro package puts the app. /usr/bin holds
+// the launcher symlink every maker emits; /opt covers an unpacked tarball install.
+var systemInstalledLinuxApp = []string{
+	"/usr/bin/agent-orchestrator",
+	"/opt/Agent Orchestrator/agent-orchestrator",
 }
 
 // linuxAppImagePath is the stable location `ao start` downloads the AppImage to

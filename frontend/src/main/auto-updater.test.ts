@@ -2852,6 +2852,19 @@ function stubProcess(platform: NodeJS.Platform, execPath: string): () => void {
   };
 }
 
+// An AppImage is a user-owned file the updater can replace, so APPIMAGE keeps
+// the Linux packaged-install preflight out of the way of tests that run the
+// generic non-macOS paths from a root-owned exec path.
+function stubAppImage(platform: NodeJS.Platform): () => void {
+  if (platform !== "linux") return () => {};
+  const original = process.env.APPIMAGE;
+  process.env.APPIMAGE = "/home/me/Applications/agent-orchestrator.AppImage";
+  return () => {
+    if (original === undefined) delete process.env.APPIMAGE;
+    else process.env.APPIMAGE = original;
+  };
+}
+
 // Builds a real bundle-shaped tree so the writability checks run against the
 // filesystem rather than a stub. Returns the exec path inside it.
 function makeBundle(): { root: string; bundle: string; execPath: string } {
@@ -3148,12 +3161,13 @@ describe("quitAndInstallUpdate", () => {
 
   it.each(["win32", "linux"] as const)("rejects an install without a staged build on %s", async (platform) => {
     const restore = stubProcess(platform, "/usr/bin/node");
+    const restoreAppImage = stubAppImage(platform);
     try {
       const { module, autoUpdater } = await importAutoUpdater();
       await module.checkForUpdatesNow(stateDir);
       await expect(module.quitAndInstallUpdate()).rejects.toThrow(/not ready/);
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
-    } finally { restore(); }
+    } finally { restoreAppImage(); restore(); }
   });
 
   it("never blocks off macOS, even for translocation-looking paths", async () => {
@@ -3221,6 +3235,7 @@ describe("install-on-quit policy", () => {
   // user had just left.
   it.each(["darwin", "win32", "linux"] as const)("blocks explicit install while a stale build awaits replacement on %s", async (platform) => {
     const restore = stubProcess(platform, "/usr/bin/node");
+    const restoreAppImage = stubAppImage(platform);
     try {
       const { module, autoUpdater, updaterEvents } = await importAutoUpdater({
         enabled: false,
@@ -3238,6 +3253,7 @@ describe("install-on-quit policy", () => {
       await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Check for updates/);
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     } finally {
+      restoreAppImage();
       restore();
     }
   });
@@ -3948,4 +3964,126 @@ it("keeps timed-out native preparation non-installable even after a late event",
     nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
     expect(module.getUpdateStatus().state).toBe("error");
   } finally { restore(); vi.useRealTimers(); }
+});
+describe("getLinuxInstallBlocker", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  // A deb/rpm/Arch install lives under root-owned /usr, so electron-updater
+  // would download a build it can never write into place.
+  it("blocks installs from an app directory the user cannot write to", async () => {
+    const root = mkdtempSync(nodePath.join(os.tmpdir(), "ao-updater-pkg-"));
+    const appDir = nodePath.join(root, "agent-orchestrator");
+    mkdirSync(appDir, { recursive: true });
+    chmodSync(appDir, 0o555);
+    const restore = stubProcess("linux", nodePath.join(appDir, "agent-orchestrator"));
+    delete process.env.APPIMAGE;
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toContain("package manager");
+    } finally {
+      restore();
+      chmodSync(appDir, 0o755);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // An AppImage is a single user-owned file the updater replaces normally. It
+  // can sit in a read-only directory and still be updatable, so APPIMAGE — not
+  // the directory mode — is what separates the two cases.
+  it("allows installs under an AppImage even from a read-only directory", async () => {
+    const root = mkdtempSync(nodePath.join(os.tmpdir(), "ao-updater-appimage-"));
+    const appDir = nodePath.join(root, "app");
+    mkdirSync(appDir, { recursive: true });
+    chmodSync(appDir, 0o555);
+    const restore = stubProcess("linux", nodePath.join(appDir, "agent-orchestrator"));
+    process.env.APPIMAGE = "/home/me/Applications/agent-orchestrator.AppImage";
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toBeUndefined();
+    } finally {
+      restore();
+      delete process.env.APPIMAGE;
+      chmodSync(appDir, 0o755);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows installs from a writable app directory", async () => {
+    const root = mkdtempSync(nodePath.join(os.tmpdir(), "ao-updater-writable-"));
+    const restore = stubProcess("linux", nodePath.join(root, "agent-orchestrator"));
+    delete process.env.APPIMAGE;
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toBeUndefined();
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never blocks on other platforms", async () => {
+    const restore = stubProcess("darwin", "/Applications/Agent Orchestrator.app/Contents/MacOS/x");
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  // startAutoUpdates refusing the timer is not enough on its own: a settings
+  // change or a manual check re-arms the periodic scheduler through
+  // reconcileAutomaticUpdateSchedule, which never goes through startAutoUpdates.
+  it("keeps the periodic check off after a settings change or manual check", async () => {
+    vi.useFakeTimers();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const root = mkdtempSync(nodePath.join(os.tmpdir(), "ao-updater-pkg-"));
+    const appDir = nodePath.join(root, "agent-orchestrator");
+    mkdirSync(appDir, { recursive: true });
+    chmodSync(appDir, 0o555);
+    const restore = stubProcess("linux", nodePath.join(appDir, "agent-orchestrator"));
+    delete process.env.APPIMAGE;
+    let current: UpdateSettings = {
+      enabled: false,
+      channel: "latest",
+      nightlyAck: false,
+      feature: null,
+    };
+    try {
+      const { module, autoUpdater, writeUpdateSettings } = await importAutoUpdater(
+        vi.fn(() => Promise.resolve(current)),
+      );
+      writeUpdateSettings.mockImplementation(
+        async (_stateDir: string, next: UpdateSettings) => {
+          current = next;
+        },
+      );
+
+      await module.startAutoUpdates(stateDir);
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+
+      await module.setUpdateSettings(stateDir, { ...current, enabled: true });
+      await module.setUpdateSettings(stateDir, {
+        ...current,
+        channel: "nightly",
+        nightlyAck: true,
+      });
+      await module.checkForUpdatesNow(stateDir);
+      const manualChecks = autoUpdater.checkForUpdates.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(manualChecks);
+      expect(
+        setIntervalSpy.mock.calls.some(([, delay]) => delay === 15 * 60 * 1000 || delay === 60 * 60 * 1000),
+      ).toBe(false);
+    } finally {
+      restore();
+      vi.useRealTimers();
+      chmodSync(appDir, 0o755);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

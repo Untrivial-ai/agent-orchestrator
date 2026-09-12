@@ -1,0 +1,8 @@
+# makepkg build output. `makepkg` unpacks into src/, stages into pkg/, and
+# leaves the downloaded source and the built package beside the recipe. Only
+# PKGBUILD and .SRCINFO belong in the repo.
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.deb

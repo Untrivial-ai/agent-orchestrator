@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,18 @@ func TestKnownAppLocations_HostOS(t *testing.T) {
 		if len(knownAppLocations()) == 0 {
 			t.Fatalf("knownAppLocations() empty on %s", runtime.GOOS)
 		}
+	}
+}
+
+// A distro package puts the app under /usr, where no AppImage ever appears.
+// Without these candidates `ao start` downloads a second copy of an app the
+// machine already has installed.
+func TestKnownAppLocations_LinuxIncludesSystemInstall(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only scan locations")
+	}
+	if !slices.Contains(knownAppLocations(), "/usr/bin/agent-orchestrator") {
+		t.Fatalf("knownAppLocations() = %q, want it to include the packaged launcher", knownAppLocations())
 	}
 }
 
