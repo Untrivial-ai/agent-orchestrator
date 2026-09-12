@@ -18,6 +18,7 @@ var (
 	ErrIdempotencyMismatch  = errors.New("idempotency key belongs to a different operation")
 	ErrSandboxQuotaExceeded = errors.New("sandbox quota exceeded")
 	ErrWorkerUnavailable    = errors.New("worker unavailable")
+	ErrWorkerSuperseded     = errors.New("worker connection superseded by a newer epoch")
 	ErrTransportExpired     = errors.New("worker request expired")
 	ErrWorkspaceReadOnly    = errors.New("workspace is read-only")
 )

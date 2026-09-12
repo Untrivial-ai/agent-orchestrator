@@ -114,6 +114,15 @@ const CLOUD_CONNECT_RETRY_MS = 1_000;
 // not false-fire a "check your firewall" error. ~8 socket failures ≈ 8s.
 const CLOUD_CONNECT_MAX_FAILURES = 8;
 const OPEN_TIMEOUT_MS = 3_000;
+// A connection is only trusted to reset the reconnect backoff once it has
+// stayed open this long. Resetting on the bare "opened" event let a socket
+// that opens and dies within ~1s (e.g. reconnecting into a worker epoch that
+// is about to be superseded) restart every retry at RETRY_BASE_MS forever —
+// the backoff never grew because r.attempts kept getting zeroed before the
+// next failure. A connection that survives past this window is treated as a
+// real recovery instead of a bounce (see also the corresponding server-side
+// churn fix, #4792/#4668).
+const STABLE_CONNECTION_MS = 3_000;
 // Trailing debounce on grid changes: a pane drag emits a burst of intermediate
 // sizes; the attached program should get one SIGWINCH when the drag settles,
 // not dozens (yyork's terminal-panel does the same at its socket layer).
@@ -202,6 +211,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		retryTimer: null as ReturnType<typeof setTimeout> | null,
 		openTimer: null as ReturnType<typeof setTimeout> | null,
 		resizeTimer: null as ReturnType<typeof setTimeout> | null,
+		// Armed on open, fires after STABLE_CONNECTION_MS to reset the reconnect
+		// backoff. Cleared on teardown so a connection that dies first leaves
+		// r.attempts untouched — see STABLE_CONNECTION_MS.
+		stableTimer: null as ReturnType<typeof setTimeout> | null,
 		// Last positive grid claimed by this attachment. This is deliberately
 		// separate from xterm's local grid: hidden fits must not resize the PTY, and
 		// repeated identical visible fits must not manufacture another SIGWINCH.
@@ -308,6 +321,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		if (r.resizeTimer) {
 			clearTimeout(r.resizeTimer);
 			r.resizeTimer = null;
+		}
+		if (r.stableTimer) {
+			clearTimeout(r.stableTimer);
+			r.stableTimer = null;
 		}
 		r.inputReady = false;
 		if (r.mux && r.handle) {
@@ -636,7 +653,16 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				if (!isCurrentAttachment(generation, handle, mux)) return;
 				clearOpenTimer(generation);
 				r.inputReady = true;
-				r.attempts = 0;
+				// Do not zero r.attempts here: an open that dies again within
+				// STABLE_CONNECTION_MS must keep growing the backoff, or a socket
+				// bouncing off a stale worker epoch reconnects in a flat, ever-
+				// repeating loop instead of backing off (see STABLE_CONNECTION_MS).
+				if (r.stableTimer) clearTimeout(r.stableTimer);
+				r.stableTimer = setTimeout(() => {
+					r.stableTimer = null;
+					if (!isCurrentAttachment(generation, handle, mux)) return;
+					r.attempts = 0;
+				}, STABLE_CONNECTION_MS);
 				r.cloudConnectFailures = 0;
 				r.hasAttachedOnce = true;
 				setError(undefined);

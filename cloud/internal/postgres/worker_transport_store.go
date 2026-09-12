@@ -758,55 +758,63 @@ func (s *Store) queueTerminalRequest(
 	payload []byte,
 ) error {
 	return s.withOrg(ctx, terminal.OrgID, func(tx pgx.Tx) error {
-		// Typing or resizing a terminal is active proof of life for BOTH terminal
-		// surfaces (workspace and agent): keep an in-use sandbox awake, and wake a
-		// paused one so the keystroke that arrives after an idle pause resumes the
-		// box instead of being silently dropped. Idle-but-open output streams never
-		// reach here, so they still pause normally. The lease rewrite is throttled
-		// so a fast typist does not rewrite ao_sandboxes on every keystroke. This
-		// mirrors the wake in IssueTerminalTicket for the in-session case where the
-		// box paused underneath an already-open terminal.
-		if kind == "terminal.input" || kind == "terminal.resize" {
-			if _, err := tx.Exec(ctx,
-				`UPDATE ao_sandboxes
-				SET desired_state = CASE WHEN desired_state = 'paused' THEN 'running' ELSE desired_state END,
-					reconcile_after = CASE WHEN desired_state = 'paused' THEN now() ELSE reconcile_after END,
-					startup_started_at = CASE WHEN desired_state = 'paused' THEN now() ELSE startup_started_at END,
-					interactive_until = now() + $3::interval,
-					updated_at = now()
-				WHERE org_id = $1 AND session_id = $2
-				  AND desired_state IN ('running', 'paused')
-				  AND (
-					desired_state = 'paused'
-					OR interactive_until IS NULL
-					OR interactive_until < now() + $4::interval
-				  )`,
-				terminal.OrgID, terminal.SessionID,
-				intervalString(interactiveSessionLease),
-				intervalString(interactiveSessionLease-interactionRefreshThrottle),
-			); err != nil {
-				return err
-			}
+		// Keystrokes on an already-open terminal are proof of life too, not
+		// just a fresh ticket mint (IssueTerminalTicket) or a chat message.
+		// Without this, typing into a connection that went stale while the
+		// sandbox auto-paused never woke it: the input just retried against
+		// ErrWorkerUnavailable for the full terminalReadyTimeout (desired_state
+		// stayed 'paused' the whole time, since nothing here ever asked the
+		// reconciler to resume it), and only an action that happened to mint a
+		// brand-new ticket -- switching panes, reopening the sidebar -- worked.
+		if _, err := tx.Exec(ctx,
+			`UPDATE ao_sandboxes
+			SET desired_state = 'running',
+				reconcile_after = now(),
+				startup_started_at = now(),
+				interactive_until = CASE
+					WHEN interactive_until IS NULL OR interactive_until < now() + $3::interval
+						THEN now() + $3::interval
+					ELSE interactive_until
+				END,
+				updated_at = now()
+			WHERE org_id = $1 AND session_id = $2 AND desired_state = 'paused'`,
+			terminal.OrgID, terminal.SessionID, intervalString(interactiveSessionLease),
+		); err != nil {
+			return fmt.Errorf("wake paused sandbox on terminal input: %w", err)
 		}
-
-		var current bool
+		var current, superseded bool
 		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS (
-				SELECT 1 FROM ao_terminal_sessions terminal
-				JOIN ao_worker_connections worker
-				  ON worker.org_id = terminal.org_id
-				 AND worker.session_id = terminal.session_id
-				 AND worker.epoch = terminal.worker_epoch
-				 AND worker.disconnected_at IS NULL
-				WHERE terminal.org_id = $1 AND terminal.session_id = $2
-				  AND terminal.id = $3 AND terminal.worker_epoch = $4
-				  AND terminal.state = 'open' AND terminal.expires_at > now()
-			)`,
+			`SELECT
+				EXISTS (
+					SELECT 1 FROM ao_terminal_sessions terminal
+					JOIN ao_worker_connections worker
+					  ON worker.org_id = terminal.org_id
+					 AND worker.session_id = terminal.session_id
+					 AND worker.epoch = terminal.worker_epoch
+					 AND worker.disconnected_at IS NULL
+					WHERE terminal.org_id = $1 AND terminal.session_id = $2
+					  AND terminal.id = $3 AND terminal.worker_epoch = $4
+					  AND terminal.state = 'open' AND terminal.expires_at > now()
+				),
+				-- A newer epoch already connected means this terminal's worker is
+				-- gone for good, not merely slow to start: retrying for the full
+				-- terminalReadyTimeout would just stall every keystroke until the
+				-- client gives up and reconnects. Fail fast instead so the caller
+				-- can close the stream immediately and let the client re-attach
+				-- against the current epoch.
+				EXISTS (
+					SELECT 1 FROM ao_worker_connections worker
+					WHERE worker.org_id = $1 AND worker.session_id = $2
+					  AND worker.epoch > $4 AND worker.disconnected_at IS NULL
+				)`,
 			terminal.OrgID, terminal.SessionID, terminal.ID, terminal.WorkerEpoch,
-		).Scan(&current); err != nil {
+		).Scan(&current, &superseded); err != nil {
 			return err
 		}
 		if !current {
+			if superseded {
+				return ErrWorkerSuperseded
+			}
 			return ErrWorkerUnavailable
 		}
 		if idempotencyKey != "" {
@@ -1099,6 +1107,24 @@ func (s *Store) ListTerminalOutput(
 		return rows.Err()
 	})
 	return output, state, err
+}
+
+// TerminalWorkerEpochCurrent reports whether this terminal's bound worker
+// epoch is still the live one for its session. A superseded epoch means the
+// worker this terminal was talking to is gone for good (the reconciler
+// already connected a replacement), not merely quiet -- the caller should
+// close the stream immediately rather than waiting for output to eventually
+// stop arriving. Retiring an epoch does not touch the old epoch's
+// ao_terminal_sessions row (see appendTerminalOutput), so state alone never
+// surfaces this; only a live join against ao_worker_connections does.
+func (s *Store) TerminalWorkerEpochCurrent(ctx context.Context, terminal domain.TerminalSession) (bool, error) {
+	var current bool
+	err := s.withOrg(ctx, terminal.OrgID, func(tx pgx.Tx) error {
+		var err error
+		current, err = workerEpochCurrent(ctx, tx, terminal.OrgID, terminal.SessionID, terminal.WorkerEpoch)
+		return err
+	})
+	return current, err
 }
 
 func workerEpochCurrent(

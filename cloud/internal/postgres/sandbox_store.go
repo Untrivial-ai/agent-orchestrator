@@ -1095,6 +1095,38 @@ func upsertWorkerConnection(
 	); err != nil {
 		return fmt.Errorf("retire superseded worker connections: %w", err)
 	}
+	// Wake any writeTerminalOutput loop still holding one of the retiring
+	// epoch's terminals over ao_terminal_output -- the same channel it already
+	// wakes on for new output -- so it re-checks epoch liveness and closes
+	// immediately instead of waiting on the next unrelated wake, the slow
+	// ping/pong keepalive, or a poll timer.
+	if rows, err := tx.Query(
+		ctx,
+		`SELECT id FROM ao_terminal_sessions
+		WHERE org_id = $1 AND session_id = $2 AND worker_epoch < $3
+		  AND state IN ('opening', 'open')`,
+		orgID, sessionID, epoch,
+	); err != nil {
+		return fmt.Errorf("list terminals on superseded epochs: %w", err)
+	} else {
+		var staleTerminalIDs []string
+		for rows.Next() {
+			var terminalID string
+			if err := rows.Scan(&terminalID); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan terminal on superseded epoch: %w", err)
+			}
+			staleTerminalIDs = append(staleTerminalIDs, terminalID)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("list terminals on superseded epochs: %w", err)
+		}
+		for _, terminalID := range staleTerminalIDs {
+			if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_terminal_output', $1)`, terminalID); err != nil {
+				return fmt.Errorf("notify terminal on superseded epoch: %w", err)
+			}
+		}
+	}
 	// Retired epochs cannot complete their outstanding requests.
 	if _, err := tx.Exec(
 		ctx,

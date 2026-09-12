@@ -364,6 +364,18 @@ func (s *Server) writeTerminalOutput(
 	startingSent := false
 	ready := false
 	for {
+		// Retiring an epoch (a resume/repair connecting a replacement worker)
+		// never touches this terminal's ao_terminal_sessions row, so `state`
+		// below would keep reading "open" for as long as terminalSessionTTL
+		// (30m) even though nothing is behind it any more. upsertWorkerConnection
+		// notifies ao_terminal_output for every terminal it retires -- the same
+		// channel this loop already wakes on for new output -- so this check
+		// runs precisely when a retirement actually happens (or, absent the
+		// stream, on the existing 50ms fallback poll) rather than on a
+		// dedicated timer of its own.
+		if current, err := s.store.TerminalWorkerEpochCurrent(ctx, terminal); err == nil && !current {
+			return postgres.ErrWorkerSuperseded
+		}
 		frames, state, err := s.store.ListTerminalOutput(ctx, terminal, after, 100)
 		if err != nil {
 			return err

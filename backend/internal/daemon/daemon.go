@@ -863,6 +863,11 @@ func Run() error {
 				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
 			}
 		}()
+		// The boot-time reconcile above only catches hosts already orphaned
+		// at startup. Keep reaping on an interval for the daemon's whole
+		// lifetime, or a host orphaned mid-run (its session deleted or
+		// archived after boot) leaks until the next restart.
+		go persistentChatHostReconcileLoop(ctx, cfg.DataDir, store, log, persistentChatHostReconcileInterval)
 	})
 
 	// Both graceful shutdown paths (SIGTERM and POST /shutdown) funnel through
