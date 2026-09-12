@@ -2,9 +2,7 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -15,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/sse"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 )
@@ -282,14 +281,12 @@ func (c *CodexAccountsController) cancelLogin(w http.ResponseWriter, r *http.Req
 	envelope.WriteJSON(w, http.StatusOK, newCodexLoginResponse(result))
 }
 
+var CodexAccountsStreamHeartbeatInterval = 25 * time.Second
+var CodexAccountsStreamWriteTimeout = sse.DefaultWriteTimeout
+
 func (c *CodexAccountsController) events(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/codex/accounts/events")
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED", "Streaming is not supported by this server", nil)
 		return
 	}
 	events, err := c.Svc.SubscribeCodexAccounts(r.Context())
@@ -297,34 +294,29 @@ func (c *CodexAccountsController) events(w http.ResponseWriter, r *http.Request)
 		envelope.WriteError(w, r, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	heartbeat := time.NewTicker(25 * time.Second)
+
+	sw, err := sse.Upgrade(w, r, sse.WithWriteTimeout(CodexAccountsStreamWriteTimeout))
+	if err != nil {
+		return
+	}
+
+	heartbeat := time.NewTicker(CodexAccountsStreamHeartbeatInterval)
 	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+			if err := sw.WriteComment("heartbeat"); err != nil {
 				return
 			}
-			flusher.Flush()
 		case event, ok := <-events:
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(newCodexAccountsResponse(event))
-			if err != nil {
+			if err := sw.WriteJSON("", "codex_account", newCodexAccountsResponse(event)); err != nil {
 				return
 			}
-			if _, err := fmt.Fprintf(w, "event: codex_account\ndata: %s\n\n", data); err != nil {
-				return
-			}
-			flusher.Flush()
 		}
 	}
 }

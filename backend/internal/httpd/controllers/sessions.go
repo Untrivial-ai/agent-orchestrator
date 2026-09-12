@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -27,6 +26,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/sse"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/previewserver"
@@ -750,14 +750,12 @@ func (c *SessionsController) getWorkspaceFileBlob(w http.ResponseWriter, r *http
 	_, _ = w.Write(blob.Data)
 }
 
+var WorkspaceStreamHeartbeatInterval = 15 * time.Second
+var WorkspaceStreamWriteTimeout = sse.DefaultWriteTimeout
+
 func (c *SessionsController) streamWorkspaceChanges(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/workspace/events")
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED", "Streaming is not supported by this server", nil)
 		return
 	}
 	paths, err := c.Svc.WorkspaceWatchPaths(r.Context(), sessionID(r))
@@ -771,15 +769,12 @@ func (c *SessionsController) streamWorkspaceChanges(w http.ResponseWriter, r *ht
 		return
 	}
 
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream; charset=utf-8")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Connection", "keep-alive")
-	h.Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	sw, err := sse.Upgrade(w, r, sse.WithWriteTimeout(WorkspaceStreamWriteTimeout))
+	if err != nil {
+		return
+	}
 
-	keepAlive := time.NewTicker(15 * time.Second)
+	keepAlive := time.NewTicker(WorkspaceStreamHeartbeatInterval)
 	defer keepAlive.Stop()
 	for {
 		select {
@@ -797,16 +792,13 @@ func (c *SessionsController) streamWorkspaceChanges(w http.ResponseWriter, r *ht
 			if files, listErr := c.Svc.ListWorkspaceFiles(r.Context(), sessionID(r)); listErr == nil {
 				payload.WorkspaceVersion = files.WorkspaceVersion
 			}
-			data, _ := json.Marshal(payload)
-			if _, err := fmt.Fprintf(w, "event: workspace_changed\ndata: %s\n\n", data); err != nil {
+			if err := sw.WriteJSON("", "workspace_changed", payload); err != nil {
 				return
 			}
-			flusher.Flush()
 		case <-keepAlive.C:
-			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+			if err := sw.WriteComment("keepalive"); err != nil {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

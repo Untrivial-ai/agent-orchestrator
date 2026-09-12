@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -301,3 +302,151 @@ func TestNotificationsAPI_StreamWithoutPublisherIs501(t *testing.T) {
 	body, status, _ := doRequest(t, srv, "GET", "/api/v1/notifications/stream", "")
 	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
 }
+
+func TestNotificationsAPI_StreamHeartbeatsWhileIdle(t *testing.T) {
+	restore := controllers.NotificationsHeartbeatInterval
+	controllers.NotificationsHeartbeatInterval = 50 * time.Millisecond
+	defer func() { controllers.NotificationsHeartbeatInterval = restore }()
+
+	stream := &fakeNotificationStream{ch: make(chan domain.NotificationEvent)}
+	srv := newNotificationStreamTestServer(t, &fakeNotificationService{}, stream)
+
+	resp, err := srv.Client().Get(srv.URL + "/api/v1/notifications/stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, ":") {
+			return
+		}
+	}
+	t.Fatal("idle notification stream sent no heartbeat comment frame")
+}
+
+type trackingNotificationStream struct {
+	mu           sync.Mutex
+	unsubscribed bool
+	ch           chan domain.NotificationEvent
+}
+
+func (s *trackingNotificationStream) Subscribe(projectID domain.ProjectID) (<-chan domain.NotificationEvent, func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unsubscribed = false
+	if s.ch == nil {
+		s.ch = make(chan domain.NotificationEvent, 1)
+	}
+	return s.ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.unsubscribed = true
+	}
+}
+
+func (s *trackingNotificationStream) isUnsubscribed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unsubscribed
+}
+
+type timeoutOnNotificationWriter struct {
+	*httptest.ResponseRecorder
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (w *timeoutOnNotificationWriter) SetWriteDeadline(t time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deadline = t
+	return nil
+}
+
+func (w *timeoutOnNotificationWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	d := w.deadline
+	w.mu.Unlock()
+	if strings.Contains(string(p), "event:") {
+		if !d.IsZero() && time.Now().Before(d) {
+			time.Sleep(time.Until(d) + 5*time.Millisecond)
+		}
+		return 0, context.DeadlineExceeded
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+func TestNotificationsAPI_StreamBlockedClientExitsAndUnsubscribes(t *testing.T) {
+	restoreTimeout := controllers.NotificationsWriteTimeout
+	controllers.NotificationsWriteTimeout = 50 * time.Millisecond
+	defer func() { controllers.NotificationsWriteTimeout = restoreTimeout }()
+
+	stream := &trackingNotificationStream{ch: make(chan domain.NotificationEvent, 1)}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Notifications:      &fakeNotificationService{},
+		NotificationStream: stream,
+	}, httpd.ControlDeps{})
+
+	tw := &timeoutOnNotificationWriter{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream", nil)
+
+	handlerDone := make(chan struct{})
+	go func() {
+		router.ServeHTTP(tw, req)
+		close(handlerDone)
+	}()
+
+	rec := domain.NotificationRecord{ID: "ntf_block", Type: domain.NotificationNeedsInput, Title: "block"}
+	stream.ch <- domain.NotificationEvent{Kind: domain.NotificationCreated, Record: rec}
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not exit within bounded write deadline")
+	}
+
+	if !stream.isUnsubscribed() {
+		t.Fatal("expected stream to unsubscribe after blocked write")
+	}
+}
+
+func TestNotificationsAPI_StreamContextCancellationUnsubscribes(t *testing.T) {
+	stream := &trackingNotificationStream{ch: make(chan domain.NotificationEvent, 1)}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Notifications:      &fakeNotificationService{},
+		NotificationStream: stream,
+	}, httpd.ControlDeps{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		router.ServeHTTP(rec, req)
+		close(handlerDone)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not exit after context cancellation")
+	}
+
+	if !stream.isUnsubscribed() {
+		t.Fatal("expected stream to unsubscribe after context cancellation")
+	}
+}
+
