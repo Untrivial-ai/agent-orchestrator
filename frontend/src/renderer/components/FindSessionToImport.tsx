@@ -80,7 +80,7 @@ export function FindSessionToImport({
 		setLoading(true);
 		const delay = lastRequestedQuery.current === query ? 0 : 50;
 		lastRequestedQuery.current = query;
-		const timer = window.setTimeout(() => {
+		const search = () => {
 			void apiClient
 				.GET("/api/v1/session-import/search", {
 					params: { query: { query, limit: 50, cursor: pageCursor } },
@@ -110,9 +110,11 @@ export function FindSessionToImport({
 					if (current === generation.current && !controller.signal.aborted)
 						setLoading(false);
 				});
-		}, delay);
+		};
+		const timer = delay > 0 ? window.setTimeout(search, delay) : undefined;
+		if (delay === 0) search();
 		return () => {
-			window.clearTimeout(timer);
+			if (timer !== undefined) window.clearTimeout(timer);
 			controller.abort();
 		};
 	}, [query, pageCursor, revision, t]);
