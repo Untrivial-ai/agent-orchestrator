@@ -15,7 +15,9 @@ import { Route as ShellTerminalsRouteImport } from './routes/_shell.terminals'
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellSessionsSessionIdRouteImport } from './routes/_shell.sessions.$sessionId'
 import { Route as ShellProjectsProjectIdRouteImport } from './routes/_shell.projects.$projectId'
+import { Route as ShellProjectsProjectIdWorkflowRouteImport } from './routes/_shell.projects.$projectId_.workflow'
 import { Route as ShellProjectsProjectIdSettingsRouteImport } from './routes/_shell.projects.$projectId_.settings'
+import { Route as ShellProjectsProjectIdWorkflowPlanIdRouteImport } from './routes/_shell.projects.$projectId_.workflow.$planId'
 import { Route as ShellProjectsProjectIdSessionsSessionIdRouteImport } from './routes/_shell.projects.$projectId_.sessions.$sessionId'
 
 const ShellRoute = ShellRouteImport.update({
@@ -47,11 +49,23 @@ const ShellProjectsProjectIdRoute = ShellProjectsProjectIdRouteImport.update({
   path: '/projects/$projectId',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellProjectsProjectIdWorkflowRoute =
+  ShellProjectsProjectIdWorkflowRouteImport.update({
+    id: '/projects/$projectId_/workflow',
+    path: '/projects/$projectId/workflow',
+    getParentRoute: () => ShellRoute,
+  } as any)
 const ShellProjectsProjectIdSettingsRoute =
   ShellProjectsProjectIdSettingsRouteImport.update({
     id: '/projects/$projectId_/settings',
     path: '/projects/$projectId/settings',
     getParentRoute: () => ShellRoute,
+  } as any)
+const ShellProjectsProjectIdWorkflowPlanIdRoute =
+  ShellProjectsProjectIdWorkflowPlanIdRouteImport.update({
+    id: '/$planId',
+    path: '/$planId',
+    getParentRoute: () => ShellProjectsProjectIdWorkflowRoute,
   } as any)
 const ShellProjectsProjectIdSessionsSessionIdRoute =
   ShellProjectsProjectIdSessionsSessionIdRouteImport.update({
@@ -67,7 +81,9 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
   '/projects/$projectId/settings': typeof ShellProjectsProjectIdSettingsRoute
+  '/projects/$projectId/workflow': typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
+  '/projects/$projectId/workflow/$planId': typeof ShellProjectsProjectIdWorkflowPlanIdRoute
 }
 export interface FileRoutesByTo {
   '/settings': typeof ShellSettingsRoute
@@ -76,7 +92,9 @@ export interface FileRoutesByTo {
   '/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
   '/projects/$projectId/settings': typeof ShellProjectsProjectIdSettingsRoute
+  '/projects/$projectId/workflow': typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
+  '/projects/$projectId/workflow/$planId': typeof ShellProjectsProjectIdWorkflowPlanIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -87,7 +105,9 @@ export interface FileRoutesById {
   '/_shell/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/_shell/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
   '/_shell/projects/$projectId_/settings': typeof ShellProjectsProjectIdSettingsRoute
+  '/_shell/projects/$projectId_/workflow': typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   '/_shell/projects/$projectId_/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
+  '/_shell/projects/$projectId_/workflow/$planId': typeof ShellProjectsProjectIdWorkflowPlanIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -98,7 +118,9 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/sessions/$sessionId'
     | '/projects/$projectId/settings'
+    | '/projects/$projectId/workflow'
     | '/projects/$projectId/sessions/$sessionId'
+    | '/projects/$projectId/workflow/$planId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/settings'
@@ -107,7 +129,9 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/sessions/$sessionId'
     | '/projects/$projectId/settings'
+    | '/projects/$projectId/workflow'
     | '/projects/$projectId/sessions/$sessionId'
+    | '/projects/$projectId/workflow/$planId'
   id:
     | '__root__'
     | '/_shell'
@@ -117,7 +141,9 @@ export interface FileRouteTypes {
     | '/_shell/projects/$projectId'
     | '/_shell/sessions/$sessionId'
     | '/_shell/projects/$projectId_/settings'
+    | '/_shell/projects/$projectId_/workflow'
     | '/_shell/projects/$projectId_/sessions/$sessionId'
+    | '/_shell/projects/$projectId_/workflow/$planId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -168,12 +194,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellProjectsProjectIdRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/projects/$projectId_/workflow': {
+      id: '/_shell/projects/$projectId_/workflow'
+      path: '/projects/$projectId/workflow'
+      fullPath: '/projects/$projectId/workflow'
+      preLoaderRoute: typeof ShellProjectsProjectIdWorkflowRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/projects/$projectId_/settings': {
       id: '/_shell/projects/$projectId_/settings'
       path: '/projects/$projectId/settings'
       fullPath: '/projects/$projectId/settings'
       preLoaderRoute: typeof ShellProjectsProjectIdSettingsRouteImport
       parentRoute: typeof ShellRoute
+    }
+    '/_shell/projects/$projectId_/workflow/$planId': {
+      id: '/_shell/projects/$projectId_/workflow/$planId'
+      path: '/$planId'
+      fullPath: '/projects/$projectId/workflow/$planId'
+      preLoaderRoute: typeof ShellProjectsProjectIdWorkflowPlanIdRouteImport
+      parentRoute: typeof ShellProjectsProjectIdWorkflowRoute
     }
     '/_shell/projects/$projectId_/sessions/$sessionId': {
       id: '/_shell/projects/$projectId_/sessions/$sessionId'
@@ -185,6 +225,21 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ShellProjectsProjectIdWorkflowRouteChildren {
+  ShellProjectsProjectIdWorkflowPlanIdRoute: typeof ShellProjectsProjectIdWorkflowPlanIdRoute
+}
+
+const ShellProjectsProjectIdWorkflowRouteChildren: ShellProjectsProjectIdWorkflowRouteChildren =
+  {
+    ShellProjectsProjectIdWorkflowPlanIdRoute:
+      ShellProjectsProjectIdWorkflowPlanIdRoute,
+  }
+
+const ShellProjectsProjectIdWorkflowRouteWithChildren =
+  ShellProjectsProjectIdWorkflowRoute._addFileChildren(
+    ShellProjectsProjectIdWorkflowRouteChildren,
+  )
+
 interface ShellRouteChildren {
   ShellSettingsRoute: typeof ShellSettingsRoute
   ShellTerminalsRoute: typeof ShellTerminalsRoute
@@ -192,6 +247,7 @@ interface ShellRouteChildren {
   ShellProjectsProjectIdRoute: typeof ShellProjectsProjectIdRoute
   ShellSessionsSessionIdRoute: typeof ShellSessionsSessionIdRoute
   ShellProjectsProjectIdSettingsRoute: typeof ShellProjectsProjectIdSettingsRoute
+  ShellProjectsProjectIdWorkflowRoute: typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   ShellProjectsProjectIdSessionsSessionIdRoute: typeof ShellProjectsProjectIdSessionsSessionIdRoute
 }
 
@@ -202,6 +258,8 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellProjectsProjectIdRoute: ShellProjectsProjectIdRoute,
   ShellSessionsSessionIdRoute: ShellSessionsSessionIdRoute,
   ShellProjectsProjectIdSettingsRoute: ShellProjectsProjectIdSettingsRoute,
+  ShellProjectsProjectIdWorkflowRoute:
+    ShellProjectsProjectIdWorkflowRouteWithChildren,
   ShellProjectsProjectIdSessionsSessionIdRoute:
     ShellProjectsProjectIdSessionsSessionIdRoute,
 }
