@@ -317,7 +317,6 @@ func codexBaseArgs(policy PermissionPolicy, providerArgs []string) []string {
 	args := []string{
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 	}
 	args = append(args, CodexPermissionArgs(policy)...)
 	return append(args, providerArgs...)

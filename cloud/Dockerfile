@@ -7,12 +7,16 @@ ARG TARGETARCH
 FROM --platform=${BUILDPLATFORM} golang:1.26.5-bookworm AS build
 ARG TARGETOS
 ARG TARGETARCH
-WORKDIR /src
-
-COPY go.mod go.sum ./
+# Build with the repository root as context. Do not resolve a second backend
+# revision through the module proxy or the developer's go.work.
+ENV GOWORK=off
+WORKDIR /src/cloud
+COPY backend/go.mod backend/go.sum /src/backend/
+COPY cloud/go.mod cloud/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
-COPY . .
+COPY backend/ /src/backend/
+COPY cloud/ /src/cloud/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

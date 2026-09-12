@@ -174,18 +174,12 @@ func sessionHookFlags(t *testing.T) []string {
 			t.Fatal(err)
 		}
 	}
-	if runtime.GOOS == "windows" {
-		executable = `& "` + executable + `"`
-	} else {
-		executable = `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
+	var flags []string
+	// Exact provider hashes and isolation are covered by the native contract test.
+	if err := appendSessionHookFlagsForExecutable(&flags, executable); err != nil {
+		t.Fatal(err)
 	}
-	prefix := executable + " hooks codex "
-	return []string{
-		"-c", `hooks.SessionStart=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"session-start") + `,timeout=5}]}]`,
-		"-c", `hooks.UserPromptSubmit=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"user-prompt-submit") + `,timeout=5}]}]`,
-		"-c", `hooks.PermissionRequest=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"permission-request") + `,timeout=5}]}]`,
-		"-c", `hooks.Stop=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"stop") + `,timeout=5}]}]`,
-	}
+	return flags
 }
 
 func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
@@ -339,7 +333,6 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 		"codex",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 		"--dangerously-bypass-approvals-and-sandbox",
 	}
 	want = append(want, sessionHookFlags(t)...)
@@ -802,7 +795,6 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		"resume",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 		"--ask-for-approval", "on-request",
 		"-c", `approvals_reviewer="auto_review"`,
 	}
@@ -1002,11 +994,14 @@ func countCodexHookCommand(entries []codexMatcherGroup, command string) int {
 }
 
 func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
-	probes := DoctorLaunchProbes()
+	probes, err := DoctorLaunchProbes()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(probes) != 2 {
 		t.Fatalf("probes = %d, want 2", len(probes))
 	}
-	if !reflect.DeepEqual(probes[0], []string{"--dangerously-bypass-hook-trust", "--version"}) {
+	if !reflect.DeepEqual(probes[0], []string{"--version"}) {
 		t.Fatalf("flag probe = %#v", probes[0])
 	}
 	override := probes[1]

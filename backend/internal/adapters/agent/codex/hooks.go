@@ -12,26 +12,12 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
-// Codex (0.136+) never loads hook config from AO's per-session worktrees, so
-// AO's hooks ride the launch command as `-c` session-flag config instead of
-// workspace files:
-//
-//   - Project-local `.codex/` layers only load when the directory is trusted,
-//     and for linked git worktrees Codex sources hook declarations from the
-//     matching `.codex/` folder in the ROOT checkout, not the worktree. A
-//     hooks.json written into an AO worktree is therefore dead config.
-//   - Hooks passed as `-c 'hooks.<Event>=[...]'` land in Codex's session-flags
-//     config layer, which is not trust-gated and aggregates with (never
-//     replaces) the user's own hooks from `~/.codex`. They carry no persisted
-//     trust hash, so the launch command also passes
-//     `--dangerously-bypass-hook-trust` to let them run.
-//
-// AO does NOT inject invocation-scoped workspace trust for the session
-// worktree. Without trust injection, Codex will not load repository-supplied
-// `.codex/` project config (including hooks) from untrusted directories,
-// closing the repo-to-execution chain described in issue #3280.
+// AO activity hooks live in the native session-flags layer. Their exact hashes
+// approve only AO-authored commands; project, user and plugin hooks retain their
+// own review requirements. Project configuration trust is a separate decision.
 const (
 	codexHooksDirName  = ".codex"
 	codexHooksFileName = "hooks.json"
@@ -94,18 +80,22 @@ func appendSessionHookFlags(cmd *[]string) error {
 			return fmt.Errorf("make AO hook executable absolute: %w", err)
 		}
 	}
-	appendSessionHookFlagsForExecutable(cmd, executable)
-	return nil
+	return appendSessionHookFlagsForExecutable(cmd, executable)
 }
 
-func appendSessionHookFlagsForExecutable(cmd *[]string, executable string) {
+func appendSessionHookFlagsForExecutable(cmd *[]string, executable string) error {
 	prefix := shellQuoteHookExecutable(executable) + " hooks codex "
+	var hooks []agentruntime.CodexHook
 	for _, spec := range codexManagedHooks {
 		action := strings.TrimPrefix(spec.Command, codexHookCommandPrefix)
-		flag := fmt.Sprintf(`hooks.%s=[{hooks=[{type="command",command=%s,timeout=%d}]}]`,
-			spec.Event, codexTOMLBasicString(prefix+action), codexHookTimeout)
-		*cmd = append(*cmd, "-c", flag)
+		hooks = append(hooks, agentruntime.CodexHook{Event: spec.Event, Command: prefix + action, Timeout: codexHookTimeout})
 	}
+	args, err := agentruntime.CodexSessionHooks(hooks)
+	if err != nil {
+		return err
+	}
+	*cmd = append(*cmd, args...)
+	return nil
 }
 
 func shellQuoteHookExecutable(executable string) string {

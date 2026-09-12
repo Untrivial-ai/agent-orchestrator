@@ -1,0 +1,70 @@
+name: Codex trust contract
+
+on:
+  pull_request:
+    paths:
+      - "backend/pkg/agentruntime/**"
+      - "backend/internal/adapters/agent/codex/**"
+      - "backend/internal/adapters/reviewer/codex/**"
+      - "backend/internal/adapters/chatdriver/codexappserver/**"
+      - "backend/internal/adapters/chatdriver/persistenthost/**"
+      - "backend/internal/adapters/chatdriver/processenv/**"
+      - "backend/go.mod"
+      - "backend/go.sum"
+      - "cloud/**"
+      - ".github/workflows/codex-trust.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-trust:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            codex: "0.146.0"
+          - os: ubuntu-latest
+            codex: "0.147.0"
+          - os: ubuntu-latest
+            codex: "0.153.4"
+          - os: macos-latest
+            codex: "0.153.4"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cloud/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install the tested native provider
+        # Cover the desktop minimum, Cloud image pin and current tested release.
+        # Provider upgrades must pass this contract before changing these pins.
+        run: npm install --prefix "$RUNNER_TEMP/codex-trust" --no-package-lock "@openai/codex@${{ matrix.codex }}"
+      - name: Verify native trust and callback execution
+        working-directory: backend
+        run: |
+          export AO_TEST_CODEX_BINARY="$RUNNER_TEMP/codex-trust/node_modules/.bin/codex"
+          go test -race -count=1 -run 'TestNativeCodex' ./internal/adapters/chatdriver/codexappserver
+
+  cloud-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cloud/go.mod
+          cache: false
+      - name: Verify standalone Cloud launch and restore
+        working-directory: cloud
+        env:
+          GOWORK: "off"
+        run: go test -race -mod=readonly ./...
+
+      - name: Build the production commands from the matching backend
+        run: docker build --file cloud/Dockerfile --target build .

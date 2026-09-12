@@ -1,5 +1,3 @@
-github.com/Untrivial-ai/agent-orchestrator/backend v0.0.0-20260812094327-5da0ce157982 h1:xE0+lOKGt93pSAAGDpe7+oN5LGxK2EaBrE8bosQySz4=
-github.com/Untrivial-ai/agent-orchestrator/backend v0.0.0-20260812094327-5da0ce157982/go.mod h1:+JSl0Lxewd6N3O+iVuO4ikyarctRB98Bw41F7TVEGSI=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/coreos/go-oidc/v3 v3.20.0 h1:EtE0WIBHk03N+DqGkY4+UONzzZHk7amKt6IyNd7OsZE=

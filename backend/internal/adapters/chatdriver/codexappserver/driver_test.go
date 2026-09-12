@@ -253,8 +253,8 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	if err := json.Unmarshal(start.Params, &params); err != nil {
 		t.Fatalf("thread/start params: %v", err)
 	}
-	if params.Cwd != "/tmp/ws" {
-		t.Errorf("cwd = %q", params.Cwd)
+	if params.Cwd != "" {
+		t.Errorf("thread/start must not grant project trust with cwd = %q", params.Cwd)
 	}
 	if params.DeveloperInstructions != "standing rules" {
 		t.Errorf("developerInstructions = %q", params.DeveloperInstructions)

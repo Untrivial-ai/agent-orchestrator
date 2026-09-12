@@ -167,7 +167,7 @@ func TestDoctorChecksHarnessVersions(t *testing.T) {
 				return []byte(strings.TrimPrefix(name, "/bin/") + " 1.2.3\n"), nil
 			}
 			// The codex launch-flag canary probes the same binary.
-			if name == "/bin/codex" && len(args) > 0 && (args[0] == "--dangerously-bypass-hook-trust" || args[0] == "features") {
+			if name == "/bin/codex" && len(args) > 0 && (args[0] == "--version" || args[0] == "features") {
 				return []byte("ok\n"), nil
 			}
 			t.Fatalf("unexpected harness command: %s %v", name, args)
@@ -724,7 +724,7 @@ func TestDoctorCodexLaunchFlagsPass(t *testing.T) {
 func TestDoctorCodexLaunchFlagsWarnOnRejectedFlag(t *testing.T) {
 	setConfigEnv(t)
 	c := doctorContext(t, map[string]string{"git": "/bin/git", "codex": "/bin/codex"},
-		codexCanaryFake(t, "error: unexpected argument '--dangerously-bypass-hook-trust' found\n", errors.New("exit status 2")))
+		codexCanaryFake(t, "error: invalid hook state\n", errors.New("exit status 2")))
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex-launch-flags")
 	if check.Level != doctorWarn || !strings.Contains(check.Message, "rejected AO's launch flags") {

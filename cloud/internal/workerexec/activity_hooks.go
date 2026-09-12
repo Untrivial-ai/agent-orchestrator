@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 const cloudHookBinary = "/usr/local/bin/ao"
@@ -129,22 +131,12 @@ func installCursorActivityHooks(workspace string) error {
 	return nil
 }
 
-func codexActivityHookArgs() []string {
-	args := make([]string, 0, len(codexActivityHooks)*2)
+func codexActivityHookArgs() ([]string, error) {
+	var hooks []agentruntime.CodexHook
 	for _, hook := range codexActivityHooks {
-		command := strings.ReplaceAll(
-			hookCommand("codex", hook.event),
-			`"`,
-			`\"`,
-		)
-		value := fmt.Sprintf(
-			`hooks.%s=[{hooks=[{type="command",command="%s",timeout=5}]}]`,
-			hook.nativeEvent,
-			command,
-		)
-		args = append(args, "-c", value)
+		hooks = append(hooks, agentruntime.CodexHook{Event: hook.nativeEvent, Command: hookCommand("codex", hook.event), Timeout: 5})
 	}
-	return args
+	return agentruntime.CodexSessionHooks(hooks)
 }
 
 func objectValue(parent map[string]any, key string) map[string]any {
