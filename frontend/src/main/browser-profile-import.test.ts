@@ -1,5 +1,5 @@
 import { createCipheriv, createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -809,14 +809,26 @@ describe("BrowserProfileImportService", () => {
 		});
 	});
 
-	it("imports Chromium history when the database has a rollback journal and online backup is locked", async () => {
+	it("does not import uncommitted transaction data from an active rollback-mode transaction", async () => {
 		const root = await fixtureRoot();
 		const { localAppData, profileRoot } = await createChromeFixture(root);
-		await writeFile(path.join(profileRoot, "History-journal"), "mock-journal-content");
+		const historyPath = path.join(profileRoot, "History");
 
-		const backupSpy = vi.spyOn(Database.prototype, "backup").mockImplementation(async () => {
-			return { totalPages: 0, remainingPages: 0 };
-		});
+		const populateDb = new Database(historyPath);
+		populateDb.pragma("journal_mode = DELETE");
+		populateDb.exec("DELETE FROM urls");
+		const insert = populateDb.prepare("INSERT INTO urls VALUES (?, ?, ?, ?)");
+		const titlePadding = "A".repeat(2048);
+		for (let i = 0; i < 200; i++) {
+			insert.run(`https://example.com/${i}`, `Title ${i} ${titlePadding}`, 1000, chromiumMicros("2026-01-01T00:00:00.000Z"));
+		}
+		populateDb.close();
+
+		const lockDb = new Database(historyPath);
+		lockDb.pragma("cache_size = 10");
+		lockDb.pragma("cache_spill = ON");
+		lockDb.exec("BEGIN EXCLUSIVE;");
+		lockDb.exec("UPDATE urls SET visit_count = 9999;");
 
 		try {
 			const stateDir = path.join(root, "ao-state");
@@ -830,6 +842,62 @@ describe("BrowserProfileImportService", () => {
 				platform: "win32",
 				homeDir: root,
 				env: { LOCALAPPDATA: localAppData },
+				sqliteTimeoutMs: 150,
+				fromPartition: () => ({
+					cookies: { set: async () => undefined },
+					clearStorageData: async () => undefined,
+					clearCache: async () => undefined,
+				}),
+			});
+
+			const source = (await service.discover()).sources[0]!;
+			await expect(service.import({
+				requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				sourceId: source.id,
+				profileIds: [source.profiles[0]!.id],
+				includeCookies: false,
+				includeHistory: true,
+				destination: { mode: "merge", name: "Recovered History" },
+			}, vi.fn())).rejects.toThrow(
+				"Browser source database is locked by Google Chrome. Close Google Chrome and retry the import.",
+			);
+
+			expect(profileStore.profiles).toHaveLength(0);
+			const stagingRoot = path.join(stateDir, "browser-profile-import-staging");
+			const stagingEntries = await readdir(stagingRoot).catch(() => []);
+			expect(stagingEntries).toHaveLength(0);
+		} finally {
+			lockDb.exec("ROLLBACK;");
+			lockDb.close();
+		}
+	});
+
+	it("recovers and imports consistent data when a transient database lock is released during retry", async () => {
+		const root = await fixtureRoot();
+		const { localAppData, profileRoot } = await createChromeFixture(root);
+		const historyPath = path.join(profileRoot, "History");
+
+		const lockDb = new Database(historyPath);
+		lockDb.exec("BEGIN EXCLUSIVE;");
+
+		const timer = setTimeout(() => {
+			lockDb.exec("COMMIT;");
+			lockDb.close();
+		}, 60);
+
+		try {
+			const stateDir = path.join(root, "ao-state");
+			const profileStore = new BrowserProfileStore({ stateDir });
+			await profileStore.load();
+			const historyStore = new BrowserHistoryStore({ stateDir });
+			const service = new BrowserProfileImportService({
+				stateDir,
+				profileStore,
+				historyStore,
+				platform: "win32",
+				homeDir: root,
+				env: { LOCALAPPDATA: localAppData },
+				sqliteTimeoutMs: 2_000,
 				fromPartition: () => ({
 					cookies: { set: async () => undefined },
 					clearStorageData: async () => undefined,
@@ -839,7 +907,7 @@ describe("BrowserProfileImportService", () => {
 
 			const source = (await service.discover()).sources[0]!;
 			const result = await service.import({
-				requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+				requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 				sourceId: source.id,
 				profileIds: [source.profiles[0]!.id],
 				includeCookies: false,
@@ -853,8 +921,68 @@ describe("BrowserProfileImportService", () => {
 			const suggestions = await historyStore.suggest(result.entries[0]!.destinationProfile.id, "openai");
 			expect(suggestions).toHaveLength(1);
 			expect(suggestions[0]!.url).toBe("https://github.com/openai");
+
+			const stagingRoot = path.join(stateDir, "browser-profile-import-staging");
+			const stagingEntries = await readdir(stagingRoot).catch(() => []);
+			expect(stagingEntries).toHaveLength(0);
 		} finally {
-			backupSpy.mockRestore();
+			clearTimeout(timer);
+			try {
+				lockDb.close();
+			} catch {
+				// Already closed in timer
+			}
+		}
+	});
+
+	it("fails with an actionable message when database lock persists and leaves no staged data or profiles", async () => {
+		const root = await fixtureRoot();
+		const { localAppData, profileRoot } = await createChromeFixture(root);
+		const historyPath = path.join(profileRoot, "History");
+
+		const lockDb = new Database(historyPath);
+		lockDb.exec("BEGIN EXCLUSIVE;");
+
+		try {
+			const stateDir = path.join(root, "ao-state");
+			const profileStore = new BrowserProfileStore({ stateDir });
+			await profileStore.load();
+			const historyStore = new BrowserHistoryStore({ stateDir });
+			const service = new BrowserProfileImportService({
+				stateDir,
+				profileStore,
+				historyStore,
+				platform: "win32",
+				homeDir: root,
+				env: { LOCALAPPDATA: localAppData },
+				sqliteTimeoutMs: 150,
+				fromPartition: () => ({
+					cookies: { set: async () => undefined },
+					clearStorageData: async () => undefined,
+					clearCache: async () => undefined,
+				}),
+			});
+
+			const source = (await service.discover()).sources[0]!;
+			await expect(service.import({
+				requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+				sourceId: source.id,
+				profileIds: [source.profiles[0]!.id],
+				includeCookies: false,
+				includeHistory: true,
+				destination: { mode: "merge", name: "Recovered History" },
+			}, vi.fn())).rejects.toThrow(
+				"Browser source database is locked by Google Chrome. Close Google Chrome and retry the import.",
+			);
+
+			const stagingRoot = path.join(stateDir, "browser-profile-import-staging");
+			const stagingEntries = await readdir(stagingRoot).catch(() => []);
+			expect(stagingEntries).toHaveLength(0);
+
+			expect(profileStore.profiles).toHaveLength(0);
+		} finally {
+			lockDb.exec("ROLLBACK;");
+			lockDb.close();
 		}
 	});
 });
