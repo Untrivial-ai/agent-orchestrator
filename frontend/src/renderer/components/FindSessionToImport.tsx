@@ -29,6 +29,7 @@ export function FindSessionToImport({
 	const [pending, setPending] = useState(false);
 	const [revision, setRevision] = useState(0);
 	const generation = useRef(0);
+	const lastRequestedQuery = useRef(initialQuery);
 	const previewGeneration = useRef(0);
 	const searchAbort = useRef<AbortController | undefined>(undefined);
 	const previewAbort = useRef<AbortController | undefined>(undefined);
@@ -74,6 +75,8 @@ export function FindSessionToImport({
 		searchAbort.current?.abort();
 		searchAbort.current = controller;
 		setLoading(true);
+		const delay = lastRequestedQuery.current === query ? 0 : 50;
+		lastRequestedQuery.current = query;
 		const timer = window.setTimeout(() => {
 			void apiClient
 				.GET("/api/v1/session-import/search", {
@@ -102,7 +105,7 @@ export function FindSessionToImport({
 					if (current === generation.current && !controller.signal.aborted)
 						setLoading(false);
 				});
-		}, 150);
+		}, delay);
 		return () => {
 			window.clearTimeout(timer);
 			controller.abort();
