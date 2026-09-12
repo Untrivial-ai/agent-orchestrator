@@ -14,9 +14,10 @@ func TestScrubRedactsLocalPaths(t *testing.T) {
 	cases := map[string]string{
 		// A trailing ':' is part of the matched path run (it must be, for C:\...),
 		// so it is redacted along with the path.
-		"open /Users/alice/secret/notes.md: no such file": "open [redacted-path] no such file",
-		"read /home/bob/ao/worktree/x.go failed":          "read [redacted-path] failed",
-		`stat C:\Users\carol\AppData\ao\db failed`:        "stat [redacted-path] failed",
+		"open /Users/alice/secret/notes.md: no such file":             "open [redacted-path] no such file",
+		"read /home/bob/ao/worktree/x.go failed":                      "read [redacted-path] failed",
+		`stat C:\Users\carol\AppData\ao\db failed`:                    "stat [redacted-path] failed",
+		"open /Users/dave/Library/Mobile Documents/report.md: denied": "open [redacted-path] denied",
 		"no paths here": "no paths here",
 	}
 	for in, want := range cases {
