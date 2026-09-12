@@ -722,6 +722,7 @@
 	"pr.review.changesRequested": "Modifications demandées",
 	"pr.review.draftNotReady": "PR en brouillon · Pas prêt pour la revue",
 	"pr.review.none": "Aucun",
+	"pr.review.notRequired": "Aucune revue requise",
 	"pr.review.openPR": "Ouvrir la pull request",
 	"pr.review.pending": "En attente",
 	"pr.review.requiredNotSubmitted": "Revue requise non soumise",

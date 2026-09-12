@@ -692,6 +692,7 @@
 	"pr.review.changesRequested": "请求修改",
 	"pr.review.draftNotReady": "草稿 PR · 尚未准备好评审",
 	"pr.review.none": "无",
+	"pr.review.notRequired": "无需评审",
 	"pr.review.openPR": "打开拉取请求",
 	"pr.review.pending": "待评审",
 	"pr.review.requiredNotSubmitted": "尚未提交所需评审",

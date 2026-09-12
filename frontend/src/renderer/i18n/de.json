@@ -710,6 +710,7 @@
 	"pr.review.changesRequested": "Änderungen angefordert",
 	"pr.review.draftNotReady": "Entwurfs-PR · Noch nicht bereit für Review",
 	"pr.review.none": "Keine",
+	"pr.review.notRequired": "Kein Review erforderlich",
 	"pr.review.openPR": "Pull Request öffnen",
 	"pr.review.pending": "Ausstehend",
 	"pr.review.requiredNotSubmitted": "Erforderliches Review nicht eingereicht",

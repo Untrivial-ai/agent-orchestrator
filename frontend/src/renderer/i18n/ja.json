@@ -710,6 +710,7 @@
 	"pr.review.changesRequested": "変更リクエストあり",
 	"pr.review.draftNotReady": "下書き PR · レビュー準備ができていません",
 	"pr.review.none": "なし",
+	"pr.review.notRequired": "レビュー不要",
 	"pr.review.openPR": "プルリクエストを開く",
 	"pr.review.pending": "保留中",
 	"pr.review.requiredNotSubmitted": "必須レビューが未提出",

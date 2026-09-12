@@ -710,6 +710,7 @@
 	"pr.review.changesRequested": "변경 요청됨",
 	"pr.review.draftNotReady": "초안 PR · 리뷰 준비되지 않음",
 	"pr.review.none": "없음",
+	"pr.review.notRequired": "리뷰 필요 없음",
 	"pr.review.openPR": "풀 리퀘스트 열기",
 	"pr.review.pending": "대기 중",
 	"pr.review.requiredNotSubmitted": "필수 리뷰가 제출되지 않음",

@@ -695,6 +695,7 @@
 	"pr.review.changesRequested": "Changes requested",
 	"pr.review.draftNotReady": "Draft PR · Not ready for review",
 	"pr.review.none": "None",
+	"pr.review.notRequired": "No review required",
 	"pr.review.openPR": "Open pull request",
 	"pr.review.pending": "Review pending",
 	"pr.review.requiredNotSubmitted": "Required review not submitted",
