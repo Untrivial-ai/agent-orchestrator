@@ -1724,6 +1724,7 @@
 	"settings.browserImport.discoveryFailed": "Não foi possível verificar os navegadores instalados.",
 	"settings.browserImport.failed": "Não foi possível importar os dados do navegador.",
 	"settings.browserImport.sourceDatabaseUnavailable": "O AO não conseguiu acessar o banco de dados do perfil do {{browser}}. O {{browser}} ainda pode estar usando o arquivo, ou o sistema operacional pode estar bloqueando o acesso. Feche completamente o {{browser}}, incluindo os processos em segundo plano, e tente novamente. Se ainda falhar, verifique se os arquivos do perfil estão acessíveis. Cookies criptografados são tratados separadamente e não causaram este erro.",
+	"settings.browserImport.safariAccessUnavailable": "O AO não conseguiu acessar os dados do Safari. Nos Ajustes do Sistema, abra Privacidade e Segurança > Acesso Total ao Disco, permita o acesso ao AO, reinicie o AO e tente importar novamente.",
 	"settings.browserImport.profileCount": "{{count}} perfis encontrados",
 	"settings.browserImport.selectProfiles": "Escolha os perfis do {{browser}} que você quer trazer para o AO.",
 	"settings.browserImport.defaultProfile": "Padrão",

@@ -1698,6 +1698,7 @@
 	"settings.browserImport.discoveryFailed": "설치된 브라우저를 확인하지 못했습니다.",
 	"settings.browserImport.failed": "브라우저 데이터를 가져오지 못했습니다.",
 	"settings.browserImport.sourceDatabaseUnavailable": "AO가 {{browser}}의 프로필 데이터베이스에 접근하지 못했습니다. {{browser}}가 아직 데이터베이스를 사용 중이거나 운영 체제가 접근을 차단하고 있을 수 있습니다. 백그라운드 프로세스를 포함해 {{browser}}를 완전히 종료한 후 다시 시도하세요. 계속 실패하면 브라우저 프로필 파일에 접근할 수 있는지 확인하세요. 암호화된 쿠키는 별도로 처리되며 이 오류의 원인이 아닙니다.",
+	"settings.browserImport.safariAccessUnavailable": "AO가 Safari 데이터에 접근하지 못했습니다. 시스템 설정에서 개인정보 보호 및 보안 > 전체 디스크 접근을 열고 AO를 허용한 다음 AO를 다시 시작하여 가져오기를 다시 시도하세요.",
 	"settings.browserImport.profileCount": "프로필 {{count}}개 발견",
 	"settings.browserImport.selectProfiles": "AO로 가져올 {{browser}} 프로필을 선택하세요.",
 	"settings.browserImport.defaultProfile": "기본값",

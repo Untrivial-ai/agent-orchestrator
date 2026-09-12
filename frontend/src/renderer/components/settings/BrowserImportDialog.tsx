@@ -248,6 +248,7 @@ function importFailureMessage(reason: unknown, browser: string): string {
 		.replace(/^Error:\s*/i, "")
 		.trim();
 	if (/unable to open database file|database is locked|SQLITE_(?:BUSY|CANTOPEN|LOCKED)|\b(?:EACCES|EBUSY|EPERM)\b/i.test(message)) {
+		if (browser === "Safari") return appI18n.t("settings.browserImport.safariAccessUnavailable");
 		return appI18n.t("settings.browserImport.sourceDatabaseUnavailable", { browser });
 	}
 	return message || fallback;

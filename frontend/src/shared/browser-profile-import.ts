@@ -4,10 +4,11 @@ export const BROWSER_IMPORT_MAX_SOURCE_PROFILES = 16;
 export const BROWSER_IMPORT_MAX_HISTORY_ENTRIES = 5_000;
 export const BROWSER_IMPORT_MAX_COOKIES = 20_000;
 
-export type BrowserImportFamily = "chromium" | "firefox";
+export type BrowserImportFamily = "chromium" | "firefox" | "safari";
 export type BrowserImportCookieSupport = "supported" | "partial" | "unsupported";
 export type BrowserImportCookieSupportReason =
 	| "firefox-plaintext"
+	| "safari-plaintext"
 	| "chromium-encryption-partial"
 	| "chromium-encryption-unsupported";
 
