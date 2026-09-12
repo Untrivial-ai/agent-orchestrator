@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { shellTerminalsQueryKey, type ShellTerminal } from "../hooks/useShellTerminals";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { aoBridge } from "../lib/bridge";
 import type { AttachableTerminal } from "../hooks/useTerminalSession";
 import type { TerminalTarget } from "../types/terminal";
 import type { WorkspaceSession } from "../types/workspace";
@@ -876,12 +877,15 @@ describe("terminal link preview", () => {
 		}
 	});
 
-	it("does not mirror orchestrator links because orchestrators have no Browser inspector", () => {
+	it("opens orchestrator links in the system browser because orchestrators have no Browser inspector", () => {
 		const view = renderPane(orchestrator);
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
 		try {
 			act(() => terminalLinkHandler?.("http://localhost:3000"));
+			expect(openExternal).toHaveBeenCalledWith("http://localhost:3000");
 			expect(postMock).not.toHaveBeenCalled();
 		} finally {
+			openExternal.mockRestore();
 			view.restore();
 		}
 	});
