@@ -4,9 +4,6 @@ SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?;
 -- name: NextStandaloneSessionNum :one
 SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id IS NULL;
 
--- name: SessionIDExists :one
-SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?);
-
 -- name: InsertSession :exec
 INSERT INTO sessions (
     id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,

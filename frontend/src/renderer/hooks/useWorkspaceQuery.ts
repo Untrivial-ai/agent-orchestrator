@@ -229,10 +229,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 			.filter((session) => !session.projectId)
 			.map((session) => toLocalWorkspaceSession(session, "", "Standalone agents")),
 	};
-	// Standalone agents are presented as a peer group after the user's projects.
-	// The sidebar can still reorder every group locally after this initial order
-	// has been established.
-	return standalone.sessions.length > 0 ? [...projects, standalone] : projects;
+	return standalone.sessions.length > 0 ? [standalone, ...projects] : projects;
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired
@@ -362,12 +359,7 @@ export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
 		// cloud projects would keep rendering for a signed-out user.
 		if (!ready || orgId === undefined) return localData;
 		const sessions = cloudSessionData ?? [];
-		const standalone = localData.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
-		const localProjects = standalone
-			? localData.filter((workspace) => workspace.id !== STANDALONE_WORKSPACE_ID)
-			: localData;
-		const cloudProjects = cloudData.map((project) => toCloudWorkspace(project, sessions, orgId));
-		return standalone ? [...localProjects, ...cloudProjects, standalone] : [...localProjects, ...cloudProjects];
+		return [...localData, ...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId))];
 	}, [localData, cloudData, cloudSessionData, orgId, ready]);
 	return { ...local, data };
 }
@@ -398,10 +390,9 @@ export function useWorkspaceSession(sessionId: string) {
 			if (error) throw error;
 			const session = data?.session;
 			if (!session) return undefined;
-			const project = session.projectId
-				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
-					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
-				: ({ id: "", name: "Standalone agents" } satisfies Pick<WorkspaceSummary, "id" | "name">);
+			const project =
+				localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
+				({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});
@@ -444,6 +435,7 @@ export function useWorkspaceSession(sessionId: string) {
 
 export type WorkspaceScope = {
 	project?: Pick<WorkspaceSummary, "id" | "kind" | "name" | "orchestratorAgent">;
+	hasWorkerSessions: boolean;
 	session?: WorkspaceSession;
 	orchestrator?: WorkspaceSession;
 };
@@ -469,7 +461,11 @@ function selectWorkspaceScope(
 				orchestratorAgent: workspace.orchestratorAgent,
 			}
 		: undefined;
-	return { project, session, orchestrator: workspace ? newestActiveOrchestrator(workspace.sessions) : undefined };
+	return {
+		project, session,
+		hasWorkerSessions: workspace ? workerSessions(workspace.sessions).length > 0 : false,
+		orchestrator: workspace ? newestActiveOrchestrator(workspace.sessions) : undefined,
+	};
 }
 
 /**
@@ -492,7 +488,10 @@ export function useWorkspaceScope(projectId?: string, sessionId?: string) {
 	}, [cloud.data, cloudSessions.data, org?.id, projectId, ready, sessionId]);
 	// Match useWorkspaceQuery's local-first semantics: do not reveal cloud
 	// records before the local workspace query has resolved successfully.
-	return { ...local, data: local.data ?? (local.isSuccess ? cloudScope : undefined) };
+	const data = local.data?.project || local.data?.session || !local.isSuccess
+		? local.data
+		: cloudScope ?? local.data;
+	return { ...local, data };
 }
 
 function selectTraySessions(workspaces: WorkspaceSummary[]): TraySessionEntry[] {

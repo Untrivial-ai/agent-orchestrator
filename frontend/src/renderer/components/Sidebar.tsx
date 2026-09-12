@@ -23,7 +23,6 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
 	AlertTriangle,
-	Bot,
 	ChevronRight,
 	Download,
 	Folder,
@@ -80,7 +79,6 @@ import { cloudSessionsQueryKey, workspaceQueryKey } from "../hooks/useWorkspaceQ
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
-import { sessionNavigateTarget } from "../lib/navigate-to-session";
 import { formatTimeCompact, formatTimeTerse } from "../lib/format-time";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useResizable } from "../hooks/useResizable";
@@ -309,32 +307,6 @@ function applyOrder<T>(items: readonly T[], idOf: (item: T) => string, order: re
 	return unplaced === "start" ? [...rest, ...placed] : [...placed, ...rest];
 }
 
-// Preserve an explicit drag order, but insert projects discovered afterward
-// ahead of Standalone agents when that group was already the final row. This
-// keeps the user's ordering while ensuring newly created/local/cloud projects
-// do not accidentally appear below the standalone group.
-export function applyProjectOrder(items: readonly WorkspaceSummary[], order: readonly string[]): WorkspaceSummary[] {
-	if (order.length === 0) return [...items];
-	const ordered = applyOrder(items, (workspace) => workspace.id, order, "end");
-	const standaloneIndex = ordered.findIndex((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
-	if (standaloneIndex < 0) return ordered;
-
-	const placedIds = new Set(order);
-	const standaloneWasLast = order.filter((id) => items.some((workspace) => workspace.id === id)).at(-1) === STANDALONE_WORKSPACE_ID;
-	if (!standaloneWasLast) return ordered;
-
-	const newlyDiscovered = ordered.filter(
-		(workspace) => !placedIds.has(workspace.id) && workspace.id !== STANDALONE_WORKSPACE_ID,
-	);
-	if (newlyDiscovered.length === 0) return ordered;
-
-	return [
-		...ordered.filter((workspace) => placedIds.has(workspace.id) && workspace.id !== STANDALONE_WORKSPACE_ID),
-		...newlyDiscovered,
-		ordered[standaloneIndex]!,
-	];
-}
-
 function useGrabbingCursor(active: boolean) {
 	useEffect(() => {
 		if (!active) return;
@@ -395,7 +367,14 @@ function useSelection() {
 	);
 	const goSession = useCallback(
 		(projectId: string, sessionId: string) => {
-			void navigate(sessionNavigateTarget(projectId, sessionId));
+			if (projectId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+				return;
+			}
+			void navigate({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId, sessionId },
+			});
 		},
 		[navigate],
 	);
@@ -530,7 +509,7 @@ export function Sidebar({
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
-		() => applyProjectOrder(workspaces, projectOrder),
+		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
 	);
 	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
@@ -1064,7 +1043,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const isStandalone = workspace.kind === STANDALONE_PROJECT_KIND;
 	const projectIsDragging = draggingProjectId === workspace.id;
 	// Keep completed PR sessions reachable while their runtime still exists.
 	// Only termination removes a worker from the sidebar; archived sessions stay
@@ -1184,8 +1162,9 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
 		if (consumeDragClick(workspace.id)) return;
-		if (isStandalone) {
+		if (workspace.kind === STANDALONE_PROJECT_KIND) {
 			toggleDisclosure();
+			if (!expanded) selection.goHome();
 			return;
 		}
 		if (!expanded) {
@@ -1313,13 +1292,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 												draggingProjectId && "group-hover/menu-item:opacity-100",
 											)}
 										>
-											{isStandalone ? (
-												<Bot strokeWidth={1.75} />
-											) : expanded ? (
-												<FolderOpen strokeWidth={1.75} />
-											) : (
-												<Folder strokeWidth={1.75} />
-											)}
+											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
 										</span>
 										<span
 											className={cn(
@@ -1336,13 +1309,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										aria-hidden="true"
 										className="hidden group-data-[collapsible=icon]:inline-flex size-8 items-center justify-center text-muted-foreground"
 									>
-										{isStandalone ? (
-											<Bot className="size-5" strokeWidth={1.75} />
-										) : expanded ? (
-											<FolderOpen className="size-5" strokeWidth={1.75} />
-										) : (
-											<Folder className="size-5" strokeWidth={1.75} />
-										)}
+										{expanded ? <FolderOpen className="size-5" strokeWidth={1.75} /> : <Folder className="size-5" strokeWidth={1.75} />}
 									</span>
 									<span
 										className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
@@ -1386,7 +1353,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
-								{!isStandalone && <Tooltip>
+								{workspace.kind !== STANDALONE_PROJECT_KIND && <Tooltip>
 									<TooltipTrigger asChild>
 										<span className="inline-flex">
 											<button
@@ -1419,22 +1386,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 													: t("shell.spawnOrchestratorLower")}
 									</TooltipContent>
 								</Tooltip>}
-								{isStandalone ? (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<button
-												aria-label={t("home.newStandaloneAgent")}
-												className={HOVER_ACTION_CLASS}
-												onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
-												type="button"
-											>
-												<Plus aria-hidden="true" />
-											</button>
-										</TooltipTrigger>
-										<TooltipContent>{t("home.newStandaloneAgent")}</TooltipContent>
-									</Tooltip>
-								) : (
-									<DropdownMenu>
+								<DropdownMenu>
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<DropdownMenuTrigger asChild>
@@ -1460,23 +1412,24 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											<Plus aria-hidden="true" />
 											{t("shell.newSession")}
 										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
-											<Settings aria-hidden="true" />
-											{t("shell.projectSettings")}
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
+										{workspace.kind !== STANDALONE_PROJECT_KIND && <>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+												<Settings aria-hidden="true" />
+												{t("shell.projectSettings")}
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem
 											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
 											disabled={isRemoving}
 											onSelect={() => void removeProject()}
 										>
 											<Trash2 aria-hidden="true" />
 											{t("shell.removeProjectTitle")}
-										</DropdownMenuItem>
+											</DropdownMenuItem>
+										</>}
 									</DropdownMenuContent>
-									</DropdownMenu>
-								)}
+								</DropdownMenu>
 							</div>
 						</div>
 						{/* end outer relative */}
@@ -1611,7 +1564,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
  * visible sessions travel with it without becoming collision targets. */
 const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expanded, selection, sessions }: { workspace: WorkspaceSummary; expanded: boolean; selection: Selection; sessions: WorkspaceSession[] }) {
 	const { t } = useTranslation();
-	const isStandalone = workspace.kind === STANDALONE_PROJECT_KIND;
 	const activeProjectMatches = selection.activeProjectId === workspace.id;
 	const projectActive =
 		(activeProjectMatches && !selection.activeSessionId) ||
@@ -1624,13 +1576,7 @@ const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expande
 				data-active={projectActive}
 			>
 				<span className="inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground">
-					{isStandalone ? (
-						<Bot strokeWidth={1.75} />
-					) : expanded ? (
-						<FolderOpen strokeWidth={1.75} />
-					) : (
-						<Folder strokeWidth={1.75} />
-					)}
+					{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
 				</span>
 				<span className="min-w-0 flex-1 translate-y-px truncate">{workspace.name}</span>
 			</div>
@@ -2583,7 +2529,6 @@ function CreateProjectButton({
 	// reuses this flow via requestCreateProject().
 	const createProjectNonce = useUiStore((state) => state.createProjectNonce);
 	const folderDropRequest = useUiStore((state) => state.folderDropRequest);
-	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<CreateProjectFlow
 			droppedPath={folderDropRequest}
@@ -2591,7 +2536,6 @@ function CreateProjectButton({
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
 			onInitializeProject={onInitializeProject}
-			onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 			openSignal={createProjectNonce}
 		>
 			{({ disabled, choosePath, label }) => (
