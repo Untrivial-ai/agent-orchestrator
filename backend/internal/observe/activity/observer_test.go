@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agy"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/crush"
@@ -330,5 +331,63 @@ func TestPollReturnsSessionListFailure(t *testing.T) {
 	observer := New(fakeSessions{err: want}, &fakeSink{}, &fakeRuntime{}, nil, Config{Logger: testLogger()})
 	if err := observer.Poll(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+const agyStuckActiveScreen = "• Thought for 5s, 454 tokens\n" +
+	"  Assessing Engine's Non-Existence\n" +
+	"\n" +
+	"• Bash(uv run --directory backend python -c \") (ctrl+o to expand)\n" +
+	"\n" +
+	"  ⌊ Interrupted · What should Antigravity CLI do instead?\n" +
+	"_________________________________________________________________\n" +
+	"> █\n" +
+	"? for shortcuts                    accept-edits · Gemini 3.8 Flash · high\n"
+
+func TestPollReconcilesStaleAgyAfterAbortedTurn(t *testing.T) {
+	now := time.Unix(500, 0).UTC()
+	session := activeSession(now, domain.HarnessAgy)
+	sink := &fakeSink{}
+	runtime := &fakeRuntime{output: agyStuckActiveScreen}
+	observer := New(
+		fakeSessions{rows: []domain.SessionRecord{session}},
+		sink,
+		runtime,
+		fakeAgents{domain.HarnessAgy: agy.New()},
+		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+	)
+
+	if err := observer.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.signals) != 1 {
+		t.Fatalf("signals = %d, want 1", len(sink.signals))
+	}
+	signal := sink.signals[0]
+	if sink.id != session.ID || signal.State != domain.ActivityIdle || signal.Event != "terminal-idle" {
+		t.Fatalf("unexpected reconciliation: id=%q signal=%+v", sink.id, signal)
+	}
+	if !signal.ExpectedUpdatedAt.Equal(session.UpdatedAt) || signal.LaunchID != "launch-1" {
+		t.Fatalf("reconciliation fence = %+v, want updatedAt=%v launch=launch-1", signal, session.UpdatedAt)
+	}
+}
+
+func TestPollKeepsGenuineLongAgyTurnActive(t *testing.T) {
+	now := time.Unix(500, 0).UTC()
+	sink := &fakeSink{}
+	runtime := &fakeRuntime{output: "• Bash(python test.py) (esc to interrupt)\n"}
+	observer := New(
+		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessAgy)}},
+		sink,
+		runtime,
+		fakeAgents{domain.HarnessAgy: agy.New()},
+		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+	)
+
+	if err := observer.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.signals) != 0 {
+		t.Fatalf("long active turn emitted reconciliation: %+v", sink.signals)
 	}
 }

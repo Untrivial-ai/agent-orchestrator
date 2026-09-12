@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 // Default activity observation settings.
 const (
-	DefaultTickInterval = 30 * time.Second
+	DefaultTickInterval = 500 * time.Millisecond
 	DefaultStaleAfter   = 2 * time.Minute
 	DefaultOutputLines  = 40
 )
@@ -133,7 +134,7 @@ func (o *Observer) reconcile(ctx context.Context, session domain.SessionRecord, 
 		session.Activity.State != domain.ActivityWaitingInput {
 		return
 	}
-	output, err := o.runtime.GetOutput(ctx, ports.RuntimeHandle{ID: session.Metadata.RuntimeHandleID}, o.outputLines)
+	output, err := o.readTerminalOutput(ctx, ports.RuntimeHandle{ID: session.Metadata.RuntimeHandleID})
 	if err != nil {
 		o.logger.Debug("activity observer: terminal output unavailable", "session", session.ID, "err", err)
 		return
@@ -158,4 +159,17 @@ func (o *Observer) reconcile(ctx context.Context, session domain.SessionRecord, 
 	if err != nil {
 		o.logger.Error("activity observer: reconciliation failed", "session", session.ID, "err", err)
 	}
+}
+
+func (o *Observer) readTerminalOutput(ctx context.Context, handle ports.RuntimeHandle) (string, error) {
+	if styled, ok := o.runtime.(ports.StyledTerminalOutputReader); ok {
+		output, err := styled.GetStyledOutput(ctx, handle, o.outputLines)
+		if err == nil {
+			return output, nil
+		}
+		if !errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
+			return "", err
+		}
+	}
+	return o.runtime.GetOutput(ctx, handle, o.outputLines)
 }
