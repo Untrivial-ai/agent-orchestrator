@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./ui/button";
 import {
 	Dialog,
@@ -23,33 +23,29 @@ import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
 
-// The coding-agent providers the control plane accepts, with the credential
-// types each one validates (see cloud validAgentCredentialType). The first
-// credential type is the default and matches the "setup token" a developer
+// Agent metadata: display names and credential types (see cloud validAgentCredentialType).
+// The first credential type is the default and matches the "setup token" a developer
 // normally pastes.
-const AGENTS = [
-	{
-		agent: "claude-code",
+const AGENT_METADATA = {
+	"claude-code": {
 		label: "Claude Code",
 		creds: [
 			{ value: "oauth_token", label: "Setup token" },
 			{ value: "api_key", label: "API key" },
 		],
 	},
-	{
-		agent: "codex",
+	codex: {
 		label: "Codex",
 		creds: [
 			{ value: "access_token", label: "Access token" },
 			{ value: "api_key", label: "API key" },
 		],
 	},
-	{
-		agent: "cursor",
+	cursor: {
 		label: "Cursor",
 		creds: [{ value: "api_key", label: "API key" }],
 	},
-] as const;
+} as const;
 
 type Phase = "idle" | "submitting" | "success";
 
@@ -65,29 +61,44 @@ export function CloudCredentialDialog() {
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
 
-	const [agent, setAgent] = useState<CloudCpAgentProvider>(AGENTS[0].agent);
-	const [credentialType, setCredentialType] = useState<string>(AGENTS[0].creds[0].value);
+	const availableAgentsQuery = useQuery({
+		queryKey: ["cloud", "agents", "available", org?.id],
+		enabled: open && org !== undefined,
+		queryFn: async () => {
+			const response = await client.getAvailableAgents(org!.id);
+			return response.agents.map((a) => a.id as CloudCpAgentProvider);
+		},
+	});
+
+	const defaultAgent = availableAgentsQuery.data?.[0] ?? ("claude-code" as CloudCpAgentProvider);
+	const defaultCredType = AGENT_METADATA[defaultAgent]?.creds[0]?.value ?? "api_key";
+
+	const [agent, setAgent] = useState<CloudCpAgentProvider>(defaultAgent);
+	const [credentialType, setCredentialType] = useState<string>(defaultCredType);
 	const [secret, setSecret] = useState("");
 	const [phase, setPhase] = useState<Phase>("idle");
 	const [error, setError] = useState<string | null>(null);
 
-	const creds = useMemo(() => AGENTS.find((a) => a.agent === agent)?.creds ?? AGENTS[0].creds, [agent]);
+	const creds = useMemo(
+		() => AGENT_METADATA[agent]?.creds ?? AGENT_METADATA["claude-code"].creds,
+		[agent]
+	);
 
 	// Reset the whole form each time the dialog opens so a reopen never shows a
 	// stale secret or a previous error/success.
 	useEffect(() => {
 		if (!open) return;
-		setAgent(AGENTS[0].agent);
-		setCredentialType(AGENTS[0].creds[0].value);
+		setAgent(defaultAgent);
+		setCredentialType(defaultCredType);
 		setSecret("");
 		setPhase("idle");
 		setError(null);
-	}, [open]);
+	}, [open, defaultAgent, defaultCredType]);
 
 	const onAgentChange = (next: string) => {
-		const agentValue = (AGENTS.find((a) => a.agent === next) ?? AGENTS[0]).agent;
+		const agentValue = next as CloudCpAgentProvider;
 		setAgent(agentValue);
-		setCredentialType(AGENTS.find((a) => a.agent === agentValue)?.creds[0]?.value ?? "api_key");
+		setCredentialType(AGENT_METADATA[agentValue]?.creds[0]?.value ?? "api_key");
 		setError(null);
 	};
 
@@ -141,9 +152,9 @@ export function CloudCredentialDialog() {
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
-									{AGENTS.map((a) => (
-										<SelectItem key={a.agent} value={a.agent}>
-											{a.label}
+									{(availableAgentsQuery.data ?? []).map((agentId) => (
+										<SelectItem key={agentId} value={agentId}>
+											{AGENT_METADATA[agentId]?.label ?? agentId}
 										</SelectItem>
 									))}
 								</SelectContent>
