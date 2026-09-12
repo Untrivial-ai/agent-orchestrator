@@ -656,6 +656,7 @@
 	"pr.merge.reasonConflict": "One approval is sufficient, but the merge conflict still blocks this PR.",
 	"pr.merge.reasonChecksFailing": "The review requirement is satisfied, but failing checks still block this PR.",
 	"pr.merge.reasonReview": "A required review must be completed before this PR can merge.",
+	"pr.merge.reasonComments": "Unresolved review comments must be resolved before this PR can merge.",
 	"pr.merge.reasonReady": "No merge conflict, checks are passing, and the review requirement is satisfied.",
 	"pr.merge.openConflicts": "Open merge conflicts",
 	"pr.merge.providerBlocked": "GitHub currently reports this pull request can't be merged.",

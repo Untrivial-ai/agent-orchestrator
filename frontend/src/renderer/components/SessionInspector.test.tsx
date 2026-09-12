@@ -648,6 +648,21 @@ describe("SessionInspector PR section", () => {
     },
   );
 
+  it("does not offer Merge while human review comments are unresolved", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            review: { decision: "none", hasUnresolvedHumanComments: true, unresolvedBy: [] },
+          }),
+        ]);
+      },
+    );
+    expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+  });
+
   it("uses the state chip as the single merged-state indicator", () => {
     renderWithQuery(
       <SessionInspector

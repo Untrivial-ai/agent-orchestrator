@@ -270,7 +270,8 @@ export function prCanMerge(pr: SessionPRSummary): boolean {
 		pr.state === "open" &&
 		pr.ci.state === "passing" &&
 		pr.mergeability.state === "mergeable" &&
-		reviewAllowsMerge(pr.review.decision)
+		reviewAllowsMerge(pr.review.decision) &&
+		!pr.review.hasUnresolvedHumanComments
 	);
 }
 
@@ -291,6 +292,7 @@ function mergeReadinessDetail(pr: SessionPRSummary): string {
 	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
 	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
 	if (!reviewAllowsMerge(pr.review.decision)) return appI18n.t("pr.merge.reasonReview");
+	if (pr.review.hasUnresolvedHumanComments) return appI18n.t("pr.merge.reasonComments");
 	if (pr.mergeability.state !== "mergeable") return appI18n.t("pr.merge.providerBlocked");
 	return appI18n.t("pr.merge.reasonReady");
 }

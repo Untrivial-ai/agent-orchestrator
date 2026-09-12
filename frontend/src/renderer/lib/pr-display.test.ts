@@ -269,6 +269,17 @@ describe("prCardPresentation", () => {
 		});
 	});
 
+	it.each(["approved", "none"] as const)("does not call a %s PR with unresolved review comments mergeable", (decision) => {
+		const presentation = prCardPresentation(
+			summary({ review: { decision, hasUnresolvedHumanComments: true, unresolvedBy: [] } }),
+		);
+
+		expect(presentation.readiness).toMatchObject({
+			label: "Not mergeable yet",
+			detail: "Unresolved review comments must be resolved before this PR can merge.",
+		});
+	});
+
 	it("shows checking merge readiness while provider state is pending", () => {
 		const presentation = prCardPresentation(
 			summary({
