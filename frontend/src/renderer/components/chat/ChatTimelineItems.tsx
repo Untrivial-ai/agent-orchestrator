@@ -347,16 +347,16 @@ export function TurnOutcome({
 		},
 		failed: { label: "The agent ran into a problem", tone: "text-destructive" },
 	}[state];
-	const providerFailure = state === "failed" && error ? providerErrorCopyFromText(error) : undefined;
+	const failed = state === "failed" && Boolean(error);
 
 	return (
 		<TwoRowTimelineMarker
 			message={copy.label}
 			detail={
-				providerFailure ? <ProviderFailureInline copy={providerFailure} /> : error
+				failed ? <span className="whitespace-pre-wrap">{linkifiedProviderErrorText(error ?? "")}</span> : error
 			}
 			detailTitle={error}
-			detailClassName={providerFailure ? "wrap-anywhere whitespace-normal" : undefined}
+			detailClassName={failed ? "wrap-anywhere whitespace-normal" : undefined}
 			tone={copy.tone}
 			detailTone={state === "failed" ? "text-destructive" : undefined}
 			action={
@@ -1894,14 +1894,19 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
  * reconnect row as `role="alert"` would interrupt a screen reader once per attempt.
  */
 function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
-	const copy = providerErrorCopy(activity);
-	const { detail } = copy;
+	const { headline, detail } = providerErrorCopy(activity);
 	const actionUrl = String(activity.detail?.actionUrl ?? "").trim();
 	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
 		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
-			<span className="wrap-anywhere min-w-0">
-				<ProviderFailureInline copy={copy} />
+			<span className="wrap-anywhere min-w-0 whitespace-pre-wrap">
+				<span>{linkifiedProviderErrorText(headline)}</span>
+				{detail ? (
+					<>
+						{" — "}
+						<span className="text-muted-foreground/80">{linkifiedProviderErrorText(detail)}</span>
+					</>
+				) : null}
 				{standaloneActionUrl ? (
 					<>
 						{detail ? " " : " — "}
@@ -1914,24 +1919,6 @@ function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
 				) : null}
 			</span>
 		</div>
-	);
-}
-
-type ProviderFailureCopy = { headline: string; detail?: string };
-
-function ProviderFailureInline({ copy }: { copy: ProviderFailureCopy }) {
-	return (
-		<>
-			<span>{copy.headline}</span>
-			{copy.detail ? (
-				<>
-					{" — "}
-					<span className="text-muted-foreground/80">
-						{linkifiedProviderErrorText(copy.detail)}
-					</span>
-				</>
-			) : null}
-		</>
 	);
 }
 
@@ -1993,26 +1980,10 @@ export function providerErrorCopy(activity: ConversationActivity): {
 	}
 
 	const headline = String(activity.detail?.message ?? activity.summary ?? "").trim();
-	const normalizedDetail = String(activity.detail?.details ?? "").trim();
-	const extra = normalizedDetail || String(activity.detail?.error ?? "").trim();
+	const extra = String(activity.detail?.error ?? "").trim();
 	if (!headline) return { headline: extra || "Provider error" };
 	if (extra && extra !== headline) return { headline, detail: extra };
 	return { headline };
-}
-
-/** Parse the flattened provider failure stored on a turn, including legacy Codex JSON. */
-export function providerErrorCopyFromText(raw: string): ProviderFailureCopy {
-	const normalized = raw.trim();
-	if (!normalized) return { headline: "Provider error" };
-	const unwrapped = unwrapProviderErrorJson(normalized);
-	if (unwrapped) return unwrapped;
-	const separator = normalized.indexOf("\n\n");
-	if (separator < 0) return { headline: normalized };
-	const headline = normalized.slice(0, separator).trim();
-	const detail = normalized.slice(separator + 2).trim();
-	if (!headline) return { headline: detail || "Provider error" };
-	if (!detail || detail === headline) return { headline };
-	return { headline, detail };
 }
 
 function unwrapProviderErrorJson(raw: string): { headline: string; detail?: string } | undefined {

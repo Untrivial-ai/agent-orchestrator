@@ -2368,11 +2368,10 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			ctx, c.conversation.ID, event.ProviderTurnID, state, message, now); err != nil {
 			return err
 		}
-		var failure *ports.ChatProviderFailure
-		if errors.As(event.Err, &failure) && failure != nil && failure.Recovery == ports.ChatProviderRecoveryReauthenticate {
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
 			if err := c.recordAccount(ctx, ports.ChatAccount{
 				ReauthRequired: true,
-				ReauthReason:   failure.Error(),
+				ReauthReason:   message,
 			}, now); err != nil {
 				return err
 			}
@@ -2692,31 +2691,21 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if event.Err != nil {
 			message = event.Err.Error()
 		}
-		summary := message
-		detailFields := map[string]string{"error": message}
-		var failure *ports.ChatProviderFailure
-		if errors.As(event.Err, &failure) && failure != nil {
-			summary = failure.Title
-			detailFields["error"] = failure.Title
-			if failure.Detail != "" {
-				detailFields["details"] = failure.Detail
-			}
-			if failure.Recovery == ports.ChatProviderRecoveryReauthenticate {
-				if err := c.recordAccount(ctx, ports.ChatAccount{
-					ReauthRequired: true,
-					ReauthReason:   failure.Error(),
-				}, now); err != nil {
-					return err
-				}
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
+			if err := c.recordAccount(ctx, ports.ChatAccount{
+				ReauthRequired: true,
+				ReauthReason:   message,
+			}, now); err != nil {
+				return err
 			}
 		}
-		detail, _ := json.Marshal(detailFields)
+		detail, _ := json.Marshal(map[string]string{"error": message})
 		return c.store.UpsertActivity(ctx, c.conversation.ID, event.ProviderTurnID,
 			domain.ConversationActivity{
 				ID:      c.newID(),
 				Kind:    domain.ActivityKindError,
 				Status:  domain.ActivityStatusFailed,
-				Summary: summary,
+				Summary: message,
 				Detail:  detail,
 			}, now)
 
@@ -2738,8 +2727,7 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)
 		}
 	case ports.ChatEventTurnCompleted:
-		var failure *ports.ChatProviderFailure
-		reauthRequired := errors.As(event.Err, &failure) && failure != nil && failure.Recovery == ports.ChatProviderRecoveryReauthenticate
+		reauthRequired := errors.Is(event.Err, ports.ErrChatAuthRequired)
 		if reauthRequired && c.onAccountChanged != nil {
 			c.onAccountChanged(c.sessionID, c.generation, c.harness)
 		}
@@ -2780,8 +2768,7 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
 		}
 	case ports.ChatEventError:
-		var failure *ports.ChatProviderFailure
-		if errors.As(event.Err, &failure) && failure != nil && failure.Recovery == ports.ChatProviderRecoveryReauthenticate {
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
 			if c.onAccountChanged != nil {
 				c.onAccountChanged(c.sessionID, c.generation, c.harness)

@@ -649,6 +649,15 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		var p codexproto.ErrorNotification
 		if err := json.Unmarshal(n.Params, &p); err == nil &&
 			(strings.TrimSpace(p.Error.Message) != "" || p.Error.AdditionalDetails != nil) {
+			if p.WillRetry && p.TurnID != "" {
+				detail, _ := json.Marshal(map[string]string{"event": "provider.failure"})
+				return []ports.ChatEvent{{
+					Kind: ports.ChatEventActivityStarted, ProviderConversationID: p.ThreadID,
+					ProviderTurnID: p.TurnID, ProviderItemID: "codex-retry:" + p.ThreadID + ":" + p.TurnID,
+					ActivityKind: domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusRunning,
+					Summary: codexProviderFailure(&p.Error).Error(), Detail: detail,
+				}}
+			}
 			return []ports.ChatEvent{{
 				Kind:                   ports.ChatEventError,
 				ProviderTurnID:         p.TurnID,
@@ -682,18 +691,21 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 	}
 }
 
-// codexProviderFailure keeps Codex's concise message and optional diagnostic
-// detail separate until the shared provider-neutral seam. codexErrorInfo remains
-// adapter-private: it is machine metadata, not copy for the conversation.
-func codexProviderFailure(turnErr *codexproto.TurnError) *ports.ChatProviderFailure {
+// codexErrorInfo is metadata, not display copy. Only an explicit unauthorized
+// reason invokes the existing authentication path; other errors remain readable.
+func codexProviderFailure(turnErr *codexproto.TurnError) error {
 	if turnErr == nil {
-		return ports.NewChatProviderFailure("", "", "")
+		return ports.NewChatProviderFailure("", "", nil)
 	}
 	detail := ""
 	if turnErr.AdditionalDetails != nil {
 		detail = *turnErr.AdditionalDetails
 	}
-	return ports.NewChatProviderFailure(turnErr.Message, detail, "")
+	var cause error
+	if turnErr.CodexErrorInfo != nil && string(*turnErr.CodexErrorInfo) == `"unauthorized"` {
+		cause = ports.ErrChatAuthRequired
+	}
+	return ports.NewChatProviderFailure(turnErr.Message, detail, cause)
 }
 
 // turnIDFallback reads a top-level turnId, which some builds send instead of

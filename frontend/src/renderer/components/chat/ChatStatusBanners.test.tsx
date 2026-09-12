@@ -21,14 +21,15 @@ describe("ReauthBanner", () => {
 		expect(screen.getByRole("alert")).toBeInTheDocument();
 		expect(screen.getByText("codex login")).toBeInTheDocument();
 		expect(screen.queryByText(/The stored session expired/)).not.toBeInTheDocument();
-		expect(screen.getByText(/rejected this session’s credentials/)).toBeInTheDocument();
+		expect(screen.getByText(/needs you to sign in again/)).toBeInTheDocument();
 	});
 
-	it("says the worktree is untouched, since nothing else about the session works", () => {
+	it("does not claim that a mid-turn auth failure left the worktree untouched", () => {
 		render(
 			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="codex" />,
 		);
-		expect(screen.getByText(/worktree is untouched/i)).toBeInTheDocument();
+		expect(screen.queryByText(/worktree is untouched/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/holds no credentials/i)).not.toBeInTheDocument();
 	});
 
 	it("names Claude Code's non-interactive authentication command", () => {

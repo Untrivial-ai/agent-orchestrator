@@ -206,8 +206,6 @@ export interface ApprovalDetail {
 export interface ProviderErrorDetail {
 	/** Optional provider destination; the renderer shows web URLs literally. */
 	actionUrl?: string;
-	/** Provider diagnostic copy kept separate from the short activity summary. */
-	details?: string;
 }
 
 export interface CommandDetail {
@@ -395,7 +393,8 @@ export interface SystemEventDetail {
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;
-	/** provider.failure: provider-neutral classification from an agent protocol extension. */
+	/** provider.failure: the adapter correlated this status with the terminal turn outcome. */
+	superseded?: boolean;
 	category?: string;
 	severity?: "warning" | "error" | (string & {});
 	revision?: number;

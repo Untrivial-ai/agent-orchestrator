@@ -95,8 +95,7 @@ func TestReadHistoryPreservesStructuredProviderFailure(t *testing.T) {
 	if len(events) != 2 || events[1].Kind != ports.ChatEventTurnCompleted {
 		t.Fatalf("events = %#v", events)
 	}
-	var failure *ports.ChatProviderFailure
-	if !errors.As(events[1].Err, &failure) || failure.Title != "Usage limit reached" || failure.Detail != "Resets tomorrow." {
+	if events[1].Err == nil || events[1].Err.Error() != "Usage limit reached\n\nResets tomorrow." {
 		t.Fatalf("completion error = %#v", events[1].Err)
 	}
 }

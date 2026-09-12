@@ -72,7 +72,7 @@ describe("TurnOutcome", () => {
 		expect(container.querySelector(".h-px.w-full.bg-border")).toBeInTheDocument();
 	});
 
-	it("renders normalized title, detail, and links from either provider", () => {
+	it("preserves multiline provider text and links without interpreting its structure", () => {
 		render(
 			<TurnOutcome
 				state="failed"
@@ -80,7 +80,7 @@ describe("TurnOutcome", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Usage limit reached")).toBeInTheDocument();
+		expect(screen.getByText(/Usage limit reached/)).toBeInTheDocument();
 		expect(screen.getByText(/Manage billing at/)).toBeInTheDocument();
 		expect(screen.getByRole("link", { name: "https://example.com/billing" })).toHaveAttribute(
 			"href",

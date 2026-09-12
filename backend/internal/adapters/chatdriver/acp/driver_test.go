@@ -2352,8 +2352,7 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 			if event.TurnState != domain.TurnStateFailed {
 				t.Fatalf("turn state = %q", event.TurnState)
 			}
-			var failure *ports.ChatProviderFailure
-			if !errors.As(event.Err, &failure) || failure.Recovery != ports.ChatProviderRecoveryReauthenticate {
+			if !errors.Is(event.Err, ports.ErrChatAuthRequired) {
 				t.Fatalf("completion error = %#v", event.Err)
 			}
 			break
@@ -2433,10 +2432,9 @@ func TestACPDriverNormalizesClaudeRetryStatus(t *testing.T) {
 	}
 
 	var retry ports.ChatEvent
-	retryItemID := "session-failure:" + ref.ProviderTurnID
 	for retry.Kind == "" {
 		event := nextEvent(t, opened.Events())
-		if event.Kind == ports.ChatEventActivityStarted && event.ProviderItemID == retryItemID {
+		if event.Kind == ports.ChatEventActivityStarted && strings.HasPrefix(event.ProviderItemID, "session-failure:") {
 			retry = event
 		}
 	}
@@ -2458,7 +2456,7 @@ func TestACPDriverNormalizesClaudeRetryStatus(t *testing.T) {
 	}
 
 	// Claude can use a new extension incident id for each attempt before its
-	// provider turn id is available. AO must still update one per-turn activity.
+	// provider turn id is available. AO must still update one active-episode row.
 	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
 		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
 		Update: acpsdk.SessionUpdate{SessionInfoUpdate: &acpsdk.SessionSessionInfoUpdate{

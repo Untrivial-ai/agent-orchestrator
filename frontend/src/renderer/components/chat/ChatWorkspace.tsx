@@ -2490,7 +2490,8 @@ const TurnGroup = memo(function TurnGroup({
 					return !(
 						terminalFailureSupersedesProviderStatus &&
 						item.kind === "activity" &&
-						item.detail?.event === "provider.failure"
+						item.detail?.event === "provider.failure" &&
+						item.detail.superseded === true
 					);
 				}),
 			),

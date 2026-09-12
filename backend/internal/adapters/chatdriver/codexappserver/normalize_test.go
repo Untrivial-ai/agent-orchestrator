@@ -73,15 +73,27 @@ func TestNormalizeCodexFailuresUseSharedProviderCopy(t *testing.T) {
 			if event.Kind != tc.wantKind || event.ProviderConversationID != "th1" || event.ProviderTurnID != "tu1" {
 				t.Fatalf("event = %#v", event)
 			}
-			var failure *ports.ChatProviderFailure
-			if !errors.As(event.Err, &failure) {
-				t.Fatalf("error = %#v", event.Err)
-			}
-			if failure.Title != "Request failed" || failure.Detail != "See https://example.com/help" ||
-				failure.Error() != "Request failed\n\nSee https://example.com/help" {
-				t.Fatalf("failure = %#v", failure)
+			if event.Err == nil || event.Err.Error() != "Request failed\n\nSee https://example.com/help" {
+				t.Fatalf("failure = %#v", event.Err)
 			}
 		})
+	}
+}
+
+func TestCodexAuthRecoveryRequiresNativeSignal(t *testing.T) {
+	for _, tc := range []struct {
+		info string
+		auth bool
+	}{
+		{`"unauthorized"`, true},
+		{`"usageLimitExceeded"`, false},
+		{`{"httpConnectionFailed":{"httpStatusCode":401}}`, false},
+		{`null`, false},
+	} {
+		event := normalizeOne(t, "error", `{"threadId":"th1","turnId":"tu1","error":{"message":"Login expired or credits exhausted","codexErrorInfo":`+tc.info+`}}`)
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) != tc.auth {
+			t.Fatalf("info=%s: auth=%v, want %v", tc.info, errors.Is(event.Err, ports.ErrChatAuthRequired), tc.auth)
+		}
 	}
 }
 

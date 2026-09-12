@@ -2287,7 +2287,7 @@ func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
 		Err: ports.NewChatProviderFailure(
 			"Provider rejected this request",
 			"Original details with https://example.com/help",
-			ports.ChatProviderRecoveryReauthenticate,
+			ports.ErrChatAuthRequired,
 		),
 	}
 	h.conv.emit(
@@ -2313,14 +2313,14 @@ func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
 	}
 }
 
-func TestStandaloneProviderFailurePersistsStructuredCopy(t *testing.T) {
+func TestStandaloneProviderFailurePreservesOpaqueText(t *testing.T) {
 	h := newHarness(t)
 	h.conv.emit(ports.ChatEvent{
 		Kind: ports.ChatEventError, ProviderEventID: "provider-error-1",
 		Err: ports.NewChatProviderFailure(
 			"Connection interrupted",
 			"Inspect https://example.com/status",
-			"",
+			nil,
 		),
 	})
 
@@ -2328,14 +2328,14 @@ func TestStandaloneProviderFailurePersistsStructuredCopy(t *testing.T) {
 		return len(s.Activities) == 1 && s.Activities[0].Kind == domain.ActivityKindError
 	})
 	activity := snapshot.Activities[0]
-	if activity.Summary != "Connection interrupted" {
+	if activity.Summary != "Connection interrupted\n\nInspect https://example.com/status" {
 		t.Fatalf("summary = %q", activity.Summary)
 	}
 	var detail map[string]string
 	if err := json.Unmarshal(activity.Detail, &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail["error"] != "Connection interrupted" || detail["details"] != "Inspect https://example.com/status" {
+	if detail["error"] != activity.Summary {
 		t.Fatalf("detail = %#v", detail)
 	}
 }

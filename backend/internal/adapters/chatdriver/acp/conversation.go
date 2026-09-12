@@ -566,16 +566,7 @@ func (c *conversation) finishPrompt(
 			state = domain.TurnStateInterrupted
 		} else {
 			state = domain.TurnStateFailed
-			if isACPAuthRequired(err) {
-				normalized := normalizeACPError("ACP session/prompt", err)
-				turnErr = ports.NewChatProviderFailure(
-					normalized.Error(),
-					"",
-					ports.ChatProviderRecoveryReauthenticate,
-				)
-			} else {
-				turnErr = err
-			}
+			turnErr = normalizeACPError("ACP session/prompt", err)
 		}
 	} else {
 		state = turnState(resp.StopReason)
@@ -583,6 +574,21 @@ func (c *conversation) finishPrompt(
 			state != domain.TurnStateInterrupted && !interruptedLocally {
 			state = domain.TurnStateFailed
 			turnErr = failure
+			// Supersede only the still-active retry in this turn. The provider may
+			// advance its incident ID; recovered warnings have already been cleared.
+			c.mu.Lock()
+			matched := false
+			if c.providerFailure != nil && c.providerFailure.ProviderTurnID == turnID {
+				var detail map[string]any
+				_ = json.Unmarshal(c.providerFailure.Detail, &detail)
+				matched = true
+				detail["superseded"] = true
+				c.providerFailure.Detail, _ = json.Marshal(detail)
+			}
+			c.mu.Unlock()
+			if matched {
+				c.completeProviderFailure(turnID, c.emit)
+			}
 		}
 		if resp.Usage != nil {
 			cached := 0

@@ -639,7 +639,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			emit(ports.ChatEvent{Kind: ports.ChatEventThreadRenamed, Title: *update.SessionInfoUpdate.Title})
 		}
 		if turnID != "" {
-			if event, ok := c.sessionFailureEvent(turnID, update.SessionInfoUpdate.Meta); ok {
+			if event, ok := c.sessionFailureEvent(turnID, sourceID, update.SessionInfoUpdate.Meta); ok {
 				emit(event)
 			}
 		}
@@ -903,7 +903,7 @@ func nestedMap(meta map[string]any, key string) map[string]any {
 // namespace. A stable provider item id makes successive retry attempts update one
 // row; settling the enclosing turn then settles this running status with it.
 func (c *conversation) sessionFailureEvent(
-	turnID string,
+	turnID, sourceID string,
 	meta map[string]any,
 ) (ports.ChatEvent, bool) {
 	failure := sessionFailure(meta)
@@ -929,16 +929,22 @@ func (c *conversation) sessionFailureEvent(
 	event := ports.ChatEvent{
 		Kind:           ports.ChatEventActivityStarted,
 		ProviderTurnID: turnID,
-		// Some adapters mint a fresh extension incident id for every retry when
-		// their provider turn id is not known yet. AO already has the durable turn
-		// boundary, so key the live failure to that boundary and update one row.
-		ProviderItemID: c.providerItemID("session-failure:" + turnID),
 		ActivityKind:   domain.ActivityKindSystem,
 		ActivityStatus: domain.ActivityStatusRunning,
 		Summary:        title,
 		Detail:         detail,
 	}
 	c.mu.Lock()
+	if c.providerFailure != nil && c.providerFailure.ProviderTurnID == turnID {
+		event.ProviderItemID = c.providerFailure.ProviderItemID
+	} else {
+		// One row per uninterrupted retry episode. Host identity survives replay;
+		// direct connections have no replay ID and need a fresh local identity.
+		if sourceID == "" {
+			sourceID = uuid.NewString()
+		}
+		event.ProviderItemID = c.providerItemID("session-failure:" + sourceID)
+	}
 	c.providerFailure = &event
 	c.mu.Unlock()
 	return event, true
@@ -960,22 +966,22 @@ func sessionFailure(meta map[string]any) map[string]any {
 // has stopReason=end_turn. Translate the protocol's severity and actions into the
 // shared provider-failure contract; never match provider prose or maintain a list
 // of subscription/limit error messages.
-func promptResponseFailure(meta map[string]any) *ports.ChatProviderFailure {
+func promptResponseFailure(meta map[string]any) error {
 	failure := sessionFailure(meta)
 	if failure["severity"] != "error" {
 		return nil
 	}
 	title, _ := failure["title"].(string)
 	details, _ := failure["details"].(string)
-	var recovery ports.ChatProviderRecovery
+	var cause error
 	if actions, ok := failure["actions"].([]any); ok {
 		for _, action := range actions {
 			if action == "login" {
-				recovery = ports.ChatProviderRecoveryReauthenticate
+				cause = ports.ErrChatAuthRequired
 			}
 		}
 	}
-	return ports.NewChatProviderFailure(title, details, recovery)
+	return ports.NewChatProviderFailure(title, details, cause)
 }
 
 // completeProviderFailure removes a stale retry warning as soon as the provider

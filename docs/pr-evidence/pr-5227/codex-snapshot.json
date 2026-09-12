@@ -1,0 +1,148 @@
+{
+  "harness": "codex",
+  "controller": "ready",
+  "turns": [
+    {
+      "id": "547015f3-c93e-47b1-abe6-6e142f1a45f0",
+      "state": "failed",
+      "providerTurnId": "9dd007fc-0ef0-43a3-805e-52c9a7efeb6e",
+      "errorMessage": "Usage limit reached (simulated)\n\nNo credits remain. Manage billing at https://example.com/billing.",
+      "requestedAt": "2026-09-12T02:02:20Z",
+      "startedAt": "2026-09-12T02:02:20Z",
+      "completedAt": "2026-09-12T02:02:32Z"
+    },
+    {
+      "id": "1de026f8-8d7b-43c7-b295-6cfcf688d627",
+      "state": "completed",
+      "providerTurnId": "a314d468-fdbf-4b38-839b-59b18c7d1096",
+      "requestedAt": "2026-09-12T02:02:35Z",
+      "startedAt": "2026-09-12T02:02:35Z",
+      "completedAt": "2026-09-12T02:02:47Z"
+    },
+    {
+      "id": "4526a351-fb3e-433d-9fd5-4f2de12c0584",
+      "state": "interrupted",
+      "providerTurnId": "6c905990-ecc5-48e0-b683-2df08542f4be",
+      "requestedAt": "2026-09-12T02:02:48Z",
+      "startedAt": "2026-09-12T02:02:48Z",
+      "completedAt": "2026-09-12T02:02:48Z"
+    },
+    {
+      "id": "10483013-ed5f-49e2-85e8-039aeda1a03a",
+      "state": "failed",
+      "providerTurnId": "ef599eb3-d744-4cc7-83f7-694e35b30b04",
+      "errorMessage": "Usage limit reached (simulated)\n\nNo credits remain. Manage billing at https://example.com/billing.",
+      "requestedAt": "2026-09-12T02:02:48Z",
+      "startedAt": "2026-09-12T02:02:48Z",
+      "completedAt": "2026-09-12T02:03:00Z"
+    },
+    {
+      "id": "2889aa23-933c-4d64-8c53-62f6ff5ea569",
+      "state": "failed",
+      "providerTurnId": "cda7ad20-e4e2-4ac5-b083-764eb73fe25d",
+      "errorMessage": "Login expired (simulated)\n\nSign in to your provider to continue.",
+      "requestedAt": "2026-09-12T02:03:03Z",
+      "startedAt": "2026-09-12T02:03:03Z",
+      "completedAt": "2026-09-12T02:03:15Z"
+    }
+  ],
+  "activities": [
+    {
+      "kind": "activity",
+      "id": "a5ee5e13-4938-4dd0-b4a8-eee603e56cab",
+      "turnId": "547015f3-c93e-47b1-abe6-6e142f1a45f0",
+      "sequence": 2,
+      "revision": 1,
+      "activityKind": "system",
+      "status": "completed",
+      "summary": "Reconnecting 1/5 (simulated)",
+      "detail": {
+        "event": "provider.failure",
+        "superseded": true
+      },
+      "providerItemId": "codex-retry:a507253b-0f91-445e-9cbc-142ff109cf1d:9dd007fc-0ef0-43a3-805e-52c9a7efeb6e:7ddef065-7fb8-4777-967a-4a751eb33d9d",
+      "createdAt": "2026-09-12T02:02:20Z"
+    },
+    {
+      "kind": "activity",
+      "id": "d8c1add7-a7aa-4185-bc28-ce3f6f23ce97",
+      "turnId": "1de026f8-8d7b-43c7-b295-6cfcf688d627",
+      "sequence": 4,
+      "revision": 1,
+      "activityKind": "system",
+      "status": "completed",
+      "summary": "Reconnecting 1/5 (simulated)",
+      "detail": {
+        "event": "provider.failure"
+      },
+      "providerItemId": "codex-retry:a507253b-0f91-445e-9cbc-142ff109cf1d:a314d468-fdbf-4b38-839b-59b18c7d1096:f89d108e-6614-4d9d-b8ab-c7367efed432",
+      "createdAt": "2026-09-12T02:02:35Z"
+    },
+    {
+      "kind": "activity",
+      "id": "82abc3b7-e673-47ce-a094-bca29f4ffe0c",
+      "turnId": "4526a351-fb3e-433d-9fd5-4f2de12c0584",
+      "sequence": 7,
+      "revision": 1,
+      "activityKind": "system",
+      "status": "completed",
+      "summary": "Reconnecting 1/5 (simulated)",
+      "detail": {
+        "event": "provider.failure"
+      },
+      "providerItemId": "codex-retry:a507253b-0f91-445e-9cbc-142ff109cf1d:6c905990-ecc5-48e0-b683-2df08542f4be:2978a5fb-b6a2-436c-94cb-c44aabb27f1d",
+      "createdAt": "2026-09-12T02:02:48Z"
+    },
+    {
+      "kind": "activity",
+      "id": "c02fe771-9c89-41fb-9891-c28b67aab0c7",
+      "turnId": "10483013-ed5f-49e2-85e8-039aeda1a03a",
+      "sequence": 9,
+      "revision": 1,
+      "activityKind": "system",
+      "status": "completed",
+      "summary": "Reconnecting 1/5 (simulated)",
+      "detail": {
+        "event": "provider.failure"
+      },
+      "providerItemId": "codex-retry:a507253b-0f91-445e-9cbc-142ff109cf1d:ef599eb3-d744-4cc7-83f7-694e35b30b04:5ba22ff6-b188-4bc2-b100-b0c0bf79ddf5",
+      "createdAt": "2026-09-12T02:02:48Z"
+    },
+    {
+      "kind": "activity",
+      "id": "f2b04c24-cd13-41cc-b682-b38cfaa8037e",
+      "turnId": "10483013-ed5f-49e2-85e8-039aeda1a03a",
+      "sequence": 11,
+      "revision": 1,
+      "activityKind": "system",
+      "status": "completed",
+      "summary": "Second retry episode (simulated)",
+      "detail": {
+        "event": "provider.failure",
+        "superseded": true
+      },
+      "providerItemId": "codex-retry:a507253b-0f91-445e-9cbc-142ff109cf1d:ef599eb3-d744-4cc7-83f7-694e35b30b04:cbd9965b-2b99-4c9c-9c57-e4dae5a1bea4",
+      "createdAt": "2026-09-12T02:02:48Z"
+    },
+    {
+      "kind": "activity",
+      "id": "18912805-cd2d-4281-9a59-a1f9b2a1f5a4",
+      "turnId": "2889aa23-933c-4d64-8c53-62f6ff5ea569",
+      "sequence": 13,
+      "revision": 1,
+      "activityKind": "system",
+      "status": "completed",
+      "summary": "Reconnecting 1/5 (simulated)",
+      "detail": {
+        "event": "provider.failure",
+        "superseded": true
+      },
+      "providerItemId": "codex-retry:a507253b-0f91-445e-9cbc-142ff109cf1d:cda7ad20-e4e2-4ac5-b083-764eb73fe25d:9c3ab139-105e-4216-ac8e-c4f8838afea4",
+      "createdAt": "2026-09-12T02:03:03Z"
+    }
+  ],
+  "account": {
+    "reauthRequiredAt": "2026-09-12T02:03:15Z",
+    "reauthReason": "Login expired (simulated)\n\nSign in to your provider to continue."
+  }
+}
