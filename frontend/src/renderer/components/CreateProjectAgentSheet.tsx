@@ -437,6 +437,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 								status={agent.status}
 								statusTone={agent.statusTone}
 								disabled={agent.disabled}
+								hint={(agent as any).hint}
 							/>
 						);
 					}}

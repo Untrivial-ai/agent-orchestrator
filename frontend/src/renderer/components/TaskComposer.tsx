@@ -116,11 +116,11 @@ export function TaskComposer({
 	// Cloud vs local is decided here and nowhere else: a cloud project routes task
 	// creation to the control plane (which provisions a sandbox), while a local
 	// project keeps the existing daemon flow untouched.
-	const { client: cloudClient } = useCloudCp();
-	const { org: cloudOrg } = useCloudOrg();
-	const cloudProjects = useCloudProjectsQuery();
-	const isCloudProject =
-		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+ 	const { client: cloudClient, ready: cloudReady } = useCloudCp();
+ 	const { org: cloudOrg } = useCloudOrg();
+ 	const cloudProjects = useCloudProjectsQuery();
+ 	const isCloudProject =
+ 		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
 	// and the model dropdown spins forever. Local projects keep their scope.
@@ -238,22 +238,36 @@ export function TaskComposer({
 		projectQuery.data?.config?.worker?.agentConfig?.mode ?? projectQuery.data?.config?.agentConfig?.mode ?? "";
 	const projectModelForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerModel : "";
 	const projectModeForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerMode : "";
-	const agentCatalog = agentsQuery.data;
+ 	const agentCatalog = agentsQuery.data;
 	const providerConnections = useProviderConnections(isCloudProject ? cloudOrg?.id : undefined);
+	const availableAgentsQuery = useQuery({
+		queryKey: ["cloud", "agents", "available", cloudOrg?.id],
+		enabled: isCloudProject && cloudReady && cloudOrg?.id !== undefined,
+		staleTime: 60_000,
+		queryFn: async () => {
+			const response = await cloudClient.getAvailableAgents(cloudOrg!.id);
+			return response.agents.map((a) => a.provider);
+		},
+	});
 	const agentsForDropdown = useMemo(() => {
 		if (!isCloudProject || !agentCatalog?.agents) return agentCatalog?.agents;
+		const cloudAgentIds = availableAgentsQuery.data;
+		if (!cloudAgentIds) return undefined;
+		const cloudAgentSet = new Set(cloudAgentIds);
 		const validAgents = new Set<string>();
 		providerConnections.data?.forEach((conn) => {
 			if (conn.validationState === "valid" && conn.label === "default") {
 				validAgents.add(conn.provider);
 			}
 		});
-		return agentCatalog.agents.map((agent) => ({
-			...agent,
-			disabled: !validAgents.has(agent.id),
-			hint: !validAgents.has(agent.id) ? "Needs auth" : undefined,
-		}));
-	}, [isCloudProject, agentCatalog?.agents, providerConnections.data]);
+		return agentCatalog.agents
+			.filter((agent) => cloudAgentSet.has(agent.id))
+			.map((agent) =>
+				validAgents.has(agent.id)
+					? agent
+					: { ...agent, authentication: { ...agent.authentication, state: "unauthorized" as const } },
+			);
+	}, [isCloudProject, agentCatalog?.agents, providerConnections.data, availableAgentsQuery.data]);
 
 	// Shares the picker's query key, so this is the same fetch, not a second one.
 	const modelCatalogQuery = useQuery(agentModelsQueryOptions(selectedAgent, modelsProjectId));
