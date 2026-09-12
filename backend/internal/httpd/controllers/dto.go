@@ -2502,6 +2502,17 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 	return names
 }
 
+// ReviewerHarnessInfo describes a supported reviewer harness and its display label.
+type ReviewerHarnessInfo struct {
+	ID    domain.ReviewerHarness `json:"id" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	Label string                 `json:"label"`
+}
+
+// ListReviewersResponse is the body of GET /api/v1/reviewers.
+type ListReviewersResponse struct {
+	Reviewers []ReviewerHarnessInfo `json:"reviewers"`
+}
+
 // TriggerReviewRequest is the optional body of the review trigger route. An
 // empty harness keeps the project's configured reviewer; setting one overrides
 // it for this pass only, without editing project config, so one session's choice

@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
@@ -415,5 +416,48 @@ func TestReviewsSubmitAcceptsBatchedReviews(t *testing.T) {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("body missing %s: %s", want, body)
 		}
+	}
+}
+
+func TestListReviewers_ReturnsSupportedCatalog(t *testing.T) {
+	srv := newReviewTestServer(t, &fakeReviewService{})
+
+	body, status, headers := doRequest(t, srv, "GET", "/api/v1/reviewers", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+
+	var got controllers.ListReviewersResponse
+	mustJSON(t, body, &got)
+	if len(got.Reviewers) != len(domain.AllReviewerHarnesses) {
+		t.Fatalf("got %d reviewers, want %d", len(got.Reviewers), len(domain.AllReviewerHarnesses))
+	}
+
+	seen := make(map[domain.ReviewerHarness]string)
+	for _, r := range got.Reviewers {
+		if r.ID == "" {
+			t.Fatal("reviewer id is empty")
+		}
+		if r.Label == "" {
+			t.Fatalf("reviewer %s has empty label", r.ID)
+		}
+		seen[r.ID] = r.Label
+	}
+
+	for _, want := range domain.AllReviewerHarnesses {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("missing reviewer harness %q in catalog", want)
+		}
+	}
+}
+
+func TestListReviewers_NilServiceReturns501(t *testing.T) {
+	srv := newReviewTestServer(t, nil)
+
+	body, status, headers := doRequest(t, srv, "GET", "/api/v1/reviewers", "")
+	assertJSON(t, headers)
+	if status != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body=%s", status, body)
 	}
 }
