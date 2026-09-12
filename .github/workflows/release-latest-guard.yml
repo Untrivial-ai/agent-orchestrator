@@ -59,3 +59,39 @@ jobs:
               exit 1
             fi
           done
+
+  package-version:
+    # frontend/package.json's version feeds CFBundleShortVersionString and the
+    # in-app Settings -> Updates display, so main must not fall behind the
+    # latest stable tag (see #4467).
+    if: github.repository == 'Untrivial-ai/agent-orchestrator'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: frontend/package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Verify frontend/package.json tracks latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="$(gh release view --repo "$REPO" --json tagName -q '.tagName')"
+          release_version="${tag#v}"
+          package_version="$(jq -r '.version' frontend/package.json)"
+
+          echo "Latest stable release: $release_version"
+          echo "frontend/package.json on main: $package_version"
+
+          lowest="$(printf '%s\n%s\n' "$release_version" "$package_version" | sort -V | head -n1)"
+          if [[ "$lowest" != "$release_version" ]]; then
+            echo "::error::frontend/package.json version '$package_version' on main is behind latest stable release '$release_version'. Bump it so the desktop app reports the shipped version."
+            exit 1
+          fi
