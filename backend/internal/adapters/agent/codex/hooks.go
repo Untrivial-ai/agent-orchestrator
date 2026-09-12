@@ -85,7 +85,7 @@ func appendSessionHookFlags(cmd *[]string) error {
 
 func appendSessionHookFlagsForExecutable(cmd *[]string, executable string) error {
 	prefix := shellQuoteHookExecutable(executable) + " hooks codex "
-	var hooks []agentruntime.CodexHook
+	hooks := make([]agentruntime.CodexHook, 0, len(codexManagedHooks))
 	for _, spec := range codexManagedHooks {
 		action := strings.TrimPrefix(spec.Command, codexHookCommandPrefix)
 		hooks = append(hooks, agentruntime.CodexHook{Event: spec.Event, Command: prefix + action, Timeout: codexHookTimeout})
