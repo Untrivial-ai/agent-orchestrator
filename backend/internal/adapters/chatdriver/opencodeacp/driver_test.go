@@ -130,3 +130,14 @@ func TestValidateTurnSettingsModelFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionOptionsForwardsEffortAfterModel(t *testing.T) {
+	got := sessionOptions(ports.ChatTurnSettings{Model: "opencode-go/deepseek-v4.1-flash", Effort: "max"})
+	if len(got) != 2 || got[0].ID != "model" || got[1].ID != "effort" || got[1].Value != "max" {
+		t.Fatalf("model+effort settings = %#v", got)
+	}
+	got = sessionOptions(ports.ChatTurnSettings{Effort: "xhigh"})
+	if len(got) != 1 || got[0].ID != "effort" || got[0].Value != "xhigh" {
+		t.Fatalf("effort-only settings = %#v", got)
+	}
+}
