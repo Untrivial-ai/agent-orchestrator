@@ -667,6 +667,8 @@ type fakeAgent struct {
 	elicitation         *acpsdk.UnstableCreateElicitationRequest
 	elicitationResponse acpsdk.UnstableCreateElicitationResponse
 	promptErr           error
+	promptStopReason    acpsdk.StopReason
+	promptEmptyResponse bool
 	promptBlock         bool
 	promptStarted       chan struct{}
 	cancelErr           error
@@ -977,6 +979,8 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 	promptNoPermission := a.promptNoPermission
 	elicitation := a.elicitation
 	promptErr := a.promptErr
+	promptStopReason := a.promptStopReason
+	promptEmptyResponse := a.promptEmptyResponse
 	promptBlock := a.promptBlock
 	promptStarted := a.promptStarted
 	a.mu.Unlock()
@@ -991,7 +995,16 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 			}
 		}
 		<-ctx.Done()
+		// A stop reason set alongside promptBlock models an agent that accepts
+		// session/cancel and then reports something other than cancelled, rather
+		// than failing the RPC outright.
+		if promptStopReason != "" {
+			return acpsdk.PromptResponse{StopReason: promptStopReason}, nil
+		}
 		return acpsdk.PromptResponse{}, ctx.Err()
+	}
+	if promptStopReason != "" || promptEmptyResponse {
+		return acpsdk.PromptResponse{StopReason: promptStopReason}, nil
 	}
 	if elicitation != nil {
 		response, err := a.conn.UnstableCreateElicitation(ctx, *elicitation)
@@ -2353,6 +2366,151 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	}
 	if !foundAccount {
 		t.Fatal("authentication failure did not emit an account recovery event")
+	}
+}
+
+// A prompt that returns a stop reason other than end_turn/cancelled fails the
+// turn while the RPC itself succeeded. Without an error of its own the turn
+// settles with an empty message and the timeline can only say "The agent ran
+// into a problem", leaving the user nothing to act on.
+func TestACPDriverReportsFailingStopReason(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason acpsdk.StopReason
+		want   string
+	}{
+		{name: "refusal", reason: acpsdk.StopReasonRefusal, want: string(acpsdk.StopReasonRefusal)},
+		{name: "max tokens", reason: acpsdk.StopReasonMaxTokens, want: string(acpsdk.StopReasonMaxTokens)},
+		// A non-conforming agent can omit the stop reason. turnState still fails
+		// the turn, so the message has to say something better than empty quotes.
+		{name: "absent", reason: "", want: "without reporting a stop reason"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &fakeAgent{promptStopReason: tc.reason, promptEmptyResponse: tc.reason == ""}
+			opened := startFakeConversation(t, agent)
+			event := runTurnToCompletion(t, opened)
+
+			if event.TurnState != domain.TurnStateFailed {
+				t.Fatalf("turn state = %q, want %q", event.TurnState, domain.TurnStateFailed)
+			}
+			// The service derives conversation_turns.error_message from this field
+			// alone, so an unset Err here is what stores the empty message.
+			if event.Err == nil {
+				t.Fatal("failed turn completed with no error; the stored message would be empty")
+			}
+			if !strings.Contains(event.Err.Error(), tc.want) {
+				t.Fatalf("turn error = %q, want it to mention %q", event.Err, tc.want)
+			}
+		})
+	}
+}
+
+// The err != nil path already reports itself through ChatEventError, which the
+// timeline renders as its own row. Carrying the same text on the turn as well
+// would print one failure twice.
+func TestACPDriverDoesNotDuplicateProviderErrorOntoTurn(t *testing.T) {
+	agent := &fakeAgent{promptErr: errors.New("provider exploded")}
+	opened := startFakeConversation(t, agent)
+
+	sawErrorRow := false
+	ref, err := opened.SendTurn(context.Background(), ports.ChatUserMessage{Text: "go"})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := opened.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+	for {
+		event := nextEvent(t, opened.Events())
+		if event.Kind == ports.ChatEventError && event.Err != nil {
+			sawErrorRow = true
+		}
+		if event.Kind == ports.ChatEventTurnCompleted {
+			if event.TurnState != domain.TurnStateFailed {
+				t.Fatalf("turn state = %q, want %q", event.TurnState, domain.TurnStateFailed)
+			}
+			if event.Err != nil {
+				t.Fatalf("turn carried %q on top of its error row; the timeline would show it twice", event.Err)
+			}
+			break
+		}
+	}
+	if !sawErrorRow {
+		t.Fatal("provider error emitted no error event for the timeline")
+	}
+}
+
+// A stop the user asked for is not an agent-side failure. If session/cancel is
+// accepted but the agent reports something other than cancelled, the turn must
+// not surface "the agent stopped early" for work the user abandoned.
+func TestACPDriverDoesNotBlameAgentForLocalInterrupt(t *testing.T) {
+	agent := &fakeAgent{
+		promptBlock:      true,
+		promptStarted:    make(chan struct{}, 1),
+		promptStopReason: acpsdk.StopReasonRefusal,
+	}
+	opened := startFakeConversation(t, agent)
+	ref, err := opened.SendTurn(context.Background(), ports.ChatUserMessage{Text: "go"})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := opened.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+	select {
+	case <-agent.promptStarted:
+	case <-time.After(time.Second):
+		t.Fatal("ACP prompt did not start")
+	}
+	agent.mu.Lock()
+	agent.promptBlock = false
+	agent.mu.Unlock()
+	if err := opened.Interrupt(context.Background(), ref.ProviderTurnID); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	for {
+		event := nextEvent(t, opened.Events())
+		if event.Kind == ports.ChatEventTurnCompleted {
+			if event.Err != nil {
+				t.Fatalf("user-requested stop reported as %q", event.Err)
+			}
+			break
+		}
+	}
+}
+
+func startFakeConversation(t *testing.T, agent *fakeAgent) ports.ChatConversation {
+	t.Helper()
+	driver := New(Config{
+		Harness:      domain.HarnessCodex,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { opened.Close() })
+	_ = nextEvent(t, opened.Events())
+	return opened
+}
+
+func runTurnToCompletion(t *testing.T, opened ports.ChatConversation) ports.ChatEvent {
+	t.Helper()
+	ref, err := opened.SendTurn(context.Background(), ports.ChatUserMessage{Text: "go"})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := opened.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+	for {
+		event := nextEvent(t, opened.Events())
+		if event.Kind == ports.ChatEventTurnCompleted {
+			return event
+		}
 	}
 }
 

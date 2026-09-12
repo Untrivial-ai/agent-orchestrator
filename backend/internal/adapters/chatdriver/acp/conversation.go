@@ -560,6 +560,12 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	var state domain.TurnState
+	// Carried onto the turn-completed event below, the only field the service
+	// reads to store conversation_turns.error_message. The err != nil branch
+	// deliberately leaves this nil: it already emits ChatEventError, which the
+	// timeline renders as its own row, and filling both would print the same
+	// failure twice.
+	var failure error
 	if err != nil {
 		if interruptedLocally || errors.Is(err, context.Canceled) {
 			state = domain.TurnStateInterrupted
@@ -575,6 +581,14 @@ func (c *conversation) finishPrompt(
 		}
 	} else {
 		state = turnState(resp.StopReason)
+		// A stop reason that is neither EndTurn nor Cancelled fails the turn while
+		// the prompt RPC itself succeeded, so nothing reports it: no error event,
+		// no message, just a bare "The agent ran into a problem". A stop the user
+		// asked for is excluded, since an agent abandoning cancelled work is not
+		// an agent-side failure to blame on it.
+		if state == domain.TurnStateFailed && !interruptedLocally {
+			failure = stopReasonFailure(resp.StopReason)
+		}
 		if resp.Usage != nil {
 			cached := 0
 			if resp.Usage.CachedReadTokens != nil {
@@ -595,7 +609,7 @@ func (c *conversation) finishPrompt(
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state,
+		ProviderTurnID: turnID, TurnState: state, Err: failure,
 	})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 
@@ -610,6 +624,17 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+}
+
+// stopReasonFailure explains a turn that ended without an error of its own. A
+// non-conforming agent can omit the stop reason altogether, which turnState also
+// treats as a failure, so that case gets its own wording rather than an empty
+// pair of quotes.
+func stopReasonFailure(reason acpsdk.StopReason) error {
+	if strings.TrimSpace(string(reason)) == "" {
+		return errors.New("the agent ended the turn without reporting a stop reason")
+	}
+	return fmt.Errorf("the agent stopped early (stop reason %q)", reason)
 }
 
 func turnState(reason acpsdk.StopReason) domain.TurnState {
