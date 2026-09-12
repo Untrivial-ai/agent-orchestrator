@@ -2,9 +2,7 @@ package httpd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/sse"
 
 	"time"
 )
@@ -45,6 +44,9 @@ func (c *EventsController) Register(r chi.Router) {
 // negligible on a metered connection. A var so tests need not wait it out.
 var eventsHeartbeatInterval = 10 * time.Second
 
+// eventsWriteTimeout bounds stalled client writes. A var so tests need not wait it out.
+var eventsWriteTimeout = sse.DefaultWriteTimeout
+
 func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	if c.Source == nil || c.Live == nil {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/events")
@@ -72,13 +74,6 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 		after = latestSeq
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED",
-			"Streaming is not supported by this server", nil)
-		return
-	}
-
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -94,17 +89,14 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	})
 	defer unsubscribe()
 
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream; charset=utf-8")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Connection", "keep-alive")
-	h.Set("X-Accel-Buffering", "no")
-	h.Set(eventAfterHeader, strconv.FormatInt(after, 10))
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	w.Header().Set(eventAfterHeader, strconv.FormatInt(after, 10))
+	sw, err := sse.Upgrade(w, r, sse.WithWriteTimeout(eventsWriteTimeout))
+	if err != nil {
+		return
+	}
 
 	sentSeq := after
-	if err := c.replay(ctx, w, flusher, &sentSeq); err != nil {
+	if err := c.replay(ctx, sw, &sentSeq); err != nil {
 		return
 	}
 
@@ -124,21 +116,20 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-heartbeat.C:
-			if _, err := io.WriteString(w, ":\n\n"); err != nil {
+			if err := sw.WriteComment(""); err != nil {
 				return
 			}
-			flusher.Flush()
 		case <-ctx.Done():
 			return
 		case e := <-live:
-			if err := writeSSEEvent(w, flusher, e, &sentSeq); err != nil {
+			if err := writeSSEEvent(sw, e, &sentSeq); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (c *EventsController) replay(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, sentSeq *int64) error {
+func (c *EventsController) replay(ctx context.Context, sw *sse.Writer, sentSeq *int64) error {
 	for {
 		events, err := c.Source.EventsAfter(ctx, *sentSeq, eventsReplayBatch)
 		if err != nil {
@@ -148,7 +139,7 @@ func (c *EventsController) replay(ctx context.Context, w http.ResponseWriter, fl
 			return nil
 		}
 		for _, e := range events {
-			if err := writeSSEEvent(w, flusher, e, sentSeq); err != nil {
+			if err := writeSSEEvent(sw, e, sentSeq); err != nil {
 				return err
 			}
 		}
@@ -173,19 +164,14 @@ func parseEventsAfter(r *http.Request) (int64, error) {
 	return seq, nil
 }
 
-func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, e cdc.Event, sentSeq *int64) error {
+func writeSSEEvent(sw *sse.Writer, e cdc.Event, sentSeq *int64) error {
 	if e.Seq <= *sentSeq {
 		return nil
 	}
-	data, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, sseEventName(e.Type), data); err != nil {
+	if err := sw.WriteJSON(strconv.FormatInt(e.Seq, 10), sseEventName(e.Type), e); err != nil {
 		return err
 	}
 	*sentSeq = e.Seq
-	flusher.Flush()
 	return nil
 }
 

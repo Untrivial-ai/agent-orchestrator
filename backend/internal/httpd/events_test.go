@@ -14,6 +14,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/sse"
 )
 
 type fakeEventSource struct {
@@ -216,11 +217,16 @@ func TestEventsStreamClampsCursorAheadOfCurrentDatabaseToHead(t *testing.T) {
 
 func TestWriteSSEEventSanitizesEventNameNewlines(t *testing.T) {
 	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	sw, err := sse.Upgrade(rec, req)
+	if err != nil {
+		t.Fatalf("sse.Upgrade: %v", err)
+	}
 	sentSeq := int64(0)
 	e := testCDCEvent(1)
 	e.Type = cdc.EventType("session_updated\nid: 999\rdata: injected")
 
-	if err := writeSSEEvent(rec, rec, e, &sentSeq); err != nil {
+	if err := writeSSEEvent(sw, e, &sentSeq); err != nil {
 		t.Fatalf("writeSSEEvent: %v", err)
 	}
 
@@ -446,4 +452,111 @@ func TestEventsStreamHeartbeatsWhileIdle(t *testing.T) {
 		}
 	}
 	t.Fatalf("idle stream sent no comment frame in 4s (got %q); a buffering proxy has nothing to flush an event through", seen)
+}
+
+type timeoutOnEventWriter struct {
+	*httptest.ResponseRecorder
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (w *timeoutOnEventWriter) SetWriteDeadline(t time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deadline = t
+	return nil
+}
+
+func (w *timeoutOnEventWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	d := w.deadline
+	w.mu.Unlock()
+	if strings.Contains(string(p), "event:") {
+		if !d.IsZero() && time.Now().Before(d) {
+			time.Sleep(time.Until(d) + 5*time.Millisecond)
+		}
+		return 0, context.DeadlineExceeded
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+func TestEventsStream_BlockedWriterExitsAndUnsubscribesThroughMiddleware(t *testing.T) {
+	restore := eventsWriteTimeout
+	eventsWriteTimeout = 50 * time.Millisecond
+	defer func() { eventsWriteTimeout = restore }()
+
+	live := &fakeEventSubscriber{}
+	src := &fakeEventSource{live: live}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		CDC:    src,
+		Events: live,
+	}, ControlDeps{})
+
+	tw := &timeoutOnEventWriter{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?after=10", nil)
+
+	handlerDone := make(chan struct{})
+	go func() {
+		router.ServeHTTP(tw, req)
+		close(handlerDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for !live.hasSubscriber() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !live.hasSubscriber() {
+		t.Fatal("subscriber was not installed")
+	}
+
+	live.publish(testCDCEvent(11))
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not exit within bounded write deadline")
+	}
+
+	if live.hasSubscriber() {
+		t.Fatal("live subscriber was retained after handler exit; expected unsubscribe")
+	}
+}
+
+func TestEventsStream_ContextCancellationUnsubscribes(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &fakeEventSource{live: live}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		CDC:    src,
+		Events: live,
+	}, ControlDeps{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?after=10", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		router.ServeHTTP(rec, req)
+		close(handlerDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for !live.hasSubscriber() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !live.hasSubscriber() {
+		t.Fatal("subscriber was not installed")
+	}
+
+	cancel()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not exit after context cancellation")
+	}
+
+	if live.hasSubscriber() {
+		t.Fatal("live subscriber was retained after context cancellation; expected unsubscribe")
+	}
 }

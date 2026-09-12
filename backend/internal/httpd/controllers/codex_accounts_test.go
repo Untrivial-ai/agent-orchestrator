@@ -1,6 +1,7 @@
 package controllers_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -392,5 +393,65 @@ func TestCodexAccountEventStreamSendsNamedCachedState(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("event leaked %q: %s", forbidden, body)
 		}
+	}
+}
+
+func TestCodexAccountEventStream_HeartbeatsWhileIdle(t *testing.T) {
+	restore := controllers.CodexAccountsStreamHeartbeatInterval
+	controllers.CodexAccountsStreamHeartbeatInterval = 50 * time.Millisecond
+	defer func() { controllers.CodexAccountsStreamHeartbeatInterval = restore }()
+
+	fake := &fakeCodexAccounts{result: codexAccountsFixture()}
+	srv := newCodexAccountServer(t, fake)
+	defer srv.Close()
+
+	response, err := http.Get(srv.URL + "/api/v1/agents/codex/accounts/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	reader := bufio.NewReader(response.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, ": heartbeat") {
+			return
+		}
+	}
+	t.Fatal("idle codex accounts stream sent no heartbeat comment frame")
+}
+
+func TestCodexAccountEventStream_BlockedClientExits(t *testing.T) {
+	restore := controllers.CodexAccountsStreamWriteTimeout
+	controllers.CodexAccountsStreamWriteTimeout = 50 * time.Millisecond
+	defer func() { controllers.CodexAccountsStreamWriteTimeout = restore }()
+
+	events := make(chan agentsvc.CodexAccounts, 1)
+	fake := &fakeCodexAccounts{result: codexAccountsFixture(), events: events}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		CodexAccounts: fake,
+	}, httpd.ControlDeps{})
+
+	tw := &timeoutOnNotificationWriter{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/codex/accounts/events", nil)
+
+	handlerDone := make(chan struct{})
+	go func() {
+		router.ServeHTTP(tw, req)
+		close(handlerDone)
+	}()
+
+	events <- codexAccountsFixture()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not exit within bounded write deadline")
 	}
 }

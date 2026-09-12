@@ -2674,6 +2674,84 @@ func TestSessionsAPI_StreamWorkspaceChanges(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_StreamWorkspaceChanges_HeartbeatsWhileIdle(t *testing.T) {
+	restore := controllers.WorkspaceStreamHeartbeatInterval
+	controllers.WorkspaceStreamHeartbeatInterval = 50 * time.Millisecond
+	defer func() { controllers.WorkspaceStreamHeartbeatInterval = restore }()
+
+	workspace := t.TempDir()
+	svc := newFakeSessionService()
+	session := svc.sessions["ao-1"]
+	session.Metadata.WorkspacePath = workspace
+	svc.sessions["ao-1"] = session
+	srv := newSessionTestServer(t, svc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/sessions/ao-1/workspace/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, ": keepalive") {
+			return
+		}
+	}
+	t.Fatal("idle workspace stream sent no keepalive comment frame")
+}
+
+func TestSessionsAPI_StreamWorkspaceChanges_BlockedClientExits(t *testing.T) {
+	restoreTimeout := controllers.WorkspaceStreamWriteTimeout
+	controllers.WorkspaceStreamWriteTimeout = 50 * time.Millisecond
+	defer func() { controllers.WorkspaceStreamWriteTimeout = restoreTimeout }()
+
+	workspace := t.TempDir()
+	svc := newFakeSessionService()
+	session := svc.sessions["ao-1"]
+	session.Metadata.WorkspacePath = workspace
+	svc.sessions["ao-1"] = session
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: svc,
+	}, httpd.ControlDeps{})
+
+	tw := &timeoutOnNotificationWriter{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/ao-1/workspace/events", nil)
+
+	handlerDone := make(chan struct{})
+	go func() {
+		router.ServeHTTP(tw, req)
+		close(handlerDone)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	writeDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(writeDeadline) {
+		select {
+		case <-handlerDone:
+			return
+		default:
+			_ = os.WriteFile(filepath.Join(workspace, "README.md"), []byte(time.Now().String()), 0o644)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	t.Fatal("handler did not exit within bounded write deadline")
+}
+
 func TestSessionsAPI_SetPreviewEmptyURLNoEntry(t *testing.T) {
 	svc := newFakeSessionService()
 	s := svc.sessions["ao-1"]
