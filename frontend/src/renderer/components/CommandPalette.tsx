@@ -80,6 +80,14 @@ export function CommandPalette() {
 	viewRef.current = view;
 	const closeResetTimerRef = useRef<number | null>(null);
 	const returnFocusRef = useRef<HTMLElement | null>(null);
+	const rootInputRef = useRef<HTMLInputElement>(null);
+	const focusRootRef = useRef(false);
+	useEffect(() => {
+		if (view.mode === "root" && focusRootRef.current) {
+			rootInputRef.current?.focus();
+			focusRootRef.current = false;
+		}
+	}, [view.mode]);
 
 	const currentSession = params.sessionId ? findSession(workspaces, params.sessionId)?.session : undefined;
 	const currentProjectId = currentSession?.workspaceId ?? params.projectId;
@@ -232,6 +240,7 @@ export function CommandPalette() {
 
 	const popToRoot = useCallback(() => {
 		const wasImport = viewRef.current.mode === "import-search";
+		focusRootRef.current = wasImport;
 		setView({ mode: "root" });
 		setPendingDismiss(null);
 		if (!wasImport) resetTransient();
@@ -598,7 +607,7 @@ export function CommandPalette() {
 				) : (
 					<>
 						<CommandInput
-							autoFocus
+							ref={rootInputRef}
 							value={query}
 								onValueChange={(next) => {
 									setQuery(next);
