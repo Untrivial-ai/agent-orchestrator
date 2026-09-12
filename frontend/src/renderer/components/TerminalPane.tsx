@@ -960,6 +960,11 @@ function AttachedTerminal({
 		};
 	}, [replayPaintPending, replaySettled, terminal]);
 	const handleId = shellTerminalHandleId ?? attachSession?.terminalHandleId;
+	const handleRetry = useCallback(() => {
+		// Re-mount the terminal attachment to reset the failure counter
+		// and start a fresh connection attempt.
+		if (terminal) attach(terminal);
+	}, [attach, terminal]);
 	const provider = terminalTarget?.kind === "reviewer" ? terminalTarget.harness : session?.provider;
 	const isSessionActive = session ? sessionIsActive(session) : false;
 	// A standalone shell is never restorable: there is no session row to restore.
@@ -1033,7 +1038,16 @@ function AttachedTerminal({
 		);
 	}
 
-	const banner = bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
+	// Detect specific cloud WebSocket block error and for 
+	// Any other error (PTY crash, pane error) keeps the generic banner.
+	const isCloudConnectError =
+		state === "error" &&
+		Boolean(attachSession?.cloud) &&
+		!hasAttached &&
+		error?.includes("WebSocket cannot connect");
+	const banner = isCloudConnectError
+		? undefined
+		: bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
 	const showEmptyState = !handleId;
 	// Cover xterm while the attachment buffers the initial replay, so the pane
 	// appears already drawn at the tail instead of visibly scrolling down to it.
@@ -1100,6 +1114,7 @@ function AttachedTerminal({
 					</div>
 				)}
 				{showReplayCover && <ReplayCover />}
+				{isCloudConnectError && <CloudConnectError onRetry={handleRetry} />}
 				{banner && (
 					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
 						{banner}
@@ -1119,6 +1134,37 @@ function AttachedTerminal({
 		</div>
 	);
 }
+
+// Shown when a cloud terminal ticket was issued but the WebSockets
+// permanently failed to connect (proxy/firewall/CSP block).
+// Distinct from a PTY error: it is recoverable - the user can retry
+// once they have fixed their network policy, without a full page reload.
+
+function CloudConnectError({ onRetry }: { onRetry: () => void }) {
+	const { t } = useTranslation();
+	return (
+		<div className="absolute inset-0 z-10 grid place-items-center bg-terminal-opaque pointer-events-auto">
+			<div className="flex max-w-sm flex-col items-center gap-4 rounded-lg border border-border bg-surface p-6 text-center shadow-lg">
+				<div className="font-mono text-sm font-medium text-foreground">
+					{t("terminal.cloudConnectTitle")}
+				</div>
+				<div className="text-xs leading-relaxed text-muted-foreground">
+					{t("terminal.cloudConnectDescription")}
+				</div>
+				<button
+					type="button"
+					id="cloud-terminal-retry"
+					className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-raised px-3 py-1.5 font-mono text-xs text-foreground transition hover:bg-interactive-hover"
+					onClick={onRetry}
+				>
+					<RotateCcw className="size-3" aria-hidden="true" />
+					{t("terminal.cloudConnectRetry")}
+				</button>
+			</div>
+		</div>
+	);
+}
+
 
 function ReplayCover() {
 	return (

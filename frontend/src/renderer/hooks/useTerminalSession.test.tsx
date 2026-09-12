@@ -1049,3 +1049,109 @@ describe("useTerminalSession", () => {
 		});
 	});
 });
+
+// Issue #4668 — cloud WebSocket failure counter 
+// A cloud session whose WebSocket permanently fails (CSP / proxy / firewall)
+// must stop minting tickets and surface a real error after
+// CLOUD_CONNECT_MAX_FAILURES (8) consecutive socket closures before the first
+// successful open. The counter resets on the first successful open, so later
+// transport drops use the normal exponential backoff path instead.
+describe("cloud WebSocket failure counter (issue #4668)", () => {
+	const cloudSession: WorkspaceSession = {
+		...session,
+		cloud: { orgId: "org-1" },
+	};
+
+	// Minimal setup for a cloud session using fake timers already installed by
+	// the outer beforeEach. coverInitialReplay=false keeps the replay gate out
+	// of the way so we only assert on connection-state transitions.
+	function setupCloud() {
+		const muxes: FakeMux[] = [];
+		const createMux = () => {
+			const fake = createFakeMux();
+			muxes.push(fake);
+			return fake.mux;
+		};
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const view = renderHook(
+			() =>
+				useTerminalSession(cloudSession, {
+					daemonReady: true,
+					createMux,
+					coverInitialReplay: false,
+				}),
+			{ wrapper },
+		);
+		const terminal = createFakeTerminal();
+		act(() => {
+			view.result.current.attach(terminal);
+		});
+		return { view, muxes };
+	}
+
+	// Helper: drive N socket-close + timer cycles without ever emitting 'opened'.
+	// Each cycle = one cloudConnectFailures increment.
+	function driveFailures(muxes: FakeMux[], count: number) {
+		for (let i = 0; i < count; i++) {
+			act(() => muxes[muxes.length - 1].emitConnection("closed"));
+			// Advance past CLOUD_CONNECT_RETRY_MS (1 000 ms) so the retry timer
+			// fires and scheduleReattach runs for the next attempt.
+			act(() => void vi.advanceTimersByTime(1_100));
+		}
+	}
+
+	it("stops retrying and enters error state after 8 consecutive WebSocket failures", () => {
+		const { view, muxes } = setupCloud();
+
+		driveFailures(muxes, 8);
+
+		expect(view.result.current.state).toBe("error");
+		expect(view.result.current.error).toBeTruthy();
+	});
+
+	it("keeps retrying while failures are below the threshold (7 of 8)", () => {
+		const { view, muxes } = setupCloud();
+
+		driveFailures(muxes, 7);
+
+		// 7 failures = still within limit — hook must still be trying.
+		expect(view.result.current.state).toBe("reattaching");
+		// A new mux is created on each retry, so there should be > 7 muxes.
+		expect(muxes.length).toBeGreaterThan(7);
+	});
+
+	it("resets the counter after a successful open so post-drop retries use backoff", () => {
+		const { view, muxes } = setupCloud();
+
+		// 5 failures — below threshold.
+		driveFailures(muxes, 5);
+		expect(view.result.current.state).toBe("reattaching");
+
+		// The next attempt succeeds — counter resets to 0.
+		act(() => muxes[muxes.length - 1].emitOpened("handle-1"));
+		expect(view.result.current.state).toBe("attached");
+
+		// 3 more failures after a real open must NOT trip the error threshold
+		// (counter was zeroed on open, so we are at 3/8 now).
+		for (let i = 0; i < 3; i++) {
+			act(() => muxes[muxes.length - 1].emitConnection("closed"));
+			act(() => void vi.advanceTimersByTime(10_000)); // exponential backoff
+		}
+		expect(view.result.current.state).toBe("reattaching");
+		expect(view.result.current.error).toBeUndefined();
+	});
+
+	it("error message contains the proxy/firewall/CSP hint for the user", () => {
+		const { view, muxes } = setupCloud();
+
+		driveFailures(muxes, 8);
+
+		expect(view.result.current.error).toContain("WebSocket cannot connect");
+		expect(view.result.current.error).toContain("proxy");
+	});
+});
