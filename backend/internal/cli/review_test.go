@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -165,40 +166,114 @@ func TestReviewSubmitBatchRetriesAcrossDaemonRestart(t *testing.T) {
 }
 
 func TestReviewSubmitRetriesUncertainTransportFailureWithIdenticalPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bodyErr error
+	}{
+		{name: "before response headers"},
+		{name: "unexpected EOF in response body", bodyErr: io.ErrUnexpectedEOF},
+		{name: "closed pipe in response body", bodyErr: io.ErrClosedPipe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, _ := reviewServer(t, http.StatusOK, `{}`)
+			writeRunFileFor(t, cfg, srv)
+
+			var bodies []string
+			deps := aliveDeps()
+			deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved","githubReviewId":"101"}]}`)
+			deps.Sleep = func(time.Duration) {}
+			deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
+					return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+				}
+				raw, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bodies = append(bodies, string(raw))
+				if len(bodies) == 1 {
+					// The daemon may have committed before the connection broke.
+					// This also covers a successful status followed by a body read failure.
+					if tc.bodyErr == nil {
+						return nil, io.ErrUnexpectedEOF
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body: io.NopCloser(io.MultiReader(
+							strings.NewReader(`{"reviews":[`), iotest.ErrReader(tc.bodyErr),
+						)),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"reviews":[{"id":"run-1","verdict":"approved"}]}`)),
+				}, nil
+			})}
+
+			out, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
+			if err != nil {
+				t.Fatalf("retry uncertain result: %v\nstderr=%s", err, errOut)
+			}
+			if len(bodies) != 2 || bodies[0] != bodies[1] {
+				t.Fatalf("request bodies = %#v, want two identical attempts", bodies)
+			}
+			if !strings.Contains(out, "recorded 1 review(s) for mer-1") {
+				t.Fatalf("stdout = %q", out)
+			}
+		})
+	}
+}
+
+func TestReviewSubmitDoesNotRetryInvalidJSONResponse(t *testing.T) {
+	for _, body := range []string{
+		`{"reviews":[}`,
+		`{"reviews":"invalid type"}`,
+		`{"reviews":[{"createdAt":"invalid timestamp"}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, _ := reviewServer(t, http.StatusOK, body)
+			writeRunFileFor(t, cfg, srv)
+
+			deps := aliveDeps()
+			deps.Sleep = func(time.Duration) { t.Fatal("must not retry invalid response JSON") }
+			_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved")
+			if err == nil || !strings.Contains(err.Error(), "decode response") {
+				t.Fatalf("err = %v, want response decoding failure", err)
+			}
+		})
+	}
+}
+
+func TestReviewRestartDoesNotRetryResponseBodyFailure(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, _ := reviewServer(t, http.StatusOK, `{}`)
 	writeRunFileFor(t, cfg, srv)
 
-	var bodies []string
+	attempts := 0
 	deps := aliveDeps()
-	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved","githubReviewId":"101"}]}`)
-	deps.Sleep = func(time.Duration) {}
+	deps.Sleep = func(time.Duration) { t.Fatal("must not retry a review trigger") }
 	deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
+		if req.URL.Path != "/api/v1/sessions/mer-1/reviews/trigger" {
 			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
 		}
-		raw, err := io.ReadAll(req.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bodies = append(bodies, string(raw))
-		if len(bodies) == 1 {
-			// The daemon may have committed before the connection broke. A retry
-			// must therefore send byte-for-byte equivalent idempotency fields.
-			return nil, io.ErrUnexpectedEOF
-		}
+		attempts++
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"reviews":[{"id":"run-1","verdict":"approved"}]}`)),
+			Body:       io.NopCloser(io.MultiReader(strings.NewReader(`{"created":`), iotest.ErrReader(io.ErrUnexpectedEOF))),
 		}, nil
 	})}
 
-	if _, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-"); err != nil {
-		t.Fatalf("retry uncertain result: %v\nstderr=%s", err, errOut)
+	_, _, err := executeCLI(t, deps, "review", "restart", "mer-1")
+	if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "decode response") {
+		t.Fatalf("err = %v, want wrapped response body failure", err)
 	}
-	if len(bodies) != 2 || bodies[0] != bodies[1] {
-		t.Fatalf("request bodies = %#v, want two identical attempts", bodies)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 

@@ -50,6 +50,18 @@ func (e daemonUnavailableError) Is(target error) bool {
 	return target == errDaemonUnavailable || errors.Is(e.cause, target)
 }
 
+// daemonResponseBody marks read failures for retry by idempotent calls. Keeping
+// the marker at the reader boundary leaves JSON syntax and value errors intact.
+type daemonResponseBody struct{ io.ReadCloser }
+
+func (b daemonResponseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, daemonUnavailableError{message: err.Error(), cause: err}
+	}
+	return n, err
+}
+
 func (e apiResponseError) Error() string {
 	if e.ErrorBody.Message == "" {
 		return fmt.Sprintf("daemon returned HTTP %d", e.StatusCode)
@@ -175,6 +187,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	if err != nil {
 		return daemonUnavailableError{message: fmt.Sprintf("call daemon: %v", err), cause: err}
 	}
+	resp.Body = daemonResponseBody{ReadCloser: resp.Body}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
