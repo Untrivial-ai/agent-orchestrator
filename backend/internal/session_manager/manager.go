@@ -1266,6 +1266,19 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	return merged
 }
 
+// restoredAgentConfig keeps a Claude session's spawn-time model selection while
+// continuing to resolve its other settings from the current project config.
+func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
+	merged := effectiveAgentConfig(rec.Kind, cfg)
+	if rec.Harness == domain.HarnessClaudeCode {
+		// A blank snapshot means either agent default or an older session whose
+		// selection was not recorded. Leave it unset so native resume can keep
+		// its own model instead of overriding it with today's project defaults.
+		merged.Model = rec.Metadata.Model
+	}
+	return merged
+}
+
 func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	if override.Model != "" {
 		base.Model = override.Model
@@ -1915,9 +1928,7 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt file: %w", operation, rec.ID, err)
 	}
 
-	// Restore re-applies the project's resolved agent config so a configured
-	// model/permissions carry across a restore, matching fresh spawn.
-	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	agentConfig := restoredAgentConfig(rec, project.Config)
 	env, browserCapabilityVerifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: browser capability: %w", operation, rec.ID, err)
