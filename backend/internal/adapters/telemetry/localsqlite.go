@@ -33,6 +33,8 @@ type LocalSQLiteSink struct {
 	ch        chan ports.TelemetryEvent
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+	queueMu   sync.RWMutex
+	closed    bool
 	now       func() time.Time
 	newID     func() string
 
@@ -56,16 +58,31 @@ func NewLocalSQLiteSink(store localStore, log *slog.Logger) *LocalSQLiteSink {
 
 // Emit enqueues an event for best-effort persistence.
 func (s *LocalSQLiteSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
+	s.queueMu.RLock()
+	if s.closed {
+		s.queueMu.RUnlock()
+		return
+	}
+	queued := false
 	select {
 	case s.ch <- ev:
+		queued = true
 	default:
+	}
+	s.queueMu.RUnlock()
+	if !queued {
 		s.log.Warn("telemetry local sink buffer full; dropping event", "name", ev.Name, "source", ev.Source)
 	}
 }
 
 // Close drains the worker until completion or context cancellation.
 func (s *LocalSQLiteSink) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() { close(s.ch) })
+	s.closeOnce.Do(func() {
+		s.queueMu.Lock()
+		s.closed = true
+		close(s.ch)
+		s.queueMu.Unlock()
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
