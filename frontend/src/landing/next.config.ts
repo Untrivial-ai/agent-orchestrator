@@ -1,6 +1,8 @@
+import { resolve } from "node:path";
 import type { NextConfig } from "next";
 
-const landingRoot = process.cwd();
+// The landing app imports shared CSS from the sibling site-theme package.
+const landingRoot = resolve(process.cwd(), "..");
 const usesServerRuntime =
 	Boolean(process.env.NEXT_PUBLIC_API_URL) ||
 	process.env.NEXT_PUBLIC_AO_AUTH_MODE === "workos" ||

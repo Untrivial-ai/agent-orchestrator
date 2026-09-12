@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 
 const serverRuntimeEnvironment = [
   "NEXT_PUBLIC_API_URL",
@@ -39,7 +40,7 @@ describe("Next configuration", () => {
 
     expect(config.output).toBeUndefined();
     expect(config.trailingSlash).toBe(false);
-    expect(config.turbopack?.root).toBe(process.cwd());
+    expect(config.turbopack?.root).toBe(resolve(process.cwd(), ".."));
   });
 
   it("keeps the marketing site as a static export", async () => {
