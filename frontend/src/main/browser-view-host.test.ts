@@ -338,6 +338,9 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		setBrowserZoomFactor: (zoomFactor: number) => {
 			browserZoomFactor = zoomFactor;
 		},
+		setCurrentURL: (url: string) => {
+			currentURL = url;
+		},
 		view,
 		webContents,
 		webContentsListeners,
@@ -856,7 +859,15 @@ describe("browser:openTab navigation failure", () => {
 });
 
 describe("browser:act", () => {
-	function setupActHost(runAction: (sessionId: string, action: string, args: Record<string, unknown>) => Promise<unknown>) {
+	function setupActHost(
+		runAction: (
+			sessionId: string,
+			action: string,
+			args: Record<string, unknown>,
+			provider?: unknown,
+			signal?: AbortSignal,
+		) => Promise<unknown>,
+	) {
 		const runtime = {
 			runAction: vi.fn(runAction),
 			closeSession: vi.fn(async () => undefined),
@@ -884,6 +895,422 @@ describe("browser:act", () => {
 			expect.objectContaining({ listTargets: expect.any(Function) }),
 			undefined,
 		);
+	});
+
+	it("reports before/after facts and a satisfied navigation postcondition separately from matching", async () => {
+		let page: ReturnType<typeof setupActHost>;
+		page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Continue" [ref=e1]', refs: { e1: { role: "button", name: "Continue" } } };
+			}
+			if (action === "click") {
+				page.setCurrentURL("http://localhost:5173/next");
+				page.webContentsListeners.get("did-navigate")?.({} as never, "http://localhost:5173/next" as never);
+				return { clicked: true };
+			}
+			return {};
+		});
+		await page.host.execute("sess-1", "tabs");
+		page.setCurrentURL("http://localhost:5173/start");
+
+		const result = (await page.host.execute("sess-1", "act", {
+			instruction: "continue",
+			postcondition: { kind: "navigation", timeoutMs: 50 },
+		})) as Record<string, unknown>;
+
+		expect(result).toMatchObject({
+			outcome: "matched",
+			inputDispatched: true,
+			before: { url: "http://localhost:5173/start", documentGeneration: 0, navigationGeneration: 0 },
+			after: { url: "http://localhost:5173/next", documentGeneration: 1, navigationGeneration: 1 },
+			postcondition: { kind: "navigation", status: "satisfied" },
+		});
+	});
+
+	it("does not report a pre-existing URL postcondition as an effect of the action", async () => {
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Refresh" [ref=e1]', refs: { e1: { role: "button", name: "Refresh" } } };
+			}
+			if (action === "wait") return { waited: "url" };
+			return { clicked: true };
+		});
+		await page.host.execute("sess-1", "tabs");
+		page.setCurrentURL("http://localhost:5173/already-there");
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "refresh",
+			postcondition: { kind: "url", value: "/already-there", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({
+			inputDispatched: true,
+			postcondition: { kind: "url", status: "already-satisfied", reason: "pre-existing" },
+		});
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "wait")).toHaveLength(0);
+	});
+
+	it("checks whether expected text existed before dispatch", async () => {
+		const callOrder: string[] = [];
+		const page = setupActHost(async (_sessionId, action) => {
+			callOrder.push(action);
+			if (action === "snapshot") {
+				return { snapshot: '- button "Save" [ref=e1]', refs: { e1: { role: "button", name: "Save" } } };
+			}
+			if (action === "get") return { text: "Saved before this action" };
+			if (action === "wait") return { waited: "text" };
+			return { clicked: true };
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "save",
+			postcondition: { kind: "text", value: "Saved", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({
+			inputDispatched: true,
+			postcondition: { kind: "text", status: "already-satisfied", reason: "pre-existing" },
+		});
+		expect(callOrder).toEqual(["snapshot", "get", "click"]);
+	});
+
+	it("reports a beforeunload-cancelled navigation without retrying the action", async () => {
+		let page: ReturnType<typeof setupActHost>;
+		page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Leave" [ref=e1]', refs: { e1: { role: "button", name: "Leave" } } };
+			}
+			if (action === "click") {
+				page.webContentsListeners.get("will-prevent-unload")?.({} as never);
+				return { clicked: true };
+			}
+			return {};
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "leave",
+			postcondition: { kind: "navigation", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({
+			outcome: "matched",
+			navigation: { status: "cancelled", reason: "beforeunload" },
+			postcondition: { kind: "navigation", status: "cancelled", reason: "beforeunload" },
+		});
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("reports an unmet postcondition without retrying a non-idempotent action", async () => {
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Pay" [ref=e1]', refs: { e1: { role: "button", name: "Pay" } } };
+			}
+			return { clicked: true };
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "pay",
+			postcondition: { kind: "navigation", timeoutMs: 1 },
+		});
+
+		expect(result).toMatchObject({
+			outcome: "matched",
+			inputDispatched: true,
+			postcondition: { kind: "navigation", status: "unmet" },
+		});
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("cancels a pending postcondition promptly without retrying the action", async () => {
+		const controller = new AbortController();
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Submit" [ref=e1]', refs: { e1: { role: "button", name: "Submit" } } };
+			}
+			return { clicked: true };
+		});
+
+		const pending = page.host.execute(
+			"sess-1",
+			"act",
+			{ instruction: "submit", postcondition: { kind: "navigation", timeoutMs: 10_000 } },
+			controller.signal,
+		);
+		await vi.waitFor(() => expect(page.runAction).toHaveBeenCalledWith("sess-1", "click", expect.anything(), expect.anything(), controller.signal));
+		controller.abort();
+
+		await expect(pending).rejects.toMatchObject({ code: "BROWSER_COMMAND_CANCELED" });
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("satisfies a DOM-change postcondition only from a fresh snapshot", async () => {
+		let snapshots = 0;
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				snapshots += 1;
+				return snapshots === 1
+					? { snapshot: '- button "Save" [ref=e1]', refs: { e1: { role: "button", name: "Save" } } }
+					: { snapshot: '- status "Saved"', refs: {} };
+			}
+			return { clicked: true };
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "save",
+			postcondition: { kind: "dom-change", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({ postcondition: { kind: "dom-change", status: "satisfied" } });
+		expect(snapshots).toBe(2);
+	});
+
+	it("does not treat an identical fresh snapshot as a DOM change", async () => {
+		const page = setupActHost(async (_sessionId, action, args) => {
+			if (action === "snapshot") {
+				expect(args).toMatchObject({ interactive: true });
+				return { snapshot: '- button "Save" [ref=e1]', refs: { e1: { role: "button", name: "Save" } } };
+			}
+			return { clicked: true };
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "save",
+			postcondition: { kind: "dom-change", timeoutMs: 1 },
+		});
+
+		expect(result).toMatchObject({ postcondition: { kind: "dom-change", status: "unmet", reason: "timeout" } });
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("prefers a committed navigation over an earlier beforeunload attempt", async () => {
+		let page: ReturnType<typeof setupActHost>;
+		page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Leave" [ref=e1]', refs: { e1: { role: "button", name: "Leave" } } };
+			}
+			if (action === "click") {
+				page.webContentsListeners.get("will-prevent-unload")?.({} as never);
+				page.setCurrentURL("http://localhost:5173/destination");
+				page.webContentsListeners.get("did-navigate")?.({} as never, "http://localhost:5173/destination" as never);
+				return { clicked: true };
+			}
+			return {};
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "leave",
+			postcondition: { kind: "navigation", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({
+			navigation: { status: "observed" },
+			postcondition: { kind: "navigation", status: "satisfied" },
+		});
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("correlates a newly activated popup and reports facts for that tab", async () => {
+		const page = setupTabHost();
+		const runAction = page.runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		runAction.mockImplementation(async (...callArgs: unknown[]) => {
+			const [, action] = callArgs as [string, string, Record<string, unknown>];
+			if (action === "snapshot") {
+				return { snapshot: '- button "Open" [ref=e1]', refs: { e1: { role: "button", name: "Open" } } };
+			}
+			if (action === "click") {
+				page.views[0].webContents.openWindow("http://localhost:3000/popup");
+				await vi.waitFor(() => expect(page.views[1]?.webContents.getURL()).toBe("http://localhost:3000/popup"));
+				return { clicked: true };
+			}
+			return originalRunAction(...callArgs);
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "open",
+			postcondition: { kind: "navigation", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({
+			before: { tabId: "t1" },
+			after: { tabId: "t2", url: "http://localhost:3000/popup" },
+			navigation: { status: "observed" },
+			postcondition: { kind: "navigation", status: "satisfied" },
+		});
+		expect(runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("does not satisfy navigation from an iframe history change", async () => {
+		let page: ReturnType<typeof setupActHost>;
+		page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Update frame" [ref=e1]', refs: { e1: { role: "button", name: "Update frame" } } };
+			}
+			if (action === "click") {
+				page.webContentsListeners.get("did-navigate-in-page")?.(
+					{} as never,
+					"http://localhost:5173/frame#changed" as never,
+					false as never,
+				);
+				return { clicked: true };
+			}
+			return {};
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "update frame",
+			postcondition: { kind: "navigation", timeoutMs: 1 },
+		});
+
+		expect(result).toMatchObject({
+			navigation: { status: "not-observed" },
+			postcondition: { kind: "navigation", status: "unmet", reason: "timeout" },
+		});
+	});
+
+	it.each([0, 55_001, 1.5, "1000"])("rejects invalid direct postcondition timeout %j", async (timeoutMs) => {
+		const page = setupActHost(async () => {
+			throw new Error("native runtime should not run for invalid input");
+		});
+
+		await expect(
+			page.host.execute("sess-1", "act", {
+				instruction: "continue",
+				postcondition: { kind: "navigation", timeoutMs },
+			}),
+		).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+		expect(page.runAction).not.toHaveBeenCalled();
+	});
+
+	it("maps a native URL wait timeout to an unmet postcondition", async () => {
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Continue" [ref=e1]', refs: { e1: { role: "button", name: "Continue" } } };
+			}
+			if (action === "wait") {
+				throw Object.assign(new Error("Wait timed out after 50ms"), { code: "AGENT_BROWSER_WAIT_TIMEOUT" });
+			}
+			return { clicked: true };
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "continue",
+			postcondition: { kind: "url", value: "/destination", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({
+			inputDispatched: true,
+			postcondition: { kind: "url", status: "unmet", expected: "/destination", reason: "timeout" },
+		});
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("polls DOM observations conservatively within the postcondition budget", async () => {
+		vi.useFakeTimers();
+		try {
+			let snapshots = 0;
+			const page = setupActHost(async (_sessionId, action) => {
+				if (action === "snapshot") {
+					snapshots += 1;
+					return { snapshot: '- button "Save" [ref=e1]', refs: { e1: { role: "button", name: "Save" } } };
+				}
+				return { clicked: true };
+			});
+
+			const pending = page.host.execute("sess-1", "act", {
+				instruction: "save",
+				postcondition: { kind: "dom-change", timeoutMs: 450 },
+			});
+			await vi.waitFor(() => expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1));
+			await vi.advanceTimersByTimeAsync(450);
+
+			await expect(pending).resolves.toMatchObject({
+				postcondition: { kind: "dom-change", status: "unmet", reason: "timeout" },
+			});
+			// One matching snapshot plus no more than three observations at a
+			// conservative interval. A 25 ms loop would issue about nineteen.
+			expect(snapshots).toBe(4);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("caps a slow native observation to the remaining postcondition deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			let snapshots = 0;
+			const page = setupActHost(async (_sessionId, action, _args, _provider, signal) => {
+				if (action === "snapshot") {
+					snapshots += 1;
+					if (snapshots === 1) {
+						return { snapshot: '- button "Save" [ref=e1]', refs: { e1: { role: "button", name: "Save" } } };
+					}
+					return new Promise((_resolve, reject) => {
+						signal?.addEventListener(
+							"abort",
+							() => reject(Object.assign(new Error("observation cancelled"), { code: "AGENT_BROWSER_CANCELLED" })),
+							{ once: true },
+						);
+					});
+				}
+				return { clicked: true };
+			});
+
+			const pending = page.host.execute("sess-1", "act", {
+				instruction: "save",
+				postcondition: { kind: "dom-change", timeoutMs: 50 },
+			});
+			await vi.waitFor(() => expect(snapshots).toBe(2));
+			await vi.advanceTimersByTimeAsync(50);
+
+			await expect(pending).resolves.toMatchObject({
+				postcondition: { kind: "dom-change", status: "unmet", reason: "timeout" },
+			});
+			expect(snapshots).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("propagates a native observation failure without redispatching the action", async () => {
+		let snapshots = 0;
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				snapshots += 1;
+				if (snapshots === 1) {
+					return { snapshot: '- button "Pay" [ref=e1]', refs: { e1: { role: "button", name: "Pay" } } };
+				}
+				throw Object.assign(new Error("browser target crashed"), { code: "AGENT_BROWSER_COMMAND_FAILED" });
+			}
+			return { clicked: true };
+		});
+
+		await expect(
+			page.host.execute("sess-1", "act", {
+				instruction: "pay",
+				postcondition: { kind: "dom-change", timeoutMs: 50 },
+			}),
+		).rejects.toMatchObject({ code: "AGENT_BROWSER_COMMAND_FAILED", message: "browser target crashed" });
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "click")).toHaveLength(1);
+	});
+
+	it("uses the action result as immediate evidence of a newly opened dialog", async () => {
+		const page = setupActHost(async (_sessionId, action) => {
+			if (action === "snapshot") {
+				return { snapshot: '- button "Delete" [ref=e1]', refs: { e1: { role: "button", name: "Delete" } } };
+			}
+			if (action === "click") return { clicked: true, dialogOpened: true };
+			throw new Error(`unexpected observation: ${action}`);
+		});
+
+		const result = await page.host.execute("sess-1", "act", {
+			instruction: "delete",
+			postcondition: { kind: "dialog", timeoutMs: 50 },
+		});
+
+		expect(result).toMatchObject({ postcondition: { kind: "dialog", status: "satisfied" } });
+		expect(page.runAction.mock.calls.filter(([, action]) => action === "dialog")).toHaveLength(0);
 	});
 
 	it("uses --nth to check an unnamed checkbox instead of a button named Check", async () => {

@@ -457,6 +457,16 @@ describe("agent-browser structured output", () => {
 		expect(thrown).toMatchObject({ code: "STALE_REFERENCE", message: "Reference expired" });
 	});
 
+	it("preserves the native wait-timeout distinction for postcondition observation", () => {
+		let thrown: unknown;
+		try {
+			parseAgentBrowserJSON(JSON.stringify({ success: false, error: "Wait timed out after 2500ms" }));
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ code: "AGENT_BROWSER_WAIT_TIMEOUT", message: "Wait timed out after 2500ms" });
+	});
+
 	it.each([
 		"Unknown ref: e99",
 		"Could not locate element with role=button name=Sign In",

@@ -28,6 +28,7 @@
 		"typecheck": "tsc --noEmit",
 		"typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
 		"test": "vitest run --config vite.renderer.config.ts",
+		"test:browser-postcondition-integration": "node ./scripts/run-browser-postcondition-integration.mjs",
 		"test:e2e": "playwright test",
 		"test:e2e:renderer": "playwright test --grep \"@T0|@P0\"",
 		"api:ts": "openapi-typescript ../backend/internal/httpd/apispec/openapi.yaml -o src/api/schema.ts"

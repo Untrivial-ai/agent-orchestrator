@@ -104,9 +104,10 @@ func newBrowserCommand(ctx *commandContext) *cobra.Command {
 	snapshot.Flags().BoolVar(&interactiveOnly, "interactive", false, "include only actionable elements")
 	cmd.AddCommand(snapshot)
 
-	var actVerb, actValue string
+	var actVerb, actValue, actExpectURL, actExpectText string
 	var actNth int
-	var actNthSet bool
+	var actNthSet, actExpectDialog, actExpectNavigation, actExpectDOMChange bool
+	var actPostconditionTimeout int
 	act := &cobra.Command{
 		Use:   "act <instruction>",
 		Short: "Resolve an element by description and act on it, snapshotting and retrying automatically",
@@ -124,14 +125,49 @@ func newBrowserCommand(ctx *commandContext) *cobra.Command {
 			if actNthSet {
 				actArgs["nth"] = actNth
 			}
+			var postcondition map[string]any
+			switch {
+			case actExpectURL != "":
+				postcondition = map[string]any{"kind": "url", "value": actExpectURL}
+			case actExpectText != "":
+				postcondition = map[string]any{"kind": "text", "value": actExpectText}
+			case actExpectDialog:
+				postcondition = map[string]any{"kind": "dialog"}
+			case actExpectNavigation:
+				postcondition = map[string]any{"kind": "navigation"}
+			case actExpectDOMChange:
+				postcondition = map[string]any{"kind": "dom-change"}
+			}
+			if postcondition != nil {
+				postcondition["timeoutMs"] = actPostconditionTimeout
+				actArgs["postcondition"] = postcondition
+			}
 			return ctx.runBrowserAction(cmd, "act", actArgs, jsonOutput)
 		},
 	}
 	act.Flags().StringVar(&actVerb, "action", "click", "verb to perform on the matched element (click, dblclick, focus, hover, fill, type, check, uncheck)")
 	act.Flags().StringVar(&actValue, "value", "", "text to fill/type; required when --action is fill or type")
 	act.Flags().IntVar(&actNth, "nth", 0, "0-based index to disambiguate when multiple candidates match equally")
+	act.Flags().StringVar(&actExpectURL, "expect-url", "", "wait for a URL containing this value after dispatch")
+	act.Flags().StringVar(&actExpectText, "expect-text", "", "wait for this page text after dispatch")
+	act.Flags().BoolVar(&actExpectDialog, "expect-dialog", false, "wait for a pending confirm or prompt dialog after dispatch")
+	act.Flags().BoolVar(&actExpectNavigation, "expect-navigation", false, "wait for a main-frame or in-page navigation after dispatch")
+	act.Flags().BoolVar(&actExpectDOMChange, "expect-dom-change", false, "wait for the accessibility snapshot to change after dispatch")
+	act.Flags().IntVar(&actPostconditionTimeout, "postcondition-timeout", 10_000, "postcondition timeout in milliseconds")
 	act.PreRunE = func(cmd *cobra.Command, _ []string) error {
 		actNthSet = cmd.Flags().Changed("nth")
+		selected := 0
+		for _, active := range []bool{actExpectURL != "", actExpectText != "", actExpectDialog, actExpectNavigation, actExpectDOMChange} {
+			if active {
+				selected++
+			}
+		}
+		if selected > 1 {
+			return usageError{errors.New("choose at most one action postcondition")}
+		}
+		if actPostconditionTimeout < 1 || actPostconditionTimeout > maxBrowserWaitMillis {
+			return usageError{fmt.Errorf("--postcondition-timeout must be between 1 and %d milliseconds", maxBrowserWaitMillis)}
+		}
 		return nil
 	}
 	cmd.AddCommand(act)
@@ -724,7 +760,29 @@ func writeBrowserActResult(cmd *cobra.Command, result map[string]any) error {
 		if retried {
 			suffix = " (after retrying a stale reference)"
 		}
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "Acted on: %s [ref=%s]%s\n%s\n", role, ref, suffix, browserUntrustedText(name))
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Element matched; input dispatched: %s [ref=%s]%s\n%s\n", role, ref, suffix, browserUntrustedText(name)); err != nil {
+			return err
+		}
+		if postcondition, ok := result["postcondition"].(map[string]any); ok {
+			status, _ := postcondition["status"].(string)
+			kind, _ := postcondition["kind"].(string)
+			reason, _ := postcondition["reason"].(string)
+			if reason != "" {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "Postcondition %s: %s (%s)\n", kind, status, reason)
+				return err
+			}
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Postcondition %s: %s\n", kind, status)
+			return err
+		}
+		if navigation, ok := result["navigation"].(map[string]any); ok {
+			status, _ := navigation["status"].(string)
+			reason, _ := navigation["reason"].(string)
+			if status == "cancelled" {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "Navigation: cancelled (%s)\n", reason)
+				return err
+			}
+		}
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No application postcondition requested; element matching is not proof of application success.")
 		return err
 	case "ambiguous":
 		candidates, _ := result["candidates"].([]any)

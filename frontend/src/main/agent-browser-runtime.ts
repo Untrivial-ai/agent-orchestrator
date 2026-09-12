@@ -733,7 +733,10 @@ export function parseAgentBrowserJSON(stdout: string): AgentBrowserJSONResult {
 	}
 	if (!isRecord(envelope)) throw runtimeError("AGENT_BROWSER_INVALID_OUTPUT", "Browser automation returned invalid output");
 	if (envelope.success === false) {
-		throw runtimeError(staleReferenceCode(envelope.error) ?? "AGENT_BROWSER_COMMAND_FAILED", stringError(envelope.error) || "Browser automation failed");
+		throw runtimeError(
+			staleReferenceCode(envelope.error) ?? waitTimeoutCode(envelope.error) ?? "AGENT_BROWSER_COMMAND_FAILED",
+			stringError(envelope.error) || "Browser automation failed",
+		);
 	}
 	const boundary = validContentBoundary(envelope._boundary);
 	const result: Record<string, unknown> = isRecord(envelope.data) ? { ...envelope.data } : { value: envelope.data };
@@ -785,6 +788,7 @@ function stringError(value: unknown): string {
 }
 
 const STALE_REFERENCE_MESSAGE = /^(?:Unknown ref:|Could not locate element with)/;
+const WAIT_TIMEOUT_MESSAGE = /^Wait timed out after \d+ms$/;
 
 // Preserve only the stale-reference signal needed by `act`. Other native
 // command failures stay generic so tab drift and close recovery paths continue
@@ -792,6 +796,10 @@ const STALE_REFERENCE_MESSAGE = /^(?:Unknown ref:|Could not locate element with)
 function staleReferenceCode(value: unknown): "STALE_REFERENCE" | undefined {
 	if (isRecord(value) && value.code === "STALE_REFERENCE") return "STALE_REFERENCE";
 	return typeof value === "string" && STALE_REFERENCE_MESSAGE.test(value) ? "STALE_REFERENCE" : undefined;
+}
+
+function waitTimeoutCode(value: unknown): "AGENT_BROWSER_WAIT_TIMEOUT" | undefined {
+	return WAIT_TIMEOUT_MESSAGE.test(stringError(value)) ? "AGENT_BROWSER_WAIT_TIMEOUT" : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
