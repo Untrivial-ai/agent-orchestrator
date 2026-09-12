@@ -1,12 +1,19 @@
 import { useTranslation } from "react-i18next";
 import type { components } from "../../../api/schema";
 import { Card, CardContent } from "../ui/card";
+import { Button } from "../ui/button";
 import { StatusBadge } from "./StatusBadge";
 
 type RunView = components["schemas"]["ControllersRunView"];
 
 type RunEntryProps = {
 	run: RunView;
+	isLatest?: boolean;
+	onStart?: () => void;
+	onCancel?: () => void;
+	onViewSession?: (sessionId: string) => void;
+	startPending?: boolean;
+	cancelPending?: boolean;
 };
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -14,7 +21,7 @@ function formatDateTime(iso: string | null | undefined): string {
 	return new Date(iso).toLocaleString();
 }
 
-export function RunEntry({ run }: RunEntryProps) {
+export function RunEntry({ run, isLatest, onStart, onCancel, onViewSession, startPending, cancelPending }: RunEntryProps) {
 	const { t } = useTranslation();
 
 	return (
@@ -78,6 +85,31 @@ export function RunEntry({ run }: RunEntryProps) {
 							<span className="text-muted-foreground">
 								{t("workflow.run.retryMode")}: {run.retryMode}
 							</span>
+						)}
+					</div>
+				)}
+
+				{isLatest && (
+					<div className="flex gap-2 border-t pt-2">
+						{run.status === "pending" && onStart && (
+							<Button size="sm" onClick={onStart} disabled={startPending} data-testid={`start-run-${run.id}`}>
+								{t("workflow.run.start")}
+							</Button>
+						)}
+						{run.status === "pending" && onCancel && (
+							<Button size="sm" variant="outline" onClick={onCancel} disabled={cancelPending} data-testid={`cancel-run-${run.id}`}>
+								{t("workflow.run.cancel")}
+							</Button>
+						)}
+						{run.status === "running" && run.sessionId && onViewSession && (
+							<Button size="sm" variant="outline" onClick={() => onViewSession(run.sessionId!)} data-testid={`view-session-${run.id}`}>
+								{t("workflow.run.viewSession")}
+							</Button>
+						)}
+						{run.status === "running" && onCancel && (
+							<Button size="sm" variant="outline" onClick={onCancel} disabled={cancelPending} data-testid={`cancel-run-${run.id}`}>
+								{t("workflow.run.cancel")}
+							</Button>
 						)}
 					</div>
 				)}
