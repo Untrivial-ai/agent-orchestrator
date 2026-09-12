@@ -230,6 +230,44 @@ func TestNativeConversationExistsIsScopedToTheWorkspaceProject(t *testing.T) {
 	}
 }
 
+func TestNativeConversationExistsFollowsASymlinkedWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved == workspace {
+		t.Skip("workspace path is not symlinked on this platform")
+	}
+
+	// Qoder CLI names the bucket after the project root it resolved at runtime,
+	// which is the symlink-resolved path (a /tmp workspace on macOS files its
+	// transcripts under "-private-tmp-…"). AO may hold either form.
+	id := SessionUUID("ao-session-1")
+	bucket, ok := transcriptBucket(resolved)
+	if !ok {
+		t.Fatalf("no bucket for %q", resolved)
+	}
+	dir := filepath.Join(root, "projects", bucket)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	exists, err := (&Plugin{}).NativeConversationExists(context.Background(),
+		ports.SessionRef{ID: "ao-session-1", WorkspacePath: workspace},
+		id, map[string]string{"QODER_CONFIG_DIR": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("a transcript filed under the resolved workspace path should be found")
+	}
+}
+
 func TestNativeConversationExistsIgnoresEmptyTranscript(t *testing.T) {
 	root := t.TempDir()
 	id := SessionUUID("ao-session-1")

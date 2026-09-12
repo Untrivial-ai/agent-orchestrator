@@ -80,9 +80,11 @@ type settingsGeneral struct {
 }
 
 type settingsPayload struct {
-	Permissions *settingsPermissions      `json:"permissions,omitempty"`
-	General     settingsGeneral           `json:"general"`
-	Hooks       map[string][]matcherGroup `json:"hooks"`
+	Permissions *settingsPermissions `json:"permissions,omitempty"`
+	General     settingsGeneral      `json:"general"`
+	// omitempty so the chat payload, which installs no hooks, omits the key
+	// rather than sending "hooks": null into a schema that expects an object.
+	Hooks map[string][]matcherGroup `json:"hooks,omitempty"`
 }
 
 // SettingsJSON builds the inline --settings payload for one launch: trust for

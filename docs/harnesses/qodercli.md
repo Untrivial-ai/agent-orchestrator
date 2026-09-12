@@ -54,10 +54,16 @@ whatever the user configured.
 
 ## Trust
 
-Qoder CLI treats an unfamiliar directory as untrusted, and an untrusted
-directory silently loses the permission mode AO asked for, drops AO's hooks, and
-opens a blocking dialog. AO therefore trusts each session's worktree through the
-same `--settings` file that carries the hooks.
+Qoder CLI treats an unfamiliar directory as untrusted. An untrusted directory
+silently loses the permission mode AO asked for, blocks project- and
+system-scoped hooks, and opens a modal trust dialog — with the initial task
+submitted behind it, so an unattended session answers nobody and finishes
+nothing. AO therefore trusts each session's worktree through the same
+`--settings` file that carries the hooks.
+
+AO's own hooks are flag-scoped and do still run in an untrusted directory, so
+activity reporting survives; it is the dialog and the permission downgrade that
+make trust load-bearing.
 
 One consequence is worth knowing: a repository's own committed
 `.qoder/settings.json` is **not** loaded in AO sessions. Qoder CLI decides

@@ -306,8 +306,17 @@ func (p *Plugin) NativeConversationExists(
 	// emit --resume for an id this project cannot see, and Qoder CLI answers an
 	// unresolvable id by opening its session-picker modal, which strands an
 	// unattended pane.
-	if bucket, ok := transcriptBucket(session.WorkspacePath); ok {
-		return transcriptExists(filepath.Join(projectsDir, bucket, id+".jsonl"))
+	if buckets := transcriptBuckets(session.WorkspacePath); len(buckets) > 0 {
+		for _, bucket := range buckets {
+			exists, err := transcriptExists(filepath.Join(projectsDir, bucket, id+".jsonl"))
+			if err != nil {
+				return false, err
+			}
+			if exists {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
 
 	// No workspace to scope by, or a path long enough that Qoder CLI appends a
@@ -354,6 +363,43 @@ func transcriptExists(path string) (bool, error) {
 // maxSanitizedProjectLength is where Qoder CLI starts appending a hash suffix
 // to a project directory name.
 const maxSanitizedProjectLength = 200
+
+// transcriptBuckets names the directories a workspace's transcripts can live
+// in. Qoder CLI derives the name from the project root it resolved at runtime,
+// which is the symlink-resolved path — on macOS a /tmp workspace files its
+// transcripts under "-private-tmp-…". AO's workspace path may be either form,
+// so both are probed.
+func transcriptBuckets(workspacePath string) []string {
+	var buckets []string
+	seen := map[string]bool{}
+	for _, candidate := range []string{
+		strings.TrimSpace(workspacePath),
+		resolvedPath(workspacePath),
+	} {
+		if candidate == "" {
+			continue
+		}
+		bucket, ok := transcriptBucket(candidate)
+		if !ok || seen[bucket] {
+			continue
+		}
+		seen[bucket] = true
+		buckets = append(buckets, bucket)
+	}
+	return buckets
+}
+
+func resolvedPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(trimmed)
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
 
 // transcriptBucket mirrors Qoder CLI's project-directory naming: every
 // character that is not ASCII alphanumeric becomes a hyphen, counted the way
