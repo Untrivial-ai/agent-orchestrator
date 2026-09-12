@@ -301,6 +301,11 @@ func (m *Manager) sendChat(ctx context.Context, id domain.SessionID, message, cl
 	if !ok || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
 		return false, nil
 	}
+	releaseInput, admitted := m.AcquireSessionInput(id)
+	if !admitted {
+		return true, fmt.Errorf("send %s: %w", id, ErrSwitchInProgress)
+	}
+	defer releaseInput()
 	if m.chat == nil {
 		return true, fmt.Errorf("send %s: %w: chat mode is not available in this build",
 			id, ports.ErrChatUnsupported)

@@ -35,6 +35,7 @@ type fakeStore struct {
 	deleteErr        error
 	upsertWTErr      error
 	listAllErr       error
+	listAllCalls     int
 	getProjectErr    error
 	getSessionErr    error
 	updateSessionErr error
@@ -123,6 +124,7 @@ func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domai
 	return out, nil
 }
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	f.listAllCalls++
 	if f.listAllErr != nil {
 		return nil, f.listAllErr
 	}

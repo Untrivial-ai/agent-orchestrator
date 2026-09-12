@@ -129,7 +129,7 @@ INSERT INTO codex_account_switches (
 	 id, source_kind, source_account_id, target_account_id, idempotency_key,
 	 request_fingerprint, expected_account_revision, restart_running_sessions, phase, failure_code,
 	 created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?, '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
 ON CONFLICT DO NOTHING
 `
 
@@ -141,6 +141,7 @@ type InsertCodexAccountSwitchParams struct {
 	IdempotencyKey          string
 	RequestFingerprint      string
 	ExpectedAccountRevision int64
+	RestartRunningSessions  bool
 	Phase                   string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
@@ -155,6 +156,7 @@ func (q *Queries) InsertCodexAccountSwitch(ctx context.Context, arg InsertCodexA
 		arg.IdempotencyKey,
 		arg.RequestFingerprint,
 		arg.ExpectedAccountRevision,
+		arg.RestartRunningSessions,
 		arg.Phase,
 		arg.CreatedAt,
 		arg.UpdatedAt,

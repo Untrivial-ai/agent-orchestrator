@@ -35,6 +35,8 @@ const (
 	CodexAccountSwitchActivatingAccount CodexAccountSwitchPhase = "activating_target"
 	// CodexAccountSwitchVerifyingAccount verifies the device-global identity.
 	CodexAccountSwitchVerifyingAccount CodexAccountSwitchPhase = "verifying_target"
+	// CodexAccountSwitchRestartingSessions reconnects sessions that are idle after verification.
+	CodexAccountSwitchRestartingSessions CodexAccountSwitchPhase = "restarting_sessions"
 	// CodexAccountSwitchRollbackRequired requires restoring the source credential.
 	CodexAccountSwitchRollbackRequired CodexAccountSwitchPhase = "rollback_required"
 	// CodexAccountSwitchRecoveryRequired requires exact recorded recovery work.
@@ -56,6 +58,7 @@ type CodexAccountSwitch struct {
 	SourceKind             CodexAccountSwitchSourceKind `json:"sourceKind" enum:"managed,device,none"`
 	SourceAccountID        string                       `json:"sourceAccountId,omitempty"`
 	TargetAccountID        string                       `json:"targetAccountId"`
+	RestartIdleSessions    bool                         `json:"restartIdleSessions"`
 	Phase                  CodexAccountSwitchPhase      `json:"phase"`
 	FailureCode            string                       `json:"failureCode,omitempty"`
 	CanRecover             bool                         `json:"canRecover"`

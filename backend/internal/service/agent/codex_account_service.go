@@ -849,6 +849,14 @@ func (s *Service) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	return s.codexSwitches.StartCodexAccountSwitch(ctx, cfg)
 }
 
+// GetCodexAccountSwitch returns active or terminal state for one switch.
+func (s *Service) GetCodexAccountSwitch(ctx context.Context, id string) (domain.CodexAccountSwitch, error) {
+	if s.codexSwitches == nil {
+		return domain.CodexAccountSwitch{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account switching is unavailable")
+	}
+	return s.codexSwitches.GetCodexAccountSwitch(ctx, id)
+}
+
 // RecoverCodexAccountSwitch retries recorded incomplete work only.
 func (s *Service) RecoverCodexAccountSwitch(ctx context.Context, id string) (domain.CodexAccountSwitch, error) {
 	if s.codexSwitches == nil {

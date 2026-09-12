@@ -20,7 +20,7 @@ INSERT INTO codex_account_switches (
 	 id, source_kind, source_account_id, target_account_id, idempotency_key,
 	 request_fingerprint, expected_account_revision, restart_running_sessions, phase, failure_code,
 	 created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?, '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
 ON CONFLICT DO NOTHING;
 
 -- name: GetCodexAccountSwitch :one

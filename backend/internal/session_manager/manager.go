@@ -406,6 +406,7 @@ type Manager struct {
 	codexOperationGate              ports.CodexOperationGate
 	codexAccountSwitchMu            sync.Mutex
 	codexAccountSwitchWorkerRunning bool
+	codexAccountSwitchOperationOpen bool
 	codexAccountSwitchLease         ports.CodexOperationLease
 	codexAccountSwitchObserverMu    sync.Mutex
 	codexAccountSwitchObserver      func()
@@ -3319,13 +3320,6 @@ func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, rows []por
 // the session is active or the budget is exhausted. Confirmation never fails
 // the send: it only decides whether to nudge again.
 func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error {
-	if m.codexAccountSwitchIsActive() {
-		if rec, ok, err := m.store.GetSession(ctx, id); err != nil {
-			return fmt.Errorf("send %s: %w", id, err)
-		} else if ok && rec.Harness == domain.HarnessCodex {
-			return fmt.Errorf("send %s: %w", id, ErrCodexAccountSwitchInProgress)
-		}
-	}
 	if attachment != nil {
 		// Reuses StageAttachments rather than a bespoke writer: it already owns the
 		// empty-workspace guard (refusing beats writing under the daemon's cwd),

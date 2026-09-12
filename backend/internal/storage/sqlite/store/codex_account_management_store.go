@@ -87,7 +87,7 @@ func (s *Store) CreateCodexAccountSwitch(ctx context.Context, rec domain.CodexAc
 		n, insertErr = q.InsertCodexAccountSwitch(ctx, gen.InsertCodexAccountSwitchParams{
 			ID: rec.ID, SourceKind: string(rec.SourceKind), SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
 			IdempotencyKey: rec.IdempotencyKey, RequestFingerprint: rec.RequestFingerprint,
-			ExpectedAccountRevision: rec.ExpectedAccountRevision, Phase: string(rec.Phase),
+			ExpectedAccountRevision: rec.ExpectedAccountRevision, RestartRunningSessions: rec.RestartIdleSessions, Phase: string(rec.Phase),
 			CreatedAt: rec.CreatedAt.UTC(), UpdatedAt: rec.UpdatedAt.UTC(),
 		})
 		return insertErr
@@ -170,7 +170,7 @@ func (s *Store) UpdateCodexAccountSwitch(ctx context.Context, rec domain.CodexAc
 func codexAccountSwitchFromGen(row gen.CodexAccountSwitch) domain.CodexAccountSwitch {
 	return domain.CodexAccountSwitch{
 		ID: row.ID, SourceKind: domain.CodexAccountSwitchSourceKind(row.SourceKind), SourceAccountID: row.SourceAccountID, TargetAccountID: row.TargetAccountID,
-		Phase: domain.CodexAccountSwitchPhase(row.Phase), FailureCode: row.FailureCode,
+		RestartIdleSessions: row.RestartRunningSessions, Phase: domain.CodexAccountSwitchPhase(row.Phase), FailureCode: row.FailureCode,
 		CredentialsCommittedAt: nullTimeToPtr(row.CredentialsCommittedAt),
 		CreatedAt:              row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: nullTimeToPtr(row.CompletedAt),
 		IdempotencyKey: row.IdempotencyKey, RequestFingerprint: row.RequestFingerprint,

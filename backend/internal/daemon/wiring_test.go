@@ -959,6 +959,9 @@ func (f *fakeSessionLifecycle) SessionMutationInProgress(domain.SessionID) bool 
 func (f *fakeSessionLifecycle) SetReviewerTerminator(sessionmanager.ReviewerTerminator) {}
 func (f *fakeSessionLifecycle) SetHarnessUseGate(sessionmanager.HarnessUseGate)         {}
 func (f *fakeSessionLifecycle) CodexAccountSwitchInProgress() bool                      { return false }
+func (f *fakeSessionLifecycle) GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
+	return domain.CodexAccountSwitch{}, nil
+}
 func (f *fakeSessionLifecycle) StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
 	return domain.CodexAccountSwitch{}, nil
 }

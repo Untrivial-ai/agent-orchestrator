@@ -170,9 +170,9 @@ export function codexSwitchDisplay(switchState: CodexAccountSwitch): CodexSwitch
 	const busy = !terminal;
 	let key: CodexAccountMessageKey;
 	if (busy) {
-		key = phase === "rollback_required"
-			? "settings.codexAccounts.switch.rollback_required"
-			: "settings.codexAccounts.switch.requested";
+		if (phase === "rollback_required") key = "settings.codexAccounts.switch.rollback_required";
+		else if (phase === "restarting_sessions") key = "settings.codexAccounts.switch.restarting_sessions";
+		else key = "settings.codexAccounts.switch.requested";
 	} else if (canRecover) {
 		key = "settings.codexAccounts.switch.recovery_required";
 	} else if (phase === "completed") {

@@ -13,13 +13,14 @@ import (
 type agentOperationKind string
 
 const (
-	agentOperationSwitch    agentOperationKind = "switch"
-	agentOperationExit      agentOperationKind = "exit"
-	agentOperationResume    agentOperationKind = "resume"
-	agentOperationKill      agentOperationKind = "kill"
-	agentOperationRestore   agentOperationKind = "restore"
-	agentOperationRetire    agentOperationKind = "retire"
-	agentOperationReconcile agentOperationKind = "reconcile"
+	agentOperationSwitch           agentOperationKind = "switch"
+	agentOperationExit             agentOperationKind = "exit"
+	agentOperationResume           agentOperationKind = "resume"
+	agentOperationKill             agentOperationKind = "kill"
+	agentOperationRestore          agentOperationKind = "restore"
+	agentOperationRetire           agentOperationKind = "retire"
+	agentOperationReconcile        agentOperationKind = "reconcile"
+	agentOperationAccountReconnect agentOperationKind = "account_reconnect"
 )
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")

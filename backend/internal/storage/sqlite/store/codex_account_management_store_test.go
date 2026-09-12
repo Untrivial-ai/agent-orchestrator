@@ -47,15 +47,15 @@ func TestCodexAccountSwitchIdempotencyAndSingleActiveConstraint(t *testing.T) {
 	first := domain.CodexAccountSwitch{
 		ID: "switch-a", SourceKind: domain.CodexAccountSwitchSourceDevice, TargetAccountID: "account-b",
 		IdempotencyKey: "request-a", RequestFingerprint: "v3:first", ExpectedAccountRevision: 1,
-		Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
+		RestartIdleSessions: true, Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
 	}
 
 	created, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
-	if err != nil || !inserted || created.ID != first.ID || created.SourceKind != domain.CodexAccountSwitchSourceDevice || created.SourceAccountID != "" {
+	if err != nil || !inserted || created.ID != first.ID || created.SourceKind != domain.CodexAccountSwitchSourceDevice || created.SourceAccountID != "" || !created.RestartIdleSessions {
 		t.Fatalf("create switch: got=%+v inserted=%v err=%v", created, inserted, err)
 	}
 	replayed, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
-	if err != nil || inserted || replayed.ID != first.ID {
+	if err != nil || inserted || replayed.ID != first.ID || !replayed.RestartIdleSessions {
 		t.Fatalf("replay switch: got=%+v inserted=%v err=%v", replayed, inserted, err)
 	}
 	conflict := first

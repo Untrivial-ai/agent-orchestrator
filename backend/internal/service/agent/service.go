@@ -67,6 +67,7 @@ type Service struct {
 type CodexAccountSwitchCoordinator interface {
 	CodexAccountSwitchInProgress() bool
 	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
+	GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
 }

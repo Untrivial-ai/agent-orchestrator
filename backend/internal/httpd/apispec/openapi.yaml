@@ -413,6 +413,39 @@ paths:
       summary: Start a global AO Codex account switch
       tags:
       - agents
+  /api/v1/agents/codex/account-switches/{switchId}:
+    get:
+      operationId: getCodexAccountSwitch
+      parameters:
+      - description: Durable Codex account switch identifier.
+        in: path
+        name: switchId
+        required: true
+        schema:
+          description: Durable Codex account switch identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountSwitchResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Get one Codex account switch
+      tags:
+      - agents
   /api/v1/agents/codex/account-switches/{switchId}/recover:
     post:
       operationId: recoverCodexAccountSwitch
@@ -443,7 +476,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Conflict
-      summary: Retry incomplete restarts for one Codex account switch
+      summary: Retry incomplete credential recovery for one Codex account switch
       tags:
       - agents
   /api/v1/agents/codex/accounts:
@@ -7918,11 +7951,14 @@ components:
           - checkpointing_source
           - activating_target
           - verifying_target
+          - restarting_sessions
           - rollback_required
           - recovery_required
           - completed
           - failed
           type: string
+        restartIdleSessions:
+          type: boolean
         sourceAccountId:
           type: string
         sourceKind:
@@ -11831,6 +11867,8 @@ components:
         idempotencyKey:
           minLength: 1
           type: string
+        restartIdleSessions:
+          type: boolean
         targetAccountId:
           minLength: 1
           type: string

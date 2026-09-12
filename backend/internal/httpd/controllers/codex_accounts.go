@@ -33,6 +33,7 @@ type CodexAccountService interface {
 	VerifyCodexAccountLogin(context.Context, string) (domain.CodexAccountLoginOperation, error)
 	CancelCodexAccountLogin(context.Context, string) (domain.CodexAccountLoginOperation, error)
 	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
+	GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 }
 
@@ -52,6 +53,7 @@ func (c *CodexAccountsController) Register(r chi.Router) {
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/verify", c.verifyLogin)
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/cancel", c.cancelLogin)
 	r.Post("/agents/codex/account-switches", c.startSwitch)
+	r.Get("/agents/codex/account-switches/{switchId}", c.getSwitch)
 	r.Post("/agents/codex/account-switches/{switchId}/recover", c.recoverSwitch)
 }
 
@@ -93,13 +95,26 @@ func (c *CodexAccountsController) startSwitch(w http.ResponseWriter, r *http.Req
 	}
 	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{
 		TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision,
-		IdempotencyKey: request.IdempotencyKey,
+		IdempotencyKey: request.IdempotencyKey, RestartIdleSessions: request.RestartIdleSessions,
 	})
 	if err != nil {
 		writeCodexAccountSwitchError(w, r, err)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, newCodexSwitchResponse(result))
+}
+
+func (c *CodexAccountsController) getSwitch(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/codex/account-switches/{switchId}")
+		return
+	}
+	result, err := c.Svc.GetCodexAccountSwitch(r.Context(), strings.TrimSpace(chi.URLParam(r, "switchId")))
+	if err != nil {
+		writeCodexAccountSwitchError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, newCodexSwitchResponse(result))
 }
 
 func (c *CodexAccountsController) recoverSwitch(w http.ResponseWriter, r *http.Request) {

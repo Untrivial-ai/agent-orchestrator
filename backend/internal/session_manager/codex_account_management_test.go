@@ -273,18 +273,48 @@ func (s *ambiguousCodexSwitchStore) UpdateCodexAccountSwitch(_ context.Context, 
 
 func TestCodexAccountSwitchFingerprintIsVersionedAndStable(t *testing.T) {
 	t.Parallel()
-	first := codexAccountSwitchFingerprint("account-b", 7)
-	if !strings.HasPrefix(first, "v3:") || len(first) != len("v3:")+64 {
+	first := codexAccountSwitchFingerprint("account-b", 7, false)
+	if !strings.HasPrefix(first, "v4:") || len(first) != len("v4:")+64 {
 		t.Fatalf("fingerprint = %q", first)
 	}
-	if got := codexAccountSwitchFingerprint("account-b", 7); got != first {
+	if got := codexAccountSwitchFingerprint("account-b", 7, false); got != first {
 		t.Fatalf("stable fingerprint = %q, want %q", got, first)
 	}
-	if got := codexAccountSwitchFingerprint("account-c", 7); got == first {
+	if got := codexAccountSwitchFingerprint("account-c", 7, false); got == first {
 		t.Fatal("target account must participate in fingerprint")
 	}
-	if got := codexAccountSwitchFingerprint("account-b", 8); got == first {
+	if got := codexAccountSwitchFingerprint("account-b", 8, false); got == first {
 		t.Fatal("account revision must participate in fingerprint")
+	}
+	if got := codexAccountSwitchFingerprint("account-b", 7, true); got == first {
+		t.Fatal("idle restart preference must participate in fingerprint")
+	}
+}
+
+func TestCodexAccountSwitchRequestMatchesHistoricalFingerprints(t *testing.T) {
+	t.Parallel()
+	base := domain.CodexAccountSwitch{TargetAccountID: "target", ExpectedAccountRevision: 7}
+	for _, tt := range []struct {
+		name        string
+		fingerprint string
+		stored      bool
+		requested   bool
+		want        bool
+	}{
+		{name: "v2 restart off", fingerprint: "v2:legacy", want: true},
+		{name: "v2 restart on", fingerprint: "v2:legacy", stored: true, requested: true, want: true},
+		{name: "v2 changed option", fingerprint: "v2:legacy", stored: true, want: false},
+		{name: "v3 default off", fingerprint: "v3:credential-only", want: true},
+		{name: "v3 rejects new option", fingerprint: "v3:credential-only", requested: true, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			existing := base
+			existing.RequestFingerprint = tt.fingerprint
+			existing.RestartIdleSessions = tt.stored
+			if got := codexAccountSwitchRequestMatches(existing, "target", 7, tt.requested); got != tt.want {
+				t.Fatalf("match = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -293,7 +323,7 @@ func TestCodexAccountSwitchIdempotencyConflictsWhenRequestChanges(t *testing.T) 
 		fakeStore: newFakeStore(),
 		switchRecord: domain.CodexAccountSwitch{
 			ID: "switch-1", IdempotencyKey: "same-request",
-			RequestFingerprint: codexAccountSwitchFingerprint("different-target", 1),
+			RequestFingerprint: codexAccountSwitchFingerprint("different-target", 1, false),
 		},
 	}
 	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
@@ -354,13 +384,16 @@ func TestCodexAccountSwitchLeavesRunningControllersUntouched(t *testing.T) {
 	manager.SetTerminalInputGate(input)
 
 	if _, err := manager.StartCodexAccountSwitch(context.Background(), ports.CodexAccountSwitchConfig{
-		TargetAccountID: "target", ExpectedAccountRevision: 1, IdempotencyKey: "leave-running",
+		TargetAccountID: "target", ExpectedAccountRevision: 1, IdempotencyKey: "leave-running", RestartIdleSessions: true,
 	}); err != nil {
 		t.Fatalf("start switch: %v", err)
 	}
 	<-credentials.activationEntered
 	if len(manager.agentOperations) != 0 {
 		t.Fatalf("credential switch acquired per-session operations: %#v", manager.agentOperations)
+	}
+	if base.listAllCalls != 0 {
+		t.Fatalf("sessions listed before target activation: %d", base.listAllCalls)
 	}
 	select {
 	case terminalID := <-input.acquired:
@@ -407,6 +440,29 @@ func TestCodexAccountSwitchLeavesRunningControllersUntouched(t *testing.T) {
 	if journal.switchRecord.Phase != domain.CodexAccountSwitchCompleted {
 		t.Fatalf("switch phase = %q, want completed", journal.switchRecord.Phase)
 	}
+	if base.listAllCalls != 1 {
+		t.Fatalf("session discovery calls = %d, want one after verification", base.listAllCalls)
+	}
+}
+
+func TestCodexAccountSwitchDoesNotListSessionsWhenIdleRestartIsDisabled(t *testing.T) {
+	credentials := &bootstrapOrderingCredentials{}
+	base := newFakeStore()
+	base.listAllErr = errors.New("must not list sessions")
+	store := &bootstrapOrderingStore{fakeStore: base, collectingCodexSwitchStore: &collectingCodexSwitchStore{}}
+	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
+	sw := domain.CodexAccountSwitch{
+		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target",
+		ExpectedAccountRevision: 1, Phase: domain.CodexAccountSwitchVerifyingAccount,
+	}
+
+	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, false, func() {})
+	if sw.Phase != domain.CodexAccountSwitchCompleted || sw.FailureCode != "" {
+		t.Fatalf("switch = phase %q failure %q", sw.Phase, sw.FailureCode)
+	}
+	if base.listAllCalls != 0 {
+		t.Fatalf("session discovery calls = %d, want zero", base.listAllCalls)
+	}
 }
 
 func TestCodexAccountSwitchRecoveryLeavesControllersUntouched(t *testing.T) {
@@ -418,7 +474,7 @@ func TestCodexAccountSwitchRecoveryLeavesControllersUntouched(t *testing.T) {
 	journal := &collectingCodexSwitchStore{
 		switchRecord: domain.CodexAccountSwitch{
 			ID: "switch-recovery", SourceAccountID: "source", TargetAccountID: "target",
-			IdempotencyKey: "recover", RequestFingerprint: codexAccountSwitchFingerprint("target", 1),
+			IdempotencyKey: "recover", RequestFingerprint: codexAccountSwitchFingerprint("target", 1, false),
 			ExpectedAccountRevision: 1, Phase: domain.CodexAccountSwitchRecoveryRequired,
 		},
 		active: true,
@@ -454,7 +510,7 @@ func TestRetainCodexAccountSwitchFence(t *testing.T) {
 		domain.CodexAccountSwitchCheckpointCredential,
 		domain.CodexAccountSwitchActivatingAccount,
 		domain.CodexAccountSwitchVerifyingAccount,
-		legacyCodexSwitchRestartingSession,
+		domain.CodexAccountSwitchRestartingSessions,
 		domain.CodexAccountSwitchRollbackRequired,
 		domain.CodexAccountSwitchRecoveryRequired,
 	} {
@@ -475,10 +531,10 @@ func TestCodexAccountSwitchAutomaticallyRestoresSourceAfterActivationFailure(t *
 	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
 	sw := domain.CodexAccountSwitch{
 		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target",
-		ExpectedAccountRevision: 1, Phase: domain.CodexAccountSwitchActivatingAccount,
+		ExpectedAccountRevision: 1, RestartIdleSessions: true, Phase: domain.CodexAccountSwitchActivatingAccount,
 	}
 
-	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw)
+	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, false, func() {})
 
 	if sw.Phase != domain.CodexAccountSwitchFailed {
 		t.Fatalf("phase = %q, want failed after automatic rollback", sw.Phase)
@@ -492,6 +548,9 @@ func TestCodexAccountSwitchAutomaticallyRestoresSourceAfterActivationFailure(t *
 	if !slices.Equal(credentials.verified, []string{"source"}) {
 		t.Fatalf("verified accounts = %v, want source", credentials.verified)
 	}
+	if store.listAllCalls != 0 {
+		t.Fatalf("credential rollback listed sessions %d times", store.listAllCalls)
+	}
 }
 
 func TestCodexAccountSwitchRecoveryUsesVerifiedDeviceTargetInsteadOfStalePointer(t *testing.T) {
@@ -504,7 +563,7 @@ func TestCodexAccountSwitchRecoveryUsesVerifiedDeviceTargetInsteadOfStalePointer
 		ExpectedAccountRevision: 1, Phase: domain.CodexAccountSwitchRecoveryRequired,
 	}
 
-	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw)
+	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, false, func() {})
 
 	if sw.Phase != domain.CodexAccountSwitchCompleted {
 		t.Fatalf("phase = %q, want completed", sw.Phase)
@@ -536,7 +595,6 @@ func TestCodexAccountSwitchSettlesLegacySessionPhasesWithoutSessionWork(t *testi
 	for _, phase := range []domain.CodexAccountSwitchPhase{
 		legacyCodexSwitchStoppingSessions,
 		legacyCodexSwitchSessionsStopped,
-		legacyCodexSwitchRestartingSession,
 	} {
 		t.Run(string(phase), func(t *testing.T) {
 			credentials := &bootstrapOrderingCredentials{}
@@ -547,11 +605,35 @@ func TestCodexAccountSwitchSettlesLegacySessionPhasesWithoutSessionWork(t *testi
 				ExpectedAccountRevision: 1, Phase: phase,
 			}
 
-			manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw)
+			manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, true, func() {})
 			if sw.Phase != domain.CodexAccountSwitchCompleted {
 				t.Fatalf("legacy phase %q settled as %q, want completed", phase, sw.Phase)
 			}
 		})
+	}
+}
+
+func TestCodexAccountSwitchCrashRecoverySettlesRestartWithoutReplayingBatch(t *testing.T) {
+	credentials := &bootstrapOrderingCredentials{}
+	base := newFakeStore()
+	base.sessions["idle"] = domain.SessionRecord{
+		ID: "idle", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityIdle},
+	}
+	store := &bootstrapOrderingStore{fakeStore: base, collectingCodexSwitchStore: &collectingCodexSwitchStore{}}
+	launcher := &recordingLauncher{}
+	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}, Chat: launcher})
+	sw := domain.CodexAccountSwitch{
+		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target",
+		ExpectedAccountRevision: 1, RestartIdleSessions: true, Phase: domain.CodexAccountSwitchRestartingSessions,
+	}
+
+	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, true, func() {})
+	if sw.Phase != domain.CodexAccountSwitchCompleted || sw.FailureCode != codexIdleRestartIncomplete {
+		t.Fatalf("recovered switch = phase %q failure %q", sw.Phase, sw.FailureCode)
+	}
+	if base.listAllCalls != 0 || len(launcher.stopped) != 0 || len(launcher.started) != 0 {
+		t.Fatalf("crash recovery replayed restart batch: lists=%d stopped=%v started=%v", base.listAllCalls, launcher.stopped, launcher.started)
 	}
 }
 
@@ -565,7 +647,7 @@ func TestCodexAccountSwitchSettlesLegacyStopRecoveryWithoutRollback(t *testing.T
 		FailureCode: "stop_unconfirmed",
 	}
 
-	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw)
+	manager.dispatchCodexAccountSwitch(context.Background(), credentials, store, &sw, false, func() {})
 	if sw.Phase != domain.CodexAccountSwitchFailed {
 		t.Fatalf("phase = %q, want failed", sw.Phase)
 	}

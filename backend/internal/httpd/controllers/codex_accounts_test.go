@@ -91,6 +91,9 @@ func (f *fakeCodexAccounts) StartCodexAccountSwitch(_ context.Context, cfg ports
 	f.switchConfig = cfg
 	return f.switchResult, f.switchErr
 }
+func (f *fakeCodexAccounts) GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
+	return f.switchResult, f.switchErr
+}
 func (f *fakeCodexAccounts) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
 	return f.switchResult, nil
 }
@@ -355,7 +358,7 @@ func TestCodexAccountResetCreditRouteRequiresIdempotencyAndReturnsRefreshedAccou
 
 func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testing.T) {
 	fake := &fakeCodexAccounts{result: codexAccountsFixture(), switchResult: domain.CodexAccountSwitch{
-		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target", Phase: domain.CodexAccountSwitchRequested,
+		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target", RestartIdleSessions: true, Phase: domain.CodexAccountSwitchRequested,
 		IdempotencyKey: "private-key", RequestFingerprint: "private-fingerprint", ExpectedAccountRevision: 3,
 	}}
 	srv := newCodexAccountServer(t, fake)
@@ -364,10 +367,10 @@ func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testi
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"IDEMPOTENCY_KEY_REQUIRED"`) {
 		t.Fatalf("missing key status=%d body=%s", status, body)
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"request-key"}`)
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"request-key","restartIdleSessions":true}`)
 	text := string(body)
-	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" ||
-		strings.Contains(text, `"restartRunningSessions"`) || strings.Contains(text, `"sessions"`) {
+	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" || !fake.switchConfig.RestartIdleSessions ||
+		!strings.Contains(text, `"restartIdleSessions":true`) || strings.Contains(text, `"restartRunningSessions"`) || strings.Contains(text, `"sessions"`) {
 		t.Fatalf("switch status=%d config=%#v body=%s", status, fake.switchConfig, body)
 	}
 	for _, forbidden := range []string{"private-key", "private-fingerprint"} {
@@ -394,22 +397,21 @@ func TestCodexAccountSwitchWithoutReconciledSourceReturnsTypedConflict(t *testin
 	}
 }
 
-func TestCodexAccountSwitchReadAndCancelRoutesAreNotRegistered(t *testing.T) {
-	fake := &fakeCodexAccounts{result: codexAccountsFixture()}
+func TestCodexAccountSwitchReadReturnsTerminalOutcomeAndCancelIsNotRegistered(t *testing.T) {
+	fake := &fakeCodexAccounts{result: codexAccountsFixture(), switchResult: domain.CodexAccountSwitch{
+		ID: "switch-1", TargetAccountID: "target", RestartIdleSessions: true,
+		Phase: domain.CodexAccountSwitchCompleted, FailureCode: "idle_session_restart_incomplete",
+	}}
 	srv := newCodexAccountServer(t, fake)
 	defer srv.Close()
 
-	for _, request := range []struct {
-		method string
-		path   string
-	}{
-		{method: http.MethodGet, path: "/api/v1/agents/codex/account-switches/switch-1"},
-		{method: http.MethodPost, path: "/api/v1/agents/codex/account-switches/switch-1/cancel"},
-	} {
-		_, status, _ := doRequest(t, srv, request.method, request.path, "")
-		if status != http.StatusNotFound {
-			t.Errorf("%s %s status = %d, want %d", request.method, request.path, status, http.StatusNotFound)
-		}
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/agents/codex/account-switches/switch-1", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"failureCode":"idle_session_restart_incomplete"`) || !strings.Contains(string(body), `"restartIdleSessions":true`) {
+		t.Fatalf("switch read status=%d body=%s", status, body)
+	}
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches/switch-1/cancel", "")
+	if status != http.StatusNotFound {
+		t.Errorf("cancel status = %d, want %d", status, http.StatusNotFound)
 	}
 }
 
