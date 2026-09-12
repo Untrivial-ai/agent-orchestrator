@@ -32,12 +32,17 @@ type fakeCommandRunner struct {
 }
 
 type fakeGitHubAuthTerminalOpener struct {
-	input shellterm.OpenCommandTerminalInput
+	input  shellterm.OpenCommandTerminalInput
+	output string
 }
 
 func (f *fakeGitHubAuthTerminalOpener) OpenCommandTerminal(_ context.Context, input shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error) {
 	f.input = input
 	return shellterm.ShellTerminal{HandleID: "shellterm-github"}, nil
+}
+
+func (f *fakeGitHubAuthTerminalOpener) ReadTerminalOutput(_ context.Context, _ string, _ int) (string, error) {
+	return f.output, nil
 }
 
 func (f *fakeCommandRunner) Run(ctx context.Context, argv []string, stdout, _ io.Writer) error {
@@ -472,14 +477,51 @@ func TestOpenGitHubAuthTerminalUsesTrustedCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenGitHubAuthTerminal() error = %v", err)
 	}
-	if terminal.HandleID != "shellterm-github" {
-		t.Fatalf("terminal handle = %q, want shellterm-github", terminal.HandleID)
+	if terminal.Terminal.HandleID != "shellterm-github" {
+		t.Fatalf("terminal handle = %q, want shellterm-github", terminal.Terminal.HandleID)
 	}
-	if got, want := opener.input.Argv, []string{"/usr/local/bin/gh", "auth", "login"}; !slices.Equal(got, want) {
+	if got, want := opener.input.Argv, []string{"/usr/local/bin/gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard"}; !slices.Equal(got, want) {
 		t.Fatalf("terminal argv = %#v, want %#v", got, want)
 	}
 	if opener.input.Title != "Connect GitHub" {
 		t.Fatalf("terminal title = %q, want Connect GitHub", opener.input.Title)
+	}
+	if opener.input.Env["GH_PROMPT_DISABLED"] != "1" {
+		t.Fatalf("terminal env GH_PROMPT_DISABLED = %q, want prompts disabled", opener.input.Env["GH_PROMPT_DISABLED"])
+	}
+}
+
+func TestOpenGitHubAuthTerminalReturnsDeviceCode(t *testing.T) {
+	svc := NewWithLookPath(&fakeHarnessCatalog{}, lookPathFound(map[string]string{"gh": "/usr/local/bin/gh"}))
+	opener := &fakeGitHubAuthTerminalOpener{output: "! First copy your one-time code: C6D9-51C4\r\n"}
+	svc.SetGitHubAuthTerminalOpener(opener)
+
+	result, err := svc.OpenGitHubAuthTerminal(context.Background())
+	if err != nil {
+		t.Fatalf("OpenGitHubAuthTerminal() error = %v", err)
+	}
+	if result.DeviceCode != "C6D9-51C4" {
+		t.Fatalf("device code = %q, want C6D9-51C4", result.DeviceCode)
+	}
+}
+
+func TestExtractDeviceCode(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{name: "plain", output: "! First copy your one-time code: C6D9-51C4", want: "C6D9-51C4"},
+		{name: "prompt-disabled", output: "! One-time code (69E7-21C8) copied to clipboard", want: "69E7-21C8"},
+		{name: "ansi escapes", output: "\x1b[0G\x1b[2K! First copy your \x1b[1mone-time code\x1b[0m: AB12-CD34", want: "AB12-CD34"},
+		{name: "no code", output: "? Authenticate Git with your GitHub credentials? (Y/n)", want: ""},
+		{name: "empty", output: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractDeviceCode(tc.output); got != tc.want {
+				t.Fatalf("extractDeviceCode() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

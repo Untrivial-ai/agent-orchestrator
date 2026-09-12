@@ -385,6 +385,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersShellTerminalResponse":                 "ShellTerminalResponse",
 	"ControllersListShellTerminalsResponse":            "ListShellTerminalsResponse",
 	"ControllersShellTerminalEnvelope":                 "ShellTerminalEnvelope",
+	"ControllersGitHubAuthTerminalEnvelope":            "GitHubAuthTerminalEnvelope",
 	"ControllersOpenCodexAccountLoginTerminalResponse": "OpenCodexAccountLoginTerminalResponse",
 	"ControllersCodexAccountLoginTerminalResponse":     "CodexAccountLoginTerminalResponse",
 	// httpd/controllers — PR wire envelopes
@@ -627,7 +628,7 @@ func systemOperations() []operation {
 			method: http.MethodPost, path: "/api/v1/system/github-auth/terminal", id: "openGitHubAuthTerminal", tag: "system",
 			summary: "Open a trusted terminal running the GitHub CLI login flow",
 			resps: []respUnit{
-				{http.StatusCreated, controllers.ShellTerminalEnvelope{}},
+				{http.StatusCreated, controllers.GitHubAuthTerminalEnvelope{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},

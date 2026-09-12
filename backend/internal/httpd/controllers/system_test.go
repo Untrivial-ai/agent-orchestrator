@@ -23,12 +23,12 @@ type fakeSystemChecker struct {
 	auth          systemcheck.Requirement
 	authErr       error
 	authCalls     int
-	terminal      shellterm.ShellTerminal
+	terminal      systemcheck.GitHubAuthResult
 	terminalErr   error
 	terminalCalls int
 }
 
-func (f *fakeSystemChecker) OpenGitHubAuthTerminal(context.Context) (shellterm.ShellTerminal, error) {
+func (f *fakeSystemChecker) OpenGitHubAuthTerminal(context.Context) (systemcheck.GitHubAuthResult, error) {
 	f.terminalCalls++
 	return f.terminal, f.terminalErr
 }
@@ -40,8 +40,9 @@ func (f *fakeSystemChecker) CheckGitHubAuth(context.Context) (systemcheck.Requir
 
 func TestOpenGitHubAuthTerminal(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	checker := &fakeSystemChecker{terminal: shellterm.ShellTerminal{
-		HandleID: "shellterm-github", WorkingDir: "/tmp/auth", Title: "Connect GitHub", CreatedAt: time.Unix(1, 0).UTC(),
+	checker := &fakeSystemChecker{terminal: systemcheck.GitHubAuthResult{
+		Terminal:   shellterm.ShellTerminal{HandleID: "shellterm-github", WorkingDir: "/tmp/auth", Title: "Connect GitHub", CreatedAt: time.Unix(1, 0).UTC()},
+		DeviceCode: "C6D9-51C4",
 	}}
 	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
 		SystemChecks: checker,
@@ -52,7 +53,7 @@ func TestOpenGitHubAuthTerminal(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("POST /system/github-auth/terminal = %d, body=%s", status, body)
 	}
-	for _, want := range []string{`"handleId":"shellterm-github"`, `"title":"Connect GitHub"`} {
+	for _, want := range []string{`"handleId":"shellterm-github"`, `"title":"Connect GitHub"`, `"deviceCode":"C6D9-51C4"`} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("body missing %s: %s", want, body)
 		}

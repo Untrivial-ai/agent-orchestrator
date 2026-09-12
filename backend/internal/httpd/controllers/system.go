@@ -8,7 +8,6 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 )
 
@@ -17,7 +16,7 @@ import (
 type SystemChecker interface {
 	CheckStartup(ctx context.Context) (systemcheck.Report, error)
 	CheckGitHubAuth(ctx context.Context) (systemcheck.Requirement, error)
-	OpenGitHubAuthTerminal(ctx context.Context) (shellterm.ShellTerminal, error)
+	OpenGitHubAuthTerminal(ctx context.Context) (systemcheck.GitHubAuthResult, error)
 }
 
 // SystemController owns the /system routes.
@@ -42,7 +41,10 @@ func (c *SystemController) openGitHubAuthTerminal(w http.ResponseWriter, r *http
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusCreated, ShellTerminalEnvelope{ShellTerminal: shellTerminalResponse(terminal)})
+	envelope.WriteJSON(w, http.StatusCreated, GitHubAuthTerminalEnvelope{
+		ShellTerminal: shellTerminalResponse(terminal.Terminal),
+		DeviceCode:    terminal.DeviceCode,
+	})
 }
 
 func (c *SystemController) githubAuth(w http.ResponseWriter, r *http.Request) {

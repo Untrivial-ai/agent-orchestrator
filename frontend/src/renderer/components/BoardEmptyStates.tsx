@@ -2,7 +2,6 @@ import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useShell } from "../lib/shell-context";
 import { CreateProjectFlow } from "./CreateProjectFlow";
-import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
 import { TopbarButton } from "./TopbarButton";
 import { WelcomePanel } from "./WelcomePanel";
 import { OrchestratorIcon } from "./icons";
@@ -25,7 +24,6 @@ export function BoardWelcome() {
 						onCreateProject={createProject}
 						onInitializeProject={initializeProjectRepository}
 					/>
-					<GitHubOnboardingNotice />
 				</div>
 			</div>
 		</WelcomePanel>

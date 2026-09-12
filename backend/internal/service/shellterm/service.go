@@ -305,6 +305,14 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 	return terminal, nil
 }
 
+// ReadTerminalOutput returns recent PTY output for a command terminal the
+// service opened. Callers use it to surface machine-readable facts (such as
+// an OAuth device code) that the command prints but the renderer never
+// displays.
+func (s *Service) ReadTerminalOutput(ctx context.Context, handleID string, lines int) (string, error) {
+	return s.runtime.GetOutput(ctx, ports.RuntimeHandle{ID: handleID}, lines)
+}
+
 const (
 	initialInputTimeout      = 10 * time.Second
 	initialInputPollInterval = 50 * time.Millisecond

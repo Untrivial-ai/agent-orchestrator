@@ -3316,6 +3316,10 @@ export interface components {
             session: components["schemas"]["ControllersSessionView"];
             sessionId: string;
         };
+        GitHubAuthTerminalEnvelope: {
+            deviceCode?: string;
+            shellTerminal: components["schemas"]["ShellTerminalResponse"];
+        };
         GitHubRepositoryPreparation: {
             name?: string;
             owner?: string;
@@ -13107,7 +13111,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShellTerminalEnvelope"];
+                    "application/json": components["schemas"]["GitHubAuthTerminalEnvelope"];
                 };
             };
             /** @description Bad Request */
