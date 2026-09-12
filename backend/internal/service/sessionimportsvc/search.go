@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/importindex"
@@ -99,7 +100,9 @@ func (s *Service) CloseSearch() error {
 	if s.search == nil {
 		return nil
 	}
+	s.search.mu.Lock()
 	s.search.cancel()
+	s.search.mu.Unlock()
 	s.search.wg.Wait()
 	return s.search.index.Close()
 }
@@ -217,10 +220,24 @@ func (s *Service) Search(ctx context.Context, query string, limit int, cursor st
 		return SearchPage{}, err
 	}
 	page := SearchPage{Results: make([]SearchResult, 0, len(results)), Status: s.SearchStatus()}
-	records, err := s.store.ListAllSessions(ctx)
-	if err != nil {
-		return SearchPage{}, err
+	lookup, ok := s.store.(interface {
+		FindImportedSessions(context.Context, []ports.ImportIdentity) ([]domain.SessionRecord, error)
+	})
+	if !ok && len(results) > 0 {
+		return SearchPage{}, fmt.Errorf("targeted import lookup unavailable")
 	}
+	identities := make([]ports.ImportIdentity, 0, len(results))
+	for _, r := range results {
+		identities = append(identities, ports.ImportIdentity{Provider: r.Session.Provider, NativeSessionID: r.Session.NativeSessionID, ConfigDir: r.Session.ConfigDir})
+	}
+	records := []domain.SessionRecord{}
+	if len(identities) > 0 {
+		records, err = lookup.FindImportedSessions(ctx, identities)
+		if err != nil {
+			return SearchPage{}, err
+		}
+	}
+
 	for _, r := range results {
 		v := SearchResult{ID: r.ID, Title: r.Session.Title, Provider: string(r.Session.Provider), LastActivity: r.Session.LastActivity.UTC().Format(time.RFC3339Nano), FolderHint: filepath.Base(r.Session.CWD)}
 		for _, record := range records {
@@ -230,6 +247,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int, cursor st
 				break
 			}
 		}
+
 		page.Results = append(page.Results, v)
 	}
 	if more {
@@ -336,6 +354,9 @@ func (s *Service) Destination(ctx context.Context, id, locate string) (Destinati
 	}
 	target, err := s.selected(ctx, id)
 	if err != nil {
+		if !errors.Is(err, ErrImportSessionNotFound) && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, sessionimport.ErrInvalidMetadataSource) {
+			return Destination{}, err
+		}
 		return Destination{ID: id, Action: "unavailable", Reason: "The source history is unavailable. Restore its original location and refresh."}, nil
 	}
 	return s.destination(ctx, id, target, locate)

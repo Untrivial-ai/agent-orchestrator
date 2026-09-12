@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+var ErrInvalidMetadataSource = errors.New("invalid provider source")
 
 // MetadataSource provides bounded metadata reads without usage scans or an in-memory inventory.
 // The visitor owns persisted fingerprints and decides whether to read each file.
@@ -56,7 +59,7 @@ func (s *CodexSource) VisitTitles(ctx context.Context, visit func(string, string
 			Name string `json:"thread_name"`
 		}
 		if json.Unmarshal(raw, &row) == nil && row.ID != "" {
-			visitErr = visit(row.ID, titleFrom(row.Name, "", ""))
+			visitErr = visit(row.ID, metadataTitle(row.Name, "", ""))
 		}
 		return visitErr == nil
 	})
@@ -77,9 +80,9 @@ func (s *CodexSource) VisitMetadata(ctx context.Context, visit func(string, os.F
 	if err != nil {
 		return err
 	}
-	err = walkMetadata(ctx, filepath.Join(root, "sessions"), 4, isCodexRollout, visit, true)
+	err = walkCodexDates(ctx, filepath.Join(root, "sessions"), 0, visit)
 	if s.includeArchived {
-		err = errors.Join(err, walkMetadata(ctx, filepath.Join(root, "archived_sessions"), 4, isCodexRollout, visit, true))
+		err = errors.Join(err, walkCodexDates(ctx, filepath.Join(root, "archived_sessions"), 0, visit))
 	}
 	return err
 }
@@ -100,7 +103,21 @@ func walkMetadata(ctx context.Context, path string, depth int, accept func(strin
 			return err
 		}
 		entries, readErr := f.ReadDir(128)
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+		// Claude has no date shards. Prioritize activity within bounded batches;
+		// project-directory mtimes are a best-effort hint, not a global chronology.
+		infos := make(map[string]os.FileInfo, len(entries))
+		for _, entry := range entries {
+			if info, err := entry.Info(); err == nil {
+				infos[entry.Name()] = info
+			}
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			a, b := infos[entries[i].Name()], infos[entries[j].Name()]
+			if a != nil && b != nil && !a.ModTime().Equal(b.ModTime()) {
+				return a.ModTime().After(b.ModTime())
+			}
+			return entries[i].Name() > entries[j].Name()
+		})
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -148,7 +165,7 @@ func metadataBytes(ctx context.Context, root, path string) ([]byte, []byte, os.F
 	}
 	rel, err := filepath.Rel(root, resolved)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, nil, nil, fmt.Errorf("transcript escapes provider root")
+		return nil, nil, nil, fmt.Errorf("%w: transcript escapes provider root", ErrInvalidMetadataSource)
 	}
 	f, err := os.Open(resolved)
 	if err != nil {
@@ -160,7 +177,7 @@ func metadataBytes(ctx context.Context, root, path string) ([]byte, []byte, os.F
 		return nil, nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, nil, nil, fmt.Errorf("transcript is not a regular file")
+		return nil, nil, nil, fmt.Errorf("%w: transcript is not a regular file", ErrInvalidMetadataSource)
 	}
 	head, err := io.ReadAll(io.LimitReader(f, defaultMaxScanBytes))
 	if err != nil {
@@ -221,7 +238,7 @@ func (s *ClaudeSource) ReadMetadata(ctx context.Context, path string) (Importabl
 		last = info.ModTime()
 	}
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-	return ImportableSession{Provider: s.Provider(), ConfigDir: root, NativeSessionID: id, TranscriptPath: path, CWD: meta.cwd, Branch: meta.gitBranch, Title: titleFrom(title, meta.firstUserText, id), LastActivity: last, SizeBytes: info.Size(), TokenCount: -1}, true, nil
+	return ImportableSession{Provider: s.Provider(), ConfigDir: root, NativeSessionID: id, TranscriptPath: path, CWD: meta.cwd, Branch: meta.gitBranch, Title: metadataTitle(title, meta.firstUserText, id), LastActivity: last, SizeBytes: info.Size(), TokenCount: -1}, true, nil
 }
 func (s *CodexSource) ReadMetadata(ctx context.Context, path string) (ImportableSession, bool, error) {
 	root, err := s.MetadataRoot()
@@ -256,4 +273,77 @@ func (s *CodexSource) ReadMetadata(ctx context.Context, path string) (Importable
 		last = info.ModTime()
 	}
 	return ImportableSession{Provider: s.Provider(), ConfigDir: root, NativeSessionID: id, TranscriptPath: path, CWD: meta.cwd, Branch: meta.branch, Title: titleFrom("", meta.firstUserText, id), LastActivity: last, SizeBytes: info.Size(), TokenCount: -1}, true, nil
+}
+
+// Preserve explicit titles separately from the short first-prompt fallback. The
+// 16Ki-rune ceiling bounds untrusted provider metadata stored in the local cache.
+func metadataTitle(explicit, prompt, fallback string) string {
+	explicit = strings.Join(strings.Fields(explicit), " ")
+	if explicit == "" {
+		return titleFrom("", prompt, fallback)
+	}
+	r := []rune(explicit)
+	if len(r) > 16384 {
+		explicit = string(r[:16384])
+	}
+	return explicit
+}
+
+// Codex date levels have a fixed numeric domain, so global newest-first date
+// traversal needs at most 10000 booleans, independent of transcript count.
+func walkCodexDates(ctx context.Context, path string, level int, visit func(string, os.FileInfo) error) error {
+	if level == 3 {
+		return walkMetadata(ctx, path, 1, isCodexRollout, visit, false)
+	}
+	f, err := os.Open(path)
+	if level == 0 && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	maxValue, width := 9999, 4
+	if level == 1 {
+		maxValue, width = 12, 2
+	}
+	if level == 2 {
+		maxValue, width = 31, 2
+	}
+	present := make([]bool, maxValue+1)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := f.ReadDir(128)
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || len(entry.Name()) != width {
+				continue
+			}
+			n, e := strconv.Atoi(entry.Name())
+			if e == nil && n > 0 && n <= maxValue {
+				present[n] = true
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	var failure error
+	for n := maxValue; n > 0; n-- {
+		if !present[n] {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := walkCodexDates(ctx, filepath.Join(path, fmt.Sprintf("%0*d", width, n)), level+1, visit)
+		if failure == nil && err != nil {
+			failure = err
+		}
+	}
+	return failure
 }

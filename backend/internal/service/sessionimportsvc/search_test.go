@@ -326,3 +326,79 @@ func TestSearchCodexGroupedSegmentsAndTitleIndexRemoval(t *testing.T) {
 		t.Fatal("removed title survived", page)
 	}
 }
+
+func (s *selectedStore) FindImportedSessions(ctx context.Context, ids []ports.ImportIdentity) ([]domain.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []domain.SessionRecord{}
+	for _, id := range ids {
+		target := sessionimport.ImportableSession{Provider: id.Provider, NativeSessionID: id.NativeSessionID, ConfigDir: id.ConfigDir}
+		for _, r := range s.records {
+			if matchesSource(r, target) {
+				out = append(out, r)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+type boundedSearchStore struct {
+	*selectedStore
+	lookupSize int
+}
+
+func (s *boundedSearchStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	return nil, errors.New("unbounded session enumeration forbidden")
+}
+func (s *boundedSearchStore) FindImportedSessions(ctx context.Context, ids []ports.ImportIdentity) ([]domain.SessionRecord, error) {
+	s.lookupSize = len(ids)
+	return s.selectedStore.FindImportedSessions(ctx, ids)
+}
+func TestSearchUsesBoundedDurableLookup(t *testing.T) {
+	s, store, _, _, _ := searchFixture(t)
+	refreshWait(t, s)
+	bounded := &boundedSearchStore{selectedStore: store}
+	s.store = bounded
+	page, err := s.Search(context.Background(), "ancient", 1, "")
+	if err != nil || len(page.Results) != 1 || bounded.lookupSize != 1 {
+		t.Fatal(page, err, bounded.lookupSize)
+	}
+}
+func TestDestinationPropagatesCacheErrors(t *testing.T) {
+	s, _, _, _, _ := searchFixture(t)
+	refreshWait(t, s)
+	page, _ := s.Search(context.Background(), "", 1, "")
+	if err := s.search.index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.Destination(context.Background(), page.Results[0].ID, ""); err == nil {
+		t.Fatal("cache failure masked as destination", d)
+	}
+}
+func TestConcurrentCloseAndRefresh(t *testing.T) {
+	for n := 0; n < 10; n++ {
+		store := &selectedStore{}
+		s := New(store, store, &selectedProjects{})
+		if err := s.EnableSearch(context.Background(), t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			<-start
+			for j := 0; j < 5; j++ {
+				s.RefreshSearch()
+			}
+		}()
+		close(start)
+		if err := s.CloseSearch(); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+		if s.SearchStatus().Running {
+			t.Fatal("refresh outlived shutdown")
+		}
+	}
+}

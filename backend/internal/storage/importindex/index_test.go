@@ -6,6 +6,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,5 +121,60 @@ func BenchmarkSearch10000(b *testing.B) {
 		if _, _, err := i.Search(context.Background(), "payment procesing", 50, 0); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestStrongPaginationBeyondCandidateLimit(t *testing.T) {
+	i, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = i.Close() }()
+	ctx := context.Background()
+	for n := 0; n < 1105; n++ {
+		put(t, i, fmt.Sprint(n), fmt.Sprintf("Matching history %04d", n), "root", "one", int64(n))
+	}
+	put(t, i, "fuzzy", "Matchng history", "root", "one", 9000)
+	seen := map[string]bool{}
+	offset := 0
+	for {
+		rows, more, err := i.Search(ctx, "matching", 100, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if seen[r.ID] {
+				t.Fatal("duplicate across pages")
+			}
+			seen[r.ID] = true
+		}
+		offset += len(rows)
+		if !more {
+			break
+		}
+		if len(rows) == 0 {
+			t.Fatal("empty continuation")
+		}
+	}
+	if len(seen) != 1106 {
+		t.Fatalf("got %d results, want all 1105 strong plus trailing fuzzy", len(seen))
+	}
+	rows, _, err := i.Search(ctx, "Matching history 0000", 1, 0)
+	if err != nil || len(rows) != 1 || rows[0].Session.NativeSessionID != "0" {
+		t.Fatal(rows, err)
+	}
+}
+
+func TestSearchExplicitTitleSuffix(t *testing.T) {
+	i, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = i.Close() }()
+	title := strings.Repeat("long provider title ", 20) + "distinctive"
+	put(t, i, "id", title, "root", "one", 1)
+	rows, _, err := i.Search(context.Background(), "distinctive", 50, 0)
+	if err != nil || len(rows) != 1 || rows[0].Session.Title != title {
+		t.Fatal(rows, err)
 	}
 }

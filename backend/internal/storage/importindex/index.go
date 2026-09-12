@@ -254,8 +254,8 @@ func (i *Index) Get(ctx context.Context, id string) (Result, error) {
 	return r, err
 }
 
-// Search retrieves at most 1000 candidates from SQLite; the Go heap is independent of history size.
-// Exact, phrase and word matches are fetched ahead of the bounded fuzzy pool.
+// Search paginates all strong matches in SQLite. Only the trailing fuzzy pool
+// is capped (1000 candidates); no query materializes the whole title index.
 func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]Result, bool, error) {
 	q := Normalize(query)
 	if len([]rune(q)) > 120 {
@@ -265,104 +265,102 @@ func (i *Index) Search(ctx context.Context, query string, limit, offset int) ([]
 		limit = 50
 	}
 	limit = min(limit, 100)
-	if offset < 0 || offset > 1000000 {
+	if offset < 0 {
 		return nil, false, fmt.Errorf("%w: invalid cursor", ErrInvalidQuery)
 	}
-	type candidate struct {
-		result Result
-		rank   int
-	}
-	candidates := []candidate{}
-	seen := map[string]bool{}
-	read := func(rows *sql.Rows, ranked bool) error {
+	read := func(rows *sql.Rows) ([]Result, error) {
 		defer func() { _ = rows.Close() }()
+		out := []Result{}
 		for rows.Next() {
-			var id string
+			var r Result
 			var data []byte
-			if err := rows.Scan(&id, &data); err != nil {
-				return err
+			if err := rows.Scan(&r.ID, &data); err != nil {
+				return nil, err
 			}
-			if seen[id] {
-				continue
+			if err := json.Unmarshal(data, &r.Session); err != nil {
+				return nil, err
 			}
-			var s sessionimport.ImportableSession
-			if err := json.Unmarshal(data, &s); err != nil {
-				return err
-			}
-			rank := 0
-			if ranked {
-				rank = relevance(Normalize(s.Title), q)
-				if rank < 0 {
-					continue
-				}
-			}
-			seen[id] = true
-			candidates = append(candidates, candidate{Result{id, s}, rank})
+			out = append(out, r)
 		}
-		return rows.Err()
+		return out, rows.Err()
 	}
-	var rows *sql.Rows
-	var err error
 	if q == "" {
-		rows, err = i.db.QueryContext(ctx, `SELECT id,data FROM results ORDER BY activity DESC,id LIMIT ? OFFSET ?`, limit+1, offset)
+		rows, err := i.db.QueryContext(ctx, `SELECT id,data FROM results ORDER BY activity DESC,id LIMIT ? OFFSET ?`, limit+1, offset)
 		if err != nil {
 			return nil, false, err
 		}
-		if err = read(rows, false); err != nil {
-			return nil, false, err
-		}
-		offset = 0
-	} else {
-		words := strings.Fields(q)
-		conditions := []string{}
-		args := []any{q, q, q}
-		for _, w := range words {
-			conditions = append(conditions, "instr(normalized,?)>0")
-			args = append(args, w)
-		}
-		rows, err = i.db.QueryContext(ctx, `SELECT id,data FROM results WHERE `+strings.Join(conditions, " AND ")+` ORDER BY CASE WHEN normalized=? THEN 0 WHEN instr(normalized,?)=1 THEN 1 WHEN instr(normalized,?)>0 THEN 2 ELSE 3 END,activity DESC,id LIMIT 1000`, append(args[3:], args[:3]...)...)
+		out, err := read(rows)
 		if err != nil {
 			return nil, false, err
 		}
-		if err = read(rows, true); err != nil {
+		more := len(out) > limit
+		return out[:min(limit, len(out))], more, nil
+	}
+	words := strings.Fields(q)
+	conditions := []string{}
+	filterArgs := []any{}
+	for _, w := range words {
+		conditions = append(conditions, "instr(normalized,?)>0")
+		filterArgs = append(filterArgs, w)
+	}
+	where := strings.Join(conditions, " AND ")
+	var strongCount int
+	if err := i.db.QueryRowContext(ctx, `SELECT count(*) FROM results WHERE `+where, filterArgs...).Scan(&strongCount); err != nil {
+		return nil, false, err
+	}
+	out := []Result{}
+	if offset < strongCount {
+		args := append([]any{}, filterArgs...)
+		args = append(args, q, q, q, limit+1, offset)
+		rows, err := i.db.QueryContext(ctx, `SELECT id,data FROM results WHERE `+where+` ORDER BY CASE WHEN normalized=? THEN 0 WHEN instr(normalized,?)=1 THEN 1 WHEN instr(normalized,?)>0 THEN 2 ELSE 3 END,activity DESC,id LIMIT ? OFFSET ?`, args...)
+		if err != nil {
 			return nil, false, err
 		}
-		gs := grams(q)
-		if len(gs) > 0 && len(candidates) < 1000 {
-			marks := make([]string, len(gs))
-			ga := make([]any, 0, len(gs)+1)
-			for n, g := range gs {
-				marks[n] = "?"
-				ga = append(ga, g)
-			}
-			ga = append(ga, 1000-len(candidates))
-			rows, err = i.db.QueryContext(ctx, `SELECT r.id,r.data FROM results r JOIN (SELECT id,count(*) hits FROM grams WHERE gram IN (`+strings.Join(marks, ",")+`) GROUP BY id ORDER BY hits DESC,id LIMIT ?) g ON g.id=r.id ORDER BY g.hits DESC,r.activity DESC,r.id`, ga...)
-			if err != nil {
-				return nil, false, err
-			}
-			if err = read(rows, true); err != nil {
-				return nil, false, err
-			}
+		out, err = read(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(out) > limit {
+			return out[:limit], true, nil
 		}
 	}
-	sort.Slice(candidates, func(a, b int) bool {
-		x, y := candidates[a], candidates[b]
-		if x.rank != y.rank {
-			return x.rank < y.rank
+	gs := grams(q)
+	if len(gs) == 0 {
+		return out, false, nil
+	}
+	marks := make([]string, len(gs))
+	args := []any{}
+	for n, g := range gs {
+		marks[n] = "?"
+		args = append(args, g)
+	}
+	args = append(args, filterArgs...)
+	rows, err := i.db.QueryContext(ctx, `SELECT r.id,r.data FROM results r JOIN (SELECT id,count(*) hits FROM grams WHERE gram IN (`+strings.Join(marks, ",")+`) GROUP BY id) g ON g.id=r.id WHERE NOT (`+where+`) ORDER BY g.hits DESC,r.activity DESC,r.id LIMIT 1000`, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	pool, err := read(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	fuzzy := pool[:0]
+	for _, r := range pool {
+		if relevance(Normalize(r.Session.Title), q) == 4 {
+			fuzzy = append(fuzzy, r)
 		}
-		if !x.result.Session.LastActivity.Equal(y.result.Session.LastActivity) {
-			return x.result.Session.LastActivity.After(y.result.Session.LastActivity)
+	}
+	sort.Slice(fuzzy, func(a, b int) bool {
+		if !fuzzy[a].Session.LastActivity.Equal(fuzzy[b].Session.LastActivity) {
+			return fuzzy[a].Session.LastActivity.After(fuzzy[b].Session.LastActivity)
 		}
-		return x.result.ID < y.result.ID
+		return fuzzy[a].ID < fuzzy[b].ID
 	})
-	start := min(offset, len(candidates))
-	end := min(start+limit, len(candidates))
-	out := make([]Result, 0, end-start)
-	for _, c := range candidates[start:end] {
-		out = append(out, c.result)
-	}
-	return out, end < len(candidates), nil
+	start := min(max(0, offset-strongCount), len(fuzzy))
+	end := min(start+limit-len(out), len(fuzzy))
+	out = append(out, fuzzy[start:end]...)
+	return out, end < len(fuzzy), nil
 }
+
 func relevance(title, q string) int {
 	if title == q {
 		return 0
