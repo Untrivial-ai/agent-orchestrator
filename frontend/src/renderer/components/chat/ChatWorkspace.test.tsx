@@ -370,6 +370,34 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getAllByText("Visible before the server snapshot")).toHaveLength(1);
 	});
 
+	it("hides an unacknowledged local echo when its durable message arrives first", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		const localEchos = [
+			{
+				clientMessageId: "local-send",
+				text: "Already durable",
+				createdAt: "2026-09-09T00:00:00Z",
+			},
+		];
+		const durable = structuredClone(snapshot);
+		durable.items.push({
+			kind: "message",
+			id: "durable-local-send",
+			turnId: "turn-local-send",
+			sequence: 1,
+			revision: 0,
+			role: "user",
+			origin: "human",
+			text: "Already durable",
+			streaming: false,
+			createdAt: "2026-09-09T00:00:01Z",
+		});
+
+		render(<ChatWorkspace snapshot={durable} localEchos={localEchos} />);
+
+		expect(screen.getAllByText("Already durable")).toHaveLength(1);
+	});
+
 	it("makes composer and history controls inert while a durable agent switch owns input", () => {
 		render(<ChatWorkspace snapshot={idleSnapshot()} agentInputDisabled />);
 

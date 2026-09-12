@@ -126,4 +126,16 @@ describe("SettingsDialog", () => {
 		fireEvent.pointerDown(await screen.findByTestId("settings-dialog-overlay"));
 		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
 	});
+
+	it("does not close when Escape is handled by a portaled nested menu", async () => {
+		useUiStore.getState().openGlobalSettings("general");
+		renderSettingsDialog();
+
+		await screen.findByRole("dialog");
+		fireEvent.keyDown(document.body, { key: "Escape" });
+		expect(useUiStore.getState().settingsModal).not.toBeNull();
+
+		fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
+	});
 });

@@ -540,11 +540,17 @@ export function Sidebar({
 
 	const handleProjectDragOver = useCallback((event: ReactDragEvent<HTMLElement>, overId: string) => {
 		const activeId = draggingProjectIdRef.current;
-		if (!activeId || activeId === overId) return;
+		if (!activeId || activeId === overId) {
+			clearProjectDropIndicator();
+			return;
+		}
 		const row = event.currentTarget;
 		const rect = row.getBoundingClientRect();
 		const placement: ProjectDropPlacement = event.clientY <= rect.top + rect.height / 2 ? "before" : "after";
-		if (reorderAtProjectBoundary(projectIds, activeId, overId, placement) === null) return;
+		if (reorderAtProjectBoundary(projectIds, activeId, overId, placement) === null) {
+			clearProjectDropIndicator();
+			return;
+		}
 		// Only invite the drop once this is a real reorder target.
 		event.preventDefault();
 		event.dataTransfer.dropEffect = "move";
@@ -564,7 +570,7 @@ export function Sidebar({
 					? last.offsetTop + last.offsetHeight
 					: (rows[insertAt - 1].offsetTop + rows[insertAt - 1].offsetHeight + rows[insertAt].offsetTop) / 2;
 		setDropLine({ top, visible: true });
-	}, [projectIds]);
+	}, [clearProjectDropIndicator, projectIds]);
 
 	const handleProjectDrop = useCallback((event: ReactDragEvent<HTMLElement>) => {
 		const activeId = draggingProjectIdRef.current;

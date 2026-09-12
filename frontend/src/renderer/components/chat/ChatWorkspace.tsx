@@ -2498,15 +2498,18 @@ function Timeline({
 		if (added.size > 0) setNewHumanMessageIds(added);
 	}, [items, snapshot.latestSequence]);
 	const localItems = useMemo(() => {
-		const durableHumanTurnIds = new Set(
-			items.flatMap((item) =>
-				item.kind === "message" && item.role === "user" && item.origin === "human" && item.turnId
-					? [item.turnId]
-					: [],
-			),
-		);
 		return localEchos
-			.filter((echo) => !echo.turnId || !durableHumanTurnIds.has(echo.turnId))
+			.filter(
+				(echo) =>
+					!items.some(
+						(item) =>
+							item.kind === "message" &&
+							item.role === "user" &&
+							item.origin === "human" &&
+							((echo.turnId && item.turnId === echo.turnId) ||
+								(!echo.turnId && item.text === echo.text && item.createdAt >= echo.createdAt)),
+					),
+			)
 			.map((echo, index): ConversationMessage => ({
 				kind: "message",
 				id: `local:${echo.clientMessageId}`,

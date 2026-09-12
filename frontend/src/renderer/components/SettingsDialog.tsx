@@ -72,13 +72,6 @@ export function SettingsDialog() {
 	const open = settingsModal !== null;
 	useEffect(() => {
 		if (!open) return;
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return;
-			event.preventDefault();
-			event.stopPropagation();
-			requestCloseRef.current();
-		};
-		document.addEventListener("keydown", onKeyDown, true);
 		// FocusScope contains focus immediately. Move visible focus after the
 		// first paint because focus() forces style resolution.
 		let focusTimer = 0;
@@ -86,7 +79,6 @@ export function SettingsDialog() {
 			focusTimer = window.setTimeout(() => closeButtonRef.current?.focus({ preventScroll: true }), 0);
 		});
 		return () => {
-			document.removeEventListener("keydown", onKeyDown, true);
 			cancelAnimationFrame(focusFrame);
 			window.clearTimeout(focusTimer);
 		};
@@ -122,6 +114,11 @@ export function SettingsDialog() {
 						settingsDialogContentClass,
 						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
 					)}
+					onKeyDown={(event) => {
+						if (event.key !== "Escape") return;
+						event.preventDefault();
+						requestCloseRef.current();
+					}}
 					role="dialog"
 					tabIndex={-1}
 				>
