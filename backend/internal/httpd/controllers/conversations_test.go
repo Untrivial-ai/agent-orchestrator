@@ -614,4 +614,3 @@ func TestConversationBodyDecoding(t *testing.T) {
 		t.Fatalf("expected 202 Accepted for valid message with trailing whitespace, got %d: %s", status, body)
 	}
 }
-
