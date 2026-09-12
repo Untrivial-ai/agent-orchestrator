@@ -33,11 +33,15 @@ export function DevicePanel({ sessionId }: { sessionId: string }) {
 				aoBridge.device.status(sessionId),
 				aoBridge.device.list(sessionId),
 			]);
+			// Older or stale dev daemons may encode an empty Go slice as null.
+			// Treat the bridge as an untrusted runtime boundary even though the
+			// generated TypeScript contract correctly declares an array.
+			const availableDevices = Array.isArray(inventory.devices) ? inventory.devices : [];
 			const listErrors = new Map((inventory.errors ?? []).map((item) => [item.platform, item]));
 			setCapabilities(status.capabilities.map((item) => listErrors.get(item.platform) ?? item));
 			setAttachment(status.attachment);
-			setDevices(inventory.devices);
-			setSelectedId((current) => current || inventory.devices.find((item) => !item.busy)?.id || "");
+			setDevices(availableDevices);
+			setSelectedId((current) => current || availableDevices.find((item) => !item.busy)?.id || "");
 		} catch (cause) {
 			setError(errorMessage(cause));
 		} finally {

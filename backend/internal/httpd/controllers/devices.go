@@ -62,6 +62,9 @@ func (c *LocalDevicesController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
+	if result.Devices == nil {
+		result.Devices = []domain.Device{}
+	}
 	envelope.WriteJSON(w, http.StatusOK, DeviceListResponse{
 		SessionID: sessionID, Devices: result.Devices, Errors: result.Errors,
 	})

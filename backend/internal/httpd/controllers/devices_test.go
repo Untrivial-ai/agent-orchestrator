@@ -18,6 +18,7 @@ type fakeLocalDeviceService struct {
 	session     domain.SessionID
 	credentials devicesvc.Credentials
 	command     devicesvc.Command
+	emptyList   bool
 }
 
 func (f *fakeLocalDeviceService) Status(_ context.Context, session domain.SessionID, credentials devicesvc.Credentials) (devicesvc.Status, error) {
@@ -27,6 +28,9 @@ func (f *fakeLocalDeviceService) Status(_ context.Context, session domain.Sessio
 
 func (f *fakeLocalDeviceService) List(_ context.Context, session domain.SessionID, credentials devicesvc.Credentials) (devicesvc.Inventory, error) {
 	f.session, f.credentials = session, credentials
+	if f.emptyList {
+		return devicesvc.Inventory{}, nil
+	}
 	return devicesvc.Inventory{Devices: []domain.Device{{ID: "ios-1", Name: "iPhone", Platform: domain.DevicePlatformIOS}}}, nil
 }
 
@@ -66,6 +70,16 @@ func TestLocalDevicesControllerRejectsMalformedJSON(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/devices/commands", strings.NewReader("{")))
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_JSON") {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLocalDevicesControllerEncodesEmptyInventoryAsArray(t *testing.T) {
+	router := chi.NewRouter()
+	(&LocalDevicesController{Svc: &fakeLocalDeviceService{emptyList: true}}).Register(router)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/devices?sessionId=s1", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"devices":[]`) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }

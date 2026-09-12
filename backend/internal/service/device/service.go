@@ -112,7 +112,9 @@ func (s *Service) List(ctx context.Context, sessionID domain.SessionID, creds Cr
 }
 
 func (s *Service) list(ctx context.Context, sessionID domain.SessionID) Inventory {
-	result := Inventory{}
+	// Keep collection fields non-nil so the HTTP contract emits [] rather than
+	// null when no platform toolchain or virtual device is available.
+	result := Inventory{Devices: []domain.Device{}, Errors: []domain.DevicePlatformCapability{}}
 	for _, capability := range s.runtime.Capabilities(ctx) {
 		if !capability.Available {
 			result.Errors = append(result.Errors, capability)

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../lib/bridge";
+import type { LocalDeviceInventory } from "../../shared/local-device";
 import { DevicePanel } from "./DevicePanel";
 
 describe("DevicePanel", () => {
@@ -39,5 +40,17 @@ describe("DevicePanel", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Home" }));
 		await waitFor(() => expect(command).toHaveBeenCalledWith({ sessionId: "s1", action: "home" }));
 		view.unmount();
+	});
+
+	it("treats a stale daemon null inventory as an empty list", async () => {
+		vi.mocked(aoBridge.device.list).mockResolvedValue({
+			sessionId: "s1",
+			devices: null,
+		} as unknown as LocalDeviceInventory);
+
+		render(<DevicePanel sessionId="s1" />);
+
+		expect(await screen.findByText("No virtual devices were found. Create one in Xcode or Android Studio, then refresh.")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open device" })).toBeDisabled();
 	});
 });

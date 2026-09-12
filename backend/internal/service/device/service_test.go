@@ -63,6 +63,18 @@ func TestServiceRequiresSessionCapabilityOrDesktopCredential(t *testing.T) {
 	}
 }
 
+func TestServiceListReturnsNonNilCollections(t *testing.T) {
+	runtime := &fakeDeviceRuntime{}
+	service := New(fakeSessionReader{}, runtime, fakeAuthority{}, "")
+	inventory, err := service.List(context.Background(), "s1", Credentials{Agent: "token-s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Devices == nil || inventory.Errors == nil {
+		t.Fatalf("inventory collections must be non-nil: %#v", inventory)
+	}
+}
+
 func TestServiceEnforcesExclusiveAttachmentAndReleasesOnClose(t *testing.T) {
 	runtime := &fakeDeviceRuntime{}
 	service := New(fakeSessionReader{}, runtime, fakeAuthority{}, "")
