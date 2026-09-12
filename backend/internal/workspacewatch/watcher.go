@@ -9,9 +9,11 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -19,6 +21,97 @@ import (
 
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
+
+// maxWatchedDirectories bounds how many directories one workspace stream has
+// concurrently registered. fsnotify consumes one descriptor per watched
+// directory (a kqueue descriptor on macOS, an inotify watch slot on Linux), so
+// watching every directory of an unbounded tree eventually exhausts
+// RLIMIT_NOFILE or max_user_watches and every subsequent Add fails.
+// Directories beyond the cap stay unwatched; the model refresh they guard
+// remains reachable through the other invalidation paths instead of the whole
+// SSE subscription failing.
+var maxWatchedDirectories = 4096
+
+// dirWatchLimiter keeps the number of concurrently registered directory
+// watches at or below maxWatchedDirectories for the lifetime of one workspace
+// stream: both the initial walk and directories created later go through add,
+// while directories that disappear reclaim their budget through release, so a
+// session with directory churn (build outputs, node_modules, branch switches)
+// keeps reusing freed budget instead of exhausting it. Failed Adds are
+// counted as skipped and surfaced by warn as a single aggregated log line
+// instead of one WARN per directory.
+type dirWatchLimiter struct {
+	watcher   *fsnotify.Watcher
+	limit     int
+	mu        sync.Mutex
+	watched   map[string]struct{}
+	used      int
+	skipped   int
+	lastError error
+}
+
+func newDirWatchLimiter(watcher *fsnotify.Watcher, limit int) *dirWatchLimiter {
+	return &dirWatchLimiter{watcher: watcher, limit: limit, watched: make(map[string]struct{})}
+}
+
+// add registers dir if budget remains. It returns ctx.Err() when the context
+// was cancelled; every other failure is counted as skipped and does not abort
+// the caller.
+func (l *dirWatchLimiter) add(ctx context.Context, dir string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.watched[dir]; ok {
+		// Already watched: fsnotify.Add is a no-op for an existing watch, so
+		// do not consume budget or re-count the slot.
+		return nil
+	}
+	if l.used >= l.limit {
+		l.skipped++
+		return nil
+	}
+	if err := l.watcher.Add(dir); err != nil {
+		l.skipped++
+		l.lastError = err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
+	}
+	l.watched[dir] = struct{}{}
+	l.used++
+	return nil
+}
+
+// release drops the watch on dir and returns its budget so it can be reused.
+// It is a no-op for paths this limiter never watched (regular files, ignored
+// directories, already-released paths) and safe to call on a nil limiter.
+// Best-effort: fsnotify may have already dropped the watch implicitly (for
+// example on Rename); reclaiming the accounting slot is what matters.
+func (l *dirWatchLimiter) release(dir string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.watched[dir]; !ok {
+		return
+	}
+	delete(l.watched, dir)
+	_ = l.watcher.Remove(dir)
+	l.used--
+}
+
+// warn emits at most one aggregated WARN per call describing how many
+// directories could not be watched and why.
+func (l *dirWatchLimiter) warn(ctx context.Context, stage string) {
+	l.mu.Lock()
+	skipped, lastError, limit := l.skipped, l.lastError, l.limit
+	l.mu.Unlock()
+	if skipped == 0 {
+		return
+	}
+	slog.WarnContext(ctx, "workspace watch skipped directories", "stage", stage, "skipped", skipped, "watch_limit", limit, "last_error", lastError)
+}
 
 // Watch subscribes to relevant changes below the workspace roots until ctx is cancelled. The
 // returned channel is intentionally edge-triggered and buffered by one: a burst
@@ -97,13 +190,15 @@ func watchRoot(ctx context.Context, root string) (<-chan struct{}, error) {
 	}
 
 	git := discoverGitWorkspace(ctx, root)
-	if err := addInitialDirectories(ctx, watcher, root, git); err != nil {
+	limiter := newDirWatchLimiter(watcher, maxWatchedDirectories)
+	if err := addInitialDirectories(ctx, limiter, root, git); err != nil {
 		_ = watcher.Close()
 		return nil, err
 	}
+	limiter.warn(ctx, "initial")
 
 	changes := make(chan struct{}, 1)
-	go run(ctx, watcher, root, git, changes)
+	go run(ctx, watcher, root, git, limiter, changes)
 	return changes, nil
 }
 
@@ -175,7 +270,7 @@ func discoverGitWorkspace(ctx context.Context, root string) gitWorkspace {
 	return gitWorkspace{available: true, files: files, metadataFiles: metadataFiles}
 }
 
-func addInitialDirectories(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace) error {
+func addInitialDirectories(ctx context.Context, limiter *dirWatchLimiter, root string, git gitWorkspace) error {
 	dirs := map[string]struct{}{root: {}}
 	if git.available {
 		for _, rel := range git.files {
@@ -209,20 +304,45 @@ func addInitialDirectories(ctx context.Context, watcher *fsnotify.Watcher, root 
 		return fmt.Errorf("walk workspace directories: %w", err)
 	}
 
+	// Register watches shallowest-first so that when the platform refuses
+	// further watches (fd or inotify limits) the remaining coverage degrades
+	// toward the leaves, which matter least for workspace-level invalidation.
+	ordered := make([]string, 0, len(dirs))
 	for dir := range dirs {
-		if err := watcher.Add(dir); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("watch workspace directory %q: %w", dir, err)
+		ordered = append(ordered, dir)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		iDepth := directoryDepth(root, ordered[i])
+		jDepth := directoryDepth(root, ordered[j])
+		if iDepth != jDepth {
+			return iDepth < jDepth
+		}
+		return ordered[i] < ordered[j]
+	})
+	if len(ordered) > maxWatchedDirectories {
+		ordered = ordered[:maxWatchedDirectories]
+	}
+
+	for _, dir := range ordered {
+		if err := limiter.add(ctx, dir); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, changes chan struct{}) {
+func directoryDepth(root, dir string) int {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
+}
+
+func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, limiter *dirWatchLimiter, changes chan struct{}) {
 	defer close(changes)
 	defer func() { _ = watcher.Close() }()
+	defer limiter.warn(ctx, "runtime")
 	notify := func() {
 		select {
 		case changes <- struct{}{}:
@@ -245,14 +365,14 @@ func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWor
 			if !ok {
 				return
 			}
-			if handleEvent(ctx, watcher, root, git, event) {
+			if handleEvent(ctx, limiter, root, git, event) {
 				notify()
 			}
 		}
 	}
 }
 
-func handleEvent(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, event fsnotify.Event) bool {
+func handleEvent(ctx context.Context, limiter *dirWatchLimiter, root string, git gitWorkspace, event fsnotify.Event) bool {
 	// On macOS, kqueue can report CHMOD while Git is only reading files to
 	// build the diff model. Treating those metadata-only notifications as
 	// content changes creates a read -> event -> read feedback loop.
@@ -272,15 +392,22 @@ func handleEvent(ctx context.Context, watcher *fsnotify.Watcher, root string, gi
 	if git.available && gitIgnored(ctx, root, name) {
 		return false
 	}
+	if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+		// A watched directory that goes away frees its descriptor and its
+		// budget slot, so later directory creation can still be watched even
+		// in workspaces with heavy directory churn. Paths the limiter never
+		// watched (regular files, ignored directories) are no-ops.
+		limiter.release(name)
+	}
 	if event.Has(fsnotify.Create) {
 		if info, statErr := os.Stat(name); statErr == nil && info.IsDir() {
-			_ = addCreatedTree(ctx, watcher, root, git, name)
+			_ = addCreatedTree(ctx, limiter, root, git, name)
 		}
 	}
 	return true
 }
 
-func addCreatedTree(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, created string) error {
+func addCreatedTree(ctx context.Context, limiter *dirWatchLimiter, root string, git gitWorkspace, created string) error {
 	return filepath.WalkDir(created, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -291,7 +418,10 @@ func addCreatedTree(ctx context.Context, watcher *fsnotify.Watcher, root string,
 		if hasGitMetadataComponent(root, path) || (git.available && gitIgnored(ctx, root, path)) {
 			return filepath.SkipDir
 		}
-		return watcher.Add(path)
+		// Created directories draw from the same budget as the initial
+		// walk, so a workspace that grows during the session cannot push
+		// concurrent watches past the cap and back into fd exhaustion.
+		return limiter.add(ctx, path)
 	})
 }
 
