@@ -138,6 +138,11 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PRNumberParam is the associated pull-request number in Files routes.
+type PRNumberParam struct {
+	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
+}
+
 // AgentSwitchIDParam is the {switchId} path parameter for one durable switch saga.
 type AgentSwitchIDParam struct {
 	SwitchID string `path:"switchId" description:"Durable agent-switch identifier."`
@@ -418,6 +423,25 @@ type ListWorkspaceFilesResponse struct {
 	// upstream, detached HEAD).
 	Ahead  *int `json:"ahead,omitempty"`
 	Behind *int `json:"behind,omitempty"`
+}
+
+// PRFileSourceResponse describes the immutable PR revision displayed in Files.
+type PRFileSourceResponse struct {
+	Number       int    `json:"number"`
+	URL          string `json:"url"`
+	Label        string `json:"label"`
+	SourceBranch string `json:"sourceBranch,omitempty"`
+	BaseSHA      string `json:"baseSha"`
+	HeadSHA      string `json:"headSha"`
+}
+
+// ListPRFilesResponse is the exact base...head changed-file set for one PR.
+type ListPRFilesResponse struct {
+	SessionID domain.SessionID       `json:"sessionId"`
+	Source    PRFileSourceResponse   `json:"source"`
+	Files     []WorkspaceFileSummary `json:"files"`
+	Truncated bool                   `json:"truncated"`
+	Summary   WorkspaceSummary       `json:"summary"`
 }
 
 // WorkspaceFileSections groups a session workspace's changed files by git

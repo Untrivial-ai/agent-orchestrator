@@ -4,6 +4,7 @@ const MAX_FEEDBACK_LENGTH = 1800;
 const MAX_LINE_TEXT_LENGTH = 700;
 
 export type FileAnnotationTarget = {
+	source?: string;
 	path: string;
 	previousPath?: string;
 	side: "file" | "old" | "new";
@@ -29,6 +30,7 @@ export function formatFileAnnotationMessage(target: FileAnnotationTarget, feedba
 		compactText(feedback, MAX_FEEDBACK_LENGTH) || "(empty)",
 		"",
 		"File context:",
+		target.source ? `- Source: ${compactText(target.source, 500)}` : null,
 		`- Path: ${compactText(target.path, 500)}`,
 		target.previousPath ? `- Previous path: ${compactText(target.previousPath, 500)}` : null,
 		`- Location: ${location}`,

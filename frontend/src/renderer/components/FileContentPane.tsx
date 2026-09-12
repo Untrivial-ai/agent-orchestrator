@@ -6,11 +6,12 @@ import { Editor, type EditorFactory } from "@pierre/diffs/edit";
 import { EditProvider } from "@pierre/diffs/react";
 import {
 	sessionWorkspaceFileQueryKey,
-	sessionWorkspaceFileQueryOptions,
+	sessionSourceFileQueryOptions,
 	sessionWorkspaceFileRevisionQueryOptions,
 	updateSessionWorkspaceFile,
 	type WorkspaceDiffScope,
 	type WorkspaceFileDetail,
+	type FilesSource,
 } from "../hooks/useSessionWorkspaceFiles";
 import { usePierreFileHighlightReady } from "../hooks/usePierreFileHighlight";
 import { cn } from "../lib/utils";
@@ -32,6 +33,8 @@ import { MarkdownFileView } from "./markdown/MarkdownFileView";
 export type FileViewMode = "diff" | "file" | "rendered";
 export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
 
+const DEFAULT_FILES_SOURCE: FilesSource = { kind: "workspace" };
+
 const createReviewEditor: EditorFactory<"feedback", undefined> = (editorType, options, editStateKey) =>
 	new Editor(editorType, options, editStateKey);
 
@@ -50,6 +53,7 @@ export function FileContentPane({
 	sessionId,
 	split,
 	scope = "combined",
+	source = DEFAULT_FILES_SOURCE,
 }: {
 	annotation: FileAnnotationModel;
 	initialEditing?: boolean;
@@ -61,6 +65,7 @@ export function FileContentPane({
 	sessionId: string;
 	split: boolean;
 	scope?: WorkspaceDiffScope;
+	source?: FilesSource;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -74,7 +79,7 @@ export function FileContentPane({
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
 	const query = useQuery({
-		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha),
+		...sessionSourceFileQueryOptions(sessionId, source, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
 	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);
@@ -83,7 +88,7 @@ export function FileContentPane({
 		setEditing(initialEditing);
 		setDraft("");
 		setSaveError("");
-	}, [commitSha, initialEditing, initialMode, initialRequestKey, path, scope]);
+	}, [commitSha, initialEditing, initialMode, initialRequestKey, path, scope, source]);
 	useEffect(() => {
 		if (initialEditing && query.data) setDraft(query.data.content);
 	}, [initialEditing, initialRequestKey, path, query.data]);

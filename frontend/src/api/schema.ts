@@ -1767,6 +1767,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/pr/{prNumber}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one file from an associated pull request base-to-head diff */
+        get: operations["getSessionPRFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/pr/{prNumber}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the exact base-to-head changed files for an associated pull request */
+        get: operations["listSessionPRFiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/pr/claim": {
         parameters: {
             query?: never;
@@ -3455,6 +3489,13 @@ export interface components {
             unreadCount: number;
             unresolvedCount: number;
         };
+        ListPRFilesResponse: {
+            files: components["schemas"]["WorkspaceFileSummary"][];
+            sessionId: string;
+            source: components["schemas"]["PRFileSourceResponse"];
+            summary: components["schemas"]["WorkspaceSummary"];
+            truncated: boolean;
+        };
         ListProjectsResponse: {
             projects: components["schemas"]["ProjectSummary"][];
         };
@@ -3620,6 +3661,14 @@ export interface components {
             id: string;
             projectId: string;
             projectName?: string;
+        };
+        PRFileSourceResponse: {
+            baseSha: string;
+            headSha: string;
+            label: string;
+            number: number;
+            sourceBranch?: string;
+            url: string;
         };
         PRReviewState: {
             latestRun?: components["schemas"]["ReviewRun"];
@@ -10642,6 +10691,117 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionPRFile: {
+        parameters: {
+            query?: {
+                /** @description Session-worktree-relative file path. */
+                path?: string;
+                /** @description Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base. */
+                section?: "committed" | "staged" | "unstaged" | "untracked";
+                /** @description Exact commit SHA to read as an immutable committed-scope snapshot. */
+                commitSha?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Associated pull request number. */
+                prNumber: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionPRFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Associated pull request number. */
+                prNumber: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPRFilesResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
