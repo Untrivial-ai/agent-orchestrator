@@ -10,32 +10,36 @@ import (
 )
 
 func TestEmbeddedSkillFrontmatterIsValidYAML(t *testing.T) {
-	body, err := files.ReadFile("using-ao/SKILL.md")
-	if err != nil {
-		t.Fatalf("read embedded SKILL.md: %v", err)
-	}
+	for _, skillName := range []string{SkillName, BrowserSkillName} {
+		t.Run(skillName, func(t *testing.T) {
+			body, err := files.ReadFile(skillName + "/SKILL.md")
+			if err != nil {
+				t.Fatalf("read embedded SKILL.md: %v", err)
+			}
 
-	parts := strings.SplitN(string(body), "---", 3)
-	if len(parts) != 3 {
-		t.Fatal("embedded SKILL.md is missing YAML frontmatter delimiters")
-	}
+			parts := strings.SplitN(string(body), "---", 3)
+			if len(parts) != 3 {
+				t.Fatal("embedded SKILL.md is missing YAML frontmatter delimiters")
+			}
 
-	var frontmatter struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
-		Trigger     string `yaml:"trigger"`
-	}
-	if err := yaml.Unmarshal([]byte(parts[1]), &frontmatter); err != nil {
-		t.Fatalf("parse embedded SKILL.md frontmatter: %v", err)
-	}
-	if frontmatter.Name != SkillName {
-		t.Fatalf("frontmatter name = %q, want %q", frontmatter.Name, SkillName)
-	}
-	if strings.TrimSpace(frontmatter.Description) == "" {
-		t.Fatal("frontmatter description is empty")
-	}
-	if strings.TrimSpace(frontmatter.Trigger) == "" {
-		t.Fatal("frontmatter trigger is empty")
+			var frontmatter struct {
+				Name        string `yaml:"name"`
+				Description string `yaml:"description"`
+				Trigger     string `yaml:"trigger"`
+			}
+			if err := yaml.Unmarshal([]byte(parts[1]), &frontmatter); err != nil {
+				t.Fatalf("parse embedded SKILL.md frontmatter: %v", err)
+			}
+			if frontmatter.Name != skillName {
+				t.Fatalf("frontmatter name = %q, want %q", frontmatter.Name, skillName)
+			}
+			if strings.TrimSpace(frontmatter.Description) == "" {
+				t.Fatal("frontmatter description is empty")
+			}
+			if strings.TrimSpace(frontmatter.Trigger) == "" {
+				t.Fatal("frontmatter trigger is empty")
+			}
+		})
 	}
 }
 
@@ -73,27 +77,66 @@ func TestEmbeddedPreviewGuidanceDoesNotScaffoldStaticSites(t *testing.T) {
 	normalizedSkillText := strings.Join(strings.Fields(skillText), " ")
 	if !strings.Contains(normalizedSkillText, "[commands/preview.md](commands/preview.md) before acting") ||
 		!strings.Contains(normalizedSkillText, "automatic-handoff rules are load-bearing") ||
-		!strings.Contains(normalizedSkillText, "[commands/browser.md](commands/browser.md)") ||
-		!strings.Contains(normalizedSkillText, "opt-in network policy") {
+		!strings.Contains(normalizedSkillText, "[`ao-browser`](../ao-browser/SKILL.md)") ||
+		!strings.Contains(normalizedSkillText, "Do not load unrelated command guides first") {
 		t.Fatalf("skill catalog is missing focused preview/browser routing:\n%s", skillText)
 	}
 }
 
 func TestEmbeddedBrowserGuidanceKeepsNetworkCaptureOptional(t *testing.T) {
-	body, err := files.ReadFile("using-ao/commands/browser.md")
+	body, err := files.ReadFile("ao-browser/SKILL.md")
 	if err != nil {
 		t.Fatalf("read embedded browser guidance: %v", err)
 	}
 	text := strings.Join(strings.Fields(string(body)), " ")
 	for _, required := range []string{
 		"Network capture is optional and disabled by default",
-		"Do not enable it for routine navigation or interaction",
-		"no request or response bodies, credentials, cookies, or query values",
-		"`network status` and `network list` never enable capture",
-		"The user can select or close these same tabs",
+		"never enable it for routine navigation or interaction",
+		"The user and agent share selection",
+		"named persistent profile",
+		"references/troubleshooting.md",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("browser guidance missing %q:\n%s", required, body)
+		}
+	}
+	networkBody, err := files.ReadFile("ao-browser/references/network.md")
+	if err != nil {
+		t.Fatalf("read embedded network guidance: %v", err)
+	}
+	networkText := strings.Join(strings.Fields(string(networkBody)), " ")
+	for _, required := range []string{
+		"no request or response bodies, credentials, cookies, or query values",
+		"`network status` and `network list` never enable capture",
+	} {
+		if !strings.Contains(networkText, required) {
+			t.Fatalf("network guidance missing %q:\n%s", required, networkBody)
+		}
+	}
+}
+
+func TestEmbeddedBrowserSkillStaysFocusedAndRoutesDeepGuidance(t *testing.T) {
+	body, err := files.ReadFile("ao-browser/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded browser skill: %v", err)
+	}
+	lineCount := strings.Count(strings.TrimSuffix(string(body), "\n"), "\n") + 1
+	if lineCount < 180 || lineCount > 230 {
+		t.Fatalf("ao-browser SKILL.md has %d lines, want 180..230", lineCount)
+	}
+	text := strings.Join(strings.Fields(string(body)), " ")
+	for _, required := range []string{
+		"Choose the cheapest suitable surface",
+		"It makes no LLM call",
+		"named persistent profile",
+		"Consequential actions",
+		"[references/lifecycle.md](references/lifecycle.md)",
+		"[references/troubleshooting.md](references/troubleshooting.md)",
+		"[references/profiles.md](references/profiles.md)",
+		"[references/network.md](references/network.md)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("browser skill missing %q:\n%s", required, body)
 		}
 	}
 }
@@ -118,8 +161,19 @@ func TestInstall_WritesSkillAndIsIdempotent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(Dir(dataDir), "commands", "spawn.md")); err != nil {
 		t.Fatalf("commands/spawn.md missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(Dir(dataDir), "commands", "browser.md")); err != nil {
-		t.Fatalf("commands/browser.md missing: %v", err)
+	browserSkillFile := filepath.Join(BrowserDir(dataDir), "SKILL.md")
+	if b, err := os.ReadFile(browserSkillFile); err != nil {
+		t.Fatalf("read %s: %v", browserSkillFile, err)
+	} else if !strings.Contains(string(b), "name: ao-browser") {
+		t.Fatalf("ao-browser SKILL.md missing frontmatter: %s", b)
+	}
+	for _, name := range []string{"lifecycle.md", "troubleshooting.md", "profiles.md", "network.md"} {
+		if _, err := os.Stat(filepath.Join(BrowserDir(dataDir), "references", name)); err != nil {
+			t.Fatalf("ao-browser references/%s missing: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(Dir(dataDir), "commands", "browser.md")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete using-ao commands/browser.md was installed: %v", err)
 	}
 
 	// A stale file inside the skill dir must not survive a reinstall (clobber).
@@ -149,5 +203,20 @@ func TestMaterialize_WritesIntoArbitraryDest(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "commands", "spawn.md")); err != nil {
 		t.Fatalf("commands/spawn.md missing: %v", err)
+	}
+}
+
+func TestMaterializeBrowser_WritesIntoArbitraryDest(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), ".opencode", "skills", BrowserSkillName)
+	if err := MaterializeBrowser(dest); err != nil {
+		t.Fatalf("MaterializeBrowser: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "SKILL.md")); err != nil {
+		t.Fatalf("read SKILL.md: %v", err)
+	} else if !strings.Contains(string(b), "name: ao-browser") {
+		t.Fatalf("installed skill missing ao-browser frontmatter: %s", b)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "references", "troubleshooting.md")); err != nil {
+		t.Fatalf("references/troubleshooting.md missing: %v", err)
 	}
 }
