@@ -335,7 +335,28 @@ func (s *Service) Destination(ctx context.Context, id, locate string) (Destinati
 	if existing, ok, err := s.existingSelected(ctx, id); err != nil {
 		return Destination{}, err
 	} else if ok {
-		return Destination{ID: id, Action: "open", SessionID: string(existing.ID), ProjectID: string(existing.ProjectID)}, nil
+		d := Destination{ID: id, Action: "open", SessionID: string(existing.ID), ProjectID: string(existing.ProjectID), Title: existing.DisplayName, Provider: string(existing.Harness)}
+		if d.Title == "" {
+			d.Title = string(existing.ID)
+		}
+		// The provider index retains the full title; the durable session name
+		// remains a fallback after source deletion or cache rebuild.
+		if s.search != nil {
+			if cached, err := s.search.index.Get(ctx, id); err == nil {
+				d.Title = cached.Session.Title
+				d.Provider = string(cached.Session.Provider)
+				d.SourceCWD = cached.Session.CWD
+			}
+		}
+		if projects, err := s.projects.List(ctx); err == nil {
+			for _, project := range projects {
+				if project.ID == existing.ProjectID {
+					d.Path = project.Path
+					break
+				}
+			}
+		}
+		return d, nil
 	}
 	target, err := s.selected(ctx, id)
 	if err != nil {

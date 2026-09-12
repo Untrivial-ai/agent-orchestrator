@@ -455,3 +455,50 @@ func TestBulkRootAliasSearchAndSelectedRetry(t *testing.T) {
 		t.Fatal(result, err, store.creates)
 	}
 }
+
+func TestOpenDestinationKeepsMetadataWithoutSource(t *testing.T) {
+	s, _, _, path, _ := searchFixture(t)
+	ctx := context.Background()
+	title := "A complete provider title that is longer than the imported display name"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]string{"type": "custom-title", "customTitle": title})
+	if _, err = f.Write(append(raw, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	refreshWait(t, s)
+	page, err := s.Search(ctx, "complete provider", 50, "")
+	if err != nil || len(page.Results) != 1 {
+		t.Fatal(page, err)
+	}
+	id := page.Results[0].ID
+	preview, err := s.Destination(ctx, id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.ImportSelected(ctx, id, SelectedInput{ConfirmationToken: preview.ConfirmationToken, AddProject: true})
+	if err != nil || result.SessionID == "" {
+		t.Fatal(result, err)
+	}
+	for _, missing := range []bool{false, true} {
+		if missing {
+			if err = os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d, err := s.Destination(ctx, id, "")
+		if err != nil || d.Action != "open" || d.Title != title || d.Provider != "claude-code" || d.Path != preview.Path || d.SessionID != result.SessionID {
+			t.Fatal(missing, d, err)
+		}
+	}
+	refreshWait(t, s)
+	d, err := s.Destination(ctx, id, "")
+	if err != nil || d.Action != "open" || d.Title == "" || d.Provider != "claude-code" || d.Path != preview.Path {
+		t.Fatal("durable fallback after index deletion", d, err)
+	}
+}
