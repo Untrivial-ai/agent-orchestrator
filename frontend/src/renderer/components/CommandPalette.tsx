@@ -611,6 +611,7 @@ export function CommandPalette() {
 							value={query}
 								onValueChange={(next) => {
 									setQuery(next);
+									setSelectedValue("");
 									setError(null);
 								}}
 							placeholder={
