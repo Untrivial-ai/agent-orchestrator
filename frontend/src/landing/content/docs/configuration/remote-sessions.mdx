@@ -1,0 +1,163 @@
+---
+title: Remote sessions
+description: Connect the desktop app to AO daemons on other machines you own, and understand the trusted-network boundary that makes it safe.
+---
+
+The desktop app can connect to AO daemons running on other machines at the same time as your local one. Sessions and projects from every connected host appear in one tree, each labelled with the host it lives on. Nothing is merged or replicated: each daemon stays the sole owner of its own projects, sessions, and worktrees, and every action is routed back to the host that owns it.
+
+Remote hosts reuse the authenticated LAN listener that [Connect Mobile](/docs/configuration/remote-access) creates. There is no separate server, service, or account.
+
+## Before you start
+
+- The remote machine must have **Connect Mobile** enabled. That is what opens its listener; without it there is nothing to connect to.
+- The two machines must be able to reach each other — the same LAN, the same Tailscale tailnet, or an SSH tunnel.
+- You need the remote machine's address, its mobile port (normally `3011`), and its current connection password.
+
+## Connect a host
+
+<Steps>
+<Step>
+
+### Enable the listener on the remote machine
+
+Open **Settings → Connect Mobile** on the remote machine and enable mobile access. Note the displayed address, port, and connection password. Use the port actually shown — the listener falls back to another port when `3011` is taken.
+
+</Step>
+<Step>
+
+### Enable remote hosts on this machine
+
+Open **Settings → General** and enable **Remote hosts (experimental)**. Remote hosts are off by default, and the host selector is hidden until this setting is enabled.
+
+</Step>
+<Step>
+
+### Open the host selector
+
+On this machine, start **Add project** and open the host selector at the top of the dialog.
+
+</Step>
+<Step>
+
+### Add the host
+
+Choose **Add remote host**, give it a name, and enter the address as `host:port` (for example `192.168.1.250:3011`; the `http://` prefix is optional). Put the connection password in the password field — an address carrying credentials, like `http://user:pw@host:3011`, is rejected rather than silently stripped.
+
+</Step>
+<Step>
+
+### Connect
+
+Select **Connect**. AO validates that the address really is an AO daemon and that the password is accepted before saving it, so a mistyped port cannot be stored as a working host.
+
+</Step>
+</Steps>
+
+Saved hosts are written to `~/.ao/remotes.json` at mode `0600` — the same file the `ao` CLI reads for `--url` targets. AO refuses to read it if it is group- or other-readable.
+
+Once a host is connected, its projects appear as their own section in the sidebar, and **Add project** can browse directories on that machine. Removing a host only deletes your saved entry: sessions on that machine keep running.
+
+"Wrong password" is reported separately from "could not reach", and one connected host failing does not blank the rest of the tree. There is a current startup limitation: only hosts that connect successfully during remote-host initialization appear in the sidebar. A newly saved host, or a saved host whose startup connection fails, is omitted instead of appearing there with **Retry**. Once the host is reachable, restart the app or switch **Remote hosts (experimental)** off and on to connect it.
+
+## The trust boundary
+
+Remote sessions are designed for **one operator, machines they own, on a network they trust** — a home or office LAN, or a private Tailscale tailnet. They are **not** designed for hostile or public networks, shared machines, or multi-tenant use.
+
+The connection password is what makes the listener safe to open at all, but it is worth being precise about what it does and does not cover.
+
+**What the connection password does:**
+
+- Gates every data route on the LAN listener. Nothing reads or writes without it.
+- Locks out a source address after repeated failed attempts, per source, so one hostile device on the network cannot lock out your real one.
+- Leaves daemon-control routes (`/shutdown`, telemetry controls, mobile controls) loopback-only. They are not reachable over the network at any password.
+- Rotates on demand. Regenerating it immediately drops whatever is connected.
+
+**What the connection password does not do:**
+
+- **It does not encrypt anything.** The LAN link is plaintext HTTP by design. Anyone who can observe traffic on that network can read the password itself and everything that follows it. This is the single largest limitation of the feature and the reason the trust boundary is a trusted network.
+- **It does not authenticate the remote machine to you.** There is no TLS and no certificate pinning, so nothing proves the address you typed is the machine you meant.
+- **It does not limit what a holder can do.** There is no per-user authorization model: possession of the password is full authority on that daemon, and that daemon can spawn coding agents. Treat the connection password as equivalent to a shell login on that machine, and share it accordingly.
+- **It is not stored in a keychain.** Saved host passwords sit in plaintext in `~/.ao/remotes.json`, protected by file permissions (`0600`) rather than by the OS keychain.
+
+<Callout type="warn" title="Rules of thumb">
+	Turn Connect Mobile off on machines that are not currently being used as remote hosts. Never expose the mobile port to the public internet or forward it through a router. On any network you do not fully control, use the encrypted SSH tunnel below instead.
+</Callout>
+
+## Or tunnel over SSH
+
+If you already have SSH access to the remote machine, you can carry the connection over an SSH tunnel instead of installing anything. AO needs no configuration for this: you forward a local port to the remote listener, then add `127.0.0.1:<local port>` as an ordinary remote host.
+
+<Steps>
+<Step>
+
+### Open the tunnel
+
+From this machine, forward a **local port nothing else is using** to the remote machine's mobile port. `3111` below is arbitrary — anything free will do:
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+    -L 3111:127.0.0.1:3011 you@remote-machine
+```
+
+`-N` means "no remote command, just the forward". `ServerAliveInterval` is what notices a machine that went to sleep — without it a suspended peer leaves a local port that hangs rather than refuses. `ExitOnForwardFailure` makes the command fail loudly instead of connecting and forwarding nothing; you will see `bind [127.0.0.1]:3111: Address already in use` and an exit rather than a tunnel that is silently doing nothing.
+
+Leave this running. The tunnel lives as long as the command does.
+
+<Callout type="warn" title="Do not reuse 3011 as the local port">
+	If this machine runs its own AO daemon with Connect Mobile enabled, that daemon is listening on **every** interface at `3011`. On macOS, `ssh -L 3011:…` still binds `127.0.0.1:3011` *alongside* it — a more specific address may bind over a wildcard one — so the forward succeeds, `ExitOnForwardFailure` never fires, and this machine's own connections to `127.0.0.1:3011` quietly go to the **remote** daemon instead of the local one. Pick a local port nothing else uses and the problem does not arise.
+</Callout>
+
+</Step>
+<Step>
+
+### Add the local end as a host
+
+Add a remote host with the address `127.0.0.1:3111` — the *local* end of the tunnel, not the remote machine's address — and the remote machine's connection password. From AO's point of view this is an ordinary host that happens to be very close by.
+
+</Step>
+</Steps>
+
+### What the tunnel does and does not do
+
+**What it does:** keeps remote-host traffic out of the plaintext LAN path. Everything between the two machines — the connection password included — is encrypted by SSH. Machine authentication comes from the SSH host key you already verified the first time you connected.
+
+**What it does not do:**
+
+- **It does not replace the connection password.** The password is still required, still stored in `~/.ao/remotes.json`, and still sent on every request. What changes is where it travels: encrypted inside the tunnel, then across the remote machine's *own loopback interface* between the tunnel's far end and the daemon — the same hop a program running locally on that machine already makes. It never touches a network in plaintext.
+- **It does not survive a dropped connection on its own.** If the `ssh` process exits, the local port stops listening and the host simply reports as unreachable, like any host that went away. Reopen the tunnel and reconnect.
+- **It is not a reason to skip the password.** Do not point the tunnel at the daemon's loopback port (`3001`) hoping the tunnel itself will serve as authentication. That port answers a *different*, unauthenticated listener with a deliberately different policy: it refuses cross-origin writes and terminal connections, so most of the app breaks — and it serves loopback-only control routes that the network listener blocks on purpose, including one that hands out the connection password in cleartext. Forward the mobile port (`3011`), and keep the password.
+
+## macOS: "no route to host" while `curl` works
+
+On macOS, **Local Network privacy** must be granted before an app can reach other machines on the LAN. When it has not been granted, the connection fails with `EHOSTUNREACH`, which surfaces as a misleading **"no route to host"**:
+
+```
+dial tcp 192.168.1.250:3011: connect: no route to host
+```
+
+The network is fine. Apple-signed binaries such as `curl` and `nc` are exempt from the restriction, so they keep working against the same address — which is exactly what makes the diagnosis confusing.
+
+**How to tell this apart from a real network problem.** This combination is conclusive:
+
+| Check | Result when it is Local Network privacy |
+| --- | --- |
+| `ping <ip>` and `nc -z <ip> 3011` | Succeed |
+| `curl http://<ip>:3011/healthz` | Returns a real HTTP status |
+| The same client against `127.0.0.1` | Works — loopback is not "local network" |
+| The same client against the LAN address | Fails **every** time, never intermittently |
+
+**The fix:** open **System Settings → Privacy & Security → Local Network** and enable the app that is making the connection. Then retry.
+
+<Callout type="info" title="The permission attaches to the app, not to AO">
+	It is granted to the responsible process: the desktop app for the app's own connections, and your terminal app (Terminal, iTerm, and so on) for `ao --url`. Because they are granted separately, the desktop app can reach a remote host while the CLI on the same machine, at the same moment, cannot. A rebuilt binary or a newly installed terminal app can require granting it again.
+</Callout>
+
+## Known limitations
+
+- The LAN link is plaintext HTTP. Tunnelling over SSH encrypts the remote-host connection; TLS with pinning is a longer-term fix for clients that cannot use a tunnel, notably the mobile app.
+- Saved host passwords are protected by file permissions, not by the OS keychain.
+
+<Cards>
+	<Card title="Connect Mobile" href="/docs/configuration/remote-access" description="Enable the listener that remote hosts connect to." />
+	<Card title="CLI" href="/docs/cli" description="Point ao at another machine with --url." />
+</Cards>
