@@ -72,6 +72,16 @@ export const aoBridge: AoBridge =
 			restart: async () => ({ state: "starting" }),
 			onStatus: () => () => undefined,
 		},
+		device: {
+			status: async (sessionId: string) => ({ sessionId, capabilities: [
+				{ platform: "ios" as const, available: false, code: "DESKTOP_REQUIRED", message: "The desktop app is required for local devices." },
+				{ platform: "android" as const, available: false, code: "DESKTOP_REQUIRED", message: "The desktop app is required for local devices." },
+			] }),
+			list: async (sessionId: string) => ({ sessionId, devices: [] }),
+			command: async () => {
+				throw new Error("The desktop app is required for local devices.");
+			},
+		},
 		editorHandoff: {
 			getState: async () => ({
 				targets: [],

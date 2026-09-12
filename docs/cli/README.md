@@ -63,6 +63,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao preview [url]`                  | `POST /api/v1/sessions/{id}/preview`           |
 | `ao preview start/status/stop`      | `POST/GET/DELETE /api/v1/sessions/{id}/preview/server` |
 | `ao browser ...`                    | `GET /api/v1/browser/status`, `POST /api/v1/browser/commands` |
+| `ao device ...`                     | `GET /api/v1/devices[/status]`, `POST /api/v1/devices/commands` |
 | `ao hooks <agent> <event>`          | `POST /api/v1/sessions/{id}/activity` (hidden) |
 
 `ao agent ls` asks the daemon to ensure display readiness, then prints the
@@ -172,6 +173,17 @@ scoped to the active tab at start time, expires after 60 seconds by default
 tab/session. Captured data is metadata-only: request and response bodies are
 never read, sensitive headers are omitted, and URL credentials, fragments, and
 query values are redacted.
+
+`ao device` is the session-scoped macOS surface for local iOS Simulators and
+Android Emulators. AO bundles the pinned MIT-licensed `agent-device` runtime;
+Apple's Xcode Simulator runtimes and the Android SDK/emulator remain host
+prerequisites and are detected independently. Use `status` and `list`, attach
+with `open <device-id>`, inspect with `ui-tree` or `screenshot`, interact with
+`tap`, `swipe`, `fill`, `type`, `key`, `back`, and `home`, then release AO's
+session lease with `close`. `shutdown` powers off a target and requires
+`--yes`. Device commands require the session id and capability injected into
+the worker environment, are available only over AO's loopback listener, and do
+not accept arbitrary commands, paths, URLs, or environment variables.
 
 `go run .` in `backend/` remains a compatibility wrapper around the daemon.
 

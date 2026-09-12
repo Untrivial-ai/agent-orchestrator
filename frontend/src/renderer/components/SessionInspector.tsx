@@ -34,6 +34,7 @@ import {
 	Trash2,
 	Loader2,
 	MessageSquare,
+	Smartphone,
 	X,
 } from "lucide-react";
 import type { components } from "../../api/schema";
@@ -60,6 +61,7 @@ import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
+import { DevicePanel } from "./DevicePanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
@@ -91,7 +93,7 @@ export type { InspectorView } from "@aoagents/product-ui";
 
 const VIEW_DEFS: {
 	id: InspectorView;
-	labelKey: "inspector.summary" | "inspector.reviewTab" | "inspector.browser" | "inspector.files";
+	labelKey: "inspector.summary" | "inspector.reviewTab" | "inspector.browser" | "inspector.device" | "inspector.files";
 	icon: ReactNode;
 }[] = [
 	{
@@ -123,6 +125,11 @@ const VIEW_DEFS: {
 				<path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18" />
 			</svg>
 		),
+	},
+	{
+		id: "device",
+		labelKey: "inspector.device",
+		icon: <Smartphone aria-hidden="true" />,
 	},
 	{
 		id: "files",
@@ -231,6 +238,7 @@ export const SessionInspector = memo(function SessionInspector({
 						/>
 					) : undefined
 				}
+				deviceView={session ? <DevicePanel sessionId={session.id} /> : undefined}
 				filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
 				headerActions={<span aria-hidden="true" className="session-inspector-actions-spacer" />}
 				isVisible={isInspectorVisible}

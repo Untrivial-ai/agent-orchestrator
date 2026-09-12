@@ -154,6 +154,11 @@ if (typeof window !== "undefined") {
 			restart: async () => ({ state: "starting" }),
 			onStatus: () => () => undefined,
 		},
+		device: {
+			status: async (sessionId: string) => ({ sessionId, capabilities: [] }),
+			list: async (sessionId: string) => ({ sessionId, devices: [] }),
+			command: async ({ sessionId, action }) => ({ sessionId, action }),
+		},
 		editorHandoff: {
 			getState: async () => ({
 				targets: [

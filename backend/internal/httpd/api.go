@@ -48,6 +48,7 @@ type APIDeps struct {
 	Telemetry           ports.EventSink
 	Mobile              *controllers.MobileController
 	Browser             controllers.BrowserService
+	LocalDevices        controllers.LocalDeviceService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
 	SystemChecks        controllers.SystemChecker
@@ -119,6 +120,7 @@ type API struct {
 	settings      *controllers.SettingsController
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
+	localDevices  *controllers.LocalDevicesController
 	system        *controllers.SystemController
 	identity      *controllers.IdentityController
 	endpoints     *controllers.EndpointsController
@@ -161,6 +163,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
+		localDevices:  &controllers.LocalDevicesController{Svc: deps.LocalDevices},
 		system:        &controllers.SystemController{Checks: deps.SystemChecks},
 		identity:      &controllers.IdentityController{HostID: deps.HostID},
 		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
@@ -200,6 +203,7 @@ func (a *API) Register(root chi.Router) {
 			a.settings.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
+			a.localDevices.Register(r)
 			a.system.Register(r)
 			a.identity.Register(r)
 			a.endpoints.Register(r)

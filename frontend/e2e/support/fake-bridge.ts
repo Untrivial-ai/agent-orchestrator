@@ -126,6 +126,11 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 						return unsubscribe();
 					},
 				},
+				device: {
+					status: async (sessionId: string) => ({ sessionId, capabilities: [] }),
+					list: async (sessionId: string) => ({ sessionId, devices: [] }),
+					command: async ({ sessionId, action }: { sessionId: string; action: string }) => ({ sessionId, action }),
+				},
 				editorHandoff: {
 					getState: async () => ({
 						targets: [
@@ -662,6 +667,11 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						listener(status);
 						return unsubscribe();
 					},
+				},
+				device: {
+					status: async (sessionId: string) => ({ sessionId, capabilities: [] }),
+					list: async (sessionId: string) => ({ sessionId, devices: [] }),
+					command: async ({ sessionId, action }: { sessionId: string; action: string }) => ({ sessionId, action }),
 				},
 				editorHandoff: {
 					getState: async () => ({

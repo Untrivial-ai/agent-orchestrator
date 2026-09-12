@@ -212,6 +212,10 @@ const (
 	EnvRunFile = "AO_RUN_FILE"
 	// EnvBrowserCapability proves ownership of the session's browser target.
 	EnvBrowserCapability = "AO_BROWSER_CAPABILITY"
+	// EnvDeviceCapability proves ownership of the session's local virtual device.
+	// It currently shares the worker-generation credential with browser control;
+	// the public surface and header remain separate so the scopes can split later.
+	EnvDeviceCapability = "AO_DEVICE_CAPABILITY"
 	// EnvBrowserRuntimeToken must never be inherited by a worker. It authenticates
 	// the privileged Electron runtime, not session-scoped browser callers.
 	EnvBrowserRuntimeToken = "AO_BROWSER_RUNTIME_TOKEN" //nolint:gosec // Environment variable name, not a credential.
@@ -387,6 +391,7 @@ type Manager struct {
 	lcm                         lifecycleRecorder
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
+	device                      DeviceLifecycle
 	browserCapabilities         BrowserCapabilityIssuer
 	attachments                 *attachmentstore.Store
 	attachmentSuffix            func() (string, error)
@@ -593,6 +598,10 @@ func (m *Manager) SetReviewerTerminator(terminator ReviewerTerminator) {
 	m.reviewers = terminator
 }
 
+// SetDeviceLifecycle late-binds virtual-device attachment cleanup after the
+// controller-facing service has been assembled.
+func (m *Manager) SetDeviceLifecycle(device DeviceLifecycle) { m.device = device }
+
 func (m *Manager) codexReviewerLifecycle() codexReviewerLifecycle {
 	m.reviewersMu.Lock()
 	defer m.reviewersMu.Unlock()
@@ -640,6 +649,12 @@ type PreviewLifecycle interface {
 // Session Manager. It must work even when no renderer panel mounted.
 type BrowserLifecycle interface {
 	DestroySession(ctx context.Context, id domain.SessionID) error
+}
+
+// DeviceLifecycle releases helper sessions and AO attachment ownership when a
+// worker leaves its live lifecycle.
+type DeviceLifecycle interface {
+	DetachSession(context.Context, domain.SessionID) error
 }
 
 // BrowserCapabilityIssuer mints the split capability injected into a worker
@@ -1676,7 +1691,7 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 		return false, fmt.Errorf("kill %s: %w", id, ErrCodexAccountSwitchInProgress)
 	}
 	m.stopPreviewBestEffort(ctx, id)
-	m.destroyBrowserBestEffort(ctx, id)
+	m.destroySessionSurfacesBestEffort(ctx, id)
 	handle := runtimeHandle(rec.Metadata)
 	ws := workspaceInfo(rec)
 
@@ -1811,7 +1826,7 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		return nil
 	}
 	m.stopPreviewBestEffort(ctx, id)
-	m.destroyBrowserBestEffort(ctx, id)
+	m.destroySessionSurfacesBestEffort(ctx, id)
 	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
 		if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
 			return fmt.Errorf("retire replacement %s: clear restore markers: %w", id, err)
@@ -1921,7 +1936,14 @@ func (m *Manager) terminateNativeSession(ctx context.Context, rec domain.Session
 	})
 }
 
-func (m *Manager) destroyBrowserBestEffort(ctx context.Context, id domain.SessionID) {
+func (m *Manager) destroySessionSurfacesBestEffort(ctx context.Context, id domain.SessionID) {
+	if m.device != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err := m.device.DetachSession(cleanupCtx, id); err != nil {
+			m.logger.Warn("session device cleanup failed", "sessionID", id, "error", err)
+		}
+		cancel()
+	}
 	if m.browser == nil {
 		return
 	}
@@ -4260,6 +4282,7 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 		env[EnvRunFile] = runFilePath
 	}
 	env[EnvBrowserCapability] = ""
+	env[EnvDeviceCapability] = ""
 	env[EnvBrowserRuntimeToken] = ""
 	env[EnvBrowserRuntimeTokenStdin] = ""
 	if runtime.GOOS == "windows" {
@@ -4302,6 +4325,7 @@ func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID
 		return nil, "", errors.New("browser capability issuer returned an empty credential")
 	}
 	env[EnvBrowserCapability] = token
+	env[EnvDeviceCapability] = token
 	return env, verifier, nil
 }
 

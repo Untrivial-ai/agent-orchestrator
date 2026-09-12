@@ -1110,6 +1110,11 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 			(app.isPackaged
 				? path.join(process.resourcesPath, "acp-runtime")
 				: path.join(app.getAppPath(), "resources", "acp-runtime")),
+		AO_DEVICE_RUNTIME_DIR:
+			process.env.AO_DEVICE_RUNTIME_DIR ??
+			(app.isPackaged
+				? path.join(process.resourcesPath, "device-runtime")
+				: path.join(app.getAppPath(), "resources", "device-runtime")),
 		...(bundledTmuxBinary ? { AO_TMUX_BINARY: bundledTmuxBinary, AO_TMUX_SOCKET_NAME: "ao" } : {}),
 	};
 	// In dev mode, inject isolation defaults so the dev daemon never collides with
@@ -1919,6 +1924,24 @@ async function restartDaemon(): Promise<DaemonStatus> {
 	return startDaemonForRestart();
 }
 
+async function requestLocalDevice(pathname: string, init: RequestInit = {}): Promise<unknown> {
+	const status = await refreshDaemonStatus();
+	if (status.state !== "ready" || !status.port) throw new Error("AO daemon is not ready.");
+	const response = await fetch(`http://127.0.0.1:${status.port}${pathname}`, {
+		...init,
+		headers: {
+			"Content-Type": "application/json",
+			"X-AO-Desktop-Device-Capability": browserRuntimeToken,
+			...init.headers,
+		},
+	});
+	const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+	if (!response.ok) {
+		throw new Error(typeof body?.message === "string" ? body.message : `Device request failed (${response.status})`);
+	}
+	return body;
+}
+
 ipcMain.handle("daemon:getStatus", () => refreshDaemonStatus());
 ipcMain.handle("daemon:start", () => startDaemon());
 ipcMain.handle("daemon:stop", () => stopDaemon());
@@ -1928,6 +1951,21 @@ ipcMain.handle("daemon:restart", async () => {
 	} catch (error) {
 		return reportDaemonRestartFailure(error);
 	}
+});
+ipcMain.handle("device:status", (event, sessionId: unknown) => {
+	if (event.sender !== getShellWebContents()) throw new Error("Untrusted device request.");
+	if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("A session id is required.");
+	return requestLocalDevice(`/api/v1/devices/status?sessionId=${encodeURIComponent(sessionId.trim())}`);
+});
+ipcMain.handle("device:list", (event, sessionId: unknown) => {
+	if (event.sender !== getShellWebContents()) throw new Error("Untrusted device request.");
+	if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("A session id is required.");
+	return requestLocalDevice(`/api/v1/devices?sessionId=${encodeURIComponent(sessionId.trim())}`);
+});
+ipcMain.handle("device:command", (event, command: unknown) => {
+	if (event.sender !== getShellWebContents()) throw new Error("Untrusted device request.");
+	if (!command || typeof command !== "object" || Array.isArray(command)) throw new Error("A device command is required.");
+	return requestLocalDevice("/api/v1/devices/commands", { method: "POST", body: JSON.stringify(command) });
 });
 ipcMain.handle("editorHandoff:getState", (event, sessionId: string) => {
 	if (event.sender !== getShellWebContents()) throw new Error("Untrusted editor handoff request.");

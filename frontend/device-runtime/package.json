@@ -1,0 +1,10 @@
+{
+	"name": "@aoagents/device-runtime",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Pinned local virtual-device helpers packaged with the AO desktop app",
+	"license": "UNLICENSED",
+	"dependencies": {
+		"agent-device": "0.21.1"
+	}
+}

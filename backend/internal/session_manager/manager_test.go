@@ -366,6 +366,16 @@ type fakeBrowserLifecycle struct {
 	err       error
 }
 
+type fakeDeviceLifecycle struct {
+	detached []domain.SessionID
+	err      error
+}
+
+func (f *fakeDeviceLifecycle) DetachSession(_ context.Context, id domain.SessionID) error {
+	f.detached = append(f.detached, id)
+	return f.err
+}
+
 func (f *fakeBrowserLifecycle) DestroySession(_ context.Context, id domain.SessionID) error {
 	f.destroyed = append(f.destroyed, id)
 	return f.err
@@ -2690,9 +2700,11 @@ func TestKill_TearsDownRuntimeAndWorkspace(t *testing.T) {
 	m, st, rt, ws := newManager()
 	preview := &fakePreviewLifecycle{}
 	browser := &fakeBrowserLifecycle{}
+	device := &fakeDeviceLifecycle{}
 	reviewer := &fakeReviewerTerminator{}
 	m.preview = preview
 	m.browser = browser
+	m.device = device
 	m.SetReviewerTerminator(reviewer)
 	dataDir := t.TempDir()
 	m.dataDir = dataDir
@@ -2712,6 +2724,9 @@ func TestKill_TearsDownRuntimeAndWorkspace(t *testing.T) {
 	}
 	if !reflect.DeepEqual(browser.destroyed, []domain.SessionID{"mer-1"}) {
 		t.Fatalf("browser destroys = %v, want [mer-1]", browser.destroyed)
+	}
+	if !reflect.DeepEqual(device.detached, []domain.SessionID{"mer-1"}) {
+		t.Fatalf("device detaches = %v, want [mer-1]", device.detached)
 	}
 	if !reflect.DeepEqual(reviewer.calls, []domain.SessionID{"mer-1"}) {
 		t.Fatalf("reviewer terminates = %v, want [mer-1]", reviewer.calls)
