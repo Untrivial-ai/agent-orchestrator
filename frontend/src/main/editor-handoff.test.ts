@@ -13,8 +13,8 @@ function deps(overrides: Partial<EditorHandoffDeps> = {}): EditorHandoffDeps {
 		writePreference: vi.fn().mockResolvedValue(undefined),
 		launch: vi.fn().mockResolvedValue(undefined),
 		openDirectory: vi.fn().mockResolvedValue(undefined),
-		isExecutable: (candidatePath) => candidatePath === "/bin/code",
-		isDirectory: (candidatePath) => candidatePath === "/Applications/Cursor.app",
+		isExecutable: (candidatePath) => path.normalize(candidatePath) === path.normalize("/bin/code"),
+		isDirectory: (candidatePath) => path.normalize(candidatePath) === path.normalize("/Applications/Cursor.app"),
 		...overrides,
 	};
 }
@@ -138,7 +138,7 @@ describe("editor handoff", () => {
 			id: "vscode",
 			kind: "editor",
 		});
-		expect(input.launch).toHaveBeenCalledWith("/bin/code", ["/worktrees/ao-1"], "/worktrees/ao-1");
+		expect(input.launch).toHaveBeenCalledWith(path.normalize("/bin/code"), ["/worktrees/ao-1"], "/worktrees/ao-1");
 		expect(input.writePreference).toHaveBeenCalledWith("vscode");
 	});
 
@@ -181,6 +181,14 @@ describe("editor handoff (win32 fallback discovery)", () => {
 		const state = await handoff.getState("ao-1");
 		const cursor = state.targets.find(({ id }) => id === "cursor");
 		expect(cursor).toBeDefined();
+	});
+
+	it("finds Antigravity IDE when present in LOCALAPPDATA install dir", async () => {
+		const antigravityBin = path.join("C:", "Users", "tester", "AppData", "Local", "Programs", "Antigravity IDE", "bin", "antigravity-ide.cmd");
+		const handoff = createEditorHandoff(winDeps({ isExecutable: installedExecutables(antigravityBin) }));
+		const state = await handoff.getState("ao-1");
+		const antigravity = state.targets.find(({ id }) => id === "antigravity");
+		expect(antigravity).toEqual({ id: "antigravity", name: "Antigravity IDE", kind: "editor" });
 	});
 
 	it("prefers a Windows-native .cmd shim over a bare extension-less sh script on PATH", async () => {
