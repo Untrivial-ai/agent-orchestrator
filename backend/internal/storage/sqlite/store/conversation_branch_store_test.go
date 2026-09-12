@@ -499,7 +499,7 @@ func TestBeginEditProviderWorkUsesCurrentConversationOwner(t *testing.T) {
 			s := newTestStore(t)
 			seedProject(t, s, "edit-owner")
 			rec := sampleRecord("edit-owner")
-			rec.Mode = domain.SessionModeChat
+			rec.Mode = tt.mode
 			rec.Metadata.ControllerGeneration = "generation-source"
 			source, err := s.CreateSession(ctx, rec)
 			if err != nil {
