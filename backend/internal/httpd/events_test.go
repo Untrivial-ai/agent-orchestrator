@@ -560,4 +560,3 @@ func TestEventsStream_ContextCancellationUnsubscribes(t *testing.T) {
 		t.Fatal("live subscriber was retained after context cancellation; expected unsubscribe")
 	}
 }
-

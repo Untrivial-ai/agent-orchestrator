@@ -449,4 +449,3 @@ func TestNotificationsAPI_StreamContextCancellationUnsubscribes(t *testing.T) {
 		t.Fatal("expected stream to unsubscribe after context cancellation")
 	}
 }
-

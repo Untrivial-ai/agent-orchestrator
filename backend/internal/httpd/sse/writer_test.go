@@ -2,6 +2,7 @@ package sse_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,7 +26,7 @@ func (n *nonFlusherResponseWriter) Header() http.Header {
 	return n.header
 }
 func (n *nonFlusherResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
-func (n *nonFlusherResponseWriter) WriteHeader(statusCode int)   {}
+func (n *nonFlusherResponseWriter) WriteHeader(statusCode int)  {}
 
 func TestUpgrade_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -70,7 +71,7 @@ func TestUpgrade_UnsupportedFlusher(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 
 	sw, err := sse.Upgrade(w, req)
-	if err != sse.ErrUnsupported {
+	if !errors.Is(err, sse.ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported, got %v", err)
 	}
 	if sw != nil {

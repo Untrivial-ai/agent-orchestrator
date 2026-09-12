@@ -178,4 +178,3 @@ func writeSSEEvent(sw *sse.Writer, e cdc.Event, sentSeq *int64) error {
 func sseEventName(t cdc.EventType) string {
 	return strings.NewReplacer("\r", "_", "\n", "_").Replace(string(t))
 }
-

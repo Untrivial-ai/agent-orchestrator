@@ -750,7 +750,10 @@ func (c *SessionsController) getWorkspaceFileBlob(w http.ResponseWriter, r *http
 	_, _ = w.Write(blob.Data)
 }
 
+// WorkspaceStreamHeartbeatInterval is the interval between SSE ping comments. Tests may override.
 var WorkspaceStreamHeartbeatInterval = 15 * time.Second
+
+// WorkspaceStreamWriteTimeout is the per-write deadline for sending SSE events or pings. Tests may override.
 var WorkspaceStreamWriteTimeout = sse.DefaultWriteTimeout
 
 func (c *SessionsController) streamWorkspaceChanges(w http.ResponseWriter, r *http.Request) {

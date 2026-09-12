@@ -117,8 +117,10 @@ func (c *NotificationsController) markAllRead(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// NotificationsHeartbeatInterval is the interval between SSE ping comments. Tests may override.
 var NotificationsHeartbeatInterval = sse.DefaultHeartbeatInterval
 
+// NotificationsWriteTimeout is the per-write deadline for sending SSE events or pings. Tests may override.
 var NotificationsWriteTimeout = sse.DefaultWriteTimeout
 
 func (c *NotificationsController) stream(w http.ResponseWriter, r *http.Request) {

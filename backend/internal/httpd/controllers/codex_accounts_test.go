@@ -455,4 +455,3 @@ func TestCodexAccountEventStream_BlockedClientExits(t *testing.T) {
 		t.Fatal("handler did not exit within bounded write deadline")
 	}
 }
-

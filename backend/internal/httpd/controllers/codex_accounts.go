@@ -281,7 +281,10 @@ func (c *CodexAccountsController) cancelLogin(w http.ResponseWriter, r *http.Req
 	envelope.WriteJSON(w, http.StatusOK, newCodexLoginResponse(result))
 }
 
+// CodexAccountsStreamHeartbeatInterval is the interval between SSE ping comments. Tests may override.
 var CodexAccountsStreamHeartbeatInterval = 25 * time.Second
+
+// CodexAccountsStreamWriteTimeout is the per-write deadline for sending SSE events or pings. Tests may override.
 var CodexAccountsStreamWriteTimeout = sse.DefaultWriteTimeout
 
 func (c *CodexAccountsController) events(w http.ResponseWriter, r *http.Request) {

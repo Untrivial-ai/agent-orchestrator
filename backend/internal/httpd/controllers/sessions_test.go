@@ -2755,7 +2755,6 @@ func TestSessionsAPI_StreamWorkspaceChanges_BlockedClientExits(t *testing.T) {
 	t.Fatal("handler did not exit within bounded write deadline")
 }
 
-
 func TestSessionsAPI_SetPreviewEmptyURLNoEntry(t *testing.T) {
 	svc := newFakeSessionService()
 	s := svc.sessions["ao-1"]
