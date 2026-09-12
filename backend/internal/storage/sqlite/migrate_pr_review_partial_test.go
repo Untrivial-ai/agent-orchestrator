@@ -15,6 +15,7 @@ import (
 )
 
 func TestMigratePRReviewPartialUpgrade(t *testing.T) {
+	fixture := migrationFixture(t, 122)
 	for _, tt := range []struct {
 		name          string
 		baseVersion   int64
@@ -29,7 +30,7 @@ func TestMigratePRReviewPartialUpgrade(t *testing.T) {
 		{name: "burned_130_without_column", baseVersion: 129, burned130: true, wantPartial: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			dataDir := t.TempDir()
+			dataDir := fixture(t)
 			db, err := sql.Open("sqlite", databaseURI(dataDir)+pragmas)
 			if err != nil {
 				t.Fatal(err)
