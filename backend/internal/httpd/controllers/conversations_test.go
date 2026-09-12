@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -555,5 +556,61 @@ func TestSnapshotKeepsAggregateWhenNoStreamArrived(t *testing.T) {
 	}
 	if _, present := detail["outputTruncated"]; present {
 		t.Error("untruncated output still carried the truncation flag")
+	}
+}
+
+type conversationPaddingReader struct {
+	byteVal byte
+}
+
+func (p conversationPaddingReader) Read(buf []byte) (int, error) {
+	for i := range buf {
+		buf[i] = p.byteVal
+	}
+	return len(buf), nil
+}
+
+func TestConversationBodyDecoding(t *testing.T) {
+	service := &fakeConversationService{}
+	srv := conversationTestServer(t, service)
+
+	// 1. Trailing non-JSON junk is rejected.
+	payloadWithJunk := `{"text":"hello"} trailing junk`
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/conversation/messages", payloadWithJunk)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_BODY")
+
+	// 2. Concatenated second JSON document is rejected.
+	payloadWithConcat := `{"text":"hello"} {"second":"doc"}`
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/conversation/messages", payloadWithConcat)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_BODY")
+
+	// 3. Valid JSON prefix padded to limit with trailing overflow is detected and rejected (not truncated).
+	validPrefix := `{"text":"hello"}`
+	maxConversationBody := int64((25<<20)*4/3 + (2 << 20)) // maxSpawnBodyBytes
+	paddingLen := maxConversationBody - int64(len(validPrefix))
+
+	stream := io.MultiReader(
+		strings.NewReader(validPrefix),
+		io.LimitReader(conversationPaddingReader{byteVal: ' '}, paddingLen),
+		strings.NewReader("EXTRA_TRUNCATED_DATA_AFTER_CAP"),
+	)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/sessions/ao-1/conversation/messages", stream)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(resp.Body)
+	assertErrorCode(t, respBytes, resp.StatusCode, http.StatusBadRequest, "INVALID_BODY")
+
+	// 4. Valid single document with trailing whitespace is accepted.
+	validWithWS := `{"text":"hello"}   ` + "\r\n  "
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/conversation/messages", validWithWS)
+	if status != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for valid message with trailing whitespace, got %d: %s", status, body)
 	}
 }
