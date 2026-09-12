@@ -8,6 +8,7 @@ import {
 	useState,
 	type FocusEvent,
 	type FormEvent,
+	type ComponentProps,
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -76,6 +77,16 @@ import { handleTabListKeyDown } from "../lib/terminal-tabs";
 import { useBrowserDownloads } from "../hooks/useBrowserDownloads";
 import { BrowserDownloadsList } from "./BrowserDownloadsList";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+
+/**
+ * Browser toolbar tooltips must stay entirely in the shell-owned chrome above
+ * the native page. Marking them as native overlays restacks WebContentsViews
+ * for every hover and produces a visible compositor flash. Collision handling
+ * is deliberately disabled so Radix cannot flip one back over the page.
+ */
+function BrowserToolbarTooltipContent(props: ComponentProps<typeof TooltipContent>) {
+	return <TooltipContent avoidCollisions={false} side="top" sideOffset={2} {...props} />;
+}
 
 // One-click viewport width presets for responsive testing — height is shown
 // for reference but not enforced (only width drives CSS breakpoints, and
@@ -807,7 +818,7 @@ export function BrowserPanelView({
 							</Button>
 						</span>
 					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.back")}</TooltipContent>
+					<BrowserToolbarTooltipContent>{t("browser.back")}</BrowserToolbarTooltipContent>
 				</Tooltip>
 				<Tooltip>
 					<TooltipTrigger asChild>
@@ -825,7 +836,7 @@ export function BrowserPanelView({
 							</Button>
 						</span>
 					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.forward")}</TooltipContent>
+					<BrowserToolbarTooltipContent>{t("browser.forward")}</BrowserToolbarTooltipContent>
 				</Tooltip>
 				<Tooltip>
 					<TooltipTrigger asChild>
@@ -844,7 +855,7 @@ export function BrowserPanelView({
 							)}
 						</Button>
 					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{navState.isLoading ? t("browser.stop") : t("browser.reload")}</TooltipContent>
+					<BrowserToolbarTooltipContent>{navState.isLoading ? t("browser.stop") : t("browser.reload")}</BrowserToolbarTooltipContent>
 				</Tooltip>
 				{annotationStatusLabel ? (
 					<span className="sr-only" role="status">
@@ -884,9 +895,9 @@ export function BrowserPanelView({
 									<ExternalLink aria-hidden="true" className="size-icon-sm" />
 								</Button>
 							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">
+							<BrowserToolbarTooltipContent>
 								{t("inspector.openInSystemBrowser")}
-							</TooltipContent>
+							</BrowserToolbarTooltipContent>
 						</Tooltip>
 					) : null}
 					<datalist id={historyListId}>
@@ -936,9 +947,9 @@ export function BrowserPanelView({
 							</Button>
 						</span>
 					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">
+					<BrowserToolbarTooltipContent>
 						{annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
-					</TooltipContent>
+					</BrowserToolbarTooltipContent>
 				</Tooltip>
 				{browserDownloads.downloads.length > 0 ? (
 					<DropdownMenu
@@ -965,7 +976,7 @@ export function BrowserPanelView({
 									</Button>
 								</DropdownMenuTrigger>
 							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.downloads.title")}</TooltipContent>
+							<BrowserToolbarTooltipContent>{t("browser.downloads.title")}</BrowserToolbarTooltipContent>
 						</Tooltip>
 						<DropdownMenuContent
 							align="end"
@@ -1017,7 +1028,7 @@ export function BrowserPanelView({
 								</Button>
 							</DropdownMenuTrigger>
 						</TooltipTrigger>
-						<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.controls")}</TooltipContent>
+						<BrowserToolbarTooltipContent>{t("browser.controls")}</BrowserToolbarTooltipContent>
 					</Tooltip>
 					{/* Opens directly over the live page (the toolbar sits right above the
 					    native browser view), so without this it renders behind the native
@@ -1200,7 +1211,7 @@ export function BrowserPanelView({
 							)}
 						</Button>
 					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}</TooltipContent>
+					<BrowserToolbarTooltipContent>{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}</BrowserToolbarTooltipContent>
 				</Tooltip>
 				{/* Docked mode has no reserved rail column by default (see
 				    BrowserTabsRail.tsx) — this trigger is the only way to reach the tab
@@ -1252,7 +1263,7 @@ export function BrowserPanelView({
 									<Plus aria-hidden="true" className="size-icon-base" />
 								</Button>
 							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.openNewTab")}</TooltipContent>
+							<BrowserToolbarTooltipContent>{t("browser.openNewTab")}</BrowserToolbarTooltipContent>
 						</Tooltip>
 					</div>
 				) : null}

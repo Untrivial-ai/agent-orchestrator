@@ -41,6 +41,7 @@ export function createWindowComposition(options: {
 	options.mainWindow.contentView.addChildView(shellView, 0);
 
 	let overlayOpen = false;
+	let surfaceRefreshRevision = 0;
 	const resize = (): void => {
 		if (options.mainWindow.isDestroyed?.()) return;
 		const bounds = options.mainWindow.contentView.getBounds();
@@ -56,9 +57,10 @@ export function createWindowComposition(options: {
 		if (options.mainWindow.isDestroyed?.()) return;
 		const bounds = options.mainWindow.contentView.getBounds();
 		if (bounds.width <= 0 || bounds.height <= 0) return;
+		const refreshRevision = ++surfaceRefreshRevision;
 		shellView.setBounds({ x: 0, y: 0, width: bounds.width, height: Math.max(1, bounds.height - 1) });
 		setTimeout(() => {
-			if (options.mainWindow.isDestroyed?.()) return;
+			if (options.mainWindow.isDestroyed?.() || surfaceRefreshRevision !== refreshRevision) return;
 			const current = options.mainWindow.contentView.getBounds();
 			shellView.setBounds({ x: 0, y: 0, width: current.width, height: current.height });
 		}, 0);
@@ -73,6 +75,11 @@ export function createWindowComposition(options: {
 		} else {
 			// Index zero leaves every live native surface above the transparent shell.
 			options.mainWindow.contentView.addChildView(shellView, 0);
+			// Invalidate any pending macOS nudge restore and synchronously return the
+			// shell to current window bounds. A rapid open-close-open sequence must
+			// never let an earlier timer mutate the newer compositor transaction.
+			surfaceRefreshRevision += 1;
+			resize();
 		}
 		// Restacking alone does not re-establish the shell's compositing surface:
 		// on macOS the freshly-raised shell can present a stale surface that hides

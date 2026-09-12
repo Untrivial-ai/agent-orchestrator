@@ -10,7 +10,11 @@ import type {
 } from "../../main/browser-view-host";
 import type { BrowserAnnotationCancelPayload, BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
 import type { BrowserProfileViewState } from "../../shared/browser-profiles";
-import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
+import {
+	hasRelevantBrowserOverlayMutation,
+	OPEN_BROWSER_OVERLAY_SELECTOR,
+} from "../lib/dom-selectors";
+import { browserSurfaceRectsEqual } from "../../shared/browser-surface";
 
 export type { BrowserNavState };
 
@@ -115,6 +119,11 @@ const EMPTY_PROFILE_STATE: BrowserProfileViewState = {
 };
 
 type PreviewTrigger = { revision: number | null; target: string };
+type BrowserBoundsInput = {
+	viewId: string;
+	rect: BrowserRect;
+	visible: boolean;
+};
 
 // The native view survives React session switches, so remember which preview
 // trigger was already consumed for each session. This prevents switching back
@@ -147,6 +156,9 @@ const HIDDEN_RECT: BrowserRect = { x: 0, y: 0, width: 0, height: 0 };
 // loaded (only continuing an already-started drag is handled elsewhere, via
 // the `is-resizing-x` watcher below). Keep in sync with tokens.css.
 const RESIZE_HANDLE_RESERVE_PX = 6;
+const LAYOUT_SETTLE_MIN_MS = 80;
+const LAYOUT_SETTLE_MAX_MS = 1_000;
+const LAYOUT_SETTLE_STABLE_FRAMES = 3;
 
 // The native WebContentsView is a window-level overlay, so DOM `overflow:
 // hidden` never clips it — it paints wherever the slot's bounding box lands.
@@ -216,14 +228,15 @@ export function useBrowserView({
 	const viewIdRef = useRef("");
 	const annotationModeRef = useRef(false);
 	const activeRef = useRef(active);
-	const poppedOutRef = useRef(poppedOut);
 	const frameRef = useRef<number | null>(null);
-	const settleTimerRef = useRef<number | null>(null);
+	const settleFrameRef = useRef<number | null>(null);
+	const settleGenerationRef = useRef(0);
 	const observerRef = useRef<ResizeObserver | null>(null);
 	const previewTriggerRef = useRef<{ revision: number | null; target: string } | null>(null);
 	const overlayOpenRef = useRef(false);
 	const tabNoticeTimerRef = useRef<number | null>(null);
 	const tabsStateRef = useRef(tabsState);
+	const lastSentBoundsRef = useRef<BrowserBoundsInput | null>(null);
 	const hasNativeBrowser = Boolean(window.ao?.browser);
 
 	useEffect(() => {
@@ -260,38 +273,41 @@ export function useBrowserView({
 		[sessionId],
 	);
 
-	const sendHiddenBounds = useCallback((id = viewIdRef.current) => {
-		if (!id) return;
-		window.ao?.browser.setBounds({ viewId: id, rect: HIDDEN_RECT, visible: false });
-	}, []);
-
-	const measureAndSend = useCallback(() => {
-		// measureAndSend runs both from the scheduleMeasure() rAF callback and as a
-		// direct synchronous call (parking on overlay open, the settle timer). A
-		// direct call may land while a scheduled frame is still queued, so cancel
-		// that live handle rather than blindly nulling it — otherwise the
-		// scheduleMeasure() dedupe guard and cancelScheduledMeasure() cleanup would
-		// both trust a frameRef that no longer reflects the pending frame.
-		if (frameRef.current !== null) {
-			if (window.cancelAnimationFrame) window.cancelAnimationFrame(frameRef.current);
-			window.clearTimeout(frameRef.current);
-		}
-		frameRef.current = null;
-		const id = viewIdRef.current;
-		const node = slotNodeRef.current;
-		if (!id) return;
-		if (!activeRef.current || !node || !node.isConnected || hiddenByFullscreen(node)) {
-			sendHiddenBounds(id);
+	const sendBounds = useCallback((input: BrowserBoundsInput) => {
+		const previous = lastSentBoundsRef.current;
+		if (
+			previous?.viewId === input.viewId &&
+			previous.visible === input.visible &&
+			browserSurfaceRectsEqual(previous.rect, input.rect)
+		) {
 			return;
 		}
+		lastSentBoundsRef.current = { ...input, rect: { ...input.rect } };
+		window.ao?.browser.setBounds(input);
+	}, []);
+
+	const sendHiddenBounds = useCallback((id = viewIdRef.current) => {
+		if (!id) return;
+		sendBounds({ viewId: id, rect: HIDDEN_RECT, visible: false });
+	}, [sendBounds]);
+
+	const measureAndSend = useCallback((): BrowserBoundsInput | null => {
+		const id = viewIdRef.current;
+		const node = slotNodeRef.current;
+		if (!id) return null;
+		if (!activeRef.current || !node || !node.isConnected || hiddenByFullscreen(node)) {
+			sendHiddenBounds(id);
+			return { viewId: id, rect: HIDDEN_RECT, visible: false };
+		}
 		const rect = visibleSlotRect(node);
-		const payload = {
+		const payload: BrowserBoundsInput = {
 			viewId: id,
 			rect,
 			visible: rect.width > 0 && rect.height > 0,
 		};
-		window.ao?.browser.setBounds(payload);
-	}, [sendHiddenBounds]);
+		sendBounds(payload);
+		return payload;
+	}, [sendBounds, sendHiddenBounds]);
 
 	const cancelScheduledMeasure = useCallback(() => {
 		if (frameRef.current === null) return;
@@ -305,26 +321,62 @@ export function useBrowserView({
 	const scheduleMeasure = useCallback(() => {
 		if (frameRef.current !== null) return;
 		frameRef.current = window.requestAnimationFrame
-			? window.requestAnimationFrame(() => measureAndSend())
-			: window.setTimeout(() => measureAndSend(), 16);
+			? window.requestAnimationFrame(() => {
+					frameRef.current = null;
+					measureAndSend();
+				})
+			: window.setTimeout(() => {
+					frameRef.current = null;
+					measureAndSend();
+				}, 16);
 	}, [measureAndSend]);
 
-	// A ResizeObserver only fires on size changes, so a position-only layout shift
-	// leaves the native overlay at stale bounds: entering/leaving pop-out moves the
-	// slot into a different panel, and opening the inspector (what `ao preview`
-	// does) reflows the slot's x without changing the observed node's box size.
-	// Neither fires the observer, so the view visibly spills over the sidebar/
-	// terminal until an unrelated window resize re-measures it. Re-measure now and
-	// again once the panel transition has settled (~240ms) so the final geometry
-	// always wins.
+	const cancelSettleMeasure = useCallback(() => {
+		settleGenerationRef.current += 1;
+		if (settleFrameRef.current === null) return;
+		if (window.cancelAnimationFrame) window.cancelAnimationFrame(settleFrameRef.current);
+		window.clearTimeout(settleFrameRef.current);
+		settleFrameRef.current = null;
+	}, []);
+
+	// ResizeObserver misses position-only transforms, and a fixed timeout can fire
+	// too early or restore obsolete geometry when transitions overlap. Sample at
+	// most once per frame until the rectangle has converged, with a hard ceiling so
+	// a perpetually animating page can never keep this loop alive indefinitely.
 	const scheduleSettleMeasure = useCallback(() => {
-		scheduleMeasure();
-		if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
-		settleTimerRef.current = window.setTimeout(() => {
-			settleTimerRef.current = null;
-			measureAndSend();
-		}, 280);
-	}, [measureAndSend, scheduleMeasure]);
+		cancelSettleMeasure();
+		const generation = settleGenerationRef.current;
+		const startedAt = performance.now();
+		let stableFrames = 0;
+		let previous: BrowserBoundsInput | null = null;
+		const tick = () => {
+			if (settleGenerationRef.current !== generation) return;
+			settleFrameRef.current = null;
+			const current = measureAndSend();
+			const unchanged =
+				current !== null &&
+				previous !== null &&
+				current.viewId === previous.viewId &&
+				current.visible === previous.visible &&
+				browserSurfaceRectsEqual(current.rect, previous.rect);
+			stableFrames = unchanged ? stableFrames + 1 : 0;
+			previous = current;
+			const elapsed = performance.now() - startedAt;
+			if (
+				current === null ||
+				elapsed >= LAYOUT_SETTLE_MAX_MS ||
+				(elapsed >= LAYOUT_SETTLE_MIN_MS && stableFrames >= LAYOUT_SETTLE_STABLE_FRAMES)
+			) {
+				return;
+			}
+			settleFrameRef.current = window.requestAnimationFrame
+				? window.requestAnimationFrame(tick)
+				: window.setTimeout(tick, 16);
+		};
+		settleFrameRef.current = window.requestAnimationFrame
+			? window.requestAnimationFrame(tick)
+			: window.setTimeout(tick, 16);
+	}, [cancelSettleMeasure, measureAndSend]);
 
 	const slotRef = useCallback(
 		(node: HTMLDivElement | null) => {
@@ -514,20 +566,6 @@ export function useBrowserView({
 	}, [active, navState.url, poppedOut, scheduleSettleMeasure, sendHiddenBounds]);
 
 	useEffect(() => {
-		if (poppedOutRef.current === poppedOut) return;
-		poppedOutRef.current = poppedOut;
-		if (!hasNativeBrowser || !activeRef.current) {
-			scheduleSettleMeasure();
-			return;
-		}
-		measureAndSend();
-		window.setTimeout(() => {
-			measureAndSend();
-		}, 0);
-		scheduleSettleMeasure();
-	}, [hasNativeBrowser, measureAndSend, poppedOut, scheduleSettleMeasure]);
-
-	useEffect(() => {
 		if (!hasNativeBrowser) return;
 		const update = () => {
 			const open =
@@ -541,15 +579,15 @@ export function useBrowserView({
 			if (!open) scheduleSettleMeasure();
 		};
 		update();
-		const observer = new MutationObserver(update);
+		const observer = new MutationObserver((records) => {
+			if (hasRelevantBrowserOverlayMutation(records)) update();
+		});
 		// Radix reuses its portal node and flips `data-state` in place rather than
 		// adding/removing a body child, so a `childList`-only observer misses the
 		// open/close transition under rapid toggling and the overlay state desyncs.
 		// Watch subtree attribute flips on `data-state` too so the transition is
-		// always observed. This widens the firing rate a lot — `data-state` is used
-		// across Radix (tooltips, accordions, selects, switches, …), so `update()`
-		// now runs a document-wide querySelector on activity anywhere in the app
-		// before it can bail. Cheap enough in practice, but not free.
+		// always observed. The callback filters records before querying the document,
+		// so unrelated Radix data-state activity never touches browser composition.
 		observer.observe(document.body, {
 			childList: true,
 			subtree: true,
@@ -582,15 +620,17 @@ export function useBrowserView({
 		window.addEventListener("resize", handle);
 		window.addEventListener("scroll", handle, true);
 		document.addEventListener("fullscreenchange", handleFullscreenChange);
+		const offNativeLayout = window.ao?.window.onBrowserLayoutChanged?.(() => scheduleSettleMeasure());
 		return () => {
 			window.removeEventListener("resize", handle);
 			window.removeEventListener("scroll", handle, true);
 			document.removeEventListener("fullscreenchange", handleFullscreenChange);
+			offNativeLayout?.();
 			observerRef.current?.disconnect();
 			cancelScheduledMeasure();
-			if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
+			cancelSettleMeasure();
 		};
-	}, [cancelScheduledMeasure, scheduleMeasure, scheduleSettleMeasure]);
+	}, [cancelScheduledMeasure, cancelSettleMeasure, scheduleMeasure, scheduleSettleMeasure]);
 
 	const withView = useCallback(async (fn: (id: string) => Promise<BrowserNavState | void>) => {
 		const id = viewIdRef.current;
