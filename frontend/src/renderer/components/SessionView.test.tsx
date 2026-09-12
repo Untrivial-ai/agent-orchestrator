@@ -31,6 +31,7 @@ const interfaceTransitionState = vi.hoisted(() => ({
 	status: undefined as SessionInterfaceTransitionStatus | undefined,
 }));
 const reviewGetMock = vi.hoisted(() => vi.fn());
+const restartProjectOrchestratorMock = vi.hoisted(() => vi.fn());
 const inspectorVisibilityRenders = vi.hoisted(() => [] as boolean[]);
 const chatSurfaceRenders = vi.hoisted(() => [] as string[]);
 const chatSurfaceWorkState = vi.hoisted(() => ({
@@ -137,6 +138,10 @@ vi.mock("../lib/api-client", () => ({
 	},
 	apiErrorCode: (error: { code?: string }) => error.code,
 	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
+}));
+
+vi.mock("../lib/restart-orchestrator", () => ({
+	restartProjectOrchestrator: restartProjectOrchestratorMock,
 }));
 
 const { workspaces, workspaceQueryState, shellTerminalsState } = vi.hoisted(() => {
@@ -750,6 +755,7 @@ describe("SessionView", () => {
 		chatSurfaceWorkState.queuedTurnCount = 0;
 		codexAccountsQueryState.data = undefined;
 		recoverCodexAccountSwitchMock.mockReset();
+		restartProjectOrchestratorMock.mockReset().mockResolvedValue(undefined);
 		reviewGetMock.mockReset();
 		reviewGetMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
@@ -1184,6 +1190,24 @@ describe("SessionView", () => {
 				policy: "drain",
 			}),
 		);
+	});
+
+	it("restarts the project orchestrator from an orchestrator session's actions menu", async () => {
+		render(<SessionView sessionId="sess-orch" />);
+
+		await chooseSessionAction("Restart");
+
+		expect(restartProjectOrchestratorMock).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-1" }),
+		);
+	});
+
+	it("does not offer a restart action from a worker session's actions menu", async () => {
+		render(<SessionView sessionId="sess-1" />);
+
+		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
+
+		expect(screen.queryByRole("menuitem", { name: "Restart" })).not.toBeInTheDocument();
 	});
 
 	it("keeps the policy dialog closed when an idle direct switch fails", async () => {

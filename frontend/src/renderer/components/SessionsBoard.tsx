@@ -324,6 +324,34 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 								: t("shell.spawnOrchestrator")}
 				</TooltipContent>
 			</Tooltip>
+			{orchestrator ? (
+				// Manual counterpart to the health-banner restart below: that one
+				// only appears once AO's own health check flags the orchestrator as
+				// stuck (restart_needed/duplicates). Project config changes
+				// (agentRules/orchestratorRules, including file-based rules read at
+				// spawn time) never trigger that health check, so without this a
+				// user has no in-app way to pick up a rules edit short of killing
+				// the session by hand. Reuses the same restartOrchestrator() used
+				// by the health banner — same replace-in-place behavior, just
+				// available on demand instead of only when AO detects a problem.
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="inline-flex">
+							<TopbarButton
+								aria-label={t("shell.restart")}
+								disabled={isSpawning || isProjectRestarting}
+								onClick={() => void restartOrchestrator()}
+								variant="icon"
+							>
+								<RotateCw className="size-icon-md" aria-hidden="true" />
+							</TopbarButton>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">
+						{isProjectRestarting ? t("shell.restarting") : t("shell.restart")}
+					</TooltipContent>
+				</Tooltip>
+			) : null}
 			{boardOwnsNotificationCenter ? (
 				<>
 					<NotificationCenter />

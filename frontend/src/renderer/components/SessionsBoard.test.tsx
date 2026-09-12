@@ -257,6 +257,54 @@ describe("SessionsBoard", () => {
 		if (!pulses) expect(indicator).not.toHaveClass("animate-status-pulse");
 	});
 
+	it("offers a manual restart action for an existing orchestrator, independent of the health banner", async () => {
+		const user = userEvent.setup();
+		boardActionsInPanelMock.mockReturnValue(true);
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				{
+					id: "p1",
+					name: "solkit-ui",
+					path: "/tmp/solkit-ui",
+					sessions: [
+						{
+							id: "orch-1",
+							workspaceId: "p1",
+							workspaceName: "solkit-ui",
+							title: "orchestrator",
+							provider: "codex",
+							kind: "orchestrator",
+							branch: "main",
+							status: "working",
+							activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
+							updatedAt: "2026-01-01T00:00:00Z",
+							prs: [],
+						},
+					],
+				},
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		// Health state is "ok" here (no restart_needed/duplicates), so the
+		// existing banner restart button never renders. The manual one must be
+		// reachable regardless — that's the whole point: rules-file edits and
+		// other config-driven cases AO's health check doesn't detect.
+		expect(screen.queryByRole("button", { name: "Restart" })).not.toBeNull();
+
+		await user.click(screen.getByRole("button", { name: "Restart" }));
+
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith(
+				"/api/v1/orchestrators",
+				expect.objectContaining({ body: expect.objectContaining({ projectId: "p1" }) }),
+			),
+		);
+	});
+
 	it("shows the Board crumb on the root board when actions live in the panel", () => {
 		boardActionsInPanelMock.mockReturnValue(true);
 		workspaceQueryMock.mockReturnValue({
