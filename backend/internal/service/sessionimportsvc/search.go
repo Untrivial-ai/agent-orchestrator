@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/importidentity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
@@ -259,22 +260,7 @@ func matchesSource(r domain.SessionRecord, target sessionimport.ImportableSessio
 	if r.IsTerminated || r.Harness != target.Provider || (r.Metadata.ProviderConversationID != target.NativeSessionID && r.Metadata.AgentSessionID != target.NativeSessionID) {
 		return false
 	}
-	path := r.Metadata.NativeTranscriptPath
-	if path == "" {
-		return false
-	} // Unknown roots must never make different source profiles collide.
-	rel, err := filepath.Rel(target.ConfigDir, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	parts := strings.Split(rel, string(filepath.Separator))
-	if target.Provider == domain.HarnessClaudeCode {
-		return len(parts) == 3 && parts[0] == "projects"
-	}
-	if target.Provider == domain.HarnessCodex {
-		return len(parts) == 5 && (parts[0] == "sessions" || parts[0] == "archived_sessions")
-	}
-	return false
+	return importidentity.Matches(target.Provider, target.ConfigDir, r.Metadata.NativeTranscriptPath)
 }
 func (s *Service) existingSelected(ctx context.Context, id string) (domain.Session, bool, error) {
 	records, err := s.store.ListAllSessions(ctx)

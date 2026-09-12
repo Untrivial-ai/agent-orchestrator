@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -400,5 +401,57 @@ func TestConcurrentCloseAndRefresh(t *testing.T) {
 		if s.SearchStatus().Running {
 			t.Fatal("refresh outlived shutdown")
 		}
+	}
+}
+
+func TestBulkRootAliasSearchAndSelectedRetry(t *testing.T) {
+	s, store, projects, path, repo := searchFixture(t)
+	ctx := context.Background()
+	root := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	alias := filepath.Join(t.TempDir(), "claude-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]any
+	if err = json.Unmarshal(raw, &header); err != nil {
+		t.Fatal(err)
+	}
+	header["timestamp"] = time.Now().UTC().Format(time.RFC3339Nano)
+	raw, _ = json.Marshal(header)
+	raw = append(raw, []byte("\n{\"type\":\"assistant\",\"message\":{\"id\":\"message\",\"usage\":{\"input_tokens\":15000}}}\n")...)
+	if err = os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	projects.list = []projectsvc.Summary{{ID: "existing", Path: repo}}
+	s.disco = sessionimport.NewService(s.existingNativeIDs, sessionimport.NewClaudeSourceAt(alias))
+	native := "11111111-1111-1111-1111-111111111111"
+	saved, already, err := s.Import(ctx, domain.HarnessClaudeCode, native, "existing")
+	if err != nil || already {
+		t.Fatal(saved, already, err)
+	}
+	if !strings.HasPrefix(store.records[0].Metadata.NativeTranscriptPath, alias) {
+		t.Fatal("bulk did not preserve alias fixture", store.records)
+	}
+	refreshWait(t, s)
+	page, err := s.Search(ctx, "ancient", 50, "")
+	if err != nil || len(page.Results) != 1 || page.Results[0].SessionID != string(saved.ID) {
+		t.Fatal(page, err)
+	}
+	id := page.Results[0].ID
+	// Removing the transcript and project shard must not erase root-alias identity.
+	if err = os.RemoveAll(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Destination(ctx, id, "")
+	if err != nil || d.Action != "open" {
+		t.Fatal(d, err)
+	}
+	result, err := s.ImportSelected(ctx, id, SelectedInput{})
+	if err != nil || !result.AlreadyImported || store.creates != 1 {
+		t.Fatal(result, err, store.creates)
 	}
 }
