@@ -30,6 +30,7 @@ export type BrowserImportSource = {
 
 export type BrowserImportDiscovery = {
 	sources: BrowserImportSource[];
+	warnings?: Array<"safari-access-denied">;
 };
 
 export type BrowserImportDestination =

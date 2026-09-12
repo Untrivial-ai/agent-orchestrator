@@ -1,4 +1,5 @@
 import { createCipheriv, createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,7 @@ import { BROWSER_PROFILE_MAX_COUNT } from "../shared/browser-profiles";
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -236,6 +238,58 @@ async function createSafariFixture(root: string): Promise<{ library: string; nam
 }
 
 describe("BrowserProfileImportService", () => {
+	it("keeps other browsers discoverable and importable when Safari access is denied", async () => {
+		const root = await fixtureRoot();
+		await createSafariFixture(root);
+		const firefox = path.join(root, "Library", "Application Support", "Firefox", "Profiles", "test.default");
+		await mkdir(firefox, { recursive: true });
+		const db = new Database(path.join(firefox, "places.sqlite"));
+		db.exec("CREATE TABLE moz_places (url TEXT, title TEXT, visit_count INTEGER, last_visit_date INTEGER); INSERT INTO moz_places VALUES ('https://example.com', 'Firefox', 1, 1767225600000000)");
+		db.close();
+		const original = fs.lstat;
+		const sourceLstat = ((file: Parameters<typeof fs.lstat>[0], options: never) => {
+			if (String(file).includes("com.apple.Safari")) return Promise.reject(Object.assign(new Error("blocked"), { code: "EPERM" }));
+			return original(file, options);
+		}) as typeof fs.lstat;
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		const service = new BrowserProfileImportService({ stateDir, profileStore, sourceLstat,
+			historyStore: new BrowserHistoryStore({ stateDir }), platform: "darwin", homeDir: root, env: {},
+			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const discovery = await service.discover();
+		expect(discovery.warnings).toEqual(["safari-access-denied"]);
+		expect(discovery.sources.map((source) => source.name)).toEqual(["Firefox"]);
+		const source = discovery.sources[0]!;
+		await expect(service.import({ requestId: "18181818-1818-4818-8818-181818181818", sourceId: source.id,
+			profileIds: [source.profiles[0]!.id], includeCookies: false, includeHistory: true,
+			destination: { mode: "merge", name: "Firefox despite Safari" },
+		}, vi.fn())).resolves.toMatchObject({ entries: [{ importedHistoryEntries: 1 }] });
+	});
+
+	it("bounds Safari metadata snapshots and removes discovery staging", async () => {
+		const root = await fixtureRoot();
+		const { library } = await createSafariFixture(root);
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		const service = new BrowserProfileImportService({ stateDir, profileStore,
+			historyStore: new BrowserHistoryStore({ stateDir }), platform: "darwin", homeDir: root, env: {},
+			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const backup = vi.spyOn(Database.prototype, "backup");
+		await service.discover();
+		expect(backup).toHaveBeenCalledWith(expect.stringContaining(path.join(stateDir, "browser-import-staging")));
+		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
+		backup.mockClear();
+		await truncate(path.join(library, "Containers", "com.apple.Safari", "Data", "Library", "Safari", "SafariTabs.db"), 256 * 1024 * 1024 + 1);
+		const discovery = await service.discover();
+		expect(backup).not.toHaveBeenCalled();
+		expect(discovery.sources[0]!.profiles[0]!.name).toBe("Personal");
+		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
+	});
+
 	it("discovers Safari profiles only on macOS and keeps their paths private", async () => {
 		const root = await fixtureRoot();
 		await createSafariFixture(root);

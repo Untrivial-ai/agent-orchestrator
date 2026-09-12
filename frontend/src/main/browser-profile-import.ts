@@ -106,6 +106,7 @@ export type BrowserProfileImportOptions = {
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
 	now?: () => Date;
+	sourceLstat?: typeof lstat;
 };
 
 class SourceBudget {
@@ -248,10 +249,10 @@ function contained(root: string, candidate: string): boolean {
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function existingRealDirectory(candidate: string, throwAccessDenied = false): Promise<string | null> {
+async function existingRealDirectory(candidate: string, throwAccessDenied = false, sourceLstat = lstat): Promise<string | null> {
 	if (!candidate) return null;
 	try {
-		const metadata = await lstat(candidate);
+		const metadata = await sourceLstat(candidate);
 		if (!metadata.isDirectory() || metadata.isSymbolicLink()) return null;
 		return await realpath(candidate);
 	} catch (error) {
@@ -266,10 +267,10 @@ function isAccessDenied(error: unknown): boolean {
 }
 
 function safariAccessError(): Error {
-	return new Error(
+	return Object.assign(new Error(
 		"AO couldn't access Safari's data. In System Settings, open Privacy & Security > Full Disk Access, "
 		+ "allow AO, then restart AO and try the import again.",
-	);
+	), { code: "EACCES" });
 }
 
 async function readSmallJSON(file: string, maxBytes: number): Promise<unknown> {
@@ -354,16 +355,16 @@ const SAFARI_DEFAULT_COOKIES = [
 ];
 const SAFARI_PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-async function discoverSafariProfiles(descriptor: BrowserDescriptor, root: string): Promise<InternalSourceProfile[]> {
+async function discoverSafariProfiles(descriptor: BrowserDescriptor, root: string, stagingRoot: string, sourceLstat = lstat): Promise<InternalSourceProfile[]> {
 	const containerSafari = path.join("Containers", "com.apple.Safari", "Data", "Library", "Safari");
 	const profileParentRelative = path.join(containerSafari, "Profiles");
 	let profileParent: string | null;
 	try {
-		profileParent = await existingRealDirectory(path.join(root, profileParentRelative), true);
+		profileParent = await existingRealDirectory(path.join(root, profileParentRelative), true, sourceLstat);
 	} catch {
 		throw safariAccessError();
 	}
-	const names = await readSafariProfileNames(root, path.join(containerSafari, "SafariTabs.db"));
+	const names = await readSafariProfileNames(root, path.join(containerSafari, "SafariTabs.db"), stagingRoot);
 	const profiles: InternalSourceProfile[] = [];
 	const defaultProfile: InternalSourceProfile = {
 		id: opaqueSourceId(`${descriptor.id}:profile`, "DefaultProfile"),
@@ -376,7 +377,7 @@ async function discoverSafariProfiles(descriptor: BrowserDescriptor, root: strin
 	if (await hasImportableDatabase(root, "safari", defaultProfile)) profiles.push(defaultProfile);
 
 	if (profileParent && contained(root, profileParent)) {
-		const entries = await readdir(profileParent, { withFileTypes: true }).catch(() => []);
+		const entries = await readdir(profileParent, { withFileTypes: true });
 		for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
 			if (!entry.isDirectory() || !SAFARI_PROFILE_ID.test(entry.name)) continue;
 			const uuidUpper = entry.name.toUpperCase();
@@ -398,18 +399,22 @@ async function discoverSafariProfiles(descriptor: BrowserDescriptor, root: strin
 	return profiles.slice(0, BROWSER_IMPORT_MAX_SOURCE_PROFILES);
 }
 
-async function readSafariProfileNames(root: string, relativeDatabase: string): Promise<Map<string, string>> {
+async function readSafariProfileNames(root: string, relativeDatabase: string, stagingRoot: string): Promise<Map<string, string>> {
 	const names = new Map<string, string>();
+	const staging = path.join(stagingRoot, randomUUID());
 	try {
 		const databaseFile = await findDatabase(root, [relativeDatabase]);
 		if (!databaseFile) return names;
-		withReadOnlyDatabase(databaseFile, (database) => {
+		await mkdir(staging, { recursive: true, mode: 0o700 });
+		const snapshot = await snapshotSQLite(databaseFile, root, staging, new SourceBudget());
+		withReadOnlyDatabase(snapshot, (database) => {
 			if (!hasTable(database, "bookmarks")) return;
 			const rows = database.prepare(`
 				SELECT external_uuid, title
 				FROM bookmarks
 				WHERE subtype = 2 AND external_uuid IS NOT NULL
 				ORDER BY rowid
+				LIMIT 1024
 			`).all() as Record<string, unknown>[];
 			for (const row of rows) {
 				const rawId = stringValue(row.external_uuid).trim();
@@ -420,6 +425,8 @@ async function readSafariProfileNames(root: string, relativeDatabase: string): P
 		});
 	} catch {
 		// TCC may block SafariTabs.db. UUID directory discovery still works.
+	} finally {
+		await rm(staging, { recursive: true, force: true }).catch(() => undefined);
 	}
 	return names;
 }
@@ -499,20 +506,29 @@ export class BrowserProfileImportService {
 	}
 
 	async discover(): Promise<BrowserImportDiscovery> {
-		return { sources: (await this.discoverInternal()).map((source) => source.public) };
+		const warnings: NonNullable<BrowserImportDiscovery["warnings"]> = [];
+		const sources = await this.discoverInternal(warnings);
+		return { sources: sources.map((source) => source.public), ...(warnings.length ? { warnings } : {}) };
 	}
 
-	private async discoverInternal(): Promise<InternalSource[]> {
+	private async discoverInternal(warnings: NonNullable<BrowserImportDiscovery["warnings"]> = []): Promise<InternalSource[]> {
 		const sources: InternalSource[] = [];
 		for (const descriptor of DESCRIPTORS) {
 			for (const candidate of descriptor.roots(this.context)) {
 				const root = await existingRealDirectory(candidate);
 				if (!root) continue;
-				const profiles = descriptor.family === "chromium"
-					? await discoverChromiumProfiles(descriptor, root)
-					: descriptor.family === "firefox"
-						? await discoverFirefoxProfiles(descriptor, root)
-						: await discoverSafariProfiles(descriptor, root);
+				let profiles: InternalSourceProfile[];
+				try {
+					profiles = descriptor.family === "chromium"
+						? await discoverChromiumProfiles(descriptor, root)
+						: descriptor.family === "firefox"
+							? await discoverFirefoxProfiles(descriptor, root)
+							: await discoverSafariProfiles(descriptor, root, this.stagingRoot(), this.options.sourceLstat);
+				} catch (error) {
+					if (descriptor.family !== "safari" || !isAccessDenied(error)) throw error;
+					warnings.push("safari-access-denied");
+					continue;
+				}
 				if (profiles.length === 0) continue;
 				const capability = cookieCapability(descriptor.family, this.context.platform);
 				sources.push({

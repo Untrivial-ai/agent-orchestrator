@@ -58,7 +58,7 @@ describe("BrowserImportDialog", () => {
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
-			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource] })),
+			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource], warnings: ["safari-access-denied" as const] })),
 			import: vi.fn(async () => ({
 				sourceName: source.name,
 				entries: [{
@@ -77,6 +77,8 @@ describe("BrowserImportDialog", () => {
 
 		render(<BrowserImportDialog onImported={onImported} onOpenChange={() => undefined} open />);
 		expect(await screen.findByText("Google Chrome")).toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("Full Disk Access");
+		expect(screen.getByRole("button", { name: "Start import" })).toBeEnabled();
 		const sourcePicker = screen.getByRole("combobox", { name: "From" });
 		expect(sourcePicker).toHaveTextContent("Google Chrome");
 		await userEvent.click(sourcePicker);
