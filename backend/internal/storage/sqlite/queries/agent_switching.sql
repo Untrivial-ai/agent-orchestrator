@@ -277,6 +277,7 @@ UPDATE sessions SET
     conversation_checkpoint_generation = sqlc.arg(conversation_checkpoint_generation),
     conversation_checkpoint_native_id = sqlc.arg(conversation_checkpoint_native_id),
     conversation_checkpoint_unsettled = sqlc.arg(conversation_checkpoint_unsettled),
+    conversation_checkpoint_turn_id = sqlc.arg(conversation_checkpoint_turn_id),
     native_transcript_path = sqlc.arg(native_transcript_path),
     updated_at = sqlc.arg(updated_at)
 WHERE sessions.id = sqlc.arg(id)
@@ -356,6 +357,7 @@ UPDATE sessions SET
     conversation_checkpoint_state = 'empty',
     conversation_checkpoint_generation = '',
     conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     conversation_checkpoint_unsettled = 0,
     latest_user_prompt = '',
     latest_assistant_update = '',
@@ -383,6 +385,7 @@ UPDATE sessions SET
     conversation_checkpoint_state = 'empty',
     conversation_checkpoint_generation = '',
     conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     conversation_checkpoint_unsettled = 0,
     latest_user_prompt = '',
     latest_assistant_update = '',

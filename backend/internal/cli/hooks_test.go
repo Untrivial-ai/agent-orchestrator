@@ -23,6 +23,30 @@ type activityCapture struct {
 	hits int
 }
 
+func TestHookConversationFactsCodexTurnIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		harness domain.AgentHarness
+		event   string
+		payload string
+		want    string
+	}{
+		{"prompt", domain.HarnessCodex, "user-prompt-submit", `{"prompt":"continue","turn_id":"turn-1"}`, "turn-1"},
+		{"stop", domain.HarnessCodex, "stop", `{"turn_id":"turn-1"}`, "turn-1"},
+		{"subagent", domain.HarnessCodex, "stop", `{"turn_id":"turn-1","agent_id":"child"}`, ""},
+		{"unrelated event", domain.HarnessCodex, "post-tool-use", `{"turn_id":"turn-1"}`, ""},
+		{"other provider", domain.HarnessClaudeCode, "stop", `{"turn_id":"turn-1"}`, ""},
+		{"missing ID", domain.HarnessCodex, "stop", `{}`, ""},
+		{"oversized ID", domain.HarnessCodex, "stop", `{"turn_id":"` + strings.Repeat("a", 257) + `"}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hookConversationFacts(tt.harness, tt.event, []byte(tt.payload)).ProviderTurnID; got != tt.want {
+				t.Fatalf("turn ID = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // activityServer accepts POST /api/v1/sessions/{id}/activity and records what
 // the CLI sent. It mirrors sendServer in send_test.go.
 func activityServer(t *testing.T, status int, respBody string) (*httptest.Server, *activityCapture) {

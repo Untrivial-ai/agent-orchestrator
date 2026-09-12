@@ -11361,6 +11361,9 @@ components:
         launchId:
           description: AO process generation that produced the signal.
           type: string
+        providerTurnId:
+          description: Native main-turn identity reported by the hook, when supported.
+          type: string
         state:
           description: Agent activity state reported by an agent hook. Optional for
             metadata-only hooks.

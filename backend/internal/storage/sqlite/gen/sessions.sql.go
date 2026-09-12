@@ -77,6 +77,7 @@ SET session_mode = ?1,
     conversation_checkpoint_generation = CASE WHEN ?1 = 'tui' THEN '' ELSE conversation_checkpoint_generation END,
     conversation_checkpoint_native_id = CASE WHEN ?1 = 'tui' THEN '' ELSE conversation_checkpoint_native_id END,
     conversation_checkpoint_unsettled = CASE WHEN ?1 = 'tui' THEN 0 ELSE conversation_checkpoint_unsettled END,
+    conversation_checkpoint_turn_id = CASE WHEN ?1 = 'tui' THEN '' ELSE conversation_checkpoint_turn_id END,
     activity_state = 'idle',
     activity_last_at = ?4,
     updated_at = ?5
@@ -124,7 +125,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
-    conversation_checkpoint_unsettled,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?
 `
@@ -172,6 +173,7 @@ type GetSessionRow struct {
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
 	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
 	NativeTranscriptPath             string
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
@@ -226,6 +228,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.ConversationCheckpointGeneration,
 		&i.ConversationCheckpointNativeID,
 		&i.ConversationCheckpointUnsettled,
+		&i.ConversationCheckpointTurnID,
 		&i.NativeTranscriptPath,
 		&i.AutoInjectReview,
 		&i.AutoInjectCI,
@@ -244,13 +247,13 @@ INSERT INTO sessions (
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
-    conversation_checkpoint_unsettled,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
     native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -286,6 +289,7 @@ type InsertSessionParams struct {
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
 	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
 	NativeTranscriptPath             string
 	PreviewURL                       string
 	PreviewRevision                  int64
@@ -338,6 +342,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ConversationCheckpointGeneration,
 		arg.ConversationCheckpointNativeID,
 		arg.ConversationCheckpointUnsettled,
+		arg.ConversationCheckpointTurnID,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,
@@ -370,7 +375,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
-    conversation_checkpoint_unsettled,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num
 `
@@ -418,6 +423,7 @@ type ListAllSessionsRow struct {
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
 	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
 	NativeTranscriptPath             string
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
@@ -478,6 +484,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.ConversationCheckpointGeneration,
 			&i.ConversationCheckpointNativeID,
 			&i.ConversationCheckpointUnsettled,
+			&i.ConversationCheckpointTurnID,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
@@ -509,7 +516,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
-    conversation_checkpoint_unsettled,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE project_id = ? ORDER BY num
 `
@@ -557,6 +564,7 @@ type ListSessionsByProjectRow struct {
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
 	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
 	NativeTranscriptPath             string
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
@@ -617,6 +625,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.ConversationCheckpointGeneration,
 			&i.ConversationCheckpointNativeID,
 			&i.ConversationCheckpointUnsettled,
+			&i.ConversationCheckpointTurnID,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
@@ -656,6 +665,7 @@ UPDATE sessions SET
     conversation_checkpoint_state = 'legacy',
     conversation_checkpoint_generation = '',
     conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = MAX(updated_at, ?2)
 WHERE id = ?3
   AND is_terminated = 0
@@ -687,6 +697,7 @@ UPDATE sessions SET
     conversation_checkpoint_state = 'legacy',
     conversation_checkpoint_generation = '',
     conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = ?2
 WHERE id = ?3
   AND is_terminated = 0
@@ -998,7 +1009,7 @@ UPDATE sessions SET
     runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
     latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?,
     conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
-    conversation_checkpoint_unsettled = ?,
+    conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?,
     native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
@@ -1036,6 +1047,7 @@ type UpdateSessionParams struct {
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
 	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
 	NativeTranscriptPath             string
 	PreviewURL                       string
 	PreviewRevision                  int64
@@ -1083,6 +1095,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.ConversationCheckpointGeneration,
 		arg.ConversationCheckpointNativeID,
 		arg.ConversationCheckpointUnsettled,
+		arg.ConversationCheckpointTurnID,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,

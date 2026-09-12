@@ -392,6 +392,7 @@ type nativeHistoryCheckpoint struct {
 	latestUserPrompt      string
 	latestAssistantUpdate string
 	completedUserPrompt   bool
+	providerTurnID        string
 	userMismatch          ports.ChatHistoryMismatchDimension
 	assistantMismatch     ports.ChatHistoryMismatchDimension
 	hardMismatches        []ports.ChatHistoryMismatchDimension
@@ -581,15 +582,14 @@ func (p nativeHistoryCheckpoint) mismatches(
 	// A trusted checkpoint describes one main-thread turn. Selecting the latest
 	// user and assistant independently can splice an older repeated answer onto a
 	// newer incomplete turn and incorrectly admit a truncated provider replay.
-	// A completed checkpoint may precede later work whose hooks were lost.
-	// Codex Stop hooks attest completion without carrying assistant text. Keep
-	// that prompt usable as evidence, but never relax pending prompts or the
-	// hard unsettled-boundary gate for a newer Stop whose prompt hook was lost.
+	// A completed checkpoint may precede work whose hooks were lost. Without
+	// paired text, require the exact native turn ID: repeated prompts cannot
+	// establish which occurrence completed. Pending prompts stay latest-only.
 	latestText := turnText[latestCompletedTurnID]
 	checkpointMatched := p.latestUserPrompt == "" && p.latestAssistantUpdate == ""
-	if p.latestUserPrompt != "" && (p.latestAssistantUpdate != "" || p.completedUserPrompt) {
+	if p.latestUserPrompt != "" && (p.latestAssistantUpdate != "" || (p.completedUserPrompt && p.providerTurnID != "")) {
 		for turnID := range completedTurns {
-			if coordinationTurns[turnID] {
+			if coordinationTurns[turnID] || (p.providerTurnID != "" && p.providerTurnID != turnID) {
 				continue
 			}
 			text := turnText[turnID]
@@ -603,11 +603,12 @@ func (p nativeHistoryCheckpoint) mismatches(
 		// Without paired text or a scoped completion, retain the latest-turn gate.
 		checkpointMatched =
 			(p.latestUserPrompt == "" || nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text)) &&
-				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text))
+				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text)) &&
+				(p.providerTurnID == "" || p.providerTurnID == latestCompletedTurnID)
 	}
 	mismatches := append([]ports.ChatHistoryMismatchDimension(nil), p.hardMismatches...)
 	if !checkpointMatched {
-		if p.latestUserPrompt != "" && !nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text) {
+		if p.latestUserPrompt != "" && (p.providerTurnID != "" || !nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text)) {
 			mismatches = append(mismatches, p.userMismatch)
 		}
 		if p.latestAssistantUpdate != "" && !nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text) {

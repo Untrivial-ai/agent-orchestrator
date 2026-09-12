@@ -595,6 +595,7 @@ type Session struct {
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
 	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
 }
 
 type SessionCleanupFact struct {

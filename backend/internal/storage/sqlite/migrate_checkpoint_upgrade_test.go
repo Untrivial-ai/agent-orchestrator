@@ -55,14 +55,14 @@ func TestMigrateCheckpointProvenance(t *testing.T) {
 		if err := snapshot.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name LIKE 'conversation_checkpoint_%'`).Scan(&checkpointColumns); err != nil {
 			t.Fatalf("read checkpoint columns: %v", err)
 		}
-		if applied != 4 || steerTables != 1 || editTables != 1 || checkpointColumns != 4 {
-			t.Fatalf("upgraded schema applied=%d steer=%d edit=%d checkpoint=%d, want 4,1,1,4", applied, steerTables, editTables, checkpointColumns)
+		if applied != 4 || steerTables != 1 || editTables != 1 || checkpointColumns != 5 {
+			t.Fatalf("upgraded schema applied=%d steer=%d edit=%d checkpoint=%d, want 4,1,1,5", applied, steerTables, editTables, checkpointColumns)
 		}
 	})
 
 	t.Run("from_populated_main_139", func(t *testing.T) {
 		// The original remains at 109 after the clone's upgrade. Advancing it
-		// to main proves 140/141 upgrade an actual pre-PR populated database.
+		// to main proves 140–142 upgrade an actual pre-PR populated database.
 		var sourceVersion int
 		if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&sourceVersion); err != nil {
 			t.Fatal(err)
@@ -84,7 +84,7 @@ func TestMigrateCheckpointProvenance(t *testing.T) {
 		}
 		var applied, checkpointColumns, historyPolicyColumns int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version
-		WHERE version_id IN (140, 141) AND is_applied = 1`).Scan(&applied); err != nil {
+		WHERE version_id IN (140, 141, 142) AND is_applied = 1`).Scan(&applied); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions')
@@ -95,21 +95,21 @@ func TestMigrateCheckpointProvenance(t *testing.T) {
 		WHERE name = 'history_policy'`).Scan(&historyPolicyColumns); err != nil {
 			t.Fatal(err)
 		}
-		if applied != 2 || checkpointColumns != 4 || historyPolicyColumns != 1 {
-			t.Fatalf("upgraded schema: migrations=%d checkpoints=%d policy=%d, want 2/4/1",
+		if applied != 3 || checkpointColumns != 5 || historyPolicyColumns != 1 {
+			t.Fatalf("upgraded schema: migrations=%d checkpoints=%d policy=%d, want 3/5/1",
 				applied, checkpointColumns, historyPolicyColumns)
 		}
-		var prompt, assistant, state, generation, nativeID string
+		var prompt, assistant, state, generation, nativeID, turnID string
 		var unsettled bool
 		if err := db.QueryRow(`SELECT latest_user_prompt, latest_assistant_update,
 		conversation_checkpoint_state, conversation_checkpoint_generation,
-		conversation_checkpoint_native_id, conversation_checkpoint_unsettled
+		conversation_checkpoint_native_id, conversation_checkpoint_unsettled, conversation_checkpoint_turn_id
 		FROM sessions WHERE id = 'checkpoint-upgrade-1'`).Scan(
-			&prompt, &assistant, &state, &generation, &nativeID, &unsettled); err != nil {
+			&prompt, &assistant, &state, &generation, &nativeID, &unsettled, &turnID); err != nil {
 			t.Fatal(err)
 		}
 		if prompt != "Say hi to" || assistant != "Hi!" || state != "legacy" ||
-			generation != "" || nativeID != "" || unsettled {
+			generation != "" || nativeID != "" || unsettled || turnID != "" {
 			t.Fatalf("upgrade changed or trusted legacy checkpoint: %q/%q %q %q %q %v",
 				prompt, assistant, state, generation, nativeID, unsettled)
 		}

@@ -52,6 +52,7 @@ type setActivityAPIRequest struct {
 	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty"`
 	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty"`
 	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty"`
+	ProviderTurnID               string                              `json:"providerTurnId,omitempty"`
 	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
 	LaunchID                     string                              `json:"launchId,omitempty"`
 	Usage                        *usageHookMetadata                  `json:"usage,omitempty"`
@@ -239,6 +240,7 @@ func hookRouteFlagEnabled(value string) bool {
 }
 
 type hookConversationSnapshot struct {
+	ProviderTurnID        string
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
 	CheckpointOrigin      domain.ConversationCheckpointOrigin
@@ -248,6 +250,7 @@ type hookConversationSnapshot struct {
 func hookConversationFacts(agent domain.AgentHarness, event string, payload []byte) hookConversationSnapshot {
 	var p struct {
 		Prompt               string `json:"prompt"`
+		TurnID               string `json:"turn_id"`
 		UserPrompt           string `json:"user_prompt"`
 		UserPromptCamel      string `json:"userPrompt"`
 		LastAssistantMessage string `json:"last_assistant_message"`
@@ -257,7 +260,7 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 	}
 	_ = json.Unmarshal(payload, &p)
 	observedPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
-	var userPrompt, assistant string
+	var userPrompt, assistant, turnID string
 	origin := domain.ConversationCheckpointOriginUnknown
 	// Conversation checkpoints are trusted only at the main-turn boundaries that
 	// own each fact. Several Claude payloads repeat prompt/assistant aliases on
@@ -265,6 +268,12 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 	// Treating those copies as current main-thread facts can permanently make an
 	// otherwise healthy provider replay look incomplete.
 	if strings.TrimSpace(p.SubagentID) == "" {
+		if agent == domain.HarnessCodex && (event == "user-prompt-submit" || event == "stop") {
+			turnID = strings.TrimSpace(p.TurnID)
+			if len(turnID) > maxActivityMetaLen || domain.SanitizeControlChars(turnID) != turnID {
+				turnID = ""
+			}
+		}
 		switch event {
 		case "user-prompt-submit":
 			userPrompt = observedPrompt
@@ -289,6 +298,7 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 		}
 	}
 	return hookConversationSnapshot{
+		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
 		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
 		CheckpointOrigin:      origin,
@@ -433,6 +443,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		LatestUserPrompt:             conversation.LatestUserPrompt,
 		LatestAssistantUpdate:        conversation.LatestAssistantUpdate,
 		ConversationCheckpointOrigin: conversation.CheckpointOrigin,
+		ProviderTurnID:               conversation.ProviderTurnID,
 		TranscriptPath:               conversation.TranscriptPath,
 		LaunchID:                     launchID,
 		Usage:                        usage,

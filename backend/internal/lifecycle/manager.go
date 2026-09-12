@@ -524,6 +524,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	s.TranscriptPath = strings.TrimSpace(s.TranscriptPath)
 	s.LaunchID = strings.TrimSpace(s.LaunchID)
 	s.ControllerGeneration = strings.TrimSpace(s.ControllerGeneration)
+	s.ProviderTurnID = strings.TrimSpace(s.ProviderTurnID)
 	if !s.ConversationCheckpointOrigin.Valid() {
 		s.ConversationCheckpointOrigin = domain.ConversationCheckpointOriginUnknown
 	}
@@ -541,6 +542,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	default:
 		s.LatestUserPrompt = ""
 		s.LatestAssistantUpdate = ""
+		s.ProviderTurnID = ""
 	}
 	// A response or Stop hook produced by AO's optional source handoff request
 	// may contain last_assistant_message without echoing the internal prompt.
@@ -672,6 +674,7 @@ retryProjection:
 		checkpoint.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		checkpoint.ConversationCheckpointGeneration = ""
 		checkpoint.ConversationCheckpointNativeID = ""
+		checkpoint.ConversationCheckpointTurnID = ""
 		if nativeIdentityChanged {
 			checkpoint.ConversationCheckpointUnsettled = false
 		}
@@ -701,6 +704,7 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
+			checkpoint.ConversationCheckpointTurnID = ""
 		} else {
 			promptAt := timeOr(s.Timestamp, now)
 			sameCheckpointOwner := !resetConversationCheckpoint && ownerGeneration != "" &&
@@ -728,10 +732,14 @@ retryProjection:
 			checkpoint.ConversationCheckpointUnsettled = false
 			checkpoint.ConversationCheckpointGeneration = ""
 			checkpoint.ConversationCheckpointNativeID = ""
+			checkpoint.ConversationCheckpointTurnID = ""
 			if ownerGeneration != "" && checkpointNativeID != "" {
 				checkpoint.ConversationCheckpointState = domain.ConversationCheckpointPrompt
 				checkpoint.ConversationCheckpointGeneration = ownerGeneration
 				checkpoint.ConversationCheckpointNativeID = checkpointNativeID
+				if rec.Harness == domain.HarnessCodex {
+					checkpoint.ConversationCheckpointTurnID = s.ProviderTurnID
+				}
 			} else {
 				// An unowned event is retained conservatively for an ordinary strict
 				// switch, but explicit provider-history recovery may identify it as
@@ -750,11 +758,13 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
+			checkpoint.ConversationCheckpointTurnID = ""
 		} else if checkpoint.ConversationCheckpointState == domain.ConversationCheckpointPrompt &&
 			!checkpoint.ConversationCheckpointUnsettled &&
 			ownerGeneration != "" && checkpointNativeID != "" &&
 			checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
-			checkpoint.ConversationCheckpointNativeID == checkpointNativeID {
+			checkpoint.ConversationCheckpointNativeID == checkpointNativeID &&
+			(checkpoint.ConversationCheckpointTurnID == "" || checkpoint.ConversationCheckpointTurnID == s.ProviderTurnID) {
 			checkpoint.LatestAssistantUpdate = s.LatestAssistantUpdate
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointComplete
 		} else if ownerGeneration != "" && checkpointNativeID != "" {
@@ -774,6 +784,7 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointLegacy
 			checkpoint.ConversationCheckpointGeneration = ""
 			checkpoint.ConversationCheckpointNativeID = ""
+			checkpoint.ConversationCheckpointTurnID = ""
 		} else {
 			// No matching pending prompt means this Stop is duplicate, delayed, or
 			// missing its turn boundary. Preserve the prior coherent checkpoint.
@@ -799,6 +810,7 @@ retryProjection:
 		checkpoint.ConversationCheckpointState != rec.Metadata.ConversationCheckpointState ||
 		checkpoint.ConversationCheckpointGeneration != rec.Metadata.ConversationCheckpointGeneration ||
 		checkpoint.ConversationCheckpointNativeID != rec.Metadata.ConversationCheckpointNativeID ||
+		checkpoint.ConversationCheckpointTurnID != rec.Metadata.ConversationCheckpointTurnID ||
 		checkpoint.ConversationCheckpointUnsettled != rec.Metadata.ConversationCheckpointUnsettled
 	metadataChanged := (s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID) ||
 		(s.AgentSessionID != "" && rec.Metadata.AgentSessionIDLaunchID != s.LaunchID) ||
@@ -1575,6 +1587,7 @@ func (m *Manager) changeControllerEpoch(
 		next.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		next.Metadata.ConversationCheckpointGeneration = ""
 		next.Metadata.ConversationCheckpointNativeID = ""
+		next.Metadata.ConversationCheckpointTurnID = ""
 		next.Metadata.ConversationCheckpointUnsettled = false
 	}
 	next.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}

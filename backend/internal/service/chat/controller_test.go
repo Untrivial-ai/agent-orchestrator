@@ -1655,11 +1655,15 @@ func TestInterfaceHandoffTrustedCheckpointMayPrecedeLaterCompletedTurn(t *testin
 		name         string
 		state        domain.ConversationCheckpointState
 		assistant    string
+		turnID       string
 		unsettled    bool
 		wantMismatch bool
 	}{
 		{name: "completed pair", state: domain.ConversationCheckpointComplete, assistant: "trusted checkpoint assistant"},
-		{name: "completed Codex prompt", state: domain.ConversationCheckpointComplete},
+		{name: "completed Codex prompt", state: domain.ConversationCheckpointComplete, turnID: "checkpoint-turn"},
+		{name: "old prompt-only checkpoint stays strict", state: domain.ConversationCheckpointComplete, wantMismatch: true},
+		{name: "repeated prompt cannot stand in for missing current turn", state: domain.ConversationCheckpointComplete, turnID: "missing-current-turn", wantMismatch: true},
+		{name: "pair cannot stand in for missing current turn", state: domain.ConversationCheckpointComplete, turnID: "missing-current-turn", assistant: "trusted checkpoint assistant", wantMismatch: true},
 		{name: "pending prompt cannot match older turn", state: domain.ConversationCheckpointPrompt, wantMismatch: true},
 		{name: "unmatched newer stop still blocks", state: domain.ConversationCheckpointComplete, unsettled: true, wantMismatch: true},
 	} {
@@ -1675,6 +1679,7 @@ func TestInterfaceHandoffTrustedCheckpointMayPrecedeLaterCompletedTurn(t *testin
 			rec.Metadata.LatestUserPrompt = "trusted checkpoint user"
 			rec.Metadata.LatestAssistantUpdate = tt.assistant
 			rec.Metadata.ConversationCheckpointState = tt.state
+			rec.Metadata.ConversationCheckpointTurnID = tt.turnID
 			rec.Metadata.ConversationCheckpointUnsettled = tt.unsettled
 			rec.Metadata.ConversationCheckpointGeneration = "terminal-generation"
 			rec.Metadata.ConversationCheckpointNativeID = "thread-1"

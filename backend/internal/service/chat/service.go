@@ -326,6 +326,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			replayCheckpoint.hardMismatches = append(replayCheckpoint.hardMismatches,
 				ports.ChatHistoryMismatchNativeIdentity)
 		case trusted:
+			replayCheckpoint.providerTurnID = rec.Metadata.ConversationCheckpointTurnID
 			replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
 			replayCheckpoint.userMismatch = ports.ChatHistoryMismatchTrustedUserText
 			if checkpointState == domain.ConversationCheckpointComplete {

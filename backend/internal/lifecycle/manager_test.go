@@ -319,6 +319,7 @@ func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(
 	current.Metadata.ConversationCheckpointState = rec.Metadata.ConversationCheckpointState
 	current.Metadata.ConversationCheckpointGeneration = rec.Metadata.ConversationCheckpointGeneration
 	current.Metadata.ConversationCheckpointNativeID = rec.Metadata.ConversationCheckpointNativeID
+	current.Metadata.ConversationCheckpointTurnID = rec.Metadata.ConversationCheckpointTurnID
 	current.Metadata.NativeTranscriptPath = rec.Metadata.NativeTranscriptPath
 	current.UpdatedAt = rec.UpdatedAt
 	f.sessions[rec.ID] = current
@@ -1496,6 +1497,41 @@ func TestActivity_MainPromptStartsNewConversationCheckpoint(t *testing.T) {
 	}
 	if got.ConversationCheckpointState != domain.ConversationCheckpointComplete {
 		t.Fatalf("completed checkpoint state = %q, want complete", got.ConversationCheckpointState)
+	}
+}
+
+func TestActivity_CodexCheckpointRequiresSameTurnStop(t *testing.T) {
+	for _, stopTurn := range []string{"native-turn", "older-turn", ""} {
+		t.Run("stop="+stopTurn, func(t *testing.T) {
+			m, store, _ := newManager()
+			rec := working("mer-1")
+			rec.Harness = domain.HarnessCodex
+			rec.Metadata.RuntimeLaunchID = "launch-current"
+			rec.Metadata.AgentSessionID = "native-current"
+			rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+			store.sessions[rec.ID] = rec
+			prompt := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+				LaunchID: "launch-current", AgentSessionID: "native-current", ProviderTurnID: "native-turn", LatestUserPrompt: "continue"}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, prompt); err != nil {
+				t.Fatal(err)
+			}
+			got := store.sessions[rec.ID].Metadata
+			if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt || got.ConversationCheckpointTurnID != "native-turn" {
+				t.Fatalf("prompt checkpoint: %+v", got)
+			}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop",
+				LaunchID: "launch-current", AgentSessionID: "native-current", ProviderTurnID: stopTurn}); err != nil {
+				t.Fatal(err)
+			}
+			got = store.sessions[rec.ID].Metadata
+			if stopTurn == "native-turn" {
+				if got.ConversationCheckpointState != domain.ConversationCheckpointComplete || got.ConversationCheckpointUnsettled {
+					t.Fatalf("matching Stop checkpoint: %+v", got)
+				}
+			} else if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt || !got.ConversationCheckpointUnsettled {
+				t.Fatalf("unmatched Stop must fail closed: %+v", got)
+			}
+		})
 	}
 }
 

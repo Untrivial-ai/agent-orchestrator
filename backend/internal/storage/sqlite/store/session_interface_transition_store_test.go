@@ -241,6 +241,7 @@ func TestCommitSessionControllerEpochRetiresCheckpointWithoutErasingLastHumanTim
 	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
 	rec.Metadata.ConversationCheckpointGeneration = "chat-generation"
 	rec.Metadata.ConversationCheckpointNativeID = "chat-native"
+	rec.Metadata.ConversationCheckpointTurnID = "chat-turn"
 	rec.Metadata.ConversationCheckpointUnsettled = true
 	created, err := st.CreateSession(ctx, rec)
 	if err != nil {
@@ -261,6 +262,7 @@ func TestCommitSessionControllerEpochRetiresCheckpointWithoutErasingLastHumanTim
 		after.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
 		after.Metadata.ConversationCheckpointGeneration != "" ||
 		after.Metadata.ConversationCheckpointNativeID != "" ||
+		after.Metadata.ConversationCheckpointTurnID != "" ||
 		after.Metadata.ConversationCheckpointUnsettled {
 		t.Fatalf("Terminal epoch retained source replay checkpoint: %+v", after.Metadata)
 	}
