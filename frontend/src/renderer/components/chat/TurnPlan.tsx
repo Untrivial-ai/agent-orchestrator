@@ -13,7 +13,7 @@
  * change, so a plan settling under a reader's eyes never moves the text they are on.
  */
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Check, ListChecks, Loader2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { ConversationPlan, PlanStepStatus } from "../../types/conversation";
@@ -32,6 +32,7 @@ export const TurnPlan = memo(function TurnPlan({
 	/** The turn is still running, so the plan can still change. */
 	live?: boolean;
 }) {
+	const [expanded, setExpanded] = useState(true);
 	if (plan.steps.length === 0) return null;
 	const done = plan.steps.filter((step) => step.status === "completed").length;
 
@@ -42,7 +43,15 @@ export const TurnPlan = memo(function TurnPlan({
 			data-turn-plan="true"
 		>
 			<div className="flex items-center gap-2 px-3.5 py-2.5">
-				<ListChecks aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+				<button
+					type="button"
+					onClick={() => setExpanded((open) => !open)}
+					aria-expanded={expanded}
+					aria-label={expanded ? "Collapse plan" : "Expand plan"}
+					className="inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				>
+					<ListChecks aria-hidden="true" className="size-4" />
+				</button>
 				<strong className="shrink-0 text-xs font-semibold text-foreground">Plan</strong>
 				{live && done < plan.steps.length ? (
 					<Loader2
@@ -57,35 +66,39 @@ export const TurnPlan = memo(function TurnPlan({
 				</span>
 			</div>
 
-			{plan.explanation ? (
-				<p className="px-3.5 pb-2 text-[11px] leading-relaxed text-muted-foreground">
-					{plan.explanation}
-				</p>
-			) : null}
+			{expanded ? (
+				<>
+					{plan.explanation ? (
+						<p className="px-3.5 pb-2 text-[11px] leading-relaxed text-muted-foreground">
+							{plan.explanation}
+						</p>
+					) : null}
 
-			{/* A real list, so a screen reader hears "list, 5 items" and the status of each
-			    step is spoken rather than left to a colour. */}
-			<ol className="flex flex-col border-t border-border py-1">
-				{plan.steps.map((step, index) => (
-					<li
-						key={`${index}-${step.text}`}
-						className="flex items-start gap-2.5 px-3.5 py-1"
-						aria-label={`${step.text} — ${STEP_LABEL[step.status]}`}
-					>
-						<StepMark status={step.status} />
-						<span
-							className={cn(
-								"min-w-0 flex-1 text-[11.5px] leading-[1.45]",
-								step.status === "completed" && "text-muted-foreground/70 line-through",
-								step.status === "in_progress" && "text-foreground",
-								step.status === "pending" && "text-muted-foreground",
-							)}
-						>
-							{step.text}
-						</span>
-					</li>
-				))}
-			</ol>
+					{/* A real list, so a screen reader hears "list, 5 items" and the status of each
+					    step is spoken rather than left to a colour. */}
+					<ol className="flex flex-col border-t border-border py-1">
+						{plan.steps.map((step, index) => (
+							<li
+								key={`${index}-${step.text}`}
+								className="flex items-start gap-2.5 px-3.5 py-1"
+								aria-label={`${step.text} — ${STEP_LABEL[step.status]}`}
+							>
+								<StepMark status={step.status} />
+								<span
+									className={cn(
+										"min-w-0 flex-1 text-[11.5px] leading-[1.45]",
+										step.status === "completed" && "text-muted-foreground/70 line-through",
+										step.status === "in_progress" && "text-foreground",
+										step.status === "pending" && "text-muted-foreground",
+									)}
+								>
+									{step.text}
+								</span>
+							</li>
+						))}
+					</ol>
+				</>
+			) : null}
 		</section>
 	);
 });

@@ -7,6 +7,7 @@ import { Button } from "../ui/button";
 
 type InputAction = "accept" | "decline" | "cancel";
 type InputValue = string | number | boolean | string[];
+type PropertyEntry = [string, Record<string, unknown>];
 
 export function ElicitationCard({
 	activity,
@@ -149,19 +150,28 @@ function FormRequest({
 }) {
 	const schema = activity.detail?.schema;
 	const properties = useMemo(() => Object.entries(schema?.properties ?? {}), [schema?.properties]);
+	const questionGroups = useMemo(() => claudeQuestionGroups(properties), [properties]);
 	const required = useMemo(() => new Set(schema?.required ?? []), [schema?.required]);
 	const [values, setValues] = useState<Record<string, InputValue>>(() => initialValues(properties));
 	const [missing, setMissing] = useState<Set<string>>(new Set());
+	const [activeQuestion, setActiveQuestion] = useState(0);
+	const visibleProperties = questionGroups?.[activeQuestion] ?? properties;
+	const hasPreviousQuestion = questionGroups !== undefined && activeQuestion > 0;
+	const hasNextQuestion = questionGroups !== undefined && activeQuestion < questionGroups.length - 1;
 
 	function submit(event: FormEvent) {
 		event.preventDefault();
 		const absent = new Set(
-			properties
+			visibleProperties
 				.filter(([name]) => required.has(name) && isEmpty(values[name]))
 				.map(([name]) => name),
 		);
 		setMissing(absent);
 		if (absent.size > 0) return;
+		if (hasNextQuestion) {
+			setActiveQuestion((current) => current + 1);
+			return;
+		}
 		void onResolve("accept", values);
 	}
 
@@ -171,7 +181,7 @@ function FormRequest({
 				<p className="mb-3 text-xs leading-relaxed text-muted-foreground">{schema.description}</p>
 			) : null}
 			<div className="flex flex-col gap-3">
-				{properties.map(([name, property]) => (
+				{visibleProperties.map(([name, property]) => (
 					<FormField
 						key={name}
 						name={name}
@@ -201,9 +211,31 @@ function FormRequest({
 						Skip
 					</Button>
 				</div>
-				<Button type="submit" size="sm" disabled={disabled} className="min-w-20">
-					{disabled ? <Loader2 aria-label="Sending answer" className="size-3.5 animate-spin" /> : "Continue"}
-				</Button>
+				<div className="flex items-center gap-1">
+					{hasPreviousQuestion ? (
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							disabled={disabled}
+							onClick={() => {
+								setMissing(new Set());
+								setActiveQuestion((current) => current - 1);
+							}}
+						>
+							Back
+						</Button>
+					) : null}
+					<Button type="submit" size="sm" disabled={disabled} className="min-w-20">
+						{disabled ? (
+							<Loader2 aria-label="Sending answer" className="size-3.5 animate-spin" />
+						) : hasNextQuestion ? (
+							"Next"
+						) : (
+							"Continue"
+						)}
+					</Button>
+				</div>
 			</div>
 		</form>
 	);
@@ -337,7 +369,32 @@ function enumOptions(property: Record<string, unknown>): Array<{ value: string; 
 	});
 }
 
-function initialValues(properties: Array<[string, Record<string, unknown>]>): Record<string, InputValue> {
+function claudeQuestionGroups(properties: PropertyEntry[]): PropertyEntry[][] | undefined {
+	if (properties.length === 0) return undefined;
+
+	const groups = new Map<number, { question?: PropertyEntry; custom?: PropertyEntry }>();
+	for (const entry of properties) {
+		const match = /^question_(\d+)(_custom)?$/.exec(entry[0]);
+		if (!match) return undefined;
+		const index = Number(match[1]);
+		const group = groups.get(index) ?? {};
+		if (match[2]) {
+			group.custom = entry;
+		} else {
+			group.question = entry;
+		}
+		groups.set(index, group);
+	}
+
+	const ordered: PropertyEntry[][] = [];
+	for (const [, group] of [...groups.entries()].sort(([left], [right]) => left - right)) {
+		if (!group.question) return undefined;
+		ordered.push(group.custom ? [group.question, group.custom] : [group.question]);
+	}
+	return ordered;
+}
+
+function initialValues(properties: PropertyEntry[]): Record<string, InputValue> {
 	const values: Record<string, InputValue> = {};
 	for (const [name, property] of properties) {
 		if (

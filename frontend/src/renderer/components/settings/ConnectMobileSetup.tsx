@@ -9,7 +9,7 @@ export type SetupMode = "lan" | "tailscale";
 // Maps a `securePairing.reason` from the daemon to the copy explaining it. An
 // unknown reason (e.g. a newer daemon build) returns undefined and renders
 // nothing rather than a raw translation key.
-function reasonMessage(reason: string, t: TFunction): string | undefined {
+export function reasonMessage(reason: string, t: TFunction): string | undefined {
 	switch (reason) {
 		case "no_cli":
 		case "no_magicdns":
@@ -28,7 +28,7 @@ function reasonMessage(reason: string, t: TFunction): string | undefined {
 }
 
 interface ConnectMobileSetupProps {
-	/** The selected connection method. Owned by the modal, which encodes the
+	/** The selected connection method. Owned by the Mobile settings page, which encodes the
 	 *  matching address into the pairing QR. */
 	mode: SetupMode;
 	onModeChange: (mode: SetupMode) => void;
@@ -44,13 +44,13 @@ interface ConnectMobileSetupProps {
 	 * seconds (up to three chained `tailscale` subprocess calls).
 	 */
 	busy?: boolean;
-	/** Secure-pairing (Tailscale TLS) state, owned by the modal. */
+	/** Secure-pairing (Tailscale TLS) state, owned by the Mobile settings page. */
 	secure: { enabled: boolean; reason: string };
 	onSecureChange: (on: boolean) => void;
 }
 
 // ConnectMobileSetup tells the user what to do with the pairing QR above it and
-// which address that QR carries. The mode is owned by ConnectMobileModal so the
+// which address that QR carries. The mode is owned by the Mobile settings page so the
 // QR can re-encode: LAN mode encodes the private IPv4 from AutopickLANIP, and
 // Tailscale mode encodes the 100.64.0.0/10 address from AutopickTailscaleIP
 // (backend/internal/mobilebridge/netiface.go), or the MagicDNS host over 443
@@ -59,7 +59,7 @@ export function ConnectMobileSetup({ mode, onModeChange, enabled, busy = false, 
 	const { t } = useTranslation();
 	const reasonText = reasonMessage(secure.reason, t);
 
-	// Margin-free on purpose: the modal owns the spacing around this block.
+	// Margin-free on purpose: the parent settings page owns the spacing around this block.
 	return (
 		<div className="flex w-full flex-col items-center">
 			<RadioGroup.Root

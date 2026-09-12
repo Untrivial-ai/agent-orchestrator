@@ -1,6 +1,6 @@
 # Agent Orchestrator Architecture
 
-Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Every session owns an isolated git worktree and one committed interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. A durable handoff may move a compatible native conversation between them, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
+Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Every session owns an isolated git worktree and one committed interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
 
 ## Table of Contents
 
@@ -196,7 +196,7 @@ backend/internal/
 ├── service/             # Controller-facing services
 │   ├── project/         # Project CRUD
 │   ├── session/         # Session read-model assembly
-│   ├── chat/            # Runtime-less Chat controllers + durable projection
+│   ├── chat/            # Chat controllers, persistent provider hosts + durable projection
 │   ├── pr/              # PR observation service
 │   └── review/          # Code review service
 ├── session_manager/     # Internal session command engine
@@ -384,12 +384,12 @@ For TUI drains, AO gates new terminal input before checking quiescence. Agent
 adapters that can interpret their rendered TUI report work state and composer
 occupancy as separate ephemeral facts. The runtime side of that contract must
 provide the current rendered viewport with ANSI cell styles: tmux uses styled
-`capture-pane`, while the Windows ConPTY host maintains a VT cell model beside
-its historical replay ring. AO accepts only repeated observations of an idle
-surface with an empty composer, held across the settle window; a visible draft
-fails with the source untouched and requires the user to submit, clear, or
-explicitly discard it. Adapter/runtime pairs without rendered-surface support
-retain the causally newer idle-fact or legacy terminal-idle fallback. An
+`capture-pane`, while macOS and Windows detached PTY hosts maintain a VT cell
+model beside their historical replay ring. AO accepts only repeated observations
+of an idle surface with an empty composer, held across the settle window; a
+visible draft fails with the source untouched and requires the user to submit,
+clear, or explicitly discard it. Adapter/runtime pairs without rendered-surface
+support retain the causally newer idle-fact or legacy terminal-idle fallback. An
 unverified idle state has a bounded proof window; active work or a user-paced
 decision remains unbounded.
 
@@ -945,6 +945,7 @@ flowchart TD
 
     subgraph Runtime
         TMux[tmux Runtime]
+        MacPTY[macOS native PTY Host]
         ConPTY[conpty Runtime]
     end
 
@@ -952,9 +953,11 @@ flowchart TD
     WS -->|attach| Mux
     Mux --> Sessions
     Sessions -->|create| TMux
+    Sessions -->|create new macOS| MacPTY
     Sessions -->|create| ConPTY
 
     TMux -->|PTY attach| Mux
+    MacPTY -->|loopback dial| Mux
     ConPTY -->|loopback dial| Mux
 
     Mux -->|frame| WS

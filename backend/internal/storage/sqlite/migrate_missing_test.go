@@ -248,6 +248,39 @@ func TestMigrateRepairsQueuedTurnPromotionWhenVersion88WasClaimed(t *testing.T) 
 	}
 }
 
+func TestMigrateRepairsRetrySourceBeforeCancelledTurnRebuild(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	upTo(t, db, 107)
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (108, 1)`); err != nil {
+		t.Fatalf("seed claimed retry-source migration: %v", err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate database with missing retry-source schema: %v", err)
+	}
+
+	var columns, indexes int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('conversation_turns') WHERE name = 'retry_of_turn_id'`,
+	).Scan(&columns); err != nil {
+		t.Fatalf("query retry source column: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_conversation_turns_retry_source'`,
+	).Scan(&indexes); err != nil {
+		t.Fatalf("query retry source index: %v", err)
+	}
+	if columns != 1 || indexes != 1 {
+		t.Fatalf("retry source schema = column %d, index %d; want 1, 1", columns, indexes)
+	}
+	assertTableSQLContains(t, db, "conversation_turns", "'cancelled'")
+}
+
 // TestMigrateAppliesAgentModelCatalogAfterUpstreamMigration covers a database
 // that has already applied main's version 41. The catalog must use the next
 // migration version so goose applies it independently.

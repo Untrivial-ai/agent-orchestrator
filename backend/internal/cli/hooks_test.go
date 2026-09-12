@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 )
 
 type activityCapture struct {
@@ -57,6 +60,9 @@ func capturedState(t *testing.T, capture *activityCapture) string {
 
 func TestHooks_ReportsUsageTranscriptMetadata(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "")
+	t.Setenv("CLAUDE_CODE_USE_VERTEX", "")
 	cfg := setConfigEnv(t)
 	srv, capture := activityServer(t, http.StatusOK, `{"ok":true,"sessionId":"ao-7","state":""}`)
 	writeRunFileFor(t, cfg, srv)
@@ -83,6 +89,7 @@ func TestHooks_ReportsUsageTranscriptMetadata(t *testing.T) {
 		t.Fatalf("request = %+v", req)
 	}
 	if req.Usage.Harness != "claude-code" ||
+		req.Usage.ProviderID != "anthropic" ||
 		req.Usage.TranscriptPath != "/home/user/.claude/projects/p/native-7.jsonl" ||
 		req.Usage.SubagentID != "sub-2" ||
 		req.Usage.SubagentTranscriptPath != "/home/user/.claude/projects/p/agent-sub-2.jsonl" {
@@ -90,6 +97,56 @@ func TestHooks_ReportsUsageTranscriptMetadata(t *testing.T) {
 	}
 	if strings.Contains(capture.body, "sourceCliVersion") {
 		t.Fatalf("usage request retained obsolete CLI version metadata: %s", capture.body)
+	}
+}
+
+func TestClaudeHookUsageProviderHintUsesTrustedProcessRouting(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		bedrock string
+		vertex  string
+		want    string
+	}{
+		{name: "default anthropic", want: "anthropic"},
+		{name: "official anthropic api", baseURL: "https://api.anthropic.com/v1/messages", want: "anthropic"},
+		{name: "official zai api", baseURL: "https://api.z.ai/api/anthropic", want: "zai"},
+		{name: "bedrock precedence", baseURL: "https://custom.invalid", bedrock: "1", want: "bedrock"},
+		{name: "vertex precedence", baseURL: "https://api.z.ai", vertex: "true", want: "vertex_ai"},
+		// A route AO cannot name is still a route. Reporting silence would make
+		// it indistinguishable from "no hook has run", which is what lets the
+		// legacy repairer fall back to the model that answered — and that
+		// fallback would bill a proxied session at Anthropic list rates.
+		{name: "conflicting flags", bedrock: "1", vertex: "1", want: pricing.UnidentifiedBillingRoute},
+		{name: "unknown custom route", baseURL: "https://token:secret@custom.invalid/v1",
+			want: pricing.UnidentifiedBillingRoute},
+		{name: "unparseable base url", baseURL: "://nonsense", want: pricing.UnidentifiedBillingRoute},
+		{name: "non http scheme", baseURL: "ftp://example.com", want: pricing.UnidentifiedBillingRoute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_BASE_URL", test.baseURL)
+			t.Setenv("CLAUDE_CODE_USE_BEDROCK", test.bedrock)
+			t.Setenv("CLAUDE_CODE_USE_VERTEX", test.vertex)
+			t.Setenv("ANTHROPIC_API_KEY", "credential-must-not-persist")
+			got := hookUsageMetadata("claude-code", []byte(`{"transcript_path":"/tmp/transcript.jsonl"}`))
+			if got == nil || got.ProviderID != test.want {
+				t.Fatalf("usage metadata = %+v, want provider %q", got, test.want)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.baseURL != "" && strings.Contains(string(encoded), test.baseURL) ||
+				strings.Contains(string(encoded), "credential-must-not-persist") || strings.Contains(string(encoded), "secret") {
+				t.Fatalf("usage metadata persisted routing secret or URL: %s", encoded)
+			}
+		})
+	}
+
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai")
+	if got := hookUsageMetadata("codex", []byte(`{"transcript_path":"/tmp/rollout.jsonl"}`)); got == nil || got.ProviderID != "" {
+		t.Fatalf("Codex inherited Claude routing hint: %+v", got)
 	}
 }
 
@@ -214,6 +271,36 @@ func TestHooks_NotificationReportsBlocked(t *testing.T) {
 	}
 	if got := capturedState(t, capture); got != "blocked" {
 		t.Errorf("state = %q, want blocked", got)
+	}
+}
+
+func TestHooks_AiderNotificationDoesNotReadInheritedStdin(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := executeCLI(t, Deps{
+			In:           reader,
+			ProcessAlive: func(int) bool { return true },
+		}, "hooks", "aider", "notification")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Aider notification blocked on inherited stdin")
+	}
+	if capture.hits != 1 || capturedState(t, capture) != "waiting_input" {
+		t.Fatalf("activity capture = %+v, want one waiting_input report", *capture)
 	}
 }
 
@@ -343,6 +430,29 @@ func TestHooks_StopReportsConversationFacts(t *testing.T) {
 	}
 	if req.TranscriptPath != "/tmp/provider/session.jsonl" {
 		t.Fatalf("transcript path = %q", req.TranscriptPath)
+	}
+}
+
+func TestHooks_ContinueStopReportsClaudeCompatibleConversationFacts(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"prompt":"finish the Continue fix","last_assistant_message":"I updated the detector.","transcript_path":"/tmp/continue/session.jsonl"}`
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "continue", "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.LatestUserPrompt != "finish the Continue fix" || req.LatestAssistantUpdate != "I updated the detector." || req.TranscriptPath != "/tmp/continue/session.jsonl" {
+		t.Fatalf("conversation facts = %#v", req)
 	}
 }
 
@@ -1131,5 +1241,194 @@ func TestHooks_DaemonErrorIsSwallowed(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "ao hooks") {
 		t.Errorf("expected the failure surfaced to stderr, got %q", errOut)
+	}
+}
+
+func TestHooks_CursorBeforeShellDefaultModeReportsBlocked(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_PERMISSION_MODE", "default")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	stdout, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"command":"git status"}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "cursor", "before-shell-execution")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := capturedState(t, capture); got != "blocked" {
+		t.Fatalf("state = %q, want blocked", got)
+	}
+	var out cursorPermissionHookOutput
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &out); err != nil {
+		t.Fatalf("decode stdout: %v\nstdout=%q", err, stdout)
+	}
+	if out.Permission != "ask" {
+		t.Fatalf("permission = %q, want ask", out.Permission)
+	}
+}
+
+func TestHooks_CursorBeforeShellAutoModeReportsActive(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_PERMISSION_MODE", "auto")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	stdout, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"command":"git status"}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "cursor", "before-shell-execution")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := capturedState(t, capture); got != "active" {
+		t.Fatalf("state = %q, want active", got)
+	}
+	var out cursorPermissionHookOutput
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &out); err != nil {
+		t.Fatalf("decode stdout: %v\nstdout=%q", err, stdout)
+	}
+	if out.Permission != "allow" {
+		t.Fatalf("permission = %q, want allow", out.Permission)
+	}
+}
+
+func TestHooks_CursorAskFailsClosedWhenBlockedActivityWriteFails(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		closeServer bool
+	}{
+		{name: "daemon 500", status: http.StatusInternalServerError},
+		{name: "daemon unreachable", status: http.StatusOK, closeServer: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			t.Setenv("AO_PERMISSION_MODE", "default")
+			cfg := setConfigEnv(t)
+			srv, _ := activityServer(t, tt.status, `{"ok":false,"code":"WRITE_FAILED","message":"write failed"}`)
+			writeRunFileFor(t, cfg, srv)
+			if tt.closeServer {
+				srv.Close()
+			}
+
+			stdout, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(`{"command":"git push"}`),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "cursor", "before-shell-execution")
+			if err == nil {
+				t.Fatal("permission hook error = nil, want fail-closed error")
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("permission hook stdout = %q, want no permission response", stdout)
+			}
+		})
+	}
+}
+
+func TestHooks_CursorAfterShellExecutionReportsActive(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"command":"git status","output":"ok"}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "cursor", "after-shell-execution")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := capturedState(t, capture); got != "active" {
+		t.Fatalf("state = %q, want active", got)
+	}
+}
+
+func TestHooks_CursorTerminalFailureReportsCorrelatedCompletion(t *testing.T) {
+	tests := []struct {
+		name      string
+		payload   string
+		wantEvent string
+		wantTool  string
+	}{
+		{
+			name:      "shell permission denied",
+			payload:   `{"tool_name":"Shell","tool_input":{"command":"git push"},"failure_type":"permission_denied"}`,
+			wantEvent: "cursor-shell-terminal-failure",
+			wantTool:  "git push",
+		},
+		{
+			name:      "shell error",
+			payload:   `{"tool_name":"Shell","tool_input":{"command":"npm test"},"failure_type":"error"}`,
+			wantEvent: "cursor-shell-terminal-failure",
+			wantTool:  "npm test",
+		},
+		{
+			name:      "shell timeout",
+			payload:   `{"tool_name":"Shell","tool_input":{"command":"sleep 60"},"failure_type":"timeout"}`,
+			wantEvent: "cursor-shell-terminal-failure",
+			wantTool:  "sleep 60",
+		},
+		{
+			name:      "shell interrupt",
+			payload:   `{"tool_name":"Shell","tool_input":{"command":"go test ./..."},"is_interrupt":true}`,
+			wantEvent: "cursor-shell-terminal-failure",
+			wantTool:  "go test ./...",
+		},
+		{
+			name:      "mcp permission denied",
+			payload:   `{"tool_name":"MCP:deploy","failure_type":"permission_denied"}`,
+			wantEvent: "cursor-mcp-terminal-failure",
+			wantTool:  "deploy",
+		},
+		{
+			name:      "mcp error",
+			payload:   `{"tool_name":"MCP:search","failure_type":"error"}`,
+			wantEvent: "cursor-mcp-terminal-failure",
+			wantTool:  "search",
+		},
+		{
+			name:      "mcp timeout",
+			payload:   `{"tool_name":"MCP:deploy","tool_input":{"environment":"prod"},"failure_type":"timeout"}`,
+			wantEvent: "cursor-mcp-terminal-failure",
+			wantTool:  "deploy",
+		},
+		{
+			name:      "mcp interrupt",
+			payload:   `{"tool_name":"MCP:fetch","is_interrupt":true}`,
+			wantEvent: "cursor-mcp-terminal-failure",
+			wantTool:  "fetch",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+
+			_, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(tt.payload),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "cursor", "post-tool-use-failure")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var req struct {
+				State    string `json:"state"`
+				Event    string `json:"event"`
+				ToolName string `json:"toolName"`
+			}
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+			}
+			if req.State != "active" || req.Event != tt.wantEvent || req.ToolName != tt.wantTool {
+				t.Fatalf("terminal-failure activity = %+v, want state=active event=%q toolName=%q", req, tt.wantEvent, tt.wantTool)
+			}
+		})
 	}
 }

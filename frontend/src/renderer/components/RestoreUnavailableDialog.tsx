@@ -2,7 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Loader2, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceScope } from "../hooks/useWorkspaceQuery";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { useUiStore } from "../stores/ui-store";
 import { hasConfiguredOrchestratorAgent, isOrchestratorSession } from "../types/workspace";
@@ -24,11 +24,11 @@ type RestoreUnavailableDialogProps = {
 
 export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecreated }: RestoreUnavailableDialogProps) {
 	const { t } = useTranslation();
-	const workspaceQuery = useWorkspaceQuery();
+	const workspaceQuery = useWorkspaceScope(session.workspaceId);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const orchestrator = isOrchestratorSession(session);
-	const workspace = workspaceQuery.data?.find((candidate) => candidate.id === session.workspaceId);
+	const workspace = workspaceQuery.data?.project;
 	const hasOrchestratorAgent = hasConfiguredOrchestratorAgent(workspace);
 	const checkingProject = workspaceQuery.isLoading && workspaceQuery.data === undefined;
 

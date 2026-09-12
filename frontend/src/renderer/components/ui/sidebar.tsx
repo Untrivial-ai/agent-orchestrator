@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
@@ -130,22 +130,20 @@ function SidebarProvider({
 
 	return (
 		<SidebarContext.Provider value={contextValue}>
-			<TooltipProvider delayDuration={0}>
-				<div
-					data-slot="sidebar-wrapper"
-					style={
-						{
-							"--sidebar-width": SIDEBAR_WIDTH,
-							"--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
-							...style,
-						} as React.CSSProperties
-					}
-					className={cn("group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar", className)}
-					{...props}
-				>
-					{children}
-				</div>
-			</TooltipProvider>
+			<div
+				data-slot="sidebar-wrapper"
+				style={
+					{
+						"--sidebar-width": SIDEBAR_WIDTH,
+						"--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
+						...style,
+					} as React.CSSProperties
+				}
+				className={cn("group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar", className)}
+				{...props}
+			>
+				{children}
+			</div>
 		</SidebarContext.Provider>
 	);
 }
@@ -154,15 +152,15 @@ function Sidebar({
 	side = "left",
 	variant = "sidebar",
 	collapsible = "offcanvas",
-	overlay = false,
 	className,
 	children,
+	resizeScopeRef,
 	...props
 }: React.ComponentProps<"div"> & {
 	side?: "left" | "right";
 	variant?: "sidebar" | "floating" | "inset";
 	collapsible?: "offcanvas" | "icon" | "none";
-	overlay?: boolean;
+	resizeScopeRef?: React.RefObject<HTMLDivElement | null>;
 }) {
 	const { t } = useTranslation();
 	const prefersReducedMotion = useReducedMotion();
@@ -214,13 +212,13 @@ function Sidebar({
 	// Target width for the gap placeholder. Animating the actual width lets the
 	// flex sibling <main> follow in real time instead of snapping separately.
 	const gapTargetWidth =
-		overlay || isOffcanvasCollapsed
+		isOffcanvasCollapsed
 			? 0
 			: isIconCollapsed
 				? variant === "floating" || variant === "inset"
 					? "calc(var(--sidebar-width-icon) + 1rem)"
 					: "var(--sidebar-width-icon)"
-				: "var(--sidebar-width)";
+				: "var(--ao-sidebar-w, var(--sidebar-width))";
 
 	// Several React HTML event types conflict with Motion's overloaded versions.
 	// Cast once so callers can keep passing through plain div props.
@@ -232,10 +230,10 @@ function Sidebar({
 			className="group peer hidden text-sidebar-foreground md:block"
 			data-state={state}
 			data-collapsible={state === "collapsed" ? collapsible : ""}
-			data-overlay={overlay ? "true" : "false"}
 			data-variant={variant}
 			data-side={side}
 			data-slot="sidebar"
+			ref={resizeScopeRef}
 		>
 			{/* Layout gap follows the sidebar width so <main> expands and contracts
 			    smoothly with the shell instead of snapping on a separate CSS timer. */}
@@ -254,7 +252,7 @@ function Sidebar({
 				animate={{ x: containerX }}
 				transition={activeTransition}
 				className={cn(
-					"fixed inset-y-0 z-chrome hidden h-svh w-(--sidebar-width) md:flex",
+					"fixed inset-y-0 z-chrome hidden h-svh w-(--ao-sidebar-w,var(--sidebar-width)) md:flex",
 					side === "left" ? "left-0" : "right-0",
 					// Adjust the padding for floating and inset variants.
 					variant === "floating" || variant === "inset"

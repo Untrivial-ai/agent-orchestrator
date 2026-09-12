@@ -56,6 +56,13 @@ export type BrowserAnnotationSnapshot = {
 	data: string;
 };
 
+export type BrowserAnnotationDraft = BrowserAnnotationPageSubmitPayload;
+
+export type BrowserAnnotationPageMode = {
+	enabled: boolean;
+	draft?: BrowserAnnotationDraft;
+};
+
 export type BrowserAnnotationSubmitPayload = BrowserAnnotationPageSubmitPayload & {
 	viewId: string;
 	snapshot?: BrowserAnnotationSnapshot;

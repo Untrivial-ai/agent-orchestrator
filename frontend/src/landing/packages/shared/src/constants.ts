@@ -1,14 +1,14 @@
 export const COMPANY = {
   NAME: "Agent Orchestrator",
   SHORT_NAME: "AO",
-  MARKETING_URL: "https://aoagents.dev",
-  DOCS_URL: "https://aoagents.dev/docs",
+  MARKETING_URL: "https://useao.dev",
+  DOCS_URL: "https://useao.dev/docs",
   GITHUB_URL: "https://github.com/Untrivial-ai/agent-orchestrator",
   GITHUB_REPO: "Untrivial-ai/agent-orchestrator",
   STATUS_URL: "https://status.aoagents.dev",
-  TRUST_URL: "https://aoagents.dev/privacy/",
+  TRUST_URL: "https://useao.dev/privacy/",
   MAIL_TO: "mailto:prateek@untrivial.ai",
-  X_URL: "https://x.com/aoagents",
+  X_URL: "https://x.com/ao_build",
   YOUTUBE_URL: "https://www.youtube.com/@itrytoohard",
   LINKEDIN_URL: "https://www.linkedin.com/company/agent-orchestrator/",
   DISCORD_URL: "https://discord.com/invite/UZv7JjxbwG",
@@ -52,21 +52,18 @@ export const DOWNLOAD_URL_MAC_X64 = "https://github.com/Untrivial-ai/agent-orche
 export const DOWNLOAD_URL_WINDOWS = "https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-win32-x64.exe";
 export const DOWNLOAD_URL_LINUX = "https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.AppImage";
 
-// AO Mobile. iOS ships as a TestFlight beta — the same link the desktop app's
+// AO Mobile, live on both stores. These are the same links the desktop app's
 // Connect Mobile panel opens (frontend/src/renderer/components/settings/
 // ConnectMobileGetApp.tsx), so the two must be changed together.
-export const TESTFLIGHT_URL = "https://testflight.apple.com/join/t4U3fu2H";
+//
+// No storefront segment ("/us/") in the App Store URL on purpose: Apple
+// redirects a bare /app/ link to the visitor's own storefront, while a pinned
+// one sends everyone outside that country to a "not available" page.
+export const IOS_APP_STORE_URL = "https://apps.apple.com/app/ao-mobile/id6792552173";
 
-/** Apple's TestFlight app itself — step one, and useless to skip. */
-export const TESTFLIGHT_APP_URL = "https://apps.apple.com/app/testflight/id899247664";
-
-/** Public self-join Group that grants eligibility for the Android closed test. */
-export const ANDROID_TESTER_GROUP_URL =
-  "https://groups.google.com/g/ao-mobile-testers/about";
-
-/** Google Play page where an eligible Group member opts in and installs. */
-export const ANDROID_TEST_OPT_IN_URL =
-  "https://play.google.com/apps/testing/aoagents.dev";
+/** Public Google Play listing. */
+export const ANDROID_PLAY_STORE_URL =
+  "https://play.google.com/store/apps/details?id=aoagents.dev";
 
 export const AGENT_HARNESSES = 24;
 export const TAGLINE = "Stop babysitting agents. Start merging real work.";

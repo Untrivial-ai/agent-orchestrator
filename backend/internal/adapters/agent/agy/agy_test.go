@@ -350,18 +350,6 @@ func assertRawJSONEqual(t *testing.T, want, got json.RawMessage) {
 	}
 }
 
-func TestAuthStatus(t *testing.T) {
-	plugin := &Plugin{resolvedBinary: "agy"}
-
-	status, err := plugin.AuthStatus(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Errorf("AuthStatus() = %v, want AgentAuthStatusAuthorized", status)
-	}
-}
-
 func TestGetConfigSpecReportsModelField(t *testing.T) {
 	plugin := &Plugin{}
 

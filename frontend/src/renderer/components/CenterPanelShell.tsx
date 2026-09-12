@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "../lib/utils";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
-import { useUiStore } from "../stores/ui-store";
+import { sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 
 /**
  * Shared inset center panel: sidebar-colored outer frame with a bordered inner
@@ -25,7 +25,7 @@ export function CenterPanelShell({
 	/** When false, keep the default panel insets (Settings). */
 	titlebarAlign?: boolean;
 }) {
-	const isSidebarOpen = useUiStore((state) => state.isSidebarOpen);
+	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const isFullScreen = useWindowFullScreen();
 	const isMac = isMacPlatform();
 	const isLinux = isLinuxPlatform();

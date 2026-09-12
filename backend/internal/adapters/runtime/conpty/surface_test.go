@@ -3,6 +3,7 @@ package conpty
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderedSurfaceTracksTheVisibleAlternateScreen(t *testing.T) {
@@ -28,5 +29,22 @@ func TestRenderedSurfaceTracksTheVisibleAlternateScreen(t *testing.T) {
 	}
 	if strings.Contains(restored, "current tui") {
 		t.Fatalf("leaving alternate screen retained hidden TUI content: %q", restored)
+	}
+}
+
+func TestRenderedSurfaceDrainsTerminalReplies(t *testing.T) {
+	surface := newRenderedSurface(80, 24)
+	done := make(chan struct{})
+	go func() {
+		// Primary Device Attributes asks the emulator to write a reply to its
+		// input pipe. A passive surface must consume that reply or Write blocks.
+		surface.Write([]byte("\x1b[c"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("rendered surface blocked while answering a terminal query")
 	}
 }

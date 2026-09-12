@@ -240,6 +240,12 @@ func (s *Store) ListAgentSwitches(ctx context.Context, sessionID domain.SessionI
 // This rejects stale source hooks and late target callbacks from abandoned
 // starts without deriving liveness from their arrival.
 func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, expectedState domain.AgentSwitchState, expectedSourceGenerationID, expectedTargetGenerationID domain.AgentGenerationID) (bool, error) {
+	if rec.State == domain.AgentSwitchFailed || rec.ErrorCode.RetainedRecoveryMarker() {
+		return false, fmt.Errorf("update agent switch %s: reportable transition requires ApplyAgentSwitchMutation", rec.ID)
+	}
+	if rec.ErrorCode == "" {
+		rec.FailurePoint = ""
+	}
 	if err := validateAgentSwitch(rec, false); err != nil {
 		return false, err
 	}
@@ -267,6 +273,7 @@ func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, e
 		NextTargetGenerationID:    rec.TargetGenerationID,
 		NextTargetRuntimeHandleID: rec.TargetRuntimeHandleID,
 		ErrorCode:                 string(rec.ErrorCode),
+		FailurePoint:              string(rec.FailurePoint),
 		UpdatedAt:                 rec.UpdatedAt,
 		ID:                        rec.ID, SessionID: rec.SessionID, ExpectedState: expectedState,
 		ExpectedSourceGenerationID: expectedSourceGenerationID,
@@ -286,25 +293,7 @@ func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, e
 // failure updates share the store write lock and opposing SQL predicates, so
 // exactly one outcome wins even when the target hook arrives at the deadline.
 func (s *Store) FailAgentSwitchIfUnacknowledged(ctx context.Context, rec domain.AgentSwitch) (bool, error) {
-	if err := validateAgentSwitch(rec, false); err != nil {
-		return false, err
-	}
-	if rec.State != domain.AgentSwitchFailed || rec.TargetGenerationID == "" || rec.TargetAcknowledgedAt != nil {
-		return false, fmt.Errorf("fail unacknowledged agent switch %s: failed state and unacknowledged target generation are required", rec.ID)
-	}
-
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	n, err := s.qw.FailAgentSwitchIfUnacknowledged(ctx, gen.FailAgentSwitchIfUnacknowledgedParams{
-		ErrorCode: string(rec.ErrorCode), FailedAt: rec.UpdatedAt,
-		ID: rec.ID, SessionID: rec.SessionID,
-		ExpectedSourceGenerationID: rec.SourceGenerationID,
-		ExpectedTargetGenerationID: rec.TargetGenerationID,
-	})
-	if err != nil {
-		return false, fmt.Errorf("fail unacknowledged agent switch %s: %w", rec.ID, err)
-	}
-	return n > 0, nil
+	return false, fmt.Errorf("fail unacknowledged agent switch %s: reportable transition requires FailAgentSwitchIfUnacknowledgedWithFault", rec.ID)
 }
 
 // RecordAgentHandoff records optional semantic enrichment for the source
@@ -580,9 +569,8 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 	return true, nil
 }
 
-// ActivateChatAgentSwitchTarget atomically moves a stopped Chat session and its
-// durable switch row to the structured target generation claimed by Chat
-// Service immediately before ControllerReady.
+// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
+// from its source controller generation to the structured target generation.
 func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchChatTargetActivation) (bool, error) {
 	if err := validateAgentSwitchChatTargetActivation(activation); err != nil {
 		return false, err
@@ -632,10 +620,11 @@ func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation do
 
 	n, err := q.ActivateChatSessionAgentSwitchTarget(ctx, gen.ActivateChatSessionAgentSwitchTargetParams{
 		TargetHarness: activation.TargetHarness, ActivatedAt: activation.ActivatedAt,
-		TargetNativeSessionID:  targetNative.NativeSessionID,
-		ProviderConversationID: activation.ProviderConversationID,
-		ControllerGeneration:   activation.ControllerGeneration,
-		SessionID:              activation.SessionID, ExpectedSourceHarness: activation.SourceHarness,
+		TargetNativeSessionID:      targetNative.NativeSessionID,
+		ProviderConversationID:     activation.ProviderConversationID,
+		TargetControllerGeneration: activation.ControllerGeneration,
+		SessionID:                  activation.SessionID, ExpectedSourceHarness: activation.SourceHarness,
+		ExpectedSourceControllerGeneration: activation.ExpectedSourceControllerGeneration,
 	})
 	if err != nil {
 		return false, fmt.Errorf("activate Chat agent switch target %s: transfer session owner: %w", activation.SwitchID, err)
@@ -658,6 +647,7 @@ func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation do
 		ProviderConversationID: activation.ProviderConversationID,
 		ParentBranchID:         conversationRow.ActiveBranchID,
 		ForkAfterSequence:      conversationRow.LatestSequence,
+		ProviderScopeID:        providerBoundaryID,
 		CreatedAt:              activation.ActivatedAt,
 	}, activation.ActivatedAt); err != nil {
 		return false, fmt.Errorf("activate Chat agent switch target %s: create provider boundary: %w", activation.SwitchID, err)
@@ -732,9 +722,13 @@ func validateAgentSwitch(rec domain.AgentSwitch, create bool) error {
 	if !rec.ErrorCode.Valid() {
 		return fmt.Errorf("agent switch %s: invalid error code %q", rec.ID, rec.ErrorCode)
 	}
+	if rec.FailurePoint != "" {
+		if _, ok := domain.AgentSwitchFailureTaxonomy(rec.FailurePoint); !ok {
+			return fmt.Errorf("agent switch %s: invalid failure point %q", rec.ID, rec.FailurePoint)
+		}
+	}
 	recoveryRequired := rec.RequiresRecovery()
-	recoveryMarker := rec.ErrorCode == domain.AgentSwitchErrorTargetStartUnconfirmed ||
-		rec.ErrorCode == domain.AgentSwitchErrorSourceRestoreUnconfirmed
+	recoveryMarker := rec.ErrorCode.RetainedRecoveryMarker()
 	failureCode := rec.State == domain.AgentSwitchFailed && rec.ErrorCode != "" && !recoveryMarker
 	if (rec.State == domain.AgentSwitchFailed) != failureCode || (rec.ErrorCode != "" && !failureCode && !recoveryRequired) {
 		return fmt.Errorf("agent switch %s: error code must describe a terminal failure or an exact recovery condition", rec.ID)
@@ -812,6 +806,7 @@ func validateAgentSwitchTargetActivation(activation domain.AgentSwitchTargetActi
 
 func validateAgentSwitchChatTargetActivation(activation domain.AgentSwitchChatTargetActivation) error {
 	if activation.SwitchID == "" || activation.SessionID == "" || activation.SourceGenerationID == "" ||
+		strings.TrimSpace(activation.ExpectedSourceControllerGeneration) == "" ||
 		activation.TargetNativeSessionRef == "" || activation.TargetGenerationID == "" ||
 		strings.TrimSpace(activation.ProviderConversationID) == "" ||
 		strings.TrimSpace(activation.ControllerGeneration) == "" || activation.ActivatedAt.IsZero() {
@@ -819,6 +814,9 @@ func validateAgentSwitchChatTargetActivation(activation domain.AgentSwitchChatTa
 	}
 	if string(activation.TargetGenerationID) != activation.ControllerGeneration {
 		return fmt.Errorf("activate Chat agent switch target %s: target and controller generations differ", activation.SwitchID)
+	}
+	if string(activation.SourceGenerationID) != activation.ExpectedSourceControllerGeneration {
+		return fmt.Errorf("activate Chat agent switch target %s: source and expected controller generations differ", activation.SwitchID)
 	}
 	if !activation.SourceHarness.IsKnown() || !activation.TargetHarness.IsKnown() || activation.SourceHarness == activation.TargetHarness {
 		return fmt.Errorf("activate Chat agent switch target %s: source and distinct known target harnesses are required", activation.SwitchID)
@@ -912,6 +910,7 @@ func agentSwitchToInsert(rec domain.AgentSwitch) gen.InsertAgentSwitchParams {
 		TargetRuntimeHandleID:   rec.TargetRuntimeHandleID,
 		TargetAcknowledgedAt:    timePtrToNull(rec.TargetAcknowledgedAt),
 		ErrorCode:               string(rec.ErrorCode),
+		FailurePoint:            string(rec.FailurePoint),
 		RequestedAt:             rec.RequestedAt, UpdatedAt: rec.UpdatedAt,
 	}
 }
@@ -935,6 +934,7 @@ func agentSwitchFromGen(row gen.AgentSwitch) domain.AgentSwitch {
 		TargetRuntimeHandleID:   row.TargetRuntimeHandleID,
 		TargetAcknowledgedAt:    nullTimeToPtr(row.TargetAcknowledgedAt),
 		ErrorCode:               domain.AgentSwitchErrorCode(row.ErrorCode),
+		FailurePoint:            domain.AgentSwitchFailurePoint(row.FailurePoint),
 		RequestedAt:             row.RequestedAt, UpdatedAt: row.UpdatedAt,
 	}
 }

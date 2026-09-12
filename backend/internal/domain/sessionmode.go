@@ -22,8 +22,9 @@ const (
 	SessionModeChat SessionMode = "chat"
 )
 
-// DefaultSessionMode is what a session gets when no mode was requested. It stays
-// TUI so an upgrade never changes how existing workflows behave.
+// DefaultSessionMode is the compatibility fallback when the daemon-owned
+// preference is unavailable or invalid. Keep it TUI so a settings read failure
+// cannot turn a working terminal spawn into a Chat-only failure.
 const DefaultSessionMode = SessionModeTUI
 
 // Valid reports whether mode is one AO knows how to dispatch.

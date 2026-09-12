@@ -194,7 +194,11 @@ func basePRFixture() *prFixture {
 						"mergeable":        "MERGEABLE",
 						"mergeStateStatus": "CLEAN",
 						"reviewDecision":   "APPROVED",
-						"headRefOid":       "deadbeef",
+						"author": map[string]any{
+							"login":     "octocat",
+							"avatarUrl": "https://avatars.githubusercontent.com/u/583231?v=4",
+						},
+						"headRefOid": "deadbeef",
 						"commits": map[string]any{"nodes": []any{
 							map[string]any{"commit": map[string]any{
 								"oid": "deadbeef",
@@ -307,6 +311,8 @@ func TestRestListPullToSCMCarriesHeadRepo(t *testing.T) {
 	pull.Head.SHA = "deadbeef"
 	pull.Head.Repo.FullName = "forker/hello"
 	pull.Base.Ref = "main"
+	pull.User.Login = "octocat"
+	pull.User.AvatarURL = "https://avatars.githubusercontent.com/u/583231?v=4"
 
 	obs := restListPullToSCM(pull)
 	if obs.SourceBranch != "feat/x" {
@@ -314,6 +320,9 @@ func TestRestListPullToSCMCarriesHeadRepo(t *testing.T) {
 	}
 	if obs.HeadRepo != "forker/hello" {
 		t.Fatalf("HeadRepo = %q, want forker/hello", obs.HeadRepo)
+	}
+	if obs.Author != "octocat" || obs.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/583231?v=4" {
+		t.Fatalf("author = %q avatar = %q", obs.Author, obs.AuthorAvatarURL)
 	}
 }
 
@@ -731,12 +740,13 @@ func TestObserve_BotAuthorFiltering(t *testing.T) {
 				"isResolved": false,
 				"comments": map[string]any{"nodes": []any{
 					map[string]any{
-						"id":     "C1",
-						"body":   "real human concern",
-						"path":   "foo/bar.go",
-						"line":   float64(12),
-						"url":    "https://github.com/octocat/hello/pull/42#discussion_r1",
-						"author": map[string]any{"login": "alice", "__typename": "User"},
+						"id":                "C1",
+						"body":              "real human concern",
+						"path":              "foo/bar.go",
+						"line":              float64(12),
+						"url":               "https://github.com/octocat/hello/pull/42#discussion_r1",
+						"pullRequestReview": map[string]any{"databaseId": float64(4_876_751_117)},
+						"author":            map[string]any{"login": "alice", "__typename": "User"},
 					},
 				}},
 			},
@@ -796,7 +806,7 @@ func TestObserve_BotAuthorFiltering(t *testing.T) {
 			t.Errorf("comment %q marked Resolved=true; observation set is unresolved-only", c.ID)
 		}
 	}
-	if obs.Comments[0].ThreadID != "T1" || obs.Comments[0].URL != "https://github.com/octocat/hello/pull/42#discussion_r1" {
+	if obs.Comments[0].ThreadID != "T1" || obs.Comments[0].ReviewID != "4876751117" || obs.Comments[0].URL != "https://github.com/octocat/hello/pull/42#discussion_r1" {
 		t.Fatalf("first comment lost URL/thread metadata: %#v", obs.Comments[0])
 	}
 }
@@ -1294,6 +1304,9 @@ func TestSCMObservationCarriesStableIDAndRequestedURLAlias(t *testing.T) {
 	if obs.Repo != "new-owner/hello" {
 		t.Fatalf("Repo = %q, want canonical new-owner/hello", obs.Repo)
 	}
+	if obs.PR.Author != "octocat" || obs.PR.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/583231?v=4" {
+		t.Fatalf("author = %q avatar = %q", obs.PR.Author, obs.PR.AuthorAvatarURL)
+	}
 }
 
 func TestSCMMergeabilityBlocksReviewRequiredAndDraft(t *testing.T) {
@@ -1484,8 +1497,8 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 		if !strings.Contains(string(body), "reviewThreads(last:50, before:null)") {
 			t.Fatalf("review query should fetch latest 50, body=%s", body)
 		}
-		if !strings.Contains(string(body), "reviews(last:20, states:[APPROVED,CHANGES_REQUESTED])") {
-			t.Fatalf("review query should fetch decisive review summaries, body=%s", body)
+		if !strings.Contains(string(body), "reviews(last:20, states:[APPROVED,CHANGES_REQUESTED,COMMENTED])") {
+			t.Fatalf("review query should fetch decisive and commented review summaries, body=%s", body)
 		}
 		if !strings.Contains(string(body), "submittedAt body commit") {
 			t.Fatalf("review query should request the review body and commit, body=%s", body)
@@ -1493,22 +1506,36 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 		if !strings.Contains(string(body), "comments(first:5)") {
 			t.Fatalf("review query should cap comments per thread, body=%s", body)
 		}
+		if !strings.Contains(string(body), "pullRequestReview{ databaseId }") {
+			t.Fatalf("review query should request each comment's parent review id, body=%s", body)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": map[string]any{"repo": map[string]any{"pullRequest": map[string]any{
 				"reviewDecision": "CHANGES_REQUESTED",
-				"reviewSummaries": map[string]any{"nodes": []any{map[string]any{
-					"id":          "review-1",
-					"state":       "CHANGES_REQUESTED",
-					"url":         "https://github.com/o/r/pull/1#pullrequestreview-1",
-					"submittedAt": "2026-06-15T00:00:00Z",
-					"body":        "please address the failing test",
-					"commit":      map[string]any{"oid": "head-sha-1"},
-					"author":      map[string]any{"login": "alice", "__typename": "User"},
-				}}},
+				"reviewSummaries": map[string]any{"nodes": []any{
+					map[string]any{
+						"id":          "review-1",
+						"state":       "CHANGES_REQUESTED",
+						"url":         "https://github.com/o/r/pull/1#pullrequestreview-1",
+						"submittedAt": "2026-06-15T00:00:00Z",
+						"body":        "please address the failing test",
+						"commit":      map[string]any{"oid": "head-sha-1"},
+						"author":      map[string]any{"login": "alice", "__typename": "User"},
+					},
+					map[string]any{
+						"id":          "review-2",
+						"state":       "COMMENTED",
+						"url":         "https://github.com/o/r/pull/1#pullrequestreview-2",
+						"submittedAt": "2026-06-16T00:00:00Z",
+						"body":        "non-blocking cleanup suggestion",
+						"commit":      map[string]any{"oid": "head-sha-1"},
+						"author":      map[string]any{"login": "bob", "__typename": "User"},
+					},
+				}},
 				"reviewThreads": map[string]any{
 					"nodes": []any{map[string]any{"id": "latest-resolved", "path": "main.go", "line": 1, "isResolved": true, "comments": map[string]any{"nodes": []any{map[string]any{
-						"id": "comment-1", "body": "fix", "url": "https://github.com/o/r/pull/1#discussion_r1", "author": map[string]any{"login": "alice", "__typename": "User"},
+						"id": "comment-1", "body": "fix", "url": "https://github.com/o/r/pull/1#discussion_r1", "pullRequestReview": map[string]any{"databaseId": float64(4_876_751_117)}, "author": map[string]any{"login": "alice", "__typename": "User"},
 					}}}}},
 					"pageInfo": map[string]any{"hasPreviousPage": true, "startCursor": "latest-start"},
 				},
@@ -1529,10 +1556,13 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 	if len(review.Threads) != 1 || review.Threads[0].ID != "latest-resolved" {
 		t.Fatalf("threads = %#v", review.Threads)
 	}
-	if len(review.Reviews) != 1 || review.Reviews[0].Author != "alice" || review.Reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || review.Reviews[0].Body != "please address the failing test" || review.Reviews[0].TargetSHA != "head-sha-1" {
+	if len(review.Reviews) != 2 || review.Reviews[0].Author != "alice" || review.Reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || review.Reviews[0].Body != "please address the failing test" || review.Reviews[0].TargetSHA != "head-sha-1" {
 		t.Fatalf("reviews = %#v", review.Reviews)
 	}
-	if len(review.Threads[0].Comments) != 1 || review.Threads[0].Comments[0].URL != "https://github.com/o/r/pull/1#discussion_r1" {
+	if review.Reviews[1].Author != "bob" || review.Reviews[1].State != string(domain.ReviewNone) || review.Reviews[1].Body != "non-blocking cleanup suggestion" {
+		t.Fatalf("commented review = %#v", review.Reviews[1])
+	}
+	if len(review.Threads[0].Comments) != 1 || review.Threads[0].Comments[0].ReviewID != "4876751117" || review.Threads[0].Comments[0].URL != "https://github.com/o/r/pull/1#discussion_r1" {
 		t.Fatalf("thread comments = %#v", review.Threads[0].Comments)
 	}
 }

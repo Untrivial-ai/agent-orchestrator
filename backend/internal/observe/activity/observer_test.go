@@ -10,6 +10,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/crush"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/droid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/muse"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -153,6 +154,62 @@ func TestPollContinuouslyReconcilesMuse(t *testing.T) {
 				t.Fatalf("unexpected reconciliation: %+v", sink.signals)
 			}
 		})
+	}
+}
+
+func TestPollReconcilesWaitingCrushAfterUserResponds(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output string
+		want   domain.ActivityState
+	}{
+		{name: "resumed active", output: "> Working!\n", want: domain.ActivityActive},
+		{name: "resumed idle", output: "> Ready?\n", want: domain.ActivityIdle},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Unix(500, 0).UTC()
+			session := activeSession(now, domain.HarnessCrush)
+			session.Activity = domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-time.Second)}
+			session.UpdatedAt = now.Add(-time.Second)
+			sink := &fakeSink{}
+			observer := New(
+				fakeSessions{rows: []domain.SessionRecord{session}},
+				sink,
+				&fakeRuntime{output: tt.output},
+				fakeAgents{domain.HarnessCrush: crush.New()},
+				Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+			)
+
+			if err := observer.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.signals) != 1 || sink.signals[0].State != tt.want {
+				t.Fatalf("unexpected reconciliation: %+v", sink.signals)
+			}
+		})
+	}
+}
+
+func TestPollPreservesClaudeWaitingInputWithoutContinuousCapability(t *testing.T) {
+	now := time.Unix(500, 0).UTC()
+	session := activeSession(now, domain.HarnessClaudeCode)
+	session.Activity = domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-time.Second)}
+	session.UpdatedAt = now.Add(-time.Second)
+	sink := &fakeSink{}
+	runtime := &fakeRuntime{output: claudeStuckActiveScreen}
+	observer := New(
+		fakeSessions{rows: []domain.SessionRecord{session}},
+		sink,
+		runtime,
+		fakeAgents{domain.HarnessClaudeCode: claudecode.New()},
+		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+	)
+
+	if err := observer.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.calls != 0 || len(sink.signals) != 0 {
+		t.Fatalf("sticky Claude waiting state was sampled: output calls=%d signals=%+v", runtime.calls, sink.signals)
 	}
 }
 

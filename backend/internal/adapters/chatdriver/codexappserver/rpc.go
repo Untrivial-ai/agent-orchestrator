@@ -86,9 +86,11 @@ type conn struct {
 	pending map[int64]chan frame
 	closed  bool
 
-	// notifications is bounded. Overflow is dropped and logged rather than
-	// allowed to block the reader, which would deadlock the provider.
-	notifications chan notification
+	// notificationInput decouples provider reads from notification consumption.
+	// The relay owns an ordered queue so a replay burst cannot block response
+	// correlation or silently drop a lifecycle frame.
+	notificationInput chan notification
+	notifications     chan notification
 
 	onServerRequest serverRequestHandler
 
@@ -100,19 +102,72 @@ type conn struct {
 	readErr error
 }
 
-const notificationBuffer = 4096
+const (
+	maxNotificationQueuedBytes = 32 << 20
+	notificationQueueOverhead  = 64
+)
 
 func newConn(w io.WriteCloser, r io.Reader, log *slog.Logger, onReq serverRequestHandler) *conn {
+	return newConnAt(w, r, log, onReq, 0)
+}
+
+func newConnAt(w io.WriteCloser, r io.Reader, log *slog.Logger, onReq serverRequestHandler, nextID int64) *conn {
 	c := &conn{
-		w:               w,
-		log:             log,
-		pending:         make(map[int64]chan frame),
-		notifications:   make(chan notification, notificationBuffer),
-		onServerRequest: onReq,
-		done:            make(chan struct{}),
+		w:                 w,
+		log:               log,
+		pending:           make(map[int64]chan frame),
+		notificationInput: make(chan notification),
+		notifications:     make(chan notification),
+		onServerRequest:   onReq,
+		done:              make(chan struct{}),
 	}
+	c.nextID.Store(nextID)
+	go c.relayNotifications()
 	go c.readLoop(r)
 	return c
+}
+
+// relayNotifications keeps provider reads independent from a slow consumer
+// without discarding protocol frames. The host bounds a detached replay by
+// bytes; this queue preserves that replay's order while the conversation pump
+// catches up.
+func (c *conn) relayNotifications() {
+	defer close(c.notifications)
+	var queued []notification
+	queuedBytes := 0
+	input := c.notificationInput
+	for input != nil || len(queued) > 0 {
+		receive := input
+		if queuedBytes >= maxNotificationQueuedBytes {
+			receive = nil
+		}
+		var output chan notification
+		var next notification
+		if len(queued) > 0 {
+			output = c.notifications
+			next = queued[0]
+		}
+		select {
+		case n, ok := <-receive:
+			if !ok {
+				input = nil
+				continue
+			}
+			queued = append(queued, n)
+			queuedBytes += notificationBytes(n)
+		case output <- next:
+			queuedBytes -= notificationBytes(next)
+			queued[0] = notification{}
+			queued = queued[1:]
+			if len(queued) == 0 {
+				queued = nil
+			}
+		}
+	}
+}
+
+func notificationBytes(n notification) int {
+	return notificationQueueOverhead + len(n.Method) + len(n.Params)
 }
 
 // notifications the caller consumes. Closed when the connection ends.
@@ -143,7 +198,7 @@ func (c *conn) readLoop(r io.Reader) {
 		for _, ch := range pending {
 			close(ch)
 		}
-		close(c.notifications)
+		close(c.notificationInput)
 		close(c.done)
 	}()
 
@@ -174,11 +229,7 @@ func (c *conn) readLoop(r io.Reader) {
 		case f.ID != nil:
 			c.deliver(f)
 		case f.Method != "":
-			select {
-			case c.notifications <- notification{Method: f.Method, Params: f.Params}:
-			default:
-				c.log.Warn("dropped app-server notification: buffer full", "method", f.Method)
-			}
+			c.notificationInput <- notification{Method: f.Method, Params: f.Params}
 		}
 	}
 }
@@ -235,7 +286,18 @@ func (c *conn) deliver(f frame) {
 // own goroutine so a slow decision (a user staring at an approval card) does not
 // stall the read loop and starve streaming deltas.
 func (c *conn) answer(req serverRequest) {
-	result, err := c.onServerRequest(context.Background(), req)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-c.done:
+			cancel()
+		case <-finished:
+		}
+	}()
+	result, err := c.onServerRequest(ctx, req)
+	close(finished)
+	cancel()
 
 	reply := map[string]any{"id": req.ID}
 	if err != nil {

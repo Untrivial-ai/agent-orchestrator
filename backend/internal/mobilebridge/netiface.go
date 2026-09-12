@@ -5,17 +5,29 @@ import (
 	"strings"
 )
 
-func skipInterface(i net.Interface) bool {
-	if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
-		return true
-	}
-	n := strings.ToLower(i.Name)
-	for _, bad := range []string{"utun", "tun", "tap", "docker", "bridge", "vmnet", "llw", "awdl"} {
+// virtualNamePrefixes are interfaces that are not the machine's own physical
+// networking: VPNs, container and VM bridges, and Apple's link-local radios.
+var virtualNamePrefixes = []string{"utun", "tun", "tap", "docker", "bridge", "vmnet", "llw", "awdl"}
+
+// hasVirtualName reports whether the interface name looks virtual. Split out of
+// skipInterface so MachineFingerprint can reuse the list without inheriting
+// skipInterface's link-state check — a fingerprint must not change when Wi-Fi
+// is switched off.
+func hasVirtualName(name string) bool {
+	n := strings.ToLower(name)
+	for _, bad := range virtualNamePrefixes {
 		if strings.HasPrefix(n, bad) {
 			return true
 		}
 	}
 	return false
+}
+
+func skipInterface(i net.Interface) bool {
+	if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
+		return true
+	}
+	return hasVirtualName(i.Name)
 }
 
 // tailscaleCGNAT is the 100.64.0.0/10 range Tailscale assigns to nodes. It is
@@ -125,4 +137,30 @@ func AutopickTailscaleIP() string {
 		return ""
 	}
 	return c[0]
+}
+
+// LocalPrivateIPv4s returns every private IPv4 address of this machine's
+// suitable interfaces. Unlike AutopickLANIP it keeps them all: the phone races
+// every advertised endpoint, so a machine on both Wi-Fi and Ethernet must
+// advertise both.
+func LocalPrivateIPv4s() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	return PrivateIPv4Candidates(ifaces, func(i net.Interface) ([]net.Addr, error) {
+		return i.Addrs()
+	})
+}
+
+// LocalTailscaleIPv4s returns every Tailscale IPv4 address of this machine, or
+// nil when Tailscale is not installed, not running, or logged out.
+func LocalTailscaleIPv4s() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	return TailscaleIPv4Candidates(ifaces, func(i net.Interface) ([]net.Addr, error) {
+		return i.Addrs()
+	})
 }

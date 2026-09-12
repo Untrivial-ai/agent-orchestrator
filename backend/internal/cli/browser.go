@@ -36,6 +36,13 @@ type browserCommandResponseDTO struct {
 	Result    map[string]any `json:"result"`
 }
 
+type browserScreenshotFileResult struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
 const browserCapabilityHeader = "X-AO-Browser-Capability"
 const maxBrowserWaitMillis = 55_000
 const (
@@ -96,6 +103,38 @@ func newBrowserCommand(ctx *commandContext) *cobra.Command {
 	}
 	snapshot.Flags().BoolVar(&interactiveOnly, "interactive", false, "include only actionable elements")
 	cmd.AddCommand(snapshot)
+
+	var actVerb, actValue string
+	var actNth int
+	var actNthSet bool
+	act := &cobra.Command{
+		Use:   "act <instruction>",
+		Short: "Resolve an element by description and act on it, snapshotting and retrying automatically",
+		Long: "Snapshots, finds the best-matching element for <instruction> against role/name/text\n" +
+			"(no LLM call — deterministic matching, same as reading a snapshot yourself), and performs\n" +
+			"--action on it (default click). Retries once on a stale reference. If the match is\n" +
+			"ambiguous or absent, returns the candidates or snapshot instead of guessing — fall back\n" +
+			"to a manual snapshot/click, retry with --nth, or refine the instruction.",
+		Args: exactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			actArgs := map[string]any{"instruction": args[0], "action": actVerb}
+			if cmd.Flags().Changed("value") {
+				actArgs["value"] = actValue
+			}
+			if actNthSet {
+				actArgs["nth"] = actNth
+			}
+			return ctx.runBrowserAction(cmd, "act", actArgs, jsonOutput)
+		},
+	}
+	act.Flags().StringVar(&actVerb, "action", "click", "verb to perform on the matched element (click, dblclick, focus, hover, fill, type, check, uncheck)")
+	act.Flags().StringVar(&actValue, "value", "", "text to fill/type; required when --action is fill or type")
+	act.Flags().IntVar(&actNth, "nth", 0, "0-based index to disambiguate when multiple candidates match equally")
+	act.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		actNthSet = cmd.Flags().Changed("nth")
+		return nil
+	}
+	cmd.AddCommand(act)
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "click <ref>",
@@ -392,25 +431,36 @@ func newBrowserCommand(ctx *commandContext) *cobra.Command {
 	waitCmd.Flags().IntVar(&timeoutMS, "timeout", 10_000, "condition timeout in milliseconds")
 	cmd.AddCommand(waitCmd)
 
-	cmd.AddCommand(&cobra.Command{
+	var screenshotBase64 bool
+	screenshot := &cobra.Command{
 		Use:   "screenshot [path]",
 		Short: "Capture the current page to a PNG file",
-		Args:  atMostOneArg,
+		Long: "Capture the current page to a PNG file. JSON output writes the file and returns compact metadata.\n" +
+			"To return inline base64 image data instead, omit the path and use --base64 with --json.",
+		Args: atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if screenshotBase64 && !jsonOutput {
+				return usageError{errors.New("--base64 requires --json")}
+			}
+			if screenshotBase64 && len(args) != 0 {
+				return usageError{errors.New("--base64 cannot be combined with a screenshot path")}
+			}
 			resp, err := ctx.browserAction(cmd.Context(), "screenshot", nil)
 			if err != nil {
 				return err
 			}
-			if jsonOutput {
+			if screenshotBase64 {
 				return writeJSON(cmd.OutOrStdout(), resp)
 			}
 			path := "ao-browser-" + ctx.deps.Now().Format("20060102-150405.000") + ".png"
 			if len(args) == 1 {
 				path = args[0]
 			}
-			return writeBrowserScreenshot(cmd, resp.Result, path)
+			return writeBrowserScreenshot(cmd, resp.Result, path, jsonOutput)
 		},
-	})
+	}
+	screenshot.Flags().BoolVar(&screenshotBase64, "base64", false, "include inline base64 image data in JSON output (cannot be used with a path)")
+	cmd.AddCommand(screenshot)
 
 	var networkDuration int
 	networkCmd := &cobra.Command{
@@ -579,6 +629,9 @@ func (c *commandContext) runBrowserAction(cmd *cobra.Command, action string, arg
 }
 
 func writeBrowserResult(cmd *cobra.Command, action string, result map[string]any) error {
+	if action == "act" {
+		return writeBrowserActResult(cmd, result)
+	}
 	if action == "snapshot" {
 		if text, ok := result["text"].(string); ok {
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), browserUntrustedText(text))
@@ -658,6 +711,50 @@ func browserUntrustedText(value string) string {
 	return browserUntrustedBegin + "\n" + value + "\n" + browserUntrustedEnd
 }
 
+func writeBrowserActResult(cmd *cobra.Command, result map[string]any) error {
+	outcome, _ := result["outcome"].(string)
+	switch outcome {
+	case "matched":
+		candidate, _ := result["candidate"].(map[string]any)
+		role, _ := candidate["role"].(string)
+		name, _ := candidate["name"].(string)
+		ref, _ := result["resolvedRef"].(string)
+		retried, _ := result["retried"].(bool)
+		suffix := ""
+		if retried {
+			suffix = " (after retrying a stale reference)"
+		}
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "Acted on: %s [ref=%s]%s\n%s\n", role, ref, suffix, browserUntrustedText(name))
+		return err
+	case "ambiguous":
+		candidates, _ := result["candidates"].([]any)
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Ambiguous — multiple elements matched equally well:"); err != nil {
+			return err
+		}
+		for _, raw := range candidates {
+			candidate, _ := raw.(map[string]any)
+			role, _ := candidate["role"].(string)
+			name, _ := candidate["name"].(string)
+			ref, _ := candidate["ref"].(string)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "  %s [ref=%s]\n%s\n", role, ref, browserUntrustedText(name)); err != nil {
+				return err
+			}
+		}
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "Pick a ref and act/click directly, retry with --nth, or refine the instruction.")
+		return err
+	case "no-match":
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "No element matched that instruction. Latest snapshot:"); err != nil {
+			return err
+		}
+		text, _ := result["snapshot"].(string)
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), browserUntrustedText(text))
+		return err
+	default:
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "Browser act completed.")
+		return err
+	}
+}
+
 func writeBrowserNetworkResult(cmd *cobra.Command, action string, result map[string]any) error {
 	if action == "network-clear" {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "Browser network capture cleared.")
@@ -731,7 +828,7 @@ func writeBrowserNetworkResult(cmd *cobra.Command, action string, result map[str
 	return err
 }
 
-func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target string) error {
+func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target string, jsonOutput bool) error {
 	encoded, _ := result["data"].(string)
 	if encoded == "" {
 		return errors.New("browser returned an empty screenshot")
@@ -751,18 +848,41 @@ func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target st
 		}
 		return err
 	}
-	defer func() { _ = file.Close() }()
-	if _, err := file.Write(data); err != nil {
-		return err
+	written, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
 	}
-	width := numberString(result["width"])
-	height := numberString(result["height"])
+	if closeErr != nil {
+		return closeErr
+	}
+	width := numberInt(result["width"])
+	height := numberInt(result["height"])
+	if jsonOutput {
+		return writeJSON(cmd.OutOrStdout(), browserScreenshotFileResult{
+			Path:   abs,
+			Size:   int64(written),
+			Width:  width,
+			Height: height,
+		})
+	}
 	size := ""
-	if width != "" && height != "" {
-		size = " (" + width + "x" + height + ")"
+	if width > 0 && height > 0 {
+		size = fmt.Sprintf(" (%dx%d)", width, height)
 	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Saved %s%s\n", abs, size)
 	return err
+}
+
+func numberInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
+	}
 }
 
 func numberString(v any) string {

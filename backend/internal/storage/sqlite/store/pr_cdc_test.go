@@ -182,6 +182,99 @@ func TestPRReviewThreadsCDC_EmitsResolvedOnReplacePoll(t *testing.T) {
 	}
 }
 
+func TestReviewRunCDC_EmitsOnInsertAndLifecycleUpdates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	review := domain.Review{
+		ID:        "review-1",
+		SessionID: rec.ID,
+		ProjectID: rec.ProjectID,
+		Harness:   domain.ReviewerClaudeCode,
+		PRURL:     "https://example/pr/1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.UpsertReview(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	insertRun := func(id, targetSHA string, trigger domain.ReviewTriggerSource) {
+		if err := s.InsertReviewRun(ctx, domain.ReviewRun{
+			ID:               id,
+			ReviewID:         review.ID,
+			SessionID:        rec.ID,
+			Harness:          review.Harness,
+			TriggerSource:    trigger,
+			PRURL:            review.PRURL,
+			TargetSHA:        targetSHA,
+			Status:           domain.ReviewRunRunning,
+			Body:             "body",
+			CreatedAt:        now,
+			AutoInjectReview: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insertRun("run-complete", "sha-1", domain.ReviewTriggerAuto)
+	if ok, err := s.UpdateReviewRunResult(ctx, "run-complete", domain.ReviewRunComplete, domain.VerdictApproved, "done", "gh-review-1", true); err != nil || !ok {
+		t.Fatalf("complete update ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.MarkReviewRunDelivered(ctx, "run-complete", now.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("deliver update ok=%v err=%v", ok, err)
+	}
+
+	insertRun("run-failed", "sha-2", domain.ReviewTriggerManual)
+	if n, err := s.SupersedeStaleRunningReviewRuns(ctx, rec.ID, review.PRURL, "sha-new", "stale"); err != nil || n != 1 {
+		t.Fatalf("supersede stale runs n=%d err=%v", n, err)
+	}
+
+	insertRun("run-cancelled", "sha-3", domain.ReviewTriggerManual)
+	if n, err := s.CancelRunningReviewRunsBySession(ctx, rec.ID, "cancelled"); err != nil || n != 1 {
+		t.Fatalf("cancel runs n=%d err=%v", n, err)
+	}
+
+	rows, err := s.EventsAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, updated []cdc.Event
+	for _, r := range rows {
+		switch r.Type {
+		case cdc.EventReviewRunCreated:
+			created = append(created, r)
+		case cdc.EventReviewRunUpdated:
+			updated = append(updated, r)
+		}
+	}
+	if len(created) != 3 {
+		t.Fatalf("want 3 review-run created events, got %d", len(created))
+	}
+	if len(updated) != 4 {
+		t.Fatalf("want 4 review-run updated events, got %d", len(updated))
+	}
+	var createdPayload map[string]any
+	if err := json.Unmarshal(created[0].Payload, &createdPayload); err != nil {
+		t.Fatalf("created payload JSON: %v", err)
+	}
+	if createdPayload["sessionId"] != string(rec.ID) || createdPayload["targetSha"] != "sha-1" || createdPayload["triggerSource"] != "auto" {
+		t.Fatalf("created payload = %#v", createdPayload)
+	}
+	var updatedPayload map[string]any
+	if err := json.Unmarshal(updated[0].Payload, &updatedPayload); err != nil {
+		t.Fatalf("updated payload JSON: %v", err)
+	}
+	if updatedPayload["id"] != "run-complete" || updatedPayload["status"] != "complete" || updatedPayload["githubReviewId"] != "gh-review-1" {
+		t.Fatalf("updated payload = %#v", updatedPayload)
+	}
+}
+
 // Pruning regression: Replace must still drop threads that are no longer in
 // the observed listing, otherwise stale rows accumulate. Seed two threads,
 // then re-poll with only one; the missing thread must be gone, while the

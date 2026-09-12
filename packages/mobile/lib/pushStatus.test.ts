@@ -109,23 +109,26 @@ describe("classifyServerFailure", () => {
 });
 
 describe("describeRegisterFailure", () => {
-	// Regression: a TestFlight user whose server was simply unreachable was told
-	// their build "has no push entitlement", which was false and alarming.
+	// Regression: a user whose server was simply unreachable was told their build
+	// "has no push entitlement", which was false and alarming.
 	it("blames the server, not the build, when the daemon is unreachable", () => {
 		const { title, message } = describeRegisterFailure("server-unreachable", "ios");
 		expect(title).toMatch(/couldn't reach your ao server/i);
 		expect(`${title} ${message}`).not.toMatch(/entitlement/i);
 	});
 
-	it("explains the missing entitlement only when the token itself failed on iOS", () => {
+	// Names the fix, not the cause: "no push entitlement" is a fact about the
+	// build that the person holding the phone can do nothing with, and the app
+	// is now a public listing they can reinstall from.
+	it("sends an iOS user to the App Store when the token itself failed", () => {
 		const { message } = describeRegisterFailure("token-failed", "ios");
-		expect(message).toMatch(/entitlement/i);
-		expect(message).toMatch(/testflight/i);
+		expect(message).toMatch(/app store/i);
+		expect(message).not.toMatch(/entitlement|testflight/i);
 	});
 
-	it("does not mention iOS entitlements on Android", () => {
+	it("does not send an Android user to the App Store", () => {
 		const { message } = describeRegisterFailure("token-failed", "android");
-		expect(message).not.toMatch(/entitlement/i);
+		expect(message).not.toMatch(/entitlement|app store/i);
 	});
 
 	it("points at system settings when permission was denied", () => {

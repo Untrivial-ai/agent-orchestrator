@@ -75,6 +75,7 @@ frontend/test-results/
 
 # built daemon binary copied into the frontend bundle dir
 frontend/daemon/
+frontend/tmux/
 frontend/resources/acp-runtime/
 
 # pinned native browser automation binary copied during package preparation

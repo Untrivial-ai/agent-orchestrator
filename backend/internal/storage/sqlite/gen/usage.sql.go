@@ -17,13 +17,34 @@ const aggregateUsageBySessionHarnessModel = `-- name: AggregateUsageBySessionHar
 SELECT
     ub.harness,
     mue.model_id,
-    CAST(SUM(mue.input_tokens) AS INTEGER) AS input_tokens,
-    CAST(SUM(mue.uncached_input_tokens) AS INTEGER) AS uncached_input_tokens,
-    CAST(SUM(mue.cache_read_tokens) AS INTEGER) AS cache_read_tokens,
-    CAST(SUM(mue.cache_write_tokens) AS INTEGER) AS cache_write_tokens,
-    CAST(SUM(mue.output_tokens) AS INTEGER) AS output_tokens,
-    CAST(COALESCE(SUM(mue.reasoning_tokens), 0) AS INTEGER) AS reasoning_tokens,
-    COUNT(mue.reasoning_tokens) AS reasoning_event_count
+    CAST(COUNT(*) AS INTEGER) AS event_count,
+    CAST(COALESCE(SUM(mue.input_tokens), 0) AS INTEGER) AS input_tokens,
+    CAST(COUNT(mue.input_tokens) AS INTEGER) AS known_input_token_count,
+    CAST(COALESCE(SUM(mue.cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
+    CAST(COUNT(mue.cached_input_tokens) AS INTEGER) AS known_cached_input_token_count,
+    CAST(COALESCE(SUM(mue.uncached_input_tokens), 0) AS INTEGER) AS uncached_input_tokens,
+    CAST(COUNT(mue.uncached_input_tokens) AS INTEGER) AS known_uncached_input_token_count,
+    CAST(COALESCE(SUM(mue.output_tokens), 0) AS INTEGER) AS output_tokens,
+    CAST(COUNT(mue.output_tokens) AS INTEGER) AS known_output_token_count,
+    CAST(COUNT(mue.estimated_cost_nanos) AS INTEGER) AS priced_event_count,
+    CAST(COALESCE(SUM(mue.estimated_cost_nanos), 0) AS INTEGER) AS priced_total_nanos,
+    CAST(COUNT(CASE WHEN mue.billing_provider_source = 'observed' AND (
+        mue.estimated_cost_nanos IS NOT NULL OR mue.input_cost_nanos IS NOT NULL OR
+        mue.cached_input_cost_nanos IS NOT NULL OR mue.output_cost_nanos IS NOT NULL
+    ) THEN 1 END) AS INTEGER) AS observed_cost_event_count,
+    CAST(COUNT(CASE WHEN mue.billing_provider_source = 'inferred' AND (
+        mue.estimated_cost_nanos IS NOT NULL OR mue.input_cost_nanos IS NOT NULL OR
+        mue.cached_input_cost_nanos IS NOT NULL OR mue.output_cost_nanos IS NOT NULL
+    ) THEN 1 END) AS INTEGER) AS inferred_cost_event_count,
+    CAST(COUNT(mue.input_cost_nanos) AS INTEGER) AS known_input_count,
+    CAST(COALESCE(SUM(mue.input_cost_nanos), 0) AS INTEGER) AS known_input_nanos,
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.input_cost_nanos END), 0) AS INTEGER) AS unpriced_known_input_nanos,
+    CAST(COUNT(mue.cached_input_cost_nanos) AS INTEGER) AS known_cached_input_count,
+    CAST(COALESCE(SUM(mue.cached_input_cost_nanos), 0) AS INTEGER) AS known_cached_input_nanos,
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.cached_input_cost_nanos END), 0) AS INTEGER) AS unpriced_known_cached_input_nanos,
+    CAST(COUNT(mue.output_cost_nanos) AS INTEGER) AS known_output_count,
+    CAST(COALESCE(SUM(mue.output_cost_nanos), 0) AS INTEGER) AS known_output_nanos,
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.output_cost_nanos END), 0) AS INTEGER) AS unpriced_known_output_nanos
 FROM model_usage_events mue
 JOIN usage_bindings ub ON ub.id = mue.binding_id
 WHERE ub.session_id = ?
@@ -32,17 +53,36 @@ ORDER BY SUM(mue.input_tokens + mue.output_tokens) DESC, ub.harness, mue.model_i
 `
 
 type AggregateUsageBySessionHarnessModelRow struct {
-	Harness             domain.AgentHarness
-	ModelID             string
-	InputTokens         int64
-	UncachedInputTokens int64
-	CacheReadTokens     int64
-	CacheWriteTokens    int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	ReasoningEventCount int64
+	Harness                       domain.AgentHarness
+	ModelID                       string
+	EventCount                    int64
+	InputTokens                   int64
+	KnownInputTokenCount          int64
+	CachedInputTokens             int64
+	KnownCachedInputTokenCount    int64
+	UncachedInputTokens           int64
+	KnownUncachedInputTokenCount  int64
+	OutputTokens                  int64
+	KnownOutputTokenCount         int64
+	PricedEventCount              int64
+	PricedTotalNanos              int64
+	ObservedCostEventCount        int64
+	InferredCostEventCount        int64
+	KnownInputCount               int64
+	KnownInputNanos               int64
+	UnpricedKnownInputNanos       int64
+	KnownCachedInputCount         int64
+	KnownCachedInputNanos         int64
+	UnpricedKnownCachedInputNanos int64
+	KnownOutputCount              int64
+	KnownOutputNanos              int64
+	UnpricedKnownOutputNanos      int64
 }
 
+// Grouped by model alone. The billing provider is a pricing input, not a
+// product distinction: each event was already costed against its own provider's
+// rates, so summing across them is exact. Splitting on it only ever surfaced
+// AO's own attribution gaps as duplicate rows for one model.
 func (q *Queries) AggregateUsageBySessionHarnessModel(ctx context.Context, sessionID domain.SessionID) ([]AggregateUsageBySessionHarnessModelRow, error) {
 	rows, err := q.db.QueryContext(ctx, aggregateUsageBySessionHarnessModel, sessionID)
 	if err != nil {
@@ -55,13 +95,28 @@ func (q *Queries) AggregateUsageBySessionHarnessModel(ctx context.Context, sessi
 		if err := rows.Scan(
 			&i.Harness,
 			&i.ModelID,
+			&i.EventCount,
 			&i.InputTokens,
+			&i.KnownInputTokenCount,
+			&i.CachedInputTokens,
+			&i.KnownCachedInputTokenCount,
 			&i.UncachedInputTokens,
-			&i.CacheReadTokens,
-			&i.CacheWriteTokens,
+			&i.KnownUncachedInputTokenCount,
 			&i.OutputTokens,
-			&i.ReasoningTokens,
-			&i.ReasoningEventCount,
+			&i.KnownOutputTokenCount,
+			&i.PricedEventCount,
+			&i.PricedTotalNanos,
+			&i.ObservedCostEventCount,
+			&i.InferredCostEventCount,
+			&i.KnownInputCount,
+			&i.KnownInputNanos,
+			&i.UnpricedKnownInputNanos,
+			&i.KnownCachedInputCount,
+			&i.KnownCachedInputNanos,
+			&i.UnpricedKnownCachedInputNanos,
+			&i.KnownOutputCount,
+			&i.KnownOutputNanos,
+			&i.UnpricedKnownOutputNanos,
 		); err != nil {
 			return nil, err
 		}
@@ -146,6 +201,28 @@ func (q *Queries) CompleteUsageBindingIfSettled(ctx context.Context, arg Complet
 	return result.RowsAffected()
 }
 
+const enrichModelUsageEventProviderUsage = `-- name: EnrichModelUsageEventProviderUsage :execrows
+UPDATE model_usage_events
+SET provider_usage_json = ?1
+WHERE id = ?2
+  AND provider_usage_json IS NULL
+`
+
+type EnrichModelUsageEventProviderUsageParams struct {
+	ProviderUsageJson sql.NullString
+	ID                int64
+}
+
+// Replaying a durable prefix can supply the bounded provider object for an event
+// stored before the capture existed. A captured object is never overwritten.
+func (q *Queries) EnrichModelUsageEventProviderUsage(ctx context.Context, arg EnrichModelUsageEventProviderUsageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, enrichModelUsageEventProviderUsage, arg.ProviderUsageJson, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const finalizeUsageBindingsForSessionLaunch = `-- name: FinalizeUsageBindingsForSessionLaunch :many
 UPDATE usage_bindings
 SET state = 'finalizing',
@@ -164,7 +241,7 @@ WHERE usage_bindings.session_id = ?2
         AND sessions.updated_at = ?4
         AND sessions.is_terminated = 0
   )
-RETURNING id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at
+RETURNING id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at, provider_hint
 `
 
 type FinalizeUsageBindingsForSessionLaunchParams struct {
@@ -197,6 +274,7 @@ func (q *Queries) FinalizeUsageBindingsForSessionLaunch(ctx context.Context, arg
 			&i.State,
 			&i.LastErrorCode,
 			&i.UpdatedAt,
+			&i.ProviderHint,
 		); err != nil {
 			return nil, err
 		}
@@ -213,10 +291,13 @@ func (q *Queries) FinalizeUsageBindingsForSessionLaunch(ctx context.Context, arg
 
 const getModelUsageEventByKey = `-- name: GetModelUsageEventByKey :one
 SELECT
-    model_id, input_tokens, uncached_input_tokens,
-    cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens
-FROM model_usage_events
-WHERE binding_id = ? AND source_event_key = ?
+    event.id, event.usage_source_id, event.provider_id, event.billing_provider_id,
+    event.billing_provider_source, event.model_id, event.usage_measurement_kind,
+    event.input_tokens, event.cached_input_tokens,
+    event.uncached_input_tokens, event.output_tokens,
+    event.provider_usage_json, event.created_at
+FROM model_usage_events event
+WHERE event.binding_id = ? AND event.source_event_key = ?
 `
 
 type GetModelUsageEventByKeyParams struct {
@@ -225,32 +306,44 @@ type GetModelUsageEventByKeyParams struct {
 }
 
 type GetModelUsageEventByKeyRow struct {
-	ModelID             string
-	InputTokens         int64
-	UncachedInputTokens int64
-	CacheReadTokens     int64
-	CacheWriteTokens    int64
-	OutputTokens        int64
-	ReasoningTokens     sql.NullInt64
+	ID                    int64
+	UsageSourceID         int64
+	ProviderID            string
+	BillingProviderID     sql.NullString
+	BillingProviderSource sql.NullString
+	ModelID               string
+	UsageMeasurementKind  string
+	InputTokens           sql.NullInt64
+	CachedInputTokens     sql.NullInt64
+	UncachedInputTokens   sql.NullInt64
+	OutputTokens          sql.NullInt64
+	ProviderUsageJson     sql.NullString
+	CreatedAt             sql.NullTime
 }
 
 func (q *Queries) GetModelUsageEventByKey(ctx context.Context, arg GetModelUsageEventByKeyParams) (GetModelUsageEventByKeyRow, error) {
 	row := q.db.QueryRowContext(ctx, getModelUsageEventByKey, arg.BindingID, arg.SourceEventKey)
 	var i GetModelUsageEventByKeyRow
 	err := row.Scan(
+		&i.ID,
+		&i.UsageSourceID,
+		&i.ProviderID,
+		&i.BillingProviderID,
+		&i.BillingProviderSource,
 		&i.ModelID,
+		&i.UsageMeasurementKind,
 		&i.InputTokens,
+		&i.CachedInputTokens,
 		&i.UncachedInputTokens,
-		&i.CacheReadTokens,
-		&i.CacheWriteTokens,
 		&i.OutputTokens,
-		&i.ReasoningTokens,
+		&i.ProviderUsageJson,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getUsageBindingBySessionHarnessRoot = `-- name: GetUsageBindingBySessionHarnessRoot :one
-SELECT id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at
+SELECT id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at, provider_hint
 FROM usage_bindings
 WHERE session_id = ? AND harness = ? AND native_root_id = ?
 `
@@ -273,6 +366,7 @@ func (q *Queries) GetUsageBindingBySessionHarnessRoot(ctx context.Context, arg G
 		&i.State,
 		&i.LastErrorCode,
 		&i.UpdatedAt,
+		&i.ProviderHint,
 	)
 	return i, err
 }
@@ -312,6 +406,7 @@ SELECT
     ub.harness,
     ub.native_root_id,
     ub.initial_model_id,
+    ub.provider_hint,
     ub.state AS binding_state
 FROM usage_sources us
 JOIN usage_bindings ub ON ub.id = us.binding_id
@@ -339,6 +434,7 @@ type GetUsageSourceWithBindingAndSessionRow struct {
 	Harness             domain.AgentHarness
 	NativeRootID        string
 	InitialModelID      string
+	ProviderHint        string
 	BindingState        domain.UsageBindingState
 }
 
@@ -366,9 +462,30 @@ func (q *Queries) GetUsageSourceWithBindingAndSession(ctx context.Context, id in
 		&i.Harness,
 		&i.NativeRootID,
 		&i.InitialModelID,
+		&i.ProviderHint,
 		&i.BindingState,
 	)
 	return i, err
+}
+
+const hasOpenUsageAttribution = `-- name: HasOpenUsageAttribution :one
+SELECT CAST(EXISTS (
+    SELECT 1
+    FROM model_usage_events
+    WHERE model_usage_events.usage_source_id = ?
+      AND (model_usage_events.billing_provider_id IS NULL
+           OR model_usage_events.billing_provider_source = 'inferred')
+) AS INTEGER)
+`
+
+// Whether this source still owns an event a repair pass could finish. Cheaper
+// than listing them, and it is asked once per applied chunk on a routed
+// binding.
+func (q *Queries) HasOpenUsageAttribution(ctx context.Context, usageSourceID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, hasOpenUsageAttribution, usageSourceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const hasPendingUsageDiscovery = `-- name: HasPendingUsageDiscovery :one
@@ -377,9 +494,10 @@ SELECT CAST(EXISTS (
     FROM usage_bindings ub
     JOIN sessions s ON s.id = ub.session_id
     WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-      AND ub.harness IN ('claude-code', 'codex')
+      AND ub.harness IN ('claude-code', 'codex', 'kimi')
       AND (
-          ub.state = 'discovering'
+          ub.harness = 'kimi'
+          OR ub.state = 'discovering'
           OR ub.last_error_code = 'source_discovery_pending'
           OR EXISTS (
               SELECT 1
@@ -412,41 +530,66 @@ func (q *Queries) HasPendingUsageDiscovery(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
-const insertModelUsageEvent = `-- name: InsertModelUsageEvent :exec
+const insertModelUsageEvent = `-- name: InsertModelUsageEvent :one
 INSERT INTO model_usage_events (
-    binding_id, usage_source_id, model_id, input_tokens, uncached_input_tokens,
-    cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
-    source_event_key
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    binding_id, usage_source_id, provider_id, billing_provider_id,
+    billing_provider_source, model_id, usage_measurement_kind,
+    input_tokens, cached_input_tokens, uncached_input_tokens, output_tokens,
+    provider_usage_json,
+    input_cost_nanos, cached_input_cost_nanos, output_cost_nanos,
+    estimated_cost_nanos, pricing_version,
+    source_event_key, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id
 `
 
 type InsertModelUsageEventParams struct {
-	BindingID           int64
-	UsageSourceID       int64
-	ModelID             string
-	InputTokens         int64
-	UncachedInputTokens int64
-	CacheReadTokens     int64
-	CacheWriteTokens    int64
-	OutputTokens        int64
-	ReasoningTokens     sql.NullInt64
-	SourceEventKey      string
+	BindingID             int64
+	UsageSourceID         int64
+	ProviderID            string
+	BillingProviderID     sql.NullString
+	BillingProviderSource sql.NullString
+	ModelID               string
+	UsageMeasurementKind  string
+	InputTokens           sql.NullInt64
+	CachedInputTokens     sql.NullInt64
+	UncachedInputTokens   sql.NullInt64
+	OutputTokens          sql.NullInt64
+	ProviderUsageJson     sql.NullString
+	InputCostNanos        sql.NullInt64
+	CachedInputCostNanos  sql.NullInt64
+	OutputCostNanos       sql.NullInt64
+	EstimatedCostNanos    sql.NullInt64
+	PricingVersion        string
+	SourceEventKey        string
+	CreatedAt             sql.NullTime
 }
 
-func (q *Queries) InsertModelUsageEvent(ctx context.Context, arg InsertModelUsageEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertModelUsageEvent,
+func (q *Queries) InsertModelUsageEvent(ctx context.Context, arg InsertModelUsageEventParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertModelUsageEvent,
 		arg.BindingID,
 		arg.UsageSourceID,
+		arg.ProviderID,
+		arg.BillingProviderID,
+		arg.BillingProviderSource,
 		arg.ModelID,
+		arg.UsageMeasurementKind,
 		arg.InputTokens,
+		arg.CachedInputTokens,
 		arg.UncachedInputTokens,
-		arg.CacheReadTokens,
-		arg.CacheWriteTokens,
 		arg.OutputTokens,
-		arg.ReasoningTokens,
+		arg.ProviderUsageJson,
+		arg.InputCostNanos,
+		arg.CachedInputCostNanos,
+		arg.OutputCostNanos,
+		arg.EstimatedCostNanos,
+		arg.PricingVersion,
 		arg.SourceEventKey,
+		arg.CreatedAt,
 	)
-	return err
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const insertUsageSource = `-- name: InsertUsageSource :one
@@ -530,21 +673,57 @@ func (q *Queries) InsertUsageSource(ctx context.Context, arg InsertUsageSourcePa
 const listCompactSessionUsage = `-- name: ListCompactSessionUsage :many
 SELECT
     ub.session_id,
-    CAST(SUM(mue.input_tokens + mue.output_tokens) AS INTEGER) AS total_tokens,
-    CAST(COALESCE(integrity.incomplete, 0) AS INTEGER) AS incomplete
+    CAST(COALESCE(SUM(mue.input_tokens) + SUM(mue.output_tokens), 0) AS INTEGER) AS processed_tokens,
+    CAST(COUNT(mue.input_tokens) = COUNT(*) AND COUNT(mue.output_tokens) = COUNT(*) AS INTEGER) AS processed_tokens_known,
+    CAST(COALESCE(integrity.incomplete, 0) AS INTEGER) AS incomplete,
+    CAST(COUNT(*) AS INTEGER) AS event_count,
+    CAST(COUNT(mue.estimated_cost_nanos) AS INTEGER) AS priced_event_count,
+    CAST(COALESCE(SUM(mue.estimated_cost_nanos), 0) AS INTEGER) AS priced_total_nanos,
+    CAST(COUNT(CASE WHEN mue.billing_provider_source = 'observed' AND (
+        mue.estimated_cost_nanos IS NOT NULL OR mue.input_cost_nanos IS NOT NULL OR
+        mue.cached_input_cost_nanos IS NOT NULL OR mue.output_cost_nanos IS NOT NULL
+    ) THEN 1 END) AS INTEGER) AS observed_cost_event_count,
+    CAST(COUNT(CASE WHEN mue.billing_provider_source = 'inferred' AND (
+        mue.estimated_cost_nanos IS NOT NULL OR mue.input_cost_nanos IS NOT NULL OR
+        mue.cached_input_cost_nanos IS NOT NULL OR mue.output_cost_nanos IS NOT NULL
+    ) THEN 1 END) AS INTEGER) AS inferred_cost_event_count,
+    CAST(COUNT(mue.input_cost_nanos) AS INTEGER) AS known_input_count,
+    CAST(COALESCE(SUM(mue.input_cost_nanos), 0) AS INTEGER) AS known_input_nanos,
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.input_cost_nanos END), 0) AS INTEGER) AS unpriced_known_input_nanos,
+    CAST(COUNT(mue.cached_input_cost_nanos) AS INTEGER) AS known_cached_input_count,
+    CAST(COALESCE(SUM(mue.cached_input_cost_nanos), 0) AS INTEGER) AS known_cached_input_nanos,
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.cached_input_cost_nanos END), 0) AS INTEGER) AS unpriced_known_cached_input_nanos,
+    CAST(COUNT(mue.output_cost_nanos) AS INTEGER) AS known_output_count,
+    CAST(COALESCE(SUM(mue.output_cost_nanos), 0) AS INTEGER) AS known_output_nanos,
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.output_cost_nanos END), 0) AS INTEGER) AS unpriced_known_output_nanos
 FROM model_usage_events mue
 JOIN usage_bindings ub ON ub.id = mue.binding_id
 JOIN sessions s ON s.id = ub.session_id
 LEFT JOIN usage_session_integrity integrity ON integrity.session_id = ub.session_id
 WHERE (?1 = '' OR s.project_id = ?1)
-GROUP BY ub.session_id
+GROUP BY ub.session_id, s.project_id, s.num, integrity.incomplete
 ORDER BY s.project_id, s.num
 `
 
 type ListCompactSessionUsageRow struct {
-	SessionID   domain.SessionID
-	TotalTokens int64
-	Incomplete  int64
+	SessionID                     domain.SessionID
+	ProcessedTokens               int64
+	ProcessedTokensKnown          int64
+	Incomplete                    int64
+	EventCount                    int64
+	PricedEventCount              int64
+	PricedTotalNanos              int64
+	ObservedCostEventCount        int64
+	InferredCostEventCount        int64
+	KnownInputCount               int64
+	KnownInputNanos               int64
+	UnpricedKnownInputNanos       int64
+	KnownCachedInputCount         int64
+	KnownCachedInputNanos         int64
+	UnpricedKnownCachedInputNanos int64
+	KnownOutputCount              int64
+	KnownOutputNanos              int64
+	UnpricedKnownOutputNanos      int64
 }
 
 func (q *Queries) ListCompactSessionUsage(ctx context.Context, projectID interface{}) ([]ListCompactSessionUsageRow, error) {
@@ -556,7 +735,26 @@ func (q *Queries) ListCompactSessionUsage(ctx context.Context, projectID interfa
 	items := []ListCompactSessionUsageRow{}
 	for rows.Next() {
 		var i ListCompactSessionUsageRow
-		if err := rows.Scan(&i.SessionID, &i.TotalTokens, &i.Incomplete); err != nil {
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.ProcessedTokens,
+			&i.ProcessedTokensKnown,
+			&i.Incomplete,
+			&i.EventCount,
+			&i.PricedEventCount,
+			&i.PricedTotalNanos,
+			&i.ObservedCostEventCount,
+			&i.InferredCostEventCount,
+			&i.KnownInputCount,
+			&i.KnownInputNanos,
+			&i.UnpricedKnownInputNanos,
+			&i.KnownCachedInputCount,
+			&i.KnownCachedInputNanos,
+			&i.UnpricedKnownCachedInputNanos,
+			&i.KnownOutputCount,
+			&i.KnownOutputNanos,
+			&i.UnpricedKnownOutputNanos,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -629,8 +827,122 @@ func (q *Queries) ListLatestRetiredCodexReplacementClaimsByPath(ctx context.Cont
 	return items, nil
 }
 
+const listLegacyUsageEvents = `-- name: ListLegacyUsageEvents :many
+SELECT
+    event.id,
+    event.binding_id,
+    event.usage_source_id,
+    event.provider_id,
+    event.billing_provider_id,
+    event.billing_provider_source,
+    event.model_id,
+    event.usage_measurement_kind,
+    event.input_tokens,
+    event.cached_input_tokens,
+    event.uncached_input_tokens,
+    event.output_tokens,
+    event.provider_usage_json,
+    event.pricing_version,
+    event.source_event_key
+FROM model_usage_events event
+WHERE event.usage_source_id = ?1
+  AND (event.billing_provider_id IS NULL OR event.billing_provider_source = 'inferred')
+ORDER BY event.id
+`
+
+type ListLegacyUsageEventsRow struct {
+	ID                    int64
+	BindingID             int64
+	UsageSourceID         int64
+	ProviderID            string
+	BillingProviderID     sql.NullString
+	BillingProviderSource sql.NullString
+	ModelID               string
+	UsageMeasurementKind  string
+	InputTokens           sql.NullInt64
+	CachedInputTokens     sql.NullInt64
+	UncachedInputTokens   sql.NullInt64
+	OutputTokens          sql.NullInt64
+	ProviderUsageJson     sql.NullString
+	PricingVersion        string
+	SourceEventKey        string
+}
+
+func (q *Queries) ListLegacyUsageEvents(ctx context.Context, usageSourceID int64) ([]ListLegacyUsageEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLegacyUsageEvents, usageSourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLegacyUsageEventsRow{}
+	for rows.Next() {
+		var i ListLegacyUsageEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.BindingID,
+			&i.UsageSourceID,
+			&i.ProviderID,
+			&i.BillingProviderID,
+			&i.BillingProviderSource,
+			&i.ModelID,
+			&i.UsageMeasurementKind,
+			&i.InputTokens,
+			&i.CachedInputTokens,
+			&i.UncachedInputTokens,
+			&i.OutputTokens,
+			&i.ProviderUsageJson,
+			&i.PricingVersion,
+			&i.SourceEventKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLegacyUsageSourceIDs = `-- name: ListLegacyUsageSourceIDs :many
+SELECT DISTINCT us.id
+FROM usage_sources us
+JOIN model_usage_events mue ON mue.usage_source_id = us.id
+WHERE mue.billing_provider_id IS NULL
+   OR mue.billing_provider_source = 'inferred'
+ORDER BY us.id
+`
+
+// Open attribution: never attributed, or attributed only by inference and so
+// still replaceable by an observation.
+func (q *Queries) ListLegacyUsageSourceIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listLegacyUsageSourceIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsageBindingsForCodexParent = `-- name: ListUsageBindingsForCodexParent :many
-SELECT DISTINCT ub.id, ub.session_id, ub.harness, ub.native_root_id, ub.initial_model_id, ub.state, ub.last_error_code, ub.updated_at
+SELECT DISTINCT ub.id, ub.session_id, ub.harness, ub.native_root_id, ub.initial_model_id, ub.state, ub.last_error_code, ub.updated_at, ub.provider_hint
 FROM usage_bindings ub
 JOIN sessions s ON s.id = ub.session_id
 JOIN usage_sources parent ON parent.binding_id = ub.id
@@ -672,6 +984,7 @@ func (q *Queries) ListUsageBindingsForCodexParent(ctx context.Context, parentNat
 			&i.State,
 			&i.LastErrorCode,
 			&i.UpdatedAt,
+			&i.ProviderHint,
 		); err != nil {
 			return nil, err
 		}
@@ -687,7 +1000,7 @@ func (q *Queries) ListUsageBindingsForCodexParent(ctx context.Context, parentNat
 }
 
 const listUsageBindingsForSession = `-- name: ListUsageBindingsForSession :many
-SELECT id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at
+SELECT id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at, provider_hint
 FROM usage_bindings
 WHERE session_id = ?
 ORDER BY updated_at, id
@@ -711,6 +1024,94 @@ func (q *Queries) ListUsageBindingsForSession(ctx context.Context, sessionID dom
 			&i.State,
 			&i.LastErrorCode,
 			&i.UpdatedAt,
+			&i.ProviderHint,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsageCostCandidates = `-- name: ListUsageCostCandidates :many
+SELECT
+    event.id,
+    event.binding_id,
+    event.provider_id,
+    event.billing_provider_id,
+    event.model_id,
+    event.usage_measurement_kind,
+    event.input_tokens,
+    event.cached_input_tokens,
+    event.uncached_input_tokens,
+    event.output_tokens,
+    event.provider_usage_json,
+    event.pricing_version,
+    event.source_event_key
+FROM model_usage_events event
+WHERE event.billing_provider_id IS NOT NULL
+  AND CASE lower(trim(event.billing_provider_id))
+        WHEN 'z.ai' THEN 'zai'
+        ELSE lower(trim(event.billing_provider_id))
+  END = ?1
+  AND event.estimated_cost_nanos IS NULL
+  AND event.pricing_version <> ?2
+  AND event.id > ?3
+ORDER BY event.id
+LIMIT 256
+`
+
+type ListUsageCostCandidatesParams struct {
+	BillingProviderID sql.NullString
+	PricingVersion    string
+	AfterID           int64
+}
+
+type ListUsageCostCandidatesRow struct {
+	ID                   int64
+	BindingID            int64
+	ProviderID           string
+	BillingProviderID    sql.NullString
+	ModelID              string
+	UsageMeasurementKind string
+	InputTokens          sql.NullInt64
+	CachedInputTokens    sql.NullInt64
+	UncachedInputTokens  sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ProviderUsageJson    sql.NullString
+	PricingVersion       string
+	SourceEventKey       string
+}
+
+func (q *Queries) ListUsageCostCandidates(ctx context.Context, arg ListUsageCostCandidatesParams) ([]ListUsageCostCandidatesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUsageCostCandidates, arg.BillingProviderID, arg.PricingVersion, arg.AfterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsageCostCandidatesRow{}
+	for rows.Next() {
+		var i ListUsageCostCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.BindingID,
+			&i.ProviderID,
+			&i.BillingProviderID,
+			&i.ModelID,
+			&i.UsageMeasurementKind,
+			&i.InputTokens,
+			&i.CachedInputTokens,
+			&i.UncachedInputTokens,
+			&i.OutputTokens,
+			&i.ProviderUsageJson,
+			&i.PricingVersion,
+			&i.SourceEventKey,
 		); err != nil {
 			return nil, err
 		}
@@ -726,17 +1127,17 @@ func (q *Queries) ListUsageBindingsForSession(ctx context.Context, sessionID dom
 }
 
 const listUsageDiscoveryBindings = `-- name: ListUsageDiscoveryBindings :many
-SELECT ub.id, ub.session_id, ub.harness, ub.native_root_id, ub.initial_model_id, ub.state, ub.last_error_code, ub.updated_at
+SELECT ub.id, ub.session_id, ub.harness, ub.native_root_id, ub.initial_model_id, ub.state, ub.last_error_code, ub.updated_at, ub.provider_hint
 FROM usage_bindings ub
 JOIN sessions s ON s.id = ub.session_id
 WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-  AND ub.harness IN ('claude-code', 'codex')
+  AND ub.harness IN ('claude-code', 'codex', 'kimi')
   AND (
       ub.state IN ('discovering', 'active', 'finalizing')
       OR (ub.state = 'partial' AND ub.last_error_code = 'codex_source_budget_exceeded')
   )
   AND (
-      ub.harness = 'claude-code'
+      ub.harness IN ('claude-code', 'kimi')
       OR ub.state = 'discovering'
       OR ub.state = 'finalizing'
       OR ub.last_error_code = 'codex_source_budget_exceeded'
@@ -783,6 +1184,7 @@ func (q *Queries) ListUsageDiscoveryBindings(ctx context.Context, limit int64) (
 			&i.State,
 			&i.LastErrorCode,
 			&i.UpdatedAt,
+			&i.ProviderHint,
 		); err != nil {
 			return nil, err
 		}
@@ -905,6 +1307,96 @@ func (q *Queries) ListWatchableUsageSources(ctx context.Context) ([]UsageSource,
 	return items, nil
 }
 
+const promoteInferredUsageEventToObserved = `-- name: PromoteInferredUsageEventToObserved :execrows
+UPDATE model_usage_events
+SET billing_provider_id = ?1,
+    billing_provider_source = 'observed',
+    input_cost_nanos = ?2,
+    cached_input_cost_nanos = ?3,
+    output_cost_nanos = ?4,
+    estimated_cost_nanos = ?5,
+    pricing_version = ?6
+WHERE id = ?7
+  AND usage_source_id = ?8
+  AND billing_provider_id = ?9
+  AND billing_provider_source = 'inferred'
+`
+
+type PromoteInferredUsageEventToObservedParams struct {
+	BillingProviderID         sql.NullString
+	InputCostNanos            sql.NullInt64
+	CachedInputCostNanos      sql.NullInt64
+	OutputCostNanos           sql.NullInt64
+	EstimatedCostNanos        sql.NullInt64
+	PricingVersion            string
+	ID                        int64
+	ExpectedUsageSourceID     int64
+	ExpectedBillingProviderID sql.NullString
+}
+
+// A later observation supersedes an inferred billing provider and every cost
+// derived from that inference. ApplyUsageChunk rehomes replacement-generation
+// rows before this statement, so the source guard also prevents promotion on a
+// stale generation.
+func (q *Queries) PromoteInferredUsageEventToObserved(ctx context.Context, arg PromoteInferredUsageEventToObservedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, promoteInferredUsageEventToObserved,
+		arg.BillingProviderID,
+		arg.InputCostNanos,
+		arg.CachedInputCostNanos,
+		arg.OutputCostNanos,
+		arg.EstimatedCostNanos,
+		arg.PricingVersion,
+		arg.ID,
+		arg.ExpectedUsageSourceID,
+		arg.ExpectedBillingProviderID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const rehomeOpenUsageEventToReplacementSource = `-- name: RehomeOpenUsageEventToReplacementSource :execrows
+UPDATE model_usage_events
+SET usage_source_id = ?1
+WHERE model_usage_events.id = ?2
+  AND model_usage_events.usage_source_id = ?3
+  AND (model_usage_events.billing_provider_id IS NULL
+       OR model_usage_events.billing_provider_source = 'inferred')
+  AND EXISTS (
+      SELECT 1
+      FROM usage_sources replacement
+      WHERE replacement.id = ?1
+        AND replacement.binding_id = model_usage_events.binding_id
+  )
+`
+
+type RehomeOpenUsageEventToReplacementSourceParams struct {
+	UsageSourceID         int64
+	ID                    int64
+	ExpectedUsageSourceID int64
+}
+
+// A physically replaced transcript re-emits the same logical event under the
+// same stable key, so the replay deduplicates against the row the retired
+// generation left behind and the row keeps pointing at that generation. Repair
+// skips a source retired as artifact_replaced, and the replacement owns no row
+// for the event, so an attribution that never landed can never land.
+//
+// Only an open attribution moves, and open means the same thing here as
+// everywhere else: unattributed, or attributed by inference and therefore still
+// replaceable. Leaving an inferred row on the retired generation would strand a
+// guess exactly where no observation can reach it. A row attributed by
+// observation stays put: it was collected under the generation it names, and
+// that is a fact about how it was observed rather than a stale pointer.
+func (q *Queries) RehomeOpenUsageEventToReplacementSource(ctx context.Context, arg RehomeOpenUsageEventToReplacementSourceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rehomeOpenUsageEventToReplacementSource, arg.UsageSourceID, arg.ID, arg.ExpectedUsageSourceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const touchUsageBinding = `-- name: TouchUsageBinding :exec
 UPDATE usage_bindings SET updated_at = ? WHERE id = ?
 `
@@ -917,6 +1409,118 @@ type TouchUsageBindingParams struct {
 func (q *Queries) TouchUsageBinding(ctx context.Context, arg TouchUsageBindingParams) error {
 	_, err := q.db.ExecContext(ctx, touchUsageBinding, arg.UpdatedAt, arg.ID)
 	return err
+}
+
+const updateLegacyUsageEvent = `-- name: UpdateLegacyUsageEvent :one
+UPDATE model_usage_events
+SET billing_provider_id = ?1,
+    billing_provider_source = ?2,
+    -- The reparse is the only way a pre-capture event can ever gain its bounded
+    -- provider object, and it is exactly what makes the event priceable.
+    provider_usage_json = ?3,
+    input_cost_nanos = ?4,
+    cached_input_cost_nanos = ?5,
+    output_cost_nanos = ?6,
+    estimated_cost_nanos = ?7,
+    pricing_version = ?8
+WHERE model_usage_events.id = ?9
+  AND model_usage_events.binding_id = ?10
+  AND model_usage_events.usage_source_id = ?11
+  -- Writable while the attribution is still open. An observation is final, so
+  -- this can promote an inference exactly once and never revise an observation.
+  AND (model_usage_events.billing_provider_id IS NULL
+       OR model_usage_events.billing_provider_source = 'inferred')
+  AND model_usage_events.billing_provider_id IS ?12
+  AND model_usage_events.billing_provider_source IS ?13
+  AND model_usage_events.provider_id = ?14
+  AND model_usage_events.model_id = ?15
+  AND model_usage_events.usage_measurement_kind = ?16
+  AND model_usage_events.input_tokens IS ?17
+  AND model_usage_events.cached_input_tokens IS ?18
+  AND model_usage_events.uncached_input_tokens IS ?19
+  AND model_usage_events.output_tokens IS ?20
+  AND model_usage_events.provider_usage_json IS ?21
+  AND model_usage_events.source_event_key = ?22
+  AND model_usage_events.pricing_version = ?23
+  AND EXISTS (
+      SELECT 1
+      FROM usage_sources source
+      WHERE source.id = model_usage_events.usage_source_id
+        AND source.file_identity = ?24
+        AND source.byte_offset = ?25
+        AND source.parser_state_json = ?26
+        AND source.updated_at = ?27
+        AND NOT (
+            source.state = 'complete'
+            AND source.last_error_code = 'artifact_replaced'
+        )
+  )
+RETURNING binding_id
+`
+
+type UpdateLegacyUsageEventParams struct {
+	BillingProviderID             sql.NullString
+	BillingProviderSource         sql.NullString
+	ProviderUsageJson             sql.NullString
+	InputCostNanos                sql.NullInt64
+	CachedInputCostNanos          sql.NullInt64
+	OutputCostNanos               sql.NullInt64
+	EstimatedCostNanos            sql.NullInt64
+	PricingVersion                string
+	ID                            int64
+	BindingID                     int64
+	UsageSourceID                 int64
+	ExpectedBillingProviderID     sql.NullString
+	ExpectedBillingProviderSource sql.NullString
+	ExpectedProviderID            string
+	ExpectedModelID               string
+	ExpectedUsageMeasurementKind  string
+	ExpectedInputTokens           sql.NullInt64
+	ExpectedCachedInputTokens     sql.NullInt64
+	ExpectedUncachedInputTokens   sql.NullInt64
+	ExpectedOutputTokens          sql.NullInt64
+	ExpectedProviderUsageJson     sql.NullString
+	ExpectedSourceEventKey        string
+	ExpectedPricingVersion        string
+	ExpectedFileIdentity          string
+	ExpectedByteOffset            int64
+	ExpectedParserStateJson       string
+	ExpectedSourceUpdatedAt       time.Time
+}
+
+func (q *Queries) UpdateLegacyUsageEvent(ctx context.Context, arg UpdateLegacyUsageEventParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, updateLegacyUsageEvent,
+		arg.BillingProviderID,
+		arg.BillingProviderSource,
+		arg.ProviderUsageJson,
+		arg.InputCostNanos,
+		arg.CachedInputCostNanos,
+		arg.OutputCostNanos,
+		arg.EstimatedCostNanos,
+		arg.PricingVersion,
+		arg.ID,
+		arg.BindingID,
+		arg.UsageSourceID,
+		arg.ExpectedBillingProviderID,
+		arg.ExpectedBillingProviderSource,
+		arg.ExpectedProviderID,
+		arg.ExpectedModelID,
+		arg.ExpectedUsageMeasurementKind,
+		arg.ExpectedInputTokens,
+		arg.ExpectedCachedInputTokens,
+		arg.ExpectedUncachedInputTokens,
+		arg.ExpectedOutputTokens,
+		arg.ExpectedProviderUsageJson,
+		arg.ExpectedSourceEventKey,
+		arg.ExpectedPricingVersion,
+		arg.ExpectedFileIdentity,
+		arg.ExpectedByteOffset,
+		arg.ExpectedParserStateJson,
+		arg.ExpectedSourceUpdatedAt,
+	)
+	var binding_id int64
+	err := row.Scan(&binding_id)
+	return binding_id, err
 }
 
 const updateUsageBinding = `-- name: UpdateUsageBinding :execrows
@@ -952,6 +1556,74 @@ func (q *Queries) UpdateUsageBinding(ctx context.Context, arg UpdateUsageBinding
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const updateUsageCostCandidate = `-- name: UpdateUsageCostCandidate :one
+UPDATE model_usage_events
+SET input_cost_nanos = ?1,
+    cached_input_cost_nanos = ?2,
+    output_cost_nanos = ?3,
+    estimated_cost_nanos = ?4,
+    pricing_version = ?5
+WHERE id = ?6
+  AND binding_id = ?7
+  AND billing_provider_id = ?8
+  AND model_id = ?9
+  AND usage_measurement_kind = ?10
+  AND input_tokens IS ?11
+  AND cached_input_tokens IS ?12
+  AND uncached_input_tokens IS ?13
+  AND output_tokens IS ?14
+  AND provider_usage_json IS ?15
+  AND source_event_key = ?16
+  AND pricing_version = ?17
+  AND estimated_cost_nanos IS NULL
+RETURNING binding_id
+`
+
+type UpdateUsageCostCandidateParams struct {
+	InputCostNanos               sql.NullInt64
+	CachedInputCostNanos         sql.NullInt64
+	OutputCostNanos              sql.NullInt64
+	EstimatedCostNanos           sql.NullInt64
+	AttemptedPricingVersion      string
+	ID                           int64
+	BindingID                    int64
+	ExpectedBillingProviderID    sql.NullString
+	ExpectedModelID              string
+	ExpectedUsageMeasurementKind string
+	ExpectedInputTokens          sql.NullInt64
+	ExpectedCachedInputTokens    sql.NullInt64
+	ExpectedUncachedInputTokens  sql.NullInt64
+	ExpectedOutputTokens         sql.NullInt64
+	ExpectedProviderUsageJson    sql.NullString
+	ExpectedSourceEventKey       string
+	ExpectedPricingVersion       string
+}
+
+func (q *Queries) UpdateUsageCostCandidate(ctx context.Context, arg UpdateUsageCostCandidateParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, updateUsageCostCandidate,
+		arg.InputCostNanos,
+		arg.CachedInputCostNanos,
+		arg.OutputCostNanos,
+		arg.EstimatedCostNanos,
+		arg.AttemptedPricingVersion,
+		arg.ID,
+		arg.BindingID,
+		arg.ExpectedBillingProviderID,
+		arg.ExpectedModelID,
+		arg.ExpectedUsageMeasurementKind,
+		arg.ExpectedInputTokens,
+		arg.ExpectedCachedInputTokens,
+		arg.ExpectedUncachedInputTokens,
+		arg.ExpectedOutputTokens,
+		arg.ExpectedProviderUsageJson,
+		arg.ExpectedSourceEventKey,
+		arg.ExpectedPricingVersion,
+	)
+	var binding_id int64
+	err := row.Scan(&binding_id)
+	return binding_id, err
 }
 
 const updateUsageSourceCursor = `-- name: UpdateUsageSourceCursor :exec
@@ -1031,12 +1703,16 @@ func (q *Queries) UpdateUsageSourceLifecycle(ctx context.Context, arg UpdateUsag
 const upsertUsageBinding = `-- name: UpsertUsageBinding :one
 INSERT INTO usage_bindings (
     session_id, harness, native_root_id, initial_model_id, state,
-    last_error_code, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    last_error_code, updated_at, provider_hint
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (session_id, harness, native_root_id) DO UPDATE SET
     initial_model_id = CASE
         WHEN excluded.initial_model_id <> '' THEN excluded.initial_model_id
         ELSE usage_bindings.initial_model_id
+    END,
+    provider_hint = CASE
+        WHEN excluded.provider_hint <> '' THEN excluded.provider_hint
+        ELSE usage_bindings.provider_hint
     END,
     state = CASE
         WHEN usage_bindings.state IN ('finalizing', 'complete', 'partial')
@@ -1053,7 +1729,7 @@ ON CONFLICT (session_id, harness, native_root_id) DO UPDATE SET
         ELSE excluded.last_error_code
     END,
     updated_at = excluded.updated_at
-RETURNING id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at
+RETURNING id, session_id, harness, native_root_id, initial_model_id, state, last_error_code, updated_at, provider_hint
 `
 
 type UpsertUsageBindingParams struct {
@@ -1064,6 +1740,7 @@ type UpsertUsageBindingParams struct {
 	State          domain.UsageBindingState
 	LastErrorCode  string
 	UpdatedAt      time.Time
+	ProviderHint   string
 }
 
 func (q *Queries) UpsertUsageBinding(ctx context.Context, arg UpsertUsageBindingParams) (UsageBinding, error) {
@@ -1075,6 +1752,7 @@ func (q *Queries) UpsertUsageBinding(ctx context.Context, arg UpsertUsageBinding
 		arg.State,
 		arg.LastErrorCode,
 		arg.UpdatedAt,
+		arg.ProviderHint,
 	)
 	var i UsageBinding
 	err := row.Scan(
@@ -1086,6 +1764,7 @@ func (q *Queries) UpsertUsageBinding(ctx context.Context, arg UpsertUsageBinding
 		&i.State,
 		&i.LastErrorCode,
 		&i.UpdatedAt,
+		&i.ProviderHint,
 	)
 	return i, err
 }

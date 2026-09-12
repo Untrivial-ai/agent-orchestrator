@@ -43,13 +43,35 @@ surface (`npm run sqlc`, `npm run api`).
   conversation between TUI and Chat without changing the AO session/worktree;
   rollback, restart recovery, controller-generation fencing, and a transition
   message outbox preserve the one-controller invariant.
+- Codex and all eight registered ACP Chat providers are
+  owned by authenticated, detached
+  per-session hosts. Desktop close, full quit, and updater daemon replacement
+  detach and reconnect without relaunching the provider or interrupting an
+  in-flight turn; explicit session termination destroys the host. ACP reconnect
+  restores the initialized session snapshot, JSON-RPC correlation, pending
+  interactions, and an acknowledged prompt journal before replaying the same
+  durable turn. Host-accepted approval/input commands close the crash window
+  before SQLite projection, and live host adoption preserves the browser bearer
+  already held by the provider instead of rotating its verifier. Native
+  load/resume remains the repair path after actual host failure; it is not needed
+  for live adoption. Installation changes and launch-only credentials do not
+  block adoption. Updater warnings use actual controller ownership rather than
+  a provider allowlist. Shared process tests cover all eight ACP identities;
+  authenticated vendor and platform coverage is tracked separately in
+  [the research/evidence note](research/persistent-acp-chat-hosts.md).
 - Durable Chat conversations with project-scoped orchestrator continuity,
   session-scoped worker history, bounded history pages, transactional raw-event
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), OpenCode, and Droid. AO reuses each harness's existing
-  binary/auth resolution and does not bundle provider CLIs.
+  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, and OMP. OMP Chat uses
+  native `omp acp` and requires OMP 15.0.0 or newer. Pi's independently
+  installed pi-acp adapter does not enforce approval modes, so AO admits Pi Chat
+  only after the user explicitly chooses the per-session bypass-permissions
+  fallback. The binding reuses the existing Pi config environment and auth
+  probe and is never downloaded by AO. AO reuses each harness's existing
+  binary/auth/environment resolution and does not bundle provider CLIs. Cursor
+  is Chat-only until its ACP and TUI conversation ids are proven to share identity.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.
@@ -79,11 +101,28 @@ surface (`npm run sqlc`, `npm run api`).
   ([#75](https://github.com/aoagents/agent-orchestrator/issues/75),
   [#108](https://github.com/aoagents/agent-orchestrator/issues/108),
   [#109](https://github.com/aoagents/agent-orchestrator/issues/109)).
-- Terminal mux over WebSocket (`/mux`): per-client `tmux attach` PTY on
-  Darwin/Linux; conpty loopback pty-host on Windows.
+- User-opened standalone and session side shells reconnect across daemon and
+  desktop restarts while their runtimes live. Explicit close, confirmed exit,
+  and session/worktree teardown remain cleanup boundaries; new trusted command
+  and authentication terminals remain scoped to their originating app launch.
+- Terminal mux over WebSocket (`/mux`): detached native PTY host for new macOS
+  sessions, per-client `tmux attach` for Linux and persisted legacy macOS
+  handles, and a ConPTY loopback host on Windows.
 - Lifecycle reducer plus reaper (`internal/observe/reaper`).
 - Agent adapter platform under `internal/adapters/agent/` (25 adapters) with a
   registry and `ao hooks` activity dispatch.
+- Daemon-owned in-memory agent readiness coordination with normalized
+  installation/authentication observations, purpose-specific freshness,
+  single-flight checks, bounded warm-up/retries, launch-time validation, and
+  compatibility projections for older agent inventory/probe clients.
+- Codex account management under Settings → Agents. AO reconciles the current
+  device-global Codex identity, adds file-backed accounts through an inline
+  native login terminal, and shows structured authentication, capacity, usage,
+  and confirmed reset-credit facts without parsing credentials. A manual global
+  switch fences input, stops and resumes only the affected AO-owned Codex
+  controllers with the same native thread IDs, and leaves native history in the
+  normal Codex home. Users can sign accounts out and delete inactive signed-out
+  accounts; external Codex clients are not controlled.
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 
@@ -119,6 +158,9 @@ surface (`npm run sqlc`, `npm run api`).
   auto-discovers a static entry point merely because a fresh worker exists.
 - Real daemon wiring via the generated `openapi-fetch` typed client
   (`src/api/schema.ts`); mock data only in `VITE_NO_ELECTRON` web-preview mode.
+- Agent pickers consume the normalized readiness snapshot, show cached state
+  immediately, and delegate open/focus/selection freshness decisions to the
+  daemon coordinator.
 - Electron main handles daemon discovery, launch, and status reporting.
 - Shell: sidebar (projects + sessions, add/remove project), sessions board,
   session view + inspector, project settings, pull-requests page,

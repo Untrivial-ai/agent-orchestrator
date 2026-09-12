@@ -31,7 +31,7 @@ SELECT id, session_id, source_mode, target_mode, policy, phase,
        created_at, updated_at, completed_at, notice_acknowledged_at
 FROM session_interface_transitions
 WHERE session_id = ?
-ORDER BY created_at DESC
+ORDER BY created_at DESC, rowid DESC
 LIMIT 1;
 
 -- name: ListActiveSessionInterfaceTransitions :many

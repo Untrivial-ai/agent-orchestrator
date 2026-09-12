@@ -67,6 +67,9 @@ func TestBuildProjectConfig_RemapAndPreserveMain(t *testing.T) {
 		Tracker:       nonNilNode(),
 	}
 	cfg := buildProjectConfig(pc, &notes)
+	if cfg.CanonicalRepoURL != "" {
+		t.Fatal("legacy import must not infer canonical trust")
+	}
 	if cfg.DefaultBranch != "main" {
 		t.Fatalf("defaultBranch = %q, want explicit main preserved", cfg.DefaultBranch)
 	}

@@ -19,10 +19,10 @@ const (
 	ampPluginSentinel = "agent-orchestrator: managed amp system prompt plugin"
 )
 
-// GetAgentHooks installs AO's Amp system-prompt plugin into the worktree-local
-// .amp/plugins directory. Amp has no documented system-prompt argv flag, but
-// its plugin agent.start hook can add hidden context at turn start. AO owns only
-// ao-system-prompt.ts; other user plugin files are preserved.
+// GetAgentHooks installs AO's Amp integration plugin into the worktree-local
+// .amp/plugins directory. It injects hidden standing instructions at turn start
+// and forwards Amp's thread lifecycle to AO. AO owns only ao-system-prompt.ts;
+// other user plugin files are preserved.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -92,6 +92,48 @@ func ampSystemPromptPluginSource(inline, file string) string {
 		b.WriteString("\"\"")
 	}
 	b.WriteString(";\n\n")
+	b.WriteString("const HOOK_TIMEOUT_MS = 5_000;\n")
+	b.WriteString("const threadSubscriptions = new Map<string, { unsubscribe(): void }>();\n\n")
+	b.WriteString("let activeThreadID = \"\";\n\n")
+	b.WriteString("function reportHookFailure(amp: any, hookName: string, detail: string) {\n")
+	b.WriteString("  try { amp.logger.log(`AO activity hook ${hookName} failed`, { detail }); } catch {}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("function callHookSync(amp: any, hookName: string, payload: Record<string, unknown>) {\n")
+	b.WriteString("  try {\n")
+	b.WriteString("    const executable = Bun.which(\"ao\");\n")
+	b.WriteString("    if (!executable) return;\n")
+	b.WriteString("    const result = Bun.spawnSync([executable, \"hooks\", \"amp\", hookName], {\n")
+	b.WriteString("      stdin: new TextEncoder().encode(JSON.stringify(payload) + \"\\n\"),\n")
+	b.WriteString("      stdout: \"ignore\",\n")
+	b.WriteString("      stderr: \"pipe\",\n")
+	b.WriteString("      timeout: HOOK_TIMEOUT_MS,\n")
+	b.WriteString("    });\n")
+	b.WriteString("    if (!result.success) {\n")
+	b.WriteString("      const detail = result.stderr ? new TextDecoder().decode(result.stderr).trim() : `exit ${result.exitCode}`;\n")
+	b.WriteString("      reportHookFailure(amp, hookName, detail);\n")
+	b.WriteString("    }\n")
+	b.WriteString("  } catch (error) {\n")
+	b.WriteString("    reportHookFailure(amp, hookName, error instanceof Error ? error.message : String(error));\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n\n")
+	b.WriteString("function reportThreadState(amp: any, sessionID: string, state: string) {\n")
+	b.WriteString("  if (amp.activeThread.current?.id !== sessionID || sessionID !== activeThreadID) return;\n")
+	b.WriteString("  callHookSync(amp, \"thread-state\", { session_id: sessionID, state });\n")
+	b.WriteString("}\n\n")
+	b.WriteString("function observeThread(amp: any, thread: any) {\n")
+	b.WriteString("  if (amp.activeThread.current?.id !== thread.id) return;\n")
+	b.WriteString("  if (activeThreadID === thread.id) return;\n")
+	b.WriteString("  if (activeThreadID) {\n")
+	b.WriteString("    threadSubscriptions.get(activeThreadID)?.unsubscribe();\n")
+	b.WriteString("    threadSubscriptions.delete(activeThreadID);\n")
+	b.WriteString("  }\n")
+	b.WriteString("  activeThreadID = thread.id;\n")
+	b.WriteString("  const subscription = thread.state.subscribe((state: string) => reportThreadState(amp, thread.id, state));\n")
+	b.WriteString("  threadSubscriptions.set(thread.id, subscription);\n")
+	b.WriteString("  void thread.state.get().then((state: string) => reportThreadState(amp, thread.id, state)).catch((error: unknown) => {\n")
+	b.WriteString("    reportHookFailure(amp, \"thread-state\", error instanceof Error ? error.message : String(error));\n")
+	b.WriteString("  });\n")
+	b.WriteString("}\n\n")
 	b.WriteString("async function loadSystemPrompt(amp: any): Promise<string> {\n")
 	b.WriteString("  if (systemPromptFile) {\n")
 	b.WriteString("    try {\n")
@@ -106,10 +148,20 @@ func ampSystemPromptPluginSource(inline, file string) string {
 	b.WriteString("  return inlineSystemPrompt.trim();\n")
 	b.WriteString("}\n\n")
 	b.WriteString("export default function (amp: PluginAPI) {\n")
-	b.WriteString("  amp.on(\"agent.start\", async () => {\n")
+	b.WriteString("  amp.on(\"session.start\", async (event, ctx) => {\n")
+	b.WriteString("    observeThread(amp, ctx.thread);\n")
+	b.WriteString("    if (event.thread.id === amp.activeThread.current?.id) callHookSync(amp, \"session-start\", { session_id: event.thread.id });\n")
+	b.WriteString("  });\n")
+	b.WriteString("  amp.on(\"agent.start\", async (event, ctx) => {\n")
+	b.WriteString("    observeThread(amp, ctx.thread);\n")
+	b.WriteString("    if (event.thread.id !== amp.activeThread.current?.id) return {};\n")
+	b.WriteString("    callHookSync(amp, \"user-prompt-submit\", { session_id: event.thread.id, prompt: event.message });\n")
 	b.WriteString("    const systemPrompt = await loadSystemPrompt(amp);\n")
 	b.WriteString("    if (!systemPrompt) return {};\n")
 	b.WriteString("    return { message: { content: systemPrompt, display: false } };\n")
+	b.WriteString("  });\n")
+	b.WriteString("  amp.on(\"agent.end\", async (event) => {\n")
+	b.WriteString("    if (event.thread.id === amp.activeThread.current?.id && event.thread.id === activeThreadID) callHookSync(amp, \"stop\", { session_id: event.thread.id, status: event.status });\n")
 	b.WriteString("  });\n")
 	b.WriteString("}\n")
 	return b.String()

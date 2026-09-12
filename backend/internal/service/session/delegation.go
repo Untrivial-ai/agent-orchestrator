@@ -28,6 +28,7 @@ type DelegateTaskInput struct {
 	Brief          string
 	RequestedAgent domain.AgentHarness
 	Model          string
+	ApprovalMode   domain.PermissionMode
 	RequestedMode  domain.SessionMode
 	Attachments    []ports.SpawnAttachment
 }
@@ -60,17 +61,20 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	}
 
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
-		ProjectID:     in.ProjectID,
-		Kind:          domain.KindWorker,
-		Harness:       in.RequestedAgent,
-		Prompt:        prompt,
-		DisplayName:   delegatedTaskDisplayName(in.Brief),
-		AgentConfig:   ports.AgentConfig{Model: strings.TrimSpace(in.Model)},
+		ProjectID:   in.ProjectID,
+		Kind:        domain.KindWorker,
+		Harness:     in.RequestedAgent,
+		Prompt:      prompt,
+		DisplayName: delegatedTaskDisplayName(in.Brief),
+		AgentConfig: ports.AgentConfig{
+			Model:       strings.TrimSpace(in.Model),
+			Permissions: in.ApprovalMode,
+		},
 		RequestedMode: in.RequestedMode,
 		Attachments:   in.Attachments,
 	})
 	if err != nil {
-		return DelegateTaskOutcome{}, toAPIError(err)
+		return DelegateTaskOutcome{}, toSpawnAPIError(err)
 	}
 
 	// The worker spawn is the commit point. Coordinator startup and title

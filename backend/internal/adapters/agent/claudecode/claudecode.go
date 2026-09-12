@@ -218,10 +218,9 @@ func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 // from cfg.Session.Metadata["agentSessionId"]; for sessions created before
 // hooks captured it, it falls back to the deterministic UUID AO pins via
 // --session-id at launch. ok is false only when neither is available, so the
-// caller fresh-spawns. The command re-applies the configured model, permission
-// mode, and current standing system instructions so a resume carries the same
-// agent config as a fresh spawn; omitting the model would silently revert the
-// session to the CLI's default. When Prompt is present it is passed as the
+// caller fresh-spawns. The command applies the caller's model selection,
+// permission mode, and current standing system instructions. A blank model
+// leaves model selection to Claude. When Prompt is present it is passed as the
 // resume-time user turn, avoiding a fragile terminal paste into Claude's TUI.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
@@ -409,8 +408,10 @@ func claudeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, er
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
-	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return ports.AgentAuthStatusAuthorized, true, nil
+		}
 	}
 	cfgPath, err := claudeConfigPath()
 	if err != nil {
@@ -567,8 +568,15 @@ func claudeConfigPath() (string, error) {
 var claudeTrustMu sync.Mutex
 
 func ensureWorkspaceTrusted(configPath, workspacePath string) error {
+	return ensureWorkspaceTrustedForOS(configPath, workspacePath, runtime.GOOS)
+}
+
+func ensureWorkspaceTrustedForOS(configPath, workspacePath, goos string) error {
 	claudeTrustMu.Lock()
 	defer claudeTrustMu.Unlock()
+	if goos == "windows" {
+		workspacePath = strings.ReplaceAll(workspacePath, `\`, "/")
+	}
 
 	root := map[string]any{}
 	data, err := os.ReadFile(configPath)

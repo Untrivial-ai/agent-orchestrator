@@ -342,8 +342,8 @@ func TestAuthStatusUsesKiroWhoami(t *testing.T) {
 		if name != "kiro-cli" {
 			t.Fatalf("binary = %q, want kiro-cli", name)
 		}
-		if !reflect.DeepEqual(arg, []string{"whoami"}) {
-			t.Fatalf("args = %#v, want [whoami]", arg)
+		if !reflect.DeepEqual(arg, []string{"whoami", "--format", "json"}) {
+			t.Fatalf("args = %#v, want [whoami --format json]", arg)
 		}
 		return []byte("Logged in with Google\nEmail: nicachale456@gmail.com\n"), nil
 	})

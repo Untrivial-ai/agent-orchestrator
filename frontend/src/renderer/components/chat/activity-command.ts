@@ -5,7 +5,7 @@ export type CommandCategory = "read" | "search" | "vcs" | "run";
 
 /** Shared chrome for one command summary and a collapsed run of commands. */
 export const ACTIVITY_SUMMARY_BUTTON_CLASS =
-	"group/run flex w-full items-center gap-1.5 rounded-sm py-0.5 pr-1 text-left transition-colors hover:bg-interactive-hover";
+	"activity-summary-button group/run flex w-full select-none items-center gap-1.5 py-0.5 pr-1 text-left outline-none focus-visible:outline-none";
 
 /** A completed shell command that reported an ordinary non-zero process exit. */
 export function isNonzeroCommandExit(activity: ConversationActivity): boolean {
@@ -60,6 +60,14 @@ export function exploredFileCount(text: string): number | undefined {
 	}
 
 	return files.size > 0 ? files.size : undefined;
+}
+
+/** The command's binary, normalized so `/bin/sed` and `sed` classify alike. */
+export function commandBinaryLabel(command: string): string | undefined {
+	const trimmed = command.trim();
+	if (!trimmed) return undefined;
+	const word = firstWord(trimmed);
+	return word || undefined;
 }
 
 /** The command's binary, normalized so `/bin/sed` and `sed` classify alike. */

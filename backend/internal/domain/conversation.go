@@ -35,23 +35,36 @@ const (
 	ConversationScopeProject ConversationScope = "project"
 )
 
+// ConversationContextResetProviderItemID returns the durable identity of the
+// hidden activity that separates a fresh project orchestrator context from the
+// project conversation history that came before it.
+func ConversationContextResetProviderItemID(session SessionID) string {
+	return "ao-context-reset:" + string(session)
+}
+
 // TurnState is the lifecycle of one request and the agent work that follows it.
 type TurnState string
 
 // Turn states. Interrupted is distinct from failed: the provider reports it as
 // its own terminal status when a turn is cancelled, and AO must not relabel it.
+// Recovered means history proved the turn is no longer live but did not carry a
+// portable provider outcome; it is terminal without claiming success or failure.
 const (
 	TurnStateQueued      TurnState = "queued"
 	TurnStateRunning     TurnState = "running"
 	TurnStateCompleted   TurnState = "completed"
+	TurnStateRecovered   TurnState = "recovered"
 	TurnStateInterrupted TurnState = "interrupted"
 	TurnStateFailed      TurnState = "failed"
+	// TurnStateCancelled marks a queued turn the user withdrew from the dock
+	// before dispatch. Stop and handoff still settle the queue as interrupted.
+	TurnStateCancelled TurnState = "cancelled"
 )
 
 // Terminal reports whether no further work is expected on the turn.
 func (s TurnState) Terminal() bool {
 	switch s {
-	case TurnStateCompleted, TurnStateInterrupted, TurnStateFailed:
+	case TurnStateCompleted, TurnStateRecovered, TurnStateInterrupted, TurnStateFailed, TurnStateCancelled:
 		return true
 	default:
 		return false
@@ -123,6 +136,9 @@ type ActivityStatus string
 const (
 	ActivityStatusRunning   ActivityStatus = "running"
 	ActivityStatusCompleted ActivityStatus = "completed"
+	// ActivityStatusRecovered means replay proved the activity is historical,
+	// but the provider supplied no portable success/failure outcome.
+	ActivityStatusRecovered ActivityStatus = "recovered"
 	ActivityStatusFailed    ActivityStatus = "failed"
 	ActivityStatusCancelled ActivityStatus = "cancelled"
 	ActivityStatusPending   ActivityStatus = "pending"
@@ -187,20 +203,51 @@ type ConversationRecord struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+// ConversationBranchStrategy records how a provider branch was materialized.
+// Native branches preserve provider-owned history; approximate branches seed a
+// fresh provider session with bounded AO-owned textual context.
+type ConversationBranchStrategy string
+
+const (
+	// ConversationBranchStrategyNative preserves the provider's exact history.
+	ConversationBranchStrategyNative ConversationBranchStrategy = "native"
+	// ConversationBranchStrategyApproximateContext starts a fresh provider
+	// session from bounded AO-owned context.
+	ConversationBranchStrategyApproximateContext ConversationBranchStrategy = "approximate_context"
+)
+
+// NormalizeConversationBranchStrategy keeps pre-strategy rows compatible. Only
+// the empty legacy value means native; unknown nonempty values are preserved so
+// a newer materialization strategy is never misreported as exact history.
+func NormalizeConversationBranchStrategy(strategy ConversationBranchStrategy) ConversationBranchStrategy {
+	if strategy == "" {
+		return ConversationBranchStrategyNative
+	}
+	return strategy
+}
+
 // ConversationBranch is one durable provider-thread lineage node.
 type ConversationBranch struct {
 	ID                     string    `json:"id"`
 	ConversationID         string    `json:"conversationId"`
 	SessionID              SessionID `json:"sessionId"`
 	ProviderConversationID string    `json:"-"`
-	// ProviderScopeID is the root created for one provider ownership epoch. Agent
-	// switches start a new scope while keeping older AO history visible.
+	ParentBranchID         string    `json:"parentBranchId,omitempty"`
+	ForkAfterTurnID        string    `json:"forkAfterTurnId,omitempty"`
+	ReplacedTurnID         string    `json:"replacedTurnId,omitempty"`
+	ReplacementTurnID      string    `json:"replacementTurnId,omitempty"`
+	ForkAfterSequence      int64     `json:"-"`
+	// Strategy distinguishes native anchored forks from approximate user-context
+	// branches.
+	Strategy             ConversationBranchStrategy `json:"strategy,omitempty"`
+	ReplayCutoffSequence int64                      `json:"-"`
+	ReplayTruncated      bool                       `json:"replayTruncated,omitempty"`
+	// ProviderBindingID identifies the durable adapter/configuration epoch that
+	// can reopen this branch. It is deliberately separate from ProviderScopeID:
+	// approximate siblings own different opaque-id namespaces while remaining
+	// reopenable by the same provider binding.
+	ProviderBindingID string    `json:"-"`
 	ProviderScopeID   string    `json:"-"`
-	ParentBranchID    string    `json:"parentBranchId,omitempty"`
-	ForkAfterTurnID   string    `json:"forkAfterTurnId,omitempty"`
-	ReplacedTurnID    string    `json:"replacedTurnId,omitempty"`
-	ReplacementTurnID string    `json:"replacementTurnId,omitempty"`
-	ForkAfterSequence int64     `json:"-"`
 	Active            bool      `json:"active"`
 	CreatedAt         time.Time `json:"createdAt"`
 }
@@ -225,6 +272,8 @@ type ConversationEditAnchor struct {
 	ReplacedTurnID              string
 	PreviousProviderTurnID      string
 	ForkAfterSequence           int64
+	ReplayFloorSequence         int64
+	HasPriorContext             bool
 	OriginalDeliveryContentJSON string
 	RetryActiveBranch           bool
 }
@@ -420,6 +469,9 @@ type ConversationSettings struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// ApprovalMode is AO's permission vocabulary, applied per turn.
 	ApprovalMode PermissionMode `json:"approvalMode,omitempty"`
+	// OpenCodeMode is the provider-owned mode explicitly selected through ACP.
+	// It is separate from approval policy and restored before accepting turns.
+	OpenCodeMode string `json:"openCodeMode,omitempty"`
 }
 
 // ConversationTurn is one user or automation request plus the agent work it
@@ -435,8 +487,14 @@ type ConversationTurn struct {
 	// replaced; the conversation identity does not.
 	HandledBySessionID SessionID `json:"handledBySessionId"`
 	// ProviderTurnID correlates back to the provider's own turn. Opaque.
-	ProviderTurnID string    `json:"providerTurnId,omitempty"`
-	State          TurnState `json:"state"`
+	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	// RetryOfTurnID is the failed source whose durable prompt created this turn.
+	// It remains present after rollback so the source cannot offer a dead action.
+	RetryOfTurnID string `json:"retryOfTurnId,omitempty"`
+	// HasRetryAttempt is a snapshot-only fact derived from every durable retry
+	// relation, including attempts outside the active provider branch.
+	HasRetryAttempt bool      `json:"hasRetryAttempt,omitempty"`
+	State           TurnState `json:"state"`
 	// ErrorMessage is set for failed turns. Interrupted turns are not errors.
 	ErrorMessage string     `json:"errorMessage,omitempty"`
 	RequestedAt  time.Time  `json:"requestedAt"`
@@ -514,6 +572,16 @@ type QueuedTurn struct {
 	// DeliveryContentJSON carries provider-neutral native prompt blocks through
 	// the durable queue. It is not rendered and never contains provider DTOs.
 	DeliveryContentJSON string
+}
+
+// RetryPrompt is the durable human-authored content of a failed turn that may
+// be dispatched again. Unlike QueuedTurn, its source was already sent and
+// settled; ActiveLineage says whether it still belongs to the visible branch.
+type RetryPrompt struct {
+	Text                string
+	Origin              MessageOrigin
+	DeliveryContentJSON string
+	ActiveLineage       bool
 }
 
 // ConversationMessage is one readable block of text.
@@ -606,3 +674,102 @@ var ErrNoConversationTurn = errors.New("conversation turn not found")
 
 // ErrNoConversationBranch reports a branch id outside the named conversation.
 var ErrNoConversationBranch = errors.New("conversation branch not found")
+
+// ConversationQueuedEditDelivery identifies one exact queued-message mutation.
+// Only its digest is stored; uploaded image bytes remain with the message.
+type ConversationQueuedEditDelivery struct {
+	ClientMessageID string
+	RequestHash     string
+}
+
+// ConversationEditDelivery is AO's durable answer to one caller-owned inline
+// edit handle. A reservation with ProviderWorkStarted set cannot be dispatched
+// again without proof of its outcome. Earlier reservations can resume safely.
+// Accepted and rejected results replay across branch changes and daemon restarts.
+type ConversationEditDelivery struct {
+	ConversationID      string
+	ClientMessageID     string
+	RequestJSON         string
+	ProviderWorkStarted bool
+	State               ConversationEditDeliveryState
+	SourceBranchID      string
+	ActiveBranchID      string
+	Turn                ConversationTurn
+	RejectionKind       ConversationEditRejectionKind
+	RejectionMessage    string
+	CreatedAt           time.Time
+	SettledAt           *time.Time
+}
+
+// ConversationEditDeliveryState records whether a reserved edit was accepted
+// or definitively rejected.
+type ConversationEditDeliveryState string
+
+// Conversation edit delivery states.
+const (
+	ConversationEditReserved ConversationEditDeliveryState = "reserved"
+	ConversationEditAccepted ConversationEditDeliveryState = "accepted"
+	ConversationEditRejected ConversationEditDeliveryState = "rejected"
+)
+
+// ConversationEditRejectionKind reconstructs errors.Is behavior for definitive
+// edit failures after the controller that observed them no longer exists.
+type ConversationEditRejectionKind string
+
+// Conversation edit rejection kinds.
+const (
+	ConversationEditRejectedInvalid             ConversationEditRejectionKind = "invalid_turn"
+	ConversationEditRejectedMissingTurn         ConversationEditRejectionKind = "missing_turn"
+	ConversationEditRejectedUnsupported         ConversationEditRejectionKind = "unsupported"
+	ConversationEditRejectedBusy                ConversationEditRejectionKind = "busy"
+	ConversationEditRejectedInterfaceTransition ConversationEditRejectionKind = "interface_transition"
+	ConversationEditRejectedByProvider          ConversationEditRejectionKind = "provider_refused"
+	// ConversationEditRejectedProviderFailure records a generic local preparation
+	// failure when AO can prove provider dispatch never occurred. It also replays
+	// reservations settled by older builds that treated generic provider/transport
+	// errors as definitive.
+	ConversationEditRejectedProviderFailure ConversationEditRejectionKind = "provider_failure"
+)
+
+// ConversationSteerDelivery is AO's durable answer to one idempotent steer.
+// Reserved is deliberately terminal from an automatic-retry perspective: once
+// provider I/O may have begun, only a recorded accepted or rejected result can
+// safely unlock the same client handle.
+type ConversationSteerDelivery struct {
+	ConversationID   string
+	ClientMessageID  string
+	RequestJSON      string
+	State            ConversationSteerDeliveryState
+	ProviderTurnID   string
+	ActivityID       string
+	RejectionKind    ConversationSteerRejectionKind
+	RejectionMessage string
+	CreatedAt        time.Time
+	SettledAt        *time.Time
+}
+
+// ConversationSteerDeliveryState records whether a reserved steer was accepted
+// or definitively rejected.
+type ConversationSteerDeliveryState string
+
+// Conversation steer delivery states.
+const (
+	ConversationSteerReserved ConversationSteerDeliveryState = "reserved"
+	ConversationSteerAccepted ConversationSteerDeliveryState = "accepted"
+	ConversationSteerRejected ConversationSteerDeliveryState = "rejected"
+)
+
+// ConversationSteerRejectionKind is the stable typed outcome persisted after a
+// provider definitively declines a steer. The original message is display detail;
+// this discriminator is what reconstructs errors.Is behavior after restart.
+type ConversationSteerRejectionKind string
+
+// Conversation steer rejection kinds.
+const (
+	ConversationSteerRejectedNoActiveTurn        ConversationSteerRejectionKind = "no_active_turn"
+	ConversationSteerRejectedUnsupported         ConversationSteerRejectionKind = "unsupported"
+	ConversationSteerRejectedTurnNotSteerable    ConversationSteerRejectionKind = "turn_not_steerable"
+	ConversationSteerRejectedContentUnsupported  ConversationSteerRejectionKind = "content_unsupported"
+	ConversationSteerRejectedByProvider          ConversationSteerRejectionKind = "provider_refused"
+	ConversationSteerRejectedInterfaceTransition ConversationSteerRejectionKind = "interface_transition"
+)

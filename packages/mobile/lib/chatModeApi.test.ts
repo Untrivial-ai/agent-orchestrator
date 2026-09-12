@@ -50,6 +50,27 @@ describe("mobile Chat API boundaries", () => {
 		expect(result.sessions[0]).toMatchObject({ isPinned: true, pinnedAt: "2026-08-09T10:00:00Z", lastActivityAt: "2026-08-08T10:00:00Z" });
 	});
 
+	it("preserves the daemon terminal handle used to attach native macOS PTYs", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({
+				sessions: [{
+					id: "w-1",
+					projectId: "p-1",
+					mode: "tui",
+					terminalHandleId: "ptyhost-v1:w-1",
+				}],
+			}))
+			.mockResolvedValueOnce(response({ sessions: [] }))
+			.mockResolvedValueOnce(response({ projects: [] }));
+
+		const result = await getSessions(cfg);
+
+		expect(result.sessions[0]).toMatchObject({
+			id: "w-1",
+			terminalHandleId: "ptyhost-v1:w-1",
+		});
+	});
+
 	it("delegates an optional empty task with explicit interface and model", async () => {
 		vi.mocked(fetch)
 			.mockResolvedValueOnce(response({ ok: true, workerId: "w-2" }, 202))
@@ -217,6 +238,46 @@ describe("mobile Chat API boundaries", () => {
 		expect(cursor).toBe(2);
 	});
 
+	// A cold-start replay against a busy daemon is ~200k events. Draining it in one
+	// unbroken run starves the JS thread, which is also what services touches — the
+	// board renders but ignores taps until the OS or the renderer gives up. The reader
+	// must therefore hand the event loop back periodically, no matter how much is queued.
+	it("yields to the event loop while draining a large replay", async () => {
+		vi.mocked(expoFetch).mockResolvedValue(new Response(
+			replayFrames(300),
+		) as unknown as Awaited<ReturnType<typeof expoFetch>>);
+
+		const streaming = chatApi.streamGlobalConversationEvents(
+			cfg, 0, new AbortController().signal, () => {}, undefined, { yieldEvery: 50 },
+		);
+		// Queued after the read loop starts. It can only run if the loop yields a
+		// macrotask mid-drain; a loop that only awaits already-resolved promises stays
+		// entirely in the microtask queue and starves this.
+		let eventLoopGotATurn = false;
+		setTimeout(() => { eventLoopGotATurn = true; }, 0);
+
+		await streaming;
+
+		expect(eventLoopGotATurn).toBe(true);
+	});
+
+	it("advances the cursor without parsing payloads when nothing is subscribed", async () => {
+		vi.mocked(expoFetch).mockResolvedValue(new Response(
+			replayFrames(3),
+		) as unknown as Awaited<ReturnType<typeof expoFetch>>);
+		const parsed: number[] = [];
+		const advanced: number[] = [];
+
+		const cursor = await chatApi.streamGlobalConversationEvents(
+			cfg, 0, new AbortController().signal, (event) => parsed.push(event.seq), undefined,
+			{ wantsPayload: () => false, onCursorAdvance: (seq) => advanced.push(seq) },
+		);
+
+		expect(parsed).toEqual([]);
+		expect(advanced).toEqual([1, 2, 3]);
+		expect(cursor).toBe(3);
+	});
+
 	it("accepts the daemon's reset cursor after its event database is replaced", async () => {
 		vi.mocked(expoFetch).mockResolvedValue(new Response(
 			'id: 1\ndata: {"seq":1,"projectId":"p-1","sessionId":"w-1","type":"session_updated","createdAt":"2026-08-11"}\n\n',
@@ -235,6 +296,15 @@ describe("mobile Chat API boundaries", () => {
 		expect(cursor).toBe(1);
 	});
 });
+
+/** `count` well-formed SSE frames with sequences 1..count. */
+function replayFrames(count: number): string {
+	let out = "";
+	for (let seq = 1; seq <= count; seq++) {
+		out += `id: ${seq}\ndata: {"seq":${seq},"projectId":"p-1","sessionId":"w-1","type":"session_updated","payload":{"conversationId":"c-1"},"createdAt":"2026-08-11"}\n\n`;
+	}
+	return out;
+}
 
 function response(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

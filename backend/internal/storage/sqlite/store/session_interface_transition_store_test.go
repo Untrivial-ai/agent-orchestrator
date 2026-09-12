@@ -124,6 +124,55 @@ func TestSessionInterfaceTransitionClaimModeCASAndOutbox(t *testing.T) {
 	}
 }
 
+func TestLatestSessionInterfaceTransitionBreaksCreatedAtTiesByInsertion(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, st, "switch-latest-tie")
+	now := time.Date(2026, 8, 28, 8, 0, 0, 0, time.UTC)
+	rec := sampleRecord("switch-latest-tie")
+	rec.Mode = domain.SessionModeTUI
+	session, err := st.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	createCompleted := func(id, nativeID string) {
+		t.Helper()
+		transition, created, err := st.CreateSessionInterfaceTransition(ctx,
+			domain.SessionInterfaceTransition{
+				ID: id, SessionID: session.ID,
+				SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+				Policy:               domain.SessionInterfaceTransitionDrain,
+				Phase:                domain.SessionInterfaceTransitionRequested,
+				NativeConversationID: nativeID,
+				CreatedAt:            now, UpdatedAt: now,
+			})
+		if err != nil || !created {
+			t.Fatalf("create transition %s: created=%v transition=%+v err=%v",
+				id, created, transition, err)
+		}
+		moved, err := st.AdvanceSessionInterfaceTransition(
+			ctx, id,
+			domain.SessionInterfaceTransitionRequested,
+			domain.SessionInterfaceTransitionCompleted,
+			nativeID, "", "", now,
+		)
+		if err != nil || !moved {
+			t.Fatalf("complete transition %s: moved=%v err=%v", id, moved, err)
+		}
+	}
+
+	createCompleted("transition-older", "native-older")
+	createCompleted("transition-newer", "native-newer")
+	latest, found, err := st.GetLatestSessionInterfaceTransition(ctx, session.ID)
+	if err != nil || !found {
+		t.Fatalf("get latest transition: found=%v err=%v", found, err)
+	}
+	if latest.ID != "transition-newer" || latest.NativeConversationID != "native-newer" {
+		t.Fatalf("latest tied transition = %+v, want insertion-later transition", latest)
+	}
+}
+
 func TestSessionInterfaceTransitionNoticeAcknowledgementRoundTripAndCDC(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

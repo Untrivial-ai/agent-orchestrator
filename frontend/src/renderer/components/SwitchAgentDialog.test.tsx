@@ -3,8 +3,9 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentModelsQueryKey } from "../hooks/useAgentModelsQuery";
-import type { WorkspaceSession } from "../types/workspace";
+import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
 import { SwitchAgentDialog } from "./SwitchAgentDialog";
+import { TooltipProvider } from "./ui/tooltip";
 
 const switchMocks = vi.hoisted(() => ({
 	clear: vi.fn(),
@@ -47,7 +48,11 @@ const worker: WorkspaceSession = {
 	workspaceName: "my-app",
 };
 
-function renderDialog(session: WorkspaceSession = worker, onOpenChange = vi.fn()) {
+function renderDialog(
+	session: WorkspaceSession = worker,
+	onOpenChange = vi.fn(),
+	agentSwitch?: AgentSwitchSummary,
+) {
 	const queryClient = new QueryClient({
 		defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
 	});
@@ -70,7 +75,15 @@ function renderDialog(session: WorkspaceSession = worker, onOpenChange = vi.fn()
 	}
 	const result = render(
 		<QueryClientProvider client={queryClient}>
-			<SwitchAgentDialog container={document.body} onOpenChange={onOpenChange} open session={session} />
+			<TooltipProvider>
+				<SwitchAgentDialog
+					agentSwitch={agentSwitch}
+					container={document.body}
+					onOpenChange={onOpenChange}
+					open
+					session={session}
+				/>
+			</TooltipProvider>
 		</QueryClientProvider>,
 	);
 	return { ...result, onOpenChange, queryClient };
@@ -143,6 +156,31 @@ describe("SwitchAgentDialog", () => {
 		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
+	it("keeps direct model IDs in the same searchable model picker", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(agentModelsQueryKey("codex", worker.workspaceId), {
+			agentId: "codex",
+			allowCustom: true,
+			customModelEntry: "direct",
+			fetchedAt: "2026-06-10T00:00:00Z",
+			models: [{ id: "gpt-5.4", label: "GPT-5.4", isDefault: true }],
+			selectionMode: "catalog",
+			source: "test",
+			stale: false,
+		});
+
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		const model = within(dialog).getByRole("button", { name: "Model" });
+		await userEvent.click(model);
+		await userEvent.type(screen.getByRole("searchbox", { name: "Search model" }), "private/model-id");
+		await userEvent.click(
+			screen.getByRole("menuitem", { name: "Use “private/model-id” as a custom model" }),
+		);
+
+		expect(model).toHaveTextContent("private/model-id");
+		expect(within(dialog).queryByRole("textbox", { name: "Model" })).not.toBeInTheDocument();
+	});
+
 	it("resets the previous target model when the active agent changes", async () => {
 		const { queryClient, rerender } = renderDialog();
 		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
@@ -153,12 +191,14 @@ describe("SwitchAgentDialog", () => {
 		const switchedSession = { ...worker, provider: "codex" as const };
 		rerender(
 			<QueryClientProvider client={queryClient}>
-				<SwitchAgentDialog
-					container={document.body}
-					onOpenChange={vi.fn()}
-					open
-					session={switchedSession}
-				/>
+				<TooltipProvider>
+					<SwitchAgentDialog
+						container={document.body}
+						onOpenChange={vi.fn()}
+						open
+						session={switchedSession}
+					/>
+				</TooltipProvider>
 			</QueryClientProvider>,
 		);
 
@@ -286,5 +326,30 @@ describe("SwitchAgentDialog", () => {
 			sessionId: "sess-1",
 			switchId: "switch-source-stop-recovery",
 		});
+	});
+
+	it("releases stale recovery UI when switch history observes terminal recovery", () => {
+		const recoverySession = {
+			...worker,
+			activeAgentSwitch: {
+				agentHandoffStatus: "received",
+				errorCode: "source_stop_unconfirmed",
+				fromHarness: "claude-code",
+				id: "switch-source-stop-recovery",
+				state: "stopping_source",
+				targetHarness: "codex",
+			},
+		} satisfies WorkspaceSession;
+		const recoveredSwitch = {
+			...recoverySession.activeAgentSwitch,
+			state: "failed",
+		} satisfies AgentSwitchSummary;
+
+		renderDialog(recoverySession, vi.fn(), recoveredSwitch);
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+
+		expect(within(dialog).queryByText("Claude Code status could not be confirmed")).not.toBeInTheDocument();
+		expect(within(dialog).queryByRole("button", { name: "Check Claude Code" })).not.toBeInTheDocument();
+		expect(within(dialog).getByRole("button", { name: "Target agent" })).toBeInTheDocument();
 	});
 });

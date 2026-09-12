@@ -322,6 +322,10 @@ func (r *unstyledTransitionRuntime) IsAlive(ctx context.Context, handle ports.Ru
 	return r.runtime.IsAlive(ctx, handle)
 }
 
+func (r *unstyledTransitionRuntime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
+	return r.runtime.ProbeFencedRuntime(ctx, ref)
+}
+
 func (r *transitionRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
 	*r.log = append(*r.log, "interrupt:tui:"+handle.ID)
 	return nil
@@ -405,7 +409,11 @@ func (c *transitionChat) SupportsChat(_ domain.AgentHarness) bool {
 	return c.supportsChat
 }
 
-func (c *transitionChat) PreflightChat(ctx context.Context, _ domain.AgentHarness) error {
+func (c *transitionChat) PreflightChat(
+	ctx context.Context,
+	_ domain.AgentHarness,
+	_ ports.PermissionMode,
+) error {
 	if c.preflightStarted != nil {
 		select {
 		case c.preflightStarted <- struct{}{}:
@@ -421,7 +429,12 @@ func (c *transitionChat) PreflightChat(ctx context.Context, _ domain.AgentHarnes
 	}
 	return c.preflightErr
 }
-func (c *transitionChat) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+func (c *transitionChat) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	var err error
+	cfg, err = prepareTestChatStart(ctx, cfg)
+	if err != nil {
+		return ChatStarted{}, err
+	}
 	c.start = cfg
 	*c.log = append(*c.log, "start:chat")
 	if c.startErr != nil {
@@ -697,6 +710,9 @@ func awaitTransition(t *testing.T, store *transitionStore, id string) domain.Ses
 
 func TestInterfaceTransitionTUIToChatStopsBeforeStartingAndReusesNativeConversation(t *testing.T) {
 	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeTUI)
+	manager.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{{
+		token: "transition-chat-token", verifier: "transition-chat-verifier",
+	}}}
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
 	if err != nil {
 		t.Fatal(err)
@@ -714,6 +730,12 @@ func TestInterfaceTransitionTUIToChatStopsBeforeStartingAndReusesNativeConversat
 	}
 	if !chat.start.RequireNativeHistory {
 		t.Fatal("TUI to Chat handoff did not require native history replay")
+	}
+	if got := chat.start.Env[EnvBrowserCapability]; got != "transition-chat-token" {
+		t.Fatalf("Chat transition capability = %q, want transition-chat-token", got)
+	}
+	if got := rec.Metadata.BrowserCapabilityVerifier; got != "transition-chat-verifier" {
+		t.Fatalf("Chat transition verifier = %q, want transition-chat-verifier", got)
 	}
 	if runtime.created != 0 {
 		t.Fatalf("terminal runtime created %d times while switching to Chat", runtime.created)

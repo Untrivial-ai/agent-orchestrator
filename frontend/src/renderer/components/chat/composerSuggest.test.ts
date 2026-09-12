@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	applySuggestion,
 	findActiveTrigger,
 	moveHighlight,
 	rankFiles,
@@ -24,12 +23,14 @@ describe("findActiveTrigger", () => {
 		expect(findActiveTrigger("/", 1)).toEqual({ kind: "skill", start: 0, query: "" });
 	});
 
-	// A slash mid-sentence is prose. Prose is full of them, and opening a menu there
-	// would make the next Enter insert a skill instead of sending the message.
-	it("ignores a slash that is not the start of the message", () => {
+	it("opens a slash command after existing prose", () => {
 		expect(findActiveTrigger("read src/app", 12)).toBeUndefined();
 		expect(findActiveTrigger("either and/or", 13)).toBeUndefined();
-		expect(findActiveTrigger("look at /rev", 12)).toBeUndefined();
+		expect(findActiveTrigger("look at /rev", 12)).toEqual({
+			kind: "skill",
+			start: 8,
+			query: "rev",
+		});
 	});
 
 	it("opens a file trigger for an at-sign after whitespace", () => {
@@ -167,40 +168,6 @@ describe("rankFiles", () => {
 	it("prefers a shallower path among equal matches", () => {
 		const ranked = rankFiles(["a/b/c/notes.md", "notes.md"], "notes");
 		expect(ranked[0]?.value).toBe("notes.md");
-	});
-});
-
-describe("applySuggestion", () => {
-	it("keeps the slash for a skill, because that is what the provider resolves", () => {
-		const trigger = findActiveTrigger("/rev", 4)!;
-		expect(applySuggestion("/rev", trigger, "review")).toEqual({
-			text: "/review ",
-			caret: 8,
-		});
-	});
-
-	// A bare path is what resolves on disk; a leading sigil would not.
-	it("drops the at-sign for a file and inserts the whole path", () => {
-		const trigger = findActiveTrigger("look at @Chat", 13)!;
-		expect(applySuggestion("look at @Chat", trigger, "src/ChatComposer.tsx")).toEqual({
-			text: "look at src/ChatComposer.tsx ",
-			caret: 29,
-		});
-	});
-
-	it("replaces only the trigger, leaving text after the caret alone", () => {
-		const text = "see @Chat and then stop";
-		const trigger = findActiveTrigger(text, 9)!;
-		expect(applySuggestion(text, trigger, "a/b.tsx").text).toBe("see a/b.tsx  and then stop");
-	});
-
-	// An unquoted path with a space reads as two arguments to anything that splits
-	// on whitespace, which is most of what an agent does with a path.
-	it("quotes a path containing whitespace", () => {
-		const trigger = findActiveTrigger("@my", 3)!;
-		expect(applySuggestion("@my", trigger, "my notes/todo.md").text).toBe(
-			'"my notes/todo.md" ',
-		);
 	});
 });
 

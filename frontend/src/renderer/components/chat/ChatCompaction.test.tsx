@@ -1,7 +1,14 @@
-import { render, screen, within } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
+import { typeInLexicalEditor } from "../../test/lexical";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 import type {
 	ConversationActivity,
 	ConversationItem,
@@ -13,6 +20,8 @@ import type {
 // that works for a day: every turn re-sends the history, so context fills on its
 // own until the conversation cannot accept another turn. These cover the two halves
 // the user sees — that a compaction happened, and how to cause one.
+
+beforeEach(() => localStorage.clear());
 
 function compaction(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
 	return {
@@ -69,15 +78,12 @@ const assistantSaid: ConversationItem = {
 };
 
 describe("compaction in the timeline", () => {
-	it("marks where history was compacted, and says what it reclaimed", () => {
+	it("shows the message above a full-width rule", () => {
 		render(<ChatWorkspace snapshot={snapshot([assistantSaid, compaction()])} />);
 
-		expect(screen.getByText("History compacted")).toBeInTheDocument();
-		// The reclaim, not the raw before/after: what was gained is the useful figure.
-		expect(screen.getByText("−11.0k")).toBeInTheDocument();
-		// How full the context is afterwards, which is what tells the user whether
-		// they have room to keep going.
-		expect(screen.getByText("2% full")).toBeInTheDocument();
+		expect(screen.getByText("The conversation history was compacted")).toBeInTheDocument();
+		expect(screen.getByText("−11.0k · 2% full")).toBeInTheDocument();
+		expect(screen.getByText("−11.0k · 2% full")).toHaveClass("text-muted-foreground/70");
 	});
 
 	// A compaction right after a daemon restart genuinely does not know what it
@@ -96,20 +102,17 @@ describe("compaction in the timeline", () => {
 			/>,
 		);
 
-		expect(screen.getByText("History compacted")).toBeInTheDocument();
+		expect(screen.getByText("The conversation history was compacted")).toBeInTheDocument();
 		expect(screen.queryByText(/0 tokens/)).not.toBeInTheDocument();
 		expect(screen.queryByText(/% full/)).not.toBeInTheDocument();
 	});
 
-	// It is a boundary in the conversation, not a step in one: everything above it is
-	// no longer what the agent sees verbatim, which a collapsed tool-call run would
-	// hide entirely.
-	it("renders as a divider rather than a collapsible activity row", () => {
+	it("does not render a centered label inside the rule", () => {
 		const { container } = render(
 			<ChatWorkspace snapshot={snapshot([assistantSaid, compaction()])} />,
 		);
 
-		expect(container.querySelector('[data-compaction="true"]')).not.toBeNull();
+		expect(container.querySelector('[data-compaction="true"]')).toBeNull();
 		expect(
 			screen.queryByRole("button", { name: /Compacted history/ }),
 		).not.toBeInTheDocument();
@@ -117,23 +120,24 @@ describe("compaction in the timeline", () => {
 });
 
 describe("the compact control", () => {
-	it("is offered in the composer message tools", () => {
-		const onCompact = vi.fn();
-		render(<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={onCompact} />);
+	// Compaction lives on `/compact` rather than a toolbar button: the composer
+	// tools stay for attach/settings, and compact is an AO slash command.
+	it("is offered in the slash menu, not the message tools", async () => {
+		render(<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={vi.fn()} />);
 
 		const tools = screen.getByRole("group", { name: "Message tools" });
-		const compactButton = within(tools).getByRole("button", {
-			name: "Compact conversation history",
-		});
-		compactButton.click();
-		expect(onCompact).toHaveBeenCalledOnce();
+		expect(
+			within(tools).queryByRole("button", { name: "Compact conversation history" }),
+		).not.toBeInTheDocument();
+
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "/");
+		expect(screen.getByRole("option", { name: /compact/i })).toBeInTheDocument();
 	});
 
 	it("offers compact alongside provider skills in the slash menu", async () => {
-		const user = userEvent.setup();
 		render(<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={vi.fn()} />);
 
-		await user.type(screen.getByLabelText("Message the agent"), "/");
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "/");
 		expect(screen.getByRole("option", { name: /compact/i })).toBeInTheDocument();
 	});
 
@@ -153,12 +157,14 @@ describe("the compact control", () => {
 		);
 
 		const field = screen.getByLabelText("Message the agent");
-		await user.type(field, "/compact");
+		await typeInLexicalEditor(field, "/compact");
 		await user.keyboard("{Enter}");
 
 		expect(onCompact).not.toHaveBeenCalled();
-		expect(field).toHaveValue("/compact");
-		expect(screen.getByRole("alert")).toHaveTextContent("Stop the current turn");
+		expect(field).toHaveTextContent("/compact");
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("Stop the current turn"),
+		);
 	});
 
 	it("surfaces a provider refusal only when the command is invoked", async () => {
@@ -171,10 +177,12 @@ describe("the compact control", () => {
 			/>,
 		);
 
-		expect(screen.getByText("This agent cannot compact its history")).toBeInTheDocument();
-		await user.type(screen.getByLabelText("Message the agent"), "/compact");
+		expect(screen.queryByText("This agent cannot compact its history")).not.toBeInTheDocument();
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "/compact");
 		await user.keyboard("{Enter}");
-		expect(screen.getByRole("alert")).toHaveTextContent("This agent cannot compact its history");
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("This agent cannot compact its history"),
+		);
 	});
 
 	it("does not start a second compaction while one is running", async () => {
@@ -184,9 +192,11 @@ describe("the compact control", () => {
 			<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={onCompact} compacting />,
 		);
 
-		await user.type(screen.getByLabelText("Message the agent"), "/compact");
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "/compact");
 		await user.keyboard("{Enter}");
 		expect(onCompact).not.toHaveBeenCalled();
-		expect(screen.getByRole("alert")).toHaveTextContent("already being compacted");
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("already being compacted"),
+		);
 	});
 });

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -14,6 +14,14 @@ const postMock = vi.hoisted(() => vi.fn());
 const openExternalMock = vi.hoisted(() => vi.fn());
 const writeTextMock = vi.hoisted(() => vi.fn());
 const restoreMock = vi.hoisted(() => vi.fn());
+const workspaceSubscriptionMock = vi.hoisted(() => vi.fn());
+const createProjectFlowMock = vi.hoisted(() => ({
+	props: null as null | {
+		existingProjectPaths?: readonly string[];
+		onOpenExistingProject?: (path: string) => void | Promise<void>;
+	},
+	lastOpenSignal: 0,
+}));
 
 const ctx = vi.hoisted(() => {
 	const workspaces: WorkspaceSummary[] = [
@@ -101,7 +109,10 @@ vi.mock("../hooks/useCommandPaletteEnabled", () => ({
 }));
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
-	useWorkspaceQuery: () => ({ data: ctx.workspaces }),
+	useWorkspaceQuery: (options: { subscribed?: boolean }) => {
+		workspaceSubscriptionMock(options);
+		return { data: ctx.workspaces };
+	},
 	workspaceQueryKey: ["workspaces"],
 }));
 
@@ -124,6 +135,7 @@ vi.mock("../lib/api-client", () => ({
 		return fallback;
 	},
 }));
+
 
 vi.mock("../lib/bridge", () => ({
 	aoBridge: {
@@ -170,8 +182,18 @@ vi.mock("./TaskComposer", () => ({
 }));
 
 vi.mock("./CreateProjectFlow", () => ({
-	CreateProjectFlow: ({ children }: { children: (state: { choosePath: () => void }) => ReactNode }) =>
-		children({ choosePath: choosePathMock }),
+	CreateProjectFlow: (props: {
+		openSignal?: number;
+		existingProjectPaths?: readonly string[];
+		onOpenExistingProject?: (path: string) => void | Promise<void>;
+	}) => {
+		createProjectFlowMock.props = props;
+		if (props.openSignal && props.openSignal !== createProjectFlowMock.lastOpenSignal) {
+			createProjectFlowMock.lastOpenSignal = props.openSignal;
+			choosePathMock();
+		}
+		return null;
+	},
 }));
 
 import { CommandPalette } from "./CommandPalette";
@@ -229,6 +251,9 @@ beforeEach(() => {
 	openExternalMock.mockReset();
 	writeTextMock.mockReset();
 	restoreMock.mockReset();
+	workspaceSubscriptionMock.mockReset();
+	createProjectFlowMock.props = null;
+	createProjectFlowMock.lastOpenSignal = 0;
 	restoreMock.mockResolvedValue({ status: "success" });
 	act(() => {
 		useUiStore.setState({
@@ -246,6 +271,26 @@ afterEach(() => {
 });
 
 describe("CommandPalette gating", () => {
+	it("does not mount the project-import flow until New project is selected", async () => {
+		renderPalette();
+		expect(createProjectFlowMock.props).toBeNull();
+
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+		expect(createProjectFlowMock.props).toBeNull();
+
+		fireEvent.click(screen.getByText("New project"));
+		await waitFor(() => expect(createProjectFlowMock.props).not.toBeNull());
+	});
+
+	it("subscribes to workspace updates only while open", () => {
+		renderPalette();
+		expect(workspaceSubscriptionMock).toHaveBeenLastCalledWith({ subscribed: false });
+
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		expect(workspaceSubscriptionMock).toHaveBeenLastCalledWith({ subscribed: true });
+	});
+
 	it("renders nothing and binds no shortcut on a disabled (stable) build", () => {
 		ctx.enabled = false;
 		renderPalette();
@@ -584,9 +629,11 @@ describe("CommandPalette actions", () => {
 	it("toggles the theme and closes", async () => {
 		renderPalette();
 		act(() => useUiStore.getState().setCommandPaletteOpen(true));
-		await screen.findByPlaceholderText(/search projects/i);
-		fireEvent.click(screen.getByText("Toggle theme"));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "toggle theme" } });
+		fireEvent.keyDown(input, { key: "Enter" });
 		expect(useUiStore.getState().resolvedTheme).toBe("light");
+		expect(input).toHaveValue("toggle theme");
 		await waitFor(() => expect(paletteInput()).toBeNull());
 	});
 
@@ -597,6 +644,23 @@ describe("CommandPalette actions", () => {
 		fireEvent.click(screen.getByText("New project"));
 		await waitFor(() => expect(choosePathMock).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("opens an already registered project selected by the import flow", async () => {
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.click(screen.getByText("New project"));
+		await waitFor(() => expect(createProjectFlowMock.props).not.toBeNull());
+
+		expect(createProjectFlowMock.props?.existingProjectPaths).toEqual(["/repos/app", "/repos/lib"]);
+		await act(async () => createProjectFlowMock.props?.onOpenExistingProject?.("/repos/lib"));
+
+		expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId",
+			params: { projectId: "proj-2" },
+		});
 	});
 });
 
@@ -660,13 +724,20 @@ describe("CommandPalette PR and review actions", () => {
 	it("triggers a review for the PR's session and closes", async () => {
 		mockReviews([reviewState("needs_review")]);
 		await openPaletteWithQuery("review");
-		fireEvent.click(await screen.findByText("Review latest commit #7"));
+		fireEvent.click(await screen.findByText("Re-review PR #7"));
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: "w-merge" } },
 			}),
 		);
 		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("does not post when the review item is not eligible to run", async () => {
+		await openPaletteWithQuery("review");
+		expect(await screen.findByText("Not eligible for review")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Run review #7"));
+		expect(postMock).not.toHaveBeenCalled();
 	});
 
 	it("shows Not eligible for review once the session review state loads", async () => {
@@ -700,6 +771,11 @@ describe("CommandPalette PR and review actions", () => {
 		// review action must not render until we actually know it's safe.
 		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
 		expect(screen.queryByText(/run review|re-run review|reviewing/i)).toBeNull();
+		await waitFor(() =>
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews", {
+				params: { path: { sessionId: "w-merge" } },
+			}),
+		);
 		await act(async () => {
 			resolveReviews({ data: { reviewerHandleId: "", reviews: [reviewState("running")] } });
 		});
@@ -748,6 +824,11 @@ describe("CommandPalette PR and review actions", () => {
 		// Run review action while the background refetch is still settling.
 		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
 		expect(screen.queryByText(/run review|re-run review/i)).toBeNull();
+		await waitFor(() =>
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews", {
+				params: { path: { sessionId: "w-merge" } },
+			}),
+		);
 
 		await act(async () => {
 			resolveReviews({ data: { reviewerHandleId: "", reviews: [reviewState("running")] } });

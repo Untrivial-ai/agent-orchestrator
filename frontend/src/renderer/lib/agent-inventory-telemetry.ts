@@ -1,4 +1,4 @@
-import type { AgentCatalog } from "../hooks/useAgentsQuery";
+import type { AgentReadiness } from "../hooks/useAgentReadinessQuery";
 
 /**
  * How many agents an install actually has available.
@@ -30,16 +30,17 @@ export type AgentInventory = {
 /** Agent ids are short registry slugs; this bounds the joined string anyway. */
 const MAX_AGENT_LIST_LENGTH = 200;
 
-export function buildAgentInventory(catalog: AgentCatalog): AgentInventory {
-  const authorized = (catalog.authorized ?? [])
+export function buildAgentInventory(catalog: AgentReadiness): AgentInventory {
+  const authorized = catalog.agents
+    .filter((agent) => agent.authentication.state === "authorized")
     .map((agent) => agent.id)
     .filter((id): id is string => typeof id === "string" && id !== "")
     .sort();
   const joined = authorized.join(",");
   return {
-    installed_count: (catalog.installed ?? []).length,
+    installed_count: catalog.agents.filter((agent) => agent.installation.state === "installed").length,
     authorized_count: authorized.length,
-    supported_count: (catalog.supported ?? []).length,
+    supported_count: catalog.agents.length,
     authorized_agents: joined.slice(0, MAX_AGENT_LIST_LENGTH),
   };
 }

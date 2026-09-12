@@ -2,7 +2,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const topbarButtonVariants = cva(
-	"topbar-control inline-flex items-center transition-[filter,background,color,border-color] duration-fast disabled:opacity-60",
+	"topbar-control topbar-control--disabled-affordance inline-flex items-center transition-[transform,filter,background-color,color,border-color] duration-fast ease-out active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
 	{
 		variants: {
 			variant: {
@@ -21,6 +21,12 @@ const topbarButtonVariants = cva(
 					"h-control-lg gap-1.5 rounded-md border border-error/40 bg-error/10 px-3 text-control font-semibold leading-none text-error hover:bg-error/16",
 				killCancel:
 					"h-control-lg rounded-md px-2.5 text-control font-semibold leading-none text-muted-foreground hover:text-foreground",
+				// The workspace handoff is one split control. Its joined edges and
+				// token-backed widths live beside the shared topbar rules in styles.css.
+				splitMain:
+					"topbar-control--split-main topbar-control--labeled h-control-lg gap-1.5 rounded-l-md border border-r-0 border-border text-sm font-semibold leading-none bg-raised text-muted-foreground hover:bg-surface hover:text-foreground",
+				splitTrigger:
+					"topbar-control--split-trigger grid h-control-lg place-items-center rounded-r-md border border-border bg-raised text-muted-foreground hover:bg-surface hover:text-foreground data-[state=open]:bg-surface data-[state=open]:text-foreground",
 			},
 		},
 		defaultVariants: { variant: "primary" },
@@ -36,7 +42,7 @@ export function TopbarButton({
 	return <button className={cn(topbarButtonVariants({ variant }), className)} type={type} {...props} />;
 }
 
-export function TopbarKillError({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
+export function TopbarActionError({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
 	return <span className={cn("text-caption text-destructive", className)} role="alert" {...props} />;
 }
 

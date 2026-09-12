@@ -50,6 +50,7 @@ type PRCheckObservation struct {
 type PRCommentObservation struct {
 	ID               string
 	ThreadID         string
+	ReviewID         string
 	Author           string
 	File             string
 	Line             int

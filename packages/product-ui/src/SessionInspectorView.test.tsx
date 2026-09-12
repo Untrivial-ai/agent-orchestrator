@@ -32,6 +32,31 @@ function ExternalLink({
   );
 }
 
+function setRenderedOverflow(
+  element: HTMLElement,
+  axis: "horizontal" | "vertical",
+  overflowing: boolean,
+) {
+  if (axis === "vertical") {
+    Object.defineProperties(element, {
+      clientHeight: { configurable: true, value: 64 },
+      scrollHeight: { configurable: true, value: overflowing ? 96 : 64 },
+    });
+  } else {
+    Object.defineProperties(element, {
+      clientWidth: { configurable: true, value: 240 },
+      scrollWidth: { configurable: true, value: overflowing ? 320 : 240 },
+    });
+  }
+  fireEvent(window, new Event("resize"));
+}
+
+function expandFirstReviewGroup() {
+  const row = screen.getAllByTestId("review-pr-row")[0]!;
+  if (row.getAttribute("aria-expanded") === "false") fireEvent.click(row);
+  return row;
+}
+
 const tabs = [
   { id: "summary" as const, icon: <svg />, label: "Summary" },
   { id: "reviews" as const, icon: <svg />, label: "Reviews" },
@@ -63,19 +88,23 @@ describe("SessionInspectorShellView", () => {
 
 
 		expect(screen.getByRole("complementary", { name: "Session inspector" })).toBeInTheDocument();
-		expect(screen.getByRole("tablist")).toHaveClass("session-inspector__tablist");
+		expect(screen.getByRole("tablist")).toHaveClass("session-inspector__tablist", "gap-1");
+		expect(screen.getByRole("tablist")).not.toHaveClass("gap-2");
+		expect(screen.getByRole("tablist").parentElement).toHaveClass("pl-1");
+		expect(screen.getByRole("tablist").parentElement).not.toHaveClass("pl-2", "pl-2.5");
 		expect(screen.getByRole("tablist").parentElement?.nextElementSibling).toHaveClass(
 			"board-scrollbar",
 			"overflow-x-hidden",
 		);
 		expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
-		expect(screen.getByRole("tab", { name: "Summary" })).toHaveClass("shrink-0");
+		expect(screen.getByRole("tab", { name: "Summary" })).toHaveClass("shrink-0", "size-control-md", "p-0");
 		expect(screen.getByRole("tab", { name: "Summary" })).not.toHaveClass("flex-1");
 		expect(screen.getByRole("tab", { name: "Summary" })).not.toHaveClass("min-w-0");
 		expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("tabindex", "0");
 		expect(screen.getByRole("tab", { name: "Browser" })).toHaveAttribute("tabindex", "-1");
 		const filesLabel = within(screen.getByRole("tab", { name: "Files" })).getByText("2 Files");
-		expect(filesLabel).toHaveClass("session-inspector__responsive-label");
+		expect(filesLabel).toHaveClass("sr-only");
+		expect(filesLabel).not.toHaveClass("session-inspector__responsive-label");
 		expect(filesLabel).not.toHaveClass("truncate", "min-w-0");
 		expect(filesLabel).not.toHaveClass("@max-[350px]/inspector:hidden");
 		expect(screen.getByTestId("browser-unseen-indicator")).toBeInTheDocument();
@@ -259,14 +288,16 @@ describe("portable inspector presentations", () => {
     );
 
     const row = screen.getByTestId("review-pr-row");
-    expect(row).not.toHaveAttribute("aria-expanded");
-    expect(screen.getByText("Looks good.")).toBeInTheDocument();
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Looks good.")).not.toBeInTheDocument();
     expect(screen.queryByText("Ship it.")).not.toBeInTheDocument();
-    const externalReview = screen.getByRole("button", {
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Looks good.")).toBeInTheDocument();
+    expect(screen.getByText("Ship it.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", {
       name: /review-bot.*Approved/,
-    });
-    expect(externalReview).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(externalReview);
+    })).not.toBeInTheDocument();
     const githubSummary = screen
       .getByText("Ship it.")
       .closest('[data-testid="github-review-summary"]');
@@ -308,11 +339,7 @@ describe("portable inspector presentations", () => {
       />
     );
     const { rerender } = render(view([olderReview]));
-    const olderButton = screen.getByRole("button", {
-      name: /ada.*Changes requested/,
-    });
-    expect(olderButton).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(olderButton);
+    expandFirstReviewGroup();
     expect(screen.getByText(olderBody)).toBeInTheDocument();
 
     rerender(
@@ -330,15 +357,12 @@ describe("portable inspector presentations", () => {
     );
 
     const cards = screen.getAllByTestId("github-review-card");
-    expect(
-      within(cards[0]).getByRole("button", {
-        name: /grace.*Changes requested/,
-      }),
-    ).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText(newerBody)).not.toBeInTheDocument();
+    expect(within(cards[0]).getByText("grace")).toBeInTheDocument();
+    expect(within(cards[0]).getByText(newerBody)).toBeInTheDocument();
   });
 
-  it("keeps external review actions inside comments and does not show re-review CTAs", () => {
+  it("keeps external review actions in the header without toggling nested comments", () => {
+    const onRequestRereview = vi.fn();
     render(
       <InspectorReviewsView
         externalLink={ExternalLink}
@@ -348,8 +372,11 @@ describe("portable inspector presentations", () => {
               entries: [
                 {
                   body: "Please take another pass after fixes land.",
+                  canRequestRereview: true,
                   id: "github-review-1",
+                  pullRequestUrl: "https://example.com/pull/12",
                   reviewerId: "maya",
+                  resolvedComments: [{ body: "Already addressed.", resolved: true }],
                   reviewUrl: "https://example.com/review",
                   submittedAt: "2026-08-09T10:00:00Z",
                   submittedAtLabel: "1h ago",
@@ -366,20 +393,33 @@ describe("portable inspector presentations", () => {
         ]}
         isLoading={false}
         labels={reviewLabels}
-        onRequestRereview={vi.fn()}
+        onRequestRereview={onRequestRereview}
         renderAvatar={() => null}
         renderMarkdown={(body) => <p>{body}</p>}
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /maya.*Changes requested/ }),
-    );
-
-    expect(
-      screen.queryByRole("button", { name: "Request to re-review PR" }),
-    ).not.toBeInTheDocument();
+    expandFirstReviewGroup();
     expect(screen.getByText("Please take another pass after fixes land.")).toBeInTheDocument();
+    const reviewToggle = screen.getByRole("button", { name: /maya.*Changes requested/i });
+    const actionMenu = screen.getByRole("button", { name: "Review actions" });
+    const externalReview = screen.getByTestId("github-review-card");
+    expect(screen.getByTestId("external-review-header")).toContainElement(actionMenu);
+    expect(reviewToggle).not.toContainElement(actionMenu);
+    expect(within(externalReview).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(actionMenu);
+    expect(screen.getByRole("link", { name: "Open in System Browser" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Request to re-review PR" }));
+    expect(onRequestRereview).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "github-review-1", reviewerId: "maya" }),
+    );
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Resolved comments · 1")).not.toBeInTheDocument();
+    fireEvent.click(reviewToggle);
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(externalReview).queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
+    expect(screen.getByText("Resolved comments · 1")).toBeInTheDocument();
   });
 
   it("does not offer re-review for an approved external review", () => {
@@ -416,8 +456,6 @@ describe("portable inspector presentations", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /maya.*Approved/ }));
-
     expect(
       screen.queryByRole("button", { name: "Request to re-review PR" }),
     ).not.toBeInTheDocument();
@@ -426,6 +464,7 @@ describe("portable inspector presentations", () => {
   it("shows unresolved inline review comments inside each reviewer dropdown", async () => {
     const onResolveInlineComment = vi.fn().mockResolvedValue(undefined);
     const onSendInlineComment = vi.fn().mockResolvedValue(undefined);
+    const onViewInlineCommentInFile = vi.fn();
     render(
       <InspectorReviewsView
         externalLink={ExternalLink}
@@ -489,6 +528,7 @@ describe("portable inspector presentations", () => {
         labels={reviewLabels}
         onResolveInlineComment={onResolveInlineComment}
         onSendInlineComment={onSendInlineComment}
+        onViewInlineCommentInFile={onViewInlineCommentInFile}
         renderAvatar={() => null}
         renderMarkdown={(body) => <p>{body}</p>}
       />,
@@ -497,6 +537,7 @@ describe("portable inspector presentations", () => {
     expect(
       screen.queryByTestId("github-inline-comments"),
     ).not.toBeInTheDocument();
+    expandFirstReviewGroup();
     expect(
       screen.getByRole("button", { name: /maya.*Commented/i }),
     ).toHaveAttribute("aria-expanded", "false");
@@ -511,6 +552,10 @@ describe("portable inspector presentations", () => {
     expect(
       screen.getByText("This branch leaks the resize listener on unmount."),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Send to worker agent" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Comment actions" })[0]!);
     fireEvent.click(
       screen.getByRole("button", { name: "Send to worker agent" }),
     );
@@ -524,9 +569,12 @@ describe("portable inspector presentations", () => {
       }),
     );
     await waitFor(() => {
-      const sentLabels = screen.getAllByText("Sent to worker agent");
-      expect(sentLabels).toHaveLength(2);
-      expect(sentLabels[0]?.closest("span")).toHaveClass("text-success");
+      const sentStatuses = screen.getAllByRole("status", {
+        name: "Sent to worker agent",
+      });
+      expect(sentStatuses).toHaveLength(2);
+      expect(sentStatuses[0]).toHaveClass("text-success");
+      expect(sentStatuses[0]).toHaveAttribute("title", "Sent to worker agent");
     });
     fireEvent.click(screen.getAllByRole("button", { name: "Comment actions" })[0]!);
     fireEvent.click(screen.getByRole("button", { name: "Resolve comment" }));
@@ -540,7 +588,10 @@ describe("portable inspector presentations", () => {
       }),
     );
     await waitFor(() => expect(screen.getByText("Resolved")).toBeInTheDocument());
-    expect(screen.getByRole("link", { name: "View in file" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View in file" }));
+    expect(onViewInlineCommentInFile).toHaveBeenCalledWith(
+      expect.objectContaining({ file: "src/panel.tsx", line: 42 }),
+    );
     expect(screen.getByRole("link", { name: "Open on GitHub" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy comment link" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy file path" })).not.toBeInTheDocument();
@@ -602,7 +653,9 @@ describe("portable inspector presentations", () => {
       />,
     );
 
+    expandFirstReviewGroup();
     fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Send to worker agent" }),
     );
@@ -612,10 +665,13 @@ describe("portable inspector presentations", () => {
         "text-error",
       ),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
     expect(
       screen.getByRole("button", { name: "Send to worker agent" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Sent to worker agent")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "Sent to worker agent" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps resolved comments collapsed until requested", () => {
@@ -661,6 +717,7 @@ describe("portable inspector presentations", () => {
       />,
     );
 
+    expandFirstReviewGroup();
     fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
     expect(screen.getByText("Resolved comments · 1")).toBeInTheDocument();
     expect(
@@ -741,16 +798,18 @@ describe("portable inspector presentations", () => {
       />,
     );
 
+    expandFirstReviewGroup();
     fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
-    const sendButtons = screen.getAllByRole("button", {
-      name: "Send to worker agent",
-    });
-    expect(sendButtons).toHaveLength(2);
-    fireEvent.click(sendButtons[0]!);
+    const actionButtons = screen.getAllByRole("button", { name: "Comment actions" });
+    fireEvent.click(actionButtons[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
 
     await waitFor(() =>
-      expect(screen.getByText("Sent to worker agent")).toBeInTheDocument(),
+      expect(
+        screen.getByRole("status", { name: "Sent to worker agent" }),
+      ).toBeInTheDocument(),
     );
+    fireEvent.click(actionButtons[1]!);
     expect(
       screen.getAllByRole("button", { name: "Send to worker agent" }),
     ).toHaveLength(1);
@@ -765,6 +824,144 @@ describe("portable inspector presentations", () => {
       }),
     );
   });
+
+  it("shows summary expansion only when the rendered four-line clamp overflows", async () => {
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[{
+          ao: {
+            runs: [{
+              body: "A rendered Markdown summary whose fit depends on the inspector width.",
+              createdAtLabel: "Now",
+              harness: "codex",
+              id: "run-overflow",
+              status: "complete",
+              verdict: { label: "Approved", tone: "success" },
+            }],
+          },
+          meta: "#12",
+          number: 12,
+          title: "Measured overflow",
+        }]}
+        isLoading={false}
+        labels={reviewLabels}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    expandFirstReviewGroup();
+    const summary = screen.getByTestId("review-run-summary");
+    setRenderedOverflow(summary, "vertical", false);
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+
+    setRenderedOverflow(summary, "vertical", true);
+    expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(summary).not.toHaveClass("line-clamp-4");
+    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
+    expect(summary).toHaveClass("line-clamp-4");
+
+    setRenderedOverflow(summary, "vertical", false);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument());
+  });
+
+  it("makes an inline comment expandable only when its preview is multiline or rendered-truncated", async () => {
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[{
+          github: {
+            entries: [{
+              id: "review-comments",
+              inlineComments: [{ body: "A short comment", file: "src/panel.tsx", line: 42 }],
+              reviewerId: "maya",
+              submittedAt: "2026-08-09T10:00:00Z",
+              submittedAtLabel: "Now",
+              verdict: { label: "Commented", tone: "neutral" },
+            }],
+            unresolved: 1,
+            unresolvedBy: [],
+          },
+          meta: "#12",
+          number: 12,
+          title: "Measured comment overflow",
+        }]}
+        isLoading={false}
+        labels={reviewLabels}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    expandFirstReviewGroup();
+    fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
+    const preview = screen.getByText("A short comment");
+    setRenderedOverflow(preview, "horizontal", false);
+    expect(preview.closest('[role="button"]')).toBeNull();
+
+    setRenderedOverflow(preview, "horizontal", true);
+    await waitFor(() => expect(preview.closest('[role="button"]')).toHaveAttribute("aria-expanded", "false"));
+    fireEvent.click(preview);
+    expect(preview.closest('[role="button"]')).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("offers AO browser, system browser, and worker-send actions for summaries", async () => {
+    const onOpenInAOBrowser = vi.fn();
+    const onSendReviewSummary = vi.fn().mockResolvedValue(undefined);
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[{
+          ao: {
+            runs: [{
+              body: "Please update the validation and tests.",
+              createdAtLabel: "Now",
+              harness: "codex",
+              id: "run-actions",
+              status: "complete",
+              url: "https://github.com/example/repo/pull/12#pullrequestreview-1",
+              verdict: { label: "Changes requested", tone: "danger" },
+            }],
+          },
+          meta: "#12",
+          number: 12,
+          title: "Summary actions",
+        }]}
+        isLoading={false}
+        labels={reviewLabels}
+        onOpenInAOBrowser={onOpenInAOBrowser}
+        onSendReviewSummary={onSendReviewSummary}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    expandFirstReviewGroup();
+    const reviewActions = screen.getByRole("button", { name: "Review actions" });
+    expect(reviewActions).toHaveClass("border");
+    fireEvent.click(reviewActions);
+    const sendAction = screen.getByRole("button", { name: "Send to worker agent" });
+    expect(sendAction.parentElement?.firstElementChild).toBe(sendAction);
+    expect(screen.getByRole("link", { name: "Open in System Browser" })).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("link", { name: "Open in System Browser" })).not.toBeInTheDocument();
+    fireEvent.click(reviewActions);
+    fireEvent.click(screen.getByRole("button", { name: "Open in AO Browser" }));
+    expect(onOpenInAOBrowser).toHaveBeenCalledWith("https://github.com/example/repo/pull/12#pullrequestreview-1");
+    expect(screen.getByRole("link", { name: "Open in System Browser" })).toHaveAttribute(
+      "href",
+      "https://github.com/example/repo/pull/12#pullrequestreview-1",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
+    await waitFor(() => expect(onSendReviewSummary).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Please update the validation and tests.",
+      reviewerId: "codex",
+      source: "agent",
+    })));
+    expect(await screen.findByRole("button", { name: "Sent to worker agent" })).toBeDisabled();
+  });
 });
 
 const reviewLabels: InspectorReviewLabels = {
@@ -777,8 +974,11 @@ const reviewLabels: InspectorReviewLabels = {
   noPastReviewSummaries: "No summaries",
   notInjected: "Not injected",
   openComments: "Open comments",
+  openInAOBrowser: "Open in AO Browser",
+  openInSystemBrowser: "Open in System Browser",
   openInlineComments: (count) => `${count} open comments`,
   requestRereviewPR: "Request to re-review PR",
+  reviewActions: "Review actions",
   reviews: "Reviews",
   reviewedAt: (time) => `Reviewed ${time}`,
   resolvedComments: (count) => `Resolved comments · ${count}`,

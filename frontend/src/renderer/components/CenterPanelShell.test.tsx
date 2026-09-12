@@ -11,6 +11,7 @@ vi.mock("../lib/platform", () => ({
 
 vi.mock("../hooks/useWindowFullScreen", () => ({ useWindowFullScreen: () => false }));
 vi.mock("../stores/ui-store", () => ({
+	sidebarOccupiesLayout: (state: { isSidebarOpen: boolean }) => state.isSidebarOpen,
 	useUiStore: (sel: (s: { isSidebarOpen: boolean }) => unknown) => sel(uiState),
 }));
 

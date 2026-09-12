@@ -1,10 +1,12 @@
 package reaper
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -227,5 +229,38 @@ func TestTick_SkipsSessionWithoutHandle(t *testing.T) {
 	}
 	if _, probed := lcm.observed["mer-1"]; probed {
 		t.Fatal("a session without a runtime handle must be skipped")
+	}
+}
+
+func TestTick_WarnsOnlyOnceForSessionWithoutHandle(t *testing.T) {
+	lcm := &fakeLCM{}
+	sessions := fakeSessions{
+		rows: []domain.SessionRecord{
+			{ID: "mer-1"},
+			{ID: "mer-2"},
+		},
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	r := New(lcm, sessions, fakeRuntime{alive: true}, Config{
+		Logger: logger,
+	})
+
+	for range 3 {
+		if err := r.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const warning = "reaper: session has no runtime handle metadata, skipping"
+	if got := strings.Count(logs.String(), warning); got != 2 {
+		t.Fatalf("warning count = %d, want 2; logs:\n%s", got, logs.String())
+	}
+	for _, id := range []domain.SessionID{"mer-1", "mer-2"} {
+		if got := strings.Count(logs.String(), "session="+string(id)); got != 1 {
+			t.Fatalf("warning count for %s = %d, want 1; logs:\n%s", id, got, logs.String())
+		}
 	}
 }

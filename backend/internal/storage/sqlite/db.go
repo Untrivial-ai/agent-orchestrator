@@ -7,7 +7,10 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +47,71 @@ const readOnlyPragmas = "?mode=ro" +
 // maxReaders caps the reader pool. WAL allows many concurrent readers.
 const maxReaders = 8
 
+// databaseURI preserves filesystem characters instead of interpreting them as
+// SQLite URI parameters/fragments. Both pools and read-only opens must address
+// the same literal file, including percent signs and Windows drive paths.
+func databaseURI(dataDir string) string {
+	file := url.URL{Path: filepath.Join(dataDir, "ao.db")}
+	return "file:" + file.EscapedPath()
+}
+
+// An older raw file: URI may have stored this directory's data elsewhere. Do
+// not silently replace that database with an empty one after fixing the URI.
+func checkLegacyDatabasePath(dataDir string) error {
+	intended := filepath.Join(dataDir, "ao.db")
+	if _, err := os.Stat(intended); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect intended database: %w", err)
+	}
+	raw := intended
+	if end := strings.IndexAny(raw, "?#"); end >= 0 {
+		raw = raw[:end]
+	}
+	var decoded strings.Builder
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '%' && i+2 < len(raw) {
+			if value, err := url.PathUnescape(raw[i : i+3]); err == nil {
+				if value[0] == 0 {
+					break
+				}
+				decoded.WriteString(value)
+				i += 2
+				continue
+			}
+		}
+		decoded.WriteByte(raw[i])
+	}
+	legacy := decoded.String()
+	if legacy == intended {
+		return nil
+	}
+	info, err := os.Stat(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect legacy database path: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	file, err := os.Open(legacy)
+	if err != nil {
+		return fmt.Errorf("inspect legacy database: %w", err)
+	}
+	var header [16]byte
+	n, readErr := io.ReadFull(file, header[:])
+	_ = file.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("inspect legacy database: %w", readErr)
+	}
+	if n == len(header) && string(header[:]) == "SQLite format 3\x00" {
+		return fmt.Errorf("legacy SQLite path parsing stored data at %q; refusing to create an empty database at %q: stop AO and recover the legacy database explicitly before retrying", legacy, intended)
+	}
+	return nil
+}
+
 // Open opens (creating if absent) the SQLite database under dataDir and returns
 // a Store. It uses TWO pools against the same file:
 //
@@ -59,7 +127,10 @@ func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-	dsn := "file:" + filepath.Join(dataDir, "ao.db") + pragmas
+	if err := checkLegacyDatabasePath(dataDir); err != nil {
+		return nil, err
+	}
+	dsn := databaseURI(dataDir) + pragmas
 
 	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -86,7 +157,7 @@ func Open(dataDir string) (*Store, error) {
 // OpenReadOnly opens an existing SQLite database under dataDir without creating
 // the directory, opening a writable connection, or running migrations.
 func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
-	dsn := "file:" + filepath.Join(dataDir, "ao.db") + readOnlyPragmas
+	dsn := databaseURI(dataDir) + readOnlyPragmas
 
 	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -131,14 +202,38 @@ func migrate(db *sql.DB) error {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}
+	if err := repairRenumberedAgentInstallJobsMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered agent-install-jobs migration history: %w", err)
+	}
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
+	}
+	if err := repairRenumberedUsageCostMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered usage-cost migration history: %w", err)
+	}
+	if err := prepareCancelledConversationTurnsMigration(db); err != nil {
+		return fmt.Errorf("prepare cancelled conversation-turn migration: %w", err)
+	}
+	if err := repairRenumberedCodexProfileMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered Codex profile migration history: %w", err)
+	}
+	if err := repairRenumberedAgentInventoryMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered agent-inventory migration history: %w", err)
+	}
+	if err := prepareUsageCostMigration(db); err != nil {
+		return fmt.Errorf("prepare usage cost migration: %w", err)
 	}
 	if err := prepareAutoInjectReviewMigration(db); err != nil {
 		return fmt.Errorf("prepare auto-inject-review migration: %w", err)
 	}
+	if err := preparePRCommentReviewIDMigration(db); err != nil {
+		return fmt.Errorf("prepare PR comment review-id migration: %w", err)
+	}
 	if err := repairRenumberedAgentSwitchMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered agent-switch migration history: %w", err)
+	}
+	if err := repairRenumberedPRReviewPartialMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered PR review-partial migration history: %w", err)
 	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
@@ -152,6 +247,9 @@ func migrate(db *sql.DB) error {
 	if err := prepareQueuedTurnPromotionMigration(db); err != nil {
 		return fmt.Errorf("prepare queued-turn promotion migration: %w", err)
 	}
+	if err := prepareSessionReviewerAgentConfigMigration(db); err != nil {
+		return fmt.Errorf("prepare session reviewer agent-config migration: %w", err)
+	}
 	// Builds can advance a database past a migration that is added or
 	// renumbered later (notably across fast-moving Nightly releases). Apply
 	// those embedded migrations instead of permanently wedging daemon startup
@@ -160,6 +258,125 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+// repairRenumberedAgentInstallJobsMigrationHistory preserves development
+// databases opened while the harness-installer branch owned versions 0119 or
+// 0120. Main later assigned those versions to idempotent data repairs, so move
+// the exact installer-table shape to its canonical 0123 ledger entry and let
+// Goose replay the real 0119 and 0120 migrations.
+func repairRenumberedAgentInstallJobsMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var installJobShape int
+	if err := db.QueryRow(`
+SELECT COUNT(*) FROM pragma_table_info('agent_install_jobs')
+WHERE name IN (
+    'target', 'status', 'method', 'command', 'expected_destination',
+    'output', 'error', 'started_at', 'finished_at', 'updated_at'
+)`).Scan(&installJobShape); err != nil {
+		return err
+	}
+	if installJobShape != 10 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var canonicalApplied int
+	if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 123 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&canonicalApplied); err != nil {
+		return err
+	}
+	if canonicalApplied != 0 {
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (123, 1)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id IN (119, 120)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// prepareCancelledConversationTurnsMigration repairs the staging table left
+// by an interrupted 0118 table rebuild. The migration runs without a wrapping
+// transaction because it temporarily disables foreign keys, so a process exit
+// can leave conversation_turns_next behind and make every retry fail at CREATE
+// TABLE. When the source table remains it is still authoritative and the stale
+// copy is discarded. If the interruption happened after the source was
+// dropped, promote the staging table back to the source name and let 0118
+// perform the complete rebuild again.
+func prepareCancelledConversationTurnsMigration(db *sql.DB) error {
+	var sourceTable, stagingTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turns'`,
+	).Scan(&sourceTable); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turns_next'`,
+	).Scan(&stagingTable); err != nil {
+		return err
+	}
+	if stagingTable == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if sourceTable != 0 {
+		if _, err := tx.Exec(`DROP TABLE conversation_turns_next`); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(`ALTER TABLE conversation_turns_next RENAME TO conversation_turns`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// prepareUsageCostMigration releases a falsely-applied usage migration before
+// 0101 adds columns to its tables. Some field profiles recorded versions
+// 44-53 from a foreign build without ever creating the real 0052 usage schema.
+func prepareUsageCostMigration(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil || gooseTable == 0 {
+		return err
+	}
+	var usageTables int
+	if err := db.QueryRow(`
+SELECT COUNT(*) FROM sqlite_master
+WHERE type = 'table' AND name IN ('usage_bindings', 'usage_sources', 'model_usage_events')`).Scan(&usageTables); err != nil {
+		return err
+	}
+	if usageTables == 3 {
+		return nil
+	}
+	_, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 52`)
+	return err
 }
 
 // prepareAutoInjectReviewMigration preserves development databases whose
@@ -203,6 +420,44 @@ SELECT COALESCE((
 	}
 
 	_, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (84, 1)`)
+	return err
+}
+
+// preparePRCommentReviewIDMigration preserves development databases that
+// acquired pr_comment.review_id while this migration was being renumbered but
+// do not have its canonical 0106 ledger entry. Recording the physically present
+// effect prevents goose from replaying the ALTER TABLE over the existing column.
+func preparePRCommentReviewIDMigration(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var applied, reviewIDColumn int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 106 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied != 0 {
+		return nil
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pr_comment') WHERE name = 'review_id'`,
+	).Scan(&reviewIDColumn); err != nil {
+		return err
+	}
+	if reviewIDColumn == 0 {
+		return nil
+	}
+	_, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (106, 1)`)
 	return err
 }
 
@@ -250,6 +505,41 @@ SELECT COALESCE((
 // owns both numbers, so record the promotion schema as version 89. If version 88
 // came from the old promotion migration, remove that ledger entry so goose can
 // apply upstream's auto-inject-CI migration at its canonical version.
+// prepareSessionReviewerAgentConfigMigration preserves databases that
+// already have sessions.reviewer_agent_config from an in-flight local run but
+// do not yet record the canonical 0118 migration version. Recording that
+// physically present effect prevents goose from replaying the ALTER TABLE over
+// the existing column on the next startup.
+func prepareSessionReviewerAgentConfigMigration(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var applied, reviewerConfigColumn int
+	if err := db.QueryRow(`
+SELECT
+    COALESCE((
+        SELECT is_applied FROM goose_db_version
+        WHERE version_id = 118 ORDER BY id DESC LIMIT 1
+    ), 0),
+    (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'reviewer_agent_config')
+`).Scan(&applied, &reviewerConfigColumn); err != nil {
+		return err
+	}
+	if applied != 0 || reviewerConfigColumn == 0 {
+		return nil
+	}
+
+	_, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (118, 1)`)
+	return err
+}
+
 func prepareQueuedTurnPromotionMigration(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -662,6 +952,280 @@ SELECT COALESCE((
 	return tx.Commit()
 }
 
+// repairRenumberedUsageCostMigrationHistory preserves development databases
+// opened while this feature's migrations occupied 0109-0112 and, later,
+// 0110-0113. Main now owns 0109-0112, while the same usage migrations live at
+// 0113-0116. Record each physically present usage effect at its canonical
+// number, then release only the collided main numbers whose physical effects
+// are absent.
+func repairRenumberedUsageCostMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	// provider_hint and the durable event pricing columns arrived together in
+	// the first usage-cost migration. Requiring the complete retained shape
+	// avoids rewriting unrelated migration history on databases without it.
+	var costShape int
+	if err := db.QueryRow(`
+SELECT (SELECT COUNT(*) FROM pragma_table_info('usage_bindings') WHERE name = 'provider_hint')
+     + (SELECT COUNT(*) FROM pragma_table_info('model_usage_events') WHERE name = 'billing_provider_id')
+     + (SELECT COUNT(*) FROM pragma_table_info('model_usage_events') WHERE name = 'estimated_cost_nanos')
+     + (SELECT COUNT(*) FROM pragma_table_info('model_usage_events') WHERE name = 'pricing_version')`).Scan(&costShape); err != nil {
+		return err
+	}
+	if costShape != 4 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	markApplied := func(version int64) error {
+		var applied int
+		if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = ? ORDER BY id DESC LIMIT 1
+), 0)`, version).Scan(&applied); err != nil {
+			return err
+		}
+		if applied != 0 {
+			return nil
+		}
+		_, err := tx.Exec(
+			`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`,
+			version,
+		)
+		return err
+	}
+
+	if err := markApplied(113); err != nil {
+		return err
+	}
+	var canonicalIndex int
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM sqlite_master
+WHERE type = 'index' AND name = 'idx_model_usage_events_canonical_cost_candidates'`).Scan(&canonicalIndex); err != nil {
+		return err
+	}
+	if canonicalIndex != 0 {
+		if err := markApplied(114); err != nil {
+			return err
+		}
+	}
+
+	var measurementShape int
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM pragma_table_info('model_usage_events')
+WHERE name IN ('usage_measurement_kind', 'provider_usage_json')`).Scan(&measurementShape); err != nil {
+		return err
+	}
+	if measurementShape == 2 {
+		if err := markApplied(115); err != nil {
+			return err
+		}
+	}
+
+	var providerSource int
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM pragma_table_info('model_usage_events')
+WHERE name = 'billing_provider_source'`).Scan(&providerSource); err != nil {
+		return err
+	}
+	if providerSource != 0 {
+		if err := markApplied(116); err != nil {
+			return err
+		}
+	}
+
+	var latestPromptShape, branchShape, prTriggerShape, cloudShape int
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM pragma_table_info('sessions')
+WHERE name = 'latest_user_prompt_at'`).Scan(&latestPromptShape); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM pragma_table_info('conversation_branches')
+WHERE name IN ('strategy', 'replay_cutoff_sequence', 'replay_truncated', 'provider_scope_id')`).Scan(&branchShape); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM sqlite_master
+WHERE type = 'trigger' AND name = 'pr_cdc_update'
+  AND instr(COALESCE(sql, ''), 'auto_inject_ci') > 0`).Scan(&prTriggerShape); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`
+SELECT COUNT(*) FROM pragma_table_info('app_settings')
+WHERE name = 'cloud_offering'`).Scan(&cloudShape); err != nil {
+		return err
+	}
+	for _, migration := range []struct {
+		version int64
+		present bool
+	}{
+		{version: 109, present: latestPromptShape != 0},
+		{version: 110, present: branchShape == 4},
+		{version: 111, present: prTriggerShape != 0},
+		{version: 112, present: cloudShape != 0},
+	} {
+		if migration.present {
+			continue
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM goose_db_version WHERE version_id = ?`, migration.version,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// repairRenumberedCodexProfileMigrationHistory preserves development
+// databases opened before the stacked Codex-profile migrations were moved out
+// of version numbers subsequently claimed by main. Early Phase 1 builds used
+// 0117 to drop agent_inventory_cache; 0117 now enables Kimi usage. Release the
+// collided ledger entry only when the canonical physical effect is absent so
+// goose can apply the real migration. The drop remains safe at canonical 0122.
+func repairRenumberedCodexProfileMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var applied117 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 117 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied117); err != nil {
+		return err
+	}
+	if applied117 == 0 {
+		return nil
+	}
+
+	var kimiUsageShape int
+	if err := db.QueryRow(`
+SELECT (SELECT COUNT(*) FROM sqlite_master
+        WHERE type = 'table' AND name = 'usage_bindings'
+          AND instr(COALESCE(sql, ''), '''kimi''') > 0)
+     + (SELECT COUNT(*) FROM sqlite_master
+        WHERE type = 'table' AND name = 'usage_sources'
+          AND instr(COALESCE(sql, ''), '''kimi_wire''') > 0)`).Scan(&kimiUsageShape); err != nil {
+		return err
+	}
+	if kimiUsageShape == 2 {
+		return nil
+	}
+
+	_, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 117`)
+	return err
+}
+
+// repairRenumberedAgentInventoryMigrationHistory preserves development
+// databases opened while this branch used 0119, 0120, or 0121 to drop
+// agent_inventory_cache. Main now owns those versions for completed-plan
+// finalization, activity timestamp normalization, and reviewer configuration;
+// the identical cache drop lives at 0122. An absent cache table plus a collided
+// ledger entry identifies the branch history: mark the physical drop at 0122,
+// then release the newest collided version so goose can apply main's migration
+// with WithAllowMissing.
+func repairRenumberedAgentInventoryMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var applied119 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 119 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied119); err != nil {
+		return err
+	}
+	var applied120 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 120 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied120); err != nil {
+		return err
+	}
+	var applied121 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 121 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied121); err != nil {
+		return err
+	}
+	var applied122 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 122 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied122); err != nil {
+		return err
+	}
+	if applied122 != 0 || (applied119 == 0 && applied120 == 0 && applied121 == 0) {
+		return nil
+	}
+
+	var inventoryTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_inventory_cache'`,
+	).Scan(&inventoryTable); err != nil {
+		return err
+	}
+	if inventoryTable != 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (122, 1)`); err != nil {
+		return err
+	}
+	collidedVersion := int64(119)
+	if applied120 != 0 {
+		collidedVersion = 120
+	}
+	if applied121 != 0 {
+		collidedVersion = 121
+	}
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, collidedVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // repairRenumberedAgentSwitchMigrationHistory preserves databases opened by
 // earlier revisions of this feature branch. Agent switching first occupied
 // 0080/0081, later 0081/0082, and briefly 0083/0084; main now owns 0080
@@ -784,6 +1348,94 @@ SELECT COALESCE((
 	return tx.Commit()
 }
 
+// repairRenumberedPRReviewPartialMigrationHistory preserves databases opened by
+// earlier revisions of this branch: the review_partial column first shipped as
+// 0123, a number main later claimed for agent_install_jobs. On those databases
+// goose would skip main's 0123 (its effects missing) and fail 0130 on the
+// duplicate column. Remap the recorded history — review_partial physically
+// present while agent_install_jobs is not identifies the branch build — and
+// re-initialize certainty conservatively, matching the migration default: rows
+// written before the completeness semantics landed carry no reliable signal, so
+// they stay uncertain until the next successful full review fetch.
+func repairRenumberedPRReviewPartialMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var reviewPartialColumn int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pr') WHERE name = 'review_partial'`,
+	).Scan(&reviewPartialColumn); err != nil {
+		return err
+	}
+	if reviewPartialColumn == 0 {
+		return nil
+	}
+
+	// The branch's 0123 ran only on builds predating main's 0123-0129. If
+	// agent_install_jobs exists, main's 0123 already ran and this database took
+	// the migration through 0130 (or never saw the old numbering) — nothing to
+	// remap.
+	var agentInstallJobsTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_install_jobs'`,
+	).Scan(&agentInstallJobsTable); err != nil {
+		return err
+	}
+	if agentInstallJobsTable != 0 {
+		return nil
+	}
+
+	var applied123 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 123 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied123); err != nil {
+		return err
+	}
+	if applied123 == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Release 123 so goose applies main's agent_install_jobs, and record 130 as
+	// applied so goose does not replay the ALTER on the existing column.
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 123`); err != nil {
+		return err
+	}
+	var applied130 int
+	if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 130 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied130); err != nil {
+		return err
+	}
+	if applied130 == 0 {
+		if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (130, 1)`); err != nil {
+			return err
+		}
+	}
+	// The column predates the conservative default; re-initialize to uncertain
+	// so pre-semantics rows cannot publish exact thread counts.
+	if _, err := tx.Exec(`UPDATE pr SET review_partial = TRUE`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // schemaRepairs lists the column-level effects of migrations that real
 // installs are known to skip. Issue #3475/#3476: profiles exist whose
 // goose_db_version already records versions 40 through 46 (written by a
@@ -897,6 +1549,26 @@ BEGIN
 		addDDL: `ALTER TABLE conversation_turns ADD COLUMN promotion_started_at TIMESTAMP`},
 	{version: 89, table: "conversation_turns", column: "promoted_to_turn_id",
 		addDDL: `ALTER TABLE conversation_turns ADD COLUMN promoted_to_turn_id TEXT REFERENCES conversation_turns(id) ON DELETE SET NULL`},
+	// 0106_pr_comment_review_id.sql. Session projections join this column, so a
+	// field database that recorded 0106 without its physical effect must be
+	// repaired before the first list request.
+	{version: 106, table: "pr_comment", column: "review_id",
+		addDDL: `ALTER TABLE pr_comment ADD COLUMN review_id TEXT NOT NULL DEFAULT ''`},
+	// 0108_conversation_retry_source.sql. Some stacked development builds
+	// recorded 0108 without applying its physical schema; 0118 rebuilds this
+	// table and must see the retry lineage column before goose reaches it.
+	{version: 108, table: "conversation_turns", column: "retry_of_turn_id",
+		addDDL: `ALTER TABLE conversation_turns ADD COLUMN retry_of_turn_id TEXT REFERENCES conversation_turns(id) ON DELETE RESTRICT`,
+		postAdd: []string{
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_retry_source
+    ON conversation_turns(conversation_id, retry_of_turn_id)
+    WHERE retry_of_turn_id IS NOT NULL`,
+		}},
+	// 0130_pr_review_partial.sql. Generated PR reads select this column, so a
+	// field database that burned version 130 must not lose it. The default
+	// matches the migration: unknown historical certainty stays partial.
+	{version: 130, table: "pr", column: "review_partial",
+		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist

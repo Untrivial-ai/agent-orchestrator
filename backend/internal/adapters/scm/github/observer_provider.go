@@ -342,7 +342,8 @@ type restListPull struct {
 		SHA string `json:"sha"`
 	} `json:"base"`
 	User struct {
-		Login string `json:"login"`
+		Login     string `json:"login"`
+		AvatarURL string `json:"avatar_url"`
 	} `json:"user"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -363,6 +364,7 @@ func restListPullToSCM(pull restListPull) ports.SCMPRObservation {
 		HeadSHA:           pull.Head.SHA,
 		Title:             pull.Title,
 		Author:            pull.User.Login,
+		AuthorAvatarURL:   pull.User.AvatarURL,
 		BaseSHA:           pull.Base.SHA,
 		ProviderState:     pull.State,
 		HTMLURL:           pull.HTMLURL,
@@ -390,7 +392,7 @@ func scmPRFields() string {
 number id url state isDraft merged closed title additions deletions changedFiles
 mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName baseRefOid
 createdAt updatedAt mergedAt closedAt
-author{ login }
+author{ login avatarUrl }
 mergeCommit{ oid }
 commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:CONTEXT_LIMIT){ nodes{
   __typename
@@ -515,6 +517,7 @@ func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMO
 			Deletions:                int(num(pr["deletions"])),
 			ChangedFiles:             int(num(pr["changedFiles"])),
 			Author:                   authorLogin(pr["author"]),
+			AuthorAvatarURL:          authorAvatarURL(pr["author"]),
 			BaseSHA:                  str(pr["baseRefOid"]),
 			MergeCommitSHA:           mergeCommitOID(pr),
 			ProviderState:            str(pr["state"]),
@@ -694,12 +697,12 @@ func buildReviewThreadsQuery(ref ports.SCMPRRef, beforeCursor string, includeRev
 	}
 	reviewSelection := ""
 	if includeReviews {
-		reviewSelection = fmt.Sprintf(" reviewSummaries: reviews(last:%d, states:[APPROVED,CHANGES_REQUESTED]){ nodes{ id state url submittedAt body commit{ oid } author{ login __typename } } }", githubReviewSummaryLimit)
+		reviewSelection = fmt.Sprintf(" reviewSummaries: reviews(last:%d, states:[APPROVED,CHANGES_REQUESTED,COMMENTED]){ nodes{ id state url submittedAt body commit{ oid } author{ login __typename } } }", githubReviewSummaryLimit)
 	}
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){ reviewDecision%s reviewThreads(last:%d, before:%s){ nodes{
   id isResolved path line
-  comments(first:%d){ nodes{ id body url author{ login __typename } } }
+  comments(first:%d){ nodes{ id body url pullRequestReview{ databaseId } author{ login __typename } } }
 } pageInfo{ hasPreviousPage startCursor } } } }
 }`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, reviewSelection, githubReviewThreadPageSize, before, githubReviewCommentLimitPerThread)
 }
@@ -744,16 +747,18 @@ func scmThreadFromGraphQL(th map[string]any) ports.SCMReviewThreadObservation {
 	allCommentsBot := len(commentNodes) > 0
 	for _, cn := range commentNodes {
 		author, _ := cn["author"].(map[string]any)
+		parentReview, _ := cn["pullRequestReview"].(map[string]any)
 		isBot := isBotAuthor(author)
 		if !isBot {
 			allCommentsBot = false
 		}
 		out.Comments = append(out.Comments, ports.SCMReviewCommentObservation{
-			ID:     str(cn["id"]),
-			Author: str(author["login"]),
-			Body:   str(cn["body"]),
-			URL:    str(cn["url"]),
-			IsBot:  isBot,
+			ID:       str(cn["id"]),
+			ReviewID: decimalID(parentReview["databaseId"]),
+			Author:   str(author["login"]),
+			Body:     str(cn["body"]),
+			URL:      str(cn["url"]),
+			IsBot:    isBot,
 		})
 	}
 	out.IsBot = allCommentsBot
@@ -847,6 +852,11 @@ func parseGitHubTime(s string) time.Time {
 func authorLogin(v any) string {
 	author, _ := v.(map[string]any)
 	return str(author["login"])
+}
+
+func authorAvatarURL(v any) string {
+	author, _ := v.(map[string]any)
+	return str(author["avatarUrl"])
 }
 
 func mergeCommitOID(pr map[string]any) string {

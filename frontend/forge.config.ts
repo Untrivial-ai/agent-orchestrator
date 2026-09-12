@@ -1,9 +1,15 @@
 import type { ForgeConfig } from "@electron-forge/shared-types";
+import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 import { VitePlugin } from "@electron-forge/plugin-vite";
+import { rebuild } from "@electron/rebuild";
+import electronPackage from "electron/package.json";
 import MakerNSIS from "./makers/maker-nsis";
-import MakerDMG, { sealDmg, verifyDmg } from "./makers/maker-dmg";
+import MakerDMG, { isSigningConfigured, sealDmg, verifyDmg, verifyMacArtifact } from "./makers/maker-dmg";
+import { machoHasX86_64Slice } from "./makers/macho-archs";
 import MakerAppImage from "./makers/maker-appimage";
-import { writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 
 // Default GitHub release target (production). Releases land on Untrivial-ai
 // (the org the repo was transferred to in July 2026; AgentWrapper and aoagents
@@ -23,6 +29,77 @@ const AUTH_PROTOCOL = {
 	schemes: ["ao-app"],
 };
 const AUTH_PROTOCOL_MIME_TYPE = "x-scheme-handler/ao-app";
+const PACKAGED_EXTERNAL_DEPENDENCIES = [
+	"/node_modules/better-sqlite3",
+	"/node_modules/bindings",
+	"/node_modules/file-uri-to-path",
+];
+
+function ignoreFromVitePackage(file: string): boolean {
+	if (!file) return false;
+	if (file.startsWith("/.vite")) return false;
+	if (file === "/node_modules") return false;
+	return !PACKAGED_EXTERNAL_DEPENDENCIES.some(
+		(dependency) => file === dependency || file.startsWith(`${dependency}/`),
+	);
+}
+
+async function prepareNativeDependencies(platform: NodeJS.Platform, arch: string): Promise<void> {
+	// Rebuild in the source tree, where prebuild-install and its helper packages
+	// are available. The Vite package intentionally carries only the resulting
+	// native runtime, not the install-time download toolchain.
+	await rebuild({
+		buildPath: process.cwd(),
+		electronVersion: electronPackage.version,
+		platform,
+		arch,
+		onlyModules: ["better-sqlite3"],
+		force: true,
+	});
+}
+
+export function extraResourcesForPlatform(platform: NodeJS.Platform): string[] {
+	return [
+		"daemon",
+		"agent-browser",
+		"resources/acp-runtime",
+		...(platform === "darwin" ? ["update-helper"] : []),
+		...(platform === "darwin" || platform === "linux" ? ["tmux"] : []),
+		"assets/icon.png",
+		"assets/icon.ico",
+		"assets/trayIconTemplate.png",
+		"assets/trayIconTemplate@2x.png",
+		"app-update.yml",
+	];
+}
+
+const ACP_RUNTIME_NODE_PATH = "/Contents/Resources/acp-runtime/node/bin/node";
+// V8 uses MAP_JIT on arm64 and mprotect on x64. electron-osx-sign's default
+// allows only the former, so its re-signing makes the bundled Node crash on
+// Intel (#3879). Which entitlements a file needs is a property of its bytes,
+// not of the signing machine: @electron/osx-sign hands optionsForFile only the
+// path, and one signing host may sign both the arm64 and the x64 artifact —
+// the canonical release signer does exactly that. So the selector below keys
+// off the Mach-O header of the file being signed (thin x64, or a universal
+// carrying an x64 slice), never off process.arch. The public CI build stays
+// unsigned, so this hook runs for locally signed builds and stands as the
+// reference implementation the canonical signer mirrors; see
+// frontend/docs/desktop-release.md.
+const ACP_RUNTIME_NODE_ENTITLEMENTS = [
+	"com.apple.security.cs.allow-jit",
+	"com.apple.security.cs.allow-unsigned-executable-memory",
+];
+
+export function macSignOptionsForFile(filePath: string): { entitlements?: string[] } {
+	// Cheap gate first: optionsForFile is invoked for every Mach-O in the
+	// bundle, and only the nested Node path can need an override.
+	if (!filePath.endsWith(ACP_RUNTIME_NODE_PATH)) return {};
+	// Fail closed: an unreadable or unparseable binary throws out of
+	// optionsForFile and aborts the signing pass. Never fall back to
+	// process.arch or to "no entitlements" — silently signing the Intel Node
+	// without allow-unsigned-executable-memory is exactly the #3879 crash.
+	return machoHasX86_64Slice(filePath) ? { entitlements: ACP_RUNTIME_NODE_ENTITLEMENTS } : {};
+}
 
 // parseReleaseRepo turns an "owner/repo" string (from AO_RELEASE_REPO) into the
 // publisher-github { owner, name } shape, falling back to the production default
@@ -39,6 +116,11 @@ function parseReleaseRepo(value: string | undefined): { owner: string; name: str
 const config: ForgeConfig = {
 	packagerConfig: {
 		asar: true,
+		// The Vite plugin normally packages only .vite. better-sqlite3 must stay
+		// external so Electron can load its native binary, so include its minimal
+		// runtime dependency tree explicitly; AutoUnpackNativesPlugin then places
+		// the .node binary outside app.asar.
+		ignore: ignoreFromVitePackage,
 		appBundleId: "dev.agent-orchestrator.desktop",
 		name: "Agent Orchestrator",
 		executableName: EXECUTABLE_NAME,
@@ -48,16 +130,7 @@ const config: ForgeConfig = {
 		// (.icns on macOS, .ico on Windows); Linux menu icons come from the
 		// deb/rpm makers below, and the runtime window icon from src/main.ts.
 		icon: "assets/icon",
-		extraResource: [
-			"daemon",
-				"agent-browser",
-				"resources/acp-runtime",
-			"assets/icon.png",
-			"assets/icon.ico",
-			"assets/trayIconTemplate.png",
-			"assets/trayIconTemplate@2x.png",
-			"app-update.yml",
-		],
+		extraResource: extraResourcesForPlatform(process.platform),
 		// Notarization. Two paths:
 		//  - CI: an App Store Connect API key. APPLE_API_KEY is a PATH to the .p8
 		//    (the workflow decodes APPLE_API_KEY_BASE64 to a temp file), plus the
@@ -66,9 +139,12 @@ const config: ForgeConfig = {
 		//    `notarytool store-credentials`. See ao-macos-signed-release runbook.
 		// Both are valid NotaryToolCredentials, so no cast is needed.
 		osxSign: process.env.APPLE_SIGNING_IDENTITY
-			? { identity: process.env.APPLE_SIGNING_IDENTITY }
+			? {
+					identity: process.env.APPLE_SIGNING_IDENTITY,
+					optionsForFile: macSignOptionsForFile,
+				}
 			: process.env.CSC_LINK
-				? {}
+				? { optionsForFile: macSignOptionsForFile }
 				: undefined,
 		osxNotarize: process.env.AO_NOTARY_PROFILE
 			? { keychainProfile: process.env.AO_NOTARY_PROFILE }
@@ -89,7 +165,13 @@ const config: ForgeConfig = {
 		// Writing it after signing (a postPackage hook) adds an unsealed resource
 		// and macOS reports the app as "damaged". owner/repo are baked from
 		// AO_RELEASE_REPO at build time.
-		prePackage: async () => {
+		prePackage: async (_forgeConfig, platform, arch) => {
+			await prepareNativeDependencies(platform as NodeJS.Platform, arch);
+			if (platform === "darwin") {
+				const helperBuild = spawnSync(process.execPath, [path.resolve("scripts/build-update-helper.mjs"), "--arch", arch], { stdio: "inherit" });
+				if (helperBuild.error) throw helperBuild.error;
+				if (helperBuild.status !== 0) throw new Error("macOS update helper build failed");
+			}
 			const { owner, name } = parseReleaseRepo(process.env.AO_RELEASE_REPO);
 			const yml = [
 				"provider: github",
@@ -99,6 +181,41 @@ const config: ForgeConfig = {
 				"",
 			].join("\n");
 			writeFileSync("app-update.yml", yml);
+		},
+		packageAfterPrune: async (_forgeConfig, buildPath) => {
+			const nativeModule = path.join(
+				buildPath,
+				"node_modules",
+				"better-sqlite3",
+				"build",
+				"Release",
+				"better_sqlite3.node",
+			);
+			if (!existsSync(nativeModule)) {
+				throw new Error("Packaged app is missing the better-sqlite3 native runtime");
+			}
+		},
+		// Assert the native resource survived Electron Packager's copy/asar/sign
+		// pipeline. A source build succeeding is not enough: a missing extraResource
+		// would otherwise publish an app that silently fell back to machine tmux.
+		postPackage: async (_forgeConfig, packageResult) => {
+			if (packageResult.platform !== "darwin" && packageResult.platform !== "linux") return;
+			for (const outputPath of packageResult.outputPaths) {
+				let resourcesPath = path.join(outputPath, "resources");
+				if (packageResult.platform === "darwin") {
+					const appBundle = readdirSync(outputPath).find((entry) => entry.endsWith(".app"));
+					if (!appBundle) throw new Error(`packaged macOS app bundle missing from ${outputPath}`);
+					resourcesPath = path.join(outputPath, appBundle, "Contents", "Resources");
+					const helper = path.join(resourcesPath, "update-helper", "ao-update-progress");
+					if (!existsSync(helper)) throw new Error(`packaged macOS update helper missing from ${helper}`);
+				}
+				const binary = path.join(resourcesPath, "tmux", "bin", "tmux");
+				if (!existsSync(binary)) throw new Error(`packaged tmux missing from ${binary}`);
+				const version = spawnSync(binary, ["-V"], { encoding: "utf8" });
+				if (version.status !== 0 || version.stdout.trim() !== "tmux 3.5a") {
+					throw new Error(`packaged tmux failed verification at ${binary}: ${version.stderr || version.stdout}`);
+				}
+			}
 		},
 		// The dmg container is NOT signed, notarized or stapled by any maker
 		// (neither Forge's maker-dmg nor app-builder-lib's dmg target does it), and
@@ -110,17 +227,32 @@ const config: ForgeConfig = {
 		//
 		// Then PROVE the seal. sealDmg exiting 0 only says three commands ran on
 		// this machine; it does not say Gatekeeper accepts the published bytes with
-		// a stapled ticket. verify-mac-artifact.sh is the canonical gate for that
-		// (#3288 workstreams 1 and 2), and #3267 decision 3 step 4 asks for exactly
-		// this check on the dmg. Run only when sealDmg actually sealed: an unsigned
-		// local or desktop-testing build has nothing to verify and must keep
-		// producing its dmg.
+		// a stapled ticket, or that a bundled nested executable (the Intel ACP
+		// Node, #3879) actually runs. verify-mac-artifact.sh is the canonical gate
+		// for both (#3288 workstreams 1 and 2; #3879 for the nested-Node check),
+		// and #3267 decision 3 step 4 asks for exactly this check on the dmg. Run
+		// only when sealDmg actually sealed: an unsigned local or desktop-testing
+		// build has nothing to verify and must keep producing its dmg.
+		//
+		// The zip needs the SAME nested-Node check but no separate sealing step:
+		// its inner .app was already signed/notarized/stapled by packagerConfig
+		// above, so verifying it only needs the same "was this build actually
+		// signed" gate sealDmg uses (isSigningConfigured), not a seal call of its
+		// own. Without this, the dmg-only check left the maker-zip artifact — the
+		// one electron-updater actually installs auto-updates from, per
+		// makers/maker-dmg.ts's ERR_UPDATER_ZIP_FILE_NOT_FOUND note, and per-arch
+		// the artifact CI ships for x64 — completely unverified: a regression of
+		// exactly the crash #3879 fixed could ship without any automated gate
+		// catching it.
 		postMake: async (_forgeConfig, makeResults) => {
 			for (const result of makeResults) {
 				if (result.platform !== "darwin") continue;
 				for (const artifact of result.artifacts) {
-					if (!artifact.endsWith(".dmg")) continue;
-					if (await sealDmg(artifact)) await verifyDmg(artifact);
+					if (artifact.endsWith(".dmg")) {
+						if (await sealDmg(artifact)) await verifyDmg(artifact);
+					} else if (artifact.endsWith(".zip") && isSigningConfigured()) {
+						await verifyMacArtifact(artifact);
+					}
 				}
 			}
 			return makeResults;
@@ -212,10 +344,17 @@ const config: ForgeConfig = {
 				repository: parseReleaseRepo(process.env.AO_RELEASE_REPO),
 				prerelease: process.env.AO_RELEASE_PRERELEASE === "true",
 				draft: false,
+				// Ask GitHub to compose the body from the PRs merged since the last
+				// release. Without it the publisher creates the release with an empty
+				// body, and the app's new "what's new" section has nothing to show:
+				// electron-updater reads release notes from the release body, so an
+				// empty body means users get told nothing about what changed.
+				generateReleaseNotes: true,
 			},
 		},
 	],
 	plugins: [
+		new AutoUnpackNativesPlugin({}),
 		new VitePlugin({
 			build: [
 				{ entry: "src/main.ts", config: "vite.main.config.ts", target: "main" },

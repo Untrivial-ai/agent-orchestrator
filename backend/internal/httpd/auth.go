@@ -165,9 +165,32 @@ func maybeSetPreviewAuthCookie(w http.ResponseWriter, r *http.Request, tok strin
 // every request that authenticates; it exists so telemetry can observe that a
 // phone actually reached this desktop, and it must not block the request, since
 // it runs inline on every authenticated call.
+// identityProbePath is the one route the LAN listener serves without the
+// connection password. The phone races several endpoints, and a private
+// address is not an identity: 192.168.1.42 exists on most networks. Verifying
+// which machine answered has to happen BEFORE a credential is presented, or
+// the phone leaks its token to whatever device holds that address on a foreign
+// network. The response carries an opaque host id and nothing else.
+//
+// Exact path, GET only, and checked ahead of the lockout so a phone racing
+// endpoints cannot lock itself out probing. See
+// docs/adr/0003-unauthenticated-identity-probe.md.
+const identityProbePath = "/api/v1/identity"
+
+// isIdentityProbe reports whether r is the exempt probe. Deliberately an exact
+// match rather than a prefix, so nothing nested below the path inherits the
+// exemption.
+func isIdentityProbe(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == identityProbePath
+}
+
 func authMiddleware(state *authState, lock *lockout, connected *mobileConnectReporter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isIdentityProbe(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			src := sourceKey(r)
 			if lock.blocked(src) {
 				envelope.WriteAPIError(w, r, http.StatusTooManyRequests, "too_many_requests", "LOCKED_OUT",

@@ -569,6 +569,7 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		Deletions:                int64(r.Deletions),
 		ChangedFiles:             int64(r.ChangedFiles),
 		Author:                   r.Author,
+		AuthorAvatarURL:          r.AuthorAvatarURL,
 		BaseSha:                  r.BaseSHA,
 		MergeCommitSha:           r.MergeCommitSHA,
 		IsDraft:                  boolInt(r.Draft),
@@ -588,25 +589,28 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		ObservedAt:               nullTime(r.ObservedAt),
 		CIObservedAt:             nullTime(r.CIObservedAt),
 		ReviewObservedAt:         nullTime(r.ReviewObservedAt),
+		ReviewPartial:            r.ReviewPartial,
 		ID:                       r.SessionID,
 	}
 }
 
 func genLegacyPRParams(r domain.PullRequest) gen.UpsertLegacyPRParams {
 	return gen.UpsertLegacyPRParams{
-		URL:            r.URL,
-		SessionID:      r.SessionID,
-		Number:         int64(r.Number),
-		PRState:        prState(r),
-		ReviewDecision: reviewOrDefault(r.Review),
-		CIState:        ciOrDefault(r.CI),
-		Mergeability:   mergeabilityOrDefault(r.Mergeability),
-		UpdatedAt:      r.UpdatedAt,
-		StateChangedAt: nullTime(initialPRStateChangedAt(r)),
-		IsDraft:        boolInt(r.Draft),
-		IsMerged:       boolInt(r.Merged),
-		IsClosed:       boolInt(r.Closed),
-		ID:             r.SessionID,
+		URL:              r.URL,
+		SessionID:        r.SessionID,
+		Number:           int64(r.Number),
+		PRState:          prState(r),
+		ReviewDecision:   reviewOrDefault(r.Review),
+		CIState:          ciOrDefault(r.CI),
+		Mergeability:     mergeabilityOrDefault(r.Mergeability),
+		UpdatedAt:        r.UpdatedAt,
+		StateChangedAt:   nullTime(initialPRStateChangedAt(r)),
+		IsDraft:          boolInt(r.Draft),
+		IsMerged:         boolInt(r.Merged),
+		IsClosed:         boolInt(r.Closed),
+		ReviewObservedAt: nullTime(r.ReviewObservedAt),
+		ReviewPartial:    r.ReviewPartial,
+		ID:               r.SessionID,
 	}
 }
 
@@ -672,6 +676,7 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		Deletions:                int(p.Deletions),
 		ChangedFiles:             int(p.ChangedFiles),
 		Author:                   p.Author,
+		AuthorAvatarURL:          p.AuthorAvatarURL,
 		BaseSHA:                  p.BaseSha,
 		MergeCommitSHA:           p.MergeCommitSha,
 		ProviderState:            p.ProviderState,
@@ -688,6 +693,7 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		ObservedAt:               timeFromNull(p.ObservedAt),
 		CIObservedAt:             timeFromNull(p.CIObservedAt),
 		ReviewObservedAt:         timeFromNull(p.ReviewObservedAt),
+		ReviewPartial:            p.ReviewPartial,
 		AutoInjectCI:             p.AutoInjectCI,
 	}
 }
@@ -716,7 +722,7 @@ func genCommentParams(prURL string, c domain.PullRequestComment) gen.UpsertPRCom
 	return gen.UpsertPRCommentParams{
 		PRURL: prURL, CommentID: c.ID, Author: c.Author, File: c.File,
 		Line: int64(c.Line), Body: c.Body, Resolved: c.Resolved, CreatedAt: c.CreatedAt,
-		ThreadID: c.ThreadID, URL: c.URL, IsBot: boolInt(c.IsBot), AutoInjectReview: c.AutoInjectReview,
+		ThreadID: c.ThreadID, ReviewID: c.ReviewID, URL: c.URL, IsBot: boolInt(c.IsBot), AutoInjectReview: c.AutoInjectReview,
 	}
 }
 
@@ -724,13 +730,13 @@ func genLegacyCommentParams(prURL string, c domain.PullRequestComment) gen.Inser
 	return gen.InsertLegacyPRCommentParams{
 		PRURL: prURL, CommentID: c.ID, Author: c.Author, File: c.File,
 		Line: int64(c.Line), Body: c.Body, Resolved: c.Resolved, CreatedAt: c.CreatedAt,
-		ThreadID: "", URL: "", IsBot: 0,
+		ThreadID: "", ReviewID: c.ReviewID, URL: "", IsBot: 0,
 	}
 }
 
 func commentFromGen(c gen.PRComment) domain.PullRequestComment {
 	return domain.PullRequestComment{
-		ThreadID: c.ThreadID, ID: c.CommentID, Author: c.Author,
+		ThreadID: c.ThreadID, ReviewID: c.ReviewID, ID: c.CommentID, Author: c.Author,
 		File: c.File, Line: int(c.Line), Body: c.Body, URL: c.URL,
 		Resolved: c.Resolved, IsBot: c.IsBot != 0, CreatedAt: c.CreatedAt,
 		AutoInjectReview: c.AutoInjectReview,

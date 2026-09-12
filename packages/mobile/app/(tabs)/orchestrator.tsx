@@ -12,7 +12,7 @@ import { useApp } from "../../lib/store";
 import { attentionMetaFor, type AttentionLevel, type Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
-import { Button, cardShell, Dot, EmptyState, IconButton, ScreenHeader } from "../../lib/ui";
+import { Button, cardShell, Dot, EmptyState, ScreenHeader } from "../../lib/ui";
 
 const ZONE_ORDER: AttentionLevel[] = ["merge", "respond", "review", "pending", "working", "done"];
 
@@ -223,21 +223,26 @@ function OrchestratorCard({
 				<Text style={styles.workers}>
 					{workers.length} worker{workers.length === 1 ? "" : "s"}
 				</Text>
+				{/* A running orchestrator offers Open and nothing else. Restart used to
+				    sit here too, which put the button on every healthy card and took it
+				    away from the stopped ones that actually needed it — see launchIntent.
+				    The card itself is deliberately not pressable: the zone pills open the
+				    board, so a whole-card target would send two taps a few pixels apart to
+				    different screens. The action carries its own label instead, which is
+				    also what makes it big enough to hit. */}
 				{running ? (
-					<View style={styles.actions}>
-						<IconButton icon="rotate-ccw" label="Restart orchestrator" loading={busy} onPress={onLaunch} />
-						<IconButton icon={link?.mode === "chat" ? "message-square" : "terminal"} label="Open orchestrator" onPress={() => link && openSession(link.id)} />
-					</View>
+					<Button
+						title="Open"
+						icon={link?.mode === "chat" ? "message-square" : "terminal"}
+						variant="ghost"
+						onPress={() => link && openSession(link.id)}
+					/>
 				) : (
-					<Pressable
-						accessibilityRole="button"
-						accessibilityLabel={intent.label}
-						disabled={busy}
-						onPress={() => { haptics.tap(); onLaunch(); }}
-						style={({ pressed }) => [styles.start, pressed && { opacity: 0.85 }, busy && { opacity: 0.5 }]}
-					>
-						<Text style={styles.startText}>{busy ? "Starting…" : intent.label}</Text>
-					</Pressable>
+					<Button
+						title={busy ? "Starting…" : intent.label}
+						loading={busy}
+						onPress={onLaunch}
+					/>
 				)}
 			</View>
 		</View>
@@ -269,14 +274,4 @@ const makeStyles = (t: Theme) =>
 		// card's own padding, centred rather than baseline-aligned.
 		footer: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 12 },
 		workers: { flex: 1, color: t.textTertiary, fontSize: 12 },
-		actions: { flexDirection: "row", gap: 6 },
-		start: {
-			backgroundColor: t.blue,
-			borderRadius: 9,
-			paddingHorizontal: 14,
-			height: 32,
-			alignItems: "center",
-			justifyContent: "center",
-		},
-		startText: { color: t.onAccent, fontSize: 13, fontWeight: "700" },
 	});

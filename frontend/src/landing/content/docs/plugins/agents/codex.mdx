@@ -3,10 +3,10 @@ title: Codex
 description: Built-in Terminal UI and native app-server Chat support for the user's Codex installation.
 ---
 
-AO uses the locally installed `codex` executable and its existing OpenAI authentication.
+AO uses the locally installed `codex` executable and Codex-owned authentication.
 
 ```bash
-ao agent ls --refresh
+ao agent ls
 ao spawn --project my-app --name codex-task --agent codex --mode chat
 ```
 
@@ -18,3 +18,11 @@ ao spawn --project my-app --name codex-task --agent codex --mode chat
 Codex supports the same capability-gated Chat/Terminal UI handoff as Claude Code. The AO session and worktree remain stable across a compatible handoff.
 
 AO performs bounded installation and authentication probes before spawn. Use `--skip-agent-check` only to bypass that advisory CLI preflight; daemon validation remains authoritative.
+
+## Accounts
+
+Open **Settings → Agents → Codex** to view the device’s current Codex account, add another account through Codex’s native login terminal, or switch the device to a verified account. AO derives each card label from the verified account, so there is no name prompt. Supported Codex builds can also provide plan, remaining-capacity, reset, and usage details.
+
+AO keeps inactive credentials in private account slots, but ordinary AO Codex launches use the normal device Codex home. Exactly one account is active device-wide. When you switch accounts, AO fences new input, interrupts and stops only the AO-owned Codex controllers and reviewers affected by the change, updates the normal device credential atomically, verifies it, then resumes the same AO sessions, worktrees, interface modes, and native thread IDs. Codex native history stays in its existing device-global location; AO does not copy or backfill it.
+
+Other Codex clients on the device—such as Terminal, IDE, and ChatGPT integrations—are not controlled by AO and may need to be restarted or resumed after a switch. AO never parses or exposes `auth.json` and does not scrape billing information. You can sign an account out; an inactive signed-out account can then be deleted. Per-task selection, assisted switching, automatic switching, rename, reorder, and in-place replacement are not part of this release.

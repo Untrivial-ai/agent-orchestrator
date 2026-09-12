@@ -18,6 +18,8 @@ const (
 	DefaultIdleThreshold = time.Minute
 	// DefaultSweepInterval is the cadence for reevaluating live sessions.
 	DefaultSweepInterval = time.Minute
+	// autoReviewFailedRetryLimit bounds retries for the same current PR head.
+	autoReviewFailedRetryLimit = 3
 )
 
 // Store provides the durable session, project, PR, and review facts used by
@@ -180,6 +182,7 @@ func triggerResultReason(prs []domain.PullRequest, result reviewcore.TriggerResu
 }
 
 func existingHeadReason(runs []domain.ReviewRun, prURL, targetSHA string) string {
+	failedAutoRuns := 0
 	for _, run := range runs {
 		if run.PRURL != prURL || run.TargetSHA != targetSHA {
 			continue
@@ -196,6 +199,12 @@ func existingHeadReason(runs []domain.ReviewRun, prURL, targetSHA string) string
 		if run.Verdict == domain.VerdictChangesRequested {
 			return "changes_requested_same_sha"
 		}
+		if run.Status == domain.ReviewRunFailed && run.TriggerSource == domain.ReviewTriggerAuto {
+			failedAutoRuns++
+		}
+	}
+	if failedAutoRuns >= autoReviewFailedRetryLimit {
+		return "failed_same_sha_retry_limit"
 	}
 	return ""
 }

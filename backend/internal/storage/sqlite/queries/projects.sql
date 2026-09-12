@@ -43,3 +43,8 @@ WHERE id = ? AND archived_at IS NULL;
 
 -- name: ArchiveProject :execrows
 UPDATE projects SET archived_at = ? WHERE id = ? AND archived_at IS NULL;
+
+-- name: PinProjectSessionPermissions :exec
+UPDATE sessions SET session_permissions = sqlc.arg(permissions)
+WHERE project_id = sqlc.arg(project_id) AND kind = sqlc.arg(kind)
+  AND LENGTH(session_permissions) = 0;

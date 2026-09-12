@@ -75,7 +75,34 @@ describe("native-composition transparency cascade", () => {
 		expect(clearsBackgroundFor((selector) => selector.includes(".browser-panel__viewport"))).toBe(true);
 	});
 
+	it("clears the app shell root while the browser panel is popped out", () => {
+		// The maximized panel is portaled straight to <body> (SessionView.tsx), so
+		// it is NOT a descendant of `.app-shell-root` and the docked `:has(LIVE_PAGE)`
+		// rule above can never match it. The popped-out block clears `#root`,
+		// `.platform-windows`, `.platform-linux`, the center/session surfaces … but
+		// omitted `.app-shell-root` — the same platform-independent hook the docked
+		// rule needed, since macOS applies no `.platform-*` class. So on macOS the
+		// shell wrapper kept painting its opaque `bg-sidebar` over the full window
+		// and blanked the live page for as long as any overlay (e.g. the
+		// device-preset dropdown) held the shell raised.
+		expect(
+			clearsBackgroundFor(
+				(selector) => selector.includes(".app-shell-root") && selector.includes(".browser-popout-overlay"),
+			),
+		).toBe(true);
+	});
+
 	it("clears the popped-out overlay surface", () => {
 		expect(clearsBackgroundFor((selector) => selector.endsWith(".browser-popout-overlay"))).toBe(true);
+	});
+
+	it("clears the popped-out frame that directly wraps the maximized browser panel", () => {
+		// SessionView.tsx portals the maximized browser into a `.browser-popout-frame`
+		// wrapper that paints an opaque `background: var(--bg)` plate. The popped-out
+		// shell clears above target #root ancestors via `:has(.browser-popout-overlay)`
+		// and never match this element, so it must be cleared explicitly — otherwise
+		// raising the transparent shell for a tooltip/menu paints the frame's opaque
+		// background over the native page and blanks it to black (Windows, maximized).
+		expect(clearsBackgroundFor((selector) => selector.includes(".browser-popout-frame"))).toBe(true);
 	});
 });

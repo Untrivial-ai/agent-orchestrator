@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { XtermJsWebView, type XtermWebViewHandle } from "@fressh/react-native-xtermjs-webview";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Alert, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { ApiError, getPreview, isTerminalStatus, killSession, sendMessage } from "../api";
@@ -13,7 +13,7 @@ import { resetHeaderRightForSwap } from "../headerRightSwap";
 import { MinimalBackButton } from "../MinimalBackButton";
 import { MuxClient, type MuxStatus } from "../mux";
 import { Composer } from "./Composer";
-import { dockInset } from "./keyboardInset";
+import { dockInset, rootKeyboardPad } from "./keyboardInset";
 import { KeyRow } from "./KeyRow";
 import {
 	REROUTED_NOTICE,
@@ -28,11 +28,14 @@ import { useVoiceInput } from "../voice/useVoiceInput";
 import { useTheme, useThemedStyles, useThemeState } from "../ThemeProvider";
 import { closeShellTerminal } from "../chat/api";
 import {
+	interfaceSwitchAlert,
+	type InterfaceSwitchRecheck,
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
 	useInterfaceTransition,
 } from "./useInterfaceTransition";
 import { terminalInterfaceFailureRecovery } from "./terminalInterfaceRecovery";
+import { adjustTerminalViewport } from "./terminalViewport";
 
 const FONT_SIZE = 12;
 
@@ -90,14 +93,16 @@ const TERMINAL_ENHANCE_JS = `
 
   // ---- Zoom & pan -----------------------------------------------------------
   // The daemon may hold the grid wider than the phone (a co-viewing desktop
-  // drives the size). The resting view shrinks the whole grid uniformly to fit
-  // the width (overview — may be tiny). Pinch zooms between that fit scale and
-  // 1:1 (crisp, readable); while zoomed, one finger pans the viewport (vertical
-  // overshoot spills into scrollback) and double-tap toggles overview <-> 1:1.
+  // drives the size). Start at 1:1 so a desktop-sized grid remains readable on
+  // the phone and is locally cropped instead of becoming a tiny overview. Pinch
+  // and the native +/- controls zoom between fit-to-width and 2x; while zoomed,
+  // one finger pans the viewport (vertical overshoot spills into scrollback) and
+  // double-tap toggles overview <-> 1:1.
   // While zoomed we auto-pan to keep the cursor framed, so the prompt/output
   // stays in view without chasing it by hand.
   function term() { return window.terminal; }
-  var Z = { s: 1, min: 1, tx: 0, ty: 0, zoomed: false, lastPan: 0 };
+  var Z = { s: 1, min: 1, max: 2, tx: 0, ty: 0,
+            zoomed: false, followFit: false, lastPan: 0 };
   function box() {
     var root = document.querySelector('.xterm');
     var screen = document.querySelector('.xterm-screen');
@@ -117,27 +122,42 @@ const TERMINAL_ENHANCE_JS = `
     b.root.style.transformOrigin = 'top left';
     b.root.style.transform = 'translate(' + Z.tx + 'px,' + Z.ty + 'px) scale(' + Z.s + ')';
   }
-  // Fit-to-width baseline, re-run on grid/container changes. Tracks the fit
-  // scale while at overview; preserves (re-clamps) the user's zoom otherwise.
+  // Fit-to-width baseline, re-run on grid/container changes. followFit records
+  // an explicit overview choice; otherwise authoritative grid resizes preserve
+  // the default/user-selected actual-size crop and only re-clamp its pan.
   function applyScale() {
     try {
       var b = box(); if (!b || !b.natW || !b.contW) return;
       Z.min = Math.min(1, b.contW / b.natW);
-      if (!Z.zoomed) { Z.s = Z.min; Z.tx = 0; Z.ty = 0; }
-      else { if (Z.s < Z.min) Z.s = Z.min; clampT(b); }
+      if (Z.followFit) { Z.s = Z.min; Z.tx = 0; Z.ty = 0; }
+      else {
+        if (Z.s < Z.min) Z.s = Z.min;
+        if (Z.s > Z.max) Z.s = Z.max;
+        clampT(b);
+      }
+      Z.zoomed = Z.s > Z.min + 0.001;
       applyTransform(b);
     } catch (_) {}
   }
   // Zoom to scale s keeping the content under screen point (ax, ay) fixed.
   function setZoom(s, ax, ay) {
     var b = box(); if (!b) return;
-    if (s < Z.min) s = Z.min; if (s > 1) s = 1;
+    if (s < Z.min) s = Z.min; if (s > Z.max) s = Z.max;
     var px = (ax - Z.tx) / Z.s, py = (ay - Z.ty) / Z.s;
     Z.s = s; Z.tx = ax - px * s; Z.ty = ay - py * s;
     Z.zoomed = s > Z.min + 0.001;
+    Z.followFit = !Z.zoomed;
     if (!Z.zoomed) { Z.s = Z.min; Z.tx = 0; Z.ty = 0; }
     clampT(b); applyTransform(b);
   }
+  // RN's +/- buttons call this through the WebView's imperative injection hook.
+  // This changes only the phone's CSS viewport: xterm stays mounted and the
+  // daemon-owned PTY grid is never resized, so a co-viewing desktop is unaffected.
+  window.__aoAdjustTerminalZoom = function (direction) {
+    var b = box(); if (!b || (direction !== 1 && direction !== -1)) return;
+    setZoom(Z.s + direction * 0.2, b.contW / 2, b.contH / 2);
+    Z.lastPan = Date.now();
+  };
   // Auto-pan so the cursor stays framed while zoomed in. Backs off for a few
   // seconds after a manual pan/pinch (never fight the finger) and only follows
   // the live screen — not while the user is reading scrollback.
@@ -560,9 +580,8 @@ export default function TerminalScreen() {
 	}, [router]);
 
 	const xtermRef = useRef<XtermWebViewHandle | null>(null);
-	// The PTY remains attached while xterm remounts for a font/theme change. Bytes
-	// arriving between the old WebView unmount and the new onInitialized used to
-	// disappear; retain them in wire order until the replacement can accept writes.
+	// Theme changes still replace xterm. Retain bytes arriving between the old
+	// WebView unmount and the replacement's onInitialized callback in wire order.
 	const xtermReadyRef = useRef(false);
 	const pendingOutputRef = useRef<Uint8Array[]>([]);
 	const muxRef = useRef<MuxClient | null>(null);
@@ -572,8 +591,8 @@ export default function TerminalScreen() {
 	const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null);
 	// The authoritative grid the daemon told us the shared PTY is actually using
 	// (driven by the largest/primary client — e.g. a co-viewing desktop). We render
-	// THIS grid (scaled to fit), not the phone's own fit, so the display matches the
-	// PTY and a full-screen TUI doesn't mis-render. Null until the daemon reports it.
+	// THIS grid, not the phone's own fit, so the display matches the PTY and a
+	// full-screen TUI doesn't mis-render. The WebView crops/scales it locally.
 	const authRef = useRef<{ cols: number; rows: number } | null>(null);
 
 	const [cfg, setCfg] = useState<ServerConfig | null>(null);
@@ -585,10 +604,6 @@ export default function TerminalScreen() {
 	const [msg, setMsg] = useState("");
 	const [sending, setSending] = useState(false);
 	const [sendTarget, setSendTarget] = useState<SendTarget>(shellOnly ? "terminal" : "agent");
-	// Terminal font size. Smaller font = more rows/cols, which is the only way to
-	// see more of a full-screen TUI (alt-screen apps have no scrollback). Changing
-	// it remounts the xterm; the PTY persists and re-attaches at the denser grid.
-	const [fontSize, setFontSize] = useState(FONT_SIZE);
 	// A terminated session has no live PTY (the mux answers "Session not found").
 	// Track that + the known status so we can offer Restore instead of a dead term.
 	const [notFound, setNotFound] = useState(false);
@@ -604,9 +619,34 @@ export default function TerminalScreen() {
 	const [preview, setPreview] = useState<{ entry: string; url: string } | null>(null);
 	const previewWebRef = useRef<WebView>(null);
 
-	const { sessions, orchestrators, restore, refresh } = useApp();
+	const { sessions, orchestrators, restore, refresh, config: activeConfig } = useApp();
 	const known = sessions.find((s) => s.id === sessionId) ?? orchestrators.find((o) => o.id === sessionId) ?? null;
+	// Runtime handles are opaque. Native macOS PTYs are versioned (ptyhost-v1:),
+	// so using the session id here would incorrectly route the attach to legacy
+	// tmux. Older daemons omit terminalHandleId and retain the historical
+	// session-id handle, which keeps the fallback backward-compatible.
+	const terminalHandleId = shellOnly ? id : known?.terminalHandleId || id;
 	const interfaceSwitch = useInterfaceTransition(cfg, shellOnly ? "" : sessionId, refresh);
+	// Owned by the screen rather than the hook: the background poll calls the same
+	// `refresh()`, so a hook-wide busy flag would let a poll tick disable the
+	// user's own button and swallow the very tap the recheck exists to serve.
+	// The ref is the guard (state updates are async); the state drives the spinner.
+	const [rechecking, setRechecking] = useState(false);
+	const recheckingRef = useRef(false);
+	// A recheck can be in flight for up to REQUEST_TIMEOUT_MS, long enough for the
+	// user to leave. Alerting from a screen they already navigated away from would
+	// interrupt whatever they went to instead.
+	const mountedRef = useRef(true);
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
+	// The status the hook holds right now, readable after an await. The tap's
+	// closure is from the render it started in, which is the pre-tap status.
+	const interfaceStatusRef = useRef(interfaceSwitch.status);
+	interfaceStatusRef.current = interfaceSwitch.status;
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
@@ -650,10 +690,12 @@ export default function TerminalScreen() {
 	// Neither platform shrinks the layout for the keyboard: iOS never has, and on
 	// Android edge-to-edge (edgeToEdgeEnabled) defeats windowSoftInputMode=adjustResize
 	// so the window no longer resizes - the keyboard just draws over our content.
-	// So reserve kbHeight on BOTH platforms and let the screen pad itself above the
-	// keyboard, else the input dock (and its send button) hide behind it. This is
-	// the ONLY place the keyboard height is applied — the dock adds nothing on top
-	// of it (see dockInset), because doing both is what made the bar kick.
+	// So reserve the keyboard on BOTH platforms and let the screen pad itself above
+	// it, else the input dock (and its send button) hide behind it. What the event
+	// reports is not the same quantity on the two platforms — rootKeyboardPad owns
+	// that difference. This is the ONLY place the keyboard height is applied — the
+	// dock adds nothing on top of it (see dockInset), because doing both is what
+	// made the bar kick.
 	useEffect(() => {
 		const isIOS = Platform.OS === "ios";
 		const showEvt = isIOS ? "keyboardWillShow" : "keyboardDidShow";
@@ -722,10 +764,21 @@ export default function TerminalScreen() {
 	}, [navigation, id, leave, params.title, shellOnly]);
 
 	// Load config, then connect the mux socket.
+	// Rebuilt whenever the active endpoint changes, not only when the session
+	// does. The app re-races its endpoints when the network moves — losing
+	// Wi-Fi hands the session to Tailscale or the tunnel — and a mux still
+	// pointed at the previous address stays disconnected on a blank screen
+	// until the screen is closed and reopened.
+	const activeBaseUrl = activeConfig
+		? `${activeConfig.secure ? "https" : "http"}://${activeConfig.host}:${activeConfig.httpPort}`
+		: "";
+
 	useEffect(() => {
 		let disposed = false;
 		(async () => {
-			const config = await loadConfig();
+			// Prefer the endpoint the race settled on; fall back to storage on the
+			// first render, before the store has resolved one.
+			const config = activeConfig ?? (await loadConfig());
 			if (disposed) return;
 			setCfg(config);
 			if (!isConfigured(config)) return;
@@ -733,7 +786,7 @@ export default function TerminalScreen() {
 			const mux = new MuxClient(config, {
 				onStatus: (s) => setStatus(s),
 				onTerminalData: (tid, bytes) => {
-					if (tid !== id) return;
+					if (tid !== terminalHandleId) return;
 					if (!xtermReadyRef.current || !xtermRef.current) {
 						pendingOutputRef.current.push(bytes.slice());
 						return;
@@ -741,23 +794,22 @@ export default function TerminalScreen() {
 					xtermRef.current.write(bytes);
 				},
 				onTerminalExited: (tid, code) => {
-					if (tid === id) {
+					if (tid === terminalHandleId) {
 						setBanner(`Session exited (code ${code})`);
 						setNotFound(true);
 					}
 				},
 				onTerminalError: (tid, msg) => {
-					if (tid !== id) return;
+					if (tid !== terminalHandleId) return;
 					// A missing PTY means the session is terminated - offer Restore
 					// instead of surfacing it as a raw error banner.
 					if (/not found/i.test(msg)) setNotFound(true);
 					else setBanner(msg);
 				},
 				onTerminalResize: (tid, cols, rows) => {
-					if (tid !== id) return;
-					// The daemon's authoritative grid: render exactly this (the webview
-					// scales it to fit), so the phone mirrors the shared PTY instead of
-					// fitting to its own screen and mis-drawing a wider grid.
+					if (tid !== terminalHandleId) return;
+					// Render the daemon's authoritative grid exactly. The WebView applies
+					// only local crop/zoom, so the phone cannot disturb a desktop owner.
 					authRef.current = { cols, rows };
 					setSize({ cols, rows });
 					xtermRef.current?.resize({ cols, rows });
@@ -773,11 +825,15 @@ export default function TerminalScreen() {
 			xtermReadyRef.current = false;
 			pendingOutputRef.current = [];
 		};
-	}, [id]);
+		// activeBaseUrl, not activeConfig: the object identity changes on every
+		// resolve, and rebuilding the mux on each one would tear down a healthy
+		// terminal for no reason.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [terminalHandleId, activeBaseUrl]);
 
 	useLayoutEffect(() => {
 		xtermReadyRef.current = false;
-	}, [fontSize, scheme]);
+	}, [scheme]);
 
 	// Poll the daemon's on-demand preview detector while the terminal is open, just
 	// to keep `preview` current for the globe button. We never auto-open the overlay
@@ -813,13 +869,13 @@ export default function TerminalScreen() {
 	const applyDims = useCallback(
 		(cols: number, rows: number) => {
 			lastDimsRef.current = { cols, rows };
-			if (openedRef.current) muxRef.current?.resize(id, cols, rows, projectId);
+			if (openedRef.current) muxRef.current?.resize(terminalHandleId, cols, rows, projectId);
 			if (!authRef.current) {
 				setSize({ cols, rows });
 				xtermRef.current?.resize({ cols, rows });
 			}
 		},
-		[id, projectId],
+		[terminalHandleId, projectId],
 	);
 
 	// fressh routes WebView {type:'debug'} messages to logger.log(prefix, message).
@@ -853,24 +909,24 @@ export default function TerminalScreen() {
 		// remount on orientation change) - that would attach the PTY twice.
 		if (openedRef.current) return;
 		openedRef.current = true;
-		muxRef.current?.openTerminal(id, projectId);
+		muxRef.current?.openTerminal(terminalHandleId, projectId);
 		// If the FitAddon already reported dims before open, send them to the PTY now.
 		const d = lastDimsRef.current;
-		if (d) muxRef.current?.resize(id, d.cols, d.rows, projectId);
-	}, [id, projectId]);
+		if (d) muxRef.current?.resize(terminalHandleId, d.cols, d.rows, projectId);
+	}, [terminalHandleId, projectId]);
 
 	const onData = useCallback(
 		(data: string) => {
-			muxRef.current?.sendInput(id, data, projectId);
+			muxRef.current?.sendInput(terminalHandleId, data, projectId);
 		},
-		[id, projectId],
+		[terminalHandleId, projectId],
 	);
 
 	const sendKey = useCallback(
 		(seq: string) => {
-			muxRef.current?.sendInput(id, seq, projectId);
+			muxRef.current?.sendInput(terminalHandleId, seq, projectId);
 		},
-		[id, projectId],
+		[terminalHandleId, projectId],
 	);
 
 	// Send the composed text to the selected route. The agent route can still
@@ -893,7 +949,7 @@ export default function TerminalScreen() {
 		if (!text) return;
 		if (routeForSend(sendTarget) === "terminal") {
 			if (muxRef.current && status === "open") {
-				muxRef.current.sendInput(id, terminalPayload(text), projectId);
+				muxRef.current.sendInput(terminalHandleId, terminalPayload(text), projectId);
 				haptics.success();
 				setMsg("");
 				setBanner(TERMINAL_MODE_NOTICE);
@@ -914,7 +970,7 @@ export default function TerminalScreen() {
 			// Only reroute onto a mux we actually hold open — otherwise the write is
 			// a no-op and we would clear the field having sent nothing.
 			if (routeForSend(sendTarget, failure) === "terminal" && muxRef.current && status === "open") {
-				muxRef.current.sendInput(id, terminalPayload(text), projectId);
+				muxRef.current.sendInput(terminalHandleId, terminalPayload(text), projectId);
 				haptics.success();
 				setMsg("");
 				setSendTarget("terminal");
@@ -926,7 +982,7 @@ export default function TerminalScreen() {
 		} finally {
 			setSending(false);
 		}
-	}, [msg, sendTarget, cfg, id, projectId, status]);
+	}, [msg, sendTarget, cfg, id, terminalHandleId, projectId, status]);
 
 	// Push-to-talk dictation, captured on the PHONE rather than by the harness.
 	//
@@ -987,15 +1043,52 @@ export default function TerminalScreen() {
 		[interfaceSwitch],
 	);
 
-	const requestInterfaceSwitch = useCallback(() => {
+	const requestInterfaceSwitch = useCallback(async () => {
+		// A second tap would start a second recheck against a link already slow
+		// enough for the first one to be visible. `starting` and an active
+		// transition are guarded too, so the button blocks exactly what it
+		// announces as busy — otherwise a tap during the start POST fires a
+		// duplicate the daemon answers with 409.
+		if (recheckingRef.current || interfaceSwitch.starting || interfaceTransitionActive) return;
 		haptics.tap();
-		if (!interfaceSwitch.status?.supported) {
-			Alert.alert(
-				"Chat unavailable",
-				interfaceSwitch.status?.reason ||
-					interfaceSwitch.error ||
-					"This agent has not declared a compatible native conversation handoff.",
-			);
+		let status = interfaceSwitch.status;
+		let recheck: InterfaceSwitchRecheck = { outcome: "answered" };
+		if (!status?.supported) {
+			// A tap can land between two polls, or before the first answer: ask
+			// once more before telling the user it is unavailable.
+			recheckingRef.current = true;
+			setRechecking(true);
+			try {
+				const result = await interfaceSwitch.refresh();
+				if (!mountedRef.current) return;
+				if (!result) recheck = { outcome: "not-attempted" };
+				// A superseded answer is not a verdict, same rule as the hook's own
+				// loop: the readiness tick can overtake a slow tap request, and acting
+				// on the tap's payload would alert "Could not reach AO" (or "Not ready
+				// yet" off an older body) while the button had just enabled itself.
+				// The newer request owns the answer; use whatever the hook adopted.
+				else if (result.stale) status = interfaceStatusRef.current;
+				else if (result.ok) status = result.status;
+				else recheck = { outcome: "failed", error: result.error, status: result.status };
+			} finally {
+				recheckingRef.current = false;
+				if (mountedRef.current) setRechecking(false);
+			}
+		}
+		if (!status?.supported) {
+			const { title, message } = interfaceSwitchAlert(status, interfaceSwitch.error, recheck);
+			Alert.alert(title, message);
+			return;
+		}
+		// The guard at the top saw the pre-tap render. The fresh answer can carry
+		// a transition someone else started while the recheck was in flight (the
+		// desktop button, say); starting another gets a 409 and a "Switch failed"
+		// banner for a switch that is in fact proceeding. The card takes over and
+		// explains it — but after a visible spinner, returning in silence reads
+		// as a tap that was dropped, so confirm the outcome the user asked for
+		// actually happened rather than leaving the card to arrive unannounced.
+		if (mobileInterfaceTransitionIsActive(status.transition)) {
+			haptics.success();
 			return;
 		}
 		if (!interfaceBusy) {
@@ -1013,7 +1106,25 @@ export default function TerminalScreen() {
 				{ text: "Stop and switch", style: "destructive", onPress: () => void startInterfaceSwitch("interrupt") },
 			],
 		);
-	}, [interfaceBusy, interfaceSwitch, known?.activity, startInterfaceSwitch]);
+	}, [interfaceBusy, interfaceSwitch, interfaceTransitionActive, known?.activity, startInterfaceSwitch]);
+
+	// The poll keeps retrying on its own at up to 8s; this is for the user who can
+	// see the network is back and does not want to wait for the tick. The header
+	// button is disabled for the whole transition, so this is the only tap that
+	// re-asks while one is live. Same guard as the header recheck: it is the same
+	// request, and two of them against a slow link is what the guard prevents.
+	const retryInterfaceCheck = useCallback(async () => {
+		if (recheckingRef.current) return;
+		haptics.tap();
+		recheckingRef.current = true;
+		setRechecking(true);
+		try {
+			await interfaceSwitch.refresh();
+		} finally {
+			recheckingRef.current = false;
+			if (mountedRef.current) setRechecking(false);
+		}
+	}, [interfaceSwitch]);
 
 	const requestInterfaceFailureRecovery = useCallback(() => {
 		if (!interfaceFailureRecovery) return;
@@ -1035,15 +1146,27 @@ export default function TerminalScreen() {
 					<Pressable
 						hitSlop={10}
 						accessibilityLabel="Open Chat interface"
-						accessibilityState={{ busy: interfaceTransitionActive || interfaceSwitch.starting }}
-						onPress={requestInterfaceSwitch}
+						accessibilityState={{
+							busy: interfaceTransitionActive || interfaceSwitch.starting || rechecking,
+						}}
+						disabled={rechecking || interfaceSwitch.starting || interfaceTransitionActive}
+						onPress={() => void requestInterfaceSwitch()}
 						style={({ pressed }) => [styles.headerBrowserBtn, pressed && { opacity: 0.6 }]}
 					>
-						<Feather
-							name={interfaceTransitionActive ? "repeat" : "message-square"}
-							size={18}
-							color={interfaceSwitch.status?.supported ? t.blue : t.textFaint}
-						/>
+						{/* A spinner rather than a dimmed glyph: the recheck only runs while
+						    the icon is already faint, so fading it further reads as broken.
+						    `starting` shows it too — that POST is disabled-but-silent for up
+						    to REQUEST_TIMEOUT_MS otherwise, the same dead-button shape the
+						    recheck spinner exists to remove. */}
+						{rechecking || interfaceSwitch.starting ? (
+							<ActivityIndicator size="small" color={t.blue} />
+						) : (
+							<Feather
+								name={interfaceTransitionActive ? "repeat" : "message-square"}
+								size={18}
+								color={interfaceSwitch.status?.supported ? t.blue : t.textFaint}
+							/>
+						)}
 					</Pressable>
 					<Pressable
 						hitSlop={12}
@@ -1061,7 +1184,7 @@ export default function TerminalScreen() {
 				</View>
 			),
 		});
-	}, [headerRightReady, navigation, browserOpen, hasPreview, toggleBrowser, styles, t, shellOnly, interfaceTransitionActive, interfaceSwitch.starting, interfaceSwitch.status?.supported, requestInterfaceSwitch]);
+	}, [headerRightReady, navigation, browserOpen, hasPreview, toggleBrowser, styles, t, shellOnly, interfaceTransitionActive, interfaceSwitch.starting, rechecking, interfaceSwitch.status?.supported, requestInterfaceSwitch]);
 
 	const confirmKill = useCallback(() => {
 		const doKill = async () => {
@@ -1101,20 +1224,20 @@ export default function TerminalScreen() {
 			setTimeout(() => {
 				if (openedRef.current) return;
 				openedRef.current = true;
-				muxRef.current?.openTerminal(id, projectId);
+				muxRef.current?.openTerminal(terminalHandleId, projectId);
 				const d = lastDimsRef.current;
-				if (d) muxRef.current?.resize(id, d.cols, d.rows, projectId);
+				if (d) muxRef.current?.resize(terminalHandleId, d.cols, d.rows, projectId);
 			}, 1200);
 		} catch (e) {
 			setBanner(`Restore failed: ${e instanceof Error ? e.message : String(e)}`);
 		} finally {
 			setRestoring(false);
 		}
-	}, [restore, id, projectId]);
+	}, [restore, id, terminalHandleId, projectId]);
 
 	const xtermOptions = useMemo(
 		() => ({
-			fontSize,
+			fontSize: FONT_SIZE,
 			cursorBlink: true,
 			scrollback: 5000,
 			// Move more rows per swipe so touch scrolling feels responsive.
@@ -1132,15 +1255,13 @@ export default function TerminalScreen() {
 		}),
 		// `scheme` matters: without it the terminal keeps the palette it was built
 		// with and stays dark after a theme switch.
-		[fontSize, scheme],
+		[scheme],
 	);
 
-	// Zoom re-mounts the terminal at a new font size (see fontSize note above).
-	// Reset open/size so the fresh mount re-attaches the PTY and re-reports dims.
+	// Adjust only the phone's CSS viewport. The xterm renderer, mux attachment,
+	// replay buffer, and daemon-owned PTY dimensions all remain untouched.
 	const zoom = useCallback((delta: number) => {
-		setFontSize((f) => Math.min(20, Math.max(7, f + delta)));
-		openedRef.current = false;
-		setSize(null);
+		adjustTerminalViewport(xtermRef.current, delta > 0 ? 1 : -1);
 	}, []);
 
 	const webViewOptions = useMemo(
@@ -1170,12 +1291,15 @@ export default function TerminalScreen() {
 		);
 	}
 
-	// One inset for the whole dock. The root already reserves kbHeight, so the
+	// One inset for the whole dock. The root already reserves the keyboard, so the
 	// dock owes nothing more while the keyboard is up — see dockInset.
 	const bottomPad = dockInset(kbHeight, insets.bottom);
+	// Android's reported kbHeight excludes the nav bar our root view draws under,
+	// so rootKeyboardPad adds it back; on iOS it passes the height through.
+	const rootPad = rootKeyboardPad(Platform.OS === "android" ? "android" : "ios", kbHeight, insets.bottom);
 
 	return (
-		<View style={[styles.screen, kbHeight > 0 && { paddingBottom: kbHeight }]}>
+		<View style={[styles.screen, rootPad > 0 && { paddingBottom: rootPad }]}>
 			<View style={styles.statusBar}>
 				<View style={[styles.statusDot, { backgroundColor: statusColorFor(t)[status] }]} />
 				<Text style={styles.statusText}>{statusLabel[status]}</Text>
@@ -1184,14 +1308,13 @@ export default function TerminalScreen() {
 						{size.cols}x{size.rows}
 					</Text>
 				)}
-				{/* Zoom the terminal font: smaller = more rows/cols (see more of a TUI).
-				    Grid geometry belongs beside the grid readout, not in the input dock. */}
+				{/* Zoom only the mobile viewport; the shared PTY grid stays unchanged. */}
 				{!dead && (
 					<View style={styles.zoomGroup}>
 						<Pressable
 							hitSlop={6}
 							accessibilityLabel="Smaller text"
-						onPress={() => { haptics.tap(); zoom(-1); }}
+							onPress={() => { haptics.tap(); zoom(-1); }}
 							style={({ pressed }) => [styles.zoomBtn, pressed && { opacity: 0.6 }]}
 						>
 							<Feather name="minus" size={13} color={t.textSecondary} />
@@ -1200,7 +1323,7 @@ export default function TerminalScreen() {
 						<Pressable
 							hitSlop={6}
 							accessibilityLabel="Larger text"
-						onPress={() => { haptics.tap(); zoom(1); }}
+							onPress={() => { haptics.tap(); zoom(1); }}
 							style={({ pressed }) => [styles.zoomBtn, pressed && { opacity: 0.6 }]}
 						>
 							<Feather name="plus" size={13} color={t.textSecondary} />
@@ -1277,10 +1400,9 @@ export default function TerminalScreen() {
 
 			<View style={styles.termWrap}>
 				<XtermJsWebView
-					// Remount on a theme change as well as a font change: xterm applies
-					// its palette at construction, so a live options swap leaves the
-					// already-painted rows in the old colours.
-					key={`term-${fontSize}-${scheme}`}
+					// Remount only on theme changes: xterm applies its palette at
+					// construction, so already-painted rows otherwise keep old colours.
+					key={`term-${scheme}`}
 					ref={xtermRef}
 					autoFit={false}
 					xtermOptions={xtermOptions}
@@ -1306,6 +1428,15 @@ export default function TerminalScreen() {
 								</Pressable>
 							) : null}
 							{interfaceSwitch.error ? <Text style={styles.interfaceError}>{interfaceSwitch.error}</Text> : null}
+							{interfaceSwitch.fetchFailed ? (
+								<Pressable
+									disabled={rechecking}
+									onPress={() => void retryInterfaceCheck()}
+									style={styles.interfaceCancel}
+								>
+									<Text style={styles.interfaceCancelText}>{rechecking ? "Retrying…" : "Retry"}</Text>
+								</Pressable>
+							) : null}
 						</View>
 					</View>
 				) : null}
@@ -1478,7 +1609,7 @@ const makeStyles = (t: Theme) =>
 	},
 	headerActions: { flexDirection: "row", alignItems: "center" },
 	interfaceOverlay: {
-		...StyleSheet.absoluteFillObject,
+		...StyleSheet.absoluteFill,
 		alignItems: "center",
 		justifyContent: "center",
 		paddingHorizontal: 24,
@@ -1521,7 +1652,7 @@ const makeStyles = (t: Theme) =>
 		borderWidth: 1,
 		borderColor: t.bgSurface,
 	},
-	browserOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: t.bgBase },
+	browserOverlay: { ...StyleSheet.absoluteFill, backgroundColor: t.bgBase },
 	browserBar: {
 		flexDirection: "row",
 		alignItems: "center",
@@ -1547,7 +1678,7 @@ const makeStyles = (t: Theme) =>
 	},
 	restoreText: { color: t.blue, fontWeight: "700", fontSize: 12 },
 	deadOverlay: {
-		...StyleSheet.absoluteFillObject,
+		...StyleSheet.absoluteFill,
 		alignItems: "center",
 		justifyContent: "center",
 		padding: 32,

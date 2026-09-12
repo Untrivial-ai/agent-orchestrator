@@ -70,6 +70,25 @@ func TestCommandsRejectUnexpectedArgs(t *testing.T) {
 	}
 }
 
+func TestChatHostRejectsMalformedInternalArgumentsAsUsage(t *testing.T) {
+	setConfigEnv(t)
+	for _, args := range [][]string{
+		{"chat-host"},
+		{"chat-host", "session", "/tmp/data", "/tmp/work", "provider"},
+		{"chat-host", "session", "/tmp/data", "/tmp/work", "not-a-separator", "provider"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, _, err := executeCLI(t, Deps{}, args...)
+			if err == nil {
+				t.Fatal("expected usage error")
+			}
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode(%v) = %d, want 2", err, got)
+			}
+		})
+	}
+}
+
 func TestVersionEmitsCLIInvocationBestEffort(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
@@ -155,6 +174,7 @@ func TestTelemetryMetaClassifiesRegisteredCommandPaths(t *testing.T) {
 	systemCommands := map[string]struct{}{
 		"ao agent-process":           {},
 		"ao agent-process supervise": {},
+		"ao chat-host":               {},
 		"ao completion":              {},
 		"ao daemon":                  {},
 		"ao help":                    {},
@@ -423,6 +443,7 @@ func setConfigEnv(t *testing.T) testConfig {
 	t.Setenv("AO_RUN_FILE", cfg.runFile)
 	t.Setenv("AO_DATA_DIR", cfg.dataDir)
 	t.Setenv("AO_PORT", "3001")
+	t.Setenv("AO_PROJECT_ID", "")
 	t.Setenv("AO_REQUEST_TIMEOUT", "")
 	t.Setenv("AO_SHUTDOWN_TIMEOUT", "")
 	return cfg

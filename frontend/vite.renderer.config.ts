@@ -42,21 +42,67 @@ const POSTHOG_ORIGINS = (() => {
 	return origins;
 })();
 
-// CSP for the built renderer. The daemon is loopback-only, so network access is
-// pinned to 127.0.0.1 (REST + SSE over http, terminal mux over ws). Injected at
-// build time rather than written into index.html because the dev server needs
-// inline scripts (react-refresh preamble) that a static meta tag would block.
-const CONTENT_SECURITY_POLICY = [
-	"default-src 'self'",
-	"script-src 'self'",
-	"style-src 'self' 'unsafe-inline'",
-	"img-src 'self' data: http://127.0.0.1:*",
-	"font-src 'self' data:",
-	["connect-src", "'self'", "http://127.0.0.1:*", "ws://127.0.0.1:*", ...POSTHOG_ORIGINS].filter(Boolean).join(" "),
-	"object-src 'none'",
-	"base-uri 'self'",
-	"frame-src 'none'",
-].join("; ");
+// Cloud terminals attach over a ticketed wss:// dialed directly from the
+// renderer (the WorkOS token stays in the main process; the single-use ticket
+// is the socket's whole authorization — see lib/cloud-terminal-mux.ts), so the
+// packaged CSP must allow the control-plane origin or every cloud terminal
+// stays on "Connecting…" forever in built apps. The runtime URL is a daemon
+// setting the build cannot read; list the baked defaults and fold in a
+// developer's AO_CLOUD_CONTROL_PLANE_URL override so a custom control plane
+// keeps a working terminal in packaged builds too.
+const CLOUD_CP_WS_ORIGINS = (() => {
+	const origins = ["wss://staging-api.aoagents.dev", "wss://api.aoagents.dev"];
+	const override = process.env.AO_CLOUD_CONTROL_PLANE_URL?.trim();
+	if (!override) return origins;
+	let url: URL;
+	try {
+		url = new URL(override);
+	} catch {
+		return origins;
+	}
+	const origin = `${url.protocol === "http:" ? "ws:" : "wss:"}//${url.host}`;
+	if (!origins.includes(origin)) origins.push(origin);
+	return origins;
+})();
+
+// CSP for the renderer. The daemon is loopback-only, so network access is
+// pinned to 127.0.0.1 (REST + SSE over http, terminal mux over ws), plus the
+// cloud control-plane websocket origins above. The policy is injected here
+// rather than written into index.html so the serve variant can differ: the
+// same directives apply in dev, relaxed only where the dev server itself
+// needs it. Enforcing CSP in dev keeps dev/packaged parity — a connect-src
+// gap then fails on the developer's screen, not weeks later in a packaged
+// build (that skew is exactly how the cloud-terminal block in #4666 shipped).
+function contentSecurityPolicy(mode: "build" | "serve"): string {
+	return [
+		"default-src 'self'",
+		// react-refresh injects its inline preamble in serve mode; a hash is
+		// impractical because the preamble changes with the plugin version.
+		mode === "serve" ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		// Repository avatars can come from self-hosted SCM instances whose origins
+		// are only known at runtime. Keep the broad exception limited to images;
+		// scripts, connections, frames, and other resource classes remain scoped.
+		"img-src 'self' data: http://127.0.0.1:* https:",
+		"font-src 'self' data:",
+		[
+			"connect-src",
+			"'self'",
+			"http://127.0.0.1:*",
+			"ws://127.0.0.1:*",
+			// Vite serves on localhost, which 'self' does not cover for the ws://
+			// HMR socket.
+			mode === "serve" ? "ws://localhost:*" : "",
+			...POSTHOG_ORIGINS,
+			...CLOUD_CP_WS_ORIGINS,
+		]
+			.filter(Boolean)
+			.join(" "),
+		"object-src 'none'",
+		"base-uri 'self'",
+		"frame-src 'none'",
+	].join("; ");
+}
 
 const injectCspMeta: Plugin = {
 	name: "inject-csp-meta",
@@ -65,7 +111,7 @@ const injectCspMeta: Plugin = {
 		return [
 			{
 				tag: "meta",
-				attrs: { "http-equiv": "Content-Security-Policy", content: CONTENT_SECURITY_POLICY },
+				attrs: { "http-equiv": "Content-Security-Policy", content: contentSecurityPolicy("build") },
 				injectTo: "head-prepend",
 			},
 		];
@@ -104,6 +150,18 @@ export default defineConfig({
 			"@": fileURLToPath(new URL("./src/renderer", import.meta.url)),
 			"@aoagents/product-ui": fileURLToPath(
 				new URL("../packages/product-ui/src/index.ts", import.meta.url),
+			),
+			// The alias above resolves product-ui to its source, so that package's
+			// own imports resolve from packages/product-ui/ — which only has a
+			// node_modules if `npm ci` was run there too. CI does that; a
+			// frontend-only install does not, and the failure mode is quiet: every
+			// test importing product-ui dies at transform time with "failed to
+			// resolve clsx", which reads as pre-existing breakage rather than a
+			// missing install. Point both runtime deps at the frontend copies so
+			// one install is enough.
+			clsx: fileURLToPath(new URL("./node_modules/clsx", import.meta.url)),
+			"tailwind-merge": fileURLToPath(
+				new URL("./node_modules/tailwind-merge", import.meta.url),
 			),
 		},
 	},

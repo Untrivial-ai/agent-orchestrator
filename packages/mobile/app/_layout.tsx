@@ -5,6 +5,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { OnboardingGate } from "../lib/OnboardingGate";
 import { TelemetryManager } from "../lib/TelemetryManager";
 import { PushManager } from "../lib/PushManager";
+import { UpdatesManager } from "../lib/UpdatesManager";
+import { StoreUpdateManager } from "../lib/StoreUpdateManager";
 import { MinimalBackButton } from "../lib/MinimalBackButton";
 import { AppProvider } from "../lib/store";
 import { ThemeProvider, useTheme, useThemeState } from "../lib/ThemeProvider";
@@ -25,6 +27,7 @@ const SHEET_ROUTES = [
 	{ name: "sheets/conversation-map", detents: [0.5, 0.95] },
 	{ name: "sheets/composer-picker", detents: [0.6, 0.95] },
 	{ name: "sheets/theme", detents: "fitToContents" },
+	{ name: "sheets/store-update", detents: "fitToContents" },
 ] as const;
 
 // The manual-connect form — the only sheet with text inputs, and the only one
@@ -73,6 +76,8 @@ function Shell() {
 			<StatusBar style={scheme === "dark" ? "light" : "dark"} />
 			<TelemetryManager />
 			<PushManager />
+			<UpdatesManager />
+			<StoreUpdateManager />
 			<OnboardingGate />
 			<Stack
 				screenOptions={{

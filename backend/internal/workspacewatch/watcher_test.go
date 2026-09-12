@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,103 @@ func TestWatchDoesNotTurnGitStatusIndexRefreshIntoAChange(t *testing.T) {
 		t.Fatalf("update tracked file: %v", err)
 	}
 	waitForChange(t, changes)
+}
+
+func TestWatchStillReportsChangesWhenWorkspaceIsNestedInAnotherRepository(t *testing.T) {
+	parent := t.TempDir()
+	runGit(t, parent, "init")
+
+	// The workspace sits inside the parent repository. Git's upward search
+	// resolves the parent repo, which tracks no files under the workspace; the
+	// watch must fall back to walking the tree instead of trusting that answer.
+	root := filepath.Join(parent, "workspace", "session")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir nested workspace: %v", err)
+	}
+	existing := filepath.Join(root, "src")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing directory: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	changes, err := Watch(ctx, root)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(existing, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write existing-directory file: %v", err)
+	}
+	waitForChange(t, changes)
+}
+
+func TestWatchReportsChangesWhenWorkspaceRootIsASymlink(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	existing := filepath.Join(repo, "src")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write existing-directory file: %v", err)
+	}
+
+	// Git canonicalizes --show-toplevel to the real path, so a symlinked
+	// workspace root must still be recognized as the repository toplevel;
+	// otherwise the watch falls back to WalkDir, which does not descend
+	// through a symlink root, and nested edits are never reported.
+	link := filepath.Join(t.TempDir(), "workspace")
+	// A junction needs no privileges on Windows and, like a symlink, is
+	// canonicalized away by git rev-parse --show-toplevel.
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, repo).CombinedOutput(); err != nil {
+			t.Fatalf("junction workspace: %v\n%s", err, out)
+		}
+	} else if err := os.Symlink(repo, link); err != nil {
+		t.Fatalf("symlink workspace: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	changes, err := Watch(ctx, link)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(existing, "main.go"), []byte("package main // updated\n"), 0o644); err != nil {
+		t.Fatalf("update existing-directory file: %v", err)
+	}
+	waitForChange(t, changes)
+}
+
+func TestDiscoverGitWorkspaceRecognizesSymlinkedToplevel(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+
+	link := filepath.Join(t.TempDir(), "workspace")
+	// A junction needs no privileges on Windows and, like a symlink, is
+	// canonicalized away by git rev-parse --show-toplevel.
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, repo).CombinedOutput(); err != nil {
+			t.Fatalf("junction workspace: %v\n%s", err, out)
+		}
+	} else if err := os.Symlink(repo, link); err != nil {
+		t.Fatalf("symlink workspace: %v", err)
+	}
+
+	// Git reports the canonical real path as the toplevel, so the workspace
+	// must be matched by filesystem identity, not by path string.
+	git := discoverGitWorkspace(context.Background(), link)
+	if !git.available {
+		t.Fatal("symlinked repository toplevel was not recognized as a git workspace")
+	}
+	if len(git.files) == 0 {
+		t.Fatal("git file list is empty for the symlinked repository toplevel")
+	}
 }
 
 func waitForChange(t *testing.T, changes <-chan struct{}) {

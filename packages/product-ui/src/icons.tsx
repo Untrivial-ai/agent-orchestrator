@@ -92,6 +92,15 @@ export function FileCodeIcon(props: IconProps) {
 	);
 }
 
+export function PlusIcon(props: IconProps) {
+	return (
+		<Icon name="plus" {...props}>
+			<path d="M5 12h14" />
+			<path d="M12 5v14" />
+		</Icon>
+	);
+}
+
 export function FileTextIcon(props: IconProps) {
 	return (
 		<Icon name="file-text" {...props}>
@@ -122,6 +131,39 @@ export function GitPullRequestIcon(props: IconProps) {
 			<circle cx="6" cy="6" r="3" />
 			<path d="M13 6h3a2 2 0 0 1 2 2v7" />
 			<path d="M6 9v12" />
+		</Icon>
+	);
+}
+
+export function GitMergeIcon(props: IconProps) {
+	return (
+		<Icon name="git-merge" {...props}>
+			<circle cx="6" cy="6" r="3" />
+			<circle cx="18" cy="18" r="3" />
+			<path d="M6 9v3a6 6 0 0 0 6 6h3" />
+			<path d="m15 15 3 3-3 3" />
+		</Icon>
+	);
+}
+
+export function GitPullRequestClosedIcon(props: IconProps) {
+	return (
+		<Icon name="git-pull-request-closed" {...props}>
+			<circle cx="6" cy="6" r="3" />
+			<path d="M6 9v12" />
+			<path d="m15 9 6 6" />
+			<path d="m21 9-6 6" />
+		</Icon>
+	);
+}
+
+export function GitPullRequestDraftIcon(props: IconProps) {
+	return (
+		<Icon name="git-pull-request-draft" {...props}>
+			<circle cx="6" cy="6" r="3" />
+			<path d="M6 9v12" />
+			<path d="M18 6h.01" />
+			<path d="M18 10v8" />
 		</Icon>
 	);
 }

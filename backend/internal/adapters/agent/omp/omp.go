@@ -5,7 +5,9 @@ package omp
 
 import (
 	"context"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -34,6 +36,7 @@ var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
+var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -64,6 +67,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 
 	cmd := make([]string, 0, 5)
 	cmd = append(cmd, binary)
+	appendOMPExtensionFlag(&cmd, cfg.WorkspacePath)
 	if err := appendSystemPrompt(&cmd, cfg.SystemPrompt, cfg.SystemPromptFile); err != nil {
 		return nil, err
 	}
@@ -92,6 +96,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	cmd := make([]string, 0, 5)
 	cmd = append(cmd, binary)
+	appendOMPExtensionFlag(&cmd, cfg.Session.WorkspacePath)
 	if err := appendSystemPrompt(&cmd, cfg.SystemPrompt, cfg.SystemPromptFile); err != nil {
 		return nil, false, err
 	}
@@ -107,6 +112,57 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 	}
 	info, ok := agentbase.StandardSessionInfo(session)
 	return info, ok, nil
+}
+
+// NativeConversationExists reports whether OMP has a persisted session file for id.
+func (p *Plugin) NativeConversationExists(ctx context.Context, _ ports.SessionRef, nativeConversationID string, env map[string]string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	id := strings.TrimSpace(nativeConversationID)
+	if id == "" {
+		return false, nil
+	}
+	configDir := strings.TrimSpace(env["PI_CODING_AGENT_DIR"])
+	if configDir == "" {
+		configDir = strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	}
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false, err
+		}
+		configDir = filepath.Join(home, ".omp", "agent")
+	}
+	found := false
+	sessionsDir := filepath.Join(configDir, "sessions")
+	err := filepath.WalkDir(sessionsDir, func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_"+id+".jsonl") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 func appendSystemPrompt(cmd *[]string, inline, file string) error {

@@ -14,6 +14,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 	provider: "github",
 	repo: "acme/repo",
 	author: "ada",
+	authorAvatarUrl: "https://avatars.githubusercontent.com/u/123?v=4",
 	sourceBranch: "fix/dashboard",
 	targetBranch: "main",
 	headSha: "abc123",
@@ -40,6 +41,10 @@ describe("PRSummaryParts", () => {
 		);
 
 		expect(screen.getByRole("link", { name: "ada" })).toHaveAttribute("href", "https://github.com/ada");
+		expect(screen.getByRole("link", { name: "ada" }).querySelector("img")).toHaveAttribute(
+			"src",
+			"https://avatars.githubusercontent.com/u/123?v=4",
+		);
 		expect(screen.getByRole("link", { name: "Checks passing" })).toHaveAttribute(
 			"href",
 			"https://github.com/acme/repo/pull/7/checks",

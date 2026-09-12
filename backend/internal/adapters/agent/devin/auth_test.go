@@ -2,24 +2,41 @@ package devin
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestAuthStatusAuthorizedFromAuthStatusOutput(t *testing.T) {
-	previous := authprobe.CmdRunner
-	authprobe.CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, error) {
-		if name != "devin" || !reflect.DeepEqual(arg, []string{"auth", "status"}) {
-			t.Fatalf("command = %s %#v, want devin auth status", name, arg)
-		}
-		return []byte("Logged in (via Devin).\n\nUser:\n  Email: agentsubs@example.com\n"), nil
+func TestAuthStatusAuthorizedFromDocumentedAPIKey(t *testing.T) {
+	t.Setenv("DEVIN_API_KEY", "cog_test")
+	got, err := (&Plugin{resolvedBinary: "devin"}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	defer func() { authprobe.CmdRunner = previous }()
+	if got != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	}
+}
+
+func TestAuthStatusUsesBoundedDevinSpecificStatusTimeout(t *testing.T) {
+	t.Setenv("DEVIN_API_KEY", "")
+	previous := authprobe.CmdRunner
+	t.Cleanup(func() { authprobe.CmdRunner = previous })
+	authprobe.CmdRunner = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("status probe context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 3*time.Second || remaining > 8*time.Second {
+			t.Fatalf("status probe timeout = %v, want > 3s and <= 8s", remaining)
+		}
+		return []byte("Logged in (via Devin)."), nil
+	}
 
 	got, err := (&Plugin{resolvedBinary: "devin"}).AuthStatus(context.Background())
 	if err != nil {
@@ -30,32 +47,38 @@ func TestAuthStatusAuthorizedFromAuthStatusOutput(t *testing.T) {
 	}
 }
 
-func TestDevinCredentialsAuthStatusAuthorized(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credentials.toml")
-	if err := os.WriteFile(path, []byte("windsurf_api_key = \"token\"\ndevin_api_url = \"https://api.devin.ai\"\n"), 0o600); err != nil {
-		t.Fatal(err)
+func TestAuthStatusUsesDevinNativeStatus(t *testing.T) {
+	t.Setenv("DEVIN_API_KEY", "")
+	previous := authprobe.CmdRunner
+	t.Cleanup(func() { authprobe.CmdRunner = previous })
+
+	tests := []struct {
+		name   string
+		output string
+		err    error
+		want   ports.AgentAuthStatus
+	}{
+		{name: "logged in", output: "Logged in (via Devin).", want: ports.AgentAuthStatusAuthorized},
+		{name: "logged out", output: "You are not logged in.", err: errors.New("exit status 1"), want: ports.AgentAuthStatusUnauthorized},
+		{name: "unrecognized", output: "Authentication state unavailable.", want: ports.AgentAuthStatusUnknown},
 	}
 
-	status, ok, err := devinCredentialsAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			authprobe.CmdRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name != "devin" || !reflect.DeepEqual(args, []string{"auth", "status"}) {
+					t.Fatalf("command = %q %#v, want devin auth status", name, args)
+				}
+				return []byte(tc.output), tc.err
+			}
 
-func TestDevinCredentialsAuthStatusUnauthorizedWithEmptyFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credentials.toml")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := devinCredentialsAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
+			got, err := (&Plugin{resolvedBinary: "devin"}).AuthStatus(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("AuthStatus = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

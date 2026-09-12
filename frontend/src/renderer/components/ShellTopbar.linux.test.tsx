@@ -19,7 +19,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 });
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
-	useWorkspaceQuery: () => useWorkspaceQueryMock(),
+	useWorkspaceScope: () => ({ ...useWorkspaceQueryMock(), data: {} }),
 	workspaceQueryKey: ["workspaces"],
 }));
 
@@ -59,7 +59,8 @@ describe("ShellTopbar on Linux", () => {
 		);
 
 		const header = screen.getByTestId("board-topbar-label").closest("header");
-		expect(header).toHaveStyle({ paddingLeft: "94px" });
+		// Cluster left (26) + cluster width (92) + content gap (12) - panel inline inset (16).
+		expect(header).toHaveStyle({ paddingLeft: "114px" });
 		expect(screen.getByTestId("board-topbar-label")).toHaveTextContent("Board");
 	});
 

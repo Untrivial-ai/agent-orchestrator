@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +16,31 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestResolveClaudeBinaryFindsLocalAppDataNPMShimOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows install location")
+	}
+	localAppData := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("USERPROFILE", t.TempDir())
+	want := filepath.Join(localAppData, "npm", "claude.cmd")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("@echo off\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveClaudeBinary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveClaudeBinary() = %q, want %q", got, want)
+	}
+}
 
 func TestNativeConversationIDUsesTheSameClaudeUUIDAcrossInterfaces(t *testing.T) {
 	p := &Plugin{}
@@ -441,9 +467,11 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	if len(config.Permissions) == 0 {
 		t.Fatalf("unrelated settings clobbered: %s", data)
 	}
-	// SessionStart carries the required matcher; UserPromptSubmit omits it.
-	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup" {
-		t.Fatalf("SessionStart matcher = %v, want startup", m)
+	// SessionStart must fire on resume (and clear/compact/fork) as well as a
+	// fresh startup: a --resume relaunch otherwise never confirms the native
+	// session id under the new RuntimeLaunchID until the user types again (#4122).
+	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
 	}
 	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], "ao hooks claude-code user-prompt-submit"); m != nil {
 		t.Fatalf("UserPromptSubmit matcher = %v, want none", m)
@@ -455,6 +483,47 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	}
 	if m := matcherForCommand(config.Hooks["SessionEnd"], "ao hooks claude-code session-end"); m != nil {
 		t.Fatalf("SessionEnd matcher = %v, want none", m)
+	}
+}
+
+func TestGetAgentHooksMigratesSessionStartMatcher(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	workspace := t.TempDir()
+	settingsPath := filepath.Join(workspace, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Workspaces installed before #4122 registered SessionStart only under
+	// "startup". Reconcile must move the AO command onto the broader matcher
+	// without duplicating it or dropping a user's own startup hook.
+	existing := `{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"ao hooks claude-code session-start","timeout":30},{"type":"command","command":"custom startup hook","timeout":5}]}]}}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Hooks map[string][]hooksjson.MatcherGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	groups := config.Hooks["SessionStart"]
+	if m := matcherForCommand(groups, "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
+	}
+	if got := countClaudeHookCommand(groups, "ao hooks claude-code session-start"); got != 1 {
+		t.Fatalf("session-start command count = %d, want 1 in %#v", got, groups)
+	}
+	if got := countClaudeHookCommand(groups, "custom startup hook"); got != 1 {
+		t.Fatalf("custom startup hook count = %d, want 1 in %#v", got, groups)
 	}
 }
 
@@ -622,8 +691,7 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 }
 
 func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
-	// The configured model must carry across a restore; without it the CLI
-	// silently reverts to its own default model (#3218).
+	// The caller's session model selection must reach native resume (#3218).
 	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
 		Config:      ports.AgentConfig{Model: "  claude-opus-4-5  "},
 		Permissions: ports.PermissionModeBypassPermissions,
@@ -934,6 +1002,50 @@ func TestEnsureWorkspaceTrustedCreatesEntry(t *testing.T) {
 	// Top-level key preserved.
 	if root["userID"] != "abc" {
 		t.Fatalf("top-level key clobbered: %#v", root["userID"])
+	}
+}
+
+func TestEnsureWorkspaceTrustedNormalizesWindowsProjectKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const workspacePath = `D:\dev\agent-orchestrator\.ao\worktrees\demo\worker-1`
+	const wantKey = `D:/dev/agent-orchestrator/.ao/worktrees/demo/worker-1`
+	if err := ensureWorkspaceTrustedForOS(cfgPath, workspacePath, "windows"); err != nil {
+		t.Fatalf("ensureWorkspaceTrustedForOS: %v", err)
+	}
+
+	root := readJSON(t, cfgPath)
+	projects := root["projects"].(map[string]any)
+	entry, ok := projects[wantKey].(map[string]any)
+	if !ok || entry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("forward-slash trust entry = %#v, want accepted entry", projects[wantKey])
+	}
+	if _, exists := projects[workspacePath]; exists {
+		t.Fatalf("unexpected backslash-keyed trust entry: %#v", projects[workspacePath])
+	}
+}
+
+func TestEnsureWorkspaceTrustedLeavesNonWindowsProjectKeyUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const workspacePath = `/worktrees/project\with-backslash`
+	if err := ensureWorkspaceTrustedForOS(cfgPath, workspacePath, "linux"); err != nil {
+		t.Fatalf("ensureWorkspaceTrustedForOS: %v", err)
+	}
+
+	root := readJSON(t, cfgPath)
+	projects := root["projects"].(map[string]any)
+	entry, ok := projects[workspacePath].(map[string]any)
+	if !ok || entry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("unchanged trust entry = %#v, want accepted entry", projects[workspacePath])
 	}
 }
 

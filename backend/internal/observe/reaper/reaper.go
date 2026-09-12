@@ -9,6 +9,7 @@ package reaper
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -69,18 +70,24 @@ type Reaper struct {
 	tick     time.Duration
 	clock    func() time.Time
 	logger   *slog.Logger
+
+	// The periodic loop and boot-time reconciliation may call Tick on the same
+	// Reaper concurrently, so the per-run warning set needs synchronization.
+	missingHandleMu     sync.Mutex
+	warnedMissingHandle map[domain.SessionID]struct{}
 }
 
 // New constructs a Reaper. sink is the lifecycle fact destination; sessions
 // supplies the rows to probe; runtime checks whether a stored handle is alive.
 func New(sink runtimeObservationSink, sessions sessionSource, runtime runtimeProber, cfg Config) *Reaper {
 	r := &Reaper{
-		sink:     sink,
-		sessions: sessions,
-		runtime:  runtime,
-		tick:     cfg.Tick,
-		clock:    cfg.Clock,
-		logger:   cfg.Logger,
+		sink:                sink,
+		sessions:            sessions,
+		runtime:             runtime,
+		tick:                cfg.Tick,
+		clock:               cfg.Clock,
+		logger:              cfg.Logger,
+		warnedMissingHandle: make(map[domain.SessionID]struct{}),
 	}
 	if workload, ok := runtime.(ports.SupervisedProcessInspector); ok {
 		r.workload = workload
@@ -89,7 +96,13 @@ func New(sink runtimeObservationSink, sessions sessionSource, runtime runtimePro
 		r.tick = DefaultTickInterval
 	}
 	if r.clock == nil {
-		r.clock = time.Now
+		// UTC, not bare time.Now: the observed timestamp reaches sessions.
+		// activity_last_at, and the SQLite driver stores a time.Time by its
+		// String() form. A local-zone value keeps its monotonic reading and
+		// offset ("… +0700 +07 m=+995.1"), which no longer compares as a
+		// timestamp against the "… +0000 UTC" rows every other writer produces —
+		// and those comparisons gate the agent-switch source-stop predicate.
+		r.clock = func() time.Time { return time.Now().UTC() }
 	}
 	if r.logger == nil {
 		r.logger = slog.Default()
@@ -206,8 +219,7 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 		// A session in the running-set without a handle is an anomaly worth
 		// surfacing (MarkSpawned should have set both keys). Warn rather
 		// than Debug so it doesn't hide behind a noisy log level.
-		r.logger.Warn("reaper: session has no runtime handle metadata, skipping",
-			"session", sess.ID)
+		r.warnMissingHandleOnce(sess.ID)
 		return ports.RuntimeFacts{}, false
 	}
 	alive, probeErr := r.runtime.IsAlive(ctx, handle)
@@ -244,6 +256,20 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 	}
 
 	return facts, true
+}
+
+// warnMissingHandleOnce logs at most once per session for this Reaper's lifetime.
+func (r *Reaper) warnMissingHandleOnce(id domain.SessionID) {
+	r.missingHandleMu.Lock()
+	if _, warned := r.warnedMissingHandle[id]; warned {
+		r.missingHandleMu.Unlock()
+		return
+	}
+	r.warnedMissingHandle[id] = struct{}{}
+	r.missingHandleMu.Unlock()
+
+	r.logger.Warn("reaper: session has no runtime handle metadata, skipping",
+		"session", id)
 }
 
 // handleFromRecord reconstructs the RuntimeHandle stored on the session by

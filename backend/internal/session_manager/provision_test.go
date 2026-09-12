@@ -19,6 +19,31 @@ func (f fixedBrowserCapability) Issue(_ domain.SessionID) (string, string, error
 	return string(f), "verifier-1", nil
 }
 
+type browserCapabilityIssue struct {
+	token    string
+	verifier string
+	err      error
+}
+
+type scriptedBrowserCapabilities struct {
+	issues  []browserCapabilityIssue
+	calls   int
+	onIssue func(call int, id domain.SessionID)
+}
+
+func (s *scriptedBrowserCapabilities) Issue(id domain.SessionID) (string, string, error) {
+	call := s.calls
+	s.calls++
+	if s.onIssue != nil {
+		s.onIssue(call, id)
+	}
+	if call >= len(s.issues) {
+		return "", "", errors.New("unexpected browser capability issuance")
+	}
+	issue := s.issues[call]
+	return issue.token, issue.verifier, issue.err
+}
+
 func TestSpawnEnvProjectVarsCannotOverrideInternal(t *testing.T) {
 	env := spawnEnv("mer-1", "mer", "issue-9", "/data", map[string]string{
 		"FOO":        "bar",
@@ -33,6 +58,19 @@ func TestSpawnEnvProjectVarsCannotOverrideInternal(t *testing.T) {
 	}
 	if env[EnvProjectID] != "mer" {
 		t.Fatalf("AO_PROJECT_ID = %q, want mer (internal wins)", env[EnvProjectID])
+	}
+}
+
+func TestSpawnEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) {
+	env := spawnEnvForOS("mer-1", "mer", "issue-9", `C:\ao`, map[string]string{
+		"ao_session_id": "hacked",
+		"buildMode":     "production",
+	}, true)
+	if _, ok := env["ao_session_id"]; ok {
+		t.Fatal("case variant of protected AO_SESSION_ID survived")
+	}
+	if env[EnvSessionID] != "mer-1" || env["buildMode"] != "production" {
+		t.Fatalf("environment = %v, want protected ID and untouched project variable spelling", env)
 	}
 }
 
@@ -142,7 +180,7 @@ func TestHookPATH(t *testing.T) {
 				}
 				return ""
 			}
-			got, err := HookPATH(tc.executable, getenv, tc.projectEnv)
+			got, err := HookPATH(tc.executable, getenv, tc.projectEnv, "/data")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("HookPATH = %q, want error", got)
@@ -236,5 +274,30 @@ func TestRunPostCreate(t *testing.T) {
 	// A failing command surfaces an error.
 	if err := runPostCreate(context.Background(), workspace, []string{"exit 3"}); err == nil {
 		t.Fatal("expected error from failing post-create command")
+	}
+}
+
+func TestSpawnPermissionPrecedence(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		for _, tc := range []struct {
+			name                    string
+			base, role, spawn, want domain.PermissionMode
+		}{
+			{"unset", "", "", "", domain.PermissionModeAuto},
+			{"project", domain.PermissionModeDefault, "", "", domain.PermissionModeDefault},
+			{"role", domain.PermissionModeAuto, domain.PermissionModeAcceptEdits, "", domain.PermissionModeAcceptEdits},
+			{"spawn", domain.PermissionModeAuto, domain.PermissionModeAcceptEdits, domain.PermissionModeDefault, domain.PermissionModeDefault},
+		} {
+			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
+				cfg := domain.ProjectConfig{AgentConfig: domain.AgentConfig{Permissions: tc.base}, Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: tc.role}}, Orchestrator: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: tc.role}}}
+				got := applySpawnAgentConfig(effectiveAgentConfig(kind, cfg), domain.AgentConfig{Permissions: tc.spawn})
+				if got.Permissions != tc.want {
+					t.Fatalf("got %q want %q", got.Permissions, tc.want)
+				}
+			})
+		}
+	}
+	if got := effectiveAgentConfig(domain.KindWorker, domain.ProjectConfig{}); got.Permissions != "" {
+		t.Fatalf("non-spawn resolution changed: %q", got.Permissions)
 	}
 }

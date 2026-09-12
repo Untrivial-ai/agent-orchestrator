@@ -1,12 +1,44 @@
 package autohand
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestAutohandAuthStatusUnknownWithoutDocumentedLocalCredential(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AUTOHAND_CONFIG", "")
+	for _, name := range []string{
+		"AUTOHAND_API_KEY", "AUTOHAND_AUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+		"GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY",
+	} {
+		t.Setenv(name, "")
+	}
+	status, err := (&Plugin{resolvedBinary: "autohand"}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestAutohandAuthStatusUsesAUTOHAND_CONFIG(t *testing.T) {
+	t.Setenv("AUTOHAND_CONFIG", writeAutohandAuthConfig(t, `{
+  "auth": {"token": "session-token"}
+}`))
+	status, err := (&Plugin{resolvedBinary: "autohand"}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	}
+}
 
 func TestAutohandConfigAuthStatusAuthorized(t *testing.T) {
 	path := writeAutohandAuthConfig(t, `{
@@ -24,7 +56,21 @@ func TestAutohandConfigAuthStatusAuthorized(t *testing.T) {
 	}
 }
 
-func TestAutohandConfigAuthStatusUnauthorizedWithMissingCloudToken(t *testing.T) {
+func TestAutohandConfigAuthStatusUnknownWithAPIKeyHelper(t *testing.T) {
+	path := writeAutohandAuthConfig(t, `{
+  "auth": {"apiKeyHelper": "security find-generic-password -w -s autohand"}
+}`)
+
+	got, err := autohandConfigAuthStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestAutohandConfigAuthStatusUnknownWithMissingCloudToken(t *testing.T) {
 	path := writeAutohandAuthConfig(t, `{
   "auth": {"token": ""},
   "provider": "zai",
@@ -35,8 +81,8 @@ func TestAutohandConfigAuthStatusUnauthorizedWithMissingCloudToken(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusUnauthorized)
+	if got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusUnknown)
 	}
 }
 

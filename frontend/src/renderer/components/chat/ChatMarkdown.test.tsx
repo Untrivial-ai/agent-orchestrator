@@ -1,8 +1,20 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
-import { ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
+import { renderMermaidDiagram } from "../../lib/mermaid-diagram";
+import { ActivityTitle, ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
+
+// Mermaid needs real SVG layout APIs jsdom lacks; pin the routing boundary and
+// let MermaidBlock.test.tsx own the block's states.
+vi.mock("../../lib/mermaid-diagram", () => ({
+	isRenderableDiagram: (code: string) => code.trim().length > 0 && code.length <= 20_000,
+	renderMermaidDiagram: vi.fn(async () => '<svg xmlns="http://www.w3.org/2000/svg"><g>diagram</g></svg>'),
+}));
+
+beforeEach(() => {
+	vi.mocked(renderMermaidDiagram).mockClear();
+});
 
 // The point of these is that the SYNTAX stops being visible. Every case here is a
 // shape agents actually emit, and the assertion is that structure replaced markup.
@@ -227,6 +239,30 @@ describe("ChatMarkdown", () => {
 		expect(document.body.textContent).not.toContain("```");
 	});
 
+	it("renders a mermaid fence as a diagram rather than source text", async () => {
+		render(<ChatMarkdown text={"```mermaid\nflowchart TD\n    A --> B\n```"} />);
+
+		expect(await screen.findByTestId("mermaid-diagram")).toBeInTheDocument();
+		expect(vi.mocked(renderMermaidDiagram)).toHaveBeenCalledWith(
+			"flowchart TD\n    A --> B",
+			expect.stringMatching(/light|dark/),
+		);
+	});
+
+	it("treats the mermaid label case-insensitively", async () => {
+		render(<ChatMarkdown text={"```Mermaid\nflowchart TD\n    A --> B\n```"} />);
+
+		expect(await screen.findByTestId("mermaid-diagram")).toBeInTheDocument();
+	});
+
+	it("keeps a mermaid fence as source text while streaming", () => {
+		render(<ChatMarkdown text={"```mermaid\nflowchart TD\n    A --> B\n```"} streaming />);
+
+		expect(screen.queryByTestId("mermaid-diagram")).not.toBeInTheDocument();
+		expect(screen.getByText(/A --> B/)).toBeInTheDocument();
+		expect(vi.mocked(renderMermaidDiagram)).not.toHaveBeenCalled();
+	});
+
 	it("renders a fence with no language as a block, not as inline code", () => {
 		// Matching on the `language-*` class alone used to send these down the inline
 		// path, where a whole `go test` transcript rendered as one accent-coloured run.
@@ -298,5 +334,22 @@ describe("ChatMarkdown code highlighting", () => {
 
 		await user.click(wrap);
 		expect(wrapper).toHaveAttribute("data-wrap", "false");
+	});
+});
+
+
+describe("ActivityTitle", () => {
+	it("keeps code delimiters inside multi-backtick code spans", () => {
+		const { container } = render(<ActivityTitle text={"Edit ``file`name.ts``"} />);
+		expect(container.querySelector("code")).toHaveTextContent("file`name.ts");
+	});
+
+	it("keeps disclosure titles inline and non-interactive", () => {
+		const { container } = render(
+			<button><ActivityTitle text={'# **Edit** [file](https://example.com) `path.ts` ![image](https://example.com/image.png) <input autofocus />'} /></button>,
+		);
+		expect(screen.getByRole("button")).toHaveTextContent("Edit file path.ts");
+		expect(container.querySelector("strong")).toHaveTextContent("Edit");
+		expect(container.querySelector("a, img, input, p, h1, pre")).toBeNull();
 	});
 });

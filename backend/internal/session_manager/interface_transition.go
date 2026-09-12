@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -51,6 +53,12 @@ type chatHandoffLauncher interface {
 	ArmChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	PrepareChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	AbortChatHandoff(domain.SessionID)
+}
+
+type chatHandoffHistoryStore interface {
+	ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
+	ConversationBranch(context.Context, string, string) (domain.ConversationBranch, error)
+	HasConversationTurns(context.Context, string) (bool, error)
 }
 
 type runtimeInterrupter interface {
@@ -145,6 +153,9 @@ func (m *Manager) StartInterfaceTransition(
 	}
 	if !found {
 		return domain.SessionInterfaceTransition{}, ErrNotFound
+	}
+	if rec.Harness == domain.HarnessCodex && m.codexAccountSwitchIsActive() {
+		return domain.SessionInterfaceTransition{}, ErrCodexAccountSwitchInProgress
 	}
 	if rec.IsTerminated {
 		return domain.SessionInterfaceTransition{}, ErrTerminated
@@ -378,13 +389,13 @@ func (m *Manager) runInterfaceTransition(
 		return
 	}
 	sourcePrepared = true
-	// A promptless TUI may not create a provider conversation until its first
-	// submitted turn. When the transition was admitted from positive initial-
-	// composer proof, resolve again after input is frozen and drain is complete.
+	// A promptless session may not persist a provider conversation until its first
+	// submitted turn. When admitted from untouched-conversation proof, resolve
+	// again after input is frozen and drain is complete.
 	// This closes the race where a turn starts between the admission snapshot and
-	// the terminal input gate: the new native id is transferred, or the switch
+	// the input gate: the new native id is transferred, or the switch
 	// fails before stopping the source if identity still cannot be proven.
-	if transition.SourceMode == domain.SessionModeTUI && transition.NativeConversationID == "" {
+	if transition.NativeConversationID == "" {
 		current, found, refreshErr := m.store.GetSession(ctx, rec.ID)
 		if refreshErr != nil || !found {
 			if refreshErr == nil {
@@ -394,6 +405,7 @@ func (m *Manager) runInterfaceTransition(
 			return
 		}
 		if current.Metadata.RuntimeLaunchID != rec.Metadata.RuntimeLaunchID ||
+			current.Metadata.ControllerGeneration != rec.Metadata.ControllerGeneration ||
 			domain.NormalizeSessionMode(current.Mode) != transition.SourceMode {
 			fail("SESSION_CHANGED", fmt.Errorf("session changed while the interface switch was draining"))
 			return
@@ -479,13 +491,11 @@ func (m *Manager) runInterfaceTransition(
 }
 
 // nativeConversationID resolves the adapter's native conversation id for the
-// session's current interface. An empty id is only safe to pass through when
-// the adapter can distinguish a fresh TUI from a real conversation (it
-// implements AgentInterfaceHandoffHistoryProbe) AND the session has no
-// hook-derived conversation history. If any conversation metadata is set but
-// the native id is empty, the hooks fired but failed to capture the id — a
-// bug state where fresh-starting would silently discard the conversation, so
-// hard-block with ErrNativeConversationMissing instead.
+// session's current interface. A missing id requires positive untouched-terminal
+// or durable empty-Chat proof. Chat may also reserve a ProviderConversationID
+// before persisting history; persistedNativeConversationID checks whether that
+// id can resume or qualifies for a fresh launch. Conversation activity without
+// a resumable identity must fail closed instead of discarding existing work.
 func (m *Manager) nativeConversationID(
 	ctx context.Context,
 	rec domain.SessionRecord,
@@ -533,19 +543,53 @@ func (m *Manager) nativeConversationID(
 // nativeConversationNotStarted is the only evidence that may turn a missing
 // provider history into an intentional fresh handoff. A missing file or a
 // reserved native id is not enough: both are also observable when persistence
-// is lagging or broken after real work. The current rendered provider surface
-// must positively identify its untouched initial composer, and AO must have no
-// hook-derived conversation facts that contradict it.
+// is lagging or broken after real work. Chat requires a durable empty root
+// conversation; TUI requires an untouched initial composer. AO must have no
+// hook-derived conversation facts that contradict either proof.
 func (m *Manager) nativeConversationNotStarted(
 	ctx context.Context,
 	rec domain.SessionRecord,
 	agent ports.Agent,
 ) bool {
-	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI ||
-		rec.Metadata.LatestUserPrompt != "" ||
-		rec.Metadata.LatestAssistantUpdate != "" ||
-		rec.Metadata.NativeTranscriptPath != "" {
+	if rec.Metadata.LatestUserPrompt != "" || rec.Metadata.LatestAssistantUpdate != "" {
 		return false
+	}
+	if path := rec.Metadata.NativeTranscriptPath; path != "" {
+		// SessionStart may announce a filename before creating the transcript;
+		// that hint can survive a fresh switch back to Chat. Only a definitely
+		// absent absolute path can accompany the mode-specific freshness proof.
+		// Existing entries (including symlinks) and lookup errors block it.
+		if !filepath.IsAbs(path) {
+			return false
+		}
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		if rec.Metadata.Prompt != "" {
+			return false
+		}
+		store, ok := m.store.(chatHandoffHistoryStore)
+		if !ok {
+			return false
+		}
+		// The sequence is monotonic even when turns are rolled back or hidden.
+		// Zero proves no message or activity was ever accepted; an empty visible
+		// timeline would not. Startup settings do not consume this sequence.
+		conversation, err := store.ConversationForSession(ctx, rec.ID)
+		if err != nil || conversation.SessionID != rec.ID || conversation.LatestSequence != 0 {
+			return false
+		}
+		branch, err := store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
+		if err != nil || branch.SessionID != rec.ID || branch.ParentBranchID != "" ||
+			branch.ProviderConversationID != rec.Metadata.ProviderConversationID {
+			return false
+		}
+		// A provider can announce a turn before its first message/activity takes
+		// a sequence. Include those turns, even if they were later hidden.
+		hasTurns, err := store.HasConversationTurns(ctx, conversation.ID)
+		return err == nil && !hasTurns
 	}
 	if _, ok := agent.(ports.AgentInterfaceHandoffHistoryProbe); !ok {
 		return false
@@ -581,7 +625,7 @@ func (m *Manager) terminalProvesNativeConversationNotStarted(
 
 // persistedNativeConversationID verifies that a reserved native id has durable
 // provider history behind it. A failed lookup is not proof of freshness: only
-// positive untouched-composer evidence may produce the explicit fresh sentinel.
+// positive untouched-terminal or durable empty-Chat proof may start fresh.
 func (m *Manager) persistedNativeConversationID(
 	ctx context.Context,
 	rec domain.SessionRecord,
@@ -629,7 +673,12 @@ func (m *Manager) preflightInterfaceTarget(
 		if m.chat == nil {
 			return ports.ErrChatUnsupported
 		}
-		return m.chat.PreflightChat(ctx, rec.Harness)
+		project, err := m.loadProject(ctx, rec.ProjectID)
+		if err != nil {
+			return err
+		}
+		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
+		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
 	if !ok {

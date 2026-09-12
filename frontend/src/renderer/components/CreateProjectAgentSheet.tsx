@@ -1,4 +1,3 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	canSubmitProjectSetup,
 	ProjectSetupFormView,
@@ -7,15 +6,17 @@ import {
 import { useTranslation } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronLeft, TriangleAlert, X, type LucideIcon } from "lucide-react";
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { components } from "../../api/schema";
-import { agentsQueryKey, agentsQueryOptions, refreshAgentsIfStale } from "../hooks/useAgentsQuery";
+import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { AGENT_OPTIONS } from "../lib/agent-options";
 import {
 	agentLabelCompare,
+	agentUsageCompare,
 	buildRankedAgentOptions,
-	DEFAULT_AGENT_PRIORITY,
 	DEFAULT_AGENT_PRIORITY_RANK,
+	type AgentInfo,
+	unknownAgentReadiness,
 } from "../lib/agent-select-options";
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
@@ -31,8 +32,6 @@ import { appI18n } from "../i18n";
 import { Button } from "./ui/button";
 
 type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
-
-type AgentInfo = components["schemas"]["AgentInfo"];
 
 export type CreateProjectAgentSelection = {
 	workerAgent: string;
@@ -54,6 +53,7 @@ type CreateProjectAgentSheetProps = {
 	path: string | null;
 	repositorySetupNeeded?: boolean;
 	repositorySetupWarning?: string | null;
+	shake?: boolean;
 };
 
 type SheetError = {
@@ -113,17 +113,30 @@ export function CreateProjectAgentSheet({
 	path,
 	repositorySetupNeeded = false,
 	repositorySetupWarning = null,
+	shake = false,
 }: CreateProjectAgentSheetProps) {
 	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const agentsQuery = useQuery({
-		...agentsQueryOptions,
-		enabled: open,
-	});
+	const [isExiting, setIsExiting] = useState(false);
+	const contentOpen = open || isExiting;
+	const displayedAction = useRef(action);
+	const displayedError = useRef(error);
+	const displayedOnBack = useRef(onBack);
+	if (open) {
+		displayedAction.current = action;
+		displayedError.current = error;
+		displayedOnBack.current = onBack;
+	}
+	const agentsQuery = useAgentReadinessQuery(contentOpen);
+	useEnsureAgentReadiness({ enabled: contentOpen });
 	const agents = agentsQuery.data;
-	const installedAgents = agents?.installed ?? [];
-	const agentOptions = agents?.authorized ?? [];
-	const supportedAgents = agents?.supported ?? [];
+	const agentOptions = useMemo(() => agents?.agents ?? [], [agents]);
+	const authorizedAgents = useMemo(
+		() =>
+			agentOptions.filter((agent) =>
+				["authorized", "not_applicable"].includes(agent.authentication.state),
+			),
+		[agentOptions],
+	);
 	const isLoadingAgents = agents === undefined && agentsQuery.isFetching;
 	const agentsError = agentsQuery.isError
 		? agentsQuery.error instanceof Error
@@ -135,6 +148,10 @@ export function CreateProjectAgentSheet({
 	const [orchestratorAgent, setOrchestratorAgent] = useState("");
 	const [workerAgentTouched, setWorkerAgentTouched] = useState(false);
 	const [orchestratorAgentTouched, setOrchestratorAgentTouched] = useState(false);
+	useEnsureAgentReadiness({
+		agentIds: [workerAgent, orchestratorAgent],
+		enabled: contentOpen && (workerAgent !== "" || orchestratorAgent !== ""),
+	});
 	const isBusy = isCreating || isInitializing;
 	const [intake, setIntake] = useState<IntakeForm>(EMPTY_INTAKE);
 	const intakeIncomplete = intakeNeedsRule(intake);
@@ -148,37 +165,45 @@ export function CreateProjectAgentSheet({
 		!intakeIncomplete &&
 		!isBusy &&
 		!isLoadingAgents;
-	const sheetError = error ? projectSheetError(error, action) : null;
+	const sheetError = displayedError.current
+		? projectSheetError(displayedError.current, displayedAction.current)
+		: null;
+	const wasOpen = useRef(false);
 
 	useEffect(() => {
-		if (!open) return;
-		void refreshAgentsIfStale().then((next) => {
-			if (next) queryClient.setQueryData(agentsQueryKey, next);
-		});
-	}, [open, queryClient]);
-
-	useEffect(() => {
-		if (!open) return;
-		const defaultAgent = defaultAuthorizedAgent(agentOptions);
-		if (!workerAgentTouched) setWorkerAgent(defaultAgent);
-		if (!orchestratorAgentTouched) setOrchestratorAgent(defaultAgent);
-	}, [agentOptions, open, orchestratorAgentTouched, workerAgentTouched]);
-
-	useEffect(() => {
-		if (!open) {
+		if (open && !wasOpen.current) {
 			setWorkerAgent("");
 			setOrchestratorAgent("");
 			setWorkerAgentTouched(false);
 			setOrchestratorAgentTouched(false);
 			setIntake(EMPTY_INTAKE);
 		}
-	}, [open, path]);
+		wasOpen.current = open;
+	}, [open]);
+
+	useEffect(() => {
+		if (!open) return;
+		const defaultAgent = defaultAuthorizedAgent(authorizedAgents);
+		if (!workerAgentTouched) setWorkerAgent(defaultAgent);
+		if (!orchestratorAgentTouched) setOrchestratorAgent(defaultAgent);
+	}, [authorizedAgents, open, orchestratorAgentTouched, workerAgentTouched]);
 
 	return (
-		<Dialog.Root open={open} onOpenChange={(next) => !isBusy && onOpenChange(next)}>
+		<Dialog.Root
+			open={open}
+			onOpenChange={(next) => {
+				if (isBusy) return;
+				setIsExiting(!next);
+				onOpenChange(next);
+			}}
+		>
 			<Dialog.Portal>
-				<Dialog.Overlay className="dialog-overlay data-[state=open]:animate-overlay-in" />
-				<Dialog.Content className="fixed left-1/2 top-1/2 z-overlay w-[min(480px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-agents-sheet border border-[var(--color-border-agents-sheet)] bg-[var(--color-bg-agents-sheet)] p-0 text-[var(--color-text-agents-sheet-title)] shadow-[var(--shadow-import-modal)] data-[state=open]:animate-modal-in">
+				<Dialog.Content
+					className={cn("fixed left-1/2 top-1/2 z-overlay w-dialog-lg -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-popover p-0 text-popover-foreground shadow-xl data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none", shake && "modal-shake")}
+					onAnimationEnd={(event) => {
+						if (!open && event.target === event.currentTarget) setIsExiting(false);
+					}}
+				>
 					<ProjectSetupHeaderView
 						CloseButton={ProjectSheetCloseButton}
 						Description={Dialog.Description}
@@ -187,24 +212,25 @@ export function CreateProjectAgentSheet({
 						closeLabel={t("createProject.closeAgents")}
 						disabled={isBusy}
 						leadingAction={
-							onBack ? (
+							displayedOnBack.current ? (
 								<Button
 									type="button"
 									variant="outline"
 									size="icon"
 									aria-label={t("createProject.cloneBackToDetails")}
 									disabled={isBusy}
-									onClick={onBack}
+								onClick={displayedOnBack.current}
 								>
 									<ChevronLeft className="size-4" aria-hidden="true" />
 								</Button>
 							) : undefined
 						}
 						path={path ?? ""}
+						showPath={false}
 						title={
 							kind === "workspace"
-								? t("createProject.workspaceAgents")
-								: t("createProject.projectAgents")
+								? t("createProject.setupWorkspace")
+								: t("createProject.setupProject")
 						}
 					/>
 					<ProjectSetupFormView
@@ -215,9 +241,7 @@ export function CreateProjectAgentSheet({
 									label={t("createProject.workerAgent")}
 									placeholder={t("createProject.selectWorker")}
 									value={workerAgent}
-									authorized={agentOptions}
-									installed={installedAgents}
-									supported={supportedAgents}
+									agents={agentOptions}
 									disabled={isLoadingAgents}
 									labelClassName="agents-sheet-label"
 									triggerClassName="agents-sheet-control"
@@ -234,9 +258,7 @@ export function CreateProjectAgentSheet({
 									label={t("createProject.orchestratorAgent")}
 									placeholder={t("createProject.selectOrchestrator")}
 									value={orchestratorAgent}
-									authorized={agentOptions}
-									installed={installedAgents}
-									supported={supportedAgents}
+									agents={agentOptions}
 									disabled={isLoadingAgents}
 									labelClassName="agents-sheet-label"
 									triggerClassName="agents-sheet-control"
@@ -249,12 +271,11 @@ export function CreateProjectAgentSheet({
 							),
 						}}
 						agents={{
-							cacheMessage: t("createProject.agentsCached"),
 							error: displayError,
 							loading: isLoadingAgents,
 							loadingMessage: t("createProject.loadingAgents"),
 							onRetry: () => void agentsQuery.refetch(),
-							refreshing: false,
+							retrying: agentsQuery.isFetching,
 							retryLabel: t("createProject.retry"),
 						}}
 						alert={
@@ -275,7 +296,6 @@ export function CreateProjectAgentSheet({
 								: null
 						}
 						canSubmit={canSubmit}
-						cancelLabel={t("createProject.cancel")}
 						intakeControl={
 							<IntakeFields
 								form={intake}
@@ -303,11 +323,15 @@ export function CreateProjectAgentSheet({
 										? t("createProject.cloning")
 										: t("createProject.creating")
 									: action === "clone"
-										? t("createProject.cloneAndStart")
+										? t("createProject.clone")
 										: kind === "workspace"
 											? t("createProject.createWorkspaceAndStart")
 											: t("createProject.createAndStart")
 						}
+						submitClassName={cn(
+							"inline-flex h-control-form items-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/80",
+							(isCreating || isInitializing) && "before:size-3.5 before:shrink-0 before:animate-spin before:rounded-full before:border-2 before:border-current before:border-r-transparent before:content-['']",
+						)}
 					/>
 				</Dialog.Content>
 			</Dialog.Portal>
@@ -339,46 +363,40 @@ function ProjectSheetCloseButton({
 }
 
 export const RequiredAgentField = memo(function RequiredAgentField({
-	authorized,
+	agents,
 	disabled = false,
 	hint,
 	icon,
 	id,
 	invalid = false,
-	installed,
 	label,
 	onChange,
 	placeholder,
-	supported,
 	triggerClassName,
 	labelClassName,
 	contentClassName,
 	value,
 	variant = "stacked",
 }: {
-	authorized?: AgentInfo[];
+	agents?: AgentInfo[];
 	disabled?: boolean;
 	/** Caption beside the label, e.g. naming where a preselected default came from. */
 	hint?: string;
 	icon?: LucideIcon;
 	id: string;
 	invalid?: boolean;
-	installed?: AgentInfo[];
 	label: string;
 	onChange: (value: string) => void;
 	placeholder: string;
-	supported?: AgentInfo[];
 	triggerClassName?: string;
 	labelClassName?: string;
 	contentClassName?: string;
 	value: string;
 	variant?: "stacked" | "settings-row" | "chip";
 }) {
-	const fallbackAgents: AgentInfo[] = AGENT_OPTIONS.map((agent) => ({ id: agent, label: agent }));
+	const fallbackAgents: AgentInfo[] = AGENT_OPTIONS.map((agent) => unknownAgentReadiness(agent, agent));
 	const options = buildRankedAgentOptions({
-		supported,
-		installed,
-		authorized,
+		agents,
 		priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
 		fallbackAgents,
 	});
@@ -542,8 +560,12 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 });
 
 export function defaultAuthorizedAgent(authorizedAgents: AgentInfo[]): string {
-	const authorizedIds = new Set(authorizedAgents.map((agent) => agent.id));
-	const prioritized = DEFAULT_AGENT_PRIORITY.find((agent) => authorizedIds.has(agent));
-	if (prioritized) return prioritized;
-	return [...authorizedAgents].sort(agentLabelCompare)[0]?.id ?? "";
+	return [...authorizedAgents]
+		.sort(
+			(a, b) =>
+				agentUsageCompare(a, b) ||
+				(DEFAULT_AGENT_PRIORITY_RANK.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+					(DEFAULT_AGENT_PRIORITY_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
+				agentLabelCompare(a, b),
+		)[0]?.id ?? "";
 }

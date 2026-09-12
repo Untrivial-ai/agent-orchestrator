@@ -1,10 +1,10 @@
 // Package crush implements the Crush agent adapter: launching new sessions,
 // resuming sessions by native ID, and reading session info.
 //
-// Crush differs from other agents in that it doesn't yet expose AO-compatible
-// activity hooks. GetAgentHooks only injects AO's standing system prompt through
-// project-local context configuration; activity tracking still falls back to
-// basic session ID management.
+// Crush differs from hook-driven agents in that it doesn't yet expose
+// AO-compatible activity hooks. GetAgentHooks only injects AO's standing system
+// prompt through project-local context configuration; activity is reconciled
+// from conservative terminal UI markers.
 package crush
 
 import (
@@ -40,6 +40,8 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.ContinuousTerminalActivityDetector = (*Plugin)(nil)
+var _ ports.WaitingTerminalActivityDetector = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {

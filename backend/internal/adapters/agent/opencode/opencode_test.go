@@ -232,6 +232,25 @@ func TestOpenCodeAuthStatusUnknownWithZeroCredentials(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAuthStatusUnknownWithNoCredentials(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OPENCODE_DATA_DIR", filepath.Join(dir, "missing-data"))
+	for _, name := range opencodeAPIKeyEnvVars {
+		t.Setenv(name, "")
+	}
+	binary := filepath.Join(dir, "opencode")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf 'No credentials found\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status, err := (&Plugin{resolvedBinary: binary}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("AuthStatus = %q, want %q", status, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestOpenCodeLocalAuthStatusUnknownWhenMissing(t *testing.T) {
 	clearOpenCodeAuthEnv(t)
 	home := t.TempDir()
@@ -882,6 +901,37 @@ func TestGetRestoreCommandReappliesSystemPromptConfig(t *testing.T) {
 	}
 	if got := config.Agent["ao-sess-1"].Prompt; got != "restore AO rules" {
 		t.Fatalf("agent prompt = %q, want restore rules", got)
+	}
+}
+
+// TestGetRestoreCommandAppendsResumeTimePrompt covers resuming a reviewer
+// after it was killed and re-triggered: the new task must be embedded in the
+// resume argv (mirroring GetLaunchCommand's --prompt), or the resumed session
+// would sit idle with no work to act on.
+func TestGetRestoreCommandAppendsResumeTimePrompt(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "opencode"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Permissions: ports.PermissionModeBypassPermissions,
+		Prompt:      "review the new commit",
+		Session: ports.SessionRef{
+			Metadata: map[string]string{opencodeAgentSessionIDMetadataKey: "ses_abc123"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []string{
+		"opencode",
+		"--dangerously-skip-permissions",
+		"--session", "ses_abc123",
+		"--prompt", "review the new commit",
+	}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
 }
 

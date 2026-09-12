@@ -241,6 +241,10 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "SessionMode"
+          - column: "agent_switch_failure_policy.enabled"
+            go_type: "bool"
+          - column: "app_settings.cloud_offering"
+            go_type: "bool"
           - column: "sessions.session_mode"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

@@ -24,6 +24,13 @@ type PRFacts struct {
 	TargetBranch   string
 	HeadSHA        string
 	UpdatedAt      time.Time
+	// ExternalApproved and ExternalChangesRequested are the human review
+	// verdicts AO did not author. Review above aggregates AO's own provider
+	// reviews with everyone else's, so it cannot say whose turn the
+	// review-feedback loop is on.
+	ExternalApproved         bool
+	ExternalChangesRequested bool
+	ExternalComments         bool
 }
 
 // PullRequest is the app-level representation of one tracked pull request as
@@ -55,16 +62,17 @@ type PullRequest struct {
 	// renames or transfers.
 	ProviderID string
 
-	SourceBranch   string
-	TargetBranch   string
-	HeadSHA        string
-	Title          string
-	Additions      int
-	Deletions      int
-	ChangedFiles   int
-	Author         string
-	BaseSHA        string
-	MergeCommitSHA string
+	SourceBranch    string
+	TargetBranch    string
+	HeadSHA         string
+	Title           string
+	Additions       int
+	Deletions       int
+	ChangedFiles    int
+	Author          string
+	AuthorAvatarURL string
+	BaseSHA         string
+	MergeCommitSHA  string
 
 	ProviderState            string
 	ProviderMergeable        string
@@ -83,7 +91,10 @@ type PullRequest struct {
 	ObservedAt       time.Time
 	CIObservedAt     time.Time
 	ReviewObservedAt time.Time
-	AutoInjectCI     bool
+	// ReviewPartial records that the latest review-thread observation hit the
+	// provider's thread-window cap, so stored thread rows are a partial view.
+	ReviewPartial bool
+	AutoInjectCI  bool
 }
 
 // PullRequestCheck is one normalized CI check run for a pull request.
@@ -101,6 +112,7 @@ type PullRequestCheck struct {
 // PullRequestComment is one normalized review comment for a pull request.
 type PullRequestComment struct {
 	ThreadID         string
+	ReviewID         string
 	ID               string
 	Author           string
 	File             string

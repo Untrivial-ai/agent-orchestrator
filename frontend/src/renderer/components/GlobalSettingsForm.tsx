@@ -1,58 +1,34 @@
-import { useState } from "react";
+import { Fragment, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { GeneralSettingsSection } from "./settings/GeneralSettingsSection";
-import { ReportProblemDialog } from "./settings/ReportProblemDialog";
-import { SettingsLinkRow } from "./settings/SettingsRow";
-import { SettingsSection } from "./settings/SettingsSection";
-import { UpdatesSection } from "./settings/UpdatesSection";
+import type { GlobalSettingsSection as GlobalSettingsPage } from "../stores/ui-store";
+import { globalSettingsItemsFor } from "./settings/settingsCatalog";
 
-export type GlobalSettingsSection = "general" | "updates" | "help" | "all";
+export type GlobalSettingsSection = GlobalSettingsPage | "all";
 
 export function GlobalSettingsForm({
+	cloudEnabled = true,
 	section = "all",
-	onOpenKeyboardShortcuts,
-	onOpenConnectMobile,
 }: {
+	cloudEnabled?: boolean;
 	section?: GlobalSettingsSection;
-	onOpenKeyboardShortcuts?: () => void;
-	onOpenConnectMobile?: () => void;
 }) {
 	const { t } = useTranslation();
-	const [reportProblemOpen, setReportProblemOpen] = useState(false);
-	// One section per page means the dialog header already names it, so the
-	// page's leading heading would just repeat that title. Only "all" (no
-	// single-page header) shows every section's own heading.
-	const leadingTitleHidden = section !== "all";
+	const all = section === "all";
+	// One section per page means the dialog header already names it, so a
+	// leading in-page heading would just repeat that title.
+	const titleHidden = !all;
 
 	return (
-		<>
-			<div
-				aria-label={t("settings.title")}
-				className="flex w-full flex-col gap-(--size-settings-section-gap)"
-				data-testid="settings-page"
-			>
-				{(section === "all" || section === "general") && (
-					<>
-						<GeneralSettingsSection
-							onConnectMobile={() => onOpenConnectMobile?.()}
-							titleHidden={leadingTitleHidden}
-						/>
-						<SettingsSection title={t("settings.preferences")} grouped>
-							<SettingsLinkRow
-								label={t("settings.keyboardShortcuts")}
-								onClick={() => onOpenKeyboardShortcuts?.()}
-							/>
-						</SettingsSection>
-					</>
-				)}
-				{(section === "all" || section === "updates") && <UpdatesSection titleHidden={leadingTitleHidden} />}
-				{(section === "all" || section === "help") && (
-					<SettingsSection title={t("settings.getHelp")} titleHidden={leadingTitleHidden} grouped>
-						<SettingsLinkRow label={t("settings.reportProblem")} onClick={() => setReportProblemOpen(true)} />
-					</SettingsSection>
-				)}
-			</div>
-			<ReportProblemDialog open={reportProblemOpen} onOpenChange={setReportProblemOpen} />
-		</>
+		<div
+			aria-label={t("settings.title")}
+			className="flex w-full flex-col gap-(--size-settings-section-gap)"
+			data-testid="settings-page"
+		>
+			{globalSettingsItemsFor(section, { cloudEnabled }).map((item) => (
+				<Fragment key={item.id}>
+					<Suspense fallback={null}>{item.render(t, titleHidden)}</Suspense>
+				</Fragment>
+			))}
+		</div>
 	);
 }
