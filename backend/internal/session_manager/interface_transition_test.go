@@ -661,6 +661,68 @@ func TestInterfaceTransitionStatusBlocksFreshStartWithoutPositiveTerminalProof(t
 	}
 }
 
+// Regression for #4842: a fresh TUI session has a hook-confirmed native id but
+// no transcript on disk yet. Status must agree with start instead of drawing an
+// enabled switch that fails with NATIVE_SESSION_MISSING on POST.
+func TestInterfaceTransitionStatusBlocksReservedNativeIDWithoutHistoryOrFreshProof(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.agents = singleAgent{agent: emptyTransitionAgent{}}
+	runtime.outputForCall = func(int) string { return ambiguousTerminalOutput }
+	rec := store.sessions["session-1"]
+	rec.Metadata.AgentSessionID = "native-fresh"
+	rec.Metadata.AgentSessionIDLaunchID = rec.Metadata.RuntimeLaunchID
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if status.Supported {
+		t.Fatal("status enabled a switch whose native id has no durable history")
+	}
+	if status.ReasonCode != "NATIVE_SESSION_MISSING" {
+		t.Fatalf("reasonCode = %q, want NATIVE_SESSION_MISSING", status.ReasonCode)
+	}
+	if _, err := manager.StartInterfaceTransition(
+		context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
+	); !errors.Is(err, ErrNativeConversationMissing) {
+		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
+	}
+}
+
+func TestInterfaceTransitionStatusAllowsReservedNativeIDWithUntouchedTerminalProof(t *testing.T) {
+	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.agents = singleAgent{agent: untouchedEmptyTransitionAgent{}}
+	rec := store.sessions["session-1"]
+	rec.Metadata.AgentSessionID = "native-fresh"
+	rec.Metadata.AgentSessionIDLaunchID = rec.Metadata.RuntimeLaunchID
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if !status.Supported {
+		t.Fatalf("untouched terminal should allow a fresh handoff: %s (%s)", status.Reason, status.ReasonCode)
+	}
+	transition, err := manager.StartInterfaceTransition(
+		context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
+	)
+	if err != nil {
+		t.Fatalf("StartInterfaceTransition: %v", err)
+	}
+	if transition.NativeConversationID != "" {
+		t.Fatalf("fresh handoff carried native id %q, want empty", transition.NativeConversationID)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
+	}
+	if chat.start.ProviderConversationID != "" {
+		t.Fatalf("fresh handoff resumed provider conversation %q", chat.start.ProviderConversationID)
+	}
+}
+
 func TestInterfaceTransitionStatusBlocksFreshStartWhenConversationMetadataExists(t *testing.T) {
 	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
 	manager.agents = singleAgent{agent: codexagent.New()}
