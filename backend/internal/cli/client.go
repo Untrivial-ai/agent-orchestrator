@@ -20,6 +20,12 @@ import (
 // status probe timeout.
 const commandTimeout = 2 * time.Minute
 
+// ErrDaemonNotRunning marks the "no daemon to talk to" condition — either no
+// run-file at all, or one whose PID is dead. Callers that must not treat a
+// daemon restart as a failure (hooks, which fire during the desktop app's
+// daemon takeover) test for it with errors.Is.
+var ErrDaemonNotRunning = errors.New("AO daemon is not running")
+
 // maxDrainedBodyBytes bounds how much of an unused response body the CLI
 // discards for keep-alive reuse without an unbounded read.
 const maxDrainedBodyBytes = 4 << 10
@@ -128,10 +134,10 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		return err
 	}
 	if info == nil {
-		return fmt.Errorf("AO daemon is not running — start it with `ao start`")
+		return fmt.Errorf("%w — start it with `ao start`", ErrDaemonNotRunning)
 	}
 	if !c.deps.ProcessAlive(info.PID) {
-		return fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
+		return fmt.Errorf("%w (stale run-file at %s) — start it with `ao start`", ErrDaemonNotRunning, cfg.RunFilePath)
 	}
 
 	var reader io.Reader = http.NoBody
