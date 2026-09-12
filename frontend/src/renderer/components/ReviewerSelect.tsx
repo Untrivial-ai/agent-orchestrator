@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
@@ -81,7 +81,6 @@ export function ReviewerSelect({
 	excludedHarness?: string;
 }) {
 	const { t } = useTranslation();
-	const queryClient = useQueryClient();
 	const [menuOpen, setMenuOpen] = useState(false);
 	// Until the daemon's catalog arrives these entries carry the whole menu, so
 	// label them the way the catalog would rather than printing bare ids: without
@@ -103,20 +102,16 @@ export function ReviewerSelect({
 	});
 	const effectiveHarness = value || defaultHarness || "";
 	const menuProjectID = projectId ?? "";
+	// Reading a harness's catalog is not free: the daemon answers a cold cache by
+	// running that agent's own CLI. The menu used to prefetch every reviewer's
+	// catalog on open, which launched the binary of each agent the user was not
+	// choosing and may never have signed in to — that is how picking a reviewer
+	// could start an unrelated agent's login flow.
+	// https://github.com/Untrivial-ai/agent-orchestrator/issues/5307
+	// Only the harness in effect is read up front, because the trigger label needs
+	// it; the rest load if and when their submenu is actually opened.
 	const triggerCatalog = useQuery(agentModelsQueryOptions(effectiveHarness, menuProjectID));
 
-	useEffect(() => {
-		if (!menuOpen) return;
-		const harnesses = new Set<string>();
-		if (defaultHarness) harnesses.add(defaultHarness);
-		for (const agent of selectableOptions) {
-			harnesses.add(agent.id);
-		}
-		for (const harness of harnesses) {
-			if (!harness) continue;
-			void queryClient.prefetchQuery(agentModelsQueryOptions(harness, menuProjectID));
-		}
-	}, [defaultHarness, menuOpen, menuProjectID, queryClient, selectableOptions]);
 	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.agentDefault"));
 	const triggerLabel = [value ? agentLabel(value) : (defaultTriggerLabel ?? defaultOptionLabel ?? defaultHarness), selectedModelLabel]
 		.filter(Boolean)
@@ -202,9 +197,12 @@ function ReviewerHarnessOption({
 }) {
 	const { t } = useTranslation();
 	const [open, setOpen] = useState(false);
+	// Clicking a harness that is not the current one selects it outright rather
+	// than opening its submenu, so only the current harness and a submenu the user
+	// deliberately opened need a catalog. Everything else reads cache-only.
 	const catalogQuery = useQuery({
 		...agentModelsQueryOptions(resolvedHarness ?? "", projectId),
-		enabled: false,
+		enabled: open,
 	});
 	const catalog = catalogQuery.data;
 	const effectiveCurrentHarness =
