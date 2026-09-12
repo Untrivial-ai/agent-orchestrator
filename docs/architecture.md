@@ -1,6 +1,6 @@
 # Agent Orchestrator Architecture
 
-Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex Chat provider processes live in a detached per-session host so daemon/desktop replacement reconnects without stopping an in-flight turn; other Chat drivers currently retain daemon-owned process lifetime. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
+Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
 
 ## Table of Contents
 
@@ -196,7 +196,7 @@ backend/internal/
 ├── service/             # Controller-facing services
 │   ├── project/         # Project CRUD
 │   ├── session/         # Session read-model assembly
-│   ├── chat/            # Chat controllers, persistent Codex hosts + durable projection
+│   ├── chat/            # Chat controllers, persistent provider hosts + durable projection
 │   ├── pr/              # PR observation service
 │   └── review/          # Code review service
 ├── session_manager/     # Internal session command engine
@@ -472,7 +472,7 @@ sequenceDiagram
 ```mermaid
 erDiagram
     projects o|--o{ sessions : optionally_owns
-    projects ||--o| conversations : owns_orchestrator_narrative
+    projects o|--o| conversations : optionally_owns_orchestrator_narrative
     sessions ||--o| conversations : owns_worker_narrative
     sessions ||--o{ session_interface_transitions : records_controller_handoffs
     session_interface_transitions ||--o{ session_interface_transition_messages : holds_messages_during_gap
@@ -484,8 +484,8 @@ erDiagram
     pull_requests ||--o{ pr_review_threads : has
     pull_requests ||--o{ pr_comments : has
     sessions ||--o{ notifications : has
-    change_log }|--|| projects : tracks
-    change_log }|--|| sessions : tracks
+    change_log }o--o| projects : optionally_tracks
+    change_log }o--o| sessions : optionally_tracks
     change_log }|--|| pull_requests : tracks
 
     projects {
@@ -511,7 +511,7 @@ erDiagram
     conversations {
         string id PK
         string scope
-        string project_id FK
+        string project_id FK "nullable for standalone conversations"
         string session_id FK
         string current_session_id FK
         integer latest_sequence

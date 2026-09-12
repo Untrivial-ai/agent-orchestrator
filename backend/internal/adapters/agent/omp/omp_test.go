@@ -307,6 +307,63 @@ func TestGetAgentHooksHonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestNativeConversationExistsRequiresPersistedSessionFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", dir)
+	id := "01a08c38-8b17-728d-acf2-60c5d9d84851"
+	sessionDir := filepath.Join(dir, "sessions", "-.ao-dev-data-worktrees-scratch-workers-scratch-3")
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "2026-09-10T16-48-30-999Z_"+id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Plugin{}
+	exists, err := p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatalf("exists = false for persisted session file, want true")
+	}
+
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, "01a07a5f-dd88-7537-9bbd-7165ecba238f", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("exists = true for unknown session id, want false")
+	}
+
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, "  ", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("exists = true for blank session id, want false")
+	}
+}
+
+func TestNativeConversationExistsFalseWithoutSessionsDir(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+	exists, err := (&Plugin{}).NativeConversationExists(context.Background(), ports.SessionRef{}, "01a08c38-8b17-728d-acf2-60c5d9d84851", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("exists = true with no sessions dir, want false")
+	}
+}
+
+func TestNativeConversationExistsHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (&Plugin{}).NativeConversationExists(ctx, ports.SessionRef{}, "some-id", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
 func fakeOMPVersionBinary(t *testing.T, version string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")

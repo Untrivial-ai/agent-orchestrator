@@ -5,18 +5,18 @@ import { buildUtmUrl, LAUNCH_CAMPAIGN, LAUNCH_CHANNELS } from "./utm";
 describe("buildUtmUrl", () => {
 	it("appends the params in standard order", () => {
 		expect(
-			buildUtmUrl("https://aoagents.dev", {
+			buildUtmUrl("https://useao.dev", {
 				source: "product_hunt",
 				medium: "referral",
 				campaign: "launch_day",
 			}),
 		).toBe(
-			"https://aoagents.dev/?utm_source=product_hunt&utm_medium=referral&utm_campaign=launch_day",
+			"https://useao.dev/?utm_source=product_hunt&utm_medium=referral&utm_campaign=launch_day",
 		);
 	});
 
 	it("omits blank optional params rather than writing them empty", () => {
-		const url = buildUtmUrl("https://aoagents.dev", {
+		const url = buildUtmUrl("https://useao.dev", {
 			source: "x",
 			medium: "social",
 			campaign: "launch_day",
@@ -28,7 +28,7 @@ describe("buildUtmUrl", () => {
 	});
 
 	it("preserves a query the base already has", () => {
-		const url = buildUtmUrl("https://aoagents.dev/?ref=abc", {
+		const url = buildUtmUrl("https://useao.dev/?ref=abc", {
 			source: "github",
 			medium: "referral",
 			campaign: "launch_day",
@@ -59,7 +59,7 @@ describe("LAUNCH_CHANNELS", () => {
 
 	it("includes Product Hunt as a real, tagged link to the site", () => {
 		const ph = LAUNCH_CHANNELS.find((c) => c.source === "product_hunt")?.link;
-		expect(ph).toContain("https://aoagents.dev");
+		expect(ph).toContain("https://useao.dev");
 		expect(ph).toContain("utm_source=product_hunt");
 	});
 });

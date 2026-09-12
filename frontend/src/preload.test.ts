@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL } from "./shared/shortcuts";
+import { SET_CHAT_DRAFT_RISK_CHANNEL } from "./shared/chat-draft-risk";
 import type { AoBridge } from "./preload";
 
 const electronMocks = vi.hoisted(() => {
@@ -223,6 +224,16 @@ describe("preload application shortcut bridges", () => {
 		expect(electronMocks.send).toHaveBeenCalledWith(SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, true);
 	});
 
+	it("reports whether the active Chat draft has an unsafe unload boundary", () => {
+		const copy = { title: "Brouillon", message: "Non enregistré", detail: "Copiez le brouillon", stay: "Rester", leave: "Quitter" };
+		exposedBridge().app.setChatDraftRisk(["persistence-failed", "pending-attachments"], copy);
+
+		expect(electronMocks.send).toHaveBeenCalledWith(SET_CHAT_DRAFT_RISK_CHANNEL, [
+			"persistence-failed",
+			"pending-attachments",
+		], copy);
+	});
+
 	it.each([
 		[NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, (listener: () => void) => exposedBridge().app.onNewShellTerminalShortcut(listener)],
 		[CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, (listener: () => void) => exposedBridge().app.onCloseShellTerminalShortcut(listener)],
@@ -302,6 +313,7 @@ describe("preload browser profile bridge", () => {
 			},
 		});
 		await bridge.browser.historySuggestions({ viewId: "1:worker-1", query: "git" });
+		await bridge.browser.captureScreenshot("1:worker-1");
 		await bridge.browserProfiles.list();
 		await bridge.browserProfiles.create("Work");
 		await bridge.browserProfiles.rename({ id: "profile-id", name: "Personal" });
@@ -321,13 +333,14 @@ describe("preload browser profile bridge", () => {
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, "browser:profile:menu", expect.objectContaining({ viewId: "1:worker-1" }));
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(3, "browser:profile:select", expect.objectContaining({ viewId: "1:worker-1", profileId: null }));
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(4, "browser:history:suggest", { viewId: "1:worker-1", query: "git" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(5, "browserProfiles:list");
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(6, "browserProfiles:create", { name: "Work" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(7, "browserProfiles:rename", { id: "profile-id", name: "Personal" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(8, "browserProfiles:clear", { id: "profile-id" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(9, "browserProfiles:delete", { id: "profile-id" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(10, "browserProfiles:import:discover");
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(11, "browserProfiles:import:start", expect.objectContaining({ destination: { mode: "merge", name: "Work" } }));
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(5, "browser:captureScreenshot", "1:worker-1");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(6, "browserProfiles:list");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(7, "browserProfiles:create", { name: "Work" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(8, "browserProfiles:rename", { id: "profile-id", name: "Personal" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(9, "browserProfiles:clear", { id: "profile-id" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(10, "browserProfiles:delete", { id: "profile-id" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(11, "browserProfiles:import:discover");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(12, "browserProfiles:import:start", expect.objectContaining({ destination: { mode: "merge", name: "Work" } }));
 	});
 
 	it("validates profile-management event payloads and removes wrapped listeners", () => {
@@ -357,5 +370,25 @@ describe("preload browser profile bridge", () => {
 		expect(progressListener).toHaveBeenCalledWith({ requestId: "request", phase: "reading", completed: 1, total: 2 });
 		progressDispose();
 		expect(electronMocks.off).toHaveBeenCalledWith("browserProfiles:import:progress", progressWrapped);
+	});
+});
+
+describe("preload browser downloads bridge", () => {
+	it("routes download commands and change events over IPC", async () => {
+		const downloads = exposedBridge().browser.downloads;
+		await downloads.list();
+		await downloads.action({ id: "download-1", action: "show" });
+		await downloads.clear();
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(1, "browser:downloads:list");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, "browser:downloads:action", { id: "download-1", action: "show" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(3, "browser:downloads:clear");
+
+		const listener = vi.fn();
+		const dispose = downloads.onChanged(listener);
+		const wrapped = electronMocks.listeners.get("browser:downloadsChanged");
+		wrapped?.({}, { downloads: [] });
+		expect(listener).toHaveBeenCalledWith({ downloads: [] });
+		dispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("browser:downloadsChanged", wrapped);
 	});
 });

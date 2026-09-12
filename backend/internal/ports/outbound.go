@@ -86,6 +86,13 @@ type Runtime interface {
 	IsAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
 }
 
+// RuntimeChildInspector distinguishes running terminal children from a runtime
+// retained only to serve scrollback. False with no error confirms all children
+// have exited (or the runtime is absent); inconclusive probes must return errors.
+type RuntimeChildInspector interface {
+	IsChildAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
+}
+
 // FencedLiveness is exact ownership evidence for one AO runtime generation.
 // Unknown is deliberately distinct from dead: callers must retain ownership
 // gates when an adapter cannot prove an exact match or exact absence.
@@ -209,10 +216,10 @@ type RuntimeConfig struct {
 	WorkspacePath string
 	Argv          []string
 	Env           map[string]string
-	// ExitOnCommandCompletion is reserved for short-lived, backend-owned
-	// command terminals. Interactive agent and shell runtimes deliberately keep
-	// their terminal alive after the launched command exits so scrollback and
-	// manual recovery remain available.
+	// ExitOnCommandCompletion prevents a recovery shell after Argv exits.
+	// User shell terminals and trusted command terminals enable it; it does
+	// not determine whether a terminal survives an app launch. Agent runtimes
+	// leave it disabled to retain scrollback and manual recovery.
 	ExitOnCommandCompletion bool
 }
 
@@ -278,6 +285,32 @@ type Attacher interface {
 }
 
 // The Agent port and its supporting types live in agent.go.
+
+// WorkspaceReclaim distinguishes a teardown that actually released disk from
+// one that found nothing to release. Destroy returning a nil error proves only
+// that the workspace is absent afterwards, not that this call is what removed
+// it: a directory that was already gone leaves nothing for the adapter to fail
+// on. Callers that report teardown counts need the two kept apart.
+type WorkspaceReclaim string
+
+// Workspace reclaim outcomes.
+const (
+	// WorkspaceReclaimRemoved means the workspace was present and this call
+	// released it.
+	WorkspaceReclaimRemoved WorkspaceReclaim = "removed"
+	// WorkspaceReclaimAlreadyAbsent means there was nothing on disk to release.
+	// Any stale registration is still reconciled, so the post-state matches
+	// WorkspaceReclaimRemoved; only the accounting differs.
+	WorkspaceReclaimAlreadyAbsent WorkspaceReclaim = "already_absent"
+)
+
+// WorkspaceReclaimer is the optional half of Workspace that reports which of
+// the two reclaim outcomes a teardown reached. Implementing it is optional:
+// callers fall back to Destroy and treat a nil error as
+// WorkspaceReclaimRemoved, which is the pre-existing behaviour.
+type WorkspaceReclaimer interface {
+	DestroyReclaim(ctx context.Context, info WorkspaceInfo) (WorkspaceReclaim, error)
+}
 
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
@@ -424,6 +457,9 @@ var (
 	// ErrRuntimePrerequisite reports a missing host prerequisite for the selected
 	// runtime before a session can be created.
 	ErrRuntimePrerequisite = errors.New("runtime: prerequisite missing")
+	// ErrRuntimeCommandLineTooLong reports that the fully escaped command line
+	// exceeds the host operating system's process-creation limit.
+	ErrRuntimeCommandLineTooLong = errors.New("runtime: command line too long")
 	// ErrRuntimeWorkspaceCwdMismatch reports that a runtime session's working
 	// directory never settled on the wanted workspace path after Create's
 	// retried verification (see the tmux adapter's verifyPaneWorkingDirectory).
@@ -495,6 +531,14 @@ type WorkspaceProjectConfig struct {
 	BaseBranch string
 	BaseRef    string
 	Repos      []WorkspaceProjectRepoConfig
+	Assets     []WorkspaceProjectAssetConfig
+}
+
+// WorkspaceProjectAssetConfig describes a non-repository child directory that
+// is copied from the canonical workspace into each session workspace.
+type WorkspaceProjectAssetConfig struct {
+	RelativePath string
+	SourcePath   string
 }
 
 // WorkspaceProjectRepoConfig describes one registered child repo in a

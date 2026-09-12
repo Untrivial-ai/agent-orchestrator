@@ -3,10 +3,17 @@
 package systemexec
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"syscall"
 )
+
+func commandContext(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, name, args...), nil //nolint:gosec // Callers supply server-owned argv.
+}
+
+func refreshExecutablePath() {}
 
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

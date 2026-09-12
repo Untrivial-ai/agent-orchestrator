@@ -10,9 +10,10 @@ import (
 // AgentSwitchFailureAuthoritySnapshot is the validated, provider-neutral
 // telemetry authority read by the filesystem adapter.
 type AgentSwitchFailureAuthoritySnapshot struct {
-	Present           bool
-	EventsEnabled     bool
-	ConsentGeneration string
+	Present                  bool
+	EventsEnabled            bool
+	ConsentGeneration        string
+	ConsentProductionEnabled bool
 }
 
 // AgentSwitchFailureAuthorityReader isolates durable-authority I/O from policy

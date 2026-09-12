@@ -146,7 +146,7 @@ export function BrowserImportDialog({
 			setResult(imported);
 			setView("result");
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : t("settings.browserImport.failed"));
+			setError(importFailureMessage(reason, source.name));
 			setView("form");
 		} finally {
 			onImported();
@@ -238,6 +238,19 @@ export function BrowserImportDialog({
 			</DialogContent>
 		</Dialog>
 	);
+}
+
+function importFailureMessage(reason: unknown, browser: string): string {
+	const fallback = appI18n.t("settings.browserImport.failed");
+	const raw = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : fallback;
+	const message = raw
+		.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, "")
+		.replace(/^Error:\s*/i, "")
+		.trim();
+	if (/unable to open database file|database is locked|SQLITE_(?:BUSY|CANTOPEN|LOCKED)|\b(?:EACCES|EBUSY|EPERM)\b/i.test(message)) {
+		return appI18n.t("settings.browserImport.sourceDatabaseUnavailable", { browser });
+	}
+	return message || fallback;
 }
 
 function ImportForm({

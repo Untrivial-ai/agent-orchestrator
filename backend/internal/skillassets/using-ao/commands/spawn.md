@@ -1,6 +1,10 @@
 # ao spawn
 
-Spawn a worker agent session in a registered project. The session runs the chosen agent in a fresh git worktree. Register the project first with `ao project add`.
+Spawn an agent session. By default, `ao spawn` resolves a registered project and
+creates the session's isolated git worktree. Use `--standalone` to start a
+durable worker without a project, repository, or git worktree; standalone
+workers use an AO-managed plain-directory workspace and cannot use
+`--branch`, `--issue`, `--claim-pr`, or `--kind orchestrator`.
 
 ## Syntax
 

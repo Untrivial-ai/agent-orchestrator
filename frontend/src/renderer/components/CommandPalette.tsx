@@ -1,7 +1,7 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type AnimationEvent, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type AnimationEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { useRestoreSession } from "../hooks/useRestoreSession";
@@ -33,6 +33,8 @@ import { TaskComposer } from "./TaskComposer";
 import { CommandDialog, CommandEmpty, CommandFooter, CommandGroup, CommandInput, CommandItem, CommandList } from "./ui/command";
 
 const PALETTE_REVIEW_STALE_TIME_MS = 60_000;
+const PALETTE_REVIEW_DEFER_MS = 120;
+const EMPTY_REVIEW_STATES: Readonly<Record<string, PRReviewState[]>> = {};
 type PaletteView =
 	| { mode: "root" }
 	| { mode: "session-actions"; sessionId: string }
@@ -68,10 +70,13 @@ export function CommandPalette() {
 	const [error, setError] = useState<string | null>(null);
 	const [pendingId, setPendingId] = useState<string | null>(null);
 	const [reviewStatesSnapshot, setReviewStatesSnapshot] = useState<Readonly<Record<string, PRReviewState[]>>>();
+	const [reviewActionsReady, setReviewActionsReady] = useState(false);
+	const [createProjectFlowMounted, setCreateProjectFlowMounted] = useState(false);
+	const [createProjectFlowOpenSignal, setCreateProjectFlowOpenSignal] = useState(0);
+	const [createProjectFlowPendingOpen, setCreateProjectFlowPendingOpen] = useState(false);
 	const [pendingDismiss, setPendingDismiss] = useState<null | "pop" | "close">(null);
 	const pendingRef = useRef(false);
 	const runGenerationRef = useRef(0);
-	const choosePathRef = useRef<(() => void) | null>(null);
 	const composerDirtyRef = useRef(false);
 	const composerBusyRef = useRef(false);
 	const viewRef = useRef(view);
@@ -83,17 +88,28 @@ export function CommandPalette() {
 
 	const sessionsWithOpenPRs = useMemo(
 		() =>
-			workspaces.flatMap((workspace) =>
+			(reviewActionsReady ? workspaces : []).flatMap((workspace) =>
 				workerSessions(workspace.sessions).filter((session) => openPRs(session).length > 0),
 			),
-		[workspaces],
+		[reviewActionsReady, workspaces],
 	);
+	// Opening the palette must first acknowledge the shortcut and focus its input.
+	// Review actions are secondary and may require one query per PR-bearing session,
+	// so defer their setup until the palette has had a chance to paint.
+	useEffect(() => {
+		if (!isOpen) {
+			setReviewActionsReady(false);
+			return;
+		}
+		const timer = window.setTimeout(() => setReviewActionsReady(true), PALETTE_REVIEW_DEFER_MS);
+		return () => window.clearTimeout(timer);
+	}, [isOpen]);
 	// Review states are fetched only while the palette is open; the shared query
 	// key means sessions already viewed in the inspector reuse the cached data.
 	const reviewQuerySummary = useQueries({
-		subscribed: isOpen,
+		subscribed: reviewActionsReady,
 		queries: sessionsWithOpenPRs.map((session) =>
-			sessionReviewsQueryOptions(session, isOpen, PALETTE_REVIEW_STALE_TIME_MS),
+			sessionReviewsQueryOptions(session, reviewActionsReady, PALETTE_REVIEW_STALE_TIME_MS),
 		),
 		combine: (results) => {
 			const reviewStatesBySessionId: Record<string, PRReviewState[]> = {};
@@ -117,6 +133,7 @@ export function CommandPalette() {
 			setReviewStatesSnapshot({});
 			return;
 		}
+		if (!reviewActionsReady) return;
 		setReviewStatesSnapshot((previous) => {
 			let changed = false;
 			const next = { ...previous };
@@ -128,7 +145,8 @@ export function CommandPalette() {
 			}
 			return changed ? next : previous;
 		});
-	}, [isOpen, reviewQuerySummary.reviewStatesBySessionId]);
+	}, [isOpen, reviewActionsReady, reviewQuerySummary.reviewStatesBySessionId]);
+	const reviewStatesForCommands = isOpen && reviewActionsReady ? reviewStatesSnapshot : EMPTY_REVIEW_STATES;
 
 	const rootItems = useMemo(
 		() =>
@@ -137,9 +155,9 @@ export function CommandPalette() {
 				currentProjectId,
 				currentSessionId: params.sessionId,
 				restartingProjectIds,
-				reviewStatesBySessionId: reviewStatesSnapshot,
+				reviewStatesBySessionId: reviewStatesForCommands,
 			}, t),
-		[workspaces, currentProjectId, params.sessionId, restartingProjectIds, reviewStatesSnapshot, t, i18n.resolvedLanguage],
+		[workspaces, currentProjectId, params.sessionId, restartingProjectIds, reviewStatesForCommands, t, i18n.resolvedLanguage],
 	);
 	const scoped = useMemo(
 		() => (view.mode === "session-actions" ? findSession(workspaces, view.sessionId) : undefined),
@@ -186,6 +204,30 @@ export function CommandPalette() {
 			if (!useUiStore.getState().isCommandPaletteOpen) resetTransient();
 		}, 150);
 	}, [resetTransient, setOpen]);
+	// The import flow has its own cloud/query/dialog subtree. Mounting it beside a
+	// permanently retained palette made every palette render pay for an unrelated
+	// feature. Mount it only after the user chooses New project, then pulse its
+	// existing programmatic-open signal on the following commit (the flow seeds its
+	// signal ref on mount, so doing both in one render would intentionally no-op).
+	useEffect(() => {
+		if (!createProjectFlowMounted || !createProjectFlowPendingOpen) return;
+		setCreateProjectFlowPendingOpen(false);
+		setCreateProjectFlowOpenSignal((current) => current + 1);
+	}, [createProjectFlowMounted, createProjectFlowPendingOpen]);
+	const openNewProject = useCallback(() => {
+		closePalette();
+		setCreateProjectFlowMounted(true);
+		setCreateProjectFlowPendingOpen(true);
+	}, [closePalette]);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find((candidate) => candidate.path === path);
+			if (!workspace) return;
+			closePalette();
+			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
+		},
+		[closePalette, navigate, workspaces],
+	);
 
 	const resetAfterClose = useCallback(() => {
 		if (closeResetTimerRef.current !== null) {
@@ -413,8 +455,7 @@ export function CommandPalette() {
 						pushView({ mode: "new-task", projectId: action.projectId });
 						break;
 					case "open-new-project":
-						closePalette();
-						choosePathRef.current?.();
+						openNewProject();
 						break;
 					case "open-orchestrator":
 							await openOrchestrator(action.projectId);
@@ -427,7 +468,7 @@ export function CommandPalette() {
 				setPendingId(null);
 			}
 		},
-		[navigateToTarget, closePalette, toggleTheme, openOrchestrator, resumeSession, pushView, blockedByRestart, queryClient, t],
+		[navigateToTarget, closePalette, toggleTheme, openOrchestrator, resumeSession, pushView, blockedByRestart, openNewProject, queryClient, t],
 	);
 
 	const onSelectItem = useCallback(
@@ -499,11 +540,15 @@ export function CommandPalette() {
 
 	return (
 		<>
-			<CommandDialog
-				open={isOpen}
+				<CommandDialog
+					// CommandDialog supplies an overlay plus trapped focus without the
+					// body-wide scroll/pointer lock that made palette opening scale with
+					// every retained shell node.
+					modal={false}
+					open={isOpen}
 				onOpenChange={(open) => (open ? setOpen(true) : requestDismiss("close"))}
-				contentProps={{
-					onAnimationEnd: handlePaletteAnimationEnd,
+					contentProps={{
+						onAnimationEnd: handlePaletteAnimationEnd,
 					onEscapeKeyDown: (event) => {
 						event.preventDefault();
 						if (event.isComposing) return;
@@ -638,30 +683,18 @@ export function CommandPalette() {
 				)}
 			</CommandDialog>
 
-			<CreateProjectFlow
-				mode="choose"
-				onCloneProject={cloneProject}
-				onCreateProject={createProject}
-				onInitializeProject={initializeProjectRepository}
-			>
-				{({ choosePath }) => <BindChoosePath choosePath={choosePath} choosePathRef={choosePathRef} />}
-			</CreateProjectFlow>
+			{createProjectFlowMounted ? (
+				<CreateProjectFlow
+					mode="choose"
+					openSignal={createProjectFlowOpenSignal}
+					onCloneProject={cloneProject}
+					onCreateProject={createProject}
+					onInitializeProject={initializeProjectRepository}
+					onOpenExistingProject={openExistingProject}
+					existingProjectPaths={workspaces.map((workspace) => workspace.path)}
+					existingProjectNames={workspaces.map((workspace) => workspace.name)}
+				/>
+			) : null}
 		</>
 	);
-}
-
-function BindChoosePath({
-	choosePath,
-	choosePathRef,
-}: {
-	choosePath: () => void;
-	choosePathRef: MutableRefObject<(() => void) | null>;
-}) {
-	useEffect(() => {
-		choosePathRef.current = choosePath;
-		return () => {
-			choosePathRef.current = null;
-		};
-	}, [choosePath, choosePathRef]);
-	return null;
 }

@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 )
 
 // reviewCapture records the method/path/body of the request the CLI made.
@@ -38,7 +42,7 @@ func aliveDeps() Deps { return Deps{ProcessAlive: func(int) bool { return true }
 
 func TestReviewSubmitReadsBodyFile(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	bodyFile := filepath.Join(t.TempDir(), "review.md")
@@ -65,7 +69,7 @@ func TestReviewSubmitReadsBodyFile(t *testing.T) {
 
 func TestReviewSubmitReadsBodyFromStdin(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	deps := aliveDeps()
@@ -86,7 +90,7 @@ func TestReviewSubmitReadsBodyFromStdin(t *testing.T) {
 
 func TestReviewSubmitAcceptsUnderscoreFlags(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	// Reviewer agents often spell --review-id as --review_id; both must work.
@@ -130,9 +134,190 @@ func TestReviewSubmitBatchReadsReviewsFromStdin(t *testing.T) {
 	}
 }
 
+func TestReviewSubmitBatchRetriesAcrossDaemonRestart(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"reviews":[{"id":"run-1","verdict":"changes_requested"}]}`)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"changes_requested","body":"fix auth","githubReviewId":"101"}]}`)
+	retries := 0
+	deps.Sleep = func(time.Duration) {
+		retries++
+		writeRunFileFor(t, cfg, srv)
+	}
+
+	out, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
+	if err != nil {
+		t.Fatalf("submit should survive a daemon restart: %v\nstderr=%s", err, errOut)
+	}
+	if retries != 1 {
+		t.Fatalf("retry waits = %d, want 1", retries)
+	}
+	if !strings.Contains(out, "recorded 1 review(s) for mer-1") {
+		t.Fatalf("stdout = %q", out)
+	}
+	var req submitReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(req.Reviews) != 1 || req.Reviews[0].RunID != "run-1" || req.Reviews[0].Body != "fix auth" || req.Reviews[0].GithubReviewID != "101" {
+		t.Fatalf("retried request = %+v", req)
+	}
+}
+
+func TestReviewSubmitRetriesUncertainTransportFailureWithIdenticalPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bodyErr error
+	}{
+		{name: "before response headers"},
+		{name: "unexpected EOF in response body", bodyErr: io.ErrUnexpectedEOF},
+		{name: "closed pipe in response body", bodyErr: io.ErrClosedPipe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, _ := reviewServer(t, http.StatusOK, `{}`)
+			writeRunFileFor(t, cfg, srv)
+
+			var bodies []string
+			deps := aliveDeps()
+			deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved","githubReviewId":"101"}]}`)
+			deps.Sleep = func(time.Duration) {}
+			deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
+					return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+				}
+				raw, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bodies = append(bodies, string(raw))
+				if len(bodies) == 1 {
+					// The daemon may have committed before the connection broke.
+					// This also covers a successful status followed by a body read failure.
+					if tc.bodyErr == nil {
+						return nil, io.ErrUnexpectedEOF
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body: io.NopCloser(io.MultiReader(
+							strings.NewReader(`{"reviews":[`), iotest.ErrReader(tc.bodyErr),
+						)),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"reviews":[{"id":"run-1","verdict":"approved"}]}`)),
+				}, nil
+			})}
+
+			out, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
+			if err != nil {
+				t.Fatalf("retry uncertain result: %v\nstderr=%s", err, errOut)
+			}
+			if len(bodies) != 2 || bodies[0] != bodies[1] {
+				t.Fatalf("request bodies = %#v, want two identical attempts", bodies)
+			}
+			if !strings.Contains(out, "recorded 1 review(s) for mer-1") {
+				t.Fatalf("stdout = %q", out)
+			}
+		})
+	}
+}
+
+func TestReviewSubmitDoesNotRetryInvalidJSONResponse(t *testing.T) {
+	for _, body := range []string{
+		`{"reviews":[}`,
+		`{"reviews":"invalid type"}`,
+		`{"reviews":[{"createdAt":"invalid timestamp"}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, _ := reviewServer(t, http.StatusOK, body)
+			writeRunFileFor(t, cfg, srv)
+
+			deps := aliveDeps()
+			deps.Sleep = func(time.Duration) { t.Fatal("must not retry invalid response JSON") }
+			_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved")
+			if err == nil || !strings.Contains(err.Error(), "decode response") {
+				t.Fatalf("err = %v, want response decoding failure", err)
+			}
+		})
+	}
+}
+
+func TestReviewRestartDoesNotRetryResponseBodyFailure(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := reviewServer(t, http.StatusOK, `{}`)
+	writeRunFileFor(t, cfg, srv)
+
+	attempts := 0
+	deps := aliveDeps()
+	deps.Sleep = func(time.Duration) { t.Fatal("must not retry a review trigger") }
+	deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/v1/sessions/mer-1/reviews/trigger" {
+			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+		}
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(io.MultiReader(strings.NewReader(`{"created":`), iotest.ErrReader(io.ErrUnexpectedEOF))),
+		}, nil
+	})}
+
+	_, _, err := executeCLI(t, deps, "review", "restart", "mer-1")
+	if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "decode response") {
+		t.Fatalf("err = %v, want wrapped response body failure", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestReviewSubmitDoesNotRetryDaemonAPIRejection(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := reviewServer(t, http.StatusConflict, `{"message":"review run already recorded a different body","code":"REVIEW_INVALID"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	waits := 0
+	deps.Sleep = func(time.Duration) { waits++ }
+	_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved")
+	if err == nil || !strings.Contains(err.Error(), "REVIEW_INVALID") {
+		t.Fatalf("err = %v, want daemon rejection", err)
+	}
+	if waits != 0 {
+		t.Fatalf("retry waits = %d, want 0", waits)
+	}
+}
+
+func TestReviewSubmitCancellationStopsUnavailableRetry(t *testing.T) {
+	setConfigEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	deps := aliveDeps()
+	waits := 0
+	deps.Sleep = func(time.Duration) {
+		waits++
+		cancel()
+	}
+	c := &commandContext{deps: deps.withDefaults()}
+	err := c.postReviewJSON(ctx, "sessions/mer-1/reviews/submit", submitReviewRequest{
+		RunID: "run-1", Verdict: "approved",
+	}, &reviewRunResponse{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context cancellation", err)
+	}
+	if waits != 1 {
+		t.Fatalf("retry waits = %d, want 1", waits)
+	}
+}
+
 func TestReviewSubmitUsesSessionFlag(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"approved"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-7","verdict":"approved"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	if _, errOut, err := executeCLI(t, aliveDeps(), "review", "submit", "--session", "mer-7", "--run", "run-7", "--verdict", "approved"); err != nil {

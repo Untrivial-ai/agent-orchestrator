@@ -742,6 +742,16 @@ func (s *Store) ConversationForSession(
 	return conversationToDomain(row), nil
 }
 
+// HasConversationTurns includes hidden and settled turns: an empty visible
+// timeline is not proof that the provider conversation never started.
+func (s *Store) HasConversationTurns(ctx context.Context, conversationID string) (bool, error) {
+	hasTurns, err := s.qr.HasConversationTurns(ctx, conversationID)
+	if err != nil {
+		return false, fmt.Errorf("check conversation turns %s: %w", conversationID, err)
+	}
+	return hasTurns, nil
+}
+
 // AppendUserMessage records an inbound message and the turn it opens.
 //
 // Idempotent on clientMessageID: a retried send returns the message and turn that
@@ -1242,6 +1252,7 @@ func (s *Store) SetConversationSettings(
 		Model:           nullableString(settings.Model),
 		ReasoningEffort: nullableString(settings.ReasoningEffort),
 		ApprovalMode:    nullableString(string(settings.ApprovalMode)),
+		OpencodeMode:    settings.OpenCodeMode,
 		UpdatedAt:       now,
 		ID:              conversationID,
 	}); err != nil {
@@ -1835,29 +1846,66 @@ func (s *Store) ReorderQueuedTurns(
 	return nil
 }
 
-// UpdateQueuedTurnMessage rewrites the durable human prompt for a turn that has
-// not yet dispatched. Attachments are cleared because the edit path is text-only.
+// QueuedTurnMessage reads the durable text and content without exposing image
+// bytes to the renderer.
+func (s *Store) QueuedTurnMessage(ctx context.Context, conversationID, turnID string) (domain.ConversationMessage, error) {
+	row, err := s.qr.SelectQueuedConversationMessage(ctx, gen.SelectQueuedConversationMessageParams{
+		ConversationID: conversationID, TurnID: nullableString(turnID),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationMessage{}, ErrQueuedTurnNotAvailable
+	}
+	if err != nil {
+		return domain.ConversationMessage{}, err
+	}
+	return messageToDomain(row), nil
+}
+
+// UpdateQueuedTurnMessage commits the prompt and its retry receipt atomically.
 func (s *Store) UpdateQueuedTurnMessage(
 	ctx context.Context,
-	conversationID, turnID, text string,
+	conversationID, turnID, text, contentJSON string,
+	revision int64,
 	now time.Time,
+	delivery domain.ConversationQueuedEditDelivery,
 ) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.UpdateQueuedConversationMessageText(ctx,
-		gen.UpdateQueuedConversationMessageTextParams{
-			Text:           text,
-			UpdatedAt:      now,
-			ConversationID: conversationID,
-			TurnID:         sql.NullString{String: turnID, Valid: true},
-		})
-	if err != nil {
-		return fmt.Errorf("update queued turn message %s: %w", turnID, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)
-	}
-	return nil
+	return s.inTx(ctx, "update queued turn message", func(q *gen.Queries) error {
+		if delivery.ClientMessageID != "" {
+			hash, err := q.SelectConversationQueuedEditDelivery(ctx, gen.SelectConversationQueuedEditDeliveryParams{
+				ConversationID: conversationID, ClientMessageID: delivery.ClientMessageID,
+			})
+			if err == nil {
+				if hash != delivery.RequestHash {
+					return ErrQueuedEditDeliveryConflict
+				}
+				return nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		rows, err := q.UpdateQueuedConversationMessageText(ctx,
+			gen.UpdateQueuedConversationMessageTextParams{
+				Text: text, DeliveryContentJson: contentJSON, Revision: revision,
+				UpdatedAt: now, ConversationID: conversationID,
+				TurnID: sql.NullString{String: turnID, Valid: true},
+			})
+		if err != nil {
+			return fmt.Errorf("update queued turn message %s: %w", turnID, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)
+		}
+		if delivery.ClientMessageID != "" {
+			return q.InsertConversationQueuedEditDelivery(ctx, gen.InsertConversationQueuedEditDeliveryParams{
+				ConversationID: conversationID, ClientMessageID: delivery.ClientMessageID,
+				RequestHash: delivery.RequestHash, CreatedAt: now,
+			})
+		}
+		return nil
+	})
 }
 
 // SettleTurnByID records a terminal state for a turn AO can name directly.
@@ -2905,6 +2953,7 @@ func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
 			Model:           row.Model.String,
 			ReasoningEffort: row.ReasoningEffort.String,
 			ApprovalMode:    domain.PermissionMode(row.ApprovalMode.String),
+			OpenCodeMode:    row.OpencodeMode,
 		},
 		ProviderTitle: row.ProviderTitle,
 		AppliedTitle:  row.AppliedTitle,
@@ -3090,18 +3139,19 @@ func turnToDomain(row gen.ConversationTurn) domain.ConversationTurn {
 
 func messageToDomain(row gen.ConversationMessage) domain.ConversationMessage {
 	msg := domain.ConversationMessage{
-		ID:              row.ID,
-		ConversationID:  row.ConversationID,
-		Sequence:        row.Sequence,
-		Revision:        row.Revision,
-		Role:            row.Role,
-		Origin:          row.Origin,
-		Text:            row.Text,
-		Streaming:       row.Streaming != 0,
-		ProviderItemID:  row.ProviderItemID,
-		ClientMessageID: row.ClientMessageID,
-		CreatedAt:       row.CreatedAt,
-		UpdatedAt:       row.UpdatedAt,
+		ID:                  row.ID,
+		ConversationID:      row.ConversationID,
+		Sequence:            row.Sequence,
+		Revision:            row.Revision,
+		Role:                row.Role,
+		Origin:              row.Origin,
+		Text:                row.Text,
+		Streaming:           row.Streaming != 0,
+		ProviderItemID:      row.ProviderItemID,
+		ClientMessageID:     row.ClientMessageID,
+		DeliveryContentJSON: row.DeliveryContentJson,
+		CreatedAt:           row.CreatedAt,
+		UpdatedAt:           row.UpdatedAt,
 	}
 	if row.TurnID.Valid {
 		msg.TurnID = row.TurnID.String
@@ -3188,4 +3238,331 @@ func (s *Store) RetryTurnIDForSource(ctx context.Context, conversationID, source
 		return "", false, err
 	}
 	return row, true, nil
+}
+
+// ErrQueuedEditDeliveryConflict refuses reuse of a key for a different mutation.
+var ErrQueuedEditDeliveryConflict = errors.New("queued edit delivery key reused")
+
+// QueuedEditDelivery finds the fingerprint of an atomically accepted queue edit.
+func (s *Store) QueuedEditDelivery(ctx context.Context, conversationID, clientMessageID string) (string, bool, error) {
+	hash, err := s.conversationReader(ctx).SelectConversationQueuedEditDelivery(ctx,
+		gen.SelectConversationQueuedEditDeliveryParams{ConversationID: conversationID, ClientMessageID: clientMessageID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return hash, err == nil, err
+}
+
+func reserveConversationDelivery[Row, Delivery any](
+	ctx context.Context,
+	s *Store,
+	insert func(context.Context) (int64, error),
+	load func(context.Context) (Row, error),
+	toDomain func(Row) Delivery,
+	insertError, loadError string,
+) (delivery Delivery, created bool, err error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := insert(ctx)
+	if err != nil {
+		return delivery, false, fmt.Errorf("%s: %w", insertError, err)
+	}
+	row, err := load(ctx)
+	if err != nil {
+		return delivery, false, fmt.Errorf("%s: %w", loadError, err)
+	}
+	return toDomain(row), rows == 1, nil
+}
+
+// EditDelivery loads the durable outcome for one caller-owned inline edit key.
+func (s *Store) EditDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID string,
+) (domain.ConversationEditDelivery, bool, error) {
+	row, err := s.conversationReader(ctx).SelectConversationEditDelivery(ctx,
+		gen.SelectConversationEditDeliveryParams{
+			ConversationID: conversationID, ClientMessageID: clientMessageID,
+		})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationEditDelivery{}, false, nil
+	}
+	if err != nil {
+		return domain.ConversationEditDelivery{}, false,
+			fmt.Errorf("select edit delivery %s: %w", clientMessageID, err)
+	}
+	return editDeliveryToDomain(row), true, nil
+}
+
+// ReserveEditDelivery claims a client handle before anchor lookup or provider
+// I/O. created is false when another request already owns the handle.
+func (s *Store) ReserveEditDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID, requestJSON string,
+	now time.Time,
+) (delivery domain.ConversationEditDelivery, created bool, err error) {
+	return reserveConversationDelivery(
+		ctx,
+		s,
+		func(ctx context.Context) (int64, error) {
+			return s.qw.InsertConversationEditDeliveryReservation(ctx,
+				gen.InsertConversationEditDeliveryReservationParams{
+					ConversationID: conversationID, ClientMessageID: clientMessageID,
+					RequestJson: requestJSON, CreatedAt: now,
+				})
+		},
+		func(ctx context.Context) (gen.ConversationEditDelivery, error) {
+			return s.qw.SelectConversationEditDelivery(ctx,
+				gen.SelectConversationEditDeliveryParams{
+					ConversationID: conversationID, ClientMessageID: clientMessageID,
+				})
+		},
+		editDeliveryToDomain,
+		"reserve edit delivery "+clientMessageID,
+		"read edit delivery reservation "+clientMessageID,
+	)
+}
+
+// RecoverCompletedEditDelivery uses provider completion as proof of acceptance.
+// A queued, bound, or failed turn alone does not prove provider execution.
+func (s *Store) RecoverCompletedEditDelivery(ctx context.Context, conversationID, clientMessageID string, now time.Time) error {
+	row, err := s.conversationReader(ctx).SelectCompletedEditReplacement(ctx, gen.SelectCompletedEditReplacementParams{
+		ConversationID: conversationID, ClientMessageID: clientMessageID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load completed edit replacement: %w", err)
+	}
+	turn := turnToDomain(row.ConversationTurn)
+	return s.CompleteEditDelivery(ctx, conversationID, clientMessageID, row.ParentBranchID.String, turn.BranchID, turn, now)
+}
+
+// BeginEditProviderWork fences retries before any provider operation can occur.
+func (s *Store) BeginEditProviderWork(ctx context.Context, conversationID, clientMessageID, generation string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.BeginConversationEditProviderWork(ctx, gen.BeginConversationEditProviderWorkParams{
+		ConversationID: conversationID, ClientMessageID: clientMessageID, Generation: generation,
+	})
+	if err != nil {
+		return fmt.Errorf("begin edit provider work: %w", err)
+	}
+	if rows != 1 {
+		return errors.New("edit provider work already started or controller replaced")
+	}
+	return nil
+}
+
+// CompleteEditDelivery attaches the replacement turn to its branch and records
+// the replayable accepted result in one transaction. A crash cannot publish one
+// fact without the other.
+func (s *Store) CompleteEditDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID, sourceBranchID, activeBranchID string,
+	turn domain.ConversationTurn,
+	now time.Time,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "complete edit delivery", func(q *gen.Queries) error {
+		rows, err := q.UpdateConversationBranchReplacement(ctx,
+			gen.UpdateConversationBranchReplacementParams{
+				ReplacementTurnID: nullableString(turn.ID), BranchID: activeBranchID,
+			})
+		if err != nil {
+			return fmt.Errorf("update conversation branch %s replacement: %w", activeBranchID, err)
+		}
+		if rows != 1 {
+			return fmt.Errorf("%w: %s", domain.ErrNoConversationBranch, activeBranchID)
+		}
+		rows, err = q.AcceptConversationEditDelivery(ctx,
+			gen.AcceptConversationEditDeliveryParams{
+				SourceBranchID: sourceBranchID, ActiveBranchID: activeBranchID,
+				TurnID: turn.ID, HandledBySessionID: string(turn.HandledBySessionID),
+				ProviderTurnID: turn.ProviderTurnID, TurnState: string(turn.State),
+				TurnRequestedAt: sql.NullTime{Time: turn.RequestedAt, Valid: !turn.RequestedAt.IsZero()},
+				SettledAt:       sql.NullTime{Time: now, Valid: true},
+				ConversationID:  conversationID, ClientMessageID: clientMessageID,
+			})
+		if err != nil {
+			return fmt.Errorf("accept edit delivery %s: %w", clientMessageID, err)
+		}
+		if rows != 1 {
+			return fmt.Errorf("accept edit delivery %s: reservation is not active", clientMessageID)
+		}
+		return nil
+	})
+}
+
+// RejectEditDelivery settles a definitive edit non-acceptance for replay after
+// active lineage changes or daemon restart.
+func (s *Store) RejectEditDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID string,
+	kind domain.ConversationEditRejectionKind,
+	message string,
+	now time.Time,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.RejectConversationEditDelivery(ctx,
+		gen.RejectConversationEditDeliveryParams{
+			RejectionKind: string(kind), RejectionMessage: message,
+			SettledAt:      sql.NullTime{Time: now, Valid: true},
+			ConversationID: conversationID, ClientMessageID: clientMessageID,
+		})
+	if err != nil {
+		return fmt.Errorf("reject edit delivery %s: %w", clientMessageID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("reject edit delivery %s: reservation is not active", clientMessageID)
+	}
+	return nil
+}
+
+func editDeliveryToDomain(row gen.ConversationEditDelivery) domain.ConversationEditDelivery {
+	delivery := domain.ConversationEditDelivery{
+		ConversationID: row.ConversationID, ClientMessageID: row.ClientMessageID,
+		RequestJSON: row.RequestJson, State: domain.ConversationEditDeliveryState(row.State),
+		ProviderWorkStarted: row.ProviderWorkStarted != 0,
+		SourceBranchID:      row.SourceBranchID, ActiveBranchID: row.ActiveBranchID,
+		Turn: domain.ConversationTurn{
+			ID: row.TurnID, ConversationID: row.ConversationID,
+			HandledBySessionID: domain.SessionID(row.HandledBySessionID),
+			ProviderTurnID:     row.ProviderTurnID, State: domain.TurnState(row.TurnState),
+		},
+		RejectionKind:    domain.ConversationEditRejectionKind(row.RejectionKind),
+		RejectionMessage: row.RejectionMessage, CreatedAt: row.CreatedAt,
+	}
+	if row.SettledAt.Valid {
+		settled := row.SettledAt.Time
+		delivery.SettledAt = &settled
+	}
+	if row.TurnRequestedAt.Valid {
+		delivery.Turn.RequestedAt = row.TurnRequestedAt.Time
+	}
+	return delivery
+}
+
+// SteerDelivery loads the durable outcome for one caller-owned idempotency key.
+func (s *Store) SteerDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID string,
+) (domain.ConversationSteerDelivery, bool, error) {
+	row, err := s.conversationReader(ctx).SelectConversationSteerDelivery(ctx,
+		gen.SelectConversationSteerDeliveryParams{
+			ConversationID: conversationID, ClientMessageID: clientMessageID,
+		})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationSteerDelivery{}, false, nil
+	}
+	if err != nil {
+		return domain.ConversationSteerDelivery{}, false,
+			fmt.Errorf("select steer delivery %s: %w", clientMessageID, err)
+	}
+	return steerDeliveryToDomain(row), true, nil
+}
+
+// ReserveSteerDelivery claims a client handle before provider I/O. created is
+// false when another controller or a previous process already owns the handle;
+// callers must interpret the returned durable state instead of dispatching.
+func (s *Store) ReserveSteerDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID, requestJSON string,
+	now time.Time,
+) (delivery domain.ConversationSteerDelivery, created bool, err error) {
+	return reserveConversationDelivery(
+		ctx,
+		s,
+		func(ctx context.Context) (int64, error) {
+			return s.qw.InsertConversationSteerDeliveryReservation(ctx,
+				gen.InsertConversationSteerDeliveryReservationParams{
+					ConversationID: conversationID, ClientMessageID: clientMessageID,
+					RequestJson: requestJSON, CreatedAt: now,
+				})
+		},
+		func(ctx context.Context) (gen.ConversationSteerDelivery, error) {
+			return s.qw.SelectConversationSteerDelivery(ctx,
+				gen.SelectConversationSteerDeliveryParams{
+					ConversationID: conversationID, ClientMessageID: clientMessageID,
+				})
+		},
+		steerDeliveryToDomain,
+		"reserve steer delivery "+clientMessageID,
+		"load reserved steer delivery "+clientMessageID,
+	)
+}
+
+// CompleteSteerDelivery records the visible timeline row and accepted provider
+// result together. A crash can therefore leave either an accepted replay or an
+// unresolved reservation, never an accepted result without its visible cause.
+func (s *Store) CompleteSteerDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID, providerTurnID string,
+	activity domain.ConversationActivity,
+	now time.Time,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "complete steer delivery", func(q *gen.Queries) error {
+		txCtx := context.WithValue(ctx, conversationProjectionTxKey{}, q)
+		if err := s.UpsertActivity(txCtx, conversationID, providerTurnID, activity, now); err != nil {
+			return err
+		}
+		rows, err := q.AcceptConversationSteerDelivery(ctx,
+			gen.AcceptConversationSteerDeliveryParams{
+				ProviderTurnID: providerTurnID, ActivityID: activity.ID,
+				SettledAt:      sql.NullTime{Time: now, Valid: true},
+				ConversationID: conversationID, ClientMessageID: clientMessageID,
+			})
+		if err != nil {
+			return fmt.Errorf("accept steer delivery %s: %w", clientMessageID, err)
+		}
+		if rows != 1 {
+			return fmt.Errorf("accept steer delivery %s: reservation is not active", clientMessageID)
+		}
+		return nil
+	})
+}
+
+// RejectSteerDelivery settles a provider-declared non-acceptance. Retrying the
+// same handle replays this typed result without contacting the provider again.
+func (s *Store) RejectSteerDelivery(
+	ctx context.Context,
+	conversationID, clientMessageID string,
+	kind domain.ConversationSteerRejectionKind,
+	message string,
+	now time.Time,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.RejectConversationSteerDelivery(ctx,
+		gen.RejectConversationSteerDeliveryParams{
+			RejectionKind: string(kind), RejectionMessage: message,
+			SettledAt:      sql.NullTime{Time: now, Valid: true},
+			ConversationID: conversationID, ClientMessageID: clientMessageID,
+		})
+	if err != nil {
+		return fmt.Errorf("reject steer delivery %s: %w", clientMessageID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("reject steer delivery %s: reservation is not active", clientMessageID)
+	}
+	return nil
+}
+
+func steerDeliveryToDomain(row gen.ConversationSteerDelivery) domain.ConversationSteerDelivery {
+	delivery := domain.ConversationSteerDelivery{
+		ConversationID: row.ConversationID, ClientMessageID: row.ClientMessageID,
+		RequestJSON: row.RequestJson, State: domain.ConversationSteerDeliveryState(row.State),
+		ProviderTurnID: row.ProviderTurnID, ActivityID: row.ActivityID,
+		RejectionKind:    domain.ConversationSteerRejectionKind(row.RejectionKind),
+		RejectionMessage: row.RejectionMessage, CreatedAt: row.CreatedAt,
+	}
+	if row.SettledAt.Valid {
+		settled := row.SettledAt.Time
+		delivery.SettledAt = &settled
+	}
+	return delivery
 }

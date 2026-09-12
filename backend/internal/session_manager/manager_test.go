@@ -819,6 +819,12 @@ type fakeWorkspace struct {
 	createErr  error
 	destroyErr error
 	destroyed  int
+	// destroyReclaim, when set, is the reclaim outcome DestroyReclaim reports.
+	destroyReclaim ports.WorkspaceReclaim
+	// destroyReclaimByPath overrides destroyReclaim for one workspace path, so a
+	// multi-repo test can have one repo still on disk while another is already
+	// gone — the state a partly cleaned workspace project is actually in.
+	destroyReclaimByPath map[string]ports.WorkspaceReclaim
 	// destroyCtxErr records ctx.Err() as seen by Destroy, so a test can prove
 	// teardown does not inherit a caller's cancellation.
 	destroyCtxErr error
@@ -981,6 +987,21 @@ func (w *fakeWorkspace) Destroy(ctx context.Context, info ports.WorkspaceInfo) e
 	}
 	w.destroyed++
 	return w.destroyErr
+}
+
+// DestroyReclaim makes the fake report reclaim outcomes like the real git
+// worktree adapter. destroyReclaim is empty in every pre-existing test, which
+// keeps them on the "a completed teardown released something" default.
+func (w *fakeWorkspace) DestroyReclaim(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
+	err := w.Destroy(ctx, info)
+	reclaim := w.destroyReclaim
+	if override, ok := w.destroyReclaimByPath[info.Path]; ok {
+		reclaim = override
+	}
+	if reclaim == "" {
+		return ports.WorkspaceReclaimRemoved, err
+	}
+	return reclaim, err
 }
 func (w *fakeWorkspace) DestroyWorkspaceProject(context.Context, ports.WorkspaceProjectInfo) error {
 	w.projectDestroyed++
@@ -3096,6 +3117,37 @@ func TestKill_WorkspaceProjectDestroysChildrenBeforeRoot(t *testing.T) {
 	}
 }
 
+// TestKill_WorkspaceProjectAlreadyAbsentStaysFreed guards the boundary between
+// the two answers destroyWorkspaceProjectRows returns. Kill's freed flag is not
+// a disk-reclaim count: freed=false means the workspace was preserved, and the
+// CLI prints "workspace preserved" from it. A worktree that was already gone
+// was torn down, not preserved, so collapsing freed onto the reclaim outcome
+// would make kill report a preserved workspace that does not exist.
+func TestKill_WorkspaceProjectAlreadyAbsentStaysFreed(t *testing.T) {
+	m, st, _, ws := newManager()
+	ws.destroyReclaim = ports.WorkspaceReclaimAlreadyAbsent
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Metadata:  domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1"},
+		Activity:  domain.Activity{State: domain.ActivityActive},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
+	}
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !freed {
+		t.Fatal("freed = false, want true: the worktrees were torn down, not preserved")
+	}
+}
+
 func TestKill_WorkspaceProjectFailsClosedOnUnregisteredChildRows(t *testing.T) {
 	m, st, _, ws := newManager()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
@@ -3377,6 +3429,37 @@ func TestCleanup_ReclaimsTerminalWorkspaces(t *testing.T) {
 	}
 }
 
+// TestCleanup_SeparatesAlreadyGoneWorkspacesFromReclaimedOnes keeps the
+// reported count evidence rather than bookkeeping. A workspace whose directory
+// was already missing tears down without error, so counting it as Cleaned
+// claims disk that was never reclaimed and makes a batch run look like it did
+// work it did not do.
+func TestCleanup_SeparatesAlreadyGoneWorkspacesFromReclaimedOnes(t *testing.T) {
+	m, st, _, ws := newManager()
+	ws.destroyReclaim = ports.WorkspaceReclaimAlreadyAbsent
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res.Cleaned) != 0 {
+		t.Fatalf("cleaned = %v, want none: nothing was reclaimed", res.Cleaned)
+	}
+	if len(res.AlreadyGone) != 1 || res.AlreadyGone[0] != "mer-1" {
+		t.Fatalf("alreadyGone = %v, want [mer-1]", res.AlreadyGone)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("skipped = %v, want none: teardown did not fail", res.Skipped)
+	}
+	// Teardown still runs, so any stale registration is reconciled exactly as
+	// before; only the accounting changed.
+	if ws.destroyed != 1 {
+		t.Fatalf("destroyed = %d, want 1", ws.destroyed)
+	}
+}
+
 // TestCleanup_ClosesScopedShellTerminalsBeforeWorkspaceTeardown mirrors the
 // Kill regression: Cleanup must also gate shut a session's scoped shell
 // terminals before reclaiming its worktree, and release the gate afterward.
@@ -3573,6 +3656,81 @@ func TestCleanup_WorkspaceProjectDestroysChildrenBeforeRoot(t *testing.T) {
 	}
 }
 
+// TestCleanup_WorkspaceProjectRepeatRunReportsAlreadyGone is the multi-repo
+// half of the false-count fix. A workspace project's teardown succeeds on every
+// later run — the worktrees are gone, so there is nothing left to fail on — and
+// counting those runs as reclaimed is exactly the report that made a batch
+// cleanup look like it freed disk it never touched. The second run here must
+// land in AlreadyGone.
+func TestCleanup_WorkspaceProjectRepeatRunReportsAlreadyGone(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1"})
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
+	}
+
+	first, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Cleaned) != 1 || first.Cleaned[0] != "mer-1" {
+		t.Fatalf("first run cleaned = %v, want [mer-1]: both worktrees were present", first.Cleaned)
+	}
+	if len(first.AlreadyGone) != 0 {
+		t.Fatalf("first run alreadyGone = %v, want none", first.AlreadyGone)
+	}
+
+	// The first run removed both directories, so every repo is now absent —
+	// which is what the adapter reports on the second run.
+	ws.destroyReclaim = ports.WorkspaceReclaimAlreadyAbsent
+
+	second, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Cleaned) != 0 {
+		t.Fatalf("second run cleaned = %v, want none: both worktrees were already gone", second.Cleaned)
+	}
+	if len(second.AlreadyGone) != 1 || second.AlreadyGone[0] != "mer-1" {
+		t.Fatalf("second run alreadyGone = %v, want [mer-1]", second.AlreadyGone)
+	}
+	if len(second.Skipped) != 0 {
+		t.Fatalf("second run skipped = %v, want none: teardown did not fail", second.Skipped)
+	}
+}
+
+// TestCleanup_WorkspaceProjectPartialReclaimCountsAsCleaned pins the aggregate
+// on the other side. Repos of one workspace project can disagree — a child
+// removed by hand, the root still there — and a session that released any disk
+// at all was reclaimed, so only a project where nothing was left may report
+// already gone.
+func TestCleanup_WorkspaceProjectPartialReclaimCountsAsCleaned(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1"})
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
+	}
+	ws.destroyReclaim = ports.WorkspaceReclaimAlreadyAbsent
+	ws.destroyReclaimByPath = map[string]ports.WorkspaceReclaim{"/ws/mer-1": ports.WorkspaceReclaimRemoved}
+
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cleaned) != 1 || res.Cleaned[0] != "mer-1" {
+		t.Fatalf("cleaned = %v, want [mer-1]: the root worktree was reclaimed", res.Cleaned)
+	}
+	if len(res.AlreadyGone) != 0 {
+		t.Fatalf("alreadyGone = %v, want none", res.AlreadyGone)
+	}
+}
+
 func TestCleanup_WorkspaceProjectMarksRetryRemoveAfterTeardownFailure(t *testing.T) {
 	m, st, _, ws := newManager()
 	ws.destroyErr = errors.New("locked")
@@ -3758,10 +3916,18 @@ func TestSpawn_InfersEmptyWorkspaceChildDefaultBeforeFetchAndCreate(t *testing.T
 
 func TestSpawn_SkipsNeedsInitWorkspaceChildrenDuringRefreshAndCreate(t *testing.T) {
 	m, st, _, ws := newManager()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	projectPath := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectPath, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectPath, "unborn", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: projectPath, Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
 	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{
 		{Name: "api", RelativePath: "api", DefaultBranch: "main", GitStatus: domain.GitStatusReady},
 		{Name: "unborn", RelativePath: "unborn", GitStatus: domain.GitStatusNeedsInit},
+		{Name: "assets", RelativePath: "assets", GitStatus: domain.GitStatusNeedsInit},
 	}
 
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
@@ -3776,6 +3942,12 @@ func TestSpawn_SkipsNeedsInitWorkspaceChildrenDuringRefreshAndCreate(t *testing.
 	}
 	if got, want := ws.lastProjectCfg.Repos[0].Name, "api"; got != want {
 		t.Fatalf("materialized child = %q, want %q", got, want)
+	}
+	if got, want := len(ws.lastProjectCfg.Assets), 1; got != want {
+		t.Fatalf("materialized asset configs = %d, want %d", got, want)
+	}
+	if got, want := ws.lastProjectCfg.Assets[0].RelativePath, "assets"; got != want {
+		t.Fatalf("materialized asset = %q, want %q", got, want)
 	}
 }
 
@@ -5634,7 +5806,10 @@ func TestSpawnAndRestore_PrependsResolvedBinaryAndNodeDirsToRuntimePATH(t *testi
 			t.Fatal(err)
 		}
 	}
-	want := strings.Join([]string{binDir, nodeDir, filepath.Dir(daemonExe), "/usr/bin"}, string(os.PathListSeparator))
+	// The daemon-dir pin stays at the HEAD: the agent binary is launched by
+	// absolute path and does not need its directory first, but a bare `ao` in
+	// the session must resolve to this daemon (see restorePinnedDir).
+	want := strings.Join([]string{filepath.Dir(daemonExe), binDir, nodeDir, "/usr/bin"}, string(os.PathListSeparator))
 
 	for _, operation := range []string{"spawn", "restore"} {
 		t.Run(operation, func(t *testing.T) {
@@ -5675,6 +5850,35 @@ func TestSpawnAndRestore_PrependsResolvedBinaryAndNodeDirsToRuntimePATH(t *testi
 	}
 }
 
+// TestSpawn_LaunchBinaryDirDoesNotShadowDaemonAO is issue #3562: the agent CLI
+// and a stale `ao` can live in the SAME directory (the legacy npm package
+// installs `ao` into the same global bin the agent CLIs use). Prepending the
+// launch binary's directory must not push the daemon-dir pin down, or that
+// stale `ao` wins every bare `ao` inside the session.
+func TestSpawn_LaunchBinaryDirDoesNotShadowDaemonAO(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	sharedBin := filepath.Join(t.TempDir(), "npm-global", "bin")
+	agentBin := filepath.Join(sharedBin, "claude")
+	daemonExe := filepath.Join(t.TempDir(), "daemon", "ao")
+
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	m := New(Deps{
+		Runtime: rt, Agents: singleAgent{agent: launchArgvAgent{argv: []string{agentBin}}},
+		Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath:   func(string) (string, error) { return agentBin, nil },
+		Executable: func() (string, error) { return daemonExe, nil },
+	})
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	want := strings.Join([]string{filepath.Dir(daemonExe), sharedBin, "/usr/bin"}, string(os.PathListSeparator))
+	if got := rt.lastCfg.Env["PATH"]; got != want {
+		t.Fatalf("runtime env PATH = %q, want %q", got, want)
+	}
+}
+
 func TestSpawn_DoesNotAddNodeRuntimeForNativeBinary(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
 	home := t.TempDir()
@@ -5707,7 +5911,7 @@ func TestSpawn_DoesNotAddNodeRuntimeForNativeBinary(t *testing.T) {
 	if nodeLookups != 0 {
 		t.Fatalf("node LookPath calls = %d, want 0 for native binary", nodeLookups)
 	}
-	want := strings.Join([]string{binDir, "/ao/bin", "/usr/bin"}, string(os.PathListSeparator))
+	want := strings.Join([]string{"/ao/bin", binDir, "/usr/bin"}, string(os.PathListSeparator))
 	if got := rt.lastCfg.Env["PATH"]; got != want {
 		t.Fatalf("runtime env PATH = %q, want %q", got, want)
 	}
@@ -8127,6 +8331,50 @@ func TestReconcileLive_ScratchDeadRuntimeTerminatesWithoutWorkspaceTeardown(t *t
 	}
 	if rows := st.worktrees["scratch-1"]; len(rows) != 0 {
 		t.Fatalf("scratch reconcile must not write restore markers, got %#v", rows)
+	}
+}
+
+func TestReconcileLive_ScratchChatReattachesPersistentController(t *testing.T) {
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{
+		ID: "scratch", Kind: domain.ProjectKindScratch, Config: testRoleAgents(),
+	}
+	launcher := &recordingLauncher{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    fakeAgents{},
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		Chat:      launcher,
+		DataDir:   "/ao-test-data",
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "scratch-chat", ProjectID: "scratch", Kind: domain.KindWorker,
+		Harness: domain.HarnessCursor, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/scratch-chat", ProviderConversationID: "cursor-thread",
+			ControllerGeneration: "generation-old",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(ctx, rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("MarkTerminated = %d, want 0", lcm.terminated[rec.ID])
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("StartChat calls = %d, want 1", len(launcher.started))
+	}
+	started := launcher.started[0]
+	if started.ProviderConversationID != "cursor-thread" || started.WorkspacePath != "/ws/scratch-chat" {
+		t.Fatalf("StartChat = %#v, want durable Cursor conversation and scratch workspace", started)
 	}
 }
 

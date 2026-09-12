@@ -109,6 +109,13 @@ function setupBridge() {
 		showProfileMenu: vi.fn(),
 		selectProfile: vi.fn(),
 		historySuggestions: vi.fn(async () => []),
+		captureScreenshot: vi.fn(async () => undefined),
+		downloads: {
+			list: vi.fn(async () => ({ downloads: [] })),
+			action: vi.fn(async () => ({ downloads: [] })),
+			clear: vi.fn(async () => ({ downloads: [] })),
+			onChanged: vi.fn(() => () => { /* no-op test subscription */ }),
+		},
 		destroy: vi.fn(),
 		setAnnotationMode: vi.fn(async () => undefined),
 		onNavState: vi.fn((listener: Listener) => {
@@ -245,6 +252,17 @@ describe("useBrowserView", () => {
 		expect(bridge.selectTab).toHaveBeenCalledWith({ viewId: "42:sess-1", tabId: "t1" });
 		await act(() => result.current.closeTab("t2"));
 		expect(bridge.closeTab).toHaveBeenCalledWith({ viewId: "42:sess-1", tabId: "t2" });
+	});
+
+	it("reuses the active blank tab when opening a chat link", async () => {
+		const bridge = setupBridge();
+		const { result } = renderHook(() => useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }));
+
+		await waitFor(() => expect(result.current.tabs.map((tab) => tab.id)).toEqual(["t1"]));
+		await act(() => result.current.openLink("http://localhost:5173/"));
+
+		expect(bridge.navigate).toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:5173/" });
+		expect(bridge.openTab).not.toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:5173/" });
 	});
 
 	it("remembers a closed tab so it can be reopened, and forgets it once reopened", async () => {

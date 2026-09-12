@@ -40,6 +40,7 @@ var _ ports.Workspace = (*Workspace)(nil)
 var _ ports.WorkspaceDefaultBranchRefresher = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
+var _ ports.WorkspaceReclaimer = (*Workspace)(nil)
 
 // New returns a router over git and scratch workspace implementations.
 func New(deps Deps) *Workspace {
@@ -88,6 +89,21 @@ func (w *Workspace) Destroy(ctx context.Context, info ports.WorkspaceInfo) error
 		return err
 	}
 	return adapter.Destroy(ctx, info)
+}
+
+// DestroyReclaim delegates teardown to the project-appropriate adapter and
+// reports whether that adapter actually released anything. An adapter that does
+// not report reclaim outcomes falls back to Destroy, whose nil error keeps the
+// pre-existing meaning of a completed removal.
+func (w *Workspace) DestroyReclaim(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
+	adapter, err := w.adapterForProject(ctx, info.ProjectID)
+	if err != nil {
+		return ports.WorkspaceReclaimAlreadyAbsent, err
+	}
+	if reclaimer, ok := adapter.(ports.WorkspaceReclaimer); ok {
+		return reclaimer.DestroyReclaim(ctx, info)
+	}
+	return ports.WorkspaceReclaimRemoved, adapter.Destroy(ctx, info)
 }
 
 // ForceDestroy delegates forced session workspace cleanup to the

@@ -20,6 +20,7 @@ import {
 } from "./session-reviews";
 import { appI18n, type MessageKey } from "../i18n";
 import { sessionNavigateTarget } from "./navigate-to-session";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 export type CommandGroupId = "current" | "attention" | "projects" | "sessions" | "prs" | "global";
 
@@ -210,7 +211,7 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 		...(currentProject ? { action: { kind: "open-new-task" as const, projectId: currentProject.id } } : {}),
 	});
 
-	if (currentProject) {
+	if (currentProject && currentProject.id !== STANDALONE_WORKSPACE_ID) {
 		items.push({
 			id: "current-open-orchestrator",
 			group: "current",
@@ -263,7 +264,7 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 		items.push(sessionCommand(workspace, session, "attention"));
 	}
 
-	for (const workspace of workspaces) {
+	for (const workspace of workspaces.filter(({ id }) => id !== STANDALONE_WORKSPACE_ID)) {
 		items.push({
 			id: `project:${workspace.id}`,
 			group: "projects",

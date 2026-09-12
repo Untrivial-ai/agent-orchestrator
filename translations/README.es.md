@@ -10,14 +10,14 @@
 [![GitHub release](https://img.shields.io/github/v/release/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest)
 [![GitHub downloads](https://img.shields.io/github/downloads/Untrivial-ai/agent-orchestrator/total?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](../LICENSE)
-[![X](https://img.shields.io/badge/@aoagents-555?style=flat&logo=x&logoColor=white)](https://x.com/aoagents)
+[![X](https://img.shields.io/badge/@ao__build-555?style=flat&logo=x&logoColor=white)](https://x.com/ao_build)
 [![Discord](https://img.shields.io/badge/Discord-555?style=flat&logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
 
 Asigna a cada tarea de programación su propio agente, espacio de trabajo y ciclo de feedback.<br />
 Planifica y delega objetivos más amplios con un orquestador que conoce tu proyecto.<br />
 Sigue a cada worker, pull request, ejecución de CI y revisión en un Kanban en vivo.
 
-[**Descargar AO**](#instalación) &nbsp;&bull;&nbsp; [Documentación](https://aoagents.dev/docs) &nbsp;&bull;&nbsp; [Versiones](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contribuir](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**Descargar AO**](#instalación) &nbsp;&bull;&nbsp; [Documentación](https://useao.dev/docs) &nbsp;&bull;&nbsp; [Versiones](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contribuir](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español** · [Français](README.fr.md) · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
@@ -161,7 +161,7 @@ AO funciona con los agentes de programación y el flujo de control de versiones 
   </tr>
 </table>
 
-[Consulta las guías de configuración de agentes →](https://aoagents.dev/docs/plugins/agents)
+[Consulta las guías de configuración de agentes →](https://useao.dev/docs/plugins/agents)
 
 **Usa la interfaz que mejor encaje en cada momento: el Chat estructurado o la interfaz de terminal nativa del agente.**
 
@@ -178,7 +178,7 @@ Descarga la última aplicación de escritorio de AO para tu plataforma. AO compr
 | Linux (Debian/Ubuntu) | [Descargar](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux (Fedora/RHEL)   | [Descargar](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Abre Agent Orchestrator y selecciona el repositorio que quieres que AO gestione. La aplicación de escritorio ejecuta el daemon por ti, así que no necesitas ninguna CLI. Consulta la [guía de instalación](https://aoagents.dev/docs/installation) para configurar las CLI de los agentes y resolver problemas.
+Abre Agent Orchestrator y selecciona el repositorio que quieres que AO gestione. La aplicación de escritorio ejecuta el daemon por ti, así que no necesitas ninguna CLI. Consulta la [guía de instalación](https://useao.dev/docs/installation) para configurar las CLI de los agentes y resolver problemas.
 
 ## Informar de un bug
 
@@ -211,7 +211,7 @@ Empieza por la [guía de desarrollo](../docs/development.md), donde encontrarás
 
 | Documento                                                           | Empieza aquí si necesitas                                                                                |
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| [Documentación del producto](https://aoagents.dev/docs)             | Instalación, configuración de agentes y uso cotidiano del producto.                                      |
+| [Documentación del producto](https://useao.dev/docs)                | Instalación, configuración de agentes y uso cotidiano del producto.                                      |
 | [docs/architecture.md](../docs/architecture.md)                     | Modelo mental del backend, ciclo de vida, persistencia, CDC, derivación del estado y límites del daemon. |
 | [docs/backend-code-structure.md](../docs/backend-code-structure.md) | Responsabilidad de los paquetes y ubicación de cada aspecto del backend.                                 |
 | [docs/cli/README.md](../docs/cli/README.md)                         | Comportamiento de la CLI y correspondencia con las rutas del daemon.                                     |
@@ -237,7 +237,7 @@ Empieza por la [guía de desarrollo](../docs/development.md), donde encontrarás
 
 ## Comunidad
 
-Únete a [Discord](https://discord.com/invite/UZv7JjxbwG) para pedir ayuda y hablar con otros colaboradores, sigue a [@aoagents](https://x.com/aoagents) para conocer las novedades o inicia una conversación en [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues).
+Únete a [Discord](https://discord.com/invite/UZv7JjxbwG) para pedir ayuda y hablar con otros colaboradores, sigue a [@ao_build](https://x.com/ao_build) para conocer las novedades o inicia una conversación en [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues).
 
 ## Telemetría anónima
 

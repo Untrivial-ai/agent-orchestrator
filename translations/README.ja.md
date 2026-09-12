@@ -10,14 +10,14 @@
 [![GitHub release](https://img.shields.io/github/v/release/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest)
 [![GitHub downloads](https://img.shields.io/github/downloads/Untrivial-ai/agent-orchestrator/total?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](../LICENSE)
-[![X](https://img.shields.io/badge/@aoagents-555?style=flat&logo=x&logoColor=white)](https://x.com/aoagents)
+[![X](https://img.shields.io/badge/@ao__build-555?style=flat&logo=x&logoColor=white)](https://x.com/ao_build)
 [![Discord](https://img.shields.io/badge/Discord-555?style=flat&logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
 
 すべてのコーディングタスクに、それぞれ専用のエージェント、ワークスペース、フィードバックループを。<br />
 プロジェクトを理解するオーケストレーターとともに、より大きな成果を計画し委任できます。<br />
 すべてのワーカー、プルリクエスト、CI、レビューをライブ Kanban で追跡できます。
 
-[**AO をダウンロード**](#インストール) &nbsp;&bull;&nbsp; [ドキュメント](https://aoagents.dev/docs) &nbsp;&bull;&nbsp; [リリース](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [コントリビューション](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**AO をダウンロード**](#インストール) &nbsp;&bull;&nbsp; [ドキュメント](https://useao.dev/docs) &nbsp;&bull;&nbsp; [リリース](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [コントリビューション](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
@@ -161,7 +161,7 @@ AO は、すでに利用しているコーディングエージェントやソ�
   </tr>
 </table>
 
-[エージェントのセットアップガイドを見る →](https://aoagents.dev/docs/plugins/agents)
+[エージェントのセットアップガイドを見る →](https://useao.dev/docs/plugins/agents)
 
 **状況に合ったインターフェースを選べます。構造化された Chat と、エージェント本来のターミナル UI に対応しています。**
 
@@ -178,7 +178,7 @@ AO は、すでに利用しているコーディングエージェントやソ�
 | Linux（Debian/Ubuntu） | [ダウンロード](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux（Fedora/RHEL）   | [ダウンロード](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Agent Orchestrator を開き、AO に管理させたいリポジトリを指定します。デスクトップアプリがデーモンを実行するため、CLI は不要です。エージェント CLI のセットアップとトラブルシューティングは[インストールガイド](https://aoagents.dev/docs/installation)を参照してください。
+Agent Orchestrator を開き、AO に管理させたいリポジトリを指定します。デスクトップアプリがデーモンを実行するため、CLI は不要です。エージェント CLI のセットアップとトラブルシューティングは[インストールガイド](https://useao.dev/docs/installation)を参照してください。
 
 ## バグを報告する
 
@@ -211,7 +211,7 @@ cd agent-orchestrator
 
 | ドキュメント                                                        | 次の情報が必要な場合                                                                      |
 | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| [プロダクトドキュメント](https://aoagents.dev/docs)                 | インストール、エージェントのセットアップ、日常的な製品の使い方。                          |
+| [プロダクトドキュメント](https://useao.dev/docs)                    | インストール、エージェントのセットアップ、日常的な製品の使い方。                          |
 | [docs/architecture.md](../docs/architecture.md)                     | バックエンドのメンタルモデル、ライフサイクル、永続化、CDC、ステータス導出、デーモン境界。 |
 | [docs/backend-code-structure.md](../docs/backend-code-structure.md) | パッケージの所有範囲と、バックエンドの各関心事を配置する場所。                            |
 | [docs/cli/README.md](../docs/cli/README.md)                         | CLI の動作とデーモンルートの対応関係。                                                    |
@@ -237,7 +237,7 @@ cd agent-orchestrator
 
 ## コミュニティ
 
-サポートやコントリビューター同士の議論には [Discord](https://discord.com/invite/UZv7JjxbwG) に参加し、最新情報は [@aoagents](https://x.com/aoagents) をフォローしてください。[GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) から会話を始めることもできます。
+サポートやコントリビューター同士の議論には [Discord](https://discord.com/invite/UZv7JjxbwG) に参加し、最新情報は [@ao_build](https://x.com/ao_build) をフォローしてください。[GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) から会話を始めることもできます。
 
 ## 匿名テレメトリ
 

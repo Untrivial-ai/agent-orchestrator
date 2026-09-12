@@ -311,6 +311,24 @@
 	--animate-popover-out: popover-out 100ms cubic-bezier(0.4, 0, 1, 1);
 }
 
+/* Pierre powers both the continuous review and focused source views. Keep its
+   Shiki tokenization while making the surface inherit AO's editor typography,
+   workspace canvas, and responsive wrapped-line geometry. */
+.ao-pierre-surface {
+	--diffs-font-family: var(--font-family-mono);
+	--diffs-header-font-family: var(--font-family-base);
+	--diffs-font-size: var(--font-size-sm);
+	--diffs-line-height: var(--line-height-row);
+	--diffs-light-bg: var(--color-bg-primary);
+	--diffs-dark-bg: var(--color-bg-primary);
+	--diffs-light: var(--color-text-terminal);
+	--diffs-dark: var(--color-text-terminal);
+	--diffs-bg-context-override: color-mix(in srgb, var(--color-bg-primary) 92%, var(--foreground) 8%);
+	--diffs-bg-context-gutter-override: color-mix(in srgb, var(--color-bg-primary) 84%, var(--foreground) 16%);
+	--diffs-bg-separator-override: var(--surface);
+	background: var(--color-bg-primary);
+}
+
 /* Full-viewport modal/sheet scrim — dim + blur everything behind pop panels. */
 @utility dialog-overlay {
 	position: fixed;
@@ -319,6 +337,18 @@
 	background-color: var(--color-scrim);
 	-webkit-backdrop-filter: blur(var(--blur-overlay));
 	backdrop-filter: blur(var(--blur-overlay));
+}
+
+@utility modal-shake {
+	animation: project-import-shake 280ms ease-in-out;
+}
+
+@utility toast-enter {
+	animation: toast-enter 180ms var(--ease-out);
+}
+
+@utility toast-exit {
+	animation: toast-exit 180ms ease-in forwards;
 }
 
 @utility agent-switch-terminal-scrim {
@@ -696,12 +726,6 @@ button.settings-row-bar {
 	background-color: var(--color-bg-settings-row);
 }
 
-button.settings-link-row:hover,
-button.settings-link-row:active {
-	background-color: var(--color-bg-settings-row-hover);
-	color: var(--color-text-settings-title);
-}
-
 /* Grouped rows size around the shared action control, keeping its top/bottom
  * inset equal to the row's right and left inset. */
 .settings-grouped-rows .settings-row-bar {
@@ -712,15 +736,15 @@ button.settings-link-row:active {
 	border-radius: 0;
 }
 
+/* The dialog body owns the page inset. Rows must not add a second left/right
+ * gutter or their labels drift from the dialog title and section headings. */
+.settings-dialog-body .settings-row-bar {
+	padding-inline: 0;
+}
+
 /* The update summary is a content row, not a compact control row. */
 .settings-grouped-rows .update-status-row {
 	padding-block: var(--space-4);
-}
-
-/* Button/link rows (e.g. Connect Mobile, Keyboard Shortcuts) keep rounded
- * corners even though the shared group container lost its outer border. */
-.settings-grouped-rows .settings-link-row.settings-row-bar {
-	border-radius: var(--radius-md);
 }
 
 @utility settings-menu-item {
@@ -1910,6 +1934,22 @@ textarea,
 	}
 }
 
+@keyframes project-import-shake {
+	0%, 100% { transform: translate(-50%, -50%); }
+	25% { transform: translate(calc(-50% - 6px), -50%); }
+	75% { transform: translate(calc(-50% + 6px), -50%); }
+}
+
+@keyframes toast-enter {
+	from { opacity: 0; transform: translateY(8px) scale(0.98); }
+	to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-exit {
+	from { opacity: 1; transform: translateY(0) scale(1); }
+	to { opacity: 0; transform: translateY(8px) scale(0.98); }
+}
+
 @keyframes modal-out {
 	from {
 		opacity: 1;
@@ -2079,6 +2119,39 @@ html.sidebar-reordering * {
 
 .cursor-chat-surface button:not(:disabled):active {
 	transform: scale(0.96);
+}
+
+/* Timeline summaries are disclosure controls, not raised buttons. Keeping their
+   footprint fixed prevents the label from shifting when the pointer lands. */
+.cursor-chat-surface .activity-summary-button:not(:disabled):active {
+	transform: none;
+}
+
+.activity-run-toggle {
+	border-bottom: 1px solid color-mix(in oklch, var(--color-border) 48%, transparent);
+	color: var(--color-text-muted);
+}
+
+.activity-run-toggle:hover,
+.activity-subgroup-toggle:hover {
+	color: var(--color-text-primary);
+}
+
+.activity-summary-button:hover > .activity-summary-label {
+	color: var(--color-text-primary);
+}
+
+.activity-row-toggle:hover > .activity-row-label {
+	color: var(--color-text-primary);
+}
+
+.cursor-chat-surface .activity-summary-button:not(:disabled),
+.cursor-chat-surface .activity-row-toggle:not(:disabled) {
+	transition: none;
+}
+
+.activity-subgroup {
+	min-width: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4575,6 +4648,24 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 		0 1px 8px color-mix(in srgb, black 9%, transparent);
 }
 
+.browser-panel__url-external {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	z-index: 3;
+	width: 23px;
+	height: 23px;
+	color: var(--fg-muted);
+	opacity: 0;
+	pointer-events: none;
+}
+
+.browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) .browser-panel__url-external,
+.browser-panel__url-external:focus-visible {
+	opacity: 1;
+	pointer-events: auto;
+}
+
 .browser-panel__content {
 	position: relative;
 	flex: 1;
@@ -4744,6 +4835,16 @@ html[data-native-browser-composition="true"] .browser-popout-overlay {
 }
 
 html[data-native-browser-composition="true"] .browser-popout-backdrop {
+	background: transparent;
+}
+
+/* The popped-out frame is the direct wrapper of the maximized browser panel
+ * (SessionView.tsx's portal) and paints its own opaque `background: var(--bg)`
+ * plate. It is NOT covered by the `:has(.browser-popout-overlay)` shell clears
+ * above — those target ancestors under #root — and leaving it opaque blanked
+ * the live page to black on Windows whenever an overlay (tooltip, menu) raised
+ * the transparent shell over the native view in a maximized window. */
+html[data-native-browser-composition="true"] .browser-popout-frame {
 	background: transparent;
 }
 

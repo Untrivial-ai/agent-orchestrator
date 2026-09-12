@@ -37,6 +37,7 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 // TestSpawnCommand_MissingProjectContext asserts `ao spawn` gives a project
 // setup hint when neither --project, AO_PROJECT_ID, nor cwd can resolve one.
 func TestSpawnCommand_MissingProjectContext(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -437,6 +438,7 @@ func TestSpawnAOSessionIDFailureRequiresProject(t *testing.T) {
 }
 
 func TestSpawnResolvesProjectFromCWD(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	repo := filepath.Join(t.TempDir(), "repo")
 	subdir := filepath.Join(repo, "pkg")

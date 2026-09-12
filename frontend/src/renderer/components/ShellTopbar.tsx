@@ -10,6 +10,7 @@ import {
 	hasConfiguredOrchestratorAgent,
 	isOrchestratorSession,
 	sessionIsActive,
+	STANDALONE_WORKSPACE_ID,
 	type WorkspaceSession,
 } from "../types/workspace";
 import { cloudSessionsQueryKey, useWorkspaceScope, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
@@ -126,6 +127,9 @@ export function ShellTopbar({
 	const isProjectRestarting = useUiStore((state) =>
 		projectId ? state.restartingProjectIds.has(projectId) : false,
 	);
+	const isProvisioning = useUiStore((state) =>
+		projectId ? state.provisioningProjectIds.has(projectId) : false,
+	);
 	const isProjectBoardRoute = !isSessionRoute && Boolean(projectId);
 	const isRootBoardRoute = !isSessionRoute && !isProjectBoardRoute;
 	const project = workspaceScope?.project;
@@ -143,12 +147,12 @@ export function ShellTopbar({
 		projectId ? void navigate({ to: "/projects/$projectId", params: { projectId } }) : void navigate({ to: "/" });
 
 	const openNewTask = () => {
-		if (!projectId || isProjectRestarting) return;
+		if (!projectId || isProjectRestarting || isProvisioning) return;
 		requestNewTask(projectId);
 	};
 
 	const openOrchestrator = async () => {
-		if (!projectId) return;
+		if (!projectId || isProvisioning) return;
 		setBoardSpawnError(null);
 		void addRendererExceptionStep("Orchestrator open requested", {
 			source: "orchestrator-open",
@@ -273,7 +277,7 @@ export function ShellTopbar({
 										aria-label={t("shell.newTask")}
 										className="topbar-control--labeled"
 										data-priority="primary"
-										disabled={isProjectRestarting}
+										disabled={isProjectRestarting || isProvisioning}
 										onClick={openNewTask}
 										variant="accent"
 									>
@@ -295,7 +299,7 @@ export function ShellTopbar({
 										}
 										className="topbar-control--labeled"
 										data-priority="secondary"
-										disabled={isSpawning || isProjectRestarting}
+										disabled={isSpawning || isProjectRestarting || isProvisioning}
 										onClick={() => void openOrchestrator()}
 										variant="primary"
 									>
@@ -326,7 +330,7 @@ export function ShellTopbar({
 												aria-label={t("shell.newTask")}
 												className="topbar-control--labeled"
 												data-priority="primary"
-												disabled={isProjectRestarting}
+												disabled={isProjectRestarting || isProvisioning}
 												onClick={openNewTask}
 												variant="accent"
 											>
@@ -371,6 +375,8 @@ export function ShellTopbar({
 								key={`open-workspace-${session.id}`}
 								sessionId={session.id}
 								projectId={session.workspaceId}
+								sessionCreatedAt={session.createdAt}
+								sessionTerminated={session.isTerminated}
 								style={noDragStyle}
 							/>
 						) : null}
@@ -396,7 +402,11 @@ export function ShellTopbar({
 												});
 												return;
 											}
-											void navigate({ to: "/projects/$projectId", params: { projectId: workspaceId } });
+											void navigate(
+												workspaceId === STANDALONE_WORKSPACE_ID
+													? { to: "/" }
+													: { to: "/projects/$projectId", params: { projectId: workspaceId } },
+											);
 										}}
 									/>
 								) : null}
@@ -410,7 +420,7 @@ export function ShellTopbar({
 											aria-label={t("shell.openOrchestrator")}
 											className="topbar-control--labeled -mr-1"
 											data-priority="secondary"
-											disabled={isSpawning || isProjectRestarting}
+											disabled={isSpawning || isProjectRestarting || isProvisioning}
 											onClick={() => void openOrchestrator()}
 											variant="primary"
 										>

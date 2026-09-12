@@ -687,7 +687,7 @@ function ShellLayout() {
 				return;
 			}
 			if (matchesRendererShortcut("open-project", event)) {
-				const workspace = workspacesRef.current[Number(event.key) - 1];
+				const workspace = workspacesRef.current.filter(({ id }) => id !== STANDALONE_WORKSPACE_ID)[Number(event.key) - 1];
 				if (workspace) {
 					event.preventDefault();
 					void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });

@@ -168,13 +168,6 @@ export const BrowserTabsRail = forwardRef<BrowserTabsRailHandle, BrowserTabsRail
 		if (expanded && flyoutOpen) closeFlyout(true);
 	}, [closeFlyout, expanded, flyoutOpen]);
 
-	// The toolbar trigger that opens this flyout only renders once there are 2+
-	// tabs (see BrowserPanel.tsx); dropping back to 1 tab while collapsed would
-	// otherwise leave the flyout stuck open with no trigger left to close it.
-	useEffect(() => {
-		if (collapsed && tabs.length < 2 && flyoutOpen) closeFlyout(true);
-	}, [closeFlyout, collapsed, flyoutOpen, tabs.length]);
-
 	useEffect(() => () => {
 		clearOpenTimer();
 		clearCloseTimer();
@@ -247,8 +240,8 @@ export const BrowserTabsRail = forwardRef<BrowserTabsRailHandle, BrowserTabsRail
 			// renders every tab as a favicon row, so opening the flyout there covered
 			// the live page with a duplicate of the list the user is already looking
 			// at; each favicon exposes its own adjacent close action instead. The
-			// toolbar trigger is likewise hidden while pinned (BrowserPanel.tsx's
-			// showTabsTrigger), so this is the last path into the flyout.
+			// toolbar trigger is likewise hidden while pinned, except when only one
+			// tab remains so recently closed tabs stay reachable.
 			onBlur={
 				collapsed
 					? (event) => {
@@ -368,6 +361,8 @@ export const BrowserTabsRail = forwardRef<BrowserTabsRailHandle, BrowserTabsRail
 					data-browser-native-overlay="true"
 					data-state={flyoutOpen ? "open" : "closed"}
 					data-testid="browser-tabs-flyout"
+					onPointerEnter={pinned ? clearCloseTimer : undefined}
+					onPointerLeave={pinned ? () => closeFlyout() : undefined}
 					role="menu"
 				>
 					<div className="flex h-full flex-col overflow-y-auto">
@@ -603,7 +598,9 @@ function ExpandedTabRow({ active, chrome, closeTitle, onClose, onSelect, onlyTab
 						</button>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent data-browser-native-overlay="true" side="bottom">{onlyTab ? closeTitle : closeLabel}</TooltipContent>
+				{/* Expanded rows render in the shell-owned rail beside the native page,
+				    so their styled tooltip does not need to restack the shell. */}
+				<TooltipContent side="bottom">{onlyTab ? closeTitle : closeLabel}</TooltipContent>
 			</Tooltip>
 		</div>
 	);

@@ -95,4 +95,14 @@ describe("native-composition transparency cascade", () => {
 	it("clears the popped-out overlay surface", () => {
 		expect(clearsBackgroundFor((selector) => selector.endsWith(".browser-popout-overlay"))).toBe(true);
 	});
+
+	it("clears the popped-out frame that directly wraps the maximized browser panel", () => {
+		// SessionView.tsx portals the maximized browser into a `.browser-popout-frame`
+		// wrapper that paints an opaque `background: var(--bg)` plate. The popped-out
+		// shell clears above target #root ancestors via `:has(.browser-popout-overlay)`
+		// and never match this element, so it must be cleared explicitly — otherwise
+		// raising the transparent shell for a tooltip/menu paints the frame's opaque
+		// background over the native page and blanks it to black (Windows, maximized).
+		expect(clearsBackgroundFor((selector) => selector.includes(".browser-popout-frame"))).toBe(true);
+	});
 });

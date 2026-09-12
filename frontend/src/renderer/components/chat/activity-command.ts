@@ -5,7 +5,7 @@ export type CommandCategory = "read" | "search" | "vcs" | "run";
 
 /** Shared chrome for one command summary and a collapsed run of commands. */
 export const ACTIVITY_SUMMARY_BUTTON_CLASS =
-	"group/run flex w-full items-center gap-1.5 rounded-sm py-0.5 pr-1 text-left outline-none focus-visible:outline-none";
+	"activity-summary-button group/run flex w-full select-none items-center gap-1.5 py-0.5 pr-1 text-left outline-none focus-visible:outline-none";
 
 /** A completed shell command that reported an ordinary non-zero process exit. */
 export function isNonzeroCommandExit(activity: ConversationActivity): boolean {

@@ -24,6 +24,7 @@ type Workspace struct {
 
 var _ ports.Workspace = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
+var _ ports.WorkspaceReclaimer = (*Workspace)(nil)
 
 // New validates ManagedRoot and returns a scratch workspace adapter.
 func New(opts Options) (*Workspace, error) {
@@ -71,22 +72,42 @@ func (w *Workspace) Restore(_ context.Context, cfg ports.WorkspaceConfig) (ports
 
 // Destroy removes only an empty scratch directory. Non-empty directories are
 // treated as dirty user work and preserved.
-func (w *Workspace) Destroy(_ context.Context, info ports.WorkspaceInfo) error {
+func (w *Workspace) Destroy(ctx context.Context, info ports.WorkspaceInfo) error {
+	_, err := w.destroy(ctx, info)
+	return err
+}
+
+// DestroyReclaim is Destroy plus the reclaim outcome. os.Remove is tolerated on
+// a missing path, so a scratch directory that was already gone tears down
+// without error while releasing nothing; callers counting reclaimed workspaces
+// need that separated from a real removal.
+func (w *Workspace) DestroyReclaim(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
+	return w.destroy(ctx, info)
+}
+
+func (w *Workspace) destroy(_ context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
 	path, err := w.validateManagedPath(info.Path)
 	if err != nil {
-		return err
+		return ports.WorkspaceReclaimAlreadyAbsent, err
+	}
+	// Only a definite absence counts as already-absent; any other stat failure
+	// stays on the removed path so an unknown is never reported as "nothing to
+	// do".
+	reclaim := ports.WorkspaceReclaimRemoved
+	if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+		reclaim = ports.WorkspaceReclaimAlreadyAbsent
 	}
 	nonEmpty, err := pathExistsNonEmpty(path)
 	if err != nil {
-		return err
+		return reclaim, err
 	}
 	if nonEmpty {
-		return fmt.Errorf("scratch workspace: preserve non-empty %q: %w", path, ports.ErrWorkspaceDirty)
+		return reclaim, fmt.Errorf("scratch workspace: preserve non-empty %q: %w", path, ports.ErrWorkspaceDirty)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("scratch workspace: remove empty %q: %w", path, err)
+		return reclaim, fmt.Errorf("scratch workspace: remove empty %q: %w", path, err)
 	}
-	return nil
+	return reclaim, nil
 }
 
 // ForceDestroy intentionally follows Destroy semantics for scratch. Normal AO

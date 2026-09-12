@@ -1,3 +1,4 @@
+import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 /**
  * The Chat surface for a session whose persisted mode is `chat`.
  *
@@ -32,9 +33,37 @@ import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import {
+	acknowledgeChatInlineEditMutation,
+	beginChatInlineEditMutation,
+	cancelChatInlineEditMutation,
+	clearAcceptedChatInlineEdit,
+	clearRejectedChatInlineEditDelivery,
+	clearUncertainChatInlineEditDelivery,
+	finishChatInlineEditMutation,
+	getChatInlineEditMutation,
+	markChatInlineEditDeliveryAccepted,
+	prepareChatInlineEditDelivery,
+	activateChatDraftScope,
+	chatDraftScopeKey,
+	chatQueuedAttachmentScopeKey,
+	readChatSessionDraft,
+	subscribeChatDraftRuntime,
+	writeChatInlineEdit,
+	writeChatQueuedEdit,
+	type ChatDraftQueuedEdit,
+	type ChatDraftAttachment,
+	type ChatDraftRetainedAttachment,
+	type DraftClearResult,
+	type ChatDraftInlineEdit,
+	type ChatDraftScope,
+	type ChatInlineEditDelivery,
+} from "../../lib/chat-drafts";
+import { purgeFileAttachments, purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
+import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
 import { sameContent, useStableList } from "../../lib/stable-list";
 import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
-import { getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
+import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
 import {
@@ -46,6 +75,7 @@ import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
 import type { ApprovalMode } from "../../types/conversation";
+import type { ConversationLocalEcho } from "../../hooks/useConversation";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import { sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
 import type { TerminalTarget } from "../../types/terminal";
@@ -76,7 +106,9 @@ import {
 } from "./ChatTimelineItems";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider } from "./ChatMarkdown";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type StoredComposerAttachment } from "./ChatComposer";
+import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
+import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { ActivityRun } from "./ActivityRun";
 import { TurnPlan } from "./TurnPlan";
@@ -99,9 +131,10 @@ import {
 	type ChatConfigOptionValue,
 	type ChatModel,
 	type ChatSkill,
+	type ChatSteerOutcome,
+	type ChatEditOutcome,
 	type ConversationActivity,
 	type ConversationBranchPoint,
-	type ConversationContentSummary,
 	type ConversationItem,
 	type ConversationMessage,
 	type TurnDiff,
@@ -137,7 +170,7 @@ function initialTerminalFontSize(): number {
 
 type ReviewerTerminalTarget = Extract<TerminalTarget, { kind: "reviewer" }>;
 type ShellTerminalTarget = Extract<TerminalTarget, { kind: "shell" }>;
-type WorkspaceTab = { key: string; content: ReactNode; onSelect: () => void };
+type WorkspaceTab = { key: string; content: ReactNode; onSelect: () => void; onClose?: () => void };
 type ChatAuxiliaryTab =
 	| { key: string; kind: "reviewer"; terminal: { handleId: string; harness: string } }
 	| { key: string; kind: "shell"; terminal: ShellTerminal }
@@ -173,12 +206,7 @@ type TopbarBounds = {
 	width: number;
 };
 
-type MessageEditDraft = {
-	turnId: string;
-	text: string;
-	content: ConversationContentSummary[];
-	reconstructedContext: boolean;
-};
+type MessageEditDraft = ChatDraftInlineEdit;
 
 /**
  * A stream refresh replaces the complete snapshot object. Queue prompts do not
@@ -229,6 +257,8 @@ export interface ChatWorkspaceProps {
 	headerActions?: ReactNode;
 	/** Agent-session actions on the primary chat tab (interface switch, handoff). */
 	sessionTabAction?: ReactNode;
+	/** Widen the primary tab action slot only while an interface switch spinner is showing. */
+	sessionTabActionWide?: boolean;
 	/** Pinned beside the tab strip, before the workspace topbar actions. */
 	tabStripAction?: ReactNode;
 	/** File tabs coordinated by SessionView, appended to the native chat tab strip. */
@@ -253,6 +283,7 @@ export interface ChatWorkspaceProps {
 	onSend?: (
 		text: string,
 		attachments?: { mimeType: string; data: string }[],
+		clientMessageId?: string,
 	) => void | Promise<unknown>;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: (
@@ -330,7 +361,11 @@ export interface ChatWorkspaceProps {
 	 */
 	retryControl?: ChatRetryControl;
 	/** Create a conversation branch by replacing a prior human prompt. */
-	onEditMessage?: (turnId: string, text: string) => void | Promise<unknown>;
+	onEditMessage?: (
+		turnId: string,
+		text: string,
+		clientMessageId?: string,
+	) => void | ChatEditOutcome | Promise<ChatEditOutcome | void>;
 	editMessagePending?: boolean;
 	editMessageError?: string;
 	/** Switch the visible conversation to another branch. */
@@ -343,6 +378,8 @@ export interface ChatWorkspaceProps {
 	filePaths?: string[];
 	/** The path list was capped by the daemon rather than being all of them. */
 	filePathsTruncated?: boolean;
+	/** Renderer-only human messages awaiting their exact durable counterpart. */
+	localEchos?: ConversationLocalEcho[];
 	/**
 	 * Writes staged images into the worktree and answers with the paths the agent
 	 * can open. Absent means no attach control is offered — the fixture preview has
@@ -360,13 +397,15 @@ export interface ChatWorkspaceProps {
 	onSteer?: (
 		text: string,
 		attachments?: { mimeType: string; data: string }[],
-	) => Promise<unknown>;
+		clientMessageId?: string,
+		recoverOnly?: boolean,
+	) => Promise<ChatSteerOutcome | void>;
 	sendPending?: boolean;
 	steerPending?: boolean;
 	/** Why the last steer was refused, from the daemon's typed answer. */
 	steerRefusal?: string;
 	onPromoteQueuedTurn?: (turnId: string) => Promise<unknown>;
-	onEditQueuedTurn?: (turnId: string, text: string) => Promise<unknown>;
+	onEditQueuedTurn?: (turnId: string, text: string, options?: QueuedMessageEditOptions) => Promise<unknown>;
 	onCancelQueuedTurn?: (turnId: string) => Promise<unknown>;
 	onReorderQueuedTurns?: (turnIds: string[]) => Promise<unknown>;
 	promoteQueuedTurnPendingTurnId?: string;
@@ -378,12 +417,92 @@ export interface ChatWorkspaceProps {
 	mcpReloadError?: string;
 }
 
-export function ChatWorkspace({
+type ChatWorkspaceActivation =
+	| { key: string; state: "active" }
+	| { key: string; state: "failed"; reason: "obsolete" | "storage" };
+
+/**
+ * Do not mount any renderer draft owner until the daemon incarnation has
+ * authoritatively claimed its storage scope. The activation transition itself
+ * owns cleanup of the predecessor; callbacks from that obsolete surface can
+ * then only fail closed against the successor lease.
+ */
+export function ChatWorkspace(props: ChatWorkspaceProps) {
+	const translateDraft = useChatDraftTranslation();
+	const { snapshot, session } = props;
+	const draftScope = useMemo<ChatDraftScope>(
+		() => ({
+			sessionId: snapshot.sessionId,
+			// Live surfaces carry the daemon-created session timestamp. Snapshot-only
+			// fixtures retain the legacy logical scope for deterministic previews.
+			incarnation: session?.createdAt ?? snapshot.sessionId,
+		}),
+		[session?.createdAt, snapshot.sessionId],
+	);
+	const scopeKey = chatDraftScopeKey(draftScope);
+	const [activation, setActivation] = useState<ChatWorkspaceActivation>();
+	const [activationAttempt, setActivationAttempt] = useState(0);
+
+	useLayoutEffect(() => {
+		// Snapshot-only previews have no daemon session incarnation to arbitrate.
+		// Their legacy logical scope remains isolated to fixture/demo surfaces.
+		if (!session?.createdAt) {
+			setActivation({ key: scopeKey, state: "active" });
+			return;
+		}
+		const result = activateChatDraftScope(draftScope);
+		if (!result.ok) {
+			setActivation({ key: scopeKey, state: "failed", reason: result.reason });
+			return;
+		}
+		if (result.replaced) purgeFileAttachmentsForSession(draftScope.sessionId);
+		setActivation({ key: scopeKey, state: "active" });
+	}, [activationAttempt, draftScope, scopeKey, session?.createdAt]);
+
+	if (activation?.key !== scopeKey || activation.state !== "active") {
+		const failure = activation?.key === scopeKey && activation.state === "failed"
+			? activation.reason
+			: undefined;
+		return (
+			<section
+				aria-label="Chat"
+				className="cursor-chat-surface flex h-full min-h-0 flex-col items-center justify-center px-6 [font-size:var(--chat-font-size)]"
+				data-session-mode={snapshot.mode}
+				style={{ "--chat-font-size": `${CHAT_FONT_SIZE_DEFAULT}px` } as CSSProperties}
+			>
+				{failure ? (
+					<div className="max-w-lg rounded-lg border border-border bg-card p-4">
+						<p className="text-sm text-foreground" role="alert">
+							{failure === "obsolete"
+								? "This Chat view belongs to an older session incarnation. Reopen the current session to continue."
+								: translateDraft("chat.draft.storageUnavailable")}
+						</p>
+						{failure === "storage" ? (
+							<Button
+								className="mt-3"
+								onClick={() => setActivationAttempt((attempt) => attempt + 1)}
+								type="button"
+								variant="outline"
+							>
+								Retry draft restore
+							</Button>
+						) : null}
+					</div>
+				) : null}
+			</section>
+		);
+	}
+
+	return <ChatWorkspaceContent key={scopeKey} {...props} draftScope={draftScope} />;
+}
+
+function ChatWorkspaceContent({
 	snapshot,
 	sessionTitle,
 	sessionRole = "worker",
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	workspaceTabs,
 	workspaceTabActions,
@@ -450,6 +569,7 @@ export function ChatWorkspace({
 	skills,
 	filePaths,
 	filePathsTruncated,
+	localEchos,
 	onStageAttachments,
 	nativeImages,
 	onSteer,
@@ -466,7 +586,9 @@ export function ChatWorkspace({
 	onReloadMcpServers,
 	reloadingMcpServers,
 	mcpReloadError,
-}: ChatWorkspaceProps) {
+	draftScope,
+}: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
+	const draftScopeKey = chatDraftScopeKey(draftScope);
 	const turn = activeTurn(snapshot);
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
@@ -541,6 +663,9 @@ export function ChatWorkspace({
 		});
 		return [...ordered, ...byKey.values()];
 	}, [auxiliaryTabOrder, auxiliaryTabs, snapshot.sessionId, tabOrderBySession]);
+	const activeWorkspaceTab = workspaceActiveTabKey
+		? workspaceTabs?.find((tab) => tab.key === workspaceActiveTabKey)
+		: undefined;
 	const reorderAuxiliaryTabs = useCallback(
 		(nextKeys: string[]) => {
 			const available = new Set(availableTabKeys);
@@ -583,49 +708,151 @@ export function ChatWorkspace({
 	const queuedMessages = useQueuedMessages(snapshot);
 	const stablePromoteQueuedTurn = useStableCallback(onPromoteQueuedTurn);
 	const stableCancelQueuedTurn = useStableCallback(onCancelQueuedTurn);
-	const [queueEdit, setQueueEdit] = useState<{ turnId: string; text: string } | undefined>();
-	useEffect(() => {
-		if (!queueEdit) return;
-		if (!queuedMessages.some((message) => message.turnId === queueEdit.turnId)) {
-			setQueueEdit(undefined);
+	const [queueEdit, setQueueEdit] = useState<ChatDraftQueuedEdit | undefined>(
+		() => readChatSessionDraft(draftScope).queuedEdit,
+	);
+	const queueEditRef = useRef(queueEdit);
+	const [queueDraftError, setQueueDraftError] = useState<string>();
+	const unprovenQueueWrite = useRef<{ expectedRevision?: string; written: { revisions: (string | undefined)[] } } | undefined>(undefined);
+	const updateQueueDraft = useCallback((edit: Omit<ChatDraftQueuedEdit, "revision"> | undefined, expectedRevision?: string) => {
+		const previous = unprovenQueueWrite.current;
+		const result = writeChatQueuedEdit(draftScope, edit, expectedRevision, undefined,
+			previous?.expectedRevision === expectedRevision ? previous?.written : undefined);
+		setQueueDraftError(result.ok ? undefined : "chat.draft.queueSaveLocalFailed");
+		if (result.ok) {
+			const retired = queueEditRef.current;
+			unprovenQueueWrite.current = undefined;
+			queueEditRef.current = result.draft.queuedEdit;
+			setQueueEdit(result.draft.queuedEdit);
+			if (retired && (!result.draft.queuedEdit || retired.ownerId !== result.draft.queuedEdit.ownerId)) {
+				purgeFileAttachments(chatQueuedAttachmentScopeKey(draftScope,
+					`${retired.turnId}:${retired.ownerId ?? retired.expectedRevision ?? "legacy"}`));
+			}
+		} else if (result.attempted) {
+			unprovenQueueWrite.current = { expectedRevision, written: result.attempted };
 		}
-	}, [queueEdit, queuedMessages]);
+		return result;
+	}, [draftScope]);
+	useEffect(() => {
+		setChatDraftBoundary(snapshot.sessionId, "queued-edit", queueDraftError ? "persistence-failed" : undefined);
+		return () => setChatDraftBoundary(snapshot.sessionId, "queued-edit", undefined);
+	}, [queueDraftError, snapshot.sessionId]);
+	// Text equality cannot prove an attachment-only edit was accepted. Keep an
+	// uncertain edit and its original daemon revision until a save is acknowledged.
+	const changeQueuedDraft = useCallback((text: string) => {
+		const current = queueEditRef.current;
+		if (!current || current.clientMessageId || current.turnId !== queueEdit?.turnId || current.ownerId !== queueEdit.ownerId || current.text === text) return;
+		const result = updateQueueDraft({ ...current, text, saving: undefined, clientMessageId: undefined }, current.revision);
+		if (!result.ok) {
+			queueEditRef.current = { ...current, text };
+			setQueueEdit(queueEditRef.current);
+		}
+	}, [queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
+	const changeQueuedAttachments = useCallback((field: "attachments" | "stagedAttachments", attachments: ChatDraftRetainedAttachment[] | ChatDraftAttachment[]) => {
+		const current = queueEditRef.current;
+		if (!current || current.clientMessageId || current.turnId !== queueEdit?.turnId || current.ownerId !== queueEdit.ownerId) return;
+		if (JSON.stringify(current[field] ?? []) === JSON.stringify(attachments)) return;
+		const next = { ...current, [field]: attachments, saving: undefined, clientMessageId: undefined };
+		const result = updateQueueDraft(next, current.revision);
+		if (!result.ok) {
+			queueEditRef.current = next;
+			setQueueEdit(next);
+		}
+	}, [queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
+	const changeQueuedStagedAttachments = useCallback((attachments: ChatDraftAttachment[]) => {
+		changeQueuedAttachments("stagedAttachments", attachments);
+	}, [changeQueuedAttachments]);
+	const changeQueuedRetainedAttachments = useCallback((attachments: ChatDraftRetainedAttachment[]) => {
+		changeQueuedAttachments("attachments", attachments);
+	}, [changeQueuedAttachments]);
 	const handleCancelQueuedTurn = useCallback(
 		async (turnId: string) => {
 			if (!onCancelQueuedTurn) return;
+			if (queueEditRef.current?.turnId === turnId && queueEditRef.current.clientMessageId) return;
 			await stableCancelQueuedTurn(turnId);
-			setQueueEdit((current) => (current?.turnId === turnId ? undefined : current));
+			const current = queueEditRef.current;
+			if (current?.turnId === turnId && !current.clientMessageId) updateQueueDraft(undefined, current.revision);
 		},
-		[stableCancelQueuedTurn],
+		[queueEdit, stableCancelQueuedTurn, updateQueueDraft],
 	);
+	// Keep the dispatch target with this composer instance while attachment staging
+	// awaits. A newer queue editor must not redirect an older ordinary send.
 	const handleComposerSend = useCallback(
-		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1]) => {
+		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1], clientMessageId?: string, retainedContent?: number[]) => {
 			if (queueEdit) {
-				if (attachments && attachments.length > 0) {
-					throw new Error("Queued message edits cannot include attachments.");
-				}
 				if (!onEditQueuedTurn) {
-					throw new Error("Queued message edits are unavailable right now.");
+					throw new Error("chat.draft.queueUnavailable");
 				}
-				await onEditQueuedTurn(queueEdit.turnId, text);
-				setQueueEdit(undefined);
+				if (!queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId)) {
+					throw new Error("chat.draft.queueMissing");
+				}
+				const currentEdit = queueEditRef.current;
+				if (!currentEdit || currentEdit.turnId !== queueEdit.turnId || currentEdit.ownerId !== queueEdit.ownerId) {
+					throw new Error("chat.draft.queueReplaced");
+				}
+				const prepared = updateQueueDraft({
+					...currentEdit,
+					saving: true,
+					clientMessageId: currentEdit.clientMessageId ?? crypto.randomUUID(),
+					nativeImages: currentEdit.nativeImages ?? Boolean(nativeImages),
+				}, currentEdit.revision);
+				if (!prepared.ok || !prepared.draft.queuedEdit) throw new Error("chat.draft.queuePrepareFailed");
+				try {
+					await onEditQueuedTurn(queueEdit.turnId, text, {
+						clientMessageId: prepared.draft.queuedEdit.clientMessageId,
+						...(attachments?.length ? { attachments } : {}),
+						retainedContent: queueEdit.attachments === undefined ? undefined : retainedContent,
+						expectedRevision: queueEdit.expectedRevision,
+					});
+				} catch (error) {
+					// These outcomes follow the daemon's atomic receipt lookup, so even
+					// a recovered retry proves this exact edit was never accepted.
+					if ([
+						"CHAT_TURN_NOT_QUEUED",
+						"CHAT_QUEUED_EDIT_CONFLICT",
+						"CHAT_QUEUED_CONTENT_INVALID",
+						"CHAT_QUEUED_TEXT_REQUIRED",
+					].includes(apiErrorCode(error) ?? "")) {
+						updateQueueDraft({
+							...prepared.draft.queuedEdit,
+							clientMessageId: undefined, saving: undefined, nativeImages: undefined,
+						}, prepared.draft.queuedEdit.revision);
+					}
+					throw error;
+				}
+				if (queueEditRef.current?.ownerId === queueEdit.ownerId) {
+					if (!updateQueueDraft(undefined, prepared.draft.queuedEdit.revision).ok) throw new Error("chat.draft.queueClearFailed");
+				}
 				return;
 			}
-			return onSend?.(text, attachments);
+			return onSend?.(text, attachments, clientMessageId);
 		},
-		[onEditQueuedTurn, onSend, queueEdit],
+		[draftScope, onEditQueuedTurn, onSend, nativeImages, queueEdit, queuedMessages, updateQueueDraft],
 	);
-	const composerSend = useStableCallback(handleComposerSend);
 	const stableInterrupt = useStableCallback(onInterrupt);
 	const stableSteer = useStableCallback(onSteer);
 	const beginQueuedEdit = useCallback(
 		(turnId: string, text: string) => {
-			if (newWorkDisabled) return;
-			setQueueEdit({ turnId, text });
+			if (newWorkDisabled || queueEditRef.current?.clientMessageId) return;
+			const message = queuedMessages.find((queued) => queued.turnId === turnId)?.message;
+			if (!message) return;
+			const parts = stagedAttachmentParts(text);
+			// Paths and native blocks have no shared persisted identity.
+			const attachments: StoredComposerAttachment[] = parts.attachments.map((path) => ({
+				id: path, name: attachmentName(path), path,
+			}));
+			(message.content ?? []).forEach((item, index) => {
+				attachments.push({ id: `content-${index}`, contentIndex: index, contentType: item.type,
+					name: item.name || (item.type === "image" ? `Image ${index + 1}` : item.uri || "Attachment") });
+			});
+			updateQueueDraft({ turnId, ownerId: crypto.randomUUID(), text: parts.body, expectedRevision: message.revision, attachments, stagedAttachments: [] });
 		},
-		[newWorkDisabled],
+		[newWorkDisabled, queuedMessages, updateQueueDraft],
 	);
-	const cancelQueuedEdit = useCallback(() => setQueueEdit(undefined), []);
+	const cancelQueuedEdit = useCallback(() => {
+		const current = queueEditRef.current;
+		if (current && !current.clientMessageId) updateQueueDraft(undefined, current.revision);
+	}, [updateQueueDraft]);
 	const promoteQueuedTurn = useCallback(
 		async (turnId: string) => stablePromoteQueuedTurn(turnId),
 		[stablePromoteQueuedTurn],
@@ -634,8 +861,24 @@ export function ChatWorkspace({
 		async (
 			text: string,
 			attachments?: { mimeType: string; data: string }[],
-		) => stableSteer(text, attachments),
+			clientMessageId?: string,
+			recoverOnly?: boolean,
+		) => stableSteer(text, attachments, clientMessageId, recoverOnly),
 		[stableSteer],
+	);
+	const acceptedClientMessageIds = useMemo(
+		() =>
+			new Set(
+				snapshot.items.flatMap((item) => {
+					if (
+						item.kind !== "activity" ||
+						item.detail?.event !== "steer" ||
+						!item.detail.clientMessageId
+					) return [];
+					return [item.detail.clientMessageId];
+				}),
+			),
+		[snapshot.items],
 	);
 	// The turn a confirmation is open for. Undo is not reversible and it changes what
 	// the agent knows, so it is never one click.
@@ -795,9 +1038,10 @@ export function ChatWorkspace({
 	useEffect(
 		() =>
 			aoBridge.app.onCloseShellTerminalShortcut(() => {
-				if (shellTarget) onCloseShellTerminal?.(shellTarget.handleId);
+				if (activeWorkspaceTab?.onClose) activeWorkspaceTab.onClose();
+				else if (shellTarget) onCloseShellTerminal?.(shellTarget.handleId);
 			}),
-		[onCloseShellTerminal, shellTarget],
+		[activeWorkspaceTab, onCloseShellTerminal, shellTarget],
 	);
 
 	useEffect(() => {
@@ -810,9 +1054,11 @@ export function ChatWorkspace({
 	}, [selectAdjacentTab]);
 
 	useEffect(() => {
-		aoBridge.app.setCloseShellTerminalShortcutEnabled(Boolean(shellTarget && onCloseShellTerminal));
+		aoBridge.app.setCloseShellTerminalShortcutEnabled(
+			Boolean(activeWorkspaceTab?.onClose) || Boolean(shellTarget && onCloseShellTerminal),
+		);
 		return () => aoBridge.app.setCloseShellTerminalShortcutEnabled(false);
-	}, [onCloseShellTerminal, shellTarget]);
+	}, [activeWorkspaceTab, onCloseShellTerminal, shellTarget]);
 
 	// Offered only while the agent is idle. The daemon refuses a rollback mid-turn,
 	// and a control that exists to be refused is worse than one that waits.
@@ -859,7 +1105,7 @@ export function ChatWorkspace({
 					configPending={configOptionPending}
 					error={configOptionError}
 					disabled={
-						snapshot.controller.state === "stopped" || configOptionPending || newWorkDisabled
+						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
 					}
 				/>
 			) : null,
@@ -867,6 +1113,7 @@ export function ChatWorkspace({
 			configOptionError,
 			configOptionPending,
 			configOptions,
+			controllerTransitioning,
 			models,
 			newWorkDisabled,
 			onChooseConfigOption,
@@ -900,6 +1147,7 @@ export function ChatWorkspace({
 				<QueuedMessageDock
 					messages={queuedMessages}
 					editingTurnId={queueEdit?.turnId}
+					disabled={Boolean(queueEdit?.clientMessageId)}
 					canSteer={canSteerQueuedMessage}
 					onPromoteQueuedTurn={newWorkDisabled ? undefined : promoteQueuedTurn}
 					onBeginQueuedEdit={
@@ -921,17 +1169,18 @@ export function ChatWorkspace({
 			onReorderQueuedTurns,
 			promoteQueuedTurn,
 			promoteQueuedTurnPendingTurnId,
+			queueEdit?.clientMessageId,
 			queueEdit?.turnId,
 			queuedMessages,
 		],
 	);
 	const composerDraftSeed = useMemo(
-		() => (queueEdit ? { id: queueEdit.turnId, text: queueEdit.text } : undefined),
+		() => (queueEdit ? { id: `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}`, text: queueEdit.text, attachments: queueEdit.attachments, stagedAttachments: queueEdit.stagedAttachments } : undefined),
 		[queueEdit],
 	);
 	// Empty chats center the prompt; once a turn or item exists the composer docks
 	// at the bottom and stays there for the rest of the session.
-	const conversationEmpty = snapshot.items.length === 0 && !turn;
+	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0;
 	const composerDockRef = useRef<HTMLDivElement>(null);
 	const composerCenteredTopRef = useRef<number | null>(null);
 	const composerFlipDyRef = useRef<number | null>(null);
@@ -1022,6 +1271,7 @@ export function ChatWorkspace({
 				session={session}
 				onSessionRenamed={onSessionRenamed}
 				sessionTabAction={sessionTabAction}
+				sessionTabActionWide={sessionTabActionWide}
 				tabStripAction={tabStripAction}
 				workspaceTabActions={workspaceTabActions}
 				workspaceActiveTabKey={workspaceActiveTabKey}
@@ -1082,7 +1332,11 @@ export function ChatWorkspace({
 					className="flex min-h-0 flex-1 flex-col"
 					data-testid="chat-conversation-panel"
 					hidden={reviewerActive || shellActive}
-					inert={reviewerActive || shellActive || agentInputDisabled ? true : undefined}
+					inert={
+						reviewerActive || shellActive || agentInputDisabled || controllerTransitioning
+							? true
+							: undefined
+					}
 					role="tabpanel"
 				>
 					{/* Ordered by what blocks what. A session that needs credentials cannot make
@@ -1115,7 +1369,9 @@ export function ChatWorkspace({
 					>
 						<ChatLinkProvider onLinkOpen={onLinkOpen}>
 							<Timeline
+								key={draftScopeKey}
 								snapshot={snapshot}
+								draftScope={draftScope}
 								hasOlder={hasOlder}
 								loadingOlder={loadingOlder}
 								onLoadOlder={onLoadOlder}
@@ -1134,6 +1390,7 @@ export function ChatWorkspace({
 								activateBranchPending={activateBranchPending}
 								activateBranchError={activateBranchError}
 								newWorkDisabled={newWorkDisabled}
+								localEchos={localEchos}
 							/>
 						</ChatLinkProvider>
 
@@ -1145,27 +1402,37 @@ export function ChatWorkspace({
 							>
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								<ChatComposer
+									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
 									approval={composerApproval}
-									onSend={composerSend}
+									onSend={handleComposerSend}
 									draftSeed={composerDraftSeed}
 									editingQueuedTurnId={queueEdit?.turnId}
+									queuedEditRecovery={Boolean(queueEdit?.clientMessageId)}
 									savingQueuedEditPending={Boolean(
 										queueEdit?.turnId &&
 											editQueuedTurnPendingTurnId === queueEdit.turnId,
 									)}
 									onCancelQueuedEdit={cancelQueuedEdit}
+									onQueuedDraftChange={queueEdit ? changeQueuedDraft : undefined}
+									queuedDraftScope={queueEdit ? draftScope : undefined}
+									onQueuedAttachmentsChange={changeQueuedStagedAttachments}
+									onQueuedRetainedAttachmentsChange={changeQueuedRetainedAttachments}
 									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
-									commandError={commandError}
+									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 									settings={composerSettings}
 									busy={busy}
 									willQueue={Boolean(turn)}
-									disabled={snapshot.controller.state === "stopped" || newWorkDisabled}
+									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
+									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
+									disabledPlaceholder={
+										controllerTransitioning || newWorkDisabled ? "" : undefined
+									}
 									skills={skills}
 									filePaths={filePaths}
 									filePathsTruncated={filePathsTruncated}
 									onStageAttachments={newWorkDisabled ? undefined : onStageAttachments}
-									nativeImages={nativeImages}
+									nativeImages={queueEdit?.clientMessageId ? queueEdit.nativeImages ?? nativeImages : nativeImages}
 									autoFocus={!reviewerActive}
 									autoFocusKey={snapshot.sessionId}
 									// Steering is only meaningful into a turn that is running. A queued turn
@@ -1179,6 +1446,9 @@ export function ChatWorkspace({
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
+									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
+									draftSessionIncarnation={draftScope.incarnation}
+									acceptedClientMessageIds={acceptedClientMessageIds}
 								/>
 							</div>
 						</div>
@@ -1262,9 +1532,6 @@ function runsOf(items: ConversationItem[]): TimelineRun[] {
 			item.activityKind !== "approval" &&
 			item.activityKind !== "user_input" &&
 			item.activityKind !== "error" &&
-			// An edit is a result, not a mechanic. Burying it in a summary would hide
-			// the one kind of activity that changed the user's worktree.
-			item.activityKind !== "file_change" &&
 			// Reasoning only reaches the timeline when the reader asked for it, so
 			// folding it into "Explored 4 files" would answer that request with the
 			// summary they were trying to get past.
@@ -1343,6 +1610,7 @@ function ChatHeader({
 	onTabsKeyDown,
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	workspaceTabActions,
 	workspaceActiveTabKey,
@@ -1369,6 +1637,7 @@ function ChatHeader({
 	onTabsKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
+	sessionTabActionWide?: boolean;
 	tabStripAction?: ReactNode;
 	workspaceTabActions?: ReactNode;
 	workspaceActiveTabKey?: string;
@@ -1437,6 +1706,7 @@ function ChatHeader({
 								onRenamed={onSessionRenamed}
 								session={session}
 								tabAction={sessionTabAction}
+								tabActionWide={sessionTabActionWide}
 							/>
 						) : (
 							<button
@@ -1654,6 +1924,7 @@ function ControllerBanner({
  */
 function Timeline({
 	snapshot,
+	draftScope,
 	hasOlder,
 	loadingOlder,
 	onLoadOlder,
@@ -1672,8 +1943,10 @@ function Timeline({
 	activateBranchPending,
 	activateBranchError,
 	newWorkDisabled,
+	localEchos = [],
 }: {
 	snapshot: ConversationSnapshot;
+	draftScope: ChatDraftScope;
 	hasOlder?: boolean;
 	loadingOlder?: boolean;
 	onLoadOlder?: () => void;
@@ -1684,7 +1957,7 @@ function Timeline({
 	onOpenFiles?: () => void;
 	onOpenFile?: (path: string) => void;
 	retryControl?: ChatRetryControl;
-	onEditHumanMessage?: (turnId: string, text: string) => Promise<unknown> | void;
+	onEditHumanMessage?: ChatWorkspaceProps["onEditMessage"];
 	editPending?: boolean;
 	editBusy?: boolean;
 	editError?: string;
@@ -1692,7 +1965,9 @@ function Timeline({
 	activateBranchPending?: boolean;
 	activateBranchError?: string;
 	newWorkDisabled?: boolean;
+	localEchos?: ConversationLocalEcho[];
 }) {
+	const translateDraft = useChatDraftTranslation();
 	const scroller = useRef<HTMLDivElement>(null);
 	const scrollContent = useRef<HTMLDivElement>(null);
 	const promptSpacer = useRef<HTMLDivElement>(null);
@@ -1705,9 +1980,73 @@ function Timeline({
 	const pinnedRef = useRef(true);
 	const [pinned, setPinned] = useState(true);
 	const [hoveredMarker, setHoveredMarker] = useState<number | null>(null);
-	const [messageEdit, setMessageEdit] = useState<MessageEditDraft>();
-	const isInspectorOpen = useUiStore(
-		(state) => state.inspectorSessions[snapshot.sessionId]?.isOpen ?? true,
+	const hoveredMarkerRef = useRef<number | null>(null);
+	hoveredMarkerRef.current = hoveredMarker;
+	const [messageEdit, setMessageEdit] = useState<MessageEditDraft | undefined>(
+		() => readChatSessionDraft(draftScope).inlineEdit,
+	);
+	const messageEditRef = useRef(messageEdit);
+	const [durableInlineEditDelivery, setDurableInlineEditDelivery] =
+		useState<ChatInlineEditDelivery | undefined>(
+			() => readChatSessionDraft(draftScope).inlineEditDelivery,
+		);
+	const [inlineEditUncertain, setInlineEditUncertain] = useState(
+		() => readChatSessionDraft(draftScope).inlineEditDelivery?.state === "dispatching",
+	);
+	const automaticInlineRecoveryAttempted = useRef<string | undefined>(undefined);
+	const [draftPersistenceError, setDraftPersistenceError] = useState<string>();
+	const [inlineEditRecoveryNotice, setInlineEditRecoveryNotice] = useState<string>();
+	const [inlineEditOutcomeNotice, setInlineEditOutcomeNotice] = useState<string>();
+	const subscribeInlineEditMutation = useCallback(
+		(listener: () => void) => subscribeChatDraftRuntime(draftScope, listener),
+		[draftScope],
+	);
+	const getInlineEditMutation = useCallback(
+		() => getChatInlineEditMutation(draftScope),
+		[draftScope],
+	);
+	const inlineEditMutation = useSyncExternalStore(
+		subscribeInlineEditMutation,
+		getInlineEditMutation,
+		getInlineEditMutation,
+	);
+	const [appliedEditAcceptanceSequence, setAppliedEditAcceptanceSequence] = useState(0);
+	const acceptedEditWaiting = Boolean(
+		inlineEditMutation.accepted &&
+			inlineEditMutation.accepted.sequence > appliedEditAcceptanceSequence,
+	);
+	const acceptedEditClearFailed = inlineEditMutation.accepted?.result.ok === false;
+	const inlineEditPending = Boolean(editPending) || inlineEditMutation.pending || acceptedEditWaiting;
+	const inlineEditLocked = inlineEditPending || Boolean(durableInlineEditDelivery);
+	const inlineEditSendBlocked =
+		inlineEditPending || (acceptedEditClearFailed && !durableInlineEditDelivery);
+	const inlineEditRecoveryLabel = durableInlineEditDelivery
+		? durableInlineEditDelivery.state === "accepted"
+			? "chat.draft.clearEdit"
+			: "chat.draft.retryEdit"
+		: undefined;
+	const canAbandonInlineEditRecovery = Boolean(
+		inlineEditUncertain && durableInlineEditDelivery?.state === "dispatching",
+	);
+	useEffect(() => {
+		setChatDraftBoundary(
+			snapshot.sessionId,
+			"inline-edit",
+			[
+				...(draftPersistenceError ? (["persistence-failed"] as const) : []),
+			],
+		);
+	}, [draftPersistenceError, snapshot.sessionId]);
+	useEffect(
+		() => () => setChatDraftBoundary(snapshot.sessionId, "inline-edit", undefined),
+		[snapshot.sessionId],
+	);
+	// The inspector changes the minimap's visibility, but it must not cause this
+	// entire timeline to rerender. A live conversation can contain hundreds of
+	// DOM nodes, and inspector toggles are otherwise a broad synchronous commit.
+	// Keep that small accessibility/interaction boundary imperative instead.
+	const inspectorOpenRef = useRef(
+		useUiStore.getState().inspectorSessions[snapshot.sessionId]?.isOpen ?? true,
 	);
 	const turn = activeTurn(snapshot);
 	const [scrollbar, setScrollbar] = useState({
@@ -1721,7 +2060,11 @@ function Timeline({
 			visible: boolean;
 		}>,
 	});
-	const minimapEnabled = scrollbar.visible && !isInspectorOpen;
+	// Show turn ticks whenever the inspector is closed and there are human
+	// prompts — not only when the transcript overflows. Closing the rail
+	// widens chat; shorter histories (common on non-Codex harnesses) often
+	// stop overflowing and used to lose the minimap exactly then.
+	const minimapEnabled = scrollbar.markers.length > 0;
 	const queued = useMemo(() => queuedTurnIds(snapshot), [snapshot]);
 	const decide = useStableCallback(onDecide);
 	const resolveInput = useStableCallback(onResolveInput);
@@ -1806,16 +2149,40 @@ function Timeline({
 		snapshot.turns,
 	]);
 
-	// An edit draft belongs to the branch where it began. A replacement branch can
-	// become active even when the provider send ends ambiguously; once that durable
-	// state arrives, the old prompt is no longer the message being edited.
-	useEffect(() => setMessageEdit(undefined), [snapshot.activeBranchId, snapshot.sessionId]);
+	// An ordinary branch change hides an edit that belongs to the previous branch.
+	// An unresolved delivery is different: its exact persisted editor owns the only
+	// Retry/Abandon controls, so keep it actionable when an ambiguous send activates
+	// and refetches the replacement branch.
 	useEffect(() => {
-		if (isInspectorOpen) {
-			drag.current = null;
-			setHoveredMarker(null);
-		}
-	}, [isInspectorOpen]);
+		if (readChatSessionDraft(draftScope).inlineEditDelivery) return;
+		setMessageEdit(undefined);
+	}, [draftScope, snapshot.activeBranchId, snapshot.sessionId]);
+	useEffect(() => {
+		const setInspectorOpen = (isOpen: boolean) => {
+			inspectorOpenRef.current = isOpen;
+			const track = scrollTrack.current;
+			if (track) {
+				track.dataset.inspectorOpen = String(isOpen);
+				track.setAttribute("aria-hidden", String(isOpen));
+				track.tabIndex = minimapEnabled && !isOpen ? 0 : -1;
+				track.classList.toggle("cursor-pointer", minimapEnabled && !isOpen);
+				track.classList.toggle("pointer-events-none", !minimapEnabled || isOpen);
+				track.classList.toggle("opacity-100", minimapEnabled && !isOpen);
+				track.classList.toggle("opacity-0", !minimapEnabled || isOpen);
+				if (isOpen && document.activeElement === track) track.blur();
+			}
+			if (isOpen) {
+				drag.current = null;
+				if (hoveredMarkerRef.current !== null) setHoveredMarker(null);
+			}
+		};
+		setInspectorOpen(useUiStore.getState().inspectorSessions[snapshot.sessionId]?.isOpen ?? true);
+		return useUiStore.subscribe((state, previous) => {
+			const currentOpen = state.inspectorSessions[snapshot.sessionId]?.isOpen ?? true;
+			const previousOpen = previous.inspectorSessions[snapshot.sessionId]?.isOpen ?? true;
+			if (currentOpen !== previousOpen) setInspectorOpen(currentOpen);
+		});
+	}, [minimapEnabled, snapshot.sessionId]);
 	const consumedRetrySources = useMemo(() => retrySourceTurnIds(snapshot), [snapshot]);
 	const retryableTurns = useMemo(
 		() =>
@@ -1836,30 +2203,266 @@ function Timeline({
 		pinnedRef.current = pinned;
 	}, [pinned]);
 
-	const startMessageEdit = useCallback(
-		(message: ConversationMessage) => {
-			if (!message.turnId) return;
-			setMessageEdit({
-				turnId: message.turnId,
-				text: message.text,
-				content: message.content ?? [],
-				reconstructedContext: reconstructedTurns.has(message.turnId),
-			});
-		},
-		[reconstructedTurns],
-	);
-	const updateMessageEdit = useCallback((text: string) => {
-		setMessageEdit((current) => (current ? { ...current, text } : current));
+	useEffect(() => {
+		const restored = readChatSessionDraft(draftScope);
+		messageEditRef.current = restored.inlineEdit;
+		setMessageEdit(restored.inlineEdit);
+		setDurableInlineEditDelivery(restored.inlineEditDelivery);
+		setInlineEditUncertain(restored.inlineEditDelivery?.state === "dispatching");
+		setDraftPersistenceError(undefined);
+		setInlineEditRecoveryNotice(
+			restored.inlineEditDelivery
+				? restored.inlineEditDelivery.state === "accepted"
+					? "chat.draft.acceptedEdit"
+					: "chat.draft.editRestart"
+				: undefined,
+		);
+		setAppliedEditAcceptanceSequence(0);
+		setInlineEditOutcomeNotice(undefined);
+		automaticInlineRecoveryAttempted.current = undefined;
+	}, [draftScope]);
+
+	const applyAcceptedInlineEditResult = useCallback((result: DraftClearResult) => {
+		setDurableInlineEditDelivery(result.draft.inlineEditDelivery);
+		if (!result.ok) {
+			setInlineEditRecoveryNotice(
+				"chat.draft.acceptedEdit",
+			);
+			setDraftPersistenceError(
+				"chat.draft.clearEditFailed",
+			);
+			return;
+		}
+		setDraftPersistenceError(undefined);
+		setInlineEditRecoveryNotice(undefined);
+		if (!result.cleared) return;
+		messageEditRef.current = undefined;
+		setMessageEdit(undefined);
 	}, []);
-	const cancelMessageEdit = useCallback(() => setMessageEdit(undefined), []);
+
+	const acceptAndClearInlineEditDelivery = useCallback(
+		(delivery: ChatInlineEditDelivery, mutationToken?: symbol) => {
+			const accepted = markChatInlineEditDeliveryAccepted(
+				draftScope,
+				delivery.clientMessageId,
+				delivery.revision,
+			);
+			if (!accepted.ok) {
+				if (mutationToken) {
+					cancelChatInlineEditMutation(draftScope, mutationToken);
+				}
+				setDurableInlineEditDelivery(delivery);
+				setDraftPersistenceError(
+					"chat.draft.recordEditFailed",
+				);
+				return false;
+			}
+			setDurableInlineEditDelivery(
+				accepted.draft.inlineEditDelivery ?? { ...delivery, state: "accepted" },
+			);
+			const result = clearAcceptedChatInlineEdit(draftScope, delivery.revision);
+			if (mutationToken) {
+				finishChatInlineEditMutation(
+					draftScope,
+					mutationToken,
+					delivery.revision,
+					result,
+				);
+				return result.ok;
+			}
+			applyAcceptedInlineEditResult(result);
+			return result.ok;
+		},
+		[applyAcceptedInlineEditResult, draftScope],
+	);
+
+	const abandonUncertainInlineEdit = useCallback(() => {
+		if (!durableInlineEditDelivery) return;
+		const result = clearUncertainChatInlineEditDelivery(
+			draftScope,
+			durableInlineEditDelivery.clientMessageId,
+			durableInlineEditDelivery.revision,
+		);
+		setDurableInlineEditDelivery(result.draft.inlineEditDelivery);
+		if (!result.ok) {
+			setDraftPersistenceError(
+				"chat.draft.abandonEditFailed",
+			);
+			return;
+		}
+		setInlineEditUncertain(false);
+		setDraftPersistenceError(undefined);
+		setInlineEditRecoveryNotice(undefined);
+		setInlineEditOutcomeNotice(
+			"chat.draft.abandonedEdit",
+		);
+	}, [draftScope, durableInlineEditDelivery]);
+
+	useEffect(() => {
+		if (!durableInlineEditDelivery || durableInlineEditDelivery.state !== "accepted") return;
+		if (
+			automaticInlineRecoveryAttempted.current ===
+			durableInlineEditDelivery.clientMessageId
+		) return;
+		automaticInlineRecoveryAttempted.current = durableInlineEditDelivery.clientMessageId;
+		acceptAndClearInlineEditDelivery(durableInlineEditDelivery);
+	}, [acceptAndClearInlineEditDelivery, durableInlineEditDelivery]);
+
+	useEffect(() => {
+		const accepted = inlineEditMutation.accepted;
+		if (!accepted || accepted.sequence <= appliedEditAcceptanceSequence) return;
+		applyAcceptedInlineEditResult(accepted.result);
+		setAppliedEditAcceptanceSequence(accepted.sequence);
+		acknowledgeChatInlineEditMutation(draftScope, accepted.sequence);
+	}, [
+		appliedEditAcceptanceSequence,
+		applyAcceptedInlineEditResult,
+		draftScope,
+		inlineEditMutation.accepted,
+	]);
+
+	const startMessageEdit = useCallback((message: ConversationMessage) => {
+		if (!message.turnId || inlineEditLocked) return;
+		const result = writeChatInlineEdit(draftScope, {
+			turnId: message.turnId,
+			text: message.text,
+			content: message.content ?? [],
+			reconstructedContext: reconstructedTurns.has(message.turnId),
+		});
+		const next = result.draft.inlineEdit;
+		if (!next) return;
+		messageEditRef.current = next;
+		setMessageEdit(next);
+		setInlineEditRecoveryNotice(undefined);
+		setInlineEditOutcomeNotice(undefined);
+		setDraftPersistenceError(
+			result.ok
+				? undefined
+				: "chat.draft.editSaveFailed",
+		);
+	}, [draftScope, inlineEditLocked, reconstructedTurns]);
+	const updateMessageEdit = useCallback((text: string) => {
+		if (inlineEditLocked) return;
+		const current = messageEditRef.current;
+		if (!current) return;
+		const result = writeChatInlineEdit(draftScope, {
+			turnId: current.turnId,
+			text,
+			content: current.content,
+			reconstructedContext: current.reconstructedContext,
+		});
+		const next = result.draft.inlineEdit;
+		if (!next) return;
+		messageEditRef.current = next;
+		setMessageEdit(next);
+		setInlineEditRecoveryNotice(undefined);
+		setInlineEditOutcomeNotice(undefined);
+		setDraftPersistenceError(
+			result.ok
+				? undefined
+				: "chat.draft.editSaveFailed",
+		);
+	}, [draftScope, inlineEditLocked]);
+	const cancelMessageEdit = useCallback(() => {
+		if (inlineEditLocked) return;
+		const result = writeChatInlineEdit(draftScope, undefined);
+		if (!result.ok) {
+			setDraftPersistenceError(
+				"chat.draft.editDiscardFailed",
+			);
+			return;
+		}
+		messageEditRef.current = undefined;
+		setMessageEdit(undefined);
+		setInlineEditRecoveryNotice(undefined);
+		setInlineEditOutcomeNotice(undefined);
+		setDraftPersistenceError(undefined);
+	}, [draftScope, inlineEditLocked]);
 	const submitMessageEdit = useCallback(
 		async (text: string) => {
-			const current = messageEdit;
-			if (!current || !onEditHumanMessage) return;
-			await editHumanMessage(current.turnId, text);
-			setMessageEdit((active) => (active?.turnId === current.turnId ? undefined : active));
+			const current = messageEditRef.current;
+			if (
+				!current ||
+				!onEditHumanMessage ||
+				inlineEditPending ||
+				(!durableInlineEditDelivery &&
+					getChatInlineEditMutation(draftScope).accepted?.result.ok === false)
+			) return;
+				const prepared = prepareChatInlineEditDelivery(draftScope, {
+					turnId: current.turnId,
+					text,
+					content: current.content,
+					reconstructedContext: current.reconstructedContext,
+					clientMessageId:
+					durableInlineEditDelivery?.clientMessageId ?? crypto.randomUUID(),
+			});
+			if (!prepared.ok) {
+				setDraftPersistenceError(
+					"chat.draft.prepareEditFailed",
+				);
+				return;
+			}
+			const delivery = prepared.mutation;
+			setInlineEditUncertain(false);
+			setDurableInlineEditDelivery(delivery);
+			setDraftPersistenceError(undefined);
+			setInlineEditRecoveryNotice(
+				delivery.state === "accepted"
+					? "chat.draft.acceptedEdit"
+					: undefined,
+			);
+			if (delivery.state === "accepted") {
+				acceptAndClearInlineEditDelivery(delivery);
+				return;
+			}
+			const mutationToken = beginChatInlineEditMutation(draftScope);
+			if (!mutationToken) return;
+			let mutationFinished = false;
+			try {
+				const outcome = await editHumanMessage(
+					delivery.turnId,
+					delivery.requestText,
+					delivery.clientMessageId,
+				);
+				if (outcome?.status === "not-accepted") {
+					const cleared = clearRejectedChatInlineEditDelivery(
+						draftScope,
+							delivery.clientMessageId,
+							delivery.revision,
+						);
+						setDurableInlineEditDelivery(cleared.draft.inlineEditDelivery);
+						if (cleared.ok) {
+							setDraftPersistenceError(undefined);
+							setInlineEditRecoveryNotice(undefined);
+							setInlineEditOutcomeNotice(outcome.reason);
+						} else {
+						setDraftPersistenceError(
+							"chat.draft.clearRefusedEditFailed",
+						);
+					}
+					return;
+				}
+				acceptAndClearInlineEditDelivery(delivery, mutationToken);
+				mutationFinished = true;
+			} catch {
+				setInlineEditUncertain(true);
+				setInlineEditRecoveryNotice(
+					"chat.draft.editUncertain",
+				);
+			} finally {
+				if (!mutationFinished) {
+					cancelChatInlineEditMutation(draftScope, mutationToken);
+				}
+			}
 		},
-		[editHumanMessage, messageEdit, onEditHumanMessage],
+		[
+			acceptAndClearInlineEditDelivery,
+			durableInlineEditDelivery,
+			editHumanMessage,
+			inlineEditPending,
+			onEditHumanMessage,
+			draftScope,
+		],
 	);
 
 	const readable = useMemo(() => readableItems(snapshot), [snapshot]);
@@ -1898,12 +2501,40 @@ function Timeline({
 		lastSeenLatestSequence.current = snapshot.latestSequence;
 		if (added.size > 0) setNewHumanMessageIds(added);
 	}, [items, snapshot.latestSequence]);
+	const localItems = useMemo(() => {
+		return localEchos
+			.filter(
+				(echo) =>
+					!items.some(
+						(item) =>
+							item.kind === "message" &&
+							item.role === "user" &&
+							item.origin === "human" &&
+							((echo.turnId && item.turnId === echo.turnId) ||
+								(!echo.turnId && item.text === echo.text && item.createdAt >= echo.createdAt)),
+					),
+			)
+			.map((echo, index): ConversationMessage => ({
+				kind: "message",
+				id: `local:${echo.clientMessageId}`,
+				turnId: `local:${echo.clientMessageId}`,
+				sequence: snapshot.latestSequence + index + 0.01,
+				revision: 0,
+				role: "user",
+				origin: "human",
+				text: echo.text,
+				streaming: false,
+				delivery: echo.turnId ? "accepted" : "sending",
+				createdAt: echo.createdAt,
+			}));
+	}, [items, localEchos, snapshot.latestSequence]);
+	const timelineItems = useStableList([...items, ...localItems], itemKey, sameContent);
 	const grouped = useMemo(() => {
 		const hiddenTurns = hiddenTimelineTurnIds(snapshot);
-		return groupByTurn({ ...snapshot, items }).filter(
+		return groupByTurn({ ...snapshot, items: timelineItems }).filter(
 			(group) => !group.turnId || !hiddenTurns.has(group.turnId),
 		);
-	}, [snapshot, items]);
+	}, [snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
 	const navigableGroups = useMemo(() => groups.filter(groupHasHumanPrompt), [groups]);
 	const previews = useMemo(() => navigableGroups.map(groupPreview), [navigableGroups]);
@@ -2018,6 +2649,17 @@ function Timeline({
 		updateScrollbar();
 	}, [syncPromptSpacer, updateScrollbar]);
 
+	// A disclosure animation changes the content box but is not new conversation
+	// content. Re-measure it without re-pinning the viewport to the bottom; doing
+	// that during a height animation makes the whole chat jump under the reader.
+	const syncScrollMetrics = useCallback(() => {
+		anchorGeometry.current = null;
+		// UI-only disclosure resizes must not rewrite the trailing spacer. Doing so
+		// every animation frame changes the scroll range and causes a small jerk when
+		// a panel collapses near the bottom of the viewport.
+		updateScrollbar();
+	}, [updateScrollbar]);
+
 	useEffect(() => {
 		syncScrollLayout();
 	}, [pinned, snapshot.latestSequence, groups.length, messageEdit?.turnId, syncScrollLayout]);
@@ -2040,11 +2682,11 @@ function Timeline({
 	useEffect(() => {
 		syncScrollLayout();
 		if (typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(syncScrollLayout);
+		const observer = new ResizeObserver(syncScrollMetrics);
 		if (scroller.current) observer.observe(scroller.current);
 		if (scrollContent.current) observer.observe(scrollContent.current);
 		return () => observer.disconnect();
-	}, [groups.length, syncScrollLayout]);
+	}, [groups.length, syncScrollMetrics]);
 
 	function onScroll() {
 		const node = scroller.current;
@@ -2066,7 +2708,7 @@ function Timeline({
 	}
 
 	function onScrollbarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const track = scrollTrack.current;
 		const node = scroller.current;
 		if (!track || !node) return;
@@ -2086,7 +2728,7 @@ function Timeline({
 	}
 
 	function onScrollbarPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const active = drag.current;
 		const node = scroller.current;
 		const track = scrollTrack.current;
@@ -2121,7 +2763,7 @@ function Timeline({
 	}
 
 	function onScrollbarWheel(event: ReactWheelEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const node = scroller.current;
 		if (!node) return;
 		event.preventDefault();
@@ -2130,7 +2772,7 @@ function Timeline({
 	}
 
 	function onScrollbarKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const node = scroller.current;
 		if (!node) return;
 		const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
@@ -2149,12 +2791,19 @@ function Timeline({
 		updateScrollbar();
 	}
 
-	if (items.length === 0 && !messageEdit && !turn) {
+	if (timelineItems.length === 0 && !messageEdit && !turn) {
 		return null;
 	}
 
 	return (
-		<div className="relative min-h-0 flex-1">
+		<div
+			className="relative min-h-0 flex-1"
+			data-testid="chat-timeline"
+			// The timeline is a fixed-size flex item with its own scroll viewport.
+			// Isolating its layout and paint means Lexical selection/composer updates
+			// cannot invalidate the complete mounted conversation history or shell.
+			style={{ contain: "layout paint" }}
+		>
 			<div
 				ref={scroller}
 				onScroll={onScroll}
@@ -2222,10 +2871,18 @@ function Timeline({
 									onStartMessageEdit={startMessageEdit}
 									onUpdateMessageEdit={updateMessageEdit}
 									onCancelMessageEdit={cancelMessageEdit}
+									onAbandonEditRecovery={
+										canAbandonInlineEditRecovery ? abandonUncertainInlineEdit : undefined
+									}
 									onSubmitMessageEdit={submitMessageEdit}
-									editPending={editPending}
+									editPending={inlineEditPending}
+									editSendBlocked={inlineEditSendBlocked}
+									editRecoveryLabel={translateDraft(inlineEditRecoveryLabel)}
 									editBusy={Boolean(editBusy || newWorkDisabled)}
-									editError={editError}
+									editError={translateDraft(editError ??
+										draftPersistenceError ??
+										inlineEditRecoveryNotice ??
+										inlineEditOutcomeNotice)}
 									branchPoints={branchPoints}
 									editableTurns={editableTurns}
 									newHumanMessageIds={newHumanMessageIds}
@@ -2250,12 +2907,21 @@ function Timeline({
 							<HumanMessageEditor
 								text={messageEdit.text}
 								content={messageEdit.content}
-								pending={Boolean(editPending)}
+								pending={inlineEditPending}
+								locked={Boolean(inlineEditRecoveryLabel)}
+								recoveryLabel={translateDraft(inlineEditRecoveryLabel)}
+								sendBlocked={inlineEditSendBlocked}
 								busy={Boolean(editBusy || newWorkDisabled)}
-								error={editError}
+								error={translateDraft(editError ??
+									draftPersistenceError ??
+									inlineEditRecoveryNotice ??
+									inlineEditOutcomeNotice)}
 								reconstructedContext={messageEdit.reconstructedContext}
 								onDraftChange={updateMessageEdit}
 								onCancel={cancelMessageEdit}
+								onAbandonRecovery={
+									canAbandonInlineEditRecovery ? abandonUncertainInlineEdit : undefined
+								}
 								onSend={submitMessageEdit}
 							/>
 						</div>
@@ -2271,12 +2937,13 @@ function Timeline({
 				</div>
 			</div>
 
-			<div
-				ref={scrollTrack}
-				role="scrollbar"
-				data-testid="chat-conversation-minimap"
-				tabIndex={minimapEnabled ? 0 : -1}
-				aria-hidden={isInspectorOpen || undefined}
+				<div
+					ref={scrollTrack}
+					role="scrollbar"
+					data-testid="chat-conversation-minimap"
+					data-inspector-open={inspectorOpenRef.current}
+					tabIndex={minimapEnabled && !inspectorOpenRef.current ? 0 : -1}
+					aria-hidden={inspectorOpenRef.current || undefined}
 				aria-label="Conversation scrollbar"
 				aria-orientation="vertical"
 				aria-valuemin={0}
@@ -2289,7 +2956,7 @@ function Timeline({
 				onWheel={onScrollbarWheel}
 				onKeyDown={onScrollbarKeyDown}
 				onFocus={() => {
-					if (!minimapEnabled || scrollbar.markers.length === 0) return;
+						if (!minimapEnabled || inspectorOpenRef.current || scrollbar.markers.length === 0) return;
 					setHoveredMarker(
 						Math.min(
 							scrollbar.markers.length - 1,
@@ -2299,13 +2966,16 @@ function Timeline({
 				}}
 				onBlur={() => setHoveredMarker(null)}
 				onPointerLeave={() => setHoveredMarker(null)}
-				className={cn(
-					"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-logo-accent/60",
-					minimapEnabled ? "cursor-pointer opacity-100" : "pointer-events-none opacity-0",
-				)}
-			>
-				<div className="absolute inset-0 cursor-grab group-active/scroll:cursor-grabbing">
-					{minimapEnabled
+					className={cn(
+						"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-logo-accent/60",
+						minimapEnabled && !inspectorOpenRef.current
+							? "cursor-pointer opacity-100"
+							: "pointer-events-none opacity-0",
+						"data-[inspector-open=true]:pointer-events-none data-[inspector-open=true]:opacity-0",
+					)}
+				>
+					<div className="absolute inset-0 cursor-grab group-active/scroll:cursor-grabbing">
+						{minimapEnabled && !inspectorOpenRef.current
 						? scrollbar.markers.map((marker, index) => {
 								const distance =
 									hoveredMarker === null
@@ -2395,8 +3065,11 @@ const TurnGroup = memo(function TurnGroup({
 	onStartMessageEdit,
 	onUpdateMessageEdit,
 	onCancelMessageEdit,
+	onAbandonEditRecovery,
 	onSubmitMessageEdit,
 	editPending,
+	editSendBlocked,
+	editRecoveryLabel,
 	editBusy,
 	editError,
 	branchPoints,
@@ -2418,13 +3091,16 @@ const TurnGroup = memo(function TurnGroup({
 	onRollback: (turnId: string) => void;
 	onOpenFiles?: () => void;
 	onOpenFile?: (path: string) => void;
-	onEditHumanMessage?: (turnId: string, text: string) => Promise<unknown> | void;
+	onEditHumanMessage?: ChatWorkspaceProps["onEditMessage"];
 	messageEdit?: MessageEditDraft;
 	onStartMessageEdit: (message: ConversationMessage) => void;
 	onUpdateMessageEdit: (text: string) => void;
 	onCancelMessageEdit: () => void;
+	onAbandonEditRecovery?: () => void;
 	onSubmitMessageEdit: (text: string) => Promise<void>;
 	editPending?: boolean;
+	editSendBlocked?: boolean;
+	editRecoveryLabel?: string;
 	editBusy?: boolean;
 	editError?: string;
 	branchPoints: Map<string, ConversationBranchPoint>;
@@ -2478,8 +3154,11 @@ const TurnGroup = memo(function TurnGroup({
 						onStartMessageEdit={onStartMessageEdit}
 						onUpdateMessageEdit={onUpdateMessageEdit}
 						onCancelMessageEdit={onCancelMessageEdit}
+						onAbandonEditRecovery={onAbandonEditRecovery}
 						onSubmitMessageEdit={onSubmitMessageEdit}
 						editPending={editPending}
+						editSendBlocked={editSendBlocked}
+						editRecoveryLabel={editRecoveryLabel}
 						editBusy={editBusy}
 						editError={editError}
 						branchPoints={branchPoints}
@@ -2507,12 +3186,11 @@ const TurnGroup = memo(function TurnGroup({
 			    list that grows both change while the reader watches, and at the end of a
 			    turn neither pushes anything the reader is already looking at. */}
 			{group.plan ? <TurnPlan plan={group.plan} live={group.live} /> : null}
-			{/* Above the outcome divider: the changed files are part of what the turn
-			    did, and belong inside it rather than after it closes. */}
-			{group.diff ? (
+			{/* Changed-files review is a settled result, not live activity. Keep it
+			    below the completed assistant response and its bottom action row. */}
+			{group.diff && group.outcome?.state === "completed" && copyableMessageId ? (
 				<TurnChangedFiles
 					diff={group.diff}
-					live={group.live}
 					items={group.items}
 					onReview={onOpenFiles}
 					onOpenFile={onOpenFile}
@@ -2643,8 +3321,11 @@ function TimelineItem({
 	onStartMessageEdit,
 	onUpdateMessageEdit,
 	onCancelMessageEdit,
+	onAbandonEditRecovery,
 	onSubmitMessageEdit,
 	editPending,
+	editSendBlocked,
+	editRecoveryLabel,
 	editBusy,
 	editError,
 	branchPoints,
@@ -2664,13 +3345,16 @@ function TimelineItem({
 	apiBaseUrl: string;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: ChatWorkspaceProps["onResolveInput"];
-	onEditHumanMessage?: (turnId: string, text: string) => Promise<unknown> | void;
+	onEditHumanMessage?: ChatWorkspaceProps["onEditMessage"];
 	messageEdit?: MessageEditDraft;
 	onStartMessageEdit: (message: ConversationMessage) => void;
 	onUpdateMessageEdit: (text: string) => void;
 	onCancelMessageEdit: () => void;
+	onAbandonEditRecovery?: () => void;
 	onSubmitMessageEdit: (text: string) => Promise<void>;
 	editPending?: boolean;
+	editSendBlocked?: boolean;
+	editRecoveryLabel?: string;
 	editBusy?: boolean;
 	editError?: string;
 	branchPoints: Map<string, ConversationBranchPoint>;
@@ -2726,7 +3410,10 @@ function TimelineItem({
 					onEditStart={editAvailable ? () => onStartMessageEdit(item) : undefined}
 					onEditDraftChange={onUpdateMessageEdit}
 					onEditCancel={onCancelMessageEdit}
+					onEditAbandonRecovery={onAbandonEditRecovery}
 					editPending={editPending}
+					editSendBlocked={editSendBlocked}
+					editRecoveryLabel={editRecoveryLabel}
 					editBusy={editBusy}
 					editError={editError}
 					branchPoint={item.turnId ? branchPoints.get(item.turnId) : undefined}

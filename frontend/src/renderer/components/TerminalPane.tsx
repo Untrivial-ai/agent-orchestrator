@@ -51,7 +51,7 @@ type TerminalPaneProps = {
 	onChangeFontSize?: (delta: number) => void;
 	isFullscreen?: boolean;
 	/** Enter or exit fullscreen for the terminal pane that owns this xterm. */
-	onToggleFullscreen?: () => void;
+	onToggleFullscreen?: () => void | Promise<void>;
 	/** Refuse agent PTY input while a controller transition owns the source. */
 	inputDisabled?: boolean;
 	/** Focus the terminal when an in-flight controller asks for human input. */
@@ -191,16 +191,19 @@ function setTerminalPhase(
 	}
 	if (interactive) {
 		entry.container.style.visibility = "";
+		entry.container.style.contentVisibility = "";
 	} else {
 		entry.container.style.visibility = "hidden";
+		// `visibility: hidden` still lays out the complete xterm subtree. Parked
+		// terminals retain their buffer and keep accepting output, but are never
+		// fitted while hidden, so Chromium can skip their expensive DOM layout
+		// until the container returns to the active pane.
+		entry.container.style.contentVisibility = "hidden";
 	}
 }
 
 function parkTerminal(entry: CachedTerminalEntry, parking: HTMLDivElement): void {
 	entry.activationId += 1;
-	const rect = entry.container.getBoundingClientRect();
-	if (rect.width > 0) entry.container.style.width = `${rect.width}px`;
-	if (rect.height > 0) entry.container.style.height = `${rect.height}px`;
 	blurTerminal(entry.container);
 	setTerminalPhase(entry, "parked");
 	parking.appendChild(entry.container);
@@ -210,10 +213,10 @@ function showTerminal(entry: CachedTerminalEntry, slot: HTMLDivElement): void {
 	entry.activationId += 1;
 	// Do not hide a retained terminal while it crosses xterm's two paint-frame
 	// preparation cycle: that made every return to a tab flash blank.
-	setTerminalPhase(entry, "visible");
 	entry.container.style.width = "100%";
 	entry.container.style.height = "100%";
 	slot.appendChild(entry.container);
+	setTerminalPhase(entry, "visible");
 }
 
 function CachedTerminalPortal({

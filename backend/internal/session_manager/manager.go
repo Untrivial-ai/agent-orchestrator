@@ -1437,6 +1437,14 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	return merged
 }
 
+func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
+	merged := effectiveAgentConfig(rec.Kind, cfg)
+	if rec.Harness == domain.HarnessClaudeCode {
+		merged.Model = rec.Metadata.Model
+	}
+	return merged
+}
+
 func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	if override.Model != "" {
 		base.Model = override.Model
@@ -2003,7 +2011,7 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 	// the workspace landed has neither WorkspacePath nor Branch, and there is
 	// nothing meaningful to restore from. Surface this as a typed 409 instead of
 	// letting workspace.Restore fail with an opaque wrapped error.
-	if meta.WorkspacePath == "" || (meta.Branch == "" && projectKindForSession(project, rec.ProjectID) != domain.ProjectKindScratch) {
+	if meta.WorkspacePath == "" || (meta.Branch == "" && project.Kind.WithDefault() != domain.ProjectKindScratch) {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrIncompleteHandle)
 	}
 	// Resumability is decided inside restoreArgv, not here. A promptless session
@@ -2196,7 +2204,7 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	meta := rec.Metadata
 	mode := domain.NormalizeSessionMode(rec.Mode)
 	if meta.WorkspacePath == "" ||
-		(meta.Branch == "" && projectKindForSession(project, rec.ProjectID) != domain.ProjectKindScratch) ||
+		(meta.Branch == "" && project.Kind.WithDefault() != domain.ProjectKindScratch) ||
 		(mode != domain.SessionModeChat && meta.RuntimeHandleID == "") {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 	}
@@ -2256,7 +2264,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 
 	// Restore resolves the project model while retaining this session's pinned
 	// permission policy independently of future project defaults.
-	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	agentConfig := restoredAgentConfig(rec, project.Config)
 	if rec.Metadata.Permissions != "" {
 		agentConfig.Permissions = rec.Metadata.Permissions
 	}
@@ -2567,10 +2575,16 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 	// Legacy Scratch sessions were intentionally one-shot. Standalone sessions
 	// also use the plain-directory workspace adapter, but unlike Scratch they
 	// are durable and must be relaunched after the daemon restarts.
-	if projectKind == domain.ProjectKindScratch && rec.ProjectID != "" {
+	if projectKind == domain.ProjectKindScratch && rec.ProjectID != "" && !isChat {
 		return m.lcm.MarkTerminated(ctx, rec.ID)
 	}
-	ws, restoreErr := m.restoreSessionWorkspace(ctx, project, rec)
+	var ws ports.WorkspaceInfo
+	var restoreErr error
+	if projectKind == domain.ProjectKindScratch {
+		ws = workspaceInfo(rec)
+	} else {
+		ws, restoreErr = m.restoreSessionWorkspace(ctx, project, rec)
+	}
 	if restoreErr == nil {
 		_, relaunchErr := m.relaunchRestoredSession(ctx, rec, project, ws)
 		if relaunchErr == nil {
@@ -3015,7 +3029,7 @@ func (m *Manager) markSessionWorktreesActive(ctx context.Context, rows []domain.
 }
 
 func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) (ports.WorkspaceInfo, error) {
-	if projectKindForSession(project, rec.ProjectID) != domain.ProjectKindWorkspace {
+	if project.Kind.WithDefault() != domain.ProjectKindWorkspace {
 		ws, err := m.workspace.Restore(ctx, ports.WorkspaceConfig{
 			ProjectID:     rec.ProjectID,
 			SessionID:     rec.ID,
@@ -3630,8 +3644,9 @@ type CleanupSkip struct {
 
 // CleanupResult reports what Cleanup reclaimed and what it preserved.
 type CleanupResult struct {
-	Cleaned []domain.SessionID
-	Skipped []CleanupSkip
+	Cleaned     []domain.SessionID
+	AlreadyGone []domain.SessionID
+	Skipped     []CleanupSkip
 }
 
 // Cleanup reclaims the workspaces of terminal sessions in a project. A workspace
@@ -3642,7 +3657,11 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	if err != nil {
 		return CleanupResult{}, fmt.Errorf("cleanup %s: %w", project, err)
 	}
-	result := CleanupResult{Cleaned: make([]domain.SessionID, 0, len(recs)), Skipped: []CleanupSkip{}}
+	result := CleanupResult{
+		Cleaned:     make([]domain.SessionID, 0, len(recs)),
+		AlreadyGone: []domain.SessionID{},
+		Skipped:     []CleanupSkip{},
+	}
 	for _, rec := range recs {
 		if !rec.IsTerminated {
 			continue
@@ -3656,11 +3675,16 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		if h := runtimeHandle(rec.Metadata); h.ID != "" {
 			_ = m.runtime.Destroy(ctx, h) // best effort; usually already gone
 		}
-		if reason := m.cleanupOne(ctx, rec, ws); reason != "" {
+		reclaim, reason := m.cleanupOne(ctx, rec, ws)
+		if reason != "" {
 			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: reason})
 			continue
 		}
 		m.cleanupSystemPromptDir(rec.ID)
+		if reclaim == ports.WorkspaceReclaimAlreadyAbsent {
+			result.AlreadyGone = append(result.AlreadyGone, rec.ID)
+			continue
+		}
 		result.Cleaned = append(result.Cleaned, rec.ID)
 	}
 	return result, nil
@@ -3674,43 +3698,50 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 // left alone this run (Cleanup records it in Skipped and can retry on a later
 // call) — most commonly because a scoped shell terminal could not be
 // confirmed closed, so reclaiming would pull the ground out from under it.
-func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) (skipReason string) {
+func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) (ports.WorkspaceReclaim, string) {
 	release, closeErr := m.beginShellTerminalTeardown(ctx, rec.ID)
 	if closeErr != nil {
 		m.logger.Warn("cleanup: shell terminal still open", "sessionID", rec.ID, "error", closeErr)
-		return "shell terminal still open"
+		return ports.WorkspaceReclaimRemoved, "shell terminal still open"
 	}
 	if release != nil {
 		defer release()
 	}
 	if err := m.importAttachments(ctx, rec); err != nil {
 		m.logger.Warn("cleanup: attachment preservation failed", "sessionID", rec.ID, "error", err)
-		return "attachment preservation failed"
+		return ports.WorkspaceReclaimRemoved, "attachment preservation failed"
 	}
 
 	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
 		m.logger.Warn("cleanup: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
-		return "workspace teardown failed"
+		return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
 	} else if ok {
 		if _, err := m.destroyWorkspaceProjectRows(ctx, rows); err != nil {
 			if !workspacePreserved(err) {
 				m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
 			}
-			return cleanupSkipReason(err)
+			return ports.WorkspaceReclaimRemoved, cleanupSkipReason(err)
 		}
 		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-		return ""
+		return ports.WorkspaceReclaimRemoved, ""
 	}
-	if err := m.workspace.Destroy(ctx, ws); err != nil {
+	reclaim := ports.WorkspaceReclaimRemoved
+	var err error
+	if reclaimer, ok := m.workspace.(ports.WorkspaceReclaimer); ok {
+		reclaim, err = reclaimer.DestroyReclaim(ctx, ws)
+	} else {
+		err = m.workspace.Destroy(ctx, ws)
+	}
+	if err != nil {
 		if !workspacePreserved(err) {
 			// The public reason stays a fixed string (the raw error carries
 			// internal filesystem paths); the full cause lands here.
 			m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
 		}
-		return cleanupSkipReason(err)
+		return ports.WorkspaceReclaimRemoved, cleanupSkipReason(err)
 	}
 	m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-	return ""
+	return reclaim, ""
 }
 
 // cleanupSkipReason renders a workspace teardown refusal as a short
@@ -4170,6 +4201,28 @@ func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueI
 	return env
 }
 
+func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, caseInsensitive bool) map[string]string {
+	env := make(map[string]string, len(projectEnv)+4)
+	for k, v := range projectEnv {
+		env[k] = v
+	}
+	setProtected := func(key, value string) {
+		if caseInsensitive {
+			for existing := range env {
+				if strings.EqualFold(existing, key) {
+					delete(env, existing)
+				}
+			}
+		}
+		env[key] = value
+	}
+	setProtected(EnvSessionID, string(id))
+	setProtected(EnvProjectID, string(project))
+	setProtected(EnvIssueID, string(issue))
+	setProtected(EnvDataDir, dataDir)
+	return env
+}
+
 // runtimeEnv is spawnEnv plus the hook PATH pin: the session's PATH puts the
 // running daemon's own directory first, so the bare `ao` in workspace hook
 // commands resolves to the daemon that installed them rather than whatever
@@ -4193,7 +4246,7 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	env[EnvBrowserCapability] = ""
 	env[EnvBrowserRuntimeToken] = ""
 	env[EnvBrowserRuntimeTokenStdin] = ""
-	path, err := HookPATH(m.executable, os.Getenv, projectEnv)
+	path, err := HookPATH(m.executable, os.Getenv, projectEnv, m.dataDir)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
 			"session", id, "error", err)
@@ -4319,27 +4372,8 @@ func chatControllerOwner(
 // applied: the executable is unresolvable, or is not named "ao", in which case
 // prepending its directory would not change what `ao` resolves to. Exported so
 // the reviewer launcher can pin its pane's PATH the same way.
-func HookPATH(executable func() (string, error), getenv func(string) string, projectEnv map[string]string) (string, error) {
-	exe, err := executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve daemon executable: %w", err)
-	}
-	name := filepath.Base(exe)
-	if runtime.GOOS == "windows" {
-		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
-	}
-	if name != hookBinaryName {
-		return "", fmt.Errorf("daemon executable %s is not named %q", exe, hookBinaryName)
-	}
-	base := projectEnv["PATH"]
-	if base == "" {
-		base = getenv("PATH")
-	}
-	dir := filepath.Dir(exe)
-	if base == "" {
-		return dir, nil
-	}
-	return dir + string(os.PathListSeparator) + base, nil
+func HookPATH(executable func() (string, error), getenv func(string) string, projectEnv map[string]string, dataDir string) (string, error) {
+	return agentlaunch.PinnedPATH(executable, getenv, projectEnv, dataDir)
 }
 
 // provisionWorkspace applies the project's per-workspace setup after the
@@ -4782,15 +4816,19 @@ func launchBinary(argv []string) (string, bool) {
 	return "", false
 }
 
+func PinnedHookDir(executable func() (string, error), dataDir string) string {
+	return agentlaunch.PinnedDir(executable, dataDir)
+}
+
 func (m *Manager) augmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string) {
-	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath)
+	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath, PinnedHookDir(m.executable, m.dataDir))
 }
 
 // AugmentRuntimePATHForLaunchBinary is retained at the session-manager boundary
 // for reviewer launches; all agent child-process paths share agentlaunch's
 // executable-environment augmentation.
-func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error)) {
-	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath)
+func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error), pinnedDir string) {
+	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath, pinnedDir)
 }
 
 func (m *Manager) validateRuntimePrerequisites() error {

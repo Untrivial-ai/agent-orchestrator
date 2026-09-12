@@ -7,7 +7,11 @@ import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { CreateProjectAgentSheet, defaultAuthorizedAgent, RequiredAgentField } from "./CreateProjectAgentSheet";
 import { TooltipProvider } from "./ui/tooltip";
 
-function renderSheet(onSubmit = vi.fn().mockResolvedValue(undefined), queryClient?: QueryClient) {
+function renderSheet(
+	onSubmit = vi.fn().mockResolvedValue(undefined),
+	queryClient?: QueryClient,
+	options: { shake?: boolean } = {},
+) {
 	queryClient ??= new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	if (queryClient.getQueryData(agentReadinessQueryKey) === undefined) {
 		queryClient.setQueryData(agentReadinessQueryKey, {
@@ -24,6 +28,7 @@ function renderSheet(onSubmit = vi.fn().mockResolvedValue(undefined), queryClien
 					onSubmit={onSubmit}
 					open={true}
 					path="/repo/new-project"
+					shake={options.shake}
 				/>
 			</TooltipProvider>
 		</QueryClientProvider>,
@@ -38,6 +43,12 @@ async function chooseOption(trigger: HTMLElement, optionName: string) {
 }
 
 describe("CreateProjectAgentSheet", () => {
+	it("shakes the active sheet when creation fails", () => {
+		renderSheet(undefined, undefined, { shake: true });
+
+		expect(screen.getByRole("dialog")).toHaveClass("modal-shake");
+	});
+
 	it("chooses the highest-priority authorized default agent", () => {
 		expect(
 			defaultAuthorizedAgent([
