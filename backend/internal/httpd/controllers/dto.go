@@ -1535,6 +1535,15 @@ type ShellTerminalEnvelope struct {
 	ShellTerminal ShellTerminalResponse `json:"shellTerminal"`
 }
 
+// GitHubAuthTerminalEnvelope is the response body for POST
+// /api/v1/system/github-auth/terminal: the login PTY plus the OAuth device
+// code gh printed into it, so the renderer can show the code and let the
+// user open the device page without displaying terminal output.
+type GitHubAuthTerminalEnvelope struct {
+	ShellTerminal ShellTerminalResponse `json:"shellTerminal"`
+	DeviceCode    string                `json:"deviceCode,omitempty"`
+}
+
 // MarkAllNotificationsReadRequest is the optional body of
 // POST /api/v1/notifications/read-all.
 type MarkAllNotificationsReadRequest struct {

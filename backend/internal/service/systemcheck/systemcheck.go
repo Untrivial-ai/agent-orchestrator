@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -49,6 +50,9 @@ type HarnessCatalog interface {
 // daemon-owned PTY. The renderer never supplies command arguments.
 type GitHubAuthTerminalOpener interface {
 	OpenCommandTerminal(context.Context, shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error)
+	// ReadTerminalOutput returns recent PTY output for a terminal this opener
+	// created, so the service can extract the OAuth device code gh prints.
+	ReadTerminalOutput(ctx context.Context, handleID string, lines int) (string, error)
 }
 
 // Service runs the startup requirements gate.
@@ -112,28 +116,107 @@ func (s *Service) CheckGitHubAuth(ctx context.Context) (Requirement, error) {
 	return s.checkGitHubAuth(ctx), nil
 }
 
+// GitHubAuthResult is the login PTY plus the OAuth device code gh printed
+// into it. The renderer shows the code and lets the user open the device
+// page themselves; AO never opens a browser on its own.
+type GitHubAuthResult struct {
+	Terminal   shellterm.ShellTerminal `json:"terminal"`
+	DeviceCode string                  `json:"deviceCode,omitempty"`
+}
+
 // OpenGitHubAuthTerminal starts the fixed GitHub CLI login flow. Executable
 // resolution remains daemon-owned so callers cannot choose an arbitrary
 // command or binary.
-func (s *Service) OpenGitHubAuthTerminal(ctx context.Context) (shellterm.ShellTerminal, error) {
+func (s *Service) OpenGitHubAuthTerminal(ctx context.Context) (GitHubAuthResult, error) {
 	if err := ctx.Err(); err != nil {
-		return shellterm.ShellTerminal{}, err
+		return GitHubAuthResult{}, err
 	}
 	path, err := s.executables.LookPath("gh")
 	if err != nil || path == "" {
-		return shellterm.ShellTerminal{}, apierr.Invalid("GITHUB_CLI_UNAVAILABLE", "GitHub CLI was not found on PATH.", nil)
+		return GitHubAuthResult{}, apierr.Invalid("GITHUB_CLI_UNAVAILABLE", "GitHub CLI was not found on PATH.", nil)
 	}
 	if s.terminals == nil {
-		return shellterm.ShellTerminal{}, apierr.Internal("GITHUB_AUTH_TERMINAL_UNAVAILABLE", "GitHub authentication terminal service is unavailable.")
+		return GitHubAuthResult{}, apierr.Internal("GITHUB_AUTH_TERMINAL_UNAVAILABLE", "GitHub authentication terminal service is unavailable.")
 	}
-	return s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
-		// Keep the native interactive flow so users can choose GitHub.com or
-		// Enterprise, HTTPS or SSH, and any authentication mode supported by their
-		// installed gh version. The renderer forwards the terminal protocol replies
-		// these prompts require.
-		Argv:  []string{path, "auth", "login"},
+	env := map[string]string{}
+	// Standalone shell terminals intentionally receive a minimal environment.
+	// gh's browser flow needs the desktop user's home/config context. BROWSER
+	// is deliberately unset: the renderer opens the device page on an
+	// explicit user click instead of AO launching a browser by itself.
+	// GH_PROMPT_DISABLED keeps gh from stopping at interactive prompts (git
+	// credential-helper setup, Enter-to-open-browser) that nobody can answer
+	// in a hidden PTY: gh prints the device code and polls instead.
+	for key, value := range map[string]string{
+		"HOME":               os.Getenv("HOME"),
+		"GH_CONFIG_DIR":      os.Getenv("GH_CONFIG_DIR"),
+		"GH_PROMPT_DISABLED": "1",
+	} {
+		if value != "" {
+			env[key] = value
+		}
+	}
+	terminal, err := s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
+		// Use gh's browser flow so authentication does not depend on an embedded
+		// terminal handling gh's interactive TUI. HTTPS is the safe default for
+		// repositories; the browser flow stores the credential in gh's normal store.
+		// --clipboard puts the one-time device code on the user's clipboard as
+		// a backup for the code returned below.
+		Argv:  []string{path, "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard"},
+		Env:   env,
 		Title: "Connect GitHub",
 	})
+	if err != nil {
+		return GitHubAuthResult{}, err
+	}
+	return GitHubAuthResult{Terminal: terminal, DeviceCode: s.waitForDeviceCode(ctx, terminal.HandleID)}, nil
+}
+
+var (
+	// PTY output carries cursor-movement and color escapes that can split the
+	// words around the code, so strip them before matching.
+	ansiEscapePattern = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]|\x1b[()][0-9A-B]")
+	// Matches gh's device-code line in either wording:
+	// "First copy your one-time code: XXXX-XXXX" (interactive) or
+	// "One-time code (XXXX-XXXX) copied to clipboard" (GH_PROMPT_DISABLED).
+	deviceCodePattern = regexp.MustCompile(`(?i)one-time code[\s:(]+([A-Za-z0-9]{4}-[A-Za-z0-9]{4})`)
+)
+
+const (
+	deviceCodeWaitTimeout  = 20 * time.Second
+	deviceCodePollInterval = 250 * time.Millisecond
+	deviceCodeOutputLines  = 50
+)
+
+// waitForDeviceCode polls the login PTY until gh prints its OAuth device
+// code. An empty string means the code never appeared (a gh version changed
+// its wording, or the prompts stalled); the login itself keeps running and
+// the renderer falls back to generic waiting copy.
+func (s *Service) waitForDeviceCode(ctx context.Context, handleID string) string {
+	ctx, cancel := context.WithTimeout(ctx, deviceCodeWaitTimeout)
+	defer cancel()
+	ticker := time.NewTicker(deviceCodePollInterval)
+	defer ticker.Stop()
+	for {
+		if output, err := s.terminals.ReadTerminalOutput(ctx, handleID, deviceCodeOutputLines); err == nil {
+			if code := extractDeviceCode(output); code != "" {
+				return code
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-ticker.C:
+		}
+	}
+}
+
+func extractDeviceCode(output string) string {
+	clean := ansiEscapePattern.ReplaceAllString(output, "")
+	match := deviceCodePattern.FindStringSubmatch(clean)
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
 }
 
 // Check runs the complete, user-triggered requirements probe, including a

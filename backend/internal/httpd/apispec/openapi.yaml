@@ -6530,7 +6530,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ShellTerminalEnvelope'
+                $ref: '#/components/schemas/GitHubAuthTerminalEnvelope'
           description: Created
         "400":
           content:
@@ -9174,6 +9174,15 @@ components:
       - ok
       - sessionId
       - session
+      type: object
+    GitHubAuthTerminalEnvelope:
+      properties:
+        deviceCode:
+          type: string
+        shellTerminal:
+          $ref: '#/components/schemas/ShellTerminalResponse'
+      required:
+      - shellTerminal
       type: object
     GitHubRepositoryPreparation:
       properties:

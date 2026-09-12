@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSummary } from "../types/workspace";
+import { TooltipProvider } from "../components/ui/tooltip";
 
 const routeMocks = vi.hoisted(() => ({
 	createProjectFlowProps: null as null | {
@@ -11,6 +12,8 @@ const routeMocks = vi.hoisted(() => ({
 	workspaces: [] as WorkspaceSummary[],
 	requirements: [] as Array<{ id: string; label: string; satisfied: boolean; required: boolean; detail: string }>,
 	authRequirement: undefined as { id: string; label: string; satisfied: boolean; required: boolean; detail: string } | undefined,
+	authTerminal: null as null | { handleId: string; title: string },
+	deviceCode: "",
 	startGitHubAuth: vi.fn(),
 	markAutoLoginOffered: vi.fn(),
 	closeTerminal: vi.fn(),
@@ -29,7 +32,7 @@ vi.mock("../hooks/useSystemRequirementsGate", () => ({
 	useSystemRequirementsGate: () => ({ blocked: false, requirements: routeMocks.requirements, query: { refetch: vi.fn() } }),
 	useGitHubAuthRequirement: () => ({ data: routeMocks.authRequirement, isFetching: false, refetch: vi.fn() }),
 	useGitHubAuthAutoLoginOffered: () => ({ offered: false, markOffered: routeMocks.markAutoLoginOffered }),
-	useGitHubAuthTerminal: () => ({ data: null, clear: vi.fn() }),
+	useGitHubAuthTerminal: () => ({ data: routeMocks.authTerminal, deviceCode: routeMocks.deviceCode, clear: vi.fn() }),
 	useStartGitHubAuthTerminal: () => ({ mutate: routeMocks.startGitHubAuth, isPending: false, isError: false }),
 }));
 
@@ -67,6 +70,8 @@ beforeEach(() => {
 	routeMocks.createProjectFlowProps = null;
 	routeMocks.requirements = [];
 	routeMocks.authRequirement = undefined;
+	routeMocks.authTerminal = null;
+	routeMocks.deviceCode = "";
 	routeMocks.startGitHubAuth.mockReset();
 	routeMocks.markAutoLoginOffered.mockReset();
 	routeMocks.closeTerminal.mockReset();
@@ -98,7 +103,7 @@ describe("shell index route", () => {
 		expect(routeMocks.navigate).not.toHaveBeenCalled();
 	});
 
-	it("surfaces missing GitHub authentication on the seeded first-run home page", () => {
+	it("surfaces optional GitHub authentication on the Home page without auto-opening it", async () => {
 		routeMocks.workspaces = [
 			{ id: "scratch", name: "Scratch", kind: "scratch", path: "/scratch", sessions: [] },
 		];
@@ -109,13 +114,53 @@ describe("shell index route", () => {
 
 		render(<HomePage />);
 
-		expect(screen.getByText("Connect GitHub for pull requests")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeInTheDocument();
+		expect(screen.getByText("GitHub isn't connected.")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeInTheDocument();
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+		expect(routeMocks.startGitHubAuth).not.toHaveBeenCalled();
 		expect(
 			screen.getByRole("button", { name: /Scratch/ }).compareDocumentPosition(
-				screen.getByText("Connect GitHub for pull requests"),
-			) & Node.DOCUMENT_POSITION_FOLLOWING,
+				screen.getByTestId("github-onboarding-notice"),
+			) & Node.DOCUMENT_POSITION_PRECEDING,
 		).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+		expect(await screen.findByRole("dialog")).toBeInTheDocument();
+	});
+
+	it("shows the device code with a user-triggered browser open once sign-in starts", async () => {
+		routeMocks.workspaces = [
+			{ id: "scratch", name: "Scratch", kind: "scratch", path: "/scratch", sessions: [] },
+		];
+		routeMocks.requirements = [
+			{ id: "gh", label: "gh", satisfied: true, required: false, detail: "/usr/bin/gh" },
+		];
+		routeMocks.authRequirement = { id: "github-auth", label: "GitHub access", satisfied: false, required: false, detail: "Sign in." };
+		routeMocks.authTerminal = { handleId: "shellterm-github", title: "Connect GitHub" };
+		routeMocks.deviceCode = "C6D9-51C4";
+
+		render(<TooltipProvider><HomePage /></TooltipProvider>);
+
+		await fireEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+		expect(await screen.findByRole("dialog")).toBeInTheDocument();
+		expect(screen.getByText("C6D9-51C4")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open GitHub" })).toBeInTheDocument();
+		expect(routeMocks.startGitHubAuth).not.toHaveBeenCalled();
+	});
+
+	it("hides the onboarding notice once GitHub is connected", () => {
+		routeMocks.workspaces = [
+			{ id: "scratch", name: "Scratch", kind: "scratch", path: "/scratch", sessions: [] },
+		];
+		routeMocks.requirements = [
+			{ id: "gh", label: "gh", satisfied: true, required: false, detail: "/usr/bin/gh" },
+		];
+		routeMocks.authRequirement = { id: "github-auth", label: "GitHub access", satisfied: true, required: false, detail: "GitHub CLI is signed in." };
+
+		render(<HomePage />);
+
+		expect(screen.queryByTestId("github-onboarding-notice")).not.toBeInTheDocument();
+		expect(screen.queryByText("GitHub isn't connected.")).not.toBeInTheDocument();
 	});
 
 	it("opens a project from the recent-project list", async () => {

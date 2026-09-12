@@ -160,6 +160,8 @@ export function HomePage() {
 		<div className="flex min-h-full items-center justify-center px-6 py-16">
 			<div className="w-full max-w-[640px] -translate-y-3">
 				<div className="space-y-6">
+					<GitHubOnboardingNotice />
+
 					<div className="flex items-center justify-between gap-4 px-3">
 						<h1 className="text-[17px] font-medium tracking-[-0.01em] text-foreground/80">{t("home.jumpBack")}</h1>
 						<TopbarButton
@@ -214,7 +216,6 @@ export function HomePage() {
 						))}
 					</div>
 
-					<GitHubOnboardingNotice />
 				</div>
 
 				<CreateProjectFlow

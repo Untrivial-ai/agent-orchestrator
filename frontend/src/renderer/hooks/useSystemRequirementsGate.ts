@@ -10,6 +10,7 @@ export type SystemRequirement = components["schemas"]["SystemRequirement"];
 
 export const systemRequirementsQueryKey = ["system-requirements"] as const;
 export const githubAuthTerminalQueryKey = ["github-auth-terminal"] as const;
+export const githubAuthDeviceCodeQueryKey = ["github-auth-device-code"] as const;
 export const githubAuthAutoLoginOfferedQueryKey = ["github-auth-auto-login-offered"] as const;
 const GITHUB_AUTH_POLL_INTERVAL_MS = 2_500;
 
@@ -57,19 +58,22 @@ export function useGitHubAuthRequirement(loginActive = false) {
 export function useStartGitHubAuthTerminal() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: async (): Promise<ShellTerminal> => {
+		mutationFn: async (): Promise<{ terminal: ShellTerminal; deviceCode: string }> => {
 			// Renderer state is lost on reload, while daemon-owned login PTYs survive.
 			// Reconcile before every start and fail without spawning if the list fails.
 			const terminals = await queryClient.fetchQuery({ ...shellTerminalsQueryOptions, staleTime: 0 });
 			const existing = terminals.find((terminal) => terminal.title === "Connect GitHub" && !terminal.sessionId && !terminal.projectId);
-			if (existing) return existing;
+			// A reattached PTY has no known device code (it was shown before the
+			// reload); the dialog degrades to generic waiting copy for it.
+			if (existing) return { terminal: existing, deviceCode: "" };
 			const { data, error } = await apiClient.POST("/api/v1/system/github-auth/terminal");
 			if (error || !data) throw new Error(apiErrorMessage(error, "Could not start GitHub sign-in."));
 			markTerminalHandleFresh(data.shellTerminal.handleId);
-			return data.shellTerminal;
+			return { terminal: data.shellTerminal, deviceCode: data.deviceCode ?? "" };
 		},
-		onSuccess: (terminal) => {
+		onSuccess: ({ terminal, deviceCode }) => {
 			queryClient.setQueryData<ShellTerminal | null>(githubAuthTerminalQueryKey, terminal);
+			queryClient.setQueryData<string>(githubAuthDeviceCodeQueryKey, deviceCode);
 			queryClient.setQueryData<ShellTerminal[]>(shellTerminalsQueryKey, (current = []) => [
 				...current.filter((item) => item.handleId !== terminal.handleId),
 				terminal,
@@ -96,10 +100,20 @@ export function useGitHubAuthTerminal() {
 		// notice. This entry holds a single handle and is cleared explicitly.
 		gcTime: Number.POSITIVE_INFINITY,
 	});
+	// The device code arrives with the start-login response and shares the
+	// handle's lifetime: clearing the flow clears both.
+	const deviceCodeQuery = useQuery<string>({
+		queryKey: githubAuthDeviceCodeQueryKey,
+		queryFn: async () => "",
+		enabled: false,
+		initialData: "",
+		gcTime: Number.POSITIVE_INFINITY,
+	});
 	const clear = useCallback(() => {
 		queryClient.setQueryData<ShellTerminal | null>(githubAuthTerminalQueryKey, null);
+		queryClient.setQueryData<string>(githubAuthDeviceCodeQueryKey, "");
 	}, [queryClient]);
-	return { ...query, clear };
+	return { ...query, deviceCode: deviceCodeQuery.data ?? "", clear };
 }
 
 /** Remember an automatic login offer for the lifetime of this renderer so
