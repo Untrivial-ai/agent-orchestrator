@@ -697,6 +697,7 @@ func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.Ch
 type nativeHistoryTurn struct {
 	providerTurnID string
 	state          domain.TurnState
+	errorMessage   string
 	clientMessage  string
 	providerItem   string
 	text           string
@@ -758,6 +759,7 @@ func reconcileNativeHistory(
 		candidate := &nativeHistoryTurn{
 			providerTurnID: turn.ProviderTurnID,
 			state:          turn.State,
+			errorMessage:   turn.ErrorMessage,
 			messages:       make(map[string]int),
 			activities:     make(map[string]int),
 		}
@@ -976,6 +978,12 @@ func reconcileNativeHistory(
 		if event.Kind == ports.ChatEventTurnCompleted &&
 			event.TurnState == domain.TurnStateRecovered && knownTurnOutcome(candidate.state) {
 			event.TurnState = candidate.state
+			// SettleTurn writes error_message unconditionally, so a replay that
+			// upgrades the state without carrying the stored message back would
+			// blank it and undo the explanation the turn already had.
+			if event.Err == nil && candidate.errorMessage != "" {
+				event.Err = errors.New(candidate.errorMessage)
+			}
 		}
 		reconciled = append(reconciled, event)
 	}
