@@ -391,6 +391,7 @@ type nativeHistoryHighWater struct {
 type nativeHistoryCheckpoint struct {
 	latestUserPrompt      string
 	latestAssistantUpdate string
+	completedUserPrompt   bool
 	userMismatch          ports.ChatHistoryMismatchDimension
 	assistantMismatch     ports.ChatHistoryMismatchDimension
 	hardMismatches        []ports.ChatHistoryMismatchDimension
@@ -580,29 +581,26 @@ func (p nativeHistoryCheckpoint) mismatches(
 	// A trusted checkpoint describes one main-thread turn. Selecting the latest
 	// user and assistant independently can splice an older repeated answer onto a
 	// newer incomplete turn and incorrectly admit a truncated provider replay.
-	// The checkpoint does not have to be the final replay turn when lifecycle saw
-	// no comparable evidence for later work. Admit an older coherent pair only
-	// when both fields match together inside one completed, non-coordination turn.
-	// A scoped Stop whose prompt hook was lost is fenced separately by the hard
-	// unresolved-boundary witness assembled by Service.Start, so an older pair
-	// cannot satisfy replay after AO has observed evidence of newer work.
+	// A completed checkpoint may precede later work whose hooks were lost.
+	// Codex Stop hooks attest completion without carrying assistant text. Keep
+	// that prompt usable as evidence, but never relax pending prompts or the
+	// hard unsettled-boundary gate for a newer Stop whose prompt hook was lost.
 	latestText := turnText[latestCompletedTurnID]
 	checkpointMatched := p.latestUserPrompt == "" && p.latestAssistantUpdate == ""
-	if p.latestUserPrompt != "" && p.latestAssistantUpdate != "" {
+	if p.latestUserPrompt != "" && (p.latestAssistantUpdate != "" || p.completedUserPrompt) {
 		for turnID := range completedTurns {
 			if coordinationTurns[turnID] {
 				continue
 			}
 			text := turnText[turnID]
 			if nativeHistoryTextMatches(p.latestUserPrompt, text.user.Text) &&
-				nativeHistoryTextMatches(p.latestAssistantUpdate, text.assistant.Text) {
+				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, text.assistant.Text)) {
 				checkpointMatched = true
 				break
 			}
 		}
 	} else {
-		// A single-sided checkpoint has no coherent pair that can identify an older
-		// turn safely, so retain the latest-turn gate.
+		// Without paired text or a scoped completion, retain the latest-turn gate.
 		checkpointMatched =
 			(p.latestUserPrompt == "" || nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text)) &&
 				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text))

@@ -329,6 +329,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
 			replayCheckpoint.userMismatch = ports.ChatHistoryMismatchTrustedUserText
 			if checkpointState == domain.ConversationCheckpointComplete {
+				replayCheckpoint.completedUserPrompt = true
 				replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
 				replayCheckpoint.assistantMismatch = ports.ChatHistoryMismatchTrustedAssistantText
 			}
