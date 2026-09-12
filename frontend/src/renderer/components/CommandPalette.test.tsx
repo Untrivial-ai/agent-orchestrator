@@ -1005,3 +1005,25 @@ describe("CommandPalette inline task composer", () => {
 		);
 	});
 });
+
+describe("external import search entry", () => {
+ it("does no discovery in AO search and keeps the query across keyboard entry and back", async () => {
+  postMock.mockResolvedValue({ data: { running: false, scanned: 0, updated: 0, errors: [] } });
+  getMock.mockResolvedValue({ data: { results: [], status: { running: false, scanned: 0, updated: 0, errors: [] } } });
+  renderPalette();
+  act(() => useUiStore.getState().setCommandPaletteOpen(true));
+  const input = screen.getByPlaceholderText(/search projects/i);
+  expect(screen.getByText("Find sessions from Codex or Claude Code…")).toBeInTheDocument();
+  fireEvent.change(input, { target: { value: "unmatched external title" } });
+  expect(getMock.mock.calls.filter(([path]) => path.includes("session-import"))).toHaveLength(0);
+  expect(postMock).not.toHaveBeenCalled();
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(await screen.findByPlaceholderText("Search session titles…")).toHaveValue("unmatched external title");
+  fireEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(screen.getByPlaceholderText(/search projects/i)).toHaveValue("unmatched external title");
+  expect(screen.getByPlaceholderText(/search projects/i)).toHaveFocus();
+  fireEvent.click(screen.getByText("Find sessions from Codex or Claude Code…"));
+  pressEscape();
+  expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+ });
+});

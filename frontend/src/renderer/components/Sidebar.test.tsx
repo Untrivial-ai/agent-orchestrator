@@ -2427,3 +2427,14 @@ describe("Sidebar", () => {
 		}
 	});
 });
+
+describe("project import menus", () => {
+ it.each(["dropdown", "context"])("offers project import through the %s menu without a persistent row", async (kind) => {
+  const user = userEvent.setup();
+  renderSidebar();
+  expect(screen.queryByRole("button", { name: "Import sessions" })).not.toBeInTheDocument();
+  if (kind === "dropdown") await user.click(screen.getByLabelText("Project actions for Project One"));
+  else fireEvent.contextMenu(screen.getByText("Project One"));
+  expect(await screen.findByRole("menuitem", { name: "Import sessions" })).toBeInTheDocument();
+ });
+});
