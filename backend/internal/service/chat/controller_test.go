@@ -1656,11 +1656,16 @@ func TestInterfaceHandoffTrustedCheckpointMayPrecedeLaterCompletedTurn(t *testin
 		state        domain.ConversationCheckpointState
 		assistant    string
 		turnID       string
+		emptyPrompt  bool
 		unsettled    bool
 		wantMismatch bool
 	}{
 		{name: "completed pair", state: domain.ConversationCheckpointComplete, assistant: "trusted checkpoint assistant"},
 		{name: "completed Codex prompt", state: domain.ConversationCheckpointComplete, turnID: "checkpoint-turn"},
+		{name: "completed empty prompt identified", state: domain.ConversationCheckpointComplete, turnID: "checkpoint-turn", emptyPrompt: true},
+		{name: "missing completed empty prompt", state: domain.ConversationCheckpointComplete, turnID: "missing-current-turn", emptyPrompt: true, wantMismatch: true},
+		{name: "missing pending empty prompt", state: domain.ConversationCheckpointPrompt, turnID: "missing-current-turn", emptyPrompt: true, wantMismatch: true},
+		{name: "pending empty prompt stays latest", state: domain.ConversationCheckpointPrompt, turnID: "checkpoint-turn", emptyPrompt: true, wantMismatch: true},
 		{name: "old prompt-only checkpoint stays strict", state: domain.ConversationCheckpointComplete, wantMismatch: true},
 		{name: "repeated prompt cannot stand in for missing current turn", state: domain.ConversationCheckpointComplete, turnID: "missing-current-turn", wantMismatch: true},
 		{name: "pair cannot stand in for missing current turn", state: domain.ConversationCheckpointComplete, turnID: "missing-current-turn", assistant: "trusted checkpoint assistant", wantMismatch: true},
@@ -1677,6 +1682,9 @@ func TestInterfaceHandoffTrustedCheckpointMayPrecedeLaterCompletedTurn(t *testin
 			// the earlier coherent checkpoint still need not be the replay's final turn.
 			// A later scoped Stop is covered separately and becomes a latest-turn gate.
 			rec.Metadata.LatestUserPrompt = "trusted checkpoint user"
+			if tt.emptyPrompt {
+				rec.Metadata.LatestUserPrompt = ""
+			}
 			rec.Metadata.LatestAssistantUpdate = tt.assistant
 			rec.Metadata.ConversationCheckpointState = tt.state
 			rec.Metadata.ConversationCheckpointTurnID = tt.turnID

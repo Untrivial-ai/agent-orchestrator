@@ -87,6 +87,7 @@ const (
 	ChatHistoryMismatchUntrustedUserText      ChatHistoryMismatchDimension = "untrusted_user_text"
 	ChatHistoryMismatchUntrustedAssistantText ChatHistoryMismatchDimension = "untrusted_assistant_text"
 	ChatHistoryMismatchTrustedUserText        ChatHistoryMismatchDimension = "trusted_user_text"
+	ChatHistoryMismatchTrustedTurn            ChatHistoryMismatchDimension = "trusted_turn_boundary"
 	ChatHistoryMismatchTrustedAssistantText   ChatHistoryMismatchDimension = "trusted_assistant_text"
 	ChatHistoryMismatchNativeIdentity         ChatHistoryMismatchDimension = "native_identity"
 	ChatHistoryMismatchAOHighWater            ChatHistoryMismatchDimension = "ao_high_water"
