@@ -52,10 +52,14 @@ func isNumericPRRef(ref string) bool {
 }
 
 // cliPRURLFromParts constructs the canonical PR/MR URL for a provider.
-// GitHub uses /pull/N; GitLab uses /-/merge_requests/N.
+// GitHub uses /pull/N; GitLab uses /-/merge_requests/N; GitCode uses
+// /merge_requests/N (no dash segment).
 func cliPRURLFromParts(host, owner, repo string, number int) string {
 	if isCLIGitHubHost(host) {
 		return fmt.Sprintf("https://%s/%s/%s/pull/%d", host, owner, repo, number)
+	}
+	if isCLIGitCodeHost(host) {
+		return fmt.Sprintf("https://%s/%s/%s/merge_requests/%d", host, owner, repo, number)
 	}
 	return fmt.Sprintf("https://%s/%s/%s/-/merge_requests/%d", host, owner, repo, number)
 }
@@ -80,9 +84,18 @@ func cliParsePRURL(raw string) (host, owner, name string, number int, err error)
 		return host, parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
 	}
 
+	// GitCode: /owner/repo/merge_requests/N → 4 parts, no dash segment
+	if isCLIGitCodeHost(host) && len(parts) == 4 && parts[2] == "merge_requests" {
+		n, parseErr := strconv.Atoi(parts[3])
+		if parseErr != nil || n <= 0 {
+			return "", "", "", 0, errors.New("bad number")
+		}
+		return host, parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
+	}
+
 	// GitLab: /owner/repo/-/merge_requests/N
 	// Supports nested groups: /group/subgroup/repo/-/merge_requests/N
-	if !isCLIGitHubHost(host) && len(parts) >= 5 && parts[len(parts)-2] == "merge_requests" && parts[len(parts)-3] == "-" {
+	if !isCLIGitHubHost(host) && !isCLIGitCodeHost(host) && len(parts) >= 5 && parts[len(parts)-2] == "merge_requests" && parts[len(parts)-3] == "-" {
 		n, parseErr := strconv.Atoi(parts[len(parts)-1])
 		if parseErr != nil || n <= 0 {
 			return "", "", "", 0, errors.New("bad number")
@@ -151,4 +164,12 @@ func isCLIGitHubHost(host string) bool {
 	host = strings.ToLower(host)
 	return host == "github.com" || host == "www.github.com" || host == "api.github.com" ||
 		strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io")
+}
+
+func isCLIGitCodeHost(host string) bool {
+	if hostname, _, err := net.SplitHostPort(host); err == nil {
+		host = hostname
+	}
+	host = strings.ToLower(host)
+	return host == "gitcode.com" || host == "www.gitcode.com"
 }

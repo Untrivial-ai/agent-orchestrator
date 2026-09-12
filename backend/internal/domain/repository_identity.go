@@ -20,7 +20,8 @@ type RepositoryIdentity struct {
 }
 
 // RepositoryProvider follows the SCM dispatcher: recognized GitHub hosts use
-// GitHub; other hosts use GitLab, including self-managed installations.
+// GitHub; gitcode.com uses GitCode; other hosts use GitLab, including
+// self-managed installations.
 func RepositoryProvider(host string) string {
 	if hostname, _, err := net.SplitHostPort(host); err == nil {
 		host = hostname
@@ -28,6 +29,9 @@ func RepositoryProvider(host string) string {
 	host = strings.ToLower(host)
 	if host == "github.com" || host == "www.github.com" || host == "api.github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io") {
 		return "github"
+	}
+	if host == "gitcode.com" || host == "www.gitcode.com" {
+		return "gitcode"
 	}
 	return "gitlab"
 }
@@ -72,7 +76,9 @@ func ParseRepositoryIdentity(raw string) (RepositoryIdentity, error) {
 		}
 	}
 	provider := RepositoryProvider(u.Hostname())
-	if provider == "github" && len(parts) != 2 {
+	// GitHub and GitCode both use a single-level owner namespace (owner/repo);
+	// GitLab allows nested group namespaces.
+	if (provider == "github" || provider == "gitcode") && len(parts) != 2 {
 		return RepositoryIdentity{}, invalid
 	}
 	return RepositoryIdentity{Provider: provider, Host: strings.ToLower(u.Host), Namespace: strings.Join(parts[:len(parts)-1], "/"), Name: parts[len(parts)-1]}, nil

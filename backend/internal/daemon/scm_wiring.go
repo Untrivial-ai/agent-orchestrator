@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	scmgithub "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/github"
+	scmgitcode "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitcode"
 	scmgitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitlab"
 	scmmulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/multi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -33,6 +34,13 @@ func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.M
 		logSCMProviderDisabled(logger, "gitlab", glErr)
 	} else {
 		named = append(named, scmmulti.NamedProvider{Key: "gitlab", Provider: glProvider})
+	}
+
+	gcProvider, gcErr := newGitCodeSCMProvider(logger)
+	if gcErr != nil {
+		logSCMProviderDisabled(logger, "gitcode", gcErr)
+	} else {
+		named = append(named, scmmulti.NamedProvider{Key: "gitcode", Provider: gcProvider})
 	}
 
 	if len(named) == 0 {
@@ -70,6 +78,20 @@ func newGitLabSCMProvider(gitlabCfg config.GitLabConfig, logger *slog.Logger) (*
 	})
 }
 
+// newGitCodeSCMProvider builds the GitCode observation provider. GitCode has
+// no self-managed hosts, so there is no host config; the token comes from
+// AO_GITCODE_TOKEN / GITCODE_TOKEN, and anonymous mode reads public repos.
+func newGitCodeSCMProvider(logger *slog.Logger) (*scmgitcode.Provider, error) {
+	tokens := scmgitcode.FallbackTokenSource{
+		scmgitcode.EnvTokenSource{EnvVars: []string{"AO_GITCODE_TOKEN"}},
+	}
+	return scmgitcode.NewProvider(scmgitcode.ProviderOptions{
+		Token:      tokens,
+		AllowAnonymous: true,
+		Logger:     logger,
+	})
+}
+
 func logSCMProviderDisabled(logger *slog.Logger, provider string, err error) {
 	if errors.Is(err, scmgithub.ErrNoToken) || errors.Is(err, scmgithub.ErrAuthFailed) ||
 		errors.Is(err, scmgitlab.ErrNoToken) || errors.Is(err, scmgitlab.ErrAuthFailed) {
@@ -89,6 +111,9 @@ func newMultiSCMProvider(gitlabCfg config.GitLabConfig, logger *slog.Logger) *sc
 	}
 	if gl, err := newGitLabSCMProvider(gitlabCfg, logger); err == nil {
 		named = append(named, scmmulti.NamedProvider{Key: "gitlab", Provider: gl})
+	}
+	if gc, err := newGitCodeSCMProvider(logger); err == nil {
+		named = append(named, scmmulti.NamedProvider{Key: "gitcode", Provider: gc})
 	}
 	if len(named) == 0 {
 		return nil

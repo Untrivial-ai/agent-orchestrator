@@ -389,10 +389,14 @@ func normalizePRRef(ref, repoOrigin string) (string, int, error) {
 }
 
 // prURLFromParts constructs the canonical PR/MR URL for a provider.
-// GitHub uses /pull/N; GitLab uses /-/merge_requests/N.
+// GitHub uses /pull/N; GitLab uses /-/merge_requests/N; GitCode uses
+// /merge_requests/N (no dash segment).
 func prURLFromParts(host, owner, repo string, number int) string {
 	if providerKey(host) == "github" {
 		return fmt.Sprintf("https://%s/%s/%s/pull/%d", host, owner, repo, number)
+	}
+	if providerKey(host) == "gitcode" {
+		return fmt.Sprintf("https://%s/%s/%s/merge_requests/%d", host, owner, repo, number)
 	}
 	return fmt.Sprintf("https://%s/%s/%s/-/merge_requests/%d", host, owner, repo, number)
 }
@@ -463,6 +467,19 @@ func parsePRURL(raw string) (host, owner, name string, number int, err error) {
 		owner = strings.Join(repoParts[:len(repoParts)-1], "/")
 		name = strings.TrimSuffix(repoParts[len(repoParts)-1], ".git")
 		return host, owner, name, n, nil
+	}
+
+	// GitCode: /owner/repo/merge_requests/N → 4 parts, parts[2] == "merge_requests"
+	// (GitCode's browser PR path mirrors GitLab's naming without the "-" segment.)
+	if providerKey(host) == "gitcode" && len(parts) == 4 && parts[2] == "merge_requests" {
+		n, parseErr := strconv.Atoi(parts[3])
+		if parseErr != nil || n <= 0 {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		if _, err := domain.ParseRepositoryIdentity("https://" + host + "/" + strings.Join(parts[:2], "/")); err != nil {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		return host, parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
 	}
 
 	return "", "", "", 0, ErrInvalidPRRef
