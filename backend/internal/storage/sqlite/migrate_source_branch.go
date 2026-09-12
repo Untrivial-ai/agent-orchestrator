@@ -3,8 +3,9 @@ package sqlite
 import "database/sql"
 
 // prepareSessionSourceBranchMigration preserves preview databases that applied
-// source_branch as version 126 before main assigned 126 to canonical repository
-// identity. Mark the existing effect as 129 and let main's idempotent 126 run.
+// source_branch as version 126 or 129. Main now owns those versions for
+// canonical repository identity and the CDC retention index. Record the existing
+// column at 140, replay idempotent 126, and release 129 only if its index is absent.
 func prepareSessionSourceBranchMigration(db *sql.DB) error {
 	var ledger, column int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='goose_db_version'`).Scan(&ledger); err != nil {
@@ -25,7 +26,7 @@ func prepareSessionSourceBranchMigration(db *sql.DB) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	var applied int
-	if err := tx.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id=129 ORDER BY id DESC LIMIT 1),0)`).Scan(&applied); err != nil {
+	if err := tx.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id=140 ORDER BY id DESC LIMIT 1),0)`).Scan(&applied); err != nil {
 		return err
 	}
 	if applied != 0 {
@@ -37,7 +38,16 @@ func prepareSessionSourceBranchMigration(db *sql.DB) error {
 	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id=126`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(129,1)`); err != nil {
+	var retentionIndex int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_change_log_created_at_seq'`).Scan(&retentionIndex); err != nil {
+		return err
+	}
+	if retentionIndex == 0 {
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id=129`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(140,1)`); err != nil {
 		return err
 	}
 	return tx.Commit()

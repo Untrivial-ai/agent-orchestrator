@@ -179,6 +179,7 @@ function commonGetsResponder(
   _unusedRuns: unknown[] = [],
   reviewerHandleId = "",
   reviews: unknown[] = [],
+  reviewerActivityState?: string,
 ) {
   return async (path: string) => {
     if (path === "/api/v1/agents/readiness") {
@@ -206,7 +207,7 @@ function commonGetsResponder(
       };
     }
     if (path === "/api/v1/sessions/{sessionId}/reviews") {
-      return { data: { reviewerHandleId, reviews } };
+      return { data: { reviewerHandleId, reviewerActivityState, reviews } };
     }
     if (path === "/api/v1/projects/{id}") {
       return {
@@ -232,8 +233,9 @@ function mockCommonGets(
   _unusedRuns: unknown[] = [],
   reviewerHandleId = "",
   reviews: unknown[] = [],
+  reviewerActivityState?: string,
 ) {
-  getMock.mockImplementation(commonGetsResponder(_unusedRuns, reviewerHandleId, reviews));
+  getMock.mockImplementation(commonGetsResponder(_unusedRuns, reviewerHandleId, reviews, reviewerActivityState));
 }
 
 const approvedReview = {
@@ -2025,6 +2027,7 @@ describe("SessionInspector summary reviews", () => {
         return {
           data: {
             reviewerHandleId: "reviewer-pane",
+            reviewerActivityState: "active",
             reviews: [
               { ...reviewState(3, "running"), latestRun: runningReview },
             ],
@@ -2122,7 +2125,7 @@ describe("SessionInspector summary reviews", () => {
         verdict: "",
       },
     };
-    mockCommonGets([], "reviewer-pane", [running]);
+    mockCommonGets([], "reviewer-pane", [running], "active");
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
@@ -3359,7 +3362,7 @@ describe("SessionInspector summary reviews", () => {
         createdAt: "2026-01-02T00:00:00Z",
       },
     };
-    mockCommonGets([], "reviewer-pane", [done, running]);
+    mockCommonGets([], "reviewer-pane", [done, running], "active");
 
     renderWithQuery(
       <SessionInspector session={session([pr(3, "open"), pr(4, "open")])} />,
@@ -3456,7 +3459,7 @@ describe("SessionInspector summary reviews", () => {
         verdict: "",
       },
     };
-    mockCommonGets([], "reviewer-pane", [running]);
+    mockCommonGets([], "reviewer-pane", [running], "active");
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
@@ -3467,6 +3470,51 @@ describe("SessionInspector summary reviews", () => {
     expect(
       screen.getByRole("button", { name: /Select reviewer agent/ }),
     ).toBeDisabled();
+  });
+
+  it("hides the review in progress strip when the reviewer hook reports idle", async () => {
+    const running = {
+      ...reviewState(3, "running", "sha-1"),
+      latestRun: {
+        ...approvedReview,
+        id: "run-live",
+        harness: "codex",
+        status: "running",
+        verdict: "",
+      },
+    };
+    mockCommonGets([], "reviewer-pane", [running], "idle");
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+
+    expect(
+      screen.queryByText("Review in progress · Codex"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Stop review" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the review in progress strip when the reviewer hook reports blocked", async () => {
+    const running = {
+      ...reviewState(3, "running", "sha-1"),
+      latestRun: {
+        ...approvedReview,
+        id: "run-live",
+        harness: "codex",
+        status: "running",
+        verdict: "",
+      },
+    };
+    mockCommonGets([], "reviewer-pane", [running], "blocked");
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+
+    expect(
+      await screen.findByText("Review in progress · Codex"),
+    ).toBeInTheDocument();
   });
 
   it("hides the previous verdict after the current head review completes", async () => {

@@ -38,6 +38,7 @@ export function BoardWelcome() {
 export function ProjectBoardEmpty({
 	hasOrchestrator,
 	isProjectRestarting,
+	isProvisioning = false,
 	isSpawning,
 	onNewTask,
 	onOpenOrchestrator,
@@ -46,6 +47,7 @@ export function ProjectBoardEmpty({
 }: {
 	hasOrchestrator: boolean;
 	isProjectRestarting: boolean;
+	isProvisioning?: boolean;
 	isSpawning: boolean;
 	onNewTask: () => void;
 	onOpenOrchestrator: () => void;
@@ -56,9 +58,11 @@ export function ProjectBoardEmpty({
 	const orchestratorLabel = hasOrchestrator ? t("shell.orchestrator") : t("shell.spawnOrchestrator");
 	const busyLabel = isProjectRestarting
 		? t("shell.restartingDots")
-		: isSpawning
-			? t("shell.spawningDots")
-			: orchestratorLabel;
+		: isProvisioning
+			? t("shell.provisioningDots", { defaultValue: "Setting up…" })
+			: isSpawning
+				? t("shell.spawningDots")
+				: orchestratorLabel;
 
 	return (
 		<div className="flex h-full min-h-0 items-center justify-center overflow-y-auto">
@@ -68,14 +72,14 @@ export function ProjectBoardEmpty({
 				<div className="mt-5 flex items-center gap-2">
 					<TopbarButton
 						aria-label={orchestratorLabel}
-						disabled={isSpawning || isProjectRestarting}
+						disabled={isSpawning || isProjectRestarting || isProvisioning}
 						onClick={onOpenOrchestrator}
 						variant="primary"
 					>
 						<OrchestratorIcon className="size-icon-md" aria-hidden="true" />
 						{busyLabel}
 					</TopbarButton>
-					<TopbarButton aria-label={t("shell.newTask")} disabled={isProjectRestarting} onClick={onNewTask} variant="accent">
+					<TopbarButton aria-label={t("shell.newTask")} disabled={isProjectRestarting || isProvisioning} onClick={onNewTask} variant="accent">
 						<Plus className="size-icon-md" aria-hidden="true" />
 						{t("shell.newTask")}
 					</TopbarButton>
@@ -86,7 +90,7 @@ export function ProjectBoardEmpty({
 							{spawnError}
 						</p>
 						{onOpenOrchestratorAsTui ? (
-							<TopbarButton disabled={isSpawning || isProjectRestarting} onClick={onOpenOrchestratorAsTui}>
+							<TopbarButton disabled={isSpawning || isProjectRestarting || isProvisioning} onClick={onOpenOrchestratorAsTui}>
 								{t("newTask.createAsTui")}
 							</TopbarButton>
 						) : null}

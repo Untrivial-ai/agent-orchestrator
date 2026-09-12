@@ -71,17 +71,27 @@ export type SessionStatusDotView = {
 // Motion stays on raw agent activity. A no-PR idle session is the exception to
 // the preserved section colour: when its agent starts working it blinks blue.
 export function getSessionStatusDotView(
-	session: { activity?: SessionActivity | null; scmStatus?: SessionStatus; status: SessionStatus; importedHistory?: boolean },
+	session: {
+		activity?: SessionActivity | null;
+		displayStatus?: string;
+		scmStatus?: SessionStatus;
+		status: SessionStatus;
+		importedHistory?: boolean;
+	},
 	t: TFunction = appI18n.t,
 ): SessionStatusDotView {
 	if (session.importedHistory) return {className: "bg-muted-foreground", breathe: false};
 	const working = isAgentActivityWorking(session.activity);
-	const sectionStatus = session.scmStatus ?? session.status;
+	const closedWithoutMerge = session.displayStatus === "Closed without merge";
+	const sectionStatus: SessionStatus =
+		closedWithoutMerge ? "exited" : (session.scmStatus ?? session.status);
 	const toneStatus = sectionStatus === "idle" && working ? "working" : sectionStatus;
 	const className =
-		toneStatus === "idle" || toneStatus === "merged"
-			? getSessionStatusView(toneStatus, t).dotClassName
-			: getAttentionZoneView(toneStatus, t).dotClassName;
+		closedWithoutMerge
+			? getSessionStatusView("exited", t).dotClassName
+			: toneStatus === "idle" || toneStatus === "merged"
+				? getSessionStatusView(toneStatus, t).dotClassName
+				: getAttentionZoneView(toneStatus, t).dotClassName;
 
 	return {
 		className,

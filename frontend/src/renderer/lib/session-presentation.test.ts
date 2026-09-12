@@ -162,6 +162,14 @@ describe("session presentation", () => {
 		).toEqual({ className: "bg-status-working", breathe: true });
 	});
 
+	it("paints a closed-without-merge session red", () => {
+		expect(
+			getSessionStatusDotView(
+				sessionWith({ status: "idle", displayStatus: "Closed without merge" }),
+			),
+		).toEqual({ className: "bg-status-exited", breathe: false });
+	});
+
 	it("keeps activity indicator color independent from PR and CI presentation", () => {
 		const active = getAgentActivityView({ state: "active", lastActivityAt: "" });
 		const idle = getAgentActivityView({ state: "idle", lastActivityAt: "" });

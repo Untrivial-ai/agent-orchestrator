@@ -43,6 +43,8 @@ type fakeShellRuntime struct {
 	aliveByHandle map[string]bool
 	aliveErr      error
 	handlePrefix  string
+	childExited   bool
+	childProbeErr error
 }
 
 type sentInput struct {
@@ -112,10 +114,21 @@ func (f *fakeShellRuntime) IsAlive(_ context.Context, handle ports.RuntimeHandle
 	return f.aliveByHandle[handle.ID], nil
 }
 
+func (f *fakeShellRuntime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	if f.childProbeErr != nil {
+		return false, f.childProbeErr
+	}
+	if f.childExited {
+		return false, nil
+	}
+	return f.IsAlive(ctx, handle)
+}
+
 // fakeShellTerminalStore is an in-memory Store keyed by handle id.
 type fakeShellTerminalStore struct {
-	records   []ShellTerminalRecord
-	insertErr error
+	records           []ShellTerminalRecord
+	insertErr         error
+	deleteErrByHandle map[string]error
 }
 
 func (f *fakeShellTerminalStore) InsertShellTerminal(_ context.Context, rec ShellTerminalRecord) error {
@@ -176,6 +189,9 @@ func (f *fakeShellTerminalStore) SelectShellTerminalsFromPreviousAppRuns(_ conte
 }
 
 func (f *fakeShellTerminalStore) DeleteShellTerminalByHandleID(_ context.Context, handleID string) (bool, error) {
+	if err := f.deleteErrByHandle[handleID]; err != nil {
+		return false, err
+	}
 	for i, rec := range f.records {
 		if rec.HandleID == handleID {
 			f.records = append(f.records[:i], f.records[i+1:]...)
@@ -298,6 +314,7 @@ func TestOpenCommandTerminalStartsTrustedCommandInDedicatedAuthWorkspace(t *test
 		WorkingDir: authWorkspace,
 		Title:      "Log in to Pi",
 		AppRunID:   testAppRunID,
+		Transient:  true,
 		CreatedAt:  time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
 	}
 	if !reflect.DeepEqual(st.records, []ShellTerminalRecord{wantRecord}) {
@@ -1516,13 +1533,13 @@ func TestListShellTerminalsForCurrentAppRunKeepsTerminalWhenLivenessProbeErrors(
 	}
 }
 
-// The app was force-killed, so nothing closed its shells. The next boot must
-// sweep them rather than leak PTYs, while leaving the new run's shells alone.
+// Abandoned transient commands are swept on the next launch, while current
+// launch terminals are left alone. Durable user shells are covered below.
 func TestReapShellTerminalsFromPreviousAppRunsDestroysOrphansOnly(t *testing.T) {
 	rt := newFakeShellRuntime()
 	st := &fakeShellTerminalStore{records: []ShellTerminalRecord{
-		{HandleID: "shellterm-orphan1", AppRunID: "app-run-crashed", WorkingDir: "/a"},
-		{HandleID: "shellterm-orphan2", AppRunID: "app-run-crashed", WorkingDir: "/b"},
+		{HandleID: "shellterm-orphan1", AppRunID: "app-run-crashed", Transient: true, WorkingDir: "/a"},
+		{HandleID: "shellterm-orphan2", AppRunID: "app-run-crashed", Transient: true, WorkingDir: "/b"},
 		{HandleID: "shellterm-current", AppRunID: testAppRunID, WorkingDir: "/c"},
 	}}
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
@@ -1548,7 +1565,7 @@ func TestReapShellTerminalsFromPreviousAppRunsClearsRowsWhenDestroyFails(t *test
 	rt := newFakeShellRuntime()
 	rt.destroyErr = errors.New("tmux: no such session")
 	st := &fakeShellTerminalStore{records: []ShellTerminalRecord{
-		{HandleID: "shellterm-orphan", AppRunID: "app-run-crashed", WorkingDir: "/a"},
+		{HandleID: "shellterm-orphan", AppRunID: "app-run-crashed", Transient: true, WorkingDir: "/a"},
 	}}
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
 
@@ -1578,8 +1595,8 @@ func TestReapShellTerminalsFromPreviousAppRunsKeepsRowForConfirmedLiveOrphan(t *
 	rt.destroyErr = errors.New("tmux: kill-session refused")
 	rt.aliveByHandle["shellterm-orphan-alive"] = true // survives the crash, still alive
 	st := &fakeShellTerminalStore{records: []ShellTerminalRecord{
-		{HandleID: "shellterm-orphan-alive", SessionID: "mer-1", AppRunID: "app-run-crashed", WorkingDir: "/a"},
-		{HandleID: "shellterm-orphan-dead", AppRunID: "app-run-crashed", WorkingDir: "/b"},
+		{HandleID: "shellterm-orphan-alive", SessionID: "mer-1", AppRunID: "app-run-crashed", Transient: true, WorkingDir: "/a"},
+		{HandleID: "shellterm-orphan-dead", AppRunID: "app-run-crashed", Transient: true, WorkingDir: "/b"},
 	}}
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
 
@@ -1610,5 +1627,189 @@ func TestNextShellTerminalTitleKeepsExistingNumbersStable(t *testing.T) {
 	terminals := []ShellTerminalRecord{{Title: "Terminal"}, {Title: "Terminal 3"}, {Title: "logs"}}
 	if got := nextShellTerminalTitle(terminals); got != "Terminal 4" {
 		t.Errorf("title = %q, want %q", got, "Terminal 4")
+	}
+}
+
+func TestDesktopRelaunchPreservesUserShells(t *testing.T) {
+	for _, tc := range []struct {
+		name, nextRun string
+		probeErr      error
+	}{
+		{name: "daemon restart", nextRun: testAppRunID},
+		{name: "desktop relaunch", nextRun: "next-launch"},
+		{name: "unknown runtime", nextRun: "next-launch", probeErr: ports.ErrRuntimeProbeInconclusive},
+		{name: "unavailable runtime", nextRun: "next-launch", probeErr: ports.ErrRuntimeUnavailable},
+		{name: "failed probe", nextRun: "next-launch", probeErr: errors.New("temporarily unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			rt := newFakeShellRuntime()
+			rt.handlePrefix = "ptyhost-v1:"
+			st := &fakeShellTerminalStore{}
+			projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"project-1": "/project"}}
+			sessions := &fakeSessionWorkspaceLocator{sessions: map[domain.SessionID]fakeSessionWorkspace{
+				"session-1": {workspacePath: "/worktree", projectID: "project-1"},
+			}}
+			svc := newTestServiceWithSessions(rt, st, projects, sessions)
+			side, err := svc.OpenShellTerminal(ctx, OpenShellTerminalInput{SessionID: "session-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			standalone, err := svc.OpenShellTerminal(ctx, OpenShellTerminalInput{ProjectID: "project-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			side, err = svc.RenameShellTerminal(ctx, side.HandleID, "Build")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []ShellTerminal{side, standalone}
+
+			// Recreate the service just as boot does. The runtime and durable rows
+			// belong to the shells, not to this service or desktop launch.
+			svc = NewService(rt, st, projects, sessions, "/data/dir", tc.nextRun, testLogger())
+			rt.aliveErr = tc.probeErr // The fake returns false alongside probe errors.
+			if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(ctx); err != nil || n != 0 {
+				t.Fatalf("reap = %d, %v", n, err)
+			}
+			got, err := svc.ListShellTerminalsForCurrentAppRun(ctx)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("restored = %+v, %v; want %+v", got, err, want)
+			}
+			if len(rt.destroyed) != 0 {
+				t.Fatalf("destroyed user shells: %v", rt.destroyed)
+			}
+			next, err := svc.OpenShellTerminal(ctx, OpenShellTerminalInput{SessionID: "session-1"})
+			if err != nil || next.Title != "Terminal 3" {
+				t.Fatalf("next terminal = %+v, %v; want Terminal 3", next, err)
+			}
+			if err := svc.CloseShellTerminal(ctx, standalone.HandleID); err != nil {
+				t.Fatal(err)
+			}
+			release, err := svc.BeginSessionTeardown(ctx, "session-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			release()
+			if len(st.records) != 0 || len(rt.aliveByHandle) != 0 {
+				t.Fatalf("cleanup left rows: %+v, runtimes: %v", st.records, rt.aliveByHandle)
+			}
+		})
+	}
+}
+
+func (f *fakeShellTerminalStore) SelectRestorableShellTerminals(_ context.Context, appRunID string) ([]ShellTerminalRecord, error) {
+	var out []ShellTerminalRecord
+	for _, rec := range f.records {
+		if !rec.Transient || rec.AppRunID == appRunID {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+func TestCommandTerminalLifetimeAcrossRestarts(t *testing.T) {
+	rt := newFakeShellRuntime()
+	st := &fakeShellTerminalStore{}
+	svc := newTestService(rt, st, &fakeProjectRootLocator{})
+	svc.dataDir = t.TempDir()
+	term, err := svc.OpenCommandTerminal(context.Background(), OpenCommandTerminalInput{Argv: []string{"auth"}, Title: "Login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || n != 0 {
+		t.Fatalf("same run reap = %d, %v", n, err)
+	}
+	svc.appRunID = "next-launch"
+	if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || n != 1 {
+		t.Fatalf("new run reap = %d, %v", n, err)
+	}
+	if rt.aliveByHandle[term.HandleID] {
+		t.Fatal("abandoned command still running")
+	}
+	if _, err := os.Stat(term.WorkingDir); !os.IsNotExist(err) {
+		t.Fatalf("auth workspace not cleaned: %v", err)
+	}
+}
+
+func TestDesktopRelaunchPrunesExitedShellAndHost(t *testing.T) {
+	rt := newFakeShellRuntime()
+	rt.aliveByHandle["shell-exited"] = true
+	rt.childExited = true
+	st := &fakeShellTerminalStore{records: []ShellTerminalRecord{{HandleID: "shell-exited", AppRunID: "previous"}}}
+	svc := newTestService(rt, st, &fakeProjectRootLocator{})
+	if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || n != 1 {
+		t.Fatalf("reap = %d, %v", n, err)
+	}
+	if len(st.records) != 0 || !reflect.DeepEqual(rt.destroyed, []string{"shell-exited"}) || rt.aliveByHandle["shell-exited"] {
+		t.Fatalf("rows = %+v, destroyed = %v", st.records, rt.destroyed)
+	}
+}
+
+func TestReapContinuesAfterDurableShellDeleteError(t *testing.T) {
+	rt := newFakeShellRuntime()
+	rt.aliveByHandle["auth"] = true
+	st := &fakeShellTerminalStore{
+		records: []ShellTerminalRecord{
+			{HandleID: "exited-shell", AppRunID: "previous"},
+			{HandleID: "auth", AppRunID: "previous", Transient: true},
+		},
+		deleteErrByHandle: map[string]error{"exited-shell": errors.New("delete failed")},
+	}
+	svc := newTestService(rt, st, nil)
+	if _, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rt.destroyed, []string{"exited-shell", "auth"}) || rt.aliveByHandle["auth"] {
+		t.Fatalf("later auth runtime was not cleaned: destroyed=%v, alive=%v", rt.destroyed, rt.aliveByHandle)
+	}
+	if len(st.records) != 1 || st.records[0].HandleID != "exited-shell" {
+		t.Fatalf("records = %+v, want only the failed delete retained for retry", st.records)
+	}
+	st.deleteErrByHandle = nil
+	if _, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || len(st.records) != 0 {
+		t.Fatalf("retry: err=%v, records=%+v", err, st.records)
+	}
+}
+
+func TestShellReconciliationPreservesUncertainChildOrHost(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		childProbeErr error
+		destroyErr    error
+		hostProbeErr  error
+	}{
+		{name: "unknown child", childProbeErr: ports.ErrRuntimeProbeInconclusive},
+		{name: "child probe unavailable", childProbeErr: ports.ErrRuntimeUnavailable},
+		{name: "child probe error", childProbeErr: errors.New("status failed")},
+		{name: "host survives teardown", destroyErr: errors.New("kill failed")},
+		{name: "host teardown unknown", destroyErr: errors.New("kill failed"), hostProbeErr: ports.ErrRuntimeProbeInconclusive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := newFakeShellRuntime()
+			rt.childExited, rt.childProbeErr = true, tc.childProbeErr
+			rt.destroyErr, rt.aliveErr = tc.destroyErr, tc.hostProbeErr
+			handleID := "ptyhost-v1:shell-exited"
+			rt.aliveByHandle[handleID] = true
+			st := &fakeShellTerminalStore{records: []ShellTerminalRecord{{HandleID: handleID, AppRunID: "previous"}}}
+			svc := newTestService(rt, st, &fakeProjectRootLocator{})
+			if count, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || count != 0 {
+				t.Fatalf("reap = %d, %v; want preserved runtime", count, err)
+			}
+			listed, err := svc.ListShellTerminalsForCurrentAppRun(context.Background())
+			if err != nil || len(listed) != 1 || len(st.records) != 1 {
+				t.Fatalf("list = %v, %v; rows = %v", listed, err, st.records)
+			}
+			if tc.childProbeErr != nil && len(rt.destroyed) != 0 {
+				t.Fatalf("inconclusive child probe destroyed runtime: %v", rt.destroyed)
+			}
+			// A later conclusive retry must finish cleanup without losing the
+			// handle needed to stop the host retained by the failed attempt.
+			rt.childProbeErr, rt.destroyErr, rt.aliveErr = nil, nil, nil
+			listed, err = svc.ListShellTerminalsForCurrentAppRun(context.Background())
+			if err != nil || len(listed) != 0 || len(st.records) != 0 || rt.aliveByHandle[handleID] {
+				t.Fatalf("retry list = %v, %v; rows = %v", listed, err, st.records)
+			}
+		})
 	}
 }

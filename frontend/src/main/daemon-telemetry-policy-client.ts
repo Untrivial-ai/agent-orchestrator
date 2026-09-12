@@ -8,6 +8,10 @@ export type DaemonTelemetryPolicyAcknowledgement = {
 
 type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
+export class DaemonTelemetryControlUnavailableError extends Error {
+	constructor() { super("daemon telemetry control is unavailable"); }
+}
+
 export class DaemonTelemetryPolicyClient {
 	constructor(private readonly origin: () => string | null, private readonly fetcher: Fetcher = fetch) {}
 
@@ -20,14 +24,14 @@ export class DaemonTelemetryPolicyClient {
 
 	async applyPolicy(consentGeneration: string, eventsEnabled: boolean): Promise<DaemonTelemetryPolicyAcknowledgement> {
 		const acknowledgement = await this.request("/internal/agent-switch-observability/apply-policy", { consentGeneration, eventsEnabled }, consentGeneration);
-		if (acknowledgement.eventsEnabled !== eventsEnabled) throw new Error("daemon telemetry acknowledgement policy mismatch");
+		if (!eventsEnabled && acknowledgement.eventsEnabled) throw new Error("daemon telemetry acknowledgement policy mismatch");
 		if (!eventsEnabled && (!acknowledgement.gateDrained || !acknowledgement.purgeConfirmed)) throw new Error("daemon telemetry acknowledgement lacks cleanup proof");
 		return acknowledgement;
 	}
 
 	private async request(pathname: string, body?: object, expectedGeneration?: string): Promise<DaemonTelemetryPolicyAcknowledgement> {
 		const base = this.origin();
-		if (!base) throw new Error("daemon telemetry control is unavailable");
+		if (!base) throw new DaemonTelemetryControlUnavailableError();
 		const parsed = new URL(base);
 		if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
 			throw new Error("daemon telemetry control origin must be exact loopback HTTP");

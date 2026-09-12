@@ -18,6 +18,7 @@ import { ShellTopbar } from "../components/ShellTopbar";
 import { SessionTopbarProvider } from "../components/SessionTopbarPortal";
 import { OrchestratorReplacementDialog } from "../components/OrchestratorReplacementDialog";
 import { RestartToUpdateDialog } from "../components/RestartToUpdateDialog";
+import { TelemetryConsentRenewalDialog } from "../components/TelemetryConsentRenewalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { TitlebarNav } from "../components/TitlebarNav";
@@ -39,7 +40,6 @@ import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
 import { recordProjectOpened } from "../lib/project-history";
-import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { cn } from "../lib/utils";
 import {
 	isLinuxPlatform,
@@ -80,6 +80,7 @@ function findRegisteredWorkspaceByPath(workspaces: WorkspaceSummary[], path: str
 	const normalizedPath = normalizeProjectPath(path);
 	return workspaces.find((workspace) => normalizeProjectPath(workspace.path) === normalizedPath);
 }
+
 type CreateProjectConfigInput = {
 	workerAgent: string;
 	orchestratorAgent: string;
@@ -95,6 +96,11 @@ export function createProjectConfig(input: CreateProjectConfigInput): components
 		...(input.trackerIntake ? { trackerIntake: input.trackerIntake } : {}),
 	};
 }
+
+// Upper bound for the background orchestrator spawn after project creation.
+// Past this the board releases the provisioning gate and shows the retry
+// banner instead of staying gated forever on a hung spawn.
+const PROVISIONING_TIMEOUT_MS = 120_000;
 
 const isMac = isMacPlatform();
 const isWindows = isWindowsPlatform();
@@ -330,6 +336,7 @@ function ShellLayout() {
 	const orchestratorReplacementErrors = useUiStore((state) => state.orchestratorReplacementErrors);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
+	const setProjectProvisioning = useUiStore((state) => state.setProjectProvisioning);
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const replacementErrorProjectId = Object.keys(orchestratorReplacementErrors)[0] ?? null;
 	const isStartupLoading =
@@ -367,6 +374,79 @@ function ShellLayout() {
 		[queryClient],
 	);
 
+	// Background orchestrator provisioning for a newly created project. Owns
+	// the provisioning flag, the hung-spawn timeout, the session refresh, and
+	// the retry error end to end — callers must fire and forget it, never await.
+	const provisionOrchestrator = useCallback(
+		async (
+			workspace: WorkspaceSummary,
+			input: CreateProjectConfigInput,
+			source: "project_add" | "project_clone",
+		) => {
+		// Safety: a hung spawn must never wedge the board behind the
+		// provisioning gate. If it outlives this budget, release the gate and
+		// surface the retry banner; a late success still navigates below and
+		// the board clears the banner once the orchestrator appears.
+		const provisioningGuard = window.setTimeout(() => {
+			setProjectProvisioning(workspace.id, false);
+			setOrchestratorStartupError(
+				workspace.id,
+				"Project added, but the orchestrator is taking longer than expected to start. Retry from the board if it does not appear.",
+			);
+		}, PROVISIONING_TIMEOUT_MS);
+		try {
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
+				project_id: workspace.id,
+				source,
+			});
+			const {
+				data: spawnData,
+				error: spawnError,
+				response: spawnResponse,
+			} = await apiClient.POST("/api/v1/sessions", {
+				body: {
+					projectId: workspace.id,
+					kind: "orchestrator",
+					harness: input.orchestratorAgent as components["schemas"]["SpawnSessionRequest"]["harness"],
+				},
+			});
+			if (spawnError || !spawnData?.session?.id) {
+				const message = spawnError
+					? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
+					: `Failed to spawn orchestrator (${spawnResponse.status})`;
+				throw new Error(message);
+			}
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
+				project_id: workspace.id,
+				source,
+			});
+			const sessionId = spawnData.session.id;
+			window.clearTimeout(provisioningGuard);
+			setProjectProvisioning(workspace.id, false);
+			// Wait for the refetch so the session route never renders before
+			// the new session is in the workspace query (which would flash
+			// the session-not-found state). The daemon just created it, so
+			// one invalidate is enough — no polling loop.
+			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			void navigate({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: workspace.id, sessionId },
+			});
+		} catch (spawnError) {
+			window.clearTimeout(provisioningGuard);
+			setProjectProvisioning(workspace.id, false);
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
+				project_id: workspace.id,
+				source,
+			});
+			const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
+			const startupMessage = `Project added, but orchestrator did not start: ${message}`;
+			setOrchestratorStartupError(workspace.id, startupMessage);
+		}
+	},
+	[navigate, queryClient, setOrchestratorStartupError, setProjectProvisioning],
+);
+
 	const completeProjectCreation = useCallback(
 		async (
 			project: components["schemas"]["Project"],
@@ -386,24 +466,15 @@ function ShellLayout() {
 			void captureRendererEvent(`ao.renderer.${source}_succeeded`, { project_id: workspace.id });
 			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
 			setOrchestratorStartupError(workspace.id, null);
-			try {
-				const sessionId = await spawnOrchestrator(
-					workspace.id,
-					source === "project_clone" ? "project_clone" : "project_add",
-				);
-				await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-				void navigate({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId: workspace.id, sessionId },
-				});
-			} catch (spawnError) {
-				void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
-				const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
-				const startupMessage = `Project added, but orchestrator did not start: ${message}`;
-				setOrchestratorStartupError(workspace.id, startupMessage);
-			}
+			setProjectProvisioning(workspace.id, true);
+			// Navigate to the project board immediately so the IDE paints, then
+			// hand off to the detached provisioning flow. Resolving here (rather
+			// than after the spawn) is what closes the setup modal and makes
+			// the board usable while the orchestrator starts in the background.
+			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
+			void provisionOrchestrator(workspace, input, source);
 		},
-		[navigate, queryClient, setOrchestratorStartupError, updateWorkspaces],
+		[navigate, provisionOrchestrator, setOrchestratorStartupError, setProjectProvisioning, updateWorkspaces],
 	);
 
 	const createProject = useCallback(
@@ -413,7 +484,7 @@ function ShellLayout() {
 			orchestratorAgent: string;
 			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 			asWorkspace?: boolean;
-			defaultBranch?: string;
+			clonePreparationId?: string;
 		}) => {
 			void addRendererExceptionStep("Project add requested", {
 				source: "project-add",
@@ -429,6 +500,7 @@ function ShellLayout() {
 				body: {
 					path: input.path,
 					asWorkspace: input.asWorkspace || undefined,
+					clonePreparationId: input.clonePreparationId,
 					config: createProjectConfig(input),
 				},
 			});
@@ -489,6 +561,7 @@ function ShellLayout() {
 			workerAgent: string;
 			orchestratorAgent: string;
 			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
+			signal?: AbortSignal;
 		}) => {
 			void addRendererExceptionStep("Project clone requested", {
 				source: "project-clone",
@@ -501,6 +574,7 @@ function ShellLayout() {
 				throw new Error(status.message || "AO daemon is not ready.");
 			}
 			const { data, error } = await apiClient.POST("/api/v1/projects/clone", {
+				signal: input.signal,
 				body: {
 					remoteUrl: input.remoteUrl,
 					destinationParent: input.destinationParent,
@@ -539,6 +613,16 @@ function ShellLayout() {
 			throw failure;
 		}
 	}, []);
+
+	const validateImport = useCallback(
+		async (input: { path: string; importKind: "project" | "workspace" }) => {
+			const { data, error } = await apiClient.POST("/api/v1/imports/validate", { body: input });
+			if (error) throw new Error(apiErrorMessage(error));
+			if (!data) throw new Error("Import validation returned no result");
+			return data;
+		},
+		[],
+	);
 
 	const removeProject = useCallback(
 		async (projectId: string) => {
@@ -812,12 +896,14 @@ function ShellLayout() {
 			cloneProject,
 			createProject,
 			initializeProjectRepository,
+			validateImport,
 		}),
 		[
 			cloneProject,
 			createProject,
 			daemonStatus,
 			initializeProjectRepository,
+			validateImport,
 			workspaceStartupState,
 		],
 	);
@@ -855,6 +941,7 @@ function ShellLayout() {
 				<GlobalToast />
 				<SettingsDialog />
 				<RestartToUpdateDialog />
+				<TelemetryConsentRenewalDialog />
 				<KeyboardShortcutsDialog
 					open={isKeyboardShortcutsOpen}
 					onOpenChange={setIsKeyboardShortcutsOpen}

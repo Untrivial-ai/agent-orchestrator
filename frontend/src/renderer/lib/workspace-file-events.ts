@@ -86,6 +86,9 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient): Wor
 		stream.debounce = setTimeout(() => {
 			void queryClient.invalidateQueries({ queryKey: ["session-workspace-files", sessionId] });
 			void queryClient.invalidateQueries({ queryKey: ["session-workspace-file", sessionId] });
+			void queryClient.invalidateQueries({ queryKey: ["session-workspace-file-revision", sessionId] });
+			void queryClient.invalidateQueries({ queryKey: ["session-workspace-diffs", sessionId] });
+			void queryClient.invalidateQueries({ queryKey: ["session-workspace-search", sessionId] });
 			void queryClient.invalidateQueries({ queryKey: ["session-workspace-tree", sessionId] });
 		}, INVALIDATE_DEBOUNCE_MS);
 	};

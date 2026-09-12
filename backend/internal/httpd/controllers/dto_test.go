@@ -18,7 +18,8 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 		Author:          "alice",
 		AuthorAvatarURL: "https://avatars.githubusercontent.com/u/123?v=4",
 		Review: sessionsvc.PRReviewSummary{
-			Decision: domain.ReviewChangesRequest,
+			Decision:              domain.ReviewChangesRequest,
+			UnresolvedThreadCount: intPtrForTest(2),
 			UnresolvedBy: []sessionsvc.PRUnresolvedReviewer{{
 				ReviewerID: "bob",
 				Count:      1,
@@ -74,7 +75,34 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	if got.Review.UnresolvedBy[0].Links[0].Body != "please fix this" {
 		t.Fatalf("unresolved comment body = %q, want body text", got.Review.UnresolvedBy[0].Links[0].Body)
 	}
+	if got.Review.UnresolvedThreadCount == nil || *got.Review.UnresolvedThreadCount != 2 {
+		t.Fatalf("unresolvedThreadCount = %v, want 2", got.Review.UnresolvedThreadCount)
+	}
 }
+
+func TestNewSessionPRSummaryThreadCountUnknownVsObservedZero(t *testing.T) {
+	// An unknown count must stay absent from the wire, while an observed zero
+	// must serialize explicitly rather than being dropped by omitempty.
+	unknown, err := json.Marshal(controllers.NewSessionPRSummary(sessionsvc.PRSummary{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(unknown), "unresolvedThreadCount") {
+		t.Fatalf("unknown count serialized: %s", unknown)
+	}
+
+	zero, err := json.Marshal(controllers.NewSessionPRSummary(sessionsvc.PRSummary{
+		Review: sessionsvc.PRReviewSummary{UnresolvedThreadCount: intPtrForTest(0)},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(zero), `"unresolvedThreadCount":0`) {
+		t.Fatalf("observed zero not serialized: %s", zero)
+	}
+}
+
+func intPtrForTest(v int) *int { return &v }
 
 func TestNewSessionPRSummaryExposesCIFailureInjectionPolicy(t *testing.T) {
 	got := controllers.NewSessionPRSummary(sessionsvc.PRSummary{

@@ -467,6 +467,53 @@ describe("TaskComposer", () => {
 		});
 	});
 
+	it("waits for both rapidly selected file batches before delegating", async () => {
+		h.post.mockResolvedValueOnce({ data: { workerId: "sess-1" } });
+		const pendingReads: Array<() => void> = [];
+		class SlowFileReader {
+			error: Error | null = null;
+			result: string | ArrayBuffer | null = null;
+			onerror: (() => void) | null = null;
+			onload: (() => void) | null = null;
+
+			readAsDataURL(file: File) {
+				pendingReads.push(() => {
+					this.result = `data:${file.type};base64,${file.name === "first.txt" ? "AQ==" : "Ag=="}`;
+					this.onload?.();
+				});
+			}
+		}
+		vi.stubGlobal("FileReader", SlowFileReader);
+		const { container } = render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+		fireEvent.change(input, {
+			target: { files: [new File([new Uint8Array([1])], "first.txt", { type: "text/plain" })] },
+		});
+		fireEvent.change(input, {
+			target: { files: [new File([new Uint8Array([2])], "second.txt", { type: "text/plain" })] },
+		});
+		fireEvent.change(task(), { target: { value: "Use both files" } });
+		fireEvent.click(screen.getByText("Start task"));
+		expect(h.post).not.toHaveBeenCalled();
+
+		await act(async () => pendingReads.shift()?.());
+		await waitFor(() => expect(pendingReads).toHaveLength(1));
+		expect(h.post).not.toHaveBeenCalled();
+		await act(async () => pendingReads.shift()?.());
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		expect(h.post.mock.calls[0][1].body).toMatchObject({
+			attachments: [
+				{ mimeType: "text/plain", data: "AQ==" },
+				{ mimeType: "text/plain", data: "Ag==" },
+			],
+		});
+	});
+
 	it("removes a selected file before submitting", async () => {
 		h.post.mockResolvedValueOnce({ data: { workerId: "sess-1" } });
 

@@ -133,6 +133,9 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlySandbox(t *testing.T)
 	if !ok {
 		t.Fatal("ReviewRestoreCommand ok = false, want true")
 	}
+	if !got.NativeResumed {
+		t.Fatal("ReviewRestoreCommand did not report native resume")
+	}
 	want := []string{
 		"agent", "resume",
 		"--sandbox", "read-only",

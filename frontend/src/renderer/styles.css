@@ -311,6 +311,24 @@
 	--animate-popover-out: popover-out 100ms cubic-bezier(0.4, 0, 1, 1);
 }
 
+/* Pierre powers both the continuous review and focused source views. Keep its
+   Shiki tokenization while making the surface inherit AO's editor typography,
+   workspace canvas, and responsive wrapped-line geometry. */
+.ao-pierre-surface {
+	--diffs-font-family: var(--font-family-mono);
+	--diffs-header-font-family: var(--font-family-base);
+	--diffs-font-size: var(--font-size-sm);
+	--diffs-line-height: var(--line-height-row);
+	--diffs-light-bg: var(--color-bg-primary);
+	--diffs-dark-bg: var(--color-bg-primary);
+	--diffs-light: var(--color-text-terminal);
+	--diffs-dark: var(--color-text-terminal);
+	--diffs-bg-context-override: color-mix(in srgb, var(--color-bg-primary) 92%, var(--foreground) 8%);
+	--diffs-bg-context-gutter-override: color-mix(in srgb, var(--color-bg-primary) 84%, var(--foreground) 16%);
+	--diffs-bg-separator-override: var(--surface);
+	background: var(--color-bg-primary);
+}
+
 /* Full-viewport modal/sheet scrim — dim + blur everything behind pop panels. */
 @utility dialog-overlay {
 	position: fixed;
@@ -319,6 +337,18 @@
 	background-color: var(--color-scrim);
 	-webkit-backdrop-filter: blur(var(--blur-overlay));
 	backdrop-filter: blur(var(--blur-overlay));
+}
+
+@utility modal-shake {
+	animation: project-import-shake 280ms ease-in-out;
+}
+
+@utility toast-enter {
+	animation: toast-enter 180ms var(--ease-out);
+}
+
+@utility toast-exit {
+	animation: toast-exit 180ms ease-in forwards;
 }
 
 @utility agent-switch-terminal-scrim {
@@ -1902,6 +1932,22 @@ textarea,
 		opacity: 1;
 		scale: 1;
 	}
+}
+
+@keyframes project-import-shake {
+	0%, 100% { transform: translate(-50%, -50%); }
+	25% { transform: translate(calc(-50% - 6px), -50%); }
+	75% { transform: translate(calc(-50% + 6px), -50%); }
+}
+
+@keyframes toast-enter {
+	from { opacity: 0; transform: translateY(8px) scale(0.98); }
+	to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-exit {
+	from { opacity: 1; transform: translateY(0) scale(1); }
+	to { opacity: 0; transform: translateY(8px) scale(0.98); }
 }
 
 @keyframes modal-out {

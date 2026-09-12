@@ -1,3 +1,5 @@
+import { finishUpdateQuit } from "./main/update-quit";
+import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import {
 	app,
 	BaseWindow,
@@ -24,6 +26,8 @@ import {
 	checkForUpdatesNow,
 	downloadUpdateNow,
 	quitAndInstallUpdate,
+	isUpdateRestartRequested,
+	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
 	returnToHome,
@@ -52,13 +56,14 @@ import {
 	writeUiSettings,
 	type UiSettings,
 } from "./main/ui-settings";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { type DaemonLaunchSpec, bundledDaemonIdentityError, resolveDaemonLaunch } from "./shared/daemon-launch";
 import { createListenPortScanner, defaultRunFilePath, parseRunFile } from "./shared/daemon-discovery";
 import type { DaemonStatus } from "./shared/daemon-status";
@@ -79,6 +84,17 @@ import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
 } from "./shared/tray";
+import {
+	parseChatDraftBoundaryKinds,
+	parseChatDraftDialogCopy,
+	type ChatDraftDialogCopy,
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+} from "./shared/chat-draft-risk";
+import {
+	confirmUnsafeChatDraftLeave,
+	shouldPreventUnsafeChatDraftClose,
+} from "./main/chat-draft-unload";
 import {
 	type DaemonProbe,
 	expectedDaemonPort,
@@ -112,6 +128,7 @@ import {
 	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
 	TELEMETRY_POLICY_CHANGED_CHANNEL,
 	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
+	telemetryPolicyRetryable,
 	type RendererTelemetryCapture,
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
@@ -147,6 +164,8 @@ import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-obser
 // Globals injected at compile time by @electron-forge/plugin-vite.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
+
+const execFileAsync = promisify(execFile);
 
 // Windows GUI launches (e.g. from a Start-menu/desktop shortcut) have no attached
 // console, so process.stdout and process.stderr are dead pipes. The daemon-output
@@ -286,6 +305,10 @@ let keybindingOverrides: KeybindingOverrides = {};
 let keybindingRecordingActive = false;
 let closeShellTerminalShortcutEnabled = false;
 let terminalFocused = false;
+let chatDraftRisks: ChatDraftBoundaryKind[] = [];
+let chatDraftDialog: ChatDraftDialogCopy | undefined;
+let chatDraftQuitConfirmed = false;
+let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
 // Guard: prevents stacking multiple flashFrame(true) calls when notifications arrive rapidly.
@@ -635,6 +658,33 @@ async function createWindowInternal(): Promise<void> {
 		}
 	});
 
+	shellWebContents.on("will-prevent-unload", (event) => {
+		if (chatDraftRisks.length === 0) return;
+		if (
+			chatDraftQuitConfirmed ||
+			chatDraftWindowCloseConfirmed ||
+			confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog)
+		) {
+			// Electron uses preventDefault here to ignore beforeunload and continue
+			// leaving. Doing nothing honors the renderer's request to stay.
+			event.preventDefault();
+		}
+	});
+
+	mainWindow.on("close", (event) => {
+		const preventClose = shouldPreventUnsafeChatDraftClose(
+			chatDraftRisks,
+			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		);
+		if (preventClose) {
+			event.preventDefault();
+			return;
+		}
+		if (chatDraftRisks.length > 0) chatDraftWindowCloseConfirmed = true;
+	});
+
 	// Application shortcuts are handled here so they fire no matter which web
 	// contents holds focus — the shell renderer, xterm's helper textarea, or a
 	// browser-preview view (wired per-view in the browser host).
@@ -744,12 +794,20 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		chatDraftRisks = [];
+		chatDraftDialog = undefined;
+		chatDraftQuitConfirmed = false;
+		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
 		if (windowComposition === composition) windowComposition = null;
-		void disposeBrowserViewHost().finally(() => {
-			composition.dispose();
-		});
+		void disposeBrowserViewHost()
+			.finally(() => {
+				composition.dispose();
+			})
+			.catch((error) => {
+				console.error("AO: window teardown failed:", error);
+			});
 		mainWindow = null;
 		// Drop any pending dock bounce with the window it was attached to: its
 		// focus listener died with the window, so leaving the id set would make
@@ -1026,11 +1084,8 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	// re-linked, survives app quit); a normal app-owned daemon is "app";
 	// headless `ao start` sets none (stays unlinked, persistent by default).
 	//
-	// AO_APP_RUN_ID identifies THIS app launch. It is constant for the process
-	// lifetime, so a daemon the supervisor restarts inherits the same id and its
-	// standalone shell terminals survive; a later app launch gets a new id, which
-	// is how the daemon recognises the previous run's shells as orphans and
-	// destroys them (see internal/service/shellterm).
+	// AO_APP_RUN_ID scopes temporary command/auth terminals to this app launch.
+	// User-opened shells remain attachable across launches while their PTYs live.
 	const AO_OWNER = forceKeep ? "persistent" : "app";
 	const bundledTmuxBinary = stagedBundledTmuxBinary;
 	const ownerTag = {
@@ -1932,6 +1987,22 @@ ipcMain.on(SET_TERMINAL_FOCUSED_CHANNEL, (event, focused: unknown) => {
 	terminalFocused = focused;
 });
 
+ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unknown) => {
+	if (event.sender !== getShellWebContents()) return;
+	const parsed = parseChatDraftBoundaryKinds(risks);
+	const parsedCopy = parseChatDraftDialogCopy(dialogCopy);
+	if (!parsed || (parsed.length > 0 && !parsedCopy)) return;
+	if (
+		chatDraftRisks.length === parsed.length &&
+		chatDraftRisks.every((risk, index) => risk === parsed[index]) &&
+		JSON.stringify(chatDraftDialog) === JSON.stringify(parsedCopy)
+	) return;
+	chatDraftRisks = [...parsed];
+	chatDraftDialog = parsedCopy;
+	chatDraftQuitConfirmed = false;
+	chatDraftWindowCloseConfirmed = false;
+});
+
 // Backs the custom title-bar menu (WindowTitlebar). Each item maps to the same
 // action the native default menu would have performed.
 ipcMain.handle("menu:action", (_event, action: string) => {
@@ -2026,11 +2097,13 @@ ipcMain.on(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, (event, request: unknown) => {
 });
 
 function failClosedTelemetryPolicyView(): TelemetryPolicyView {
-	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
+	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
 }
-async function chooseDirectory(title: string): Promise<string | null> {
+async function chooseDirectory(title: string, defaultPath?: string): Promise<string | null> {
+	if (defaultPath) await mkdir(defaultPath, { recursive: true });
 	const options: OpenDialogOptions = {
-		properties: ["openDirectory"],
+		defaultPath,
+		properties: ["openDirectory", "createDirectory"],
 		title,
 	};
 	// On Windows, parenting the common file dialog forces a repaint of the main
@@ -2043,8 +2116,26 @@ async function chooseDirectory(title: string): Promise<string | null> {
 	return result.filePaths[0] ?? null;
 }
 
-ipcMain.handle("app:chooseDirectory", async (_event, title?: string) => {
-	return chooseDirectory(typeof title === "string" && title.trim() ? title : "Choose a git repository");
+ipcMain.handle("app:chooseDirectory", async (_event, input?: string | { title?: string; defaultPath?: string }) => {
+	const title = typeof input === "string"
+		? input
+		: input?.title;
+	const defaultPath = typeof input === "object" && input !== null && typeof input.defaultPath === "string"
+		? input.defaultPath.trim()
+		: "";
+	return chooseDirectory(title?.trim() || "Choose a git repository", defaultPath === "~/ao/projects" ? path.join(os.homedir(), "ao", "projects") : undefined);
+});
+ipcMain.handle("app:checkGitRepository", async (_event, remoteUrl: string) => {
+	await ensureShellEnv();
+	try {
+		await execFileAsync("git", ["ls-remote", "--quiet", remoteUrl, "HEAD"], {
+			env: daemonEnv(),
+			timeout: 8000,
+		});
+		return true;
+	} catch {
+		return false;
+	}
 });
 ipcMain.handle("app:scanImportFolder", async (_event, input: { path: string; mode: "project" | "workspace" }) => {
 	await ensureShellEnv();
@@ -2057,6 +2148,90 @@ ipcMain.handle("app:checkAncestorRepo", async (_event, path: string) => {
 ipcMain.handle("app:getRepositoryBranch", async (_event, path: string) => {
 	await ensureShellEnv();
 	return resolveCheckedOutBranch(path, { env: daemonEnv(), homeDir: os.homedir() });
+});
+ipcMain.handle("app:getGitHubLogin", async (_event, repoPath?: string) => {
+	await ensureShellEnv();
+	const gitConfig = async (args: string[]) => {
+		try {
+			const { stdout } = await execFileAsync("git", args, { env: daemonEnv(), timeout: 3000 });
+			return stdout.trim();
+		} catch {
+			return "";
+		}
+	};
+	const candidates = [
+		typeof repoPath === "string" && repoPath.trim() ? await gitConfig(["-C", repoPath.trim(), "config", "--get", "github.user"]) : "",
+		await gitConfig(["config", "--global", "--get", "github.user"]),
+		process.env.AO_GITHUB_LOGIN?.trim() ?? "",
+	];
+	try {
+		const { stdout } = await execFileAsync("gh", ["api", "user", "--jq", ".login"], {
+			env: daemonEnv(),
+			timeout: 5000,
+		});
+		candidates.push(stdout.trim());
+	} catch {
+		// GitHub CLI may not be installed or authenticated yet; keep the editable fallback.
+	}
+	const gitNames = [
+		typeof repoPath === "string" && repoPath.trim() ? await gitConfig(["-C", repoPath.trim(), "config", "--get", "user.name"]) : "",
+		await gitConfig(["config", "--global", "--get", "user.name"]),
+	].filter((candidate) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(candidate));
+	candidates.push(...gitNames);
+	return candidates.find((candidate) => candidate.length > 0) ?? "";
+});
+type GitHubOwner = { login: string; avatarUrl: string };
+let cachedGitHubOwners: GitHubOwner[] = [];
+
+async function refreshGitHubOwners(): Promise<GitHubOwner[]> {
+	await ensureShellEnv();
+	try {
+		const { stdout } = await execFileAsync("gh", ["api", "user", "--jq", "[.login, .avatar_url] | @tsv"], {
+			env: daemonEnv(),
+			timeout: 5000,
+		});
+		let organizationOutput = "";
+		try {
+			({ stdout: organizationOutput } = await execFileAsync("gh", ["api", "user/memberships/orgs", "--paginate", "--jq", ".[] | [.organization.login, .organization.avatar_url] | @tsv"], {
+				env: daemonEnv(),
+				timeout: 8000,
+			}));
+		} catch {
+			// The authenticated account may not have the read:org scope; the personal owner is still usable.
+		}
+		const owners = [stdout, ...organizationOutput.split("\n")].map((line) => {
+			const [login, avatarUrl] = line.trim().split("\t");
+			return login && avatarUrl ? { login, avatarUrl } : null;
+		}).filter((owner): owner is GitHubOwner => owner !== null);
+		cachedGitHubOwners = [...new Map(owners.map((owner) => [owner.login, owner])).values()];
+		return cachedGitHubOwners;
+	} catch {
+		return cachedGitHubOwners;
+	}
+}
+
+ipcMain.handle("app:getCachedGitHubOwners", () => cachedGitHubOwners);
+ipcMain.handle("app:refreshGitHubOwners", () => refreshGitHubOwners());
+ipcMain.handle("app:checkGitHubRepositoryAvailability", async (_event, input: { owner: string; name: string }) => {
+	await ensureShellEnv();
+	const owner = input.owner.trim();
+	const name = input.name.trim();
+	if (!owner || !name) {
+		return { available: false, message: "Owner and repository name are required." };
+	}
+	try {
+		await execFileAsync("gh", ["api", `repos/${owner}/${name}`], {
+			env: daemonEnv(),
+			timeout: 8000,
+		});
+		return { available: false, message: "Repository name is already in use for this owner." };
+	} catch (error) {
+		const output = error instanceof Error ? error.message : String(error);
+		if (/404|not found/i.test(output)) {
+			return { available: true };
+		}
+		return { available: false, message: "Could not check this repository name. Confirm GitHub CLI is signed in." };
+	}
 });
 ipcMain.handle("clipboard:writeText", (_event, text: string) => {
 	clipboard.writeText(text, "clipboard");
@@ -2147,9 +2322,7 @@ ipcMain.handle("updates:returnHome", async (_event, requestId?: string) => {
 ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 	await downloadUpdateNow(requestId);
 });
-ipcMain.handle("updates:install", () => {
-	quitAndInstallUpdate();
-});
+ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
 
 function cancelDockBounce(): void {
 	if (pendingBounce === null) return;
@@ -2281,6 +2454,17 @@ ipcMain.on(TRAY_SET_ATTENTION_STATE_CHANNEL, (event, state) => trayLifecycle.han
 
 ipcMain.on(TRAY_RENDERER_READY_CHANNEL, (event) => {
 	trayLifecycle.handleRendererReady(event);
+	// This existing handshake comes from TrayRuntime after the React shell has
+	// mounted. Loading the HTML or merely observing a new PID is not success.
+	if (app.isPackaged && process.platform === "darwin" && event.sender === getShellWebContents()) {
+		const runFile = runFilePath();
+		if (runFile) void acknowledgeMacUpdateRestart({
+			stateDir: path.dirname(runFile),
+			appPath: resolveBundlePath(),
+			version: app.getVersion(),
+		});
+	}
+
 	if (pendingFolderPath && event.sender === getShellWebContents()) {
 		event.sender.send(OPEN_FOLDER_PATH_CHANNEL, pendingFolderPath);
 		pendingFolderPath = null;
@@ -2429,6 +2613,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 	const stateDir = path.dirname(runFile);
 	await writeAppStateMarker({
 		stateDir,
+		updateRestartProtocol: 1,
 		appPath: resolveBundlePath(),
 		version: app.getVersion(),
 		installedVia: parseInstalledVia(process.argv),
@@ -2437,6 +2622,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	void refreshGitHubOwners();
 	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
 	// The approved release gate is intentionally closed. Tests inject the
 	// dedicated no-cache sender; the shipping composition creates no visibility
@@ -2459,7 +2645,7 @@ app.whenReady().then(async () => {
 	telemetryPolicyController = policyController;
 	try { await policyController.initialize(); }
 	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	setInterval(() => { if (policyController.snapshot().state !== "applied") void policyController.retryPendingCleanup(); }, 1_000).unref();
+	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
 	// code past a successful move never runs in this instance, so a post-move-only
@@ -2563,7 +2749,24 @@ app.whenReady().then(async () => {
 // self-stops ~5s after the last client (this process) drops its connection.
 // The supervisorLink fd is NOT explicitly closed on quit; the OS closes it when
 // the process exits for any reason (Cmd+Q, crash, SIGKILL). Sessions survive.
+setUpdateRestartFailureHandler(() => {
+	if (!browserQuitRequested) focusMainWindow();
+});
+
+let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
+	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
+		event.preventDefault();
+		if (confirmUnsafeChatDraftLeave(
+			chatDraftRisks,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		)) {
+			chatDraftQuitConfirmed = true;
+			app.quit();
+		}
+		return;
+	}
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	trayLifecycle.dispose();
@@ -2571,13 +2774,24 @@ app.on("before-quit", (event) => {
 	if (!browserCleanupComplete) {
 		event.preventDefault();
 		if (!browserQuitCleanupPromise) {
-			browserQuitCleanupPromise = Promise.all([
+			const cleanup = Promise.all([
 				disposeAllBrowserViewHosts(),
 				telemetryPolicyController?.close() ?? Promise.resolve(),
-			]).then(() => undefined).finally(() => {
+			]);
+			const finishQuit = () => {
 				browserCleanupComplete = true;
 				browserQuitCleanupPromise = null;
 				app.quit();
+			};
+			browserQuitCleanupPromise = cleanup.then(() => undefined).finally(finishQuit);
+		}
+		if (isUpdateRestartRequested() && !updateQuitDeadlineArmed) {
+			updateQuitDeadlineArmed = true;
+			// Also cover a normal quit already waiting on the same cleanup.
+			void finishUpdateQuit(browserQuitCleanupPromise, {
+				quit: () => undefined, // The existing cleanup continuation owns normal quit.
+				exit: () => { if (isUpdateRestartRequested()) app.exit(0); },
+				log: (error) => console.error("update shutdown:", error),
 			});
 		}
 		return;

@@ -129,6 +129,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const isProjectRestarting = projectId ? restartingProjectIds.has(projectId) : false;
+	const isProvisioning = useUiStore((state) =>
+		projectId ? state.provisioningProjectIds.has(projectId) : false,
+	);
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
 	const visibleSpawnError = formatOrchestratorStartupError(spawnError ?? orchestratorStartupError ?? "");
 
@@ -189,6 +192,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 	const openOrchestrator = async (mode?: "tui") => {
 		if (!projectId || isProjectRestarting) return;
+		// The shell already has a background spawn in flight for this project;
+		// a second spawn would create a duplicate orchestrator.
+		if (isProvisioning) return;
 		if (orchestrator) {
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
@@ -265,7 +271,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				</TopbarActionError>
 			)}
 			{visibleSpawnError && canCreateAsTui && !showProjectEmpty ? (
-				<TopbarButton disabled={isSpawning || isProjectRestarting} onClick={() => void openOrchestrator("tui")}>
+				<TopbarButton disabled={isSpawning || isProjectRestarting || isProvisioning} onClick={() => void openOrchestrator("tui")}>
 					{t("newTask.createAsTui")}
 				</TopbarButton>
 			) : null}
@@ -276,7 +282,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 							aria-label={t("shell.newTask")}
 							className="topbar-control--labeled"
 							data-priority="primary"
-							disabled={isProjectRestarting}
+							disabled={isProjectRestarting || isProvisioning}
 							onClick={() => projectId && requestNewTask(projectId)}
 							variant="accent"
 						>
@@ -298,7 +304,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 							}
 							className="topbar-control--labeled"
 							data-priority="secondary"
-							disabled={isSpawning || isProjectRestarting}
+							disabled={isSpawning || isProjectRestarting || isProvisioning}
 							onClick={() => void openOrchestrator()}
 							variant="primary"
 						>
@@ -378,21 +384,36 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						) : null}
 					</div>
 				) : null}
-				{workspace?.folderMissing ? (
-					<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
-						<AlertTriangle className="size-icon-base shrink-0 text-warning" aria-hidden="true" />
-						<span className="min-w-0 flex-1">{t("home.folderMissing")}</span>
-					</div>
-				) : null}
-				{workspaceStartupState === "error" || workspaceQuery.isError ? (
-					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
-				) : showWelcome ? (
-					<BoardWelcome />
-				) : showProjectEmpty ? (
-					<ProjectBoardEmpty
-						hasOrchestrator={orchestrator !== undefined}
-						isSpawning={isSpawning}
-						isProjectRestarting={isProjectRestarting}
+			{workspace?.folderMissing ? (
+				<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+					<AlertTriangle className="size-icon-base shrink-0 text-warning" aria-hidden="true" />
+					<span className="min-w-0 flex-1">{t("home.folderMissing")}</span>
+				</div>
+			) : null}
+			{projectId && isProvisioning ? (
+				<div
+					className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground"
+					role="status"
+				>
+					<span
+						className="size-icon-base shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent"
+						aria-hidden="true"
+					/>
+					<span className="min-w-0 flex-1">
+						{t("shell.provisioning", { defaultValue: "Setting up the project — starting the orchestrator…" })}
+					</span>
+				</div>
+			) : null}
+			{workspaceStartupState === "error" || workspaceQuery.isError ? (
+				<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
+			) : showWelcome ? (
+				<BoardWelcome />
+			) : showProjectEmpty ? (
+				<ProjectBoardEmpty
+					hasOrchestrator={orchestrator !== undefined}
+					isSpawning={isSpawning}
+					isProvisioning={isProvisioning}
+					isProjectRestarting={isProjectRestarting}
 						onNewTask={() => projectId && requestNewTask(projectId)}
 						onOpenOrchestrator={() => void openOrchestrator()}
 						onOpenOrchestratorAsTui={canCreateAsTui ? () => void openOrchestrator("tui") : undefined}

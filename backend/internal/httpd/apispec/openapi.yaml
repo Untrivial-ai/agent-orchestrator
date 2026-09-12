@@ -2234,6 +2234,70 @@ paths:
       summary: Clone and register a project from a git repository URL
       tags:
       - projects
+  /api/v1/projects/clone/cleanup:
+    post:
+      operationId: cleanupPreparedClone
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectClonePreparationCleanupInput'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remove an abandoned clone created for project preparation
+      tags:
+      - projects
+  /api/v1/projects/clone/prepare:
+    post:
+      operationId: prepareCloneProject
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloneProjectInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClonePreparationResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Clone a project without registering it so Git setup can be completed
+      tags:
+      - projects
   /api/v1/projects/initialize:
     post:
       operationId: initializeProjectRepository
@@ -5871,6 +5935,63 @@ paths:
       summary: Switch a logical AO session to another agent harness
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/workspace/diffs:
+    post:
+      operationId: getSessionWorkspaceDiffs
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceDiffRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDiffsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read grouped unified patches for a bounded set of workspace files
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/events:
     get:
       operationId: streamSessionWorkspaceChanges
@@ -5944,6 +6065,12 @@ paths:
           - unstaged
           - untracked
           type: string
+      - description: Exact commit SHA to read as an immutable committed-scope snapshot.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact commit SHA to read as an immutable committed-scope snapshot.
+          type: string
       responses:
         "200":
           content:
@@ -5976,6 +6103,62 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Read one session workspace file and its git diff
+      tags:
+      - sessions
+    put:
+      operationId: updateSessionWorkspaceFile
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkspaceFileRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Replace one existing text file in a session workspace
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/workspace/file/blob:
@@ -6049,6 +6232,103 @@ paths:
       summary: Read one side of a session workspace image file
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/workspace/file/revision:
+    get:
+      operationId: getSessionWorkspaceFileRevision
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Session-worktree-relative file path.
+        in: query
+        name: path
+        required: true
+        schema:
+          description: Session-worktree-relative file path.
+          type: string
+      - description: Comparison scope. Defaults to combined.
+        in: query
+        name: scope
+        schema:
+          description: Comparison scope. Defaults to combined.
+          enum:
+          - combined
+          - committed
+          - staged
+          - unstaged
+          - untracked
+          type: string
+      - description: Comparison side. Defaults to after.
+        in: query
+        name: side
+        schema:
+          description: Comparison side. Defaults to after.
+          enum:
+          - before
+          - after
+          type: string
+      - description: Opaque workspace snapshot token used for consistency checks.
+        in: query
+        name: workspaceVersion
+        schema:
+          description: Opaque workspace snapshot token used for consistency checks.
+          type: string
+      - description: Opaque revision token used for optimistic consistency checks.
+        in: query
+        name: expectedRevision
+        schema:
+          description: Opaque revision token used for optimistic consistency checks.
+          type: string
+      - description: Exact commit SHA for a committed-scope comparison.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact commit SHA for a committed-scope comparison.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileRevisionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read one text-capable side of a workspace comparison
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/files:
     get:
       operationId: listSessionWorkspaceFiles
@@ -6086,6 +6366,72 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: List files in a session workspace with git change status
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/workspace/search:
+    get:
+      operationId: searchSessionWorkspaceFiles
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Case-insensitive path substring.
+        in: query
+        name: query
+        required: true
+        schema:
+          description: Case-insensitive path substring.
+          type: string
+      - description: Opaque pagination cursor returned by the previous page.
+        in: query
+        name: cursor
+        schema:
+          description: Opaque pagination cursor returned by the previous page.
+          type: string
+      - description: Maximum results. Defaults to 50.
+        in: query
+        name: limit
+        schema:
+          description: Maximum results. Defaults to 50.
+          maximum: 100
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileSearchResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Search visible workspace file paths
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/workspace/tree:
@@ -6865,6 +7211,8 @@ components:
       properties:
         asWorkspace:
           type: boolean
+        clonePreparationId:
+          type: string
         config:
           $ref: '#/components/schemas/ProjectConfig'
         name:
@@ -7427,6 +7775,19 @@ components:
       required:
       - sessionId
       - reason
+      type: object
+    ClonePreparationResult:
+      properties:
+        path:
+          type: string
+        preparationId:
+          type: string
+        remoteUrl:
+          type: string
+      required:
+      - path
+      - remoteUrl
+      - preparationId
       type: object
     CloneProjectInput:
       properties:
@@ -8160,6 +8521,8 @@ components:
           type: boolean
         branch:
           type: string
+        chatProviderPreserved:
+          type: boolean
         createdAt:
           format: date-time
           type: string
@@ -8251,11 +8614,7 @@ components:
           - opencode
           - kiro
           - pi
-          - qwen
           - agy
-          - continue
-          - goose
-          - vibe
           - devin
           - droid
           - kimi
@@ -8320,6 +8679,7 @@ components:
       - createdAt
       - updatedAt
       - isPinned
+      - chatProviderPreserved
       - status
       - kanbanColumn
       - displayStatus
@@ -9211,6 +9571,8 @@ components:
           items:
             $ref: '#/components/schemas/ConversationImageContentRequest'
           type: array
+        clientMessageId:
+          type: string
         expectedRevision:
           type:
           - "null"
@@ -9317,12 +9679,24 @@ components:
       - sessionId
       - session
       type: object
+    GitHubRepositoryPreparation:
+      properties:
+        name:
+          type: string
+        owner:
+          type: string
+        private:
+          type:
+          - "null"
+          - boolean
+      type: object
     GitPreparationEvent:
       properties:
         action:
           enum:
           - git_init
           - git_commit
+          - create_remote_repository
           - set_remote
           type: string
         error:
@@ -9349,6 +9723,8 @@ components:
           items:
             type: string
           type: array
+        githubRepository:
+          $ref: '#/components/schemas/GitHubRepositoryPreparation'
         importKind:
           enum:
           - project
@@ -9366,6 +9742,8 @@ components:
           items:
             $ref: '#/components/schemas/GitRepositoryPreparationInput'
           type: array
+        stepwise:
+          type: boolean
       required:
       - importKind
       - path
@@ -9388,6 +9766,8 @@ components:
           items:
             type: string
           type: array
+        githubRepository:
+          $ref: '#/components/schemas/GitHubRepositoryPreparation'
         initialCommitMessage:
           type: string
         remoteUrl:
@@ -9751,6 +10131,14 @@ components:
       type: object
     ListReviewsResponse:
       properties:
+        reviewerActivityState:
+          enum:
+          - active
+          - idle
+          - waiting_input
+          - blocked
+          - exited
+          type: string
         reviewerHandleId:
           type: string
         reviewerHarness:
@@ -9833,8 +10221,11 @@ components:
           $ref: '#/components/schemas/WorkspaceSummary'
         truncated:
           type: boolean
+        workspaceVersion:
+          type: string
       required:
       - sessionId
+      - workspaceVersion
       - files
       - truncated
       - sections
@@ -10270,6 +10661,18 @@ components:
       - repo
       - defaultBranch
       - folderMissing
+      type: object
+    ProjectClonePreparationCleanupInput:
+      properties:
+        path:
+          minLength: 1
+          type: string
+        preparationId:
+          minLength: 1
+          type: string
+      required:
+      - path
+      - preparationId
       type: object
     ProjectConfig:
       properties:
@@ -11048,6 +11451,10 @@ components:
           items:
             $ref: '#/components/schemas/SessionPRUnresolvedReviewer'
           type: array
+        unresolvedThreadCount:
+          type:
+          - "null"
+          - integer
       required:
       - decision
       - hasUnresolvedHumanComments
@@ -11307,8 +11714,8 @@ components:
           description: AO process generation that produced the signal.
           type: string
         state:
-          description: Reviewer activity state reported by a hook. Accepted for forward
-            compatibility, not used for session display state.
+          description: Reviewer activity state reported by a hook. Used for reviewer-pane
+            live status, not worker session state.
           enum:
           - active
           - idle
@@ -11417,11 +11824,7 @@ components:
           - opencode
           - kiro
           - pi
-          - qwen
           - agy
-          - continue
-          - goose
-          - vibe
           - devin
           - droid
           - kimi
@@ -11709,6 +12112,8 @@ components:
           type: array
         clientMessageId:
           type: string
+        recoverOnly:
+          type: boolean
         text:
           type: string
       required:
@@ -11866,11 +12271,7 @@ components:
           - opencode
           - kiro
           - pi
-          - qwen
           - agy
-          - continue
-          - goose
-          - vibe
           - devin
           - droid
           - kimi
@@ -11946,6 +12347,19 @@ components:
           type: string
       required:
       - title
+      type: object
+    UpdateWorkspaceFileRequest:
+      properties:
+        content:
+          type: string
+        expectedFileFingerprint:
+          type: string
+        path:
+          type: string
+      required:
+      - path
+      - content
+      - expectedFileFingerprint
       type: object
     UsageHarnessResponse:
       properties:
@@ -12054,6 +12468,10 @@ components:
       properties:
         author:
           type: string
+        files:
+          items:
+            $ref: '#/components/schemas/WorkspaceFileSummary'
+          type: array
         sha:
           type: string
         subject:
@@ -12066,6 +12484,108 @@ components:
       - subject
       - author
       - timestamp
+      - files
+      type: object
+    WorkspaceDiffDeferredResponse:
+      properties:
+        path:
+          type: string
+        reason:
+          enum:
+          - binary
+          - oversized
+          - generated
+          - long_line
+          - budget_exceeded
+          type: string
+      required:
+      - path
+      - reason
+      type: object
+    WorkspaceDiffErrorResponse:
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+      required:
+      - code
+      - message
+      type: object
+    WorkspaceDiffGroupResponse:
+      properties:
+        deferred:
+          items:
+            $ref: '#/components/schemas/WorkspaceDiffDeferredResponse'
+          type: array
+        errors:
+          items:
+            $ref: '#/components/schemas/WorkspaceDiffErrorResponse'
+          type: array
+        includedPaths:
+          items:
+            type: string
+          type: array
+        patch:
+          type: string
+        repository:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - patch
+      - truncated
+      - includedPaths
+      - deferred
+      - errors
+      type: object
+    WorkspaceDiffRequest:
+      properties:
+        commitSha:
+          description: Exact commit SHA for a committed-scope comparison.
+          type: string
+        contextLines:
+          maximum: 20
+          minimum: 0
+          type: integer
+        ignoreWhitespace:
+          type: boolean
+        paths:
+          items:
+            type: string
+          maxItems: 100
+          minItems: 1
+          type: array
+        scope:
+          enum:
+          - combined
+          - committed
+          - staged
+          - unstaged
+          - untracked
+          type: string
+        workspaceVersion:
+          type: string
+      required:
+      - scope
+      - paths
+      - contextLines
+      - ignoreWhitespace
+      type: object
+    WorkspaceDiffsResponse:
+      properties:
+        groups:
+          items:
+            $ref: '#/components/schemas/WorkspaceDiffGroupResponse'
+          type: array
+        sessionId:
+          type: string
+        workspaceVersion:
+          type: string
+      required:
+      - sessionId
+      - workspaceVersion
+      - groups
       type: object
     WorkspaceFileResponse:
       properties:
@@ -12094,6 +12614,10 @@ components:
           type: string
         diffTruncated:
           type: boolean
+        editable:
+          type: boolean
+        fileFingerprint:
+          type: string
         imageMediaType:
           type: string
         path:
@@ -12113,6 +12637,8 @@ components:
           - deleted
           - renamed
           type: string
+        workspaceVersion:
+          type: string
       required:
       - sessionId
       - path
@@ -12122,10 +12648,100 @@ components:
       - size
       - binary
       - deleted
+      - editable
       - content
       - contentTruncated
       - diff
       - diffTruncated
+      - workspaceVersion
+      - fileFingerprint
+      type: object
+    WorkspaceFileRevisionResponse:
+      properties:
+        binary:
+          type: boolean
+        content:
+          type: string
+        encoding:
+          type: string
+        exists:
+          type: boolean
+        mediaType:
+          type: string
+        path:
+          type: string
+        revision:
+          type: string
+        sessionId:
+          type: string
+        side:
+          enum:
+          - before
+          - after
+          type: string
+        size:
+          format: int64
+          type: integer
+        truncated:
+          type: boolean
+        workspaceVersion:
+          type: string
+      required:
+      - sessionId
+      - path
+      - side
+      - workspaceVersion
+      - size
+      - exists
+      - binary
+      - truncated
+      - content
+      type: object
+    WorkspaceFileSearchResponse:
+      properties:
+        nextCursor:
+          type: string
+        query:
+          type: string
+        results:
+          items:
+            $ref: '#/components/schemas/WorkspaceFileSearchResultResponse'
+          type: array
+        sessionId:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - sessionId
+      - query
+      - results
+      - truncated
+      type: object
+    WorkspaceFileSearchResultResponse:
+      properties:
+        binary:
+          type: boolean
+        fileFingerprint:
+          type: string
+        path:
+          type: string
+        size:
+          format: int64
+          type: integer
+        status:
+          enum:
+          - unmodified
+          - modified
+          - added
+          - deleted
+          - renamed
+          type: string
+      required:
+      - path
+      - status
+      - size
+      - binary
+      - fileFingerprint
       type: object
     WorkspaceFileSections:
       properties:
@@ -12159,6 +12775,10 @@ components:
           type: boolean
         deletions:
           type: integer
+        editable:
+          type: boolean
+        fileFingerprint:
+          type: string
         path:
           type: string
         previousPath:
@@ -12181,6 +12801,8 @@ components:
       - deletions
       - size
       - binary
+      - editable
+      - fileFingerprint
       type: object
     WorkspaceRepo:
       properties:

@@ -32,8 +32,11 @@ type wsConn interface {
 }
 
 const (
-	defaultHeartbeat   = 15 * time.Second
-	defaultWriteBuffer = 1024
+	defaultHeartbeat = 15 * time.Second
+	// dataWatermark caps queued PTY output per connection. Above it the producing
+	// attachment's read loop blocks, so tmux throttles at the source instead of
+	// the connection being torn down under a flood.
+	dataWatermark = 1 << 20
 )
 
 // Manager serves WebSocket clients, opening one attach Stream per opened pane
@@ -337,8 +340,9 @@ func (m *Manager) Serve(ctx context.Context, conn wsConn) {
 	c := &connState{
 		mgr:    m,
 		conn:   conn,
+		ctx:    ctx,
 		cancel: cancel,
-		out:    make(chan serverMsg, defaultWriteBuffer),
+		out:    newOutQueue(),
 		terms:  map[string]*attachment{},
 	}
 	defer c.cleanup()
@@ -362,8 +366,9 @@ func (m *Manager) Serve(ctx context.Context, conn wsConn) {
 type connState struct {
 	mgr    *Manager
 	conn   wsConn
+	ctx    context.Context
 	cancel context.CancelFunc
-	out    chan serverMsg
+	out    *outQueue
 
 	mu        sync.Mutex
 	terms     map[string]*attachment // terminal id -> this conn's own attach PTY
@@ -523,15 +528,63 @@ func (c *connState) handleSubscribe(msg clientMsg) {
 	c.mu.Unlock()
 }
 
-// enqueue pushes a frame to the writer. If the buffer is full the client is too
-// slow to keep up; tear the connection down rather than block the attachment's
-// PTY read loop behind it.
-func (c *connState) enqueue(msg serverMsg) {
+// outQueue is the per-connection write queue. A buffered channel cannot serve
+// both frame classes: control frames must never be dropped or block their
+// caller, while PTY output must push back on its own read loop.
+type outQueue struct {
+	mu     sync.Mutex
+	frames []serverMsg
+	bytes  int
+	wake   chan struct{}
+	room   chan struct{}
+}
+
+func newOutQueue() *outQueue {
+	return &outQueue{wake: make(chan struct{}, 1), room: make(chan struct{}, 1)}
+}
+
+func (q *outQueue) push(msg serverMsg) {
+	q.mu.Lock()
+	q.frames = append(q.frames, msg)
+	q.bytes += len(msg.Data)
+	q.mu.Unlock()
 	select {
-	case c.out <- msg:
+	case q.wake <- struct{}{}:
 	default:
-		c.cancel()
 	}
+}
+
+func (q *outQueue) full() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.bytes >= dataWatermark
+}
+
+func (q *outQueue) drain() []serverMsg {
+	q.mu.Lock()
+	frames := q.frames
+	q.frames, q.bytes = nil, 0
+	q.mu.Unlock()
+	select {
+	case q.room <- struct{}{}:
+	default:
+	}
+	return frames
+}
+
+// enqueue pushes a frame to the writer. Data frames wait for room so the
+// attachment's PTY read loop stalls and tmux throttles the producer; control
+// frames never wait, because the CDC fan-out enqueues on one goroutine shared
+// by every connection.
+func (c *connState) enqueue(msg serverMsg) {
+	for msg.Type == msgData && c.out.full() {
+		select {
+		case <-c.out.room:
+		case <-c.ctx.Done():
+			return
+		}
+	}
+	c.out.push(msg)
 }
 
 func (c *connState) writeLoop(ctx context.Context) {
@@ -539,10 +592,12 @@ func (c *connState) writeLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-c.out:
-			if err := c.conn.WriteJSON(ctx, msg); err != nil {
-				c.cancel()
-				return
+		case <-c.out.wake:
+			for _, msg := range c.out.drain() {
+				if err := c.conn.WriteJSON(ctx, msg); err != nil {
+					c.cancel()
+					return
+				}
 			}
 		}
 	}

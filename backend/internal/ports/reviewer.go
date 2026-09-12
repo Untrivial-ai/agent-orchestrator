@@ -146,6 +146,9 @@ type ReviewCommandSpec struct {
 	Argv           []string
 	Env            map[string]string
 	AgentSessionID string
+	// NativeResumed reports whether this command resumes an existing provider-
+	// native conversation rather than relaunching a fresh reviewer process.
+	NativeResumed bool
 	// InitialMessage is injected after the process starts. Interactive-only
 	// reviewers use this instead of placing a task on the command line.
 	InitialMessage string
