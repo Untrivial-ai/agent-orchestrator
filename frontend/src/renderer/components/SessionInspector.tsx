@@ -1,3 +1,4 @@
+import { AppLink } from "./AppLink";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
@@ -1352,7 +1353,7 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 
 function PRTimelineLink({ pr, verb }: { pr: SessionPRSummary; verb: string }) {
 	return (
-		<a
+		<AppLink
 			aria-label={`${verb} PR #${pr.number}`}
 			className="inline-flex min-w-0 items-center gap-1 rounded-xs text-foreground underline-offset-2 transition-colors hover:text-accent hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50"
 			href={prBrowserUrl(pr)}
@@ -1362,7 +1363,7 @@ function PRTimelineLink({ pr, verb }: { pr: SessionPRSummary; verb: string }) {
 			<span>{verb} </span>
 			<b>PR #{pr.number}</b>
 			<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />
-		</a>
+		</AppLink>
 	);
 }
 
@@ -2028,9 +2029,9 @@ function renderReviewMarkdown(body: string) {
 		<ReactMarkdown
 			components={{
 				a: ({ href, children }) => (
-					<a href={href} target="_blank" rel="noopener noreferrer">
+					<AppLink href={href} target="_blank" rel="noopener noreferrer">
 						{children}
-					</a>
+					</AppLink>
 				),
 			}}
 			remarkPlugins={[remarkGfm]}

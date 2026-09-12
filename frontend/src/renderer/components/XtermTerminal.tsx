@@ -1509,6 +1509,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				>
 					{contextMenu.link ? (
 						<>
+							<DropdownMenuItem disabled={!props.onLinkOpen} onSelect={() => {
+								const { link } = contextMenu;
+								setContextMenuOpen(false);
+								if (link) props.onLinkOpen?.(link);
+							}}>
+								Open in ao browser
+							</DropdownMenuItem>
 							<DropdownMenuItem
 								onSelect={() => {
 									const { link } = contextMenu;
@@ -1516,7 +1523,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 									if (link) void aoBridge.app.openExternal(link);
 								}}
 							>
-								{t("terminal.openSystemBrowser")}
+								Open in external browser
+							</DropdownMenuItem>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onSelect={() => {
+								const { link } = contextMenu;
+								setContextMenuOpen(false);
+								if (link) void aoBridge.clipboard.writeText(link);
+							}}>
+								Copy link
 							</DropdownMenuItem>
 							<DropdownMenuSeparator />
 						</>
