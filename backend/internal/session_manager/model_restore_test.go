@@ -82,7 +82,7 @@ func TestClaudeSessionModelSurvivesRestore(t *testing.T) {
 					}
 					manager := newManager()
 					rec, _, _, err := manager.Spawn(ctx, ports.SpawnConfig{
-						ProjectID: project.ID, Kind: kind, Prompt: "continue the task", RequestedMode: mode,
+						ProjectID: domain.ProjectID(project.ID), Kind: kind, Prompt: "continue the task", RequestedMode: mode,
 						AgentConfig: ports.AgentConfig{Model: selection.spawnModel},
 					})
 					if err != nil {
