@@ -407,6 +407,44 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 	);
 }
 
+export type NextSessionNavigation =
+	| { target: "session"; sessionId: string }
+	| { target: "project" };
+
+/**
+ * Resolves where to navigate after an active session is killed.
+ * Prioritizes:
+ * 1. Adjacent remaining worker session (previous if available, else first remaining).
+ * 2. Active non-terminated orchestrator if no worker sessions remain.
+ * 3. Project board if no alive sessions remain.
+ */
+export function resolveNextNavigationAfterSessionKill(
+	workspace: WorkspaceSummary | undefined,
+	killedSessionId: string,
+	sessionsInDisplayOrder?: WorkspaceSession[],
+): NextSessionNavigation {
+	if (!workspace) return { target: "project" };
+
+	const workerList = (sessionsInDisplayOrder ?? sortedWorkerSessions(workspace.sessions)).filter(
+		(s) => s.isTerminated !== true,
+	);
+	const currentIndex = workerList.findIndex((s) => s.id === killedSessionId);
+	const remaining = workerList.filter((s) => s.id !== killedSessionId);
+
+	if (remaining.length > 0) {
+		const nextIndex = currentIndex > 0 ? currentIndex - 1 : 0;
+		const nextSession = remaining[nextIndex] ?? remaining[0];
+		return { target: "session", sessionId: nextSession.id };
+	}
+
+	const orchestrator = newestActiveOrchestrator(workspace.sessions);
+	if (orchestrator && orchestrator.id !== killedSessionId && orchestrator.isTerminated !== true) {
+		return { target: "session", sessionId: orchestrator.id };
+	}
+
+	return { target: "project" };
+}
+
 // Built on shadcn's sidebar primitives (components/ui/sidebar): the provider in
 // _shell owns the persistent open state. Collapsed sidebars move fully off-canvas.
 export function Sidebar({
@@ -648,6 +686,29 @@ export function Sidebar({
 		[workspaces],
 	);
 
+	const handlePinnedSessionKilled = useCallback(
+		(killedSession: WorkspaceSession) => {
+			if (selection.activeSessionId !== killedSession.id) return;
+			const workspace = workspaces.find((w) => w.id === killedSession.workspaceId);
+			const projectOrder = sessionOrderByProject[killedSession.workspaceId] ?? [];
+			const displaySessions = workspace
+				? applyOrder(
+						sortedWorkerSessions(workspace.sessions).filter((s) => s.isTerminated !== true),
+						(s) => s.id,
+						projectOrder,
+						"start",
+				  )
+				: undefined;
+			const nextRoute = resolveNextNavigationAfterSessionKill(workspace, killedSession.id, displaySessions);
+			if (nextRoute.target === "session") {
+				selection.goSession(killedSession.workspaceId, nextRoute.sessionId);
+			} else {
+				selection.goProject(killedSession.workspaceId);
+			}
+		},
+		[selection, sessionOrderByProject, workspaces],
+	);
+
 	return (
 		// Pinned sidebars start below shell chrome.
 		<SidebarRoot
@@ -751,6 +812,7 @@ export function Sidebar({
 									session={session}
 									active={selection.activeSessionId === session.id}
 									layoutSettled={layoutSettled}
+									onKilled={handlePinnedSessionKilled}
 									onOpenSession={selection.goSession}
 								/>
 								))}
@@ -1134,6 +1196,18 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const openSession = useCallback((sessionId: string) => {
 		selection.goSession(workspace.id, sessionId);
 	}, [selection, workspace.id]);
+	const handleSessionKilled = useCallback(
+		(killedSession: WorkspaceSession) => {
+			if (selection.activeSessionId !== killedSession.id) return;
+			const nextRoute = resolveNextNavigationAfterSessionKill(workspace, killedSession.id, sessions);
+			if (nextRoute.target === "session") {
+				selection.goSession(workspace.id, nextRoute.sessionId);
+			} else {
+				selection.goProject(workspace.id);
+			}
+		},
+		[selection, sessions, workspace],
+	);
 	// The project's live orchestrator (if any) backs the hover Orchestrator
 	// button: navigate to it when present, otherwise spawn one first.
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
@@ -1501,6 +1575,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 															session={session}
 															active={selection.activeSessionId === session.id}
 															disableLayout
+															onKilled={handleSessionKilled}
 															onOpen={() => openSession(session.id)}
 														/>
 													))}
@@ -1530,6 +1605,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																	layoutSettled={layoutSettled}
 																	listIsDragging={sessionDragging}
 																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
+																	onKilled={handleSessionKilled}
 																	onOpen={openSession}
 																/>
 															))}
@@ -1635,15 +1711,17 @@ const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
 	layoutSettled,
+	onKilled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	layoutSettled: boolean;
+	onKilled?: (session: WorkspaceSession) => void;
 	onOpenSession: (projectId: string, sessionId: string) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
-	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onKilled={onKilled} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders
@@ -1656,6 +1734,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	layoutSettled,
 	listIsDragging,
 	dropTransitionDisabled,
+	onKilled,
 	onOpen,
 }: {
 	session: WorkspaceSession;
@@ -1665,6 +1744,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	layoutSettled: boolean;
 	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
+	onKilled?: (session: WorkspaceSession) => void;
 	onOpen: (sessionId: string) => void;
 }) {
 	const { isDragging, listeners, setActivatorNodeRef, setNodeRef, transform, transition } = useSortable({
@@ -1675,6 +1755,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 			session={session}
 			active={active}
 			disableLayout={!layoutSettled}
+			onKilled={onKilled}
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
@@ -1707,6 +1788,7 @@ function SessionRow({
 	layoutDependency,
 	listIsDragging = false,
 	disableLayout = false,
+	onKilled,
 	onOpen,
 	reorder,
 }: {
@@ -1717,6 +1799,7 @@ function SessionRow({
 	listIsDragging?: boolean;
 	/** Project drags pause nested session projection work. */
 	disableLayout?: boolean;
+	onKilled?: (session: WorkspaceSession) => void;
 	onOpen: () => void;
 	/** Present only for rows inside a reorderable project list. */
 	reorder?: SessionReorder;
@@ -1881,6 +1964,7 @@ function SessionRow({
 					    space while idle, then reveal without changing the row footprint. */}
 					<SessionActions
 						isDragging={Boolean(reorder?.isDragging)}
+						onKilled={onKilled}
 						session={session}
 					/>
 				</div>
@@ -1916,14 +2000,25 @@ const SessionMessageAge = memo(function SessionMessageAge({ session }: { session
 const SessionActions = memo(function SessionActions({
 	session,
 	isDragging,
+	onKilled,
 }: {
 	session: WorkspaceSession;
 	isDragging: boolean;
+	onKilled?: (session: WorkspaceSession) => void;
 }) {
 	const { t } = useTranslation();
 	const { mutate: pinSession } = usePinSession();
 	const { mutate: unpinSession } = useUnpinSession();
 	const { mutate: terminateSession, isPending: isKilling } = useTerminateSession();
+
+	const handleKill = (event: React.MouseEvent) => {
+		event.stopPropagation();
+		terminateSession(session, {
+			onSuccess: () => {
+				onKilled?.(session);
+			},
+		});
+	};
 
 	return (
 		<div
@@ -1954,10 +2049,7 @@ const SessionActions = memo(function SessionActions({
 					aria-label={t("shell.killSession")}
 					className={cn(SESSION_ACTION_CLASS, "hover:text-destructive")}
 					disabled={isKilling}
-					onClick={(event) => {
-						event.stopPropagation();
-						terminateSession(session);
-					}}
+					onClick={handleKill}
 					type="button"
 				>
 					<Trash2 aria-hidden="true" />
