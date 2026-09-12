@@ -31,6 +31,8 @@ Both Chat and Terminal UI are supported. Install tmux if you want to use native 
 brew install tmux
 ```
 
+If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names this exact command to run.
+
 macOS packages include both a `.dmg` and `.zip`. The disk image is convenient for first installation; the zip is also part of the release because the desktop updater uses it for future updates.
 
 ## Linux
@@ -40,6 +42,10 @@ Linux supports the desktop app, Chat, tmux-backed Terminal UI, and the in-app br
 ```bash
 sudo apt install tmux
 ```
+
+If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names the exact
+`sudo` command for whichever package manager it finds (`apt-get`, `dnf`, `pacman`, `zypper`, or `apk`). Run it
+yourself: AO never asks for your administrator password.
 
 Choose the AppImage for a portable launch, or the `.deb`/`.rpm` package that matches your distribution.
 

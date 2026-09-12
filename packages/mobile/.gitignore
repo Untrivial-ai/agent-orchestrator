@@ -49,11 +49,15 @@ yarn-error.*
 # Firebase Android config — kept out of the public repo (origin is PUBLIC).
 # Must exist locally for `expo run:android`.
 #
-# ⚠️ EAS BUILD GOTCHA: EAS's git VCS client strips files matching .gitignore
-# from the upload archive EVEN IF they are committed — and the `!google-services.json`
-# re-include in .easignore does NOT override this (verified 2026-07-25; build
-# failed "google-services.json is missing" every time this line was present).
-# To build with FCM, you must BOTH commit the file AND remove this line — do it
-# in a local-only temp commit, build, then undo (never push either change).
-# See docs/android-play-setup.md "google-services.json build gotcha".
+# EAS Build gets it from the GOOGLE_SERVICES_JSON file environment variable, which
+# app.config.js copies to this directory before prebuild. Nothing needs committing:
+#
+#   eas env:set --name GOOGLE_SERVICES_JSON --type file \
+#     --value ./google-services.json --visibility secret \
+#     --environment preview --environment production
+#
+# Do NOT go back to committing it in a temp commit to force it past EAS's VCS
+# client. That dance also required deleting this line, and .gitignore is a
+# fingerprint input — so every build came out with a runtime version no normal
+# working tree could reproduce, and no OTA update would ever have matched it.
 google-services.json

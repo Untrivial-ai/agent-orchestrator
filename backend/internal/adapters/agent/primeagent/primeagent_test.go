@@ -53,7 +53,7 @@ func TestGetLaunchCommandOrdersFlagsAndProtectsPrompt(t *testing.T) {
 	}
 	want := []string{
 		"/bin/prime-agent",
-		"--no-session",
+		"--session-dir", filepath.Join(dataDir, "agent-runtime", "prime-agent", "sessions"),
 		"--extension", filepath.Join(dataDir, "agent-runtime", "prime-agent", "ao-activity.ts"),
 		"--append-system-prompt", "follow repository rules",
 		"--model", "prime/model",
@@ -76,7 +76,11 @@ func TestGetLaunchCommandOmitsBlankOptionalArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"prime-agent", "--no-session", "--extension", filepath.Join(dataDir, "agent-runtime", "prime-agent", "ao-activity.ts")}
+	want := []string{
+		"prime-agent",
+		"--session-dir", filepath.Join(dataDir, "agent-runtime", "prime-agent", "sessions"),
+		"--extension", filepath.Join(dataDir, "agent-runtime", "prime-agent", "ao-activity.ts"),
+	}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("command = %#v, want %#v", cmd, want)
 	}
@@ -123,7 +127,7 @@ func TestGetLaunchCommandOmitsWhitespaceSystemPromptFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cmd) != 4 {
+	if len(cmd) != 5 {
 		t.Fatalf("command = %#v, want only required arguments", cmd)
 	}
 }
@@ -155,7 +159,7 @@ func TestGetLaunchCommandIgnoresEveryPermissionMode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(cmd) != 4 {
+			if len(cmd) != 5 {
 				t.Fatalf("command = %#v, want no permission argument", cmd)
 			}
 		})
@@ -175,11 +179,70 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
-func TestGetRestoreCommandUnavailable(t *testing.T) {
-	p := New()
-	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{})
-	if err != nil || ok || cmd != nil {
-		t.Fatalf("GetRestoreCommand = (%#v, %v, %v), want (nil, false, nil)", cmd, ok, err)
+func TestGetRestoreCommandUsesNativeSessionAndRoleConfig(t *testing.T) {
+	dataDir := t.TempDir()
+	p := &Plugin{resolvedBinary: "/bin/prime-agent"}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		DataDir:      dataDir,
+		SystemPrompt: "coordinate workers only",
+		Config:       ports.AgentConfig{Model: " anthropic/claude-opus-4-8 "},
+		Session: ports.SessionRef{
+			WorkspacePath: "/work/session",
+			Metadata: map[string]string{
+				ports.MetadataKeyAgentSessionID: " prime-session-123 ",
+			},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("GetRestoreCommand ok=%v err=%v", ok, err)
+	}
+	want := []string{
+		"/bin/prime-agent",
+		"--session-dir", filepath.Join(dataDir, "agent-runtime", "prime-agent", "sessions"),
+		"--extension", filepath.Join(dataDir, "agent-runtime", "prime-agent", "ao-activity.ts"),
+		"--append-system-prompt", "coordinate workers only",
+		"--model", "anthropic/claude-opus-4-8",
+		"--resume", "prime-session-123",
+	}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("command\n got: %#v\nwant: %#v", cmd, want)
+	}
+}
+
+func TestGetRestoreCommandReadsSystemPromptFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "system.md")
+	if err := os.WriteFile(file, []byte("restored role instructions"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{resolvedBinary: "prime-agent"}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		DataDir:          t.TempDir(),
+		SystemPromptFile: file,
+		Session: ports.SessionRef{Metadata: map[string]string{
+			ports.MetadataKeyAgentSessionID: "native-7",
+		}},
+	})
+	if err != nil || !ok {
+		t.Fatalf("GetRestoreCommand ok=%v err=%v", ok, err)
+	}
+	if got := cmd[len(cmd)-4:]; !reflect.DeepEqual(got, []string{
+		"--append-system-prompt", "restored role instructions", "--resume", "native-7",
+	}) {
+		t.Fatalf("restore prompt argv = %#v", cmd)
+	}
+}
+
+func TestGetRestoreCommandUnavailableWithoutNativeSessionID(t *testing.T) {
+	tests := []ports.SessionRef{
+		{},
+		{Metadata: map[string]string{}},
+		{Metadata: map[string]string{ports.MetadataKeyAgentSessionID: " \t "}},
+	}
+	for i, session := range tests {
+		cmd, ok, err := New().GetRestoreCommand(context.Background(), ports.RestoreConfig{Session: session})
+		if err != nil || ok || cmd != nil {
+			t.Fatalf("case %d: GetRestoreCommand = (%#v, %v, %v), want (nil, false, nil)", i, cmd, ok, err)
+		}
 	}
 }
 

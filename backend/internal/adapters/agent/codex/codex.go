@@ -23,7 +23,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/terminalui"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -74,12 +73,13 @@ var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 var _ ports.TerminalActivityDetector = (*Plugin)(nil)
 var _ ports.EmptyComposerDetector = (*Plugin)(nil)
+var _ ports.TerminalSurfaceInspector = (*Plugin)(nil)
 
 // ComposerIsEmpty recognizes Codex's blank composer or its dim placeholder.
 // Normal text after the prompt marker is treated as a human draft and causes
 // optional semantic handoff collection to fail closed.
 func (p *Plugin) ComposerIsEmpty(output string) bool {
-	return terminalui.LastPromptIsEmptyOrDimPlaceholder(output, "›")
+	return p.InspectTerminalSurface(output).Composer == ports.TerminalComposerEmpty
 }
 
 // Manifest returns the adapter's static self-description.
@@ -345,6 +345,7 @@ func ResolveCodexBinary(ctx context.Context) (string, error) {
 		if home, err := os.UserHomeDir(); err == nil {
 			candidates = append(candidates, filepath.Join(home, ".cargo", "bin", "codex.exe"))
 		}
+		candidates = append(candidates, binaryutil.WindowsPackageManagerBinCandidates("codex")...)
 		for _, candidate := range candidates {
 			if fileExists(candidate) {
 				return resolveNativeWindowsCodex(candidate), nil
@@ -385,6 +386,7 @@ func ResolveCodexBinary(ctx context.Context) (string, error) {
 			filepath.Join(home, ".local", "bin", "codex"),
 			filepath.Join(home, ".cargo", "bin", "codex"),
 		)
+		candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "codex")...)
 		nodeManagerCandidates, err := binaryutil.UnixNodeManagerBinCandidates(ctx, home, "codex")
 		if err != nil {
 			return "", err

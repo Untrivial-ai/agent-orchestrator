@@ -563,12 +563,8 @@ func TestAuthenticatedIdentityForProvider_UnknownProviderReturnsError(t *testing
 }
 
 // TestFetchPullRequests_FailedPlaceholderCarriesHostAndRepo verifies that
-// Fetched=false placeholders created by the multi provider carry Host and
-// Repo from the ref's SCMRepo. Without these fields, the observer's
-// prKeyFromObs returns an empty key, causing the placeholder to be skipped
-// at the `if key == "" { continue }` guard — the per-observation error
-// routing (rate-limit cooldown vs refresh-incomplete) is never reached and
-// the failed provider is retried every tick instead of entering cooldown.
+// Fetched=false placeholders created by the multi provider retain the Host
+// and Repo context of the ref they represent.
 // This test covers both placeholder sites: the unknown-provider branch and
 // the provider-returned-fewer-than-refs branch.
 func TestFetchPullRequests_FailedPlaceholderCarriesHostAndRepo(t *testing.T) {
@@ -629,32 +625,6 @@ func TestFetchPullRequests_FailedPlaceholderCarriesHostAndRepo(t *testing.T) {
 	}
 	if obs3[0].Host != "self-hosted.example" {
 		t.Errorf("obs3[0].Host = %q, want %q", obs3[0].Host, "self-hosted.example")
-	}
-}
-
-// TestFetchPullRequests_FailedPlaceholderProducesNonEmptyKey verifies that
-// the observer's prKeyFromObs returns a non-empty key for a failed-provider
-// placeholder. This is the integration assertion: without Host/Repo on the
-// placeholder, prKeyFromObs returns "" and the observer skips it at the
-// `if key == "" { continue }` guard, preventing per-observation error routing.
-func TestFetchPullRequests_FailedPlaceholderProducesNonEmptyKey(t *testing.T) {
-	gl := &fakeProvider{key: "gitlab", parseOK: true, fetchErr: errors.New("gitlab rate limit")}
-	m := New(NamedProvider{Key: "gitlab", Provider: gl})
-
-	refs := []ports.SCMPRRef{
-		{Repo: ports.SCMRepo{Provider: "gitlab", Host: "gitlab.com", Owner: "owner", Name: "repo", Repo: "owner/repo"}, Number: 99},
-	}
-	obs, _ := m.FetchPullRequests(context.Background(), refs)
-
-	// The observer's prKeyFromObs builds: Provider + ":" + Host + ":" + Repo + "#" + Number
-	// All three components must be non-empty for the key to be non-empty.
-	key := obs[0].Provider + ":" + obs[0].Host + ":" + obs[0].Repo + "#" + fmt.Sprint(obs[0].PR.Number)
-	if key == "" || key == "gitlab::#99" {
-		t.Errorf("prKey would be empty or incomplete: %q (Host=%q Repo=%q)", key, obs[0].Host, obs[0].Repo)
-	}
-	wantKey := "gitlab:gitlab.com:owner/repo#99"
-	if key != wantKey {
-		t.Errorf("prKey = %q, want %q", key, wantKey)
 	}
 }
 

@@ -13,11 +13,14 @@ import (
 type agentOperationKind string
 
 const (
-	agentOperationSwitch  agentOperationKind = "switch"
-	agentOperationResume  agentOperationKind = "resume"
-	agentOperationKill    agentOperationKind = "kill"
-	agentOperationRestore agentOperationKind = "restore"
-	agentOperationRetire  agentOperationKind = "retire"
+	agentOperationSwitch             agentOperationKind = "switch"
+	agentOperationExit               agentOperationKind = "exit"
+	agentOperationResume             agentOperationKind = "resume"
+	agentOperationKill               agentOperationKind = "kill"
+	agentOperationRestore            agentOperationKind = "restore"
+	agentOperationRetire             agentOperationKind = "retire"
+	agentOperationReconcile          agentOperationKind = "reconcile"
+	agentOperationCodexAccountSwitch agentOperationKind = "codex_account_switch"
 )
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")
@@ -78,9 +81,15 @@ func (m *Manager) agentOperationActiveLocked(id domain.SessionID) bool {
 }
 
 func (m *Manager) agentSwitchDecisionInputAllowedLocked(id domain.SessionID) bool {
-	switching := m.agentOperations[id] == agentOperationSwitch
-	_, allowed := m.switchDecisionInput[id]
-	return switching && allowed
+	switch m.agentOperations[id] {
+	case agentOperationSwitch:
+		_, allowed := m.switchDecisionInput[id]
+		return allowed
+	case agentOperationCodexAccountSwitch:
+		return false
+	default:
+		return false
+	}
 }
 
 // beginAgentOperation closes input admission before waiting for already-issued
@@ -111,6 +120,50 @@ func (m *Manager) beginAgentOperation(ctx context.Context, id domain.SessionID, 
 		m.endAgentOperation(id, kind)
 		return ctx.Err()
 	}
+}
+
+// beginAgentOperations reserves every currently-unowned session before waiting
+// for any admitted input to drain. Startup reconciliation uses this batch form
+// so candidates queued behind its worker limit are fenced just as early as the
+// candidates already being probed.
+func (m *Manager) beginAgentOperations(ctx context.Context, ids []domain.SessionID, kind agentOperationKind) ([]domain.SessionID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type reservation struct {
+		id      domain.SessionID
+		drained <-chan struct{}
+	}
+	reservations := make([]reservation, 0, len(ids))
+	m.agentOpMu.Lock()
+	for _, id := range ids {
+		id = domain.SessionID(strings.TrimSpace(string(id)))
+		if id == "" || m.agentOperationActiveLocked(id) {
+			continue
+		}
+		m.agentOperations[id] = kind
+		reservations = append(reservations, reservation{id: id, drained: m.inputDrained[id]})
+	}
+	m.agentOpMu.Unlock()
+
+	for _, reservation := range reservations {
+		if reservation.drained == nil {
+			continue
+		}
+		select {
+		case <-reservation.drained:
+		case <-ctx.Done():
+			for _, reserved := range reservations {
+				m.endAgentOperation(reserved.id, kind)
+			}
+			return nil, ctx.Err()
+		}
+	}
+	acquired := make([]domain.SessionID, 0, len(reservations))
+	for _, reservation := range reservations {
+		acquired = append(acquired, reservation.id)
+	}
+	return acquired, nil
 }
 
 func (m *Manager) endAgentOperation(id domain.SessionID, kind agentOperationKind) {

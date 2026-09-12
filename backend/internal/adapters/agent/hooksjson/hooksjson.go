@@ -168,6 +168,9 @@ type Manager struct {
 	// CommandPrefix identifies AO-owned hook commands, e.g. "ao hooks goose ".
 	// Install skips commands already present and uninstall/detect match on it.
 	CommandPrefix string
+	// LegacyCommandPrefixes identifies AO-owned command prefixes from an older
+	// installer that should be removed while installing the current hooks.
+	LegacyCommandPrefixes []string
 	// Timeout is written into each installed hook entry.
 	Timeout int
 	// Path returns the hooks file path for a workspace.
@@ -200,6 +203,7 @@ func (m Manager) Install(ctx context.Context, workspacePath string) error {
 		if err := parseEvent(rawHooks, event, &groups); err != nil {
 			return fmt.Errorf("%s.GetAgentHooks: %w", m.Label, err)
 		}
+		groups = removeManagedPrefixes(groups, m.LegacyCommandPrefixes)
 		for _, spec := range specs {
 			entry := HookEntry{Type: "command", Command: spec.Command, Timeout: m.Timeout}
 			groups = reconcileHook(groups, entry, spec.Matcher)
@@ -216,6 +220,33 @@ func (m Manager) Install(ctx context.Context, workspacePath string) error {
 		return fmt.Errorf("%s.GetAgentHooks: gitignore: %w", m.Label, err)
 	}
 	return nil
+}
+
+func removeManagedPrefixes(groups []MatcherGroup, prefixes []string) []MatcherGroup {
+	if len(prefixes) == 0 {
+		return groups
+	}
+	result := make([]MatcherGroup, 0, len(groups))
+	for _, group := range groups {
+		kept := make([]HookEntry, 0, len(group.Hooks))
+		for _, hook := range group.Hooks {
+			legacy := false
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(hook.Command, prefix) {
+					legacy = true
+					break
+				}
+			}
+			if !legacy {
+				kept = append(kept, hook)
+			}
+		}
+		if len(kept) > 0 {
+			group.Hooks = kept
+			result = append(result, group)
+		}
+	}
+	return result
 }
 
 // Uninstall removes AO's hooks from the workspace's hooks file, leaving

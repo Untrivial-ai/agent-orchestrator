@@ -210,6 +210,161 @@ Rebuild with `npx expo run:ios|run:android` only when **native** config changes:
 plugins or permissions, native dependencies, `expo-build-properties`. After dependency
 surgery, regenerate the native projects from scratch with `npx expo prebuild --clean`.
 
+## Over-the-air updates
+
+Preview and production builds pull JS-only changes from
+[EAS Update](https://docs.expo.dev/eas-update/introduction/), so a fix that touches no
+native code reaches phones without a store release. A cold start checks in the
+background and applies on the next launch. When the app comes back after 15+ minutes
+in the background it applies a downloaded update (a quick reload; sessions live in the
+daemon) or checks for one. **Settings → About → App updates** checks on demand,
+restarts into a pending update and shows what is running. Dev builds
+(`npx expo run:*`) never take updates — they load from Metro.
+
+- **Runtime version** is a
+  [fingerprint](https://docs.expo.dev/eas-update/runtime-versions/#fingerprint-runtime-version-policy)
+  of the native inputs (dependencies, config plugins, patches; see `fingerprint.config.js`).
+  Any native change produces a new runtime, so an update can never land on a build that
+  lacks the native code it needs. `npx expo-updates runtimeversion:resolve --platform ios`
+  prints the current value.
+- **Channels** follow the `eas.json` build profiles: `preview` and `production`.
+- **Publishing** is a deliberate local step, like builds. There is no CI publish, so
+  no Expo token lives in the repo:
+
+  ```bash
+  eas update --channel preview --environment preview -m "fix: ..."
+  eas update --channel production --environment production -m "fix: ..." --rollout-percentage 10
+  ```
+
+  `--environment` selects the EAS environment variables and is required from SDK 55.
+  Start production at a partial rollout and widen it from the EAS dashboard once it looks healthy.
+  Publish from the machine that builds, so the fingerprint is computed with the same
+  inputs. `eas update:list --branch production` shows what is live (note `--branch`,
+  not `--channel`), `eas update:insights` shows adoption, and
+  `eas update:roll-back-to-embedded` reverts.
+
+### Build or update?
+
+Don't judge by eye — a diff that touches only `.ts`/`.tsx` can still need a build if it
+also touches `app.json`, a plugin, or a dependency. Ask the tool:
+
+```bash
+eas fingerprint:compare
+```
+
+Matches the live build's fingerprint → ship an update. Doesn't match → it needs a build,
+however JS-only the diff looks. `google-services.json`, `eas.json`, `.gitignore` and the
+masked-view Android manifest are excluded from the hash (see `fingerprint.config.js`);
+everything else that feeds the native build is in it, including `.easignore` — editing
+even its comments moves the runtime version.
+
+### Rules that keep this working
+
+- **Never let a fingerprint input differ between machines, or between the build state
+  and the publish state.** Every OTA failure this project has hit was one of these, and
+  they are all silent: the publish succeeds, the dashboard says live, and no device ever
+  matches. Four have been found and closed; assume there is a fifth.
+- **Updates published before a build are invisible to that build.** `useEmbeddedUpdate`
+  serves the embedded bundle when it is newer than anything on the branch. So after every
+  production build, re-publish any JS fixes that still matter — or cut the build from a
+  commit that already contains them. Otherwise users on the fresh binary quietly regress
+  while the dashboard still shows those updates as live.
+- **`roll-back-to-embedded` is per-runtime.** It prompts for one runtime version, and
+  runtimes are per-platform. In an incident you must run it **twice**, once for iOS and
+  once for Android. Rolling back one platform turns the dashboard green while half your
+  users stay broken.
+- **Don't change dependencies between a build and the updates published against it.**
+  `npx expo install --check` moves the fingerprint. Run it before a build, never after.
+  `expo-doctor` reporting patch drift a week after shipping is normal and is not a reason
+  to rebuild.
+- **Start Metro with `--clear` after any `npm ci` or dependency change**, or you get
+  "Unable to resolve module X" for a package that is demonstrably installed.
+- **`eas.json` is `skip-worktree`** on the publishing machine so local App Store Connect
+  submit credentials stay out of the public repo. EAS Build reads the committed file, so
+  any local edit to it — a new profile, a channel change — never reaches a build until
+  the bit is cleared and the change is committed.
+- **`google-services.json` reaches EAS Build as the `GOOGLE_SERVICES_JSON` file
+  environment variable**, not by being committed. Never go back to a temp commit: that
+  required deleting the file's line from `.gitignore`, which is itself a fingerprint
+  input, and it put a public-repo leak one `git push` away.
+
+### Verified, and not
+
+Checked on device against real builds (Android `307dee3c…`, iOS `66d18d1d…`): build and
+publishing-machine fingerprints matching, the Settings check-and-restart path, cold start
+applying on the second launch, and rollback to embedded over populated storage without a
+crash.
+
+**The 15-minute resume path is covered by unit tests only.** `onForeground` is tested
+directly; the `AppState` wiring around it has never been exercised on a device. Note also
+that any foreground resets the timer, so testing it needs one uninterrupted background
+stretch.
+
+## Store updates
+
+OTA covers JS only. A native change mints a new fingerprint runtime, so a build
+in the field stops being offered updates the moment a newer binary ships — silently.
+This is the other half: when a newer **native binary** is live on a store, the app
+says so once per launch and takes the user there. **Settings → About → App Store /
+Play Store** checks on demand.
+
+- **Android** uses [Play In-App Updates](https://developer.android.com/guide/playcore/in-app-updates)
+  via `expo-in-app-updates`. Play compares the installed `versionCode` itself, so the
+  app never reads or configures a version. Only works for builds installed from Play;
+  sideloaded and dev builds fail the check silently.
+- **iOS** queries the iTunes Search API by bundle id in plain JS. The response carries
+  the App Store id, so nothing has to be configured. It is inert until the app is
+  actually on the App Store.
+- `expo-in-app-updates` is therefore **excluded from Apple autolinking**
+  (`package.json` → `expo.autolinking.apple.exclude`) — it is Android-only code here.
+  Keep it that way: linking the unused pod puts the package into the iOS fingerprint,
+  which would change the iOS runtime version on every dependency bump and force a
+  native release for changes that are pure JS. `lib/inAppUpdates.ts` binds the native
+  module with `requireOptionalNativeModule`, which answers `null` on iOS instead of
+  throwing the way a plain import would.
+- **Two tiers.** The nudge is a dismissible sheet, shown at most once a day and three
+  times per store version (a swipe counts as a dismissal). The insistent tier is Play's
+  own fullscreen updater — note it is still cancellable: `startUpdateFlowForResult`
+  resolves as soon as the dialog opens, and cancelling leaves the app running. It is
+  entered only when Play asks for it — publish the release with `inAppUpdatePriority`
+  4 or 5 in `Edits.tracks.releases` through the Play Developer API. Priority can only
+  be set while rolling a release out and **can never be changed afterwards**. Raise it
+  only once the new build is *live* on the store, not merely approved. iOS has no
+  equivalent channel and Apple discourages blocking, so iOS is nudge-only.
+- **Version floor.** Two EAS environment variables let a release be declared
+  without shipping app code: `EXPO_PUBLIC_AO_MIN_APP_VERSION` (below it, the
+  update stops being optional) and `EXPO_PUBLIC_AO_LATEST_APP_VERSION` (below it,
+  the usual once-a-day nudge). Both unset means the floor is inert, which is how
+  it ships. Move one and publish:
+
+  ```bash
+  eas env:create --environment production --name EXPO_PUBLIC_AO_MIN_APP_VERSION --value 1.3.0 --visibility plaintext
+  eas update --channel production --environment production -m "raise the floor to 1.3.0" --rollout-percentage 10
+  ```
+
+  Four things to know before you do:
+  - **`min` can only escalate an update the store already confirmed exists.** It
+    can raise a confirmed update from dismissible to blocking; it can never invent
+    one. So a mistyped floor cannot strand anyone, and iOS stays nudge-only until
+    the App Store listing exists — then starts blocking on its own, no code change.
+  - **Visibility must be `plaintext`.** Secret variables are not readable outside
+    EAS servers, so they do not resolve during `eas update` and the floor silently
+    falls back to inert.
+  - **One publish per runtime you want to reach.** Values are inlined into the JS
+    bundle. A `version` stamp changes the fingerprint, so after one, `main` only
+    reaches the new runtime — publish from the older release's tag to reach that
+    cohort. The EAS values are read at publish time, so no code edit on that tag.
+  - **It only distinguishes versions you actually stamp.** `eas.json`
+    `autoIncrement` moves the build number, not `version`.
+- **Flexible updates are never started, deliberately.** `expo-in-app-updates` calls
+  `completeUpdate()` as soon as a flexible download finishes, which restarts the app
+  unannounced; Google's own contract is that a flexible update restarts only when the
+  user chooses to. A surprise restart is wrong for a remote control over long-running
+  agents, so the dismissible sheet is the soft tier and opting in goes straight to the
+  immediate flow.
+- Everything fails open: an unreachable store, an unpublished bundle id or a non-Play
+  install all read as "no update" rather than an error.
+
 ## Troubleshooting
 
 | Symptom                                           | Fix                                                                                                                                                          |
@@ -222,6 +377,7 @@ surgery, regenerate the native projects from scratch with `npx expo prebuild --c
 | iOS app installs, then closes immediately         | Untrusted developer profile: **Settings → General → VPN & Device Management → trust your Apple ID**.                                                         |
 | App runs but can't reach the daemon (iOS)         | The Local Network prompt was denied: **Settings → Privacy & Security → Local Network → AO** → on.                                                            |
 | Phone can't reach Metro                           | `adb reverse tcp:8081 tcp:8081` (Android), or `npx expo start --tunnel` (either platform).                                                                   |
+| An update never arrives                           | Its runtime version differs from the build's — a native change since that build. Compare `runtimeversion:resolve` with the runtime shown in a bug-report body. |
 | Terminal renders blank                            | The xterm WebView is patched via `patch-package`; confirm `postinstall` ran (`npx patch-package`).                                                           |
 
 ## Project layout

@@ -73,6 +73,14 @@ export function BotIcon(props: IconProps) {
 	);
 }
 
+export function CheckIcon(props: IconProps) {
+	return (
+		<Icon name="check" {...props}>
+			<path d="M20 6 9 17l-5-5" />
+		</Icon>
+	);
+}
+
 export function FileCodeIcon(props: IconProps) {
 	return (
 		<Icon name="file-code-2" {...props}>
@@ -80,6 +88,15 @@ export function FileCodeIcon(props: IconProps) {
 			<polyline points="14 2 14 8 20 8" />
 			<path d="m10 13-2 2 2 2" />
 			<path d="m14 17 2-2-2-2" />
+		</Icon>
+	);
+}
+
+export function PlusIcon(props: IconProps) {
+	return (
+		<Icon name="plus" {...props}>
+			<path d="M5 12h14" />
+			<path d="M12 5v14" />
 		</Icon>
 	);
 }
@@ -118,6 +135,39 @@ export function GitPullRequestIcon(props: IconProps) {
 	);
 }
 
+export function GitMergeIcon(props: IconProps) {
+	return (
+		<Icon name="git-merge" {...props}>
+			<circle cx="6" cy="6" r="3" />
+			<circle cx="18" cy="18" r="3" />
+			<path d="M6 9v3a6 6 0 0 0 6 6h3" />
+			<path d="m15 15 3 3-3 3" />
+		</Icon>
+	);
+}
+
+export function GitPullRequestClosedIcon(props: IconProps) {
+	return (
+		<Icon name="git-pull-request-closed" {...props}>
+			<circle cx="6" cy="6" r="3" />
+			<path d="M6 9v12" />
+			<path d="m15 9 6 6" />
+			<path d="m21 9-6 6" />
+		</Icon>
+	);
+}
+
+export function GitPullRequestDraftIcon(props: IconProps) {
+	return (
+		<Icon name="git-pull-request-draft" {...props}>
+			<circle cx="6" cy="6" r="3" />
+			<path d="M6 9v12" />
+			<path d="M18 6h.01" />
+			<path d="M18 10v8" />
+		</Icon>
+	);
+}
+
 export function LoaderCircleIcon(props: IconProps) {
 	return (
 		<Icon name="loader-circle" {...props}>
@@ -130,6 +180,16 @@ export function MessageSquareIcon(props: IconProps) {
 	return (
 		<Icon name="message-square" {...props}>
 			<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+		</Icon>
+	);
+}
+
+export function MoreHorizontalIcon(props: IconProps) {
+	return (
+		<Icon name="more-horizontal" {...props}>
+			<circle cx="12" cy="12" r="1" />
+			<circle cx="19" cy="12" r="1" />
+			<circle cx="5" cy="12" r="1" />
 		</Icon>
 	);
 }

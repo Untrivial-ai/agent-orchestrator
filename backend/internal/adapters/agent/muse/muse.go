@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const adapterID = "muse"
@@ -112,9 +112,12 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 
 // GetRestoreCommand builds the argv to resume an existing Muse session:
 //
-//	[env TBH_EVAL_APPEND_DEVELOPER_PROMPT=<instructions> TBH_MANAGED_HOOKS_PATH=<path>] muse --trust-workspace [--approval-mode never|--yolo] [--model <model>] resume <agentSessionId>
+//	[env TBH_EVAL_APPEND_DEVELOPER_PROMPT=<instructions> TBH_MANAGED_HOOKS_PATH=<path>] muse --trust-workspace [--approval-mode never|--yolo] [--model <model>] resume <agentSessionId> [<prompt>]
 //
 // ok is false when Muse has not emitted its native session id through AO hooks.
+// The optional resume-time prompt is appended last, matching GetLaunchCommand,
+// so a review task submitted alongside a resume starts atomically with the
+// process instead of racing a post-launch terminal injection.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -156,6 +159,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendApprovalFlags(&cmd, cfg.Permissions)
 	agentbase.AppendModelFlag(&cmd, cfg.Config, "--model")
 	cmd = append(cmd, "resume", agentSessionID)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, cfg.Prompt)
+	}
 	return cmd, true, nil
 }
 
@@ -187,6 +193,10 @@ var museBinarySpec = binaryutil.BinarySpec{
 	},
 	UnixHomePaths: [][]string{
 		{".local", "bin", "muse"}, // official Meta installer default
+	},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "muse.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "muse.exe"}},
 	},
 }
 
@@ -227,7 +237,7 @@ func resolveMuseBinary(ctx context.Context, spec binaryutil.BinarySpec) (string,
 }
 
 func isOfficialMuseBinary(ctx context.Context, binary string) bool {
-	cmd := exec.CommandContext(ctx, binary, "--version")
+	cmd := aoprocess.CommandContext(ctx, binary, "--version")
 	cmd.Env = append(os.Environ(), "MUSE_NO_AUTO_UPDATE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

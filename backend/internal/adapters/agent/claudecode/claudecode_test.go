@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +16,31 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestResolveClaudeBinaryFindsLocalAppDataNPMShimOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows install location")
+	}
+	localAppData := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("USERPROFILE", t.TempDir())
+	want := filepath.Join(localAppData, "npm", "claude.cmd")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("@echo off\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveClaudeBinary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveClaudeBinary() = %q, want %q", got, want)
+	}
+}
 
 func TestNativeConversationIDUsesTheSameClaudeUUIDAcrossInterfaces(t *testing.T) {
 	p := &Plugin{}
@@ -441,9 +467,11 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	if len(config.Permissions) == 0 {
 		t.Fatalf("unrelated settings clobbered: %s", data)
 	}
-	// SessionStart carries the required matcher; UserPromptSubmit omits it.
-	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup" {
-		t.Fatalf("SessionStart matcher = %v, want startup", m)
+	// SessionStart must fire on resume (and clear/compact/fork) as well as a
+	// fresh startup: a --resume relaunch otherwise never confirms the native
+	// session id under the new RuntimeLaunchID until the user types again (#4122).
+	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
 	}
 	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], "ao hooks claude-code user-prompt-submit"); m != nil {
 		t.Fatalf("UserPromptSubmit matcher = %v, want none", m)
@@ -455,6 +483,47 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	}
 	if m := matcherForCommand(config.Hooks["SessionEnd"], "ao hooks claude-code session-end"); m != nil {
 		t.Fatalf("SessionEnd matcher = %v, want none", m)
+	}
+}
+
+func TestGetAgentHooksMigratesSessionStartMatcher(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	workspace := t.TempDir()
+	settingsPath := filepath.Join(workspace, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Workspaces installed before #4122 registered SessionStart only under
+	// "startup". Reconcile must move the AO command onto the broader matcher
+	// without duplicating it or dropping a user's own startup hook.
+	existing := `{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"ao hooks claude-code session-start","timeout":30},{"type":"command","command":"custom startup hook","timeout":5}]}]}}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Hooks map[string][]hooksjson.MatcherGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	groups := config.Hooks["SessionStart"]
+	if m := matcherForCommand(groups, "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
+	}
+	if got := countClaudeHookCommand(groups, "ao hooks claude-code session-start"); got != 1 {
+		t.Fatalf("session-start command count = %d, want 1 in %#v", got, groups)
+	}
+	if got := countClaudeHookCommand(groups, "custom startup hook"); got != 1 {
+		t.Fatalf("custom startup hook count = %d, want 1 in %#v", got, groups)
 	}
 }
 
@@ -899,6 +968,50 @@ func TestEnsureWorkspaceTrustedCreatesEntry(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkspaceTrustedNormalizesWindowsProjectKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const workspacePath = `D:\dev\agent-orchestrator\.ao\worktrees\demo\worker-1`
+	const wantKey = `D:/dev/agent-orchestrator/.ao/worktrees/demo/worker-1`
+	if err := ensureWorkspaceTrustedForOS(cfgPath, workspacePath, "windows"); err != nil {
+		t.Fatalf("ensureWorkspaceTrustedForOS: %v", err)
+	}
+
+	root := readJSON(t, cfgPath)
+	projects := root["projects"].(map[string]any)
+	entry, ok := projects[wantKey].(map[string]any)
+	if !ok || entry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("forward-slash trust entry = %#v, want accepted entry", projects[wantKey])
+	}
+	if _, exists := projects[workspacePath]; exists {
+		t.Fatalf("unexpected backslash-keyed trust entry: %#v", projects[workspacePath])
+	}
+}
+
+func TestEnsureWorkspaceTrustedLeavesNonWindowsProjectKeyUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const workspacePath = `/worktrees/project\with-backslash`
+	if err := ensureWorkspaceTrustedForOS(cfgPath, workspacePath, "linux"); err != nil {
+		t.Fatalf("ensureWorkspaceTrustedForOS: %v", err)
+	}
+
+	root := readJSON(t, cfgPath)
+	projects := root["projects"].(map[string]any)
+	entry, ok := projects[workspacePath].(map[string]any)
+	if !ok || entry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("unchanged trust entry = %#v, want accepted entry", projects[workspacePath])
+	}
+}
+
 func TestEnsureWorkspaceTrustedIsIdempotentAndNoWriteWhenAlreadyTrusted(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".claude.json")
@@ -939,6 +1052,29 @@ func TestEnsureWorkspaceTrustedCreatesMissingConfig(t *testing.T) {
 	entry := projects[work].(map[string]any)
 	if entry["hasTrustDialogAccepted"] != true {
 		t.Fatalf("entry not trusted in freshly-created config: %#v", entry)
+	}
+}
+
+func TestEnsureWorkspaceTrustedRefusesZeroByteConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	// Simulate catching some other writer mid-truncate: the file exists
+	// but reads back as zero bytes.
+	if err := os.WriteFile(cfgPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureWorkspaceTrusted(cfgPath, "/some/worktree")
+	if err == nil {
+		t.Fatal("expected error for zero-byte config, got nil")
+	}
+
+	data, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("zero-byte config must not be overwritten; got %d bytes: %s", len(data), data)
 	}
 }
 
@@ -996,6 +1132,149 @@ func TestComposerIsEmptyUsesClaudePromptMarker(t *testing.T) {
 	footer := "\x1b[38;5;220mUpdate available!\x1b[39m\n\x1b[38;5;211m⏵⏵ bypass permissions on\x1b[39m"
 	if !plugin.ComposerIsEmpty(rule + "\n\x1b[39m❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n" + footer) {
 		t.Fatal("blank bordered Claude composer above status footer was not recognized")
+	}
+}
+
+func TestInspectTerminalSurfaceSeparatesClaudeWorkFromComposer(t *testing.T) {
+	plugin := &Plugin{}
+	rule := "\x1b[38;5;244m" + strings.Repeat("─", 48) + "\x1b[39m"
+	tests := []struct {
+		name       string
+		output     string
+		wantWork   ports.TerminalSurfaceWorkState
+		wantEditor ports.TerminalComposerState
+	}{
+		{
+			name:       "idle empty composer",
+			output:     rule + "\n\x1b[39m❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n⏵⏵ bypass permissions on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name:       "idle draft",
+			output:     rule + "\n❯ keep this draft\n" + rule + "\n⏵⏵ bypass permissions on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerDraft,
+		},
+		{
+			name:       "active wording inside draft is not current chrome",
+			output:     rule + "\n❯ quote ✶ Generating… (esc to interrupt · 2s)\n" + rule + "\n⏵⏵ bypass permissions on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerDraft,
+		},
+		{
+			name:       "active with empty composer",
+			output:     "✶ Generating… (esc to interrupt · 2s)\n" + rule + "\n❯\n" + rule,
+			wantWork:   ports.TerminalSurfaceWorkActive,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "active with interrupt hint in footer",
+			output: "✻ Computing… (24s · ↓ 114 tokens)\n" + rule + "\n❯\n" + rule +
+				"\n⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents",
+			wantWork:   ports.TerminalSurfaceWorkActive,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "spinner transcript above idle composer without active footer",
+			output: "✻ Computing… (24s · ↓ 114 tokens)\n" + rule + "\n❯\n" + rule +
+				"\n⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name:       "permission dialog",
+			output:     "Do you want to proceed?\n❯ 1. Yes\n  2. No\nPress enter to confirm",
+			wantWork:   ports.TerminalSurfaceWorkBlocked,
+			wantEditor: ports.TerminalComposerUnknown,
+		},
+		{
+			name: "permission dialog with provider-specific question and modern footer",
+			output: "Claude wants to run Bash\n" +
+				"❯ 1. Yes\n" +
+				"  2. No\n" +
+				"Esc to cancel · Tab to amend",
+			wantWork:   ports.TerminalSurfaceWorkBlocked,
+			wantEditor: ports.TerminalComposerUnknown,
+		},
+		{
+			name: "permission dialog with a non-first selected option",
+			output: "Claude wants to run Bash\n" +
+				"  1. Yes\n" +
+				"❯ 2. No\n" +
+				"Esc to cancel · Tab to amend",
+			wantWork:   ports.TerminalSurfaceWorkBlocked,
+			wantEditor: ports.TerminalComposerUnknown,
+		},
+		{
+			name: "permissions menu without a selected prompt marker",
+			output: "❯ /permissions\n" + rule + "\n" +
+				"  Permissions  Recently denied   Allow   Ask   Deny   Workspace\n\n" +
+				"  Claude Code won't ask before using allowed tools.\n" +
+				"  ╭───────────────────────────────────────────────╮\n" +
+				"  │ ⌕ Search…                                     │\n" +
+				"  ╰───────────────────────────────────────────────╯\n\n" +
+				"    1. Add a new rule…\n\n" +
+				"  ←/→ to switch · ↓ to select · Esc to cancel",
+			wantWork:   ports.TerminalSurfaceWorkBlocked,
+			wantEditor: ports.TerminalComposerUnknown,
+		},
+		{
+			name: "completed permissions menu above current composer is not blocked",
+			output: "  ╭─── Search… ───╮\n" +
+				"  │ ⌕ Search… │\n" +
+				"  ╰────────────╯\n" +
+				"    1. Add a new rule…\n" +
+				"  ←/→ to switch · ↓ to select · Esc to cancel\n" +
+				rule + "\n❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n⏵⏵ auto mode on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "completed permission menu above the current composer is not blocked",
+			output: "Claude wanted to run Bash\n" +
+				"❯ 1. Yes\n" +
+				"  2. No\n" +
+				"Esc to cancel · Tab to amend\n" + rule + "\n❯\u00a0\x1b[7m \x1b[0m\n" + rule,
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "permission wording in completed response is not current chrome",
+			output: "The command asked: Do you want to proceed?\n" +
+				"It then said: Press enter to confirm.\n" + rule + "\n❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n⏵⏵ bypass permissions on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "interrupt wording in completed response is not active chrome",
+			output: "The status previously read esc to interrupt while the command ran.\n" +
+				rule + "\n❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n⏵⏵ bypass permissions on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "old active row separated from composer is not current chrome",
+			output: "✶ Generating… (esc to interrupt · 2s)\nThe work finished.\n" +
+				rule + "\n❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n⏵⏵ bypass permissions on",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			name: "transcript marker is outside current surface",
+			output: "Earlier output mentioned esc to interrupt\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n" +
+				"❯\u00a0",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := plugin.InspectTerminalSurface(tt.output)
+			if got.Work != tt.wantWork || got.Composer != tt.wantEditor {
+				t.Fatalf("InspectTerminalSurface() = %+v, want work=%v composer=%v", got, tt.wantWork, tt.wantEditor)
+			}
+		})
 	}
 }
 

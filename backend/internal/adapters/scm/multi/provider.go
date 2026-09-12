@@ -193,6 +193,40 @@ func (m *Provider) FetchReviewThreads(ctx context.Context, ref ports.SCMPRRef) (
 	return p.FetchReviewThreads(ctx, ref)
 }
 
+// RequestReview delegates to the sub-provider matching request.PR.Repo.Provider
+// when that provider supports review-request mutations.
+func (m *Provider) RequestReview(ctx context.Context, request ports.SCMReviewRequest) error {
+	if m == nil {
+		return fmt.Errorf("%w: review request provider is unavailable", ports.ErrSCMUnsupported)
+	}
+	p, err := m.resolve(request.PR.Repo.Provider)
+	if err != nil {
+		return err
+	}
+	requester, ok := p.(ports.SCMReviewRequester)
+	if !ok {
+		return fmt.Errorf("%w: review requests for provider %q", ports.ErrSCMUnsupported, request.PR.Repo.Provider)
+	}
+	return requester.RequestReview(ctx, request)
+}
+
+// ResolveReviewThread delegates to the sub-provider matching request.PR.Repo.Provider
+// when that provider supports review-thread resolve mutations.
+func (m *Provider) ResolveReviewThread(ctx context.Context, request ports.SCMReviewResolveRequest) error {
+	if m == nil {
+		return fmt.Errorf("%w: review thread resolver is unavailable", ports.ErrSCMUnsupported)
+	}
+	p, err := m.resolve(request.PR.Repo.Provider)
+	if err != nil {
+		return err
+	}
+	resolver, ok := p.(ports.SCMReviewResolver)
+	if !ok {
+		return fmt.Errorf("%w: review thread resolve for provider %q", ports.ErrSCMUnsupported, request.PR.Repo.Provider)
+	}
+	return resolver.ResolveReviewThread(ctx, request)
+}
+
 type credentialChecker interface {
 	SCMCredentialsAvailable(ctx context.Context) (bool, error)
 }
@@ -245,9 +279,8 @@ type indexedRef struct {
 
 // repoFullNameFromRef returns the display repository name from a ref's
 // SCMRepo, preferring the pre-filled Repo field and falling back to
-// Owner + "/" + Name when Repo is empty. This mirrors the observer's
-// repoFullName helper and ensures Fetched=false placeholders carry a
-// non-empty Repo so prKeyFromObs produces a non-empty key.
+// Owner + "/" + Name when Repo is empty. This ensures Fetched=false
+// placeholders retain the repository context of the ref they represent.
 func repoFullNameFromRef(repo ports.SCMRepo) string {
 	if repo.Repo != "" {
 		return repo.Repo

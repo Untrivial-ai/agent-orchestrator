@@ -120,10 +120,10 @@ func (p *cannedSCMProvider) CommitChecksGuard(_ context.Context, _ ports.SCMRepo
 func (p *cannedSCMProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]ports.SCMObservation, 0, len(refs))
-	for _, ref := range refs {
+	out := make([]ports.SCMObservation, len(refs))
+	for i, ref := range refs {
 		if obs, ok := p.observations[ref.Number]; ok {
-			out = append(out, obs)
+			out[i] = obs
 		}
 	}
 	return out, nil

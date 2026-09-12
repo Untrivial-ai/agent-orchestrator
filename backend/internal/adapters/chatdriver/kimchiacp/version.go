@@ -3,10 +3,11 @@ package kimchiacp
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // minimumKimchiVersion is the oldest Kimchi build known to support ACP mode.
@@ -20,7 +21,7 @@ var semverPattern = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)
 // triplet, and returns an error if the binary is too old or the version
 // output is unparseable.
 func versionProbe(ctx context.Context, bin string) error {
-	output, err := exec.CommandContext(ctx, bin, "--version").CombinedOutput()
+	output, err := aoprocess.CommandContext(ctx, bin, "--version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("read Kimchi version: %w", err)
 	}

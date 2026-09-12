@@ -38,14 +38,20 @@ describe("MobileDevicesSection", () => {
 		await appI18n.changeLanguage("en");
 	});
 
-	it("shows a live device and a last-seen fallback", async () => {
+	it("shows devices as a compact, single-line management list", async () => {
 		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
 		renderSection();
 
 		expect(await screen.findByText("iPhone")).toBeInTheDocument();
-		expect(screen.getByText("Live")).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Connected devices" })).toBeInTheDocument();
+		const deviceList = screen.getByRole("list");
+		expect(deviceList).toHaveClass("divide-y");
+		expect(deviceList).not.toHaveClass("rounded-md", "border");
+		expect(screen.getAllByRole("listitem")[0]).not.toHaveClass("rounded-lg", "border", "px-3", "bg-[var(--color-bg-settings-input)]");
 		expect(screen.getByText("M31s")).toBeInTheDocument();
-		expect(screen.getByText(/2 hours ago/)).toBeInTheDocument();
+		expect(screen.queryByText("Live")).not.toBeInTheDocument();
+		expect(screen.getAllByTestId("bell")).toHaveLength(2);
+		expect(screen.queryByText(/2 hours ago/)).not.toBeInTheDocument();
 	});
 
 	it("mutes a device", async () => {
@@ -68,17 +74,21 @@ describe("MobileDevicesSection", () => {
 		const del = vi.spyOn(apiClient, "DELETE").mockResolvedValue({ data: undefined } as never);
 		renderSection();
 
-		fireEvent.click(await screen.findByRole("button", { name: /remove iPhone/i }));
+		const removeButton = await screen.findByRole("button", { name: /remove iPhone/i });
+		expect(removeButton.querySelector(".lucide-trash-2")).toBeInTheDocument();
+		fireEvent.click(removeButton);
 		expect(del).not.toHaveBeenCalled();
 
 		fireEvent.click(screen.getByRole("button", { name: /confirm remove/i }));
 		await waitFor(() => expect(del).toHaveBeenCalledTimes(1));
 	});
 
-	it("shows an empty state when nothing is paired", async () => {
+	it("renders nothing when no devices are paired", async () => {
 		vi.spyOn(apiClient, "GET").mockResolvedValue({ data: { devices: [] } } as never);
 		renderSection();
-		expect(await screen.findByText(/No devices paired yet/i)).toBeInTheDocument();
+		await waitFor(() => expect(apiClient.GET).toHaveBeenCalled());
+		expect(screen.queryByRole("heading", { name: "Connected devices" })).not.toBeInTheDocument();
+		expect(screen.queryByText(/No devices paired yet/i)).not.toBeInTheDocument();
 	});
 
 	it("shows a distinct message when the device registry is unavailable, not the empty state", async () => {
@@ -171,7 +181,7 @@ describe("MobileDevicesSection", () => {
 		expect(names).toEqual(["iPhone", "M31s"]);
 	});
 
-	it("shows a disabled switch and explanatory line for a device with no push token, but keeps live/last-seen and removal working", async () => {
+	it("keeps a device without a push token manageable without extra status copy", async () => {
 		const noToken = {
 			data: {
 				devices: [
@@ -188,10 +198,8 @@ describe("MobileDevicesSection", () => {
 		renderSection();
 
 		expect(await screen.findByText("Pixel Announce")).toBeInTheDocument();
-		// Still shows live state even with no token.
-		expect(screen.getByText("Live")).toBeInTheDocument();
-		// Explanatory line for the disabled-notifications state.
-		expect(screen.getByText(/Notifications not enabled on this device/i)).toBeInTheDocument();
+		expect(screen.queryByText("Live")).not.toBeInTheDocument();
+		expect(screen.queryByText(/Notifications not enabled on this device/i)).not.toBeInTheDocument();
 
 		const toggle = screen.getByRole("switch", { name: /notifications for Pixel Announce/i });
 		expect(toggle).toBeDisabled();
@@ -202,16 +210,4 @@ describe("MobileDevicesSection", () => {
 		await waitFor(() => expect(del).toHaveBeenCalledTimes(1));
 	});
 
-	it("formats last-seen relative to the app's language, not the OS locale", async () => {
-		await appI18n.changeLanguage("ja");
-		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
-		renderSection();
-
-		await screen.findByText("M31s");
-		// Japanese Intl.RelativeTimeFormat renders "2 時間前" for 2 hours ago —
-		// distinct from the English "2 hours ago" the OS-locale default would
-		// have produced on an en-US machine regardless of the app's own language.
-		expect(screen.getByText(/時間前/)).toBeInTheDocument();
-		expect(screen.queryByText(/2 hours ago/i)).not.toBeInTheDocument();
-	});
 });

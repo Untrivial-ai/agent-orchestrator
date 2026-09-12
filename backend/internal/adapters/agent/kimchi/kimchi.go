@@ -1,7 +1,7 @@
 // Package kimchi implements the Kimchi agent adapter: launching headless Kimchi
 // sessions and resuming sessions when a native session id is known.
 //
-// Kimchi (@kimchi-dev/cli, binary "kimchi") is a coding-agent CLI built on
+// Kimchi (binary "kimchi") is a coding-agent CLI built on
 // @earendil-works/pi-coding-agent. AO drives it non-interactively with
 // `--print` ("process prompt and exit"). The initial prompt is delivered
 // in-command as a trailing positional argument.
@@ -247,7 +247,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 // GetRestoreCommand rebuilds the argv to resume an existing Kimchi session
 // when a native session id is available in metadata.
 //
-// Final argv shape: kimchi [--auto|--yolo] [--allow-tool <rules>] [--deny-tool <rules>] [--append-system-prompt <text>] --session <id>.
+// Final argv shape: kimchi [--auto|--yolo] [--allow-tool <rules>] [--deny-tool <rules>] [--append-system-prompt <text>] --session <id> [<prompt>].
 // Re-applying the permission mode is a behavioral fix, not just a contract gap:
 // Kimchi's default mode fails closed (cannot auto-approve anything) in headless
 // contexts, so dropping the mode would regress a resumed orchestrator. The
@@ -256,8 +256,10 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 // instructions must be re-appended or a restored orchestrator loses its role.
 // Tool allow/deny rules are re-applied because RestoreConfig carries them and
 // a worker session launched with tool restrictions would otherwise lose those
-// restrictions on resume, matching Claude Code's restore behavior.
-// --session <id> is appended last.
+// restrictions on resume, matching Claude Code's restore behavior. The
+// optional resume-time prompt is appended last, matching GetLaunchCommand, so
+// a review task submitted alongside a resume starts atomically with the
+// process instead of racing a post-launch terminal injection.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -286,6 +288,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 
 	cmd = append(cmd, "--session", agentSessionID)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, sanitizePrompt(cfg.Prompt))
+	}
 	return cmd, true, nil
 }
 

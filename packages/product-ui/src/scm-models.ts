@@ -79,6 +79,7 @@ export type PullRequestReviewSummary = {
 	decision: ReviewDecision;
 	hasUnresolvedHumanComments: boolean;
 	unresolvedBy: PullRequestUnresolvedReviewer[];
+	resolvedBy?: PullRequestUnresolvedReviewer[];
 	reviews: PullRequestSubmittedReview[];
 };
 
@@ -103,6 +104,7 @@ export type PullRequestSummary = {
 	provider: string;
 	repository: string;
 	author: string;
+	authorAvatarUrl?: string;
 	sourceBranch: string;
 	targetBranch: string;
 	headSha: string;

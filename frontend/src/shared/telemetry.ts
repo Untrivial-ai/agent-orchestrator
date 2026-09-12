@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import type { TelemetryPolicySnapshot } from "./telemetry-policy";
 
 export type TelemetryBootstrap = {
 	distinctId: string;
@@ -18,6 +19,8 @@ export type TelemetryBootstrap = {
 	 * name, which is a kill switch that only half works.
 	 */
 	disabledEvents: string[];
+	eventsEnabled: boolean;
+	consentGeneration: string;
 };
 
 /** Parses the comma-separated deny list. Never throws: an unusable entry is inert. */
@@ -77,6 +80,7 @@ export async function buildTelemetryBootstrap(
 	platform: NodeJS.Platform,
 	homeDir = os.homedir(),
 	isPackaged = true,
+	policy?: TelemetryPolicySnapshot,
 ): Promise<TelemetryBootstrap | null> {
 	// Returning null is the whole switch: initTelemetry() bails on a null
 	// bootstrap, so the renderer never constructs a PostHog client at all. That
@@ -85,10 +89,16 @@ export async function buildTelemetryBootstrap(
 	if (!rendererTelemetryEnabled(env, isPackaged)) return null;
 	const dataDir = defaultDataDir(platform, env, homeDir);
 	if (!dataDir) return null;
+	if (!policy) return null;
+	// This policy controls failure reporting only. Existing anonymous PostHog
+	// product analytics retain their own packaged/env gate above.
+	const eventsEnabled = policy.eventsEnabled && policy.acknowledged;
 	return {
 		distinctId: await loadOrCreateTelemetryInstallId(dataDir),
 		appVersion,
 		platform,
 		disabledEvents: parseDisabledEvents(env.AO_TELEMETRY_DISABLED_EVENTS),
+		eventsEnabled,
+		consentGeneration: policy.consentGeneration,
 	};
 }

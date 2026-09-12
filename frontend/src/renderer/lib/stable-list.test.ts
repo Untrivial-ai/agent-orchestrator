@@ -37,6 +37,17 @@ describe("useStableList", () => {
 		expect(result.current[1]).toBe(stable[1]);
 	});
 
+	it("keeps the list reference when a refetch changes no entries", () => {
+		const { result, rerender } = renderHook(
+			({ list }) => useStableList(list, keyOf, sameContent),
+			{ initialProps: { list: [{ id: "a", n: 1 }, { id: "b", n: 2 }] } },
+		);
+		const stable = result.current;
+
+		rerender({ list: [{ id: "a", n: 1 }, { id: "b", n: 2 }] });
+		expect(result.current).toBe(stable);
+	});
+
 	it("adopts the new object for the one entry that changed", () => {
 		const { result, rerender } = renderHook(
 			({ list }) => useStableList(list, keyOf, sameContent),

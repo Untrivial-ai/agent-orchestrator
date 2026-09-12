@@ -1,7 +1,12 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInterfaceTransition } from "../hooks/useSessionInterfaceTransition";
-import { SessionInterfaceSwitchButton } from "./SessionInterfaceSwitch";
+import {
+	SessionInterfaceActionGroup,
+	SessionInterfaceSwitchButton,
+	SessionInterfaceSwitchDialog,
+	SessionInterfaceTransitionNotice,
+} from "./SessionInterfaceSwitch";
 import { TooltipProvider } from "./ui/tooltip";
 
 function renderSwitchButton(target: "chat" | "tui", onClick = vi.fn()) {
@@ -29,36 +34,67 @@ function transition(phase: SessionInterfaceTransition["phase"]): SessionInterfac
 }
 
 describe("SessionInterfaceSwitchButton", () => {
-	it("keeps a draining switch in the top bar with an adjacent Cancel action", () => {
-		const onCancel = vi.fn();
+	it("uses the shared topbar spacing between adjacent session actions", () => {
 		render(
-			<SessionInterfaceSwitchButton
-				target="chat"
-				supported
-				transition={transition("draining")}
-				onClick={vi.fn()}
-				onCancel={onCancel}
-			/>,
+			<SessionInterfaceActionGroup>
+				<button type="button">First action</button>
+				<button type="button">Second action</button>
+			</SessionInterfaceActionGroup>,
 		);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Waiting to switch… Chat UI");
+		const group = screen.getByRole("button", { name: "First action" }).parentElement;
+		expect(group).toHaveClass("gap-2");
+		expect(group).not.toHaveClass("gap-px");
+	});
+
+	it("shows a spinner while switching and reveals cancel on the tab hover target", () => {
+		const onCancel = vi.fn();
+		render(
+			<TooltipProvider>
+				{/* TerminalTabFrame marks the session tab with Tailwind `group`. */}
+				<div className="group">
+					<SessionInterfaceSwitchButton
+						target="chat"
+						supported
+						transition={transition("draining")}
+						onClick={vi.fn()}
+						onCancel={onCancel}
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		const status = screen.getByRole("status");
+		expect(status).toHaveAttribute(
+			"aria-label",
+			"Waiting to switch… Switching to Chat UI.",
+		);
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
 		const cancel = screen.getByRole("button", { name: "Cancel switch to Chat UI" });
+		expect(cancel).toHaveClass("opacity-0", "group-hover:opacity-100");
 		fireEvent.click(cancel);
 		expect(onCancel).toHaveBeenCalledOnce();
 	});
 
 	it("stays non-interactive after the source controller begins stopping", () => {
 		render(
-			<SessionInterfaceSwitchButton
-				target="chat"
-				supported
-				transition={transition("source_stopping")}
-				onClick={vi.fn()}
-				onCancel={vi.fn()}
-			/>,
+			<TooltipProvider>
+				<SessionInterfaceSwitchButton
+					target="chat"
+					supported
+					transition={transition("source_stopping")}
+					onClick={vi.fn()}
+					onCancel={vi.fn()}
+				/>
+			</TooltipProvider>,
 		);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Stopping controller… Chat UI");
+		const status = screen.getByRole("status");
+		expect(status).toHaveAttribute(
+			"aria-label",
+			"Stopping controller… Switching to Chat UI.",
+		);
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
 		expect(screen.queryByRole("button", { name: "Cancel switch to Chat UI" })).not.toBeInTheDocument();
 	});
 
@@ -74,5 +110,145 @@ describe("SessionInterfaceSwitchButton", () => {
 		expect(button.querySelector(`.${iconClass}`)).not.toBeNull();
 		fireEvent.click(button);
 		expect(onClick).toHaveBeenCalledOnce();
+	});
+
+	it("describes recovered history accurately and hides it after durable acknowledgement", () => {
+		const recovered = { ...transition("recovery_required"), errorCode: "DAEMON_RESTARTED" };
+		const { rerender } = render(
+			<SessionInterfaceTransitionNotice transition={recovered} onDismiss={vi.fn()} />,
+		);
+
+		expect(screen.getByText("Interface switch recovered")).toBeInTheDocument();
+		expect(screen.queryByText("Interface switch needs recovery")).not.toBeInTheDocument();
+
+		rerender(
+			<SessionInterfaceTransitionNotice
+				transition={{ ...recovered, noticeAcknowledgedAt: "2026-08-13T08:00:00Z" }}
+				onDismiss={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByText("Interface switch recovered")).not.toBeInTheDocument();
+	});
+
+	it("does not claim an unresolved recovery-required transition was recovered", () => {
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("recovery_required"),
+					errorCode: "SOURCE_STOP_UNCERTAIN",
+				}}
+				onDismiss={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Interface switch needs attention")).toBeInTheDocument();
+		expect(screen.queryByText("Interface switch recovered")).not.toBeInTheDocument();
+	});
+});
+
+describe("SessionInterfaceSwitchDialog", () => {
+	it("focuses Finish work as the safe default", async () => {
+		render(<SessionInterfaceSwitchDialog open target="tui" onOpenChange={vi.fn()} onChoose={vi.fn()} />);
+
+		await waitFor(() => {
+			expect(screen.getByRole("button", { name: /^Finish work, then switch/ })).toHaveFocus();
+		});
+	});
+
+	it("names active, queued, draft, and staged-attachment consequences before a Chat escape", () => {
+		render(<SessionInterfaceSwitchDialog open target="tui" onOpenChange={vi.fn()} onChoose={vi.fn()} />);
+
+		const dialog = screen.getByRole("dialog", { name: "Switch to Terminal UI?" });
+		expect(within(dialog).getByRole("button", { name: /^Finish work, then switch/ })).toHaveTextContent(
+			"running turn and anything already queued to finish",
+		);
+		expect(within(dialog).getByRole("button", { name: /^Stop now and switch/ })).toHaveTextContent(
+			"unfinished output and queued Chat turns are cancelled",
+		);
+		expect(dialog).toHaveTextContent(
+			"Any unsent Chat draft or staged attachments are discarded when the switch completes.",
+		);
+	});
+
+	it("discloses that interrupting discards an unsent terminal draft", () => {
+		render(<SessionInterfaceSwitchDialog open target="chat" onOpenChange={vi.fn()} onChoose={vi.fn()} />);
+
+		expect(screen.getByText(/Any unsent Terminal UI draft is discarded/)).toBeInTheDocument();
+	});
+});
+
+describe("SessionInterfaceTransitionNotice", () => {
+	it("offers an explicit discard action when drain preserves a draft", () => {
+		const onSwitchWithInterrupt = vi.fn();
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "DRAIN_DRAFT_PRESENT",
+					errorDetail: "AO found unsent text and left the source untouched.",
+				}}
+				onDismiss={vi.fn()}
+				onSwitchWithInterrupt={onSwitchWithInterrupt}
+			/>,
+		);
+
+		const action = screen.getByRole("button", {
+			name: "Discard draft and switch",
+		});
+		fireEvent.click(action);
+		expect(onSwitchWithInterrupt).toHaveBeenCalledOnce();
+	});
+
+	it("offers an explicit cancellation action when a provider decision blocks drain", () => {
+		const onSwitchWithInterrupt = vi.fn();
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "DRAIN_DECISION_PENDING",
+					errorDetail: "AO found a provider decision waiting in Terminal.",
+				}}
+				onDismiss={vi.fn()}
+				onSwitchWithInterrupt={onSwitchWithInterrupt}
+			/>,
+		);
+
+		const action = screen.getByRole("button", {
+			name: "Cancel request and switch",
+		});
+		fireEvent.click(action);
+		expect(onSwitchWithInterrupt).toHaveBeenCalledOnce();
+	});
+
+	it("does not offer a destructive retry for unrelated failures", () => {
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "TARGET_UNAVAILABLE",
+				}}
+				onDismiss={vi.fn()}
+				onSwitchWithInterrupt={vi.fn()}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Stop now and switch" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Discard draft and switch" })).not.toBeInTheDocument();
+	});
+
+	it("does not offer a destructive retry when terminal quiescence is unverified", () => {
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "DRAIN_QUIESCENCE_UNVERIFIED",
+					errorDetail: "AO could not classify the current Terminal screen.",
+				}}
+				onDismiss={vi.fn()}
+				onSwitchWithInterrupt={vi.fn()}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Stop now and switch" })).not.toBeInTheDocument();
 	});
 });

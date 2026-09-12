@@ -3,32 +3,50 @@ import {
 	type DragEvent,
 	type FormEvent,
 	type ReactNode,
+	memo,
+	useCallback,
+	useEffect,
 	useId,
 	useRef,
 	useState,
 } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	FileTextIcon as FileText,
 	LoaderCircleIcon as Loader2,
 	PaperclipIcon as Paperclip,
 	XIcon as X,
 } from "./icons";
+import { useOverlayAutoFocus } from "./overlay-auto-focus";
+
+// One fixed-height, non-wrapping row: 56px attachment tiles plus 6px top and
+// 8px bottom padding. Keeping this numeric avoids Motion's auto-height layout
+// measurement when an image is pasted.
+const ATTACHMENT_ROW_HEIGHT = 70;
 
 export type TaskComposerAgentOption = {
-	authStatus?: "authorized" | "unauthorized" | "unknown";
+	authentication: {
+		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		freshness: "fresh" | "stale" | "checking";
+	};
+	effectiveReadiness: "ready" | "not_ready" | "unknown";
 	id: string;
+	installation: {
+		state: "installed" | "not_installed" | "unknown";
+		freshness: "fresh" | "stale" | "checking";
+	};
 	label: string;
+	lastUsedAt?: string | null;
+	usageCount: number;
 };
 
 export type TaskComposerAgentControl = {
-	authorized?: TaskComposerAgentOption[];
+	agents?: TaskComposerAgentOption[];
 	disabled: boolean;
 	id: string;
-	installed?: TaskComposerAgentOption[];
 	label: string;
 	onChange: (value: string) => void;
 	placeholder: string;
-	supported?: TaskComposerAgentOption[];
 	value: string;
 };
 
@@ -41,6 +59,7 @@ export type TaskComposerModelOption = {
 
 export type TaskComposerModelCatalog = {
 	allowCustom: boolean;
+	customModelEntry: "none" | "direct" | "configured";
 	models: TaskComposerModelOption[];
 	selectionMode: "catalog" | "text" | "mode";
 };
@@ -49,15 +68,14 @@ export type TaskComposerModelControl = {
 	agentId: string;
 	agentLabel: string;
 	catalog?: TaskComposerModelCatalog;
+	disabled: boolean;
 	fetching: boolean;
 	id: string;
 	loading: boolean;
 	mode: string;
 	onModeChange: (value: string) => void;
 	onModelChange: (value: string) => void;
-	onRefresh?: () => void;
 	projectId: string;
-	refreshing: boolean;
 	value: string;
 };
 
@@ -75,17 +93,17 @@ export type TaskComposerAttachments = {
 };
 
 export type TaskComposerSubmission = {
-	canCreateAsTui: boolean;
+	showFallbackAction: boolean;
 	error?: string;
 	isSubmitting: boolean;
 	modelWarning?: string;
-	onSubmit: () => void;
-	onSubmitAsTui: () => void;
+	onFallbackAction: (prompt: string) => void;
+	onSubmit: (prompt: string) => void;
 };
 
 export type TaskComposerLabels = {
 	addFile: string;
-	createAsTui: string;
+	fallbackAction: string;
 	removeFile: (name: string) => string;
 	runsWith: string;
 	start: string;
@@ -99,24 +117,85 @@ export type TaskComposerViewProps = {
 	attachments: TaskComposerAttachments;
 	autoFocusPrompt?: boolean;
 	canSubmit: boolean;
+	initialPrompt?: string;
 	labels: TaskComposerLabels;
 	model: Omit<TaskComposerModelControl, "id">;
 	onPromptChange: (value: string) => void;
-	prompt: string;
 	renderAgentControl: (control: TaskComposerAgentControl) => ReactNode;
 	renderModelControl: (control: TaskComposerModelControl) => ReactNode;
 	submission: TaskComposerSubmission;
 };
+
+type TaskPromptProps = {
+	autoFocus?: boolean;
+	disabled: boolean;
+	id: string;
+	initialValue: string;
+	label: string;
+	onChange: (value: string) => void;
+	onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+	placeholder: string;
+};
+
+const TaskPrompt = memo(function TaskPrompt({
+	autoFocus,
+	disabled,
+	id,
+	initialValue,
+	label,
+	onChange,
+	onPaste,
+	placeholder,
+}: TaskPromptProps) {
+	const [value, setValue] = useState(initialValue);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	useOverlayAutoFocus(textareaRef, autoFocus === true);
+
+	useEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		el.style.height = "auto";
+		el.style.height = `${el.scrollHeight}px`;
+	}, [value]);
+
+	return (
+		<>
+			<label className="sr-only" htmlFor={id}>
+				{label}
+			</label>
+			<textarea
+				ref={textareaRef}
+				id={id}
+				className="min-h-[calc(3lh+1.75rem)] max-h-[calc(8lh+1.75rem)] w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-4 text-md leading-relaxed text-foreground outline-none placeholder:text-passive disabled:cursor-not-allowed disabled:opacity-50"
+				disabled={disabled}
+				placeholder={placeholder}
+				value={value}
+				onChange={(event) => {
+					const nextValue = event.target.value;
+					setValue(nextValue);
+					onChange(nextValue);
+				}}
+				onPaste={onPaste}
+				onKeyDown={(event) => {
+					if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.nativeEvent.isComposing) {
+						event.preventDefault();
+						event.currentTarget.form?.requestSubmit();
+					}
+				}}
+			/>
+		</>
+	);
+});
 
 export function TaskComposerView({
 	agent,
 	attachments,
 	autoFocusPrompt,
 	canSubmit,
+	initialPrompt = "",
 	labels,
 	model,
 	onPromptChange,
-	prompt,
 	renderAgentControl,
 	renderModelControl,
 	submission,
@@ -125,14 +204,24 @@ export function TaskComposerView({
 	const modelId = useId();
 	const agentId = useId();
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	const promptRef = useRef(initialPrompt);
+	const prefersReducedMotion = useReducedMotion();
 	const [isDragging, setIsDragging] = useState(false);
+	const handlePromptChange = useCallback(
+		(value: string) => {
+			promptRef.current = value;
+			onPromptChange(value);
+		},
+		[onPromptChange],
+	);
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		submission.onSubmit();
+		submission.onSubmit(promptRef.current);
 	};
 
 	const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+		if (submission.isSubmitting) return;
 		const files = Array.from(event.clipboardData?.files ?? []);
 		if (files.length === 0) return;
 		event.preventDefault();
@@ -142,11 +231,13 @@ export function TaskComposerView({
 	const handleDrop = (event: DragEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		setIsDragging(false);
+		if (submission.isSubmitting) return;
 		const files = Array.from(event.dataTransfer?.files ?? []);
 		if (files.length > 0) attachments.onAddFiles(files);
 	};
 
 	const handleDragOver = (event: DragEvent<HTMLFormElement>) => {
+		if (submission.isSubmitting) return;
 		if (Array.from(event.dataTransfer?.items ?? []).some((item) => item.kind === "file")) {
 			event.preventDefault();
 			setIsDragging(true);
@@ -165,59 +256,91 @@ export function TaskComposerView({
 				if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDragging(false);
 			}}
 		>
-			<label className="sr-only" htmlFor={promptId}>
-				{labels.task}
-			</label>
-			<textarea
-				id={promptId}
+			<TaskPrompt
 				autoFocus={autoFocusPrompt}
-				className="min-h-(--size-composer-prompt-min) w-full resize-none bg-transparent px-4 pb-3 pt-4 text-md leading-relaxed text-foreground outline-none placeholder:text-passive"
-				placeholder={labels.taskPlaceholder}
-				value={prompt}
-				onChange={(event) => onPromptChange(event.target.value)}
+				disabled={submission.isSubmitting}
+				id={promptId}
+				initialValue={initialPrompt}
+				label={labels.task}
+				onChange={handlePromptChange}
 				onPaste={handlePaste}
-				onKeyDown={(event) => {
-					if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.nativeEvent.isComposing) {
-						event.preventDefault();
-						event.currentTarget.form?.requestSubmit();
-					}
-				}}
+				placeholder={labels.taskPlaceholder}
 			/>
 
-			{attachments.items.length > 0 && (
-				<ul className="scrollbar-none flex max-h-24 flex-wrap gap-2 overflow-y-auto px-3 pb-2">
-					{attachments.items.map((attachment) => (
-						<li
-							key={attachment.id}
-							className="flex min-w-0 max-w-48 items-center gap-2 rounded-md bg-surface px-1.5 py-1 text-xs text-foreground"
-						>
-							{attachment.previewUrl ? (
-								<img src={attachment.previewUrl} alt="" className="size-7 shrink-0 rounded object-cover" />
-							) : (
-								<FileText
-									className="size-7 shrink-0 rounded bg-input/60 p-1.5 text-muted-foreground"
-									aria-hidden="true"
-								/>
-							)}
-							<span className="min-w-0 flex-1 truncate font-medium">{attachment.name}</span>
-							<button
-								type="button"
-								className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-border hover:text-foreground"
-								aria-label={labels.removeFile(attachment.name)}
-								onClick={() => attachments.onRemove(attachment.id)}
-							>
-								<X className="size-icon-sm" aria-hidden="true" />
-							</button>
-						</li>
-					))}
-				</ul>
-			)}
+			<AnimatePresence initial={false}>
+				{attachments.items.length > 0 ? (
+					<motion.div
+						className="overflow-hidden"
+						initial={prefersReducedMotion ? false : { height: 0 }}
+						animate={{ height: ATTACHMENT_ROW_HEIGHT }}
+						exit={{ height: 0 }}
+						transition={
+							prefersReducedMotion ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 }
+						}
+					>
+						<ul className="scrollbar-none flex w-full flex-row flex-nowrap items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-2">
+							{attachments.items.map((attachment) => (
+								<li key={attachment.id} className="shrink-0">
+									{attachment.previewUrl ? (
+										<div className="relative size-14 rounded-lg border border-border bg-surface overflow-hidden group">
+											<img
+												src={attachment.previewUrl}
+												alt=""
+												className="size-full object-cover"
+											/>
+											<button
+												type="button"
+												disabled={submission.isSubmitting}
+												className="absolute top-1 right-1 grid size-4.5 place-items-center rounded-full bg-background/80 text-muted-foreground hover:bg-background hover:text-foreground shadow-sm transition-colors disabled:pointer-events-none disabled:opacity-50"
+												aria-label={labels.removeFile(attachment.name)}
+												onClick={() => {
+													if (!submission.isSubmitting) attachments.onRemove(attachment.id);
+												}}
+											>
+												<X className="size-3" aria-hidden="true" />
+											</button>
+										</div>
+									) : (
+										<div className="relative flex h-14 min-w-36 max-w-48 items-center gap-2 rounded-lg border border-border bg-surface pl-2.5 pr-8 py-1.5 text-xs text-foreground group">
+											<FileText
+												className="size-7.5 shrink-0 rounded bg-input/60 p-1.5 text-muted-foreground"
+												aria-hidden="true"
+											/>
+											<div className="min-w-0 flex-1 flex flex-col justify-center">
+												<span className="truncate font-semibold leading-tight" title={attachment.name}>
+													{attachment.name}
+												</span>
+												<span className="text-[10px] text-muted-foreground leading-normal mt-0.5 truncate">
+													File
+												</span>
+											</div>
+											<button
+												type="button"
+												disabled={submission.isSubmitting}
+												className="absolute top-1 right-1 grid size-4.5 place-items-center rounded-full bg-background border border-border text-muted-foreground hover:bg-muted hover:text-foreground shadow-sm transition-colors disabled:pointer-events-none disabled:opacity-50"
+												aria-label={labels.removeFile(attachment.name)}
+												onClick={() => {
+													if (!submission.isSubmitting) attachments.onRemove(attachment.id);
+												}}
+											>
+												<X className="size-3" aria-hidden="true" />
+											</button>
+										</div>
+									)}
+								</li>
+							))}
+						</ul>
+					</motion.div>
+				) : null}
+			</AnimatePresence>
 			<input
 				ref={fileInputRef}
 				type="file"
 				multiple
+				disabled={submission.isSubmitting}
 				className="hidden"
 				onChange={(event) => {
+					if (submission.isSubmitting) return;
 					if (event.target.files) attachments.onAddFiles(Array.from(event.target.files));
 					event.target.value = "";
 				}}
@@ -234,14 +357,14 @@ export function TaskComposerView({
 							role="alert"
 						>
 							<span>{submission.error}</span>
-							{submission.canCreateAsTui ? (
+							{submission.showFallbackAction ? (
 								<button
 									type="button"
 									disabled={submission.isSubmitting}
-									onClick={submission.onSubmitAsTui}
+									onClick={() => submission.onFallbackAction(promptRef.current)}
 									className="inline-flex h-control-md shrink-0 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
 								>
-									{labels.createAsTui}
+									{labels.fallbackAction}
 								</button>
 							) : null}
 						</div>
@@ -262,14 +385,19 @@ export function TaskComposerView({
 						{renderModelControl({ ...model, id: modelId })}
 					</div>
 				</div>
+
 				<button
 					type="button"
-					className="grid size-(--size-settings-action-height) place-items-center rounded-md text-muted-foreground transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					disabled={submission.isSubmitting}
+					className="inline-flex size-(--size-settings-action-height) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
 					aria-label={labels.addFile}
-					onClick={() => fileInputRef.current?.click()}
+					onClick={() => {
+						if (!submission.isSubmitting) fileInputRef.current?.click();
+					}}
 				>
 					<Paperclip className="size-icon-base" aria-hidden="true" />
 				</button>
+
 				<button
 					type="submit"
 					disabled={submission.isSubmitting || !canSubmit}
@@ -277,11 +405,6 @@ export function TaskComposerView({
 				>
 					{submission.isSubmitting ? <Loader2 className="size-icon-base animate-spin" aria-hidden="true" /> : null}
 					{submission.isSubmitting ? labels.starting : labels.start}
-					{!submission.isSubmitting && (
-						<kbd className="composer-keycap" aria-hidden="true">
-							↵
-						</kbd>
-					)}
 				</button>
 			</div>
 		</form>

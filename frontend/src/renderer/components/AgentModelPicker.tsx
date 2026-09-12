@@ -1,14 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	agentModelsQueryKey,
 	agentModelsQueryOptions,
+	refreshAgentModels,
 	revalidateAgentModels,
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
-import { cn } from "../lib/utils";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
@@ -37,7 +37,6 @@ export function AgentModelPicker({
 }: AgentModelPickerProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const [customAgentId, setCustomAgentId] = useState<string | null>(null);
 	const query = useQuery(agentModelsQueryOptions(agentId, projectId));
 	const catalog: AgentModelCatalog | undefined = query.data;
 	const revalidationQuery = useQuery({
@@ -69,6 +68,10 @@ export function AgentModelPicker({
 		? t("newTask.letAgentChoose", { agent: agentLabel })
 		: t("settings.models.agentDefault");
 	const catalogLoading = agentId !== "" && query.isFetching && catalog === undefined;
+	const refreshCatalog = async () => {
+		const refreshed = await refreshAgentModels(agentId, projectId);
+		queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), refreshed);
+	};
 
 	if (catalogLoading) {
 		return (
@@ -95,7 +98,7 @@ export function AgentModelPicker({
 				aria-label={t("newTask.model")}
 				value={mode || "__default__"}
 				options={options}
-				disabled={disabled}
+				disabled={disabled || agentId === "" || (query.isFetching && catalog === undefined)}
 				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 				menuAlign="start"
 				renderTrigger={() => (
@@ -108,79 +111,43 @@ export function AgentModelPicker({
 		);
 	}
 
-	const hasCatalog = catalog?.selectionMode === "catalog" && (catalog.models?.length ?? 0) > 0;
-	const modelIsInCatalog = catalog?.models?.some((item) => item.id === value) ?? false;
+	const customModelEntry = catalog?.customModelEntry ?? (catalog?.allowCustom ? "direct" : "none");
 	const displayModels = (catalog?.models ?? []).map((item) =>
 		item.id === "auto" ? { ...item, label: t("settings.models.autoRouteLabel") } : item,
 	);
-	const showCustomInput = hasCatalog && (customAgentId === agentId || (value !== "" && !modelIsInCatalog));
 	const selectCatalogModel = (nextModel: string) => {
-		setCustomAgentId(null);
 		onModelChange(nextModel);
 	};
 	const selectCustomModel = (nextModel: string) => {
-		setCustomAgentId(agentId);
 		onModelChange(nextModel);
 	};
 
-	if (hasCatalog && !showCustomInput) {
-		return (
-			<AgentModelCombobox
-				key={agentId}
-				aria-label={t("newTask.model")}
-				value={value}
-				models={displayModels}
-				allowCustom={catalog.allowCustom}
-				disabled={disabled}
-				emptyLabel={noOverrideLabel}
-				onChange={selectCatalogModel}
-				onCustom={selectCustomModel}
-				compact
-				recentScope={agentId}
-				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
-				menuAlign="start"
-				renderTrigger={(label) => {
-					const visibleLabel = value ? label : noOverrideLabel;
-					return (
-						<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
-							{visibleLabel}
-						</span>
-					);
-				}}
-			/>
-		);
-	}
-
 	return (
-		<span className="inline-flex w-full min-w-0 items-center gap-1.5">
-			<input
-				aria-label={t("newTask.model")}
-				className={cn(
-					"composer-chip composer-toolbar-option min-w-0 flex-1 text-control placeholder:text-passive disabled:cursor-not-allowed disabled:opacity-50",
-					!hasCatalog && "rounded-r-md!",
-				)}
-				value={value}
-				disabled={disabled || agentId === ""}
-				onChange={(event) => onModelChange(event.target.value)}
-				placeholder={query.isFetching ? t("settings.models.loading") : noOverrideLabel}
-			/>
-			{hasCatalog && (
-				<AgentModelCombobox
-					key={agentId}
-					aria-label={t("settings.models.optionsAria", { label: t("newTask.model") })}
-					value={value}
-					models={displayModels}
-					allowCustom={catalog.allowCustom}
-					disabled={disabled}
-					emptyLabel={noOverrideLabel}
-					onChange={selectCatalogModel}
-					onCustom={selectCustomModel}
-					compact
-					recentScope={agentId}
-					triggerLabel={t("settings.models.browse")}
-					triggerClassName="shrink-0"
-				/>
-			)}
-		</span>
+		<AgentModelCombobox
+			key={agentId}
+			aria-label={t("newTask.model")}
+			value={value}
+			models={displayModels}
+			allowCustom={catalog?.allowCustom}
+			customModelEntry={customModelEntry}
+			agentLabel={agentLabel}
+			onRefresh={refreshCatalog}
+			disabled={disabled || agentId === ""}
+			emptyLabel={query.isFetching ? t("settings.models.loading") : noOverrideLabel}
+			onChange={selectCatalogModel}
+			onCustom={selectCustomModel}
+			compact
+			recentScope={agentId}
+			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
+			menuAlign="start"
+			renderTrigger={(label) => {
+				const visibleLabel = value ? label : noOverrideLabel;
+				return (
+					<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
+						{visibleLabel}
+					</span>
+				);
+			}}
+		/>
 	);
 }

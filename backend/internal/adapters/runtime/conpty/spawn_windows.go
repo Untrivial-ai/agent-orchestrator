@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,20 +18,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// readyRE matches the "READY:<pid> <port>" line printed by RunHost.
-var readyRE = regexp.MustCompile(`READY:(\d+) (\d+)`)
-
-const spawnReadyTimeout = 10 * time.Second
-
-// maxCapturedStderr bounds how much pty-host stderr we retain for diagnostics.
-const maxCapturedStderr = 8192
-
 // boundedBuffer is a thread-safe io.Writer that retains up to max bytes of what
 // is written and discards the rest. It always consumes its input (never blocks
-// or errors), so it is a safe stderr sink for the detached pty-host — matching
-// the previous io.Discard behavior while keeping a capped copy so a startup
-// failure (e.g. newConPTY) can be reported instead of only "exited without
-// printing READY".
+// or errors), making it a safe startup diagnostic sink for a detached host.
 type boundedBuffer struct {
 	mu  sync.Mutex
 	buf []byte
@@ -77,14 +65,12 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 
 	// Build: <exe> pty-host <sessionID> <cwd> <shellCmd> <shellArgs...>
 	args := append([]string{"pty-host", sessionID, cwd}, argv...)
-
-	// Merge env: inherit parent, overlay caller-provided vars, then apply the
-	// assignments stripped from the argv prefix.
-	merged := os.Environ()
-	for k, v := range env {
-		merged = append(merged, k+"="+v)
+	if err := validateWindowsCommandLine(append([]string{exe}, args...)); err != nil {
+		return "", 0, fmt.Errorf("conpty spawn: %w", err)
 	}
-	merged = append(merged, envAssignments...)
+
+	// Merge and normalize the environment for an interactive true-color PTY.
+	merged := interactiveTerminalEnv(os.Environ(), env, envAssignments)
 
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = cwd
@@ -153,8 +139,8 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	select {
 	case r := <-readyC:
 		if r.err != nil {
-			_ = cmd.Process.Kill()
-			return "", 0, r.err
+			pid, err := cleanupStartedHostFailure(cmd.Process.Pid, r.err, cmd.Process.Kill)
+			return "", pid, err
 		}
 		// Unref: detach stdout so the child is not blocked, then release reference
 		// so our process can exit while the child keeps running.
@@ -162,10 +148,10 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 		cmd.Process.Release() // nolint: errcheck - best-effort detach
 		return r.addr, cmd.Process.Pid, nil
 	case <-timer.C:
-		_ = cmd.Process.Kill()
-		return "", 0, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout)
+		pid, err := cleanupStartedHostFailure(cmd.Process.Pid, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout), cmd.Process.Kill)
+		return "", pid, err
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
-		return "", 0, ctx.Err()
+		pid, err := cleanupStartedHostFailure(cmd.Process.Pid, ctx.Err(), cmd.Process.Kill)
+		return "", pid, err
 	}
 }

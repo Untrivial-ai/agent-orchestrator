@@ -11,6 +11,7 @@ type Summary struct {
 	SessionPrefix     string              `json:"sessionPrefix"`
 	OrchestratorAgent domain.AgentHarness `json:"orchestratorAgent,omitempty"`
 	ResolveError      string              `json:"resolveError,omitempty"`
+	FolderMissing     bool                `json:"folderMissing"`
 }
 
 // Project is the full read-model returned by GET /api/v1/projects/{id}.
@@ -24,6 +25,7 @@ type Project struct {
 	Agent          string                `json:"agent,omitempty"`
 	Config         *domain.ProjectConfig `json:"config,omitempty"`
 	WorkspaceRepos []WorkspaceRepo       `json:"workspaceRepos,omitempty"`
+	FolderMissing  bool                  `json:"folderMissing"`
 }
 
 // Degraded is returned in place of Project when project config failed to load.

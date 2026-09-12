@@ -13,6 +13,7 @@ import {
 import { CTAButtons } from "./components/CTAButtons";
 import { Footer } from "./components/Footer";
 import { Header } from "./components/Header";
+import { LaunchAnalytics } from "./components/LaunchAnalytics";
 import "./globals.css";
 import { Providers } from "./providers";
 
@@ -70,7 +71,7 @@ export const metadata: Metadata = {
     title: COMPANY.NAME,
     description: siteDescription,
     images: ["/og-image.png"],
-    creator: "@aoagents",
+    creator: "@ao_build",
   },
   robots: {
     index: true,
@@ -85,6 +86,7 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
+      { url: "/favicon-192.png", type: "image/png", sizes: "192x192" },
       { url: "/favicon.svg", type: "image/svg+xml" },
     ],
   },
@@ -127,6 +129,7 @@ export default function RootLayout({
       </head>
       <body className="relative overscroll-none font-sans antialiased">
         <Providers>
+          <LaunchAnalytics />
           <Header ctaButtons={<CTAButtons />} />
           {children}
           <Footer />

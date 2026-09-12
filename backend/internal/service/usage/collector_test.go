@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
@@ -32,6 +33,7 @@ func TestCollectorRegistersFinalizesAndReactivatesSource(t *testing.T) {
 
 	err := collector.RecordHook(context.Background(), session.ID, HookSignal{
 		Harness:         domain.HarnessCodex,
+		ProviderHint:    " openai ",
 		Event:           "session-start",
 		NativeSessionID: "native-1",
 		TranscriptPath:  path,
@@ -48,11 +50,148 @@ func TestCollectorRegistersFinalizesAndReactivatesSource(t *testing.T) {
 	if err != nil || len(sources) != 1 {
 		t.Fatalf("sources=%+v err=%v", sources, err)
 	}
-	if bindings[0].State != domain.UsageBindingActive || bindings[0].InitialModelID != "gpt-5.6" ||
+	if bindings[0].State != domain.UsageBindingActive || bindings[0].InitialModelID != "gpt-5.6" || bindings[0].ProviderHint != "" ||
 		sources[0].State != domain.UsageSourceActive || wakes == 0 {
 		t.Fatalf("registered binding=%+v source=%+v wakes=%d", bindings[0], sources[0], wakes)
 	}
 
+}
+
+func TestCollectorPersistsOnlyCanonicalClaudeProviderHints(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness domain.AgentHarness
+		raw     string
+		want    string
+	}{
+		{name: "canonical anthropic", harness: domain.HarnessClaudeCode, raw: "anthropic", want: "anthropic"},
+		{name: "trimmed canonical zai alias", harness: domain.HarnessClaudeCode, raw: " Z.AI ", want: "zai"},
+		{name: "canonical bedrock", harness: domain.HarnessClaudeCode, raw: "bedrock", want: "bedrock"},
+		{name: "canonical vertex", harness: domain.HarnessClaudeCode, raw: "VERTEX_AI", want: "vertex_ai"},
+		{name: "custom provider", harness: domain.HarnessClaudeCode, raw: "custom-provider"},
+		{name: "credential", harness: domain.HarnessClaudeCode, raw: "sk-secret-credential"},
+		{name: "url", harness: domain.HarnessClaudeCode, raw: "https://api.z.ai/v1?key=secret"},
+		{name: "codex hint", harness: domain.HarnessCodex, raw: "openai"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := collectorTestStore(t)
+			const nativeID = "native-provider-hint"
+			session := collectorTestSession(t, store, test.harness, nativeID, false)
+			signal := HookSignal{
+				Harness:         test.harness,
+				Event:           "session-start",
+				NativeSessionID: nativeID,
+				ModelID:         "source-model",
+				ProviderHint:    test.raw,
+			}
+			roots := SourceRoots{}
+			if test.harness == domain.HarnessCodex {
+				root := filepath.Join(t.TempDir(), "sessions")
+				path := filepath.Join(root, "rollout-native-provider-hint.jsonl")
+				writeUsageFixture(t, path, codexSessionMetaFixture(t, nativeID, ""))
+				roots.CodexSessions = root
+				signal.TranscriptPath = path
+			}
+			collector := NewCollector(store, roots, nil)
+			if err := collector.RecordHook(context.Background(), session.ID, signal); err != nil {
+				t.Fatalf("record hook: %v", err)
+			}
+			bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+			if err != nil || len(bindings) != 1 {
+				t.Fatalf("bindings=%+v err=%v", bindings, err)
+			}
+			if bindings[0].ProviderHint != test.want {
+				t.Fatalf("persisted provider hint = %q, want %q", bindings[0].ProviderHint, test.want)
+			}
+		})
+	}
+}
+
+// Break caught: a Claude binding that predates its first hook holds events that
+// can never be attributed, because a Claude transcript names no provider. The
+// hook's route hint is the only evidence, and it arrives long after those events
+// were stored — so the moment it lands has to reopen historical repair, or the
+// session stays unpriced until the next daemon start.
+func TestCollectorReopensHistoricalRepairWhenAClaudeRouteFirstArrives(t *testing.T) {
+	store := collectorTestStore(t)
+	const nativeID = "native-late-route"
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, nativeID, false)
+	collector := NewCollector(store, SourceRoots{}, nil)
+	resolved := 0
+	collector.OnRouteResolved(func() { resolved++ })
+
+	hook := func(hint string) {
+		t.Helper()
+		if err := collector.RecordHook(context.Background(), session.ID, HookSignal{
+			Harness:         domain.HarnessClaudeCode,
+			Event:           "session-start",
+			NativeSessionID: nativeID,
+			ModelID:         "claude-test",
+			ProviderHint:    hint,
+		}); err != nil {
+			t.Fatalf("record hook: %v", err)
+		}
+	}
+
+	// A binding created without a route has no history to reopen yet.
+	hook("")
+	if resolved != 0 {
+		t.Fatalf("route resolutions = %d after the first routeless hook, want 0", resolved)
+	}
+
+	hook("anthropic")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d once the route arrives, want 1", resolved)
+	}
+
+	// Every later hook repeats the same route. Reopening repair on each one
+	// would rescan every legacy source on every turn.
+	hook("anthropic")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d after a repeat route, want it to stay 1", resolved)
+	}
+}
+
+// Break caught: the first hook can prove that a custom Claude route exists
+// without naming it. When a later hook identifies that route, treating the
+// non-empty "unidentified" sentinel as already resolved leaves the historical
+// events on their inferred or unavailable price until the next daemon start.
+func TestCollectorReopensHistoricalRepairWhenAClaudeRouteBecomesIdentified(t *testing.T) {
+	store := collectorTestStore(t)
+	const nativeID = "native-identified-route"
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, nativeID, false)
+	collector := NewCollector(store, SourceRoots{}, nil)
+	resolved := 0
+	collector.OnRouteResolved(func() { resolved++ })
+
+	hook := func(hint string) {
+		t.Helper()
+		if err := collector.RecordHook(context.Background(), session.ID, HookSignal{
+			Harness:         domain.HarnessClaudeCode,
+			Event:           "session-start",
+			NativeSessionID: nativeID,
+			ModelID:         "claude-test",
+			ProviderHint:    hint,
+		}); err != nil {
+			t.Fatalf("record hook: %v", err)
+		}
+	}
+
+	hook(pricing.UnidentifiedBillingRoute)
+	if resolved != 0 {
+		t.Fatalf("route resolutions = %d after the unidentified route, want 0", resolved)
+	}
+
+	hook("anthropic")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d once the route is identified, want 1", resolved)
+	}
+
+	hook("anthropic")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d after a repeat route, want it to stay 1", resolved)
+	}
 }
 
 func TestCollectorSerializesFinalizationAgainstEarlierHook(t *testing.T) {
@@ -391,6 +530,37 @@ func TestCollectorReactivateSessionPreservesCursorWithoutHook(t *testing.T) {
 	watchable, err := store.ListWatchableUsageSources(context.Background())
 	if err != nil || len(watchable) != 1 || watchable[0].ID != source.ID {
 		t.Fatalf("watchable sources=%+v err=%v", watchable, err)
+	}
+}
+
+func TestCollectorRegistersChatUsageWhenLifecycleMarksControllerSpawned(t *testing.T) {
+	store := collectorTestStore(t)
+	session := collectorTestChatSession(t, store, domain.HarnessCodex, "", false)
+
+	root := filepath.Join(t.TempDir(), "sessions")
+	path := filepath.Join(root, "2026", "08", "18", "rollout-native-chat.jsonl")
+	writeUsageFixture(t, path, codexSessionMetaFixture(t, "native-chat", ""))
+	collector := NewCollector(store, SourceRoots{CodexSessions: root}, nil)
+	manager := lifecycle.New(store, nil)
+	manager.SetUsageFinalizer(collector)
+
+	mustNoError(t, manager.MarkSpawned(context.Background(), session.ID, domain.SessionMetadata{
+		ProviderConversationID: "native-chat",
+	}))
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("chat usage bindings=%+v err=%v, want one binding for the provider conversation", bindings, err)
+	}
+	if bindings[0].NativeRootID != "native-chat" || bindings[0].State != domain.UsageBindingActive {
+		t.Fatalf("chat usage binding=%+v, want active native-chat binding", bindings[0])
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("chat usage sources=%+v err=%v, want the provider rollout", sources, err)
+	}
+	wantPath := canonicalUsagePath(t, path)
+	if sources[0].ArtifactPath != wantPath {
+		t.Fatalf("chat usage source path=%q, want %q", sources[0].ArtifactPath, wantPath)
 	}
 }
 
@@ -971,6 +1141,27 @@ func TestCollectorBackfillsOnlyNonTerminatedSupportedSessions(t *testing.T) {
 	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
 	if err != nil || len(sources) != 1 {
 		t.Fatalf("active sources=%+v err=%v", sources, err)
+	}
+}
+
+func TestCollectorBackfillsChatSessionFromProviderConversationID(t *testing.T) {
+	store := collectorTestStore(t)
+	session := collectorTestChatSession(t, store, domain.HarnessCodex, "native-chat-backfill", false)
+	root := filepath.Join(t.TempDir(), "sessions")
+	path := filepath.Join(root, "2026", "08", "18", "rollout-native-chat-backfill.jsonl")
+	writeUsageFixture(t, path, codexSessionMetaFixture(t, "native-chat-backfill", ""))
+	collector := NewCollector(store, SourceRoots{CodexSessions: root}, nil)
+
+	mustNoError(t, collector.BackfillActive(context.Background()), "backfill chat usage")
+	binding, ok, err := store.GetUsageBinding(
+		context.Background(), session.ID, session.Harness, "native-chat-backfill",
+	)
+	if err != nil || !ok || binding.State != domain.UsageBindingActive {
+		t.Fatalf("chat backfill binding=%+v ok=%v err=%v", binding, ok, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), binding.ID)
+	if err != nil || len(sources) != 1 || sources[0].ArtifactPath != canonicalUsagePath(t, path) {
+		t.Fatalf("chat backfill sources=%+v err=%v", sources, err)
 	}
 }
 
@@ -1620,6 +1811,26 @@ func TestCodexSessionMetaMatchesLargeRollout(t *testing.T) {
 	}
 }
 
+func TestCodexSessionMetaMatchesLargeFirstRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout-large-meta.jsonl")
+	line, err := json.Marshal(map[string]any{
+		"type": "session_meta",
+		"payload": map[string]any{
+			"id":             "native-large-meta",
+			"model_provider": "openai",
+			"base_instructions": map[string]any{
+				"text": strings.Repeat("x", 96<<10),
+			},
+		},
+	})
+	mustNoError(t, err)
+	writeUsageFixture(t, path, string(line)+"\n")
+
+	if !codexSessionMetaMatches(path, "native-large-meta", "") {
+		t.Fatal("valid session_meta record with a switch-sized system prompt was rejected")
+	}
+}
+
 func TestDiscoverCodexPathRequiresConfiguredRoots(t *testing.T) {
 	const nativeID = "11111111-1111-4111-8111-111111111111"
 	t.Chdir(t.TempDir())
@@ -1631,6 +1842,175 @@ func TestDiscoverCodexPathRequiresConfiguredRoots(t *testing.T) {
 	mustNoError(t, err)
 	if got != "" {
 		t.Fatalf("unconfigured Codex roots discovered %q", got)
+	}
+}
+
+func TestDefaultSourceRootsIncludesManagedKimiHome(t *testing.T) {
+	home := t.TempDir()
+	dataDir := filepath.Join(home, ".ao", "data")
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	got, err := DefaultSourceRoots(context.Background(), dataDir)
+	mustNoError(t, err)
+	if got.KimiHome != filepath.Join(dataDir, "kimi") {
+		t.Fatalf("Kimi home = %q, want %q", got.KimiHome, filepath.Join(dataDir, "kimi"))
+	}
+}
+
+func TestCollectorDiscoversKimiWireSourcesFromSessionIndex(t *testing.T) {
+	const nativeID = "kimi-session-1"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessKimi, nativeID, false)
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, "sessions", "wd_agent-orchestrator", nativeID)
+	mainPath := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+	childPath := filepath.Join(sessionDir, "agents", "researcher", "wire.jsonl")
+	writeUsageFixture(t, mainPath, "{}\n")
+	writeUsageFixture(t, childPath, "{}\n")
+	writeUsageFixture(t, filepath.Join(home, "session_index.jsonl"),
+		fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q,"workDir":"/repo"}`+"\n", nativeID, sessionDir))
+	collector := NewCollector(store, SourceRoots{KimiHome: home}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessKimi, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("sources=%+v err=%v", sources, err)
+	}
+	pathsBySubagent := make(map[string]string, len(sources))
+	for _, source := range sources {
+		if source.Kind != domain.UsageSourceKimiWire || source.NativeSessionID != nativeID {
+			t.Fatalf("source=%+v", source)
+		}
+		pathsBySubagent[source.SubagentID] = source.ArtifactPath
+	}
+	if pathsBySubagent[""] != canonicalUsagePath(t, mainPath) ||
+		pathsBySubagent["researcher"] != canonicalUsagePath(t, childPath) {
+		t.Fatalf("paths by subagent = %+v", pathsBySubagent)
+	}
+}
+
+// TestCollectorReconcileDiscoversKimiChildCreatedAfterStart catches dropping
+// child agents that appear after the initial Kimi source scan.
+func TestCollectorReconcileDiscoversKimiChildCreatedAfterStart(t *testing.T) {
+	const nativeID = "kimi-session-late-child"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessKimi, nativeID, false)
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, "sessions", "wd_agent-orchestrator", nativeID)
+	mainPath := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+	childPath := filepath.Join(sessionDir, "agents", "researcher", "wire.jsonl")
+	writeUsageFixture(t, mainPath, "{}\n")
+	writeUsageFixture(t, filepath.Join(home, "session_index.jsonl"),
+		fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q,"workDir":"/repo"}`+"\n", nativeID, sessionDir))
+	collector := NewCollector(store, SourceRoots{KimiHome: home}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessKimi, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	writeUsageFixture(t, childPath, "{}\n")
+	mustNoError(t, collector.ReconcileSources(context.Background(), 8))
+
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("sources=%+v err=%v, want main and late child", sources, err)
+	}
+	subagents := map[string]bool{}
+	for _, source := range sources {
+		subagents[source.SubagentID] = true
+	}
+	if !subagents[""] || !subagents["researcher"] {
+		t.Fatalf("sources=%+v, want main and researcher", sources)
+	}
+}
+
+func TestDiscoverKimiPathRejectsUntrustedIndexRecords(t *testing.T) {
+	const nativeID = "kimi-session-untrusted"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, home string) string
+	}{
+		{
+			name: "absolute path outside sessions root",
+			setup: func(t *testing.T, home string) string {
+				t.Helper()
+				outside := filepath.Join(t.TempDir(), nativeID)
+				writeUsageFixture(t, filepath.Join(outside, "agents", "main", "wire.jsonl"), "{}\n")
+				return fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q}`+"\n", nativeID, outside)
+			},
+		},
+		{
+			name: "symlink escape",
+			setup: func(t *testing.T, home string) string {
+				t.Helper()
+				outside := filepath.Join(t.TempDir(), nativeID)
+				writeUsageFixture(t, filepath.Join(outside, "agents", "main", "wire.jsonl"), "{}\n")
+				link := filepath.Join(home, "sessions", nativeID)
+				mustNoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
+				if err := os.Symlink(outside, link); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+				return fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q}`+"\n", nativeID, link)
+			},
+		},
+		{
+			name: "deleted latest record",
+			setup: func(t *testing.T, home string) string {
+				t.Helper()
+				sessionDir := filepath.Join(home, "sessions", nativeID)
+				writeUsageFixture(t, filepath.Join(sessionDir, "agents", "main", "wire.jsonl"), "{}\n")
+				return fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q}`+"\n"+`{"sessionId":%q,"sessionDir":%q,"deleted":true}`+"\n", nativeID, sessionDir, nativeID, sessionDir)
+			},
+		},
+		{
+			name: "malformed index",
+			setup: func(t *testing.T, _ string) string {
+				t.Helper()
+				return `{"sessionId":` + "\n"
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			writeUsageFixture(t, filepath.Join(home, "session_index.jsonl"), tt.setup(t, home))
+			collector := NewCollector(collectorTestStore(t), SourceRoots{KimiHome: home}, nil)
+
+			path, err := collector.discoverKimiPath(context.Background(), nativeID)
+			mustNoError(t, err)
+			if path != "" {
+				t.Fatalf("untrusted index record discovered %q", path)
+			}
+		})
+	}
+}
+
+func TestSourceKindForHarness(t *testing.T) {
+	tests := []struct {
+		harness domain.AgentHarness
+		want    domain.UsageSourceKind
+		ok      bool
+	}{
+		{harness: domain.HarnessClaudeCode, want: domain.UsageSourceClaudeMain, ok: true},
+		{harness: domain.HarnessCodex, want: domain.UsageSourceCodexRollout, ok: true},
+		{harness: domain.HarnessKimi, want: domain.UsageSourceKimiWire, ok: true},
+		{harness: domain.HarnessAider, ok: false},
+	}
+	for _, tt := range tests {
+		got, ok := sourceKindForHarness(tt.harness)
+		if got != tt.want || ok != tt.ok {
+			t.Fatalf("sourceKindForHarness(%q) = %q, %v; want %q, %v", tt.harness, got, ok, tt.want, tt.ok)
+		}
 	}
 }
 
@@ -1757,6 +2137,32 @@ func assertNoUsageSourcesForSession(t *testing.T, store *sqlite.Store, sessionID
 
 func collectorTestSession(t *testing.T, store *sqlite.Store, harness domain.AgentHarness, nativeID string, terminated bool) domain.SessionRecord {
 	return collectorTestSessionWithActivity(t, store, harness, nativeID, terminated, domain.ActivityIdle)
+}
+
+func collectorTestChatSession(
+	t *testing.T,
+	store *sqlite.Store,
+	harness domain.AgentHarness,
+	providerConversationID string,
+	terminated bool,
+) domain.SessionRecord {
+	t.Helper()
+	now := time.Now().UTC()
+	session, err := store.CreateSession(context.Background(), domain.SessionRecord{
+		ProjectID:    "usage-test",
+		Kind:         domain.KindWorker,
+		Harness:      harness,
+		Mode:         domain.SessionModeChat,
+		Activity:     domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		IsTerminated: terminated,
+		Metadata: domain.SessionMetadata{
+			ProviderConversationID: providerConversationID,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	mustNoError(t, err)
+	return session
 }
 
 func collectorTestSessionWithActivity(

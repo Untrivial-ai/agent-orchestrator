@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
@@ -187,7 +188,7 @@ func detectWorkspaceChildren(ctx context.Context, parent string, projectID domai
 		}
 		if err := validateWorkspaceChild(ctx, child); err != nil {
 			var apiErr *apierr.Error
-			if errors.As(err, &apiErr) && (apiErr.Code == "WORKSPACE_CHILD_ORIGIN_REQUIRED" || apiErr.Code == "WORKSPACE_CHILD_UNBORN" || apiErr.Code == "WORKSPACE_CHILD_DEFAULT_BRANCH_UNKNOWN" || apiErr.Code == "WORKSPACE_CHILD_IS_WORKTREE") {
+			if errors.As(err, &apiErr) && (apiErr.Code == "WORKSPACE_CHILD_ORIGIN_REQUIRED" || apiErr.Code == "WORKSPACE_CHILD_UNBORN" || apiErr.Code == "WORKSPACE_CHILD_IS_WORKTREE") {
 				repos = append(repos, domain.WorkspaceRepoRecord{
 					ProjectID:     projectID,
 					Name:          name,
@@ -205,7 +206,10 @@ func detectWorkspaceChildren(ctx context.Context, parent string, projectID domai
 			Name:          name,
 			RelativePath:  filepath.ToSlash(name),
 			RepoOriginURL: resolveGitOriginURL(child),
-			DefaultBranch: resolveDefaultBranch(child),
+			// Preserve AO's recorded branch for repositories it initialized during
+			// onboarding, even when the freshly entered remote URL does not yet
+			// advertise origin/HEAD.
+			DefaultBranch: resolveWorkspaceChildDefaultBranch(ctx, child),
 			RegisteredAt:  registeredAt,
 			GitStatus:     domain.GitStatusReady,
 		})
@@ -237,13 +241,6 @@ func validateWorkspaceChild(ctx context.Context, child string) error {
 			"suggestedFix": "Run `git init -b main`, add the initial files, and create the first commit before registering the workspace.",
 		})
 	}
-	branch, err := gitOutput(ctx, child, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if err != nil || strings.TrimSpace(branch) == "" {
-		return apierr.Invalid("WORKSPACE_CHILD_DEFAULT_BRANCH_UNKNOWN", "Workspace child repositories must have an identifiable default branch", map[string]any{
-			"path":         child,
-			"suggestedFix": "Check out the repository's default branch (for example `main`) and retry.",
-		})
-	}
 	if origin := resolveGitOriginURL(child); origin == "" {
 		return apierr.Invalid("WORKSPACE_CHILD_ORIGIN_REQUIRED", "Workspace child repositories must have an origin remote configured", map[string]any{
 			"path":         child,
@@ -258,29 +255,54 @@ func adoptWorkspaceParent(ctx context.Context, parent string, repos []domain.Wor
 	if err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to update workspace parent .gitignore", map[string]any{"error": err.Error()})
 	}
-	if !changed {
-		return nil
+	needsCommit := changed
+	if !needsCommit {
+		_, headErr := gitOutput(ctx, parent, "rev-parse", "--verify", "HEAD")
+		needsCommit = headErr != nil
 	}
-	if _, err := gitOutput(ctx, parent, "add", ".gitignore"); err != nil {
-		return apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to stage workspace parent .gitignore", map[string]any{"error": err.Error()})
+	if needsCommit {
+		if _, err := gitOutput(ctx, parent, "add", ".gitignore"); err != nil {
+			return apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to stage workspace parent .gitignore", map[string]any{"error": err.Error()})
+		}
+		if err := guardNoGitlinks(ctx, parent); err != nil {
+			return err
+		}
+		if _, err := gitOutput(ctx, parent, "commit", "-m", "chore: configure AO workspace ignores", "--", ".gitignore"); err != nil {
+			return apierr.Invalid("WORKSPACE_PARENT_COMMIT_FAILED", "Failed to commit workspace parent .gitignore", map[string]any{"error": err.Error()})
+		}
 	}
-	if err := guardNoGitlinks(ctx, parent); err != nil {
-		return err
-	}
-	if _, err := gitOutput(ctx, parent, "commit", "-m", "chore: configure AO workspace ignores", "--", ".gitignore"); err != nil {
-		return apierr.Invalid("WORKSPACE_PARENT_COMMIT_FAILED", "Failed to commit workspace parent .gitignore", map[string]any{"error": err.Error()})
+	if err := recordWorkspaceDefault(ctx, parent); err != nil {
+		return apierr.Invalid("WORKSPACE_PARENT_DEFAULT_FAILED", "Failed to record the workspace parent default branch", map[string]any{"error": err.Error()})
 	}
 	return nil
 }
 
-func initWorkspaceParent(ctx context.Context, parent string, repos []domain.WorkspaceRepoRecord) (retErr error) {
+func recordWorkspaceDefault(ctx context.Context, parent string) error {
+	if configured, err := gitOutput(ctx, parent, "config", "--local", "--get", gitdefault.ManagedDefaultConfigKey); err == nil && strings.TrimSpace(configured) != "" {
+		return nil
+	}
+	branch, err := gitOutput(ctx, parent, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return err
+	}
+	_, err = gitOutput(ctx, parent, "config", "--local", gitdefault.ManagedDefaultConfigKey, strings.TrimSpace(branch))
+	return err
+}
+
+func initWorkspaceParent(ctx context.Context, parent string, repos []domain.WorkspaceRepoRecord) error {
+	return initWorkspaceParentWithGit(ctx, parent, repos, gitOutput)
+}
+
+type workspaceGitRunner func(context.Context, string, ...string) (string, error)
+
+func initWorkspaceParentWithGit(ctx context.Context, parent string, repos []domain.WorkspaceRepoRecord, runGit workspaceGitRunner) (retErr error) {
 	// Snapshot the original .gitignore so we can restore it on failure.
 	// If the file doesn't exist, originalGitignore is nil.
 	gitignorePath := filepath.Join(parent, ".gitignore")
 	originalGitignore, readErr := os.ReadFile(gitignorePath)
 	gitignoreExisted := readErr == nil
 
-	if _, err := gitOutput(ctx, parent, "init", "-b", domain.DefaultBranchName); err != nil {
+	if _, err := runGit(ctx, parent, "init", "-b", domain.DefaultBranchName); err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_INIT_FAILED", "Failed to initialize workspace parent git repository", map[string]any{"error": err.Error()})
 	}
 
@@ -298,16 +320,20 @@ func initWorkspaceParent(ctx context.Context, parent string, repos []domain.Work
 		}
 	}()
 
+	if _, err := runGit(ctx, parent, "config", "--local", gitdefault.ManagedDefaultConfigKey, domain.DefaultBranchName); err != nil {
+		return apierr.Invalid("WORKSPACE_PARENT_INIT_FAILED", "Failed to record the workspace root default branch", map[string]any{"error": err.Error()})
+	}
+
 	if _, err := ensureWorkspaceGitignore(parent, repos); err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to write workspace parent .gitignore", map[string]any{"error": err.Error()})
 	}
-	if _, err := gitOutput(ctx, parent, "add", "-A"); err != nil {
+	if _, err := runGit(ctx, parent, "add", "-A"); err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_ADD_FAILED", "Failed to stage workspace parent files", map[string]any{"error": err.Error()})
 	}
 	if err := guardNoGitlinks(ctx, parent); err != nil {
 		return err
 	}
-	if _, err := gitOutput(ctx, parent, "commit", "-m", "chore: initialize AO workspace root"); err != nil {
+	if _, err := runGit(ctx, parent, "commit", "-m", "chore: initialize AO workspace root"); err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_COMMIT_FAILED", "Failed to create workspace parent initial commit", map[string]any{"error": err.Error()})
 	}
 	return nil
@@ -355,6 +381,16 @@ func ensureWorkspaceGitignore(parent string, repos []domain.WorkspaceRepoRecord)
 	return true, os.WriteFile(path, []byte(content), 0o600)
 }
 
+func resolveWorkspaceChildDefaultBranch(ctx context.Context, child string) string {
+	if branch := resolveDefaultBranch(ctx, child); branch != "" {
+		return branch
+	}
+	if out, err := gitOutput(ctx, child, "config", "--local", "--get", gitdefault.ManagedDefaultConfigKey); err == nil {
+		return strings.TrimSpace(out)
+	}
+	return ""
+}
+
 func guardNoGitlinks(ctx context.Context, repo string) error {
 	out, err := gitOutput(ctx, repo, "ls-files", "-s")
 	if err != nil {
@@ -386,9 +422,18 @@ func guardNoGitlinks(ctx context.Context, repo string) error {
 	return nil
 }
 
-func workspaceReposFromRecords(records []domain.WorkspaceRepoRecord) []WorkspaceRepo {
+func workspaceReposFromRecords(parent string, records []domain.WorkspaceRepoRecord) []WorkspaceRepo {
 	out := make([]WorkspaceRepo, 0, len(records))
 	for _, rec := range records {
+		// Plain directories share the durable child registry so the session
+		// manager can materialize them as assets, but they are not repositories
+		// and must not appear in Project Settings' repository list.
+		if rec.GitStatus == domain.GitStatusNeedsInit {
+			gitPath := filepath.Join(parent, filepath.FromSlash(rec.RelativePath), ".git")
+			if _, err := os.Lstat(gitPath); errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+		}
 		out = append(out, WorkspaceRepo{
 			Name:         rec.Name,
 			RelativePath: rec.RelativePath,

@@ -128,11 +128,14 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 }
 
 // GetRestoreCommand rebuilds the argv that continues an existing opencode
-// session: `[env OPENCODE_CONFIG=<ao-config>] opencode [--dangerously-skip-permissions] [--agent <ao-agent>] --session <agentSessionId>`.
+// session: `[env OPENCODE_CONFIG=<ao-config>] opencode [--dangerously-skip-permissions] [--agent <ao-agent>] --session <agentSessionId> [--prompt <prompt>]`.
 // It re-applies the permission flag and the generated AO agent config (resume
 // otherwise reverts to configured defaults). ok is false when the plugin-derived
 // native session id has not landed yet, so callers fall back to fresh launch
-// behavior — mirroring the Codex adapter.
+// behavior — mirroring the Codex adapter. The optional resume-time prompt is
+// applied the same way GetLaunchCommand does, so a review task submitted
+// alongside a resume starts atomically with the process instead of racing a
+// post-launch terminal injection.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -159,6 +162,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		cmd = append(cmd, "--agent", agentName)
 	}
 	cmd = append(cmd, "--session", agentSessionID)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, "--prompt", cfg.Prompt)
+	}
 	return cmd, true, nil
 }
 
@@ -191,10 +197,13 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 
 	out, err := aoprocess.CommandContext(probeCtx, binary, "auth", "list").CombinedOutput()
 	if probeCtx.Err() != nil {
+		if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return ports.AgentAuthStatusUnknown, nil
+		}
 		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
 	text := strings.ToLower(string(out))
-	if strings.Contains(text, "0 credentials") {
+	if strings.Contains(text, "0 credentials") || strings.Contains(text, "no credentials") || strings.Contains(text, "not authenticated") {
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	if strings.Contains(text, "credential") && err == nil {
@@ -509,6 +518,10 @@ func ResolveOpenCodeBinary(ctx context.Context) (string, error) {
 				filepath.Join(appData, "npm", "opencode.exe"),
 			)
 		}
+		candidates = append(candidates, binaryutil.WindowsPackageManagerBinCandidates("opencode")...)
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates, filepath.Join(home, ".opencode", "bin", "opencode.exe"))
+		}
 		for _, candidate := range candidates {
 			if hookutil.IsExecutableFile(candidate) {
 				return candidate, nil
@@ -529,6 +542,7 @@ func ResolveOpenCodeBinary(ctx context.Context) (string, error) {
 			filepath.Join(home, ".local", "bin", "opencode"),
 			filepath.Join(home, ".opencode", "bin", "opencode"),
 		)
+		candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "opencode")...)
 		nodeManagerCandidates, err := binaryutil.UnixNodeManagerBinCandidates(ctx, home, "opencode")
 		if err != nil {
 			return "", err

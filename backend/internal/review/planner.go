@@ -19,7 +19,7 @@ const (
 	ReviewStateUpToDate = contract.AOReviewUpToDate
 	// ReviewStateChangesRequested means AO requested changes on the PR's current head.
 	ReviewStateChangesRequested = contract.AOReviewChangesRequested
-	// ReviewStateIneligible means the PR is draft, closed, merged, or missing required facts.
+	// ReviewStateIneligible means the PR is closed, merged, or missing required facts.
 	ReviewStateIneligible = contract.AOReviewIneligible
 )
 
@@ -51,7 +51,7 @@ func Plan(prs []domain.PullRequest, runs []domain.ReviewRun) []PRReviewState {
 		if run, ok := latestCompletedRunForOtherSHA(runs, review.PRURL, review.TargetSHA); ok {
 			review.PreviousRun = &run
 		}
-		if pr.URL == "" || pr.HeadSHA == "" || pr.Draft || pr.Merged || pr.Closed {
+		if pr.URL == "" || pr.HeadSHA == "" || pr.Merged || pr.Closed {
 			review.Status = ReviewStateIneligible
 			if run, ok := latest[review.PRURL+"\x00"+review.TargetSHA]; ok {
 				review.LatestRun = &run

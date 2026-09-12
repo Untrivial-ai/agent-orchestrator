@@ -34,6 +34,15 @@ export function resolveDaemonLaunch(
 	}
 
 	if (!isPackaged) {
+		if (platform === "win32") {
+			return {
+				command: env.AO_DEV_DAEMON_BINARY?.trim() || joinPath(appPath, "daemon", bundledDaemonBinaryName(platform)),
+				args: ["daemon"],
+				cwd: appPath,
+				shell: false,
+				source: "dev",
+			};
+		}
 		return {
 			command: "go",
 			args: ["run", "./cmd/ao", "daemon"],

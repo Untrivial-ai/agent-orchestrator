@@ -11,7 +11,7 @@ const { spawnMock, workspaceQueryMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
-	useWorkspaceQuery: () => workspaceQueryMock(),
+	useWorkspaceScope: () => workspaceQueryMock(),
 }));
 
 vi.mock("../lib/spawn-orchestrator", () => ({
@@ -41,7 +41,7 @@ const workspace: WorkspaceSummary = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	useUiStore.setState({ settingsModal: null });
-	workspaceQueryMock.mockReturnValue({ data: [workspace], isLoading: false });
+	workspaceQueryMock.mockReturnValue({ data: { project: workspace }, isLoading: false });
 });
 
 describe("RestoreUnavailableDialog", () => {
@@ -49,7 +49,7 @@ describe("RestoreUnavailableDialog", () => {
 		const onOpenChange = vi.fn();
 		const onRecreated = vi.fn();
 		workspaceQueryMock.mockReturnValue({
-			data: [{ ...workspace, orchestratorAgent: undefined }],
+		data: { project: { ...workspace, orchestratorAgent: undefined } },
 			isLoading: false,
 		});
 		render(

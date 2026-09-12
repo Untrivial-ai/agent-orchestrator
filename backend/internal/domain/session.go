@@ -25,6 +25,9 @@ const (
 // SessionMetadata is the typed, off-status metadata for a session: operational
 // handles and seed inputs used by Session Manager and reaper.
 type SessionMetadata struct {
+	// Permissions pins the resolved launch policy independently of future project defaults.
+	Permissions PermissionMode `json:"permissions,omitempty"`
+
 	Branch            string `json:"branch,omitempty"`
 	WorkspacePath     string `json:"workspacePath,omitempty"`
 	WorkspaceRepoPath string `json:"workspaceRepoPath,omitempty"`
@@ -33,11 +36,20 @@ type SessionMetadata struct {
 	RuntimeHandleID   string `json:"runtimeHandleId,omitempty"`
 	RuntimeLaunchID   string `json:"runtimeLaunchId,omitempty"`
 	AgentSessionID    string `json:"agentSessionId,omitempty"`
-	Prompt            string `json:"prompt,omitempty"`
+	// AgentSessionIDLaunchID identifies the terminal runtime generation proven to
+	// own AgentSessionID. Usually that proof comes from a provider hook. A
+	// coordinated Chat-to-TUI handoff may also establish it by launching the
+	// target with the exact structured provider id transferred from Chat.
+	AgentSessionIDLaunchID string `json:"-"`
+	Prompt                 string `json:"prompt,omitempty"`
 	// LatestUserPrompt is the latest real user-authored task direction observed
 	// for this AO session. Internal AO coordination messages (for example an
 	// agent-switch handoff request) must not replace it.
 	LatestUserPrompt string `json:"latestUserPrompt,omitempty"`
+	// LatestUserPromptAt is when LatestUserPrompt was submitted. It is kept as a
+	// separate durable fact because SessionRecord.UpdatedAt also changes for
+	// lifecycle, SCM, preview, and preference updates.
+	LatestUserPromptAt time.Time `json:"-"`
 	// LatestAssistantUpdate is the latest user-facing assistant update observed
 	// before any internal agent-switch coordination turn.
 	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`
@@ -65,6 +77,9 @@ type SessionMetadata struct {
 	// even when PreviewURL is unchanged. The desktop browser panel keys
 	// navigation on it so a repeated `ao preview <same-url>` still refreshes.
 	PreviewRevision int64 `json:"previewRevision,omitempty"`
+	// Model is the agent model this session resolved to at spawn time, including
+	// any per-spawn --model override. Empty means the agent's default model.
+	Model string `json:"model,omitempty"`
 	// BrowserCapabilityVerifier is a one-way verifier for the random browser
 	// capability held by this session's worker process. The bearer token itself
 	// is never persisted, so reading the database cannot grant access to another
@@ -84,7 +99,8 @@ type SessionRecord struct {
 	Harness   AgentHarness `json:"harness,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
-	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	ReviewerConfig    AgentConfig     `json:"reviewerConfig,omitempty"`
 	AutoReviewEnabled bool            `json:"autoReviewEnabled"`
 	DisplayName       string          `json:"displayName,omitempty"`
 	// Mode is the session's currently committed conversation controller. Every
@@ -119,12 +135,54 @@ type SessionRecord struct {
 	PinnedAt          *time.Time `json:"pinnedAt,omitempty"`
 }
 
+// SessionControllerOwner is the durable identity of the process/controller
+// currently allowed to act for a session. Narrow lifecycle writes compare this
+// snapshot before updating so stale launch work cannot mutate a replacement.
+type SessionControllerOwner struct {
+	Harness                AgentHarness
+	Mode                   SessionMode
+	IsTerminated           bool
+	RuntimeLaunchID        string
+	AgentSessionID         string
+	AgentSessionIDLaunchID string
+	ProviderConversationID string
+	ControllerGeneration   string
+}
+
+// ControllerOwner returns the fields that fence process/controller ownership.
+func (r SessionRecord) ControllerOwner() SessionControllerOwner {
+	return SessionControllerOwner{
+		Harness:                r.Harness,
+		Mode:                   NormalizeSessionMode(r.Mode),
+		IsTerminated:           r.IsTerminated,
+		RuntimeLaunchID:        r.Metadata.RuntimeLaunchID,
+		AgentSessionID:         r.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID: r.Metadata.AgentSessionIDLaunchID,
+		ProviderConversationID: r.Metadata.ProviderConversationID,
+		ControllerGeneration:   r.Metadata.ControllerGeneration,
+	}
+}
+
 // Session is the read-model returned across the API boundary: a SessionRecord
-// plus derived display facts. Neither Status nor SCMStatus is persisted.
+// plus derived display facts. None of Status, SCMStatus, or KanbanColumn is
+// persisted.
 type Session struct {
 	SessionRecord
-	Status            SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
-	SCMStatus         SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
+	// ChatProviderPreserved is a live-controller observation, never stored.
+	// False also covers recovery/unknown ownership; callers must not infer safety.
+	ChatProviderPreserved bool          `json:"chatProviderPreserved"`
+	Status                SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
+	SCMStatus             SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
+	// KanbanColumn is where the session sits in its delivery lifecycle and
+	// which loop is turning it: an AO-driven one (validating) or the
+	// review-feedback loop whose next turn is a person's (needs_review). It is
+	// derived independently of Status and, like it, is never persisted.
+	KanbanColumn KanbanColumn `json:"kanbanColumn" enum:"building,validating,needs_review,ready,archive"`
+	// DisplayStatus is the short phrase to render inside that column: the most
+	// important current fact about the session at the stage it sits in. It is
+	// derived after the column, from the facts that column reads, and ships in
+	// renderable form so clients print it without a mapping table of their own.
+	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
 	TerminalHandleID  string        `json:"terminalHandleId,omitempty"`
 	ActiveAgentSwitch *AgentSwitch  `json:"-"`
 	// PRs are the session's attributed pull requests (one session can own many).

@@ -10,11 +10,9 @@
 //   - Prints a final line: AO_VERDICT {"passed":true|false,...}
 //   - Exits 0 on green, non-zero on red.
 //
-// Wired by .github/workflows/frontend-release.yml `e2e-gate` (currently ADVISORY:
-// continue-on-error + publish-feed does NOT depend on it), which reflects the
-// outcome into an `ao-stable-gate` commit status. The verdict->exit-code->status
-// contract lives in the pure, tested deriveGateOutcome. Once the gate is trusted
-// on live releases, add `e2e-gate` to publish-feed `needs` to make it blocking.
+// Invoked by the private release conductor, which reflects the outcome into an
+// `ao-stable-gate` commit status. The verdict->exit-code->status contract lives
+// in the pure, tested deriveGateOutcome.
 
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";

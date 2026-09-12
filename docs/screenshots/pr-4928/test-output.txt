@@ -1,0 +1,12 @@
+=== RUN   TestManager_AddRejectsEquivalentRepositoryPaths
+=== RUN   TestManager_AddRejectsEquivalentRepositoryPaths/alias-first=false
+=== RUN   TestManager_AddRejectsEquivalentRepositoryPaths/alias-first=true
+--- PASS: TestManager_AddRejectsEquivalentRepositoryPaths (1.78s)
+    --- PASS: TestManager_AddRejectsEquivalentRepositoryPaths/alias-first=false (1.27s)
+    --- PASS: TestManager_AddRejectsEquivalentRepositoryPaths/alias-first=true (0.50s)
+PASS
+ok  	github.com/aoagents/agent-orchestrator/backend/internal/service/project	2.991s
+=== RUN   TestProjectsAPI_EquivalentPathsReturnRegisteredIdentity
+--- PASS: TestProjectsAPI_EquivalentPathsReturnRegisteredIdentity (0.84s)
+PASS
+ok  	github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers	2.990s

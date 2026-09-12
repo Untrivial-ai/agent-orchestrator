@@ -12,6 +12,7 @@ import { handleTerminalTabListKeyDown } from "../lib/terminal-tabs";
 import { useResolvedTheme, useUiStore } from "../stores/ui-store";
 import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalPane } from "./TerminalPane";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 // The standalone terminals screen: shells with no agent session behind them,
 // reachable from anywhere via the + at the end of a tab strip or ⌘T / Ctrl+T.
@@ -87,19 +88,25 @@ export function ShellTerminalsView() {
 				<span className="shrink-0 font-mono text-caption font-semibold uppercase tracking-wide-lg text-muted-foreground">
 					{t("workbench.terminals")}
 				</span>
-				<button
-					aria-label={t("terminal.scrollTabsLeft")}
-					className={cn(
-						"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-0",
-						!tabsOverflow.canScrollLeft && "invisible",
-					)}
-					disabled={!tabsOverflow.canScrollLeft}
-					onClick={() => tabsOverflow.scrollByDirection(-1)}
-					title={t("terminal.scrollTabsLeft")}
-					type="button"
-				>
-					<ChevronLeft aria-hidden="true" className="size-icon-md" />
-				</button>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="inline-flex">
+							<button
+								aria-label={t("terminal.scrollTabsLeft")}
+								className={cn(
+									"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-0",
+									!tabsOverflow.canScrollLeft && "invisible",
+								)}
+								disabled={!tabsOverflow.canScrollLeft}
+								onClick={() => tabsOverflow.scrollByDirection(-1)}
+								type="button"
+							>
+								<ChevronLeft aria-hidden="true" className="size-icon-md" />
+							</button>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{t("terminal.scrollTabsLeft")}</TooltipContent>
+				</Tooltip>
 				{/* Tabs shrink and truncate down to a minimum width; beyond that the
 				    strip scrolls and edge chevrons reveal the overflow. */}
 				<div
@@ -123,28 +130,38 @@ export function ShellTerminalsView() {
 						);
 					})}
 				</div>
-				<button
-					aria-label={t("terminal.scrollTabsRight")}
-					className={cn(
-						"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-0",
-						!tabsOverflow.canScrollRight && "invisible",
-					)}
-					disabled={!tabsOverflow.canScrollRight}
-					onClick={() => tabsOverflow.scrollByDirection(1)}
-					title={t("terminal.scrollTabsRight")}
-					type="button"
-				>
-					<ChevronRight aria-hidden="true" className="size-icon-md" />
-				</button>
-				<button
-					aria-label={t("shortcut.new-shell-terminal")}
-					className="ml-auto inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
-					onClick={requestNewShellTerminal}
-					title={t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}
-					type="button"
-				>
-					<Plus aria-hidden="true" className="size-icon-md" />
-				</button>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="inline-flex">
+							<button
+								aria-label={t("terminal.scrollTabsRight")}
+								className={cn(
+									"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-0",
+									!tabsOverflow.canScrollRight && "invisible",
+								)}
+								disabled={!tabsOverflow.canScrollRight}
+								onClick={() => tabsOverflow.scrollByDirection(1)}
+								type="button"
+							>
+								<ChevronRight aria-hidden="true" className="size-icon-md" />
+							</button>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{t("terminal.scrollTabsRight")}</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							aria-label={t("shortcut.new-shell-terminal")}
+							className="ml-auto inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
+							onClick={requestNewShellTerminal}
+							type="button"
+						>
+							<Plus aria-hidden="true" className="size-icon-md" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}</TooltipContent>
+				</Tooltip>
 			</div>
 			<div className="min-h-0 flex-1">
 				{active ? (

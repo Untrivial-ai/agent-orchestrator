@@ -171,13 +171,47 @@ Use layered controls:
 5. Use the AO kill switch for a stream that turns out to be noisy. Setting
    `AO_TELEMETRY_DISABLED_EVENTS` silences named streams (with `*` prefix
    matching) on installs that already exist, without shipping a release. Local
-   SQLite still records them, so the stream stays debuggable. See the kill-switch
-   section in [telemetry.md](telemetry.md). This is the in-app counterpart to a
-   PostHog ingestion rule: the rule stops paying for events already sent, the
-   switch stops sending them.
+   SQLite still records them, so the stream stays debuggable. See
+   [AO event kill switch](#ao-event-kill-switch) below. This is the client-side
+   counterpart to a PostHog ingestion rule: the rule stops paying for events
+   already sent, the switch stops sending them.
 
 Those steps protect cost from normal bugs and known old clients, but they do
 not fully protect a public project token from deliberate abuse.
+
+### AO event kill switch
+
+`AO_TELEMETRY_DISABLED_EVENTS` is a comma-separated list of event streams that
+must not reach PostHog from the desktop or daemon:
+
+```bash
+AO_TELEMETRY_DISABLED_EVENTS="ao.v2.app.active, ao.renderer.*"
+```
+
+Whitespace around entries is ignored. An entry ending in `*` after a non-empty
+prefix matches by prefix. Both exact and prefix matching are case-insensitive
+and check the internal event name (`ao.app.active`) and its exported PostHog
+alias (`ao.v2.app.active`), so operators can use the name visible in PostHog
+without translating it first.
+
+The desktop supervisor passes the list to both remote producers: the daemon's
+PostHog sink and the renderer, which sends directly to PostHog. A stream is
+therefore silenced across both paths after AO restarts. This is a per-install
+launch setting, not a remotely managed switch: the variable must reach the AO
+desktop process itself. A shell startup file may not be inherited when AO is
+launched from the macOS Finder or Dock.
+
+Mobile telemetry is not affected by this variable. Mobile builds instead use
+`EXPO_PUBLIC_AO_TELEMETRY_DISABLED=1` to disable all telemetry or
+`EXPO_PUBLIC_AO_TELEMETRY_DISABLED_EVENTS` for a comma-separated event list.
+Those values are compiled into the app, so an ingestion drop rule is the only
+way to silence a mobile stream in builds already shipped.
+
+The switch is applied before aggregation, rate limiting, and export, so a
+disabled stream consumes none of those resources. Local SQLite storage is
+deliberately unaffected and continues to keep the raw operational event for
+local debugging. Empty entries, a bare `*`, and unrecognized event names are
+inert rather than preventing AO from starting.
 
 The stronger standard pattern is to send telemetry through an AO-owned
 collection proxy instead of sending directly to PostHog:

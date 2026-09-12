@@ -38,7 +38,7 @@ func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
 	}
 
 	// Set an initial size matching node-pty defaults from pty-host.ts.
-	if err := cp.Resize(220, 50); err != nil {
+	if err := cp.Resize(initialConPTYColumns, initialConPTYRows); err != nil {
 		_ = cp.Close()
 		return nil, fmt.Errorf("conpty: initial resize: %w", err)
 	}

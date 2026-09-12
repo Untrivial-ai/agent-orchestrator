@@ -79,6 +79,7 @@ type SessionWorktreeRecord struct {
 	RepoName     string
 	Branch       string
 	BaseSHA      string
+	BaseRef      string
 	WorktreePath string
 	PreservedRef string
 	// ponytail: State mirrors session_worktrees.state, an enum that is unused

@@ -79,7 +79,7 @@ export function attachAppShortcuts(
 	focusTarget = false,
 	getOverrides: () => KeybindingOverrides = () => ({}),
 	isRecording: () => boolean = () => false,
-	shouldHandle: (id: AppShortcutId) => boolean = () => true,
+	shouldHandle: (id: AppShortcutId, chord: ShortcutChord) => boolean = () => true,
 	onShortcut?: (id: AppShortcutId) => void,
 	isTerminalFocused: () => boolean = () => false,
 ): void {
@@ -104,7 +104,11 @@ export function attachAppShortcuts(
 		// Let the renderer's capture listener receive application-owned chords
 		// while the user is recording a replacement binding.
 		if (isRecording()) return;
-		if (onShortcut && matchesAppShortcut("toggle-browser-devtools", chord, isMac, getOverrides())) {
+		if (
+			onShortcut &&
+			matchesAppShortcut("toggle-browser-devtools", chord, isMac, getOverrides()) &&
+			shouldHandle("toggle-browser-devtools", chord)
+		) {
 			event.preventDefault();
 			if (focusTarget) target.focus();
 			onShortcut("toggle-browser-devtools");
@@ -113,7 +117,7 @@ export function attachAppShortcuts(
 		const match = appShortcutChannel(chord, isMac, getOverrides());
 		if (!match) return;
 		const [id, channel] = match;
-		if (!shouldHandle(id)) return;
+		if (!shouldHandle(id, chord)) return;
 
 		event.preventDefault();
 		if (focusTarget) target.focus();

@@ -1,5 +1,11 @@
 # `ao start` Bootstrapper + npm Deprecation: Implementation Spec
 
+> **Historical document:** This implementation snapshot predates the private
+> `Untrivial-ai/ao-releases` conductor and uses former repository names and
+> release wiring. It is retained as design history, not as an operator runbook.
+> Do not run or reconstruct its publication flow. The current release boundary
+> is documented in [`frontend/docs/desktop-release.md`](../frontend/docs/desktop-release.md).
+
 > **Status:** ready for build (Track A). Grounded against the real codebase on
 > branch `feat/ao-start-bootstrapper` (= `upstream/main` + PR #2185) on 2026-06-26.
 > Every "current state" claim carries a `file:line` reference.

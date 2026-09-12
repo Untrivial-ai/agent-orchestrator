@@ -1,6 +1,8 @@
 import { Fragment, type ReactNode } from "react";
 import type { ExternalLinkComponent } from "./external-link";
 import { ArrowUpRightIcon } from "./icons";
+import { UserAvatar } from "./UserAvatar";
+import { scmUserAvatarUrl } from "./scm-avatar";
 import type {
 	PRCardPresentation,
 	PRCardStatus,
@@ -43,36 +45,41 @@ export function PRSummaryMeta({
 	const hasDiff = hasDiffMetadata(pr);
 	const authorHandle = pr.author?.replace(/^@/, "") ?? "";
 	const primary: ReactNode[] = [leading, branchRange].filter(Boolean);
+	let author: ReactNode = null;
 	if (authorHandle) {
-		primary.push(
+		author =
 			pr.provider === "github" ? (
 				<ExternalLink
-					className="text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+					className="inline-flex min-w-0 items-center gap-1 text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 					href={`https://github.com/${encodeURIComponent(authorHandle)}`}
-					key="author"
 				>
-					@{authorHandle}
+					<UserAvatar
+						className="size-3"
+						imageUrl={pr.authorAvatarUrl || scmUserAvatarUrl("github", "https://github.com", authorHandle)}
+						name={authorHandle}
+					/>
+					{authorHandle}
 				</ExternalLink>
 			) : (
-				<span key="author">@{authorHandle}</span>
-			),
-		);
+				<span>{authorHandle}</span>
+			);
 	}
-	if (primary.length === 0 && !hasDiff) {
+	if (primary.length === 0 && !hasDiff && !author) {
 		return null;
 	}
 	return (
 		<div className={cn("min-w-0 font-mono text-2xs leading-4", className)}>
 			{primary.length > 0 ? (
-				<div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-muted-foreground">
+				<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted-foreground">
 					{primary.map((part, index) => (
 						<Fragment key={index}>
 							{index > 0 ? <span className="shrink-0 text-passive">·</span> : null}
-							<span className="min-w-0 truncate">{part}</span>
+							<span className="min-w-0 break-words [overflow-wrap:anywhere]">{part}</span>
 						</Fragment>
 					))}
 				</div>
 			) : null}
+			{author ? <div className="mt-0.5 min-w-0 break-words [overflow-wrap:anywhere] text-muted-foreground">{author}</div> : null}
 			{hasDiff ? <PRDiffMeta countNounLabel={countNounLabel} pr={pr} /> : null}
 		</div>
 	);
@@ -125,17 +132,54 @@ export function PRCardStatusSummary({
 	externalLink,
 	omit,
 	presentation,
+	reviewDetailsAction,
 }: {
 	action?: ReactNode;
 	className?: string;
 	externalLink: ExternalLinkComponent;
 	omit?: PRSummaryPartKey[];
 	presentation: PRCardPresentation;
+	reviewDetailsAction?: ReactNode;
 }) {
 	const omitted = omit ? new Set(omit) : undefined;
 	const supporting = presentation.supporting.filter(
 		(status) => status.key === "lifecycle" || !omitted?.has(status.key),
 	);
+	const rows = presentation.statusRows?.filter((status) => status.key === "lifecycle" || !omitted?.has(status.key));
+	if (rows && presentation.readiness) {
+		return (
+			<div className={cn("border-t border-border pt-2", className)}>
+				<div className="grid min-w-0 grid-cols-1 gap-y-1.5">
+					{rows.map((status) => (
+						<div className="min-w-0" key={status.key}>
+							<div className={cn("flex min-w-0 items-center gap-2 text-xs font-medium leading-4", toneClass[status.tone])}>
+								<span aria-hidden="true" className={cn("size-dot-sm shrink-0 rounded-full bg-current", status.breathe && "animate-status-pulse")} />
+								<PRCardStatusLink externalLink={externalLink} status={status} />
+							</div>
+							{status.detail || (status.key === "review" && reviewDetailsAction) ? (
+								<div className="mt-0.5 flex min-w-0 items-baseline gap-2 pl-4 text-2xs leading-4">
+									{status.detail ? <span className="text-muted-foreground">{status.detail}</span> : null}
+									{status.key === "review" && reviewDetailsAction ? reviewDetailsAction : null}
+								</div>
+							) : null}
+						</div>
+					))}
+				</div>
+				<div className="mt-2 border-t border-border pt-2">
+					<div className="flex min-w-0 items-center justify-between gap-3">
+						<div className="min-w-0">
+							<div className={cn("flex items-center gap-2 text-xs font-medium leading-4", toneClass[presentation.readiness.tone])}>
+								<span aria-hidden="true" className="size-dot-sm shrink-0 rounded-full bg-current" />
+								{presentation.readiness.label}
+							</div>
+							<div className="mt-0.5 min-w-0 break-words pl-4 text-2xs leading-4 text-muted-foreground">{presentation.readiness.detail}</div>
+						</div>
+						{action ? <div className="shrink-0 self-center">{action}</div> : null}
+					</div>
+				</div>
+			</div>
+		);
+	}
 	return (
 		<div className={cn("border-t border-border pt-2", className)}>
 			<div className="flex min-w-0 items-center gap-3">
@@ -159,7 +203,7 @@ export function PRCardStatusSummary({
 								<PRCardStatusLink externalLink={externalLink} status={presentation.primary} />
 							</div>
 							{presentation.primary.detail ? (
-								<div className="mt-0.5 text-2xs leading-4 text-muted-foreground">
+								<div className="mt-0.5 min-w-0 break-words text-2xs leading-4 text-muted-foreground">
 									{presentation.primary.detail}
 								</div>
 							) : null}

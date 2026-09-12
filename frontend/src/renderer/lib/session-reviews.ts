@@ -8,6 +8,7 @@ import { usesPreviewWorkspaceData as usePreviewData } from "./preview-mode";
 export type PRReviewState = components["schemas"]["PRReviewState"];
 export type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 export type ReviewRunFacts = components["schemas"]["ReviewRun"];
+export type ReviewerActivityState = ReviewsResponse["reviewerActivityState"];
 
 /**
  * Shared query options for a session's AO review states. The query key is the
@@ -36,11 +37,11 @@ export function sessionReviewsQueryOptions(session: WorkspaceSession, enabled: b
 	});
 }
 
-/** Review states for a session's open (non-draft) PRs, matching ReviewPanel semantics. */
+/** Review states for a session's active PRs. Open and draft PRs can be reviewed; merged/closed PRs cannot. */
 export function openReviewStatesFor(session: WorkspaceSession, reviewStates: PRReviewState[]): PRReviewState[] {
 	const openPRURLs = new Set(
 		sortedPRs(session)
-			.filter((pr) => pr.state === "open")
+			.filter((pr) => pr.state === "open" || pr.state === "draft")
 			.map((pr) => pr.url),
 	);
 	return reviewStates.filter((reviewState) => openPRURLs.has(reviewState.prUrl));
@@ -48,6 +49,28 @@ export function openReviewStatesFor(session: WorkspaceSession, reviewStates: PRR
 
 export function reviewIsRunning(openReviewStates: PRReviewState[]): boolean {
 	return openReviewStates.some((reviewState) => reviewState.status === "running");
+}
+
+export function reviewHasLiveActivity(
+	openReviewStates: PRReviewState[],
+	reviewerActivityState: ReviewerActivityState | undefined,
+	hasReviewerSession: boolean,
+): boolean {
+	if (!reviewIsRunning(openReviewStates)) return false;
+	if (!hasReviewerSession) return false;
+	switch (reviewerActivityState) {
+		case "idle":
+		case "waiting_input":
+		case "exited":
+			return false;
+		case "active":
+		case "blocked":
+			return true;
+		default:
+			// Older daemons do not return reviewer activity state. Keep today's
+			// running-run semantics until a hook says otherwise.
+			return true;
+	}
 }
 
 export function reviewRunDisabled(openReviewStates: PRReviewState[], isTriggering: boolean): boolean {
@@ -61,6 +84,9 @@ export function reviewRunDisabled(openReviewStates: PRReviewState[], isTriggerin
 export function reviewSessionRunAction(reviewStates: PRReviewState[], isTriggering: boolean): string {
 	if (isTriggering || reviewStates.some((reviewState) => reviewState.status === "running")) {
 		return appI18n.t("inspector.review.reviewing");
+	}
+	if (reviewStates.some((reviewState) => reviewState.status === "needs_review")) {
+		return appI18n.t("inspector.review.runLatest");
 	}
 	if (reviewStates.some((reviewState) => reviewState.status === "changes_requested" || reviewState.latestRun)) {
 		return appI18n.t("inspector.review.rerun");
@@ -177,6 +203,7 @@ function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
 			targetSha: state.targetSha,
 		};
 		return [
+			...(state.latestRun?.body?.trim() ? [state.latestRun] : []),
 			{
 				...base,
 				id: `demo-hist-${state.prNumber}-a`,

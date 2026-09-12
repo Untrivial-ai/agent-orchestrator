@@ -3,41 +3,71 @@ SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?;
 
 -- name: InsertSession :exec
 INSERT INTO sessions (
-    id, project_id, num, issue_id, kind, harness, reviewer_harness, auto_review_enabled, display_name,
+    id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
-    runtime_launch_id, agent_session_id, prompt,
-    latest_user_prompt, latest_assistant_update, native_transcript_path,
+    runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
-    session_mode, provider_conversation_id, controller_generation,
+    session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, auto_review_enabled = ?, display_name = ?,
+    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, updated_at = ?,
+    provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
 WHERE id = ?;
+
+-- name: UpdateBrowserCapabilityVerifier :execrows
+-- Rotate only the browser credential for the exact controller owner observed by
+-- the launcher. This must not replay a stale SessionRecord over newer lifecycle,
+-- activity, termination, or provider ownership facts.
+UPDATE sessions SET
+    browser_capability_verifier = sqlc.arg(browser_capability_verifier),
+    updated_at = MAX(updated_at, sqlc.arg(updated_at))
+WHERE id = sqlc.arg(id)
+  AND harness = sqlc.arg(expected_harness)
+  AND session_mode = sqlc.arg(expected_session_mode)
+  AND is_terminated = sqlc.arg(expected_is_terminated)
+  AND runtime_launch_id = sqlc.arg(expected_runtime_launch_id)
+  AND agent_session_id = sqlc.arg(expected_agent_session_id)
+  AND agent_session_id_launch_id = sqlc.arg(expected_agent_session_id_launch_id)
+  AND provider_conversation_id = sqlc.arg(expected_provider_conversation_id)
+  AND controller_generation = sqlc.arg(expected_controller_generation);
 
 -- name: RecordSessionLatestUserPrompt :execrows
 UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
+    latest_user_prompt_at = sqlc.arg(updated_at),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_terminated = 0
   AND updated_at <= sqlc.arg(updated_at);
+
+-- name: RecordSessionHumanMessage :execrows
+-- Chat message insertion already owns controller/idempotency fencing. Compare
+-- against the dedicated fact timestamp here so unrelated lifecycle writes do
+-- not suppress a newer human message.
+UPDATE sessions SET
+    latest_user_prompt = sqlc.arg(latest_user_prompt),
+    latest_user_prompt_at = sqlc.arg(latest_user_prompt_at),
+    updated_at = MAX(updated_at, sqlc.arg(latest_user_prompt_at))
+WHERE id = sqlc.arg(id)
+  AND is_terminated = 0
+  AND (latest_user_prompt_at IS NULL OR latest_user_prompt_at <= sqlc.arg(latest_user_prompt_at));
 
 -- name: ClaimChatControllerGeneration :execrows
 -- A Chat controller claims ownership before its event goroutine starts. Provider
@@ -62,6 +92,7 @@ SET session_mode = ?,
     runtime_handle_id = '',
     runtime_launch_id = '',
     agent_session_id = ?,
+    agent_session_id_launch_id = '',
     provider_conversation_id = ?,
     controller_generation = '',
     activity_state = 'idle',
@@ -72,37 +103,37 @@ WHERE id = ? AND session_mode = ? AND is_terminated = 0;
 -- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE project_id = ? ORDER BY num;
 
 -- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num;
 
 
@@ -127,8 +158,8 @@ UPDATE sessions SET auto_inject_ci = ?, updated_at = ? WHERE id = ?;
 -- name: SetSessionPinned :execrows
 UPDATE sessions SET is_pinned = ?, pinned_at = ?, updated_at = ? WHERE id = ?;
 
--- name: SetSessionReviewerHarness :execrows
-UPDATE sessions SET reviewer_harness = ?, updated_at = ? WHERE id = ?;
+-- name: SetSessionReviewerConfig :execrows
+UPDATE sessions SET reviewer_harness = ?, reviewer_agent_config = ?, updated_at = ? WHERE id = ?;
 
 -- name: SetSessionAutoReview :execrows
 UPDATE sessions SET auto_review_enabled = ?, updated_at = ? WHERE id = ?;

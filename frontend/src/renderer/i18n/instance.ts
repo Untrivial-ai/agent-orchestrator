@@ -12,7 +12,7 @@ import {
 	zhCNMessages,
 } from "./messages";
 
-export type TranslationCatalogs = Record<AppLocale, Readonly<Record<string, string>>>;
+export type TranslationCatalogs = Record<AppLocale, Record<string, string | string[]>>;
 
 export const appCatalogs: TranslationCatalogs = {
 	en: enMessages,

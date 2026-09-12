@@ -5,7 +5,13 @@ description: The built-in Terminal UI runtime on macOS and Linux.
 
 AO uses `tmux` on macOS and Linux to keep each Terminal UI agent process attachable and to feed the desktop terminal mux. Runtime selection is automatic.
 
-## Install
+The macOS and Linux desktop packages include their own pinned tmux and use an
+AO-owned socket. Desktop users do not need to install tmux, and AO never shares
+the machine tmux server.
+
+## Standalone daemon and development
+
+Standalone daemon and source development runs still resolve tmux from `PATH`:
 
 ```bash
 # macOS
@@ -15,7 +21,8 @@ brew install tmux
 sudo apt install tmux
 ```
 
-Then run `ao doctor`. The desktop app starts and owns the daemon; there is no `runtime: tmux` YAML setting.
+Then run `ao doctor`. It reports whether that AO process selected an explicitly
+configured, packaged, or system tmux. There is no `runtime: tmux` YAML setting.
 
 ## Desktop terminal
 

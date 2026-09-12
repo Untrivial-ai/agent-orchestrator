@@ -221,6 +221,7 @@ func (p *Provider) ListPRsByRepo(ctx context.Context, repo ports.SCMRepo, update
 }
 
 type restMR struct {
+	ID                  int64  `json:"id"`
 	IID                 int    `json:"iid"`
 	Title               string `json:"title"`
 	State               string `json:"state"`
@@ -272,6 +273,7 @@ func mrToSCMPRObservation(repo ports.SCMRepo, mr *restMR) ports.SCMPRObservation
 	merged := mr.State == "merged"
 	closed := mr.State == "closed" || mr.State == "locked"
 	return ports.SCMPRObservation{
+		ProviderID:               providerID(mr.ID),
 		URL:                      mr.WebURL,
 		HTMLURL:                  mr.WebURL,
 		Number:                   mr.IID,
@@ -293,6 +295,13 @@ func mrToSCMPRObservation(repo ports.SCMRepo, mr *restMR) ports.SCMPRObservation
 		MergedAtProvider:         safeTime(mr.MergedAt),
 		ClosedAtProvider:         safeTime(mr.ClosedAt),
 	}
+}
+
+func providerID(id int64) string {
+	if id <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(id, 10)
 }
 
 func normalizeMRState(state string, draft bool) domain.PRState {
@@ -462,6 +471,13 @@ func (p *Provider) fetchSingleMR(ctx context.Context, ref ports.SCMPRRef) (ports
 	}
 
 	prObs := mrToSCMPRObservation(repo, &mr)
+	canonicalRepo := canonicalRepoFromMRURL(repo.Host, prObs.URL, repo.Repo)
+	if mr.SourceProjectID == 0 || mr.SourceProjectID == mr.TargetProjectID {
+		prObs.HeadRepo = canonicalRepo
+	}
+	if requestedURL := strings.TrimSpace(ref.URL); requestedURL != "" && requestedURL != strings.TrimSpace(prObs.URL) {
+		prObs.URLAlias = requestedURL
+	}
 	prObs.BaseSHA = mr.DiffRefs.BaseSHA
 	prObs.MergeCommitSHA = mr.MergeCommitSHA
 
@@ -522,12 +538,26 @@ func (p *Provider) fetchSingleMR(ctx context.Context, ref ports.SCMPRRef) (ports
 		ObservedAt:   now,
 		Provider:     "gitlab",
 		Host:         repo.Host,
-		Repo:         repo.Repo,
+		Repo:         canonicalRepo,
 		PR:           prObs,
 		CI:           ciObs,
 		Review:       ports.SCMReviewObservation{Decision: string(reviewDecision)},
 		Mergeability: mergeObs,
 	}, nil
+}
+
+func canonicalRepoFromMRURL(host, rawURL, fallback string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || !strings.EqualFold(u.Host, strings.TrimSpace(host)) {
+		return fallback
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := 1; i+1 < len(parts); i++ {
+		if parts[i] == "-" && parts[i+1] == "merge_requests" {
+			return strings.Join(parts[:i], "/")
+		}
+	}
+	return fallback
 }
 
 // fetchSourceProjectCached resolves a fork MR source project's

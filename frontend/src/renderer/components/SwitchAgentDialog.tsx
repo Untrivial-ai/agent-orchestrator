@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import {
 	agentSwitchesQueryKey,
 	agentSwitchNeedsRecovery,
+	agentSwitchNeedsSourceRecovery,
 	agentSwitchNeedsSourceStopRecovery,
 	agentSwitchNeedsSourceRestore,
 	isTerminalAgentSwitch,
@@ -19,7 +20,7 @@ import {
 } from "../hooks/useSwitchAgent";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { AGENT_LABELS, AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
-import type { WorkspaceSession } from "../types/workspace";
+import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
@@ -31,6 +32,7 @@ import {
 	DialogDescription,
 	DialogTitle,
 } from "./ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export const SWITCH_AGENT_OPTIONS = [
 	{ value: "claude-code", label: "Claude Code" },
@@ -107,13 +109,14 @@ function SwitchTargetPicker({
 }
 
 type SwitchAgentDialogProps = {
+	agentSwitch?: AgentSwitchSummary;
 	container: HTMLElement;
 	open: boolean;
 	session: WorkspaceSession;
 	onOpenChange: (open: boolean) => void;
 };
 
-export function SwitchAgentDialog({ container, open, session, onOpenChange }: SwitchAgentDialogProps) {
+export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpenChange }: SwitchAgentDialogProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const defaultTargetHarness: SwitchAgentHarness = session.provider === "claude-code" ? "codex" : "claude-code";
@@ -125,11 +128,14 @@ export function SwitchAgentDialog({ container, open, session, onOpenChange }: Sw
 	const recoverAgentSwitch = useRecoverAgentSwitch();
 	const switchMutation = useSwitchAgentState(session.id);
 	const admissionPending = switchMutation.isPending;
-	const durableSwitch = session.activeAgentSwitch;
+	// Agent-switch history has its own bounded polling fallback. Prefer that
+	// observation over the compact workspace projection so a settled recovery
+	// cannot leave this dialog pinned to an older recovery-required snapshot.
+	const durableSwitch = agentSwitch ?? session.activeAgentSwitch;
 	const recoveryRequired = durableSwitch ? agentSwitchNeedsRecovery(durableSwitch) : false;
 	const sourceStopRecoveryRequired = durableSwitch ? agentSwitchNeedsSourceStopRecovery(durableSwitch) : false;
 	const sourceRestoreRequired = durableSwitch ? agentSwitchNeedsSourceRestore(durableSwitch) : false;
-	const sourceRecoveryRequired = sourceStopRecoveryRequired || sourceRestoreRequired;
+	const sourceRecoveryRequired = durableSwitch ? agentSwitchNeedsSourceRecovery(durableSwitch) : false;
 	const sourceLabel = durableSwitch
 		? agentLabel(durableSwitch.fromHarness)
 		: agentLabel(session.provider);
@@ -223,7 +229,7 @@ export function SwitchAgentDialog({ container, open, session, onOpenChange }: Sw
 					/>
 				}
 				showCloseButton={false}
-				className="absolute left-1/2 top-1/2 z-overlay w-dialog-md max-w-none -translate-x-1/2 -translate-y-1/2 gap-0 overflow-hidden rounded-xl border border-border-strong bg-surface/95 p-0 text-foreground shadow-xl shadow-black/20 data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none"
+				className="absolute left-1/2 top-1/2 z-overlay w-[min(var(--size-dialog-md),calc(100%-var(--space-8)))] max-w-none -translate-x-1/2 -translate-y-1/2 gap-0 overflow-hidden rounded-xl border border-border-strong bg-surface/95 p-0 text-foreground shadow-xl shadow-black/20 data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none"
 			>
 					<DialogClose asChild>
 						<button
@@ -339,21 +345,29 @@ export function SwitchAgentDialog({ container, open, session, onOpenChange }: Sw
 									/>
 								</div>
 							</div>
-							<Button
-								aria-label={admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
-								className="size-(--size-settings-action-height)"
-								disabled={admissionPending}
-								size="none"
-								title={admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
-								type="submit"
-								variant="primary"
-							>
-								{admissionPending ? (
-									<LoaderCircle className="size-icon-base animate-spin" aria-hidden="true" />
-								) : (
-									<Repeat2 className="size-4 stroke-[1.8]" aria-hidden="true" />
-								)}
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span className="inline-flex">
+										<Button
+											aria-label={admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
+											className="size-(--size-settings-action-height)"
+											disabled={admissionPending}
+											size="none"
+											type="submit"
+											variant="primary"
+										>
+											{admissionPending ? (
+												<LoaderCircle className="size-icon-base animate-spin" aria-hidden="true" />
+											) : (
+												<Repeat2 className="size-4 stroke-[1.8]" aria-hidden="true" />
+											)}
+										</Button>
+									</span>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									{admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
+								</TooltipContent>
+							</Tooltip>
 						</div>
 						</form>
 					)}

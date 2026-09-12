@@ -361,21 +361,6 @@ func TestNormalizeToleratesMalformedParams(t *testing.T) {
 	}
 }
 
-func TestUnwrapShellLeavesPlainCommands(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"date -u", "date -u"},
-		{"/bin/sh -c 'ls -la'", "ls -la"},
-		{`/bin/bash -lc "git status"`, "git status"},
-		{"ao spawn --project p --name w", "ao spawn --project p --name w"},
-		// A non-shell binary that happens to take -c must not be unwrapped.
-		{"python -c print(1)", "python -c print(1)"},
-	} {
-		if got := unwrapShell(tc.in); got != tc.want {
-			t.Errorf("unwrapShell(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 // A current app-server reports compaction ONLY as a contextCompaction item. The
 // schema still declares a thread/compacted notification and marks it deprecated;
 // 0.146.0 never sends it. Reading only the notification would mean AO silently

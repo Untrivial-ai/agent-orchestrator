@@ -260,8 +260,24 @@ go run ./cmd/ao --help
 | `npm run typecheck` has type errors   | API types out of sync   | Run `npm run api` from repo root to regenerate               |
 | `npm run dev` fails on native modules | Missing build tools     | Install Python + C++ build tools for `node-gyp`              |
 | `npm install` or `npm ci` fails       | Node.js version too old | `node --version`; must be 20.19.0+ (see prerequisites above) |
+| Blank window or crash on Linux        | Broken GPU driver stack | Start with `AO_DISABLE_GPU=1` to skip hardware acceleration  |
 
 ### Code generation drift
+
+If CI fails on `sqlc-drift`, run the pinned generator from the repository root
+and commit the generated storage changes together with their SQL/config source:
+
+```bash
+npm run sqlc
+git diff --exit-code -- backend/internal/storage/sqlite/gen
+```
+
+The diff check should pass after committing the regenerated files. Do not edit
+`gen/` by hand or use a different sqlc version; the version in `package.json` is
+authoritative. Review any unexpected query or generated type changes before
+committing. The storage tests also check that the config is valid YAML and keeps
+the boolean overrides for `agent_switch_failure_policy.enabled` and
+`app_settings.cloud_offering`.
 
 If CI fails on the `api-drift` check, the OpenAPI-generated files are out of sync with source. Regenerate them locally and commit the updated files:
 

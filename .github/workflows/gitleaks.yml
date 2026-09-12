@@ -16,7 +16,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      # gitleaks-action v1 scans for committed secrets and needs no license
-      # key (v2 requires GITLEAKS_LICENSE for organization repos).
-      - name: Scan for secrets
-        uses: zricethezav/gitleaks-action@v1.6.0
+      # The legacy v1 action scans both sides of base...HEAD for PRs and every
+      # fetched ref for pushes. Build the range here so each run checks only the
+      # commits introduced by that PR or push.
+      - name: Select commits to scan
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          commits_file=".git/gitleaks-commits.txt"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            git rev-list --right-only --cherry-pick \
+              "refs/remotes/origin/${GITHUB_BASE_REF}...HEAD" > "${commits_file}"
+          elif [[ -n "${BEFORE_SHA}" && ! "${BEFORE_SHA}" =~ ^0+$ ]] && \
+            git cat-file -e "${BEFORE_SHA}^{commit}"; then
+            git rev-list "${BEFORE_SHA}..${GITHUB_SHA}" > "${commits_file}"
+          else
+            printf '%s\n' "${GITHUB_SHA}" > "${commits_file}"
+          fi
+          echo "Scanning $(wc -l < "${commits_file}") commit(s)"
+
+      # Run the same license-free gitleaks v7.4 image used by the old v1 action,
+      # pinned to the digest observed in that action's Dockerfile build.
+      - name: Scan selected commits for secrets
+        uses: docker://zricethezav/gitleaks:v7.4.0@sha256:ffe35a0d42974c19da37b3fb5ca1ff1e781ae6dffaf80164568129a2714eca61
+        with:
+          args: >-
+            --path=/github/workspace
+            --verbose
+            --redact
+            --commits-file=/github/workspace/.git/gitleaks-commits.txt
+            --config-path=/github/workspace/.github/.gitleaks.toml

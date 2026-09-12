@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,15 +18,17 @@ func (s *Store) UpsertReview(ctx context.Context, r domain.Review) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.UpsertReview(ctx, gen.UpsertReviewParams{
-		ID:               r.ID,
-		SessionID:        r.SessionID,
-		ProjectID:        r.ProjectID,
-		Harness:          r.Harness,
-		PRURL:            r.PRURL,
-		ReviewerHandleID: r.ReviewerHandleID,
-		AgentSessionID:   r.AgentSessionID,
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: string(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
 	})
 }
 
@@ -97,12 +100,36 @@ func (s *Store) ClearReviewerHandleByHarness(ctx context.Context, id domain.Sess
 	return s.qw.ClearReviewerHandleByHarness(ctx, gen.ClearReviewerHandleByHarnessParams{SessionID: id, Harness: harness})
 }
 
-// UpdateReviewAgentSessionID records the native reviewer conversation id
-// reported by the reviewer harness hooks.
+// UpdateReviewAgentSessionID records engine-owned reviewer native session
+// metadata without applying the reviewer-hook launch generation fence.
 func (s *Store) UpdateReviewAgentSessionID(ctx context.Context, id, agentSessionID string) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	n, err := s.qw.UpdateReviewAgentSessionID(ctx, gen.UpdateReviewAgentSessionIDParams{ID: id, AgentSessionID: agentSessionID})
+	n, err := s.qw.UpdateReviewAgentSessionID(ctx, gen.UpdateReviewAgentSessionIDParams{
+		AgentSessionID: agentSessionID,
+		ID:             id,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// UpdateReviewActivity records the native reviewer conversation id and/or
+// reviewer activity reported by the reviewer harness hooks.
+func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.UpdateReviewActivity(ctx, gen.UpdateReviewActivityParams{
+		Column1:               agentSessionID,
+		AgentSessionID:        agentSessionID,
+		Column3:               state,
+		ReviewerActivityState: string(state),
+		Column6:               launchID,
+		ReviewerLaunchID:      launchID,
+		Column8:               launchID,
+		ID:                    id,
+	})
 	if err != nil {
 		return false, err
 	}
@@ -290,29 +317,67 @@ func (s *Store) ListReviewRunsByBatch(ctx context.Context, id domain.SessionID, 
 	return out, nil
 }
 
-func reviewFromGetReviewBySessionRow(r gen.Review) domain.Review {
-	return reviewFromReview(r)
-}
-
-func reviewFromGetReviewBySessionAndHarnessRow(r gen.Review) domain.Review {
-	return reviewFromReview(r)
-}
-
-func reviewFromListReviewsBySessionRow(r gen.Review) domain.Review {
-	return reviewFromReview(r)
-}
-
-func reviewFromReview(r gen.Review) domain.Review {
+func reviewFromGetReviewBySessionRow(r gen.GetReviewBySessionRow) domain.Review {
 	return domain.Review{
-		ID:               r.ID,
-		SessionID:        r.SessionID,
-		ProjectID:        r.ProjectID,
-		Harness:          r.Harness,
-		PRURL:            r.PRURL,
-		ReviewerHandleID: r.ReviewerHandleID,
-		AgentSessionID:   r.AgentSessionID,
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
+	}
+}
+
+func reviewFromGetReviewBySessionAndHarnessRow(r gen.GetReviewBySessionAndHarnessRow) domain.Review {
+	return domain.Review{
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
+	}
+}
+
+func reviewFromListReviewsBySessionRow(r gen.ListReviewsBySessionRow) domain.Review {
+	return domain.Review{
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
+	}
+}
+
+func reviewFromReview(r gen.GetReviewByIDRow) domain.Review {
+	return domain.Review{
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
 	}
 }
 
@@ -339,4 +404,63 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		DeliveredAt:      deliveredAt,
 		AutoInjectReview: r.AutoInjectReview,
 	}
+}
+
+// ListCurrentHeadReviewRunsForSession returns AO's review passes against the
+// current head commit of each PR the session owns. Passes recorded for an
+// earlier head are filtered out in SQL, so callers cannot let a stale run
+// decide a derived column.
+func (s *Store) ListCurrentHeadReviewRunsForSession(ctx context.Context, id domain.SessionID) ([]domain.CurrentHeadReviewRun, error) {
+	rows, err := s.qr.ListCurrentHeadReviewRunsBySession(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("list current-head review runs for %s: %w", id, err)
+	}
+	out := make([]domain.CurrentHeadReviewRun, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, domain.CurrentHeadReviewRun{
+			SessionID: id,
+			Harness:   r.Harness,
+			PRURL:     r.PRURL,
+			Status:    r.Status,
+			Verdict:   r.Verdict,
+			ID:        r.ID,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// ListCurrentHeadReviewRunsForSessions batches
+// ListCurrentHeadReviewRunsForSession for session-list reads, returning every
+// requested session id with an empty slice when the current head has no runs.
+func (s *Store) ListCurrentHeadReviewRunsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.CurrentHeadReviewRun, error) {
+	out := make(map[domain.SessionID][]domain.CurrentHeadReviewRun, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal session ids: %w", err)
+	}
+	rows, err := s.qr.ListCurrentHeadReviewRunsBySessions(ctx, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("list current-head review runs for sessions: %w", err)
+	}
+	for _, r := range rows {
+		out[r.SessionID] = append(out[r.SessionID], domain.CurrentHeadReviewRun{
+			SessionID: r.SessionID,
+			Harness:   r.Harness,
+			PRURL:     r.PRURL,
+			Status:    r.Status,
+			Verdict:   r.Verdict,
+			ID:        r.ID,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	for _, id := range ids {
+		if out[id] == nil {
+			out[id] = []domain.CurrentHeadReviewRun{}
+		}
+	}
+	return out, nil
 }

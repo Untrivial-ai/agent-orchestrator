@@ -1,9 +1,11 @@
 import { attentionZone as presentationAttentionZone } from "../lib/session-presentation";
 import {
 	AGENT_OPTIONS,
+	toKanbanColumn,
 	toSessionActivity,
 	toSessionStatus,
 	type AgentId,
+	type KanbanColumn,
 	type SessionActivity,
 	type SessionActivityState,
 	type SessionStatus,
@@ -11,8 +13,8 @@ import {
 
 import type { ReviewerHarnessId } from "../lib/reviewer-harnesses";
 
-export { toSessionActivity, toSessionStatus };
-export type { SessionActivity, SessionActivityState, SessionStatus };
+export { toKanbanColumn, toSessionActivity, toSessionStatus };
+export type { KanbanColumn, SessionActivity, SessionActivityState, SessionStatus };
 
 export type AgentProvider = AgentId | "fake";
 
@@ -56,11 +58,14 @@ export type AgentSwitchSummary = {
 	id: string;
 	state: string;
 	targetHarness: string;
+	updatedAt?: string;
 };
 
 export type WorkspaceSession = {
 	id: string;
 	terminalHandleId?: string;
+	/** Opaque controller generation; changes even when a restarted PTY reuses its handle. */
+	terminalGeneration?: string;
 	workspaceId: string;
 	workspaceName: string;
 	title: string;
@@ -69,6 +74,12 @@ export type WorkspaceSession = {
 	provider: AgentProvider;
 	/** Reviewer selected for this session; absent means use the project default. */
 	reviewerHarness?: ReviewerHarnessId;
+	/** Per-session reviewer override, including hidden fields preserved across saves. */
+	reviewerConfig?: {
+		model?: string;
+		mode?: string;
+		permissions?: string;
+	};
 	/** Whether the daemon may automatically review this session after it becomes idle. */
 	autoReviewEnabled?: boolean;
 	kind?: SessionKind;
@@ -82,18 +93,39 @@ export type WorkspaceSession = {
 	status: SessionStatus;
 	/** Stack-aware PR context derived by the daemon independently of runtime activity. */
 	scmStatus?: SessionStatus;
+	/**
+	 * Board lane derived by the daemon from durable delivery facts (PR
+	 * lifecycle, review runs, review ownership). `validating` and
+	 * `needs_review` are the same review-feedback loop seen from either side:
+	 * AO turning it, or a person taking the next turn. The board groups by this
+	 * and never re-derives a lane from {@link status}. For a daemon too old to
+	 * send one, {@link toKanbanColumn} keeps the placement the status already
+	 * implied rather than inventing a new one.
+	 */
+	kanbanColumn?: KanbanColumn;
+	/**
+	 * Phrase the daemon derived for what is happening inside
+	 * {@link kanbanColumn} — "Reviewing", "Fixing CI failures", "Needs human
+	 * review". It arrives renderable, so the UI prints it rather than mapping it.
+	 * Absent from a daemon too old to send one, which keeps the label
+	 * {@link status} already produced.
+	 */
+	displayStatus?: string;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
+	chatProviderPreserved?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
 	/** Whether SCM review feedback is automatically injected into the worker. */
 	autoInjectReview?: boolean;
-	/** Default captured by newly created PRs for automatic CI-failure injection. */
+	/** Whether CI failures are automatically injected into the worker. */
 	autoInjectCI?: boolean;
 	/** ISO timestamp from the daemon — used for relative time in the inspector. */
 	createdAt?: string;
 	/** ISO timestamp from the daemon. */
 	updatedAt: string;
+	/** ISO timestamp of the latest real user-authored message, when known. */
+	lastUserMessageAt?: string;
 	isPinned?: boolean;
 	pinnedAt?: string;
 	/** Raw agent lifecycle activity from the daemon. */
@@ -120,6 +152,12 @@ export type WorkspaceSession = {
 	 * done server-side, so {@link status} already reflects all of these.
 	 */
 	prs: PullRequestFacts[];
+	/**
+	 * Present only for sessions that run in a control-plane sandbox. Carries the
+	 * org the session is scoped to so its terminal can be opened against the CP;
+	 * absent for local sessions, which route through the local daemon.
+	 */
+	cloud?: { orgId: string };
 };
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in
@@ -139,6 +177,9 @@ export function canonicalTrackerIssueId(issueId?: string): string | undefined {
 }
 
 export type ProjectKind = "single_repo" | "workspace" | "scratch";
+
+/** Sentinel `kind` value for projects hosted by the AO cloud control plane. */
+export const CLOUD_PROJECT_KIND = "cloud" as const;
 
 const projectKinds = new Set<ProjectKind>(["single_repo", "workspace", "scratch"]);
 
@@ -212,14 +253,44 @@ function sessionNewer(a: WorkspaceSession, b: WorkspaceSession): boolean {
 	return a.id > b.id;
 }
 
+function sessionRecentlyUpdatedNewer(a: WorkspaceSession, b: WorkspaceSession): boolean {
+	const aUpdated = timestamp(a.updatedAt);
+	const bUpdated = timestamp(b.updatedAt);
+	if (aUpdated !== bUpdated) return aUpdated > bUpdated;
+	const aLastActive = sessionLastActiveTimestamp(a);
+	const bLastActive = sessionLastActiveTimestamp(b);
+	if (aLastActive !== bLastActive) return aLastActive > bLastActive;
+	return a.id > b.id;
+}
+
+function sessionLastActiveTimestamp(session: WorkspaceSession): number {
+	return (
+		validTimestamp(session.activity?.lastActivityAt) ??
+		validTimestamp(session.updatedAt) ??
+		validTimestamp(session.createdAt) ??
+		0
+	);
+}
+
 function timestamp(value?: string): number {
-	if (!value) return 0;
+	return validTimestamp(value) ?? 0;
+}
+
+function validTimestamp(value?: string): number | undefined {
+	if (!value) return undefined;
 	const parsed = Date.parse(value);
-	return Number.isNaN(parsed) ? 0 : parsed;
+	return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 export function workerSessions(sessions: WorkspaceSession[]): WorkspaceSession[] {
 	return sessions.filter((s) => !isOrchestratorSession(s));
+}
+
+/** Worker sessions ordered by session update time, newest first. */
+export function sortedWorkerSessions(sessions: WorkspaceSession[]): WorkspaceSession[] {
+	return workerSessions(sessions).sort((a, b) =>
+		sessionRecentlyUpdatedNewer(b, a) ? 1 : sessionRecentlyUpdatedNewer(a, b) ? -1 : 0,
+	);
 }
 
 export function sessionIsActive(session: WorkspaceSession): boolean {
@@ -236,8 +307,16 @@ export type { AttentionZone } from "../lib/session-presentation";
 export type WorkspaceSummary = {
 	id: string;
 	name: string;
-	kind?: ProjectKind;
+	/**
+	 * Discriminator for where the project lives. Local projects carry the
+	 * daemon's ProjectKind (or undefined for older daemons); projects hosted by
+	 * the AO cloud control plane carry CLOUD_PROJECT_KIND — branch on
+	 * `kind === CLOUD_PROJECT_KIND`.
+	 */
+	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND;
+	/** Local checkout path; empty string for cloud projects (no local folder). */
 	path: string;
+	folderMissing?: boolean;
 	workspaceRepos?: WorkspaceRepoSummary[];
 	type?: "main" | "worktree";
 	orchestratorAgent?: AgentProvider;

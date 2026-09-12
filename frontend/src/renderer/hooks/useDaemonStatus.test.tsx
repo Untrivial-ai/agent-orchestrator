@@ -11,6 +11,8 @@ const {
 	stopTransportMock,
 	setApiBaseUrlMock,
 	setApiDaemonStatusMock,
+	ensureAgentReadinessMock,
+	cacheAgentReadinessMock,
 } = vi.hoisted(() => ({
 	getStatusMock: vi.fn(),
 	onStatusMock: vi.fn(),
@@ -19,6 +21,8 @@ const {
 	stopTransportMock: vi.fn(),
 	setApiBaseUrlMock: vi.fn(),
 	setApiDaemonStatusMock: vi.fn(),
+	ensureAgentReadinessMock: vi.fn(),
+	cacheAgentReadinessMock: vi.fn(),
 }));
 
 vi.mock("../lib/bridge", () => ({
@@ -34,12 +38,18 @@ vi.mock("../lib/api-client", () => ({
 	setApiDaemonStatus: setApiDaemonStatusMock,
 }));
 
+vi.mock("./useAgentReadinessQuery", () => ({
+	agentReadinessQueryKey: ["agent-readiness"],
+	ensureAgentReadiness: ensureAgentReadinessMock,
+	cacheAgentReadiness: cacheAgentReadinessMock,
+}));
+
 import { useDaemonStatus } from "./useDaemonStatus";
 
-type DaemonStatus = { state: "starting" | "ready" | "stopped" | "error"; port?: number; message?: string };
+type DaemonStatus = { state: "starting" | "ready" | "stopped" | "error"; port?: number; pid?: number; message?: string };
 
 function fakeQueryClient(): QueryClient {
-	return { invalidateQueries: vi.fn() } as unknown as QueryClient;
+	return { invalidateQueries: vi.fn(), removeQueries: vi.fn(), setQueryData: vi.fn() } as unknown as QueryClient;
 }
 
 beforeEach(() => {
@@ -51,6 +61,8 @@ beforeEach(() => {
 	stopTransportMock.mockReset();
 	setApiBaseUrlMock.mockReset();
 	setApiDaemonStatusMock.mockReset();
+	ensureAgentReadinessMock.mockReset().mockResolvedValue({ agents: [] });
+	cacheAgentReadinessMock.mockReset();
 });
 
 afterEach(() => {
@@ -101,6 +113,39 @@ describe("useDaemonStatus", () => {
 
 		expect(result.current).toEqual({ state: "ready", port: 4555 });
 		expect(setApiBaseUrlMock).toHaveBeenCalledWith("http://127.0.0.1:4555");
+	});
+
+	it("clears readiness when the daemon identity changes or becomes unavailable", async () => {
+		getStatusMock.mockResolvedValue({ state: "ready", port: 4555, pid: 101 });
+		const queryClient = fakeQueryClient();
+		const { result } = renderHook(() => useDaemonStatus(queryClient));
+		await waitFor(() => expect(result.current).toEqual({ state: "ready", port: 4555, pid: 101 }));
+		const pushStatus = onStatusMock.mock.calls[0][0] as (status: DaemonStatus) => void;
+
+		act(() => pushStatus({ state: "ready", port: 4555, pid: 102 }));
+		act(() => pushStatus({ state: "stopped" }));
+
+		expect(queryClient.removeQueries).toHaveBeenCalledWith({
+			queryKey: ["agent-readiness"],
+			exact: true,
+		});
+		expect(queryClient.removeQueries).toHaveBeenCalledWith({
+			queryKey: ["codex-accounts"],
+			exact: true,
+		});
+		expect(queryClient.removeQueries).toHaveBeenCalledTimes(6);
+	});
+
+	it("ensures display readiness when the window regains focus", async () => {
+		getStatusMock.mockResolvedValue({ state: "ready", port: 4555, pid: 101 });
+		const queryClient = fakeQueryClient();
+		renderHook(() => useDaemonStatus(queryClient));
+		await waitFor(() => expect(onStatusMock).toHaveBeenCalled());
+
+		act(() => window.dispatchEvent(new Event("focus")));
+
+		await waitFor(() => expect(ensureAgentReadinessMock).toHaveBeenCalledWith([], "display"));
+		expect(cacheAgentReadinessMock).toHaveBeenCalledWith(queryClient, { agents: [] });
 	});
 
 	it("refreshes non-ready status until the daemon is ready", async () => {

@@ -257,7 +257,7 @@ func TestListPRsByRepo(t *testing.T) {
 
 func TestFetchPullRequests(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/1", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v4/projects/oldorg%2Fmyrepo/merge_requests/1", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"iid":           1,
 			"title":         "Fix bug",
@@ -272,18 +272,18 @@ func TestFetchPullRequests(t *testing.T) {
 			"diff_refs":     map[string]any{"base_sha": "base123"},
 		})
 	})
-	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipelines", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v4/projects/oldorg%2Fmyrepo/pipelines", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]map[string]any{
 			{"id": 100, "status": "success", "sha": "abc123"},
 		})
 	})
-	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipelines/100/jobs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v4/projects/oldorg%2Fmyrepo/pipelines/100/jobs", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]map[string]any{
 			{"id": 200, "name": "build", "status": "success", "web_url": "https://gitlab.com/jobs/200"},
 			{"id": 201, "name": "test", "status": "success", "web_url": "https://gitlab.com/jobs/201"},
 		})
 	})
-	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/1/approvals", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v4/projects/oldorg%2Fmyrepo/merge_requests/1/approvals", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"approved":           true,
 			"approvals_required": 1,
@@ -293,8 +293,8 @@ func TestFetchPullRequests(t *testing.T) {
 		})
 	})
 	_, p := testServer(t, mux)
-	repo := ports.SCMRepo{Provider: "gitlab", Host: "gitlab.com", Owner: "myorg", Name: "myrepo", Repo: "myorg/myrepo"}
-	ref := ports.SCMPRRef{Repo: repo, Number: 1, URL: "https://gitlab.com/myorg/myrepo/-/merge_requests/1"}
+	repo := ports.SCMRepo{Provider: "gitlab", Host: "gitlab.com", Owner: "oldorg", Name: "myrepo", Repo: "oldorg/myrepo"}
+	ref := ports.SCMPRRef{Repo: repo, Number: 1, URL: "https://gitlab.com/oldorg/myrepo/-/merge_requests/1"}
 
 	obs, err := p.FetchPullRequests(context.Background(), []ports.SCMPRRef{ref})
 	if err != nil {
@@ -309,6 +309,9 @@ func TestFetchPullRequests(t *testing.T) {
 	}
 	if o.Provider != "gitlab" {
 		t.Errorf("Provider = %q, want %q", o.Provider, "gitlab")
+	}
+	if o.Repo != "myorg/myrepo" {
+		t.Errorf("Repo = %q, want canonical myorg/myrepo", o.Repo)
 	}
 	if o.CI.Summary != "passing" {
 		t.Errorf("CI.Summary = %q, want %q", o.CI.Summary, "passing")
@@ -326,6 +329,20 @@ func TestFetchPullRequests(t *testing.T) {
 	// it must be parsed via the nested struct (not the broken dotted tag).
 	if got, want := o.PR.BaseSHA, "base123"; got != want {
 		t.Errorf("PR.BaseSHA = %q, want %q", got, want)
+	}
+	if o.PR.URLAlias != ref.URL {
+		t.Fatalf("PR.URLAlias = %q, want %q", o.PR.URLAlias, ref.URL)
+	}
+}
+
+func TestMergeRequestObservationCarriesStableGlobalID(t *testing.T) {
+	var mr restMR
+	if err := json.Unmarshal([]byte(`{"id":9001,"iid":42,"web_url":"https://gitlab.com/group/repo/-/merge_requests/42","state":"opened"}`), &mr); err != nil {
+		t.Fatal(err)
+	}
+	obs := mrToSCMPRObservation(ports.SCMRepo{Provider: "gitlab", Host: "gitlab.com", Repo: "group/repo"}, &mr)
+	if obs.ProviderID != "9001" {
+		t.Fatalf("ProviderID = %q, want 9001", obs.ProviderID)
 	}
 }
 

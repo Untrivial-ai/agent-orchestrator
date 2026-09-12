@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	ProjectGeneralSettingsView,
-	ProjectModePickerView,
+	ProjectSourcePickerView,
 	ProjectSetupFormView,
 } from "./ProjectViews";
 import { canSubmitProjectSetup, validateProjectSettings } from "./project-models";
@@ -11,20 +12,24 @@ import { canSubmitProjectSetup, validateProjectSettings } from "./project-models
 const modeLabels = {
 	title: "Import",
 	description: "What would you like to import?",
+	clone: "Clone from Git",
+	cloneDescription: "Clone a remote repository",
+	cloneExample: "github.com/acme/web-app",
+	cloneBranchExample: "origin / main",
+	local: "Open local repository",
+	localDescription: "Choose a repository on this computer",
+	localExample: "~/Development/web-app",
+	localBranchExample: "main",
 	workspace: "Workspace",
 	workspaceDescription: "A folder containing repositories",
-	project: "Project",
-	projectDescription: "A single repository",
 	close: "Close",
-	workspaceExample: "my-workspace/",
-	workspaceRepositories: ["web-app", "api-server", "shared-libs"] as [string, string, string],
-	projectExample: "web-app",
-	projectBranchExample: "main",
 };
 
 function ExternalLink(props: ComponentProps<"a">) {
 	return <a {...props} />;
 }
+
+afterEach(() => cleanup());
 
 describe("project models", () => {
 	it("validates settings in user-action order", () => {
@@ -62,13 +67,15 @@ describe("project models", () => {
 });
 
 describe("project presentation", () => {
-	it("presents the controlled project/workspace choice", () => {
+	it("presents the controlled source choice with workspace as a secondary path", () => {
 		const onSelect = vi.fn();
-		render(<ProjectModePickerView disabled={false} labels={modeLabels} onSelect={onSelect} />);
+		render(<ProjectSourcePickerView disabled={false} labels={modeLabels} onSelect={onSelect} />);
 
+		fireEvent.click(screen.getByRole("button", { name: "Clone from Git" }));
+		expect(onSelect).toHaveBeenCalledWith("clone");
 		fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
 		expect(onSelect).toHaveBeenCalledWith("workspace");
-		expect(screen.getByText("my-workspace/")).toBeInTheDocument();
+		expect(screen.getByText("github.com/acme/web-app")).toBeInTheDocument();
 	});
 
 	it("submits the controlled setup form and exposes setup feedback", () => {
@@ -80,10 +87,6 @@ describe("project presentation", () => {
 					cacheMessage: "Cached",
 					loading: false,
 					loadingMessage: "Loading",
-					onRefresh: vi.fn(),
-					refreshLabel: "Refresh",
-					refreshing: false,
-					retryLabel: "Retry",
 				}}
 				canSubmit
 				intakeControl={<span>Intake control</span>}
@@ -99,6 +102,36 @@ describe("project presentation", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Create and start" }));
 		expect(onSubmit).toHaveBeenCalledOnce();
 		expect(screen.getByText("Nested repository")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+	});
+
+	it("can hide the normal refresh action while keeping an error retry", () => {
+		const onRetry = vi.fn();
+		render(
+			<ProjectSetupFormView
+				agentControls={{ worker: <span>Worker control</span>, orchestrator: <span>Orchestrator control</span> }}
+				agents={{
+					cacheMessage: "Cached",
+					error: "Could not load agents",
+					loading: false,
+					loadingMessage: "Loading",
+					onRetry,
+					retrying: false,
+					retryLabel: "Retry",
+				}}
+				canSubmit={false}
+				intakeControl={<span>Intake control</span>}
+				isBusy={false}
+				onCancel={vi.fn()}
+				onSubmit={vi.fn()}
+				submitLabel="Create and start"
+				cancelLabel="Cancel"
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(onRetry).toHaveBeenCalledOnce();
 	});
 
 	it("renders project identity and workspace repository summaries", () => {

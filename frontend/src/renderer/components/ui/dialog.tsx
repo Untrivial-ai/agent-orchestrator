@@ -62,7 +62,7 @@ function DialogContent({
 			>
 				{children}
 				{showCloseButton && (
-					<DialogPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
+					<DialogPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
 						<XIcon className="size-4" />
 						<span className="sr-only">{t("common.close")}</span>
 					</DialogPrimitive.Close>
@@ -113,9 +113,9 @@ export {
 	DialogDescription,
 };
 
-// Settings-style dialog sections — the single source for settings popups
-// (ReportProblemDialog) and confirmation modals (ConfirmDialog) so they all
-// share the same frame, spacing, and typography. Every value resolves to a
+// Settings-style dialog sections — the single source for settings popups and
+// confirmation modals (ConfirmDialog) so they all share the same frame,
+// spacing, and typography. Every value resolves to a
 // design token; no raw pixel values here.
 export const settingsDialogContentClass =
 	"z-overlay flex max-h-[min(var(--size-settings-dialog-max-h),calc(100svh-var(--space-8)))] w-[min(var(--size-settings-dialog),calc(100vw-var(--space-8)))] max-w-none flex-col gap-0 overflow-hidden rounded-(--radius-settings-dialog-lg) border border-[var(--color-border-settings-dialog)] bg-popover p-0 text-settings-label shadow-[var(--shadow-settings-dialog)]";
@@ -124,7 +124,7 @@ export const settingsDialogHeaderClass =
 	"flex shrink-0 flex-col gap-1 border-b border-(--color-border-settings-dialog-header) p-(--size-modal-padding)";
 
 export const settingsDialogBodyClass =
-	"flex min-h-0 flex-col gap-4 overflow-y-auto p-(--size-modal-padding)";
+	"flex min-h-0 flex-col gap-4 overflow-y-auto p-(--size-modal-padding) settings-thin-scrollbar";
 
 export const settingsDialogFooterClass =
 	"flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-[var(--color-border-settings-dialog-header)] p-(--size-modal-padding)";

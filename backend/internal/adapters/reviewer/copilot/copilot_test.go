@@ -95,6 +95,7 @@ func TestReviewCommandUsesRestrictedPersistentPolicy(t *testing.T) {
 		ReviewerID:       "review-w1",
 		WorkspacePath:    "/ws/w1",
 		Prompt:           "Read the hidden task.",
+		Config:           ports.AgentConfig{Model: "gpt-5"},
 		SystemPromptFile: filepath.Join(promptRoot, "system.md"),
 		TaskPromptRoot:   promptRoot,
 	})
@@ -104,6 +105,9 @@ func TestReviewCommandUsesRestrictedPersistentPolicy(t *testing.T) {
 
 	if agent.launchConfig.Permissions != ports.PermissionModeDefault {
 		t.Fatalf("permissions = %q, want default", agent.launchConfig.Permissions)
+	}
+	if agent.launchConfig.Config.Model != "gpt-5" {
+		t.Fatalf("launch config model = %q, want gpt-5", agent.launchConfig.Config.Model)
 	}
 	if agent.launchConfig.Prompt != "Read the hidden task." ||
 		agent.launchConfig.SystemPrompt != "" ||

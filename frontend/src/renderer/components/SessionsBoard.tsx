@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -7,19 +7,17 @@ import {
 	SessionsBoardGridView,
 	archiveToggleOffsetClassName,
 } from "@aoagents/product-ui";
-import { AlertTriangle, LayoutDashboard, Plus, RotateCw } from "lucide-react";
+import { AlertTriangle, LayoutDashboard, RotateCw } from "lucide-react";
 import {
 	type WorkspaceSession,
-	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
 	orchestratorHealth,
 	workerSessions,
 } from "../types/workspace";
 import {
-	boardAttentionZoneOrder,
-	getAgentActivityView,
-	getAttentionZoneViewForZone,
-	type AttentionZoneView,
+	boardKanbanColumnOrder,
+	getKanbanColumnView,
+	type KanbanColumnView,
 } from "../lib/session-presentation";
 import {
 	useSessionUsageSummaries,
@@ -30,24 +28,23 @@ import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { NotificationCenter } from "./NotificationCenter";
 import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
-import { OrchestratorIcon } from "./icons";
-import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
-import { TopbarButton, TopbarKillError, topbarProjectLabelClass } from "./TopbarButton";
-import { isChatPreflightError, spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { TopbarButton, topbarProjectLabelClass } from "./TopbarButton";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
+import { demoBoardSessions } from "../lib/demo-board-sessions";
 import { isLinuxPlatform, isMacPlatform, usesBoardActionsInPanel } from "../lib/platform";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
-import { useShellMaybe } from "../lib/shell-context";
+import { useBoardPresentation } from "../hooks/useBoardPresentation";
+import { useProjectOrchestratorAction } from "../hooks/useProjectOrchestratorAction";
+import { ProjectBoardActions } from "./ProjectBoardActions";
 import {
 	ArchivedSessionCardAdapter,
 	BoardSessionCardAdapter,
 	sessionsBoardLabels,
 } from "./SessionsBoardAdapters";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
@@ -58,9 +55,14 @@ type UsageBySession = ReadonlyMap<string, SessionUsageSummary>;
 const emptyUsageBySession: UsageBySession = new Map();
 
 // Live merged sessions remain in-flow. A terminated runtime is archived even
-// when its SCM outcome remains `merged`.
+// when its SCM outcome remains `merged`, which is exactly what the daemon's
+// `archive` column means.
 function isArchivedSession(session: WorkspaceSession): boolean {
-	return session.isTerminated === true || session.status === "terminated";
+	return (
+		session.kanbanColumn === "archive" ||
+		session.isTerminated === true ||
+		session.status === "terminated"
+	);
 }
 
 const isMac = isMacPlatform();
@@ -71,10 +73,12 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
-	const columns: AttentionZoneView[] = boardAttentionZoneOrder.map((zone) => getAttentionZoneViewForZone(zone, t));
+	// Lanes follow the daemon's delivery order: building -> validating ->
+	// in review -> ready. The middle two are one review-feedback loop, split by
+	// whose turn it is.
+	const columns: KanbanColumnView[] = boardKanbanColumnOrder.map((column) => getKanbanColumnView(column, t));
 	const workspaceQuery = useWorkspaceQuery();
-	const shell = useShellMaybe();
-	const usageBySession = useSessionUsageSummaries(projectId).data ?? emptyUsageBySession;
+	const liveUsageBySession = useSessionUsageSummaries(projectId).data ?? emptyUsageBySession;
 	// Evaluated at render so platform mocks in tests can flip the in-panel chrome.
 	const boardActionsInPanel = usesBoardActionsInPanel();
 	/** Bell lives in the board action row when the shell topbar does not host it. */
@@ -84,113 +88,54 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const workspace = projectId ? workspaces[0] : undefined;
 	// Board chrome stays route-oriented; project context remains in the sidebar.
 	const boardLabel = t("shell.board");
-	const sessions = workspaces.flatMap((workspace) => workerSessions(workspace.sessions));
+	const liveSessions = workspaces.flatMap((workspace) => workerSessions(workspace.sessions));
+	const demoWorkspaceId = projectId ?? workspaces[0]?.id;
+	const sessions = usesPreviewWorkspaceData && demoWorkspaceId && liveSessions.length === 0
+		? demoBoardSessions(demoWorkspaceId)
+		: liveSessions;
+	const usageBySession = usesPreviewWorkspaceData
+		? new Map<string, SessionUsageSummary>(
+				sessions.map((session, index) => [
+						session.id,
+						liveUsageBySession.get(session.id) ?? {
+							estimatedCost: null,
+							sessionId: session.id,
+							processedTokens: [18_400, 46_700, 12_900, 81_200, 3_100][index % 5],
+							totalTokens: 100_000,
+							incomplete: false,
+					},
+				]),
+			)
+		: liveUsageBySession;
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
-	const orchestratorActivityLabel = orchestrator ? getAgentActivityView(orchestrator.activity, t).label : undefined;
-	const [isSpawning, setIsSpawning] = useState(false);
-	const [spawnError, setSpawnError] = useState<string | null>(null);
-	const [canCreateAsTui, setCanCreateAsTui] = useState(false);
-	const restartingProjectIds = useUiStore((state) => state.restartingProjectIds);
-	const orchestratorStartupError = useUiStore((state) =>
-		projectId ? (state.orchestratorStartupErrors[projectId] ?? null) : null,
-	);
+	const projectActions = useProjectOrchestratorAction({ projectId, project: workspace, orchestrator, source: "board" });
+	const { isProjectRestarting, isProvisioning } = projectActions;
 	const setProjectRestarting = useUiStore((state) => state.setProjectRestarting);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
-	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
-	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const isProjectRestarting = projectId ? restartingProjectIds.has(projectId) : false;
-	const isBoardEmpty = Boolean(projectId) && sessions.length === 0;
-	const boardHeaderActionVariant = isBoardEmpty ? "accent" : "primary";
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
-	const visibleSpawnError = spawnError ?? orchestratorStartupError;
-
-	// The board instance survives project-to-project navigation (same route,
-	// new param), so a spawn failure must not follow the user to another board.
-	useEffect(() => {
-		setSpawnError(null);
-		setCanCreateAsTui(false);
-	}, [projectId]);
-	const previousProjectIdRef = useRef(projectId);
-	useEffect(() => {
-		const previousProjectId = previousProjectIdRef.current;
-		if (previousProjectId && previousProjectId !== projectId) {
-			setOrchestratorStartupError(previousProjectId, null);
-		}
-		previousProjectIdRef.current = projectId;
-	}, [projectId, setOrchestratorStartupError]);
-	useEffect(() => {
-		if (projectId && orchestrator && orchestratorStartupError) {
-			setOrchestratorStartupError(projectId, null);
-		}
-	}, [orchestrator, orchestratorStartupError, projectId, setOrchestratorStartupError]);
 
 	const archived = sessions
 		.filter(isArchivedSession)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 	const activeSessions = sessions.filter((candidate) => !isArchivedSession(candidate));
 	const boardLabels = sessionsBoardLabels(t);
-	// First-run orientation replaces the empty column shells (only once the
-	// query has resolved, so the welcome never flashes over real data): the
-	// global board teaches the app before any project exists, and a fresh
-	// project board invites the first task instead of showing four zeros.
-	const isDaemonReady = usesPreviewWorkspaceData || (shell ? shell.daemonStatus.state === "ready" : true);
-	const daemonHasFailed = Boolean(shell?.daemonStatus.code);
-	const workspaceStartupState = shell?.workspaceStartupState ?? "ready";
-	const isLoaded = isDaemonReady && workspaceStartupState === "ready" && workspaceQuery.isSuccess;
-	const showStartup =
-		shell !== null &&
-		!daemonHasFailed &&
-		(!isDaemonReady || workspaceStartupState === "loading" || (!workspaceQuery.isSuccess && !workspaceQuery.isError));
-	const showWelcome = !projectId && isLoaded && all.length === 0;
-	const showProjectEmpty = projectId !== undefined && isLoaded && workspaces.length > 0 && sessions.length === 0;
+	const { showStartup, showWelcome, showProjectEmpty, workspaceStartupState } = useBoardPresentation({
+		projectId,
+		isSuccess: workspaceQuery.isSuccess,
+		isError: workspaceQuery.isError,
+		hasProjects: workspaces.length > 0,
+		hasWorkerSessions: liveSessions.length > 0,
+	});
 	const hasArchive = archived.length > 0;
 	const terminateSession = useTerminateSession();
 	const activeProjectIdRef = useRef(projectId);
 	activeProjectIdRef.current = projectId;
 
-	const openSession = (session: WorkspaceSession) =>
+	const openSession = useCallback((session: WorkspaceSession) =>
 		void navigate({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: session.workspaceId, sessionId: session.id },
-		});
-
-	const openOrchestrator = async (mode?: "tui") => {
-		if (!projectId || isProjectRestarting) return;
-		if (orchestrator) {
-			void navigate({
-				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId, sessionId: orchestrator.id },
-			});
-			return;
-		}
-		if (!hasConfiguredOrchestratorAgent(workspace)) {
-			if (workspace) {
-				useUiStore.getState().openProjectSettings(projectId);
-			}
-			return;
-		}
-		setSpawnError(null);
-		setCanCreateAsTui(false);
-		setOrchestratorStartupError(projectId, null);
-		setIsSpawning(true);
-		try {
-			const sessionId = await spawnOrchestrator(projectId, "board", false, mode);
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			setOrchestratorStartupError(projectId, null);
-			void navigate({
-				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId, sessionId },
-			});
-		} catch (error) {
-			// Never fail silently: the daemon's message (e.g. a worktree/branch
-			// conflict) is the only actionable signal the user gets.
-			console.error("Failed to spawn orchestrator:", error);
-			setSpawnError(error instanceof Error ? error.message : t("shell.couldNotSpawn"));
-			setCanCreateAsTui(isChatPreflightError(error));
-		} finally {
-			setIsSpawning(false);
-		}
-	};
+		}), [navigate]);
 
 	const restartOrchestrator = async () => {
 		if (!projectId) return;
@@ -205,46 +150,12 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 	const actions = projectId ? (
 		<>
-			{visibleSpawnError && !showProjectEmpty && (
-				<TopbarKillError className="max-w-content-max truncate" title={visibleSpawnError}>
-					{visibleSpawnError}
-				</TopbarKillError>
-			)}
-			{visibleSpawnError && canCreateAsTui && !showProjectEmpty ? (
-				<TopbarButton disabled={isSpawning || isProjectRestarting} onClick={() => void openOrchestrator("tui")}>
-					{t("newTask.createAsTui")}
-				</TopbarButton>
+			<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} />
+			{boardOwnsNotificationCenter ? (
+				<>
+					<NotificationCenter />
+				</>
 			) : null}
-			<TopbarButton
-				aria-label={t("shell.newTask")}
-				disabled={isProjectRestarting}
-				onClick={() => projectId && requestNewTask(projectId)}
-				variant="accent"
-			>
-				<Plus className="size-icon-md" aria-hidden="true" />
-				{t("shell.newTask")}
-			</TopbarButton>
-			<TopbarButton
-				aria-label={
-					orchestratorActivityLabel
-						? t("shell.orchestratorWithActivity", { activity: orchestratorActivityLabel })
-						: t("shell.spawnOrchestrator")
-				}
-				disabled={isSpawning || isProjectRestarting}
-				onClick={() => void openOrchestrator()}
-				variant="primary"
-			>
-				<OrchestratorIcon className="size-icon-md" aria-hidden="true" />
-				{orchestrator ? <OrchestratorActivityIndicator session={orchestrator} /> : null}
-				{isProjectRestarting
-					? t("shell.restartingDots")
-					: isSpawning
-						? t("shell.spawningDots")
-						: orchestrator
-							? t("shell.orchestrator")
-							: t("shell.spawnOrchestrator")}
-			</TopbarButton>
-			{boardOwnsNotificationCenter ? <NotificationCenter /> : null}
 		</>
 	) : boardOwnsNotificationCenter ? (
 		<NotificationCenter />
@@ -257,9 +168,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 			    Win/Linux keep the crumb and actions in the framed ShellTopbar.
 			    Welcome skips the row — a dangling "Board" above the import
 			    chooser was review feedback on #2432. */}
-			{!showWelcome && !showStartup && boardActionsInPanel && (boardLabel || actions) ? (
+			{!showWelcome && boardActionsInPanel && (boardLabel || actions) ? (
 				<div
-					className="workspace-topbar-container center-panel-titlebar flex h-toolbar shrink-0 items-center gap-2 border-b border-border-strong pr-4"
+					className="workspace-topbar-container center-panel-titlebar flex h-toolbar shrink-0 items-center gap-2 border-b border-border-strong pr-1"
 					style={dragStyle}
 				>
 					{boardLabel ? (
@@ -295,32 +206,42 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						) : null}
 					</div>
 				) : null}
-				{showStartup ? (
-					<DaemonStartupLoader />
-				) : workspaceStartupState === "error" || workspaceQuery.isError ? (
-					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
-				) : showWelcome ? (
-					<BoardWelcome />
-				) : showProjectEmpty ? (
-					<ProjectBoardEmpty
-						hasOrchestrator={orchestrator !== undefined}
-						isSpawning={isSpawning}
-						isProjectRestarting={isProjectRestarting}
-						onNewTask={() => projectId && requestNewTask(projectId)}
-						onOpenOrchestrator={() => void openOrchestrator()}
-						onOpenOrchestratorAsTui={canCreateAsTui ? () => void openOrchestrator("tui") : undefined}
-						spawnError={visibleSpawnError}
+			{workspace?.folderMissing ? (
+				<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+					<AlertTriangle className="size-icon-base shrink-0 text-warning" aria-hidden="true" />
+					<span className="min-w-0 flex-1">{t("home.folderMissing")}</span>
+				</div>
+			) : null}
+			{projectId && isProvisioning ? (
+				<div
+					className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground"
+					role="status"
+				>
+					<span
+						className="size-icon-base shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent"
+						aria-hidden="true"
 					/>
+					<span className="min-w-0 flex-1">
+						{t("shell.provisioning", { defaultValue: "Setting up the project — starting the orchestrator…" })}
+					</span>
+				</div>
+			) : null}
+			{workspaceStartupState === "error" || workspaceQuery.isError ? (
+				<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
+			) : showWelcome ? (
+				<BoardWelcome />
+			) : showProjectEmpty ? (
+				<ProjectBoardEmpty actions={<ProjectBoardActions actions={projectActions} placement="empty" />} />
 				) : (
 					<SessionsBoardGridView
 						columns={columns}
 						key={projectId ?? "all"}
 						labels={boardLabels}
-						renderSessionCard={(session) => (
-							<BoardSessionCardAdapter
+							renderSessionCard={(session) => (
+								<BoardSessionCardAdapter
 								onOpen={() => openSession(session)}
-								onTerminate={() => terminateSession.mutate(session)}
-								session={session}
+									onTerminate={() => terminateSession.mutate(session)}
+									session={session}
 								usage={usageBySession.get(session.id)}
 							/>
 						)}
@@ -337,6 +258,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 					usageBySession={usageBySession}
 				/>
 			) : null}
+			{showStartup ? <DaemonStartupLoader /> : null}
 		</div>
 	);
 }
@@ -455,4 +377,4 @@ const BoardArchivePanel = memo(function BoardArchivePanel({
 			) : null}
 		</>
 	);
-}
+});

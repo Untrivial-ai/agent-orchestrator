@@ -213,6 +213,27 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			supporting.push(cardStatus("ci", "pr.card.checksLoading", "passive", undefined, [], prChecksUrl(pr), true));
 		}
 	}
+	if (pr.state === "open") {
+		const statusRows: PRCardStatus[] = [];
+		if (pr.mergeability.state === "conflicting") {
+			statusRows.push(cardStatus("merge", "pr.card.mergeConflict", "error", "Resolve before merging", mergeLinks(pr)));
+		}
+		if (pr.ci.state === "passing") {
+			statusRows.push(cardStatus("ci", "pr.card.checksPassing", "success", undefined, [], prChecksUrl(pr)));
+		} else if (pr.ci.state === "failing") {
+			statusRows.push(cardStatus("ci", "pr.card.checksFailing", "error", undefined, [], prChecksUrl(pr)));
+		} else if (pr.ci.state === "pending" || pr.ci.state === "unknown") {
+			statusRows.push(cardStatus("ci", pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading", "neutral", undefined, [], prChecksUrl(pr), true));
+		}
+		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
+		const mergeable = pr.mergeability.state !== "conflicting" && pr.ci.state === "passing" && pr.review.decision === "approved";
+		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
+		return { primary, supporting, statusRows, readiness: {
+			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
+			detail: checkingReadiness ? appI18n.t("pr.merge.checkingDetail") : mergeReadinessDetail(pr),
+			tone: checkingReadiness ? "neutral" : mergeable ? "success" : "error",
+		} };
+	}
 	return { primary, supporting };
 }
 
@@ -233,7 +254,8 @@ function cardStatus(
 		| "pr.card.readyToMerge"
 		| "pr.card.reviewApproved"
 		| "pr.card.open"
-		| "pr.card.checksPassing",
+		| "pr.card.checksPassing"
+		| "pr.card.reviewStatus",
 	tone: PRDisplayTone,
 	detail?: string,
 	links: PRSummaryLink[] = [],
@@ -241,6 +263,22 @@ function cardStatus(
 	breathe = false,
 ): PRCardStatus {
 	return { key, label: appI18n.t(labelKey), detail, href, breathe, links, tone };
+}
+
+function reviewStatusDetail(pr: SessionPRSummary): string {
+	switch (pr.review.decision) {
+		case "approved": return appI18n.t("pr.review.requirementSatisfied");
+		case "changes_requested": return appI18n.t("pr.review.changesActive");
+		case "review_required": return appI18n.t("pr.review.requiredNotSubmitted");
+		default: return appI18n.t("pr.review.pending");
+	}
+}
+
+function mergeReadinessDetail(pr: SessionPRSummary): string {
+	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
+	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
+	if (pr.review.decision !== "approved") return appI18n.t("pr.merge.reasonReview");
+	return appI18n.t("pr.merge.reasonReady");
 }
 
 export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {

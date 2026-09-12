@@ -1,26 +1,51 @@
-import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { cn } from "../../lib/utils";
 
-export const TooltipProvider = TooltipPrimitive.Provider;
-export const Tooltip = TooltipPrimitive.Root;
-export const TooltipTrigger = TooltipPrimitive.Trigger;
-
-export function TooltipContent({
-	className,
-	sideOffset = 6,
+function TooltipProvider({
+	delayDuration = 400,
+	disableHoverableContent = true,
 	...props
-}: React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+	return (
+		<TooltipPrimitive.Provider
+			data-slot="tooltip-provider"
+			delayDuration={delayDuration}
+			disableHoverableContent={disableHoverableContent}
+			{...props}
+		/>
+	);
+}
+
+function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+	return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
+}
+
+function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+	return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
+}
+
+function TooltipContent({
+	className,
+	sideOffset = 0,
+	children,
+	...props
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
 	return (
 		<TooltipPrimitive.Portal>
 			<TooltipPrimitive.Content
+				data-slot="tooltip-content"
+				sideOffset={sideOffset}
 				className={cn(
-					"z-overlay rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md",
-					"data-[state=delayed-open]:animate-popover-in data-[state=instant-open]:animate-popover-in data-[state=closed]:animate-popover-out",
+					"pointer-events-none z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md bg-popover px-3 py-1.5 text-xs text-balance text-popover-foreground shadow-md fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
 					className,
 				)}
-				sideOffset={sideOffset}
 				{...props}
-			/>
+			>
+				{children}
+				<TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] bg-popover fill-popover" />
+			</TooltipPrimitive.Content>
 		</TooltipPrimitive.Portal>
 	);
 }
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };

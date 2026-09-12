@@ -203,6 +203,7 @@ func ResolveCopilotBinary(ctx context.Context) (string, error) {
 		if home, err := os.UserHomeDir(); err == nil {
 			candidates = append(candidates, filepath.Join(home, ".copilot", "bin", "copilot.exe"))
 		}
+		candidates = append(candidates, binaryutil.WindowsPackageManagerBinCandidates("copilot")...)
 		for _, candidate := range candidates {
 			if hookutil.IsExecutableFile(candidate) {
 				return candidate, nil
@@ -231,6 +232,7 @@ func ResolveCopilotBinary(ctx context.Context) (string, error) {
 			filepath.Join(home, ".copilot", "bin", "copilot"),
 			filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage", "github.copilot-chat", "copilotCli", "copilot"),
 		)
+		candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "copilot")...)
 		nodeManagerCandidates, err := binaryutil.UnixNodeManagerBinCandidates(ctx, home, "copilot")
 		if err != nil {
 			return "", err

@@ -54,6 +54,11 @@ func TestEmbeddedPreviewGuidanceDoesNotScaffoldStaticSites(t *testing.T) {
 		"without waiting for a separate \"open it\" request",
 		"Do not steal the browser from an active application",
 		"open the primary requested artifact",
+		"relative to the session workspace root, not the shell's current directory",
+		"Do not compensate for the current directory with `../README.md`",
+		"existing confined loopback preview origin",
+		"not a deployment or a new development server",
+		"Do not open workspace files with `file://`",
 	} {
 		if !strings.Contains(normalizedPreviewText, required) {
 			t.Fatalf("preview guidance missing %q:\n%s", required, previewText)

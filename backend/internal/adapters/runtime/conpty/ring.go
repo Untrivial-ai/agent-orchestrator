@@ -65,6 +65,18 @@ func (r *Ring) Snapshot() []byte {
 	return []byte(strings.Join(r.lines, ""))
 }
 
+// Replay returns the complete terminal byte stream retained for a newly
+// attached viewer, including the current non-newline-terminated fragment.
+// Full-screen TUIs commonly repaint with cursor-control sequences and carriage
+// returns instead of newlines, so excluding partialLine can otherwise replay an
+// empty screen even though the process has already drawn its UI.
+func (r *Ring) Replay() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return []byte(strings.Join(r.lines, "") + r.partialLine)
+}
+
 // Tail returns the last n stored lines joined as a string.
 // Mirrors the MSG_GET_OUTPUT_REQ handler: start = max(0, len-lines).
 // n <= 0 returns "".

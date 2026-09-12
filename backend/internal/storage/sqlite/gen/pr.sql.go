@@ -57,6 +57,80 @@ func (q *Queries) ClaimPRForSession(ctx context.Context, arg ClaimPRForSessionPa
 	return err
 }
 
+const clearPRProviderIdentity = `-- name: ClearPRProviderIdentity :exec
+UPDATE pr SET provider_id = '' WHERE url = ?
+`
+
+func (q *Queries) ClearPRProviderIdentity(ctx context.Context, url string) error {
+	_, err := q.db.ExecContext(ctx, clearPRProviderIdentity, url)
+	return err
+}
+
+const deletePRAlias = `-- name: DeletePRAlias :exec
+DELETE FROM pr_url_alias WHERE alias_url = ?
+`
+
+func (q *Queries) DeletePRAlias(ctx context.Context, aliasUrl string) error {
+	_, err := q.db.ExecContext(ctx, deletePRAlias, aliasUrl)
+	return err
+}
+
+const deletePRAliasChecks = `-- name: DeletePRAliasChecks :exec
+DELETE FROM pr_checks WHERE pr_url = ?
+`
+
+func (q *Queries) DeletePRAliasChecks(ctx context.Context, prUrl string) error {
+	_, err := q.db.ExecContext(ctx, deletePRAliasChecks, prUrl)
+	return err
+}
+
+const deletePRAliasComments = `-- name: DeletePRAliasComments :exec
+DELETE FROM pr_comment WHERE pr_url = ?
+`
+
+func (q *Queries) DeletePRAliasComments(ctx context.Context, prUrl string) error {
+	_, err := q.db.ExecContext(ctx, deletePRAliasComments, prUrl)
+	return err
+}
+
+const deletePRAliasReviewRuns = `-- name: DeletePRAliasReviewRuns :exec
+DELETE FROM review_run WHERE pr_url = ?
+`
+
+// Rows left on the previous URL collided with the canonical review-run
+// idempotency key and therefore represent the same logical review pass.
+func (q *Queries) DeletePRAliasReviewRuns(ctx context.Context, prUrl string) error {
+	_, err := q.db.ExecContext(ctx, deletePRAliasReviewRuns, prUrl)
+	return err
+}
+
+const deletePRAliasReviewThreads = `-- name: DeletePRAliasReviewThreads :exec
+DELETE FROM pr_review_threads WHERE pr_url = ?
+`
+
+func (q *Queries) DeletePRAliasReviewThreads(ctx context.Context, prUrl string) error {
+	_, err := q.db.ExecContext(ctx, deletePRAliasReviewThreads, prUrl)
+	return err
+}
+
+const deletePRAliasReviews = `-- name: DeletePRAliasReviews :exec
+DELETE FROM pr_reviews WHERE pr_url = ?
+`
+
+func (q *Queries) DeletePRAliasReviews(ctx context.Context, prUrl string) error {
+	_, err := q.db.ExecContext(ctx, deletePRAliasReviews, prUrl)
+	return err
+}
+
+const deletePRByURL = `-- name: DeletePRByURL :exec
+DELETE FROM pr WHERE url = ?
+`
+
+func (q *Queries) DeletePRByURL(ctx context.Context, url string) error {
+	_, err := q.db.ExecContext(ctx, deletePRByURL, url)
+	return err
+}
+
 const getDisplayPRFactsBySession = `-- name: GetDisplayPRFactsBySession :one
 SELECT
     pr.url,
@@ -73,6 +147,20 @@ SELECT
         WHERE pr_comment.pr_url = pr.url
           AND pr_comment.resolved = 0
           AND pr_comment.is_bot = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM review_run
+              WHERE pr_comment.review_id != ''
+                AND review_run.github_review_id != ''
+                AND review_run.github_review_id = pr_comment.review_id
+          )
+    ) AS external_comments,
+    EXISTS (
+        SELECT 1
+        FROM pr_comment
+        WHERE pr_comment.pr_url = pr.url
+          AND pr_comment.resolved = 0
+          AND pr_comment.is_bot = 0
     ) AS review_comments
 FROM pr
 WHERE pr.session_id = ?
@@ -83,15 +171,16 @@ LIMIT 1
 `
 
 type GetDisplayPRFactsBySessionRow struct {
-	URL            string
-	Number         int64
-	PRState        domain.PRState
-	ReviewDecision domain.ReviewDecision
-	CIState        domain.CIState
-	Mergeability   domain.Mergeability
-	HeadSha        string
-	UpdatedAt      time.Time
-	ReviewComments bool
+	URL              string
+	Number           int64
+	PRState          domain.PRState
+	ReviewDecision   domain.ReviewDecision
+	CIState          domain.CIState
+	Mergeability     domain.Mergeability
+	HeadSha          string
+	UpdatedAt        time.Time
+	ExternalComments bool
+	ReviewComments   bool
 }
 
 func (q *Queries) GetDisplayPRFactsBySession(ctx context.Context, sessionID domain.SessionID) (GetDisplayPRFactsBySessionRow, error) {
@@ -106,13 +195,14 @@ func (q *Queries) GetDisplayPRFactsBySession(ctx context.Context, sessionID doma
 		&i.Mergeability,
 		&i.HeadSha,
 		&i.UpdatedAt,
+		&i.ExternalComments,
 		&i.ReviewComments,
 	)
 	return i, err
 }
 
 const getPR = `-- name: GetPR :one
-SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci FROM pr WHERE url = ?
+SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci, provider_id, author_avatar_url, review_partial FROM pr WHERE url = ?
 `
 
 func (q *Queries) GetPR(ctx context.Context, url string) (PR, error) {
@@ -160,6 +250,137 @@ func (q *Queries) GetPR(ctx context.Context, url string) (PR, error) {
 		&i.LastNudgeSignature,
 		&i.StateChangedAt,
 		&i.AutoInjectCI,
+		&i.ProviderID,
+		&i.AuthorAvatarURL,
+		&i.ReviewPartial,
+	)
+	return i, err
+}
+
+const getPRByProviderIdentity = `-- name: GetPRByProviderIdentity :one
+SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci, provider_id, author_avatar_url, review_partial
+FROM pr
+WHERE provider = ?1
+  AND host = ?2
+  AND provider_id = ?3
+  AND provider_id != ''
+`
+
+type GetPRByProviderIdentityParams struct {
+	Provider   string
+	Host       string
+	ProviderID string
+}
+
+func (q *Queries) GetPRByProviderIdentity(ctx context.Context, arg GetPRByProviderIdentityParams) (PR, error) {
+	row := q.db.QueryRowContext(ctx, getPRByProviderIdentity, arg.Provider, arg.Host, arg.ProviderID)
+	var i PR
+	err := row.Scan(
+		&i.URL,
+		&i.SessionID,
+		&i.Number,
+		&i.PRState,
+		&i.ReviewDecision,
+		&i.CIState,
+		&i.Mergeability,
+		&i.UpdatedAt,
+		&i.Provider,
+		&i.Host,
+		&i.Repo,
+		&i.SourceBranch,
+		&i.TargetBranch,
+		&i.HeadSha,
+		&i.Title,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+		&i.Author,
+		&i.BaseSha,
+		&i.MergeCommitSha,
+		&i.IsDraft,
+		&i.IsMerged,
+		&i.IsClosed,
+		&i.ProviderState,
+		&i.ProviderMergeable,
+		&i.ProviderMergeStateStatus,
+		&i.HtmlURL,
+		&i.CreatedAtProvider,
+		&i.UpdatedAtProvider,
+		&i.MergedAtProvider,
+		&i.ClosedAtProvider,
+		&i.MetadataHash,
+		&i.CIHash,
+		&i.ReviewHash,
+		&i.ObservedAt,
+		&i.CIObservedAt,
+		&i.ReviewObservedAt,
+		&i.LastNudgeSignature,
+		&i.StateChangedAt,
+		&i.AutoInjectCI,
+		&i.ProviderID,
+		&i.AuthorAvatarURL,
+		&i.ReviewPartial,
+	)
+	return i, err
+}
+
+const getPRByURLOrAlias = `-- name: GetPRByURLOrAlias :one
+SELECT pr.url, pr.session_id, pr.number, pr.pr_state, pr.review_decision, pr.ci_state, pr.mergeability, pr.updated_at, pr.provider, pr.host, pr.repo, pr.source_branch, pr.target_branch, pr.head_sha, pr.title, pr.additions, pr.deletions, pr.changed_files, pr.author, pr.base_sha, pr.merge_commit_sha, pr.is_draft, pr.is_merged, pr.is_closed, pr.provider_state, pr.provider_mergeable, pr.provider_merge_state_status, pr.html_url, pr.created_at_provider, pr.updated_at_provider, pr.merged_at_provider, pr.closed_at_provider, pr.metadata_hash, pr.ci_hash, pr.review_hash, pr.observed_at, pr.ci_observed_at, pr.review_observed_at, pr.last_nudge_signature, pr.state_changed_at, pr.auto_inject_ci, pr.provider_id, pr.author_avatar_url, pr.review_partial
+FROM pr
+WHERE pr.url = COALESCE(
+    (SELECT canonical_url FROM pr_url_alias WHERE alias_url = ?1),
+    ?1
+)
+`
+
+func (q *Queries) GetPRByURLOrAlias(ctx context.Context, url string) (PR, error) {
+	row := q.db.QueryRowContext(ctx, getPRByURLOrAlias, url)
+	var i PR
+	err := row.Scan(
+		&i.URL,
+		&i.SessionID,
+		&i.Number,
+		&i.PRState,
+		&i.ReviewDecision,
+		&i.CIState,
+		&i.Mergeability,
+		&i.UpdatedAt,
+		&i.Provider,
+		&i.Host,
+		&i.Repo,
+		&i.SourceBranch,
+		&i.TargetBranch,
+		&i.HeadSha,
+		&i.Title,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+		&i.Author,
+		&i.BaseSha,
+		&i.MergeCommitSha,
+		&i.IsDraft,
+		&i.IsMerged,
+		&i.IsClosed,
+		&i.ProviderState,
+		&i.ProviderMergeable,
+		&i.ProviderMergeStateStatus,
+		&i.HtmlURL,
+		&i.CreatedAtProvider,
+		&i.UpdatedAtProvider,
+		&i.MergedAtProvider,
+		&i.ClosedAtProvider,
+		&i.MetadataHash,
+		&i.CIHash,
+		&i.ReviewHash,
+		&i.ObservedAt,
+		&i.CIObservedAt,
+		&i.ReviewObservedAt,
+		&i.LastNudgeSignature,
+		&i.StateChangedAt,
+		&i.AutoInjectCI,
+		&i.ProviderID,
+		&i.AuthorAvatarURL,
+		&i.ReviewPartial,
 	)
 	return i, err
 }
@@ -197,6 +418,47 @@ func (q *Queries) GetPRLastNudgeSignature(ctx context.Context, url string) (stri
 }
 
 const listPRFactsBySession = `-- name: ListPRFactsBySession :many
+WITH current_pr AS (
+    SELECT url, head_sha
+    FROM pr
+    WHERE pr.session_id = ?1
+),
+eligible_external_review AS (
+    -- Each human reviewer's CURRENT verdict on the PR's current head. Reviews
+    -- for an older explicit target_sha are stale and must not drive current
+    -- readiness. Empty target_sha is kept as a compatibility fallback for
+    -- older provider rows that did not record which head they reviewed.
+    SELECT pr_reviews.pr_url, pr_reviews.author, pr_reviews.review_id, pr_reviews.state, pr_reviews.submitted_at
+    FROM pr_reviews
+    JOIN current_pr ON current_pr.url = pr_reviews.pr_url
+    WHERE pr_reviews.is_bot = 0
+      AND pr_reviews.state IN ('approved', 'changes_requested')
+      AND (pr_reviews.target_sha = '' OR pr_reviews.target_sha = current_pr.head_sha)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM review_run
+          WHERE review_run.github_review_id != ''
+            AND review_run.github_review_id = pr_reviews.review_id
+      )
+),
+external_review AS (
+    -- Keep this query body ASCII. A multi-byte character anywhere in it makes
+    -- sqlc 1.31 truncate the tail of the generated SQL by the extra byte count
+    -- (an em dash here silently cut ` + "`" + `DESC` + "`" + ` to ` + "`" + `DE` + "`" + `), the same class of parser
+    -- bug documented in queries/sessions.sql and queries/changelog.sql.
+    SELECT eligible_external_review.pr_url, eligible_external_review.state
+    FROM eligible_external_review
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM eligible_external_review newer
+        WHERE newer.pr_url = eligible_external_review.pr_url
+          AND newer.author = eligible_external_review.author
+          AND (
+              newer.submitted_at > eligible_external_review.submitted_at
+              OR (newer.submitted_at = eligible_external_review.submitted_at AND newer.review_id > eligible_external_review.review_id)
+          )
+    )
+)
 SELECT
     pr.url,
     pr.number,
@@ -214,29 +476,60 @@ SELECT
         WHERE pr_comment.pr_url = pr.url
           AND pr_comment.resolved = 0
           AND pr_comment.is_bot = 0
-    ) AS review_comments
+          AND NOT EXISTS (
+              SELECT 1
+              FROM review_run
+              WHERE pr_comment.review_id != ''
+                AND review_run.github_review_id != ''
+                AND review_run.github_review_id = pr_comment.review_id
+          )
+    ) AS external_comments,
+    EXISTS (
+        SELECT 1
+        FROM pr_comment
+        WHERE pr_comment.pr_url = pr.url
+          AND pr_comment.resolved = 0
+          AND pr_comment.is_bot = 0
+    ) AS review_comments,
+    EXISTS (
+        SELECT 1
+        FROM external_review
+        WHERE external_review.pr_url = pr.url
+          AND external_review.state = 'approved'
+    ) AS external_approved,
+    EXISTS (
+        SELECT 1
+        FROM external_review
+        WHERE external_review.pr_url = pr.url
+          AND external_review.state = 'changes_requested'
+    ) AS external_changes_requested
 FROM pr
-WHERE pr.session_id = ?
+WHERE pr.session_id = ?1
 ORDER BY pr.updated_at DESC
 `
 
 type ListPRFactsBySessionRow struct {
-	URL            string
-	Number         int64
-	PRState        domain.PRState
-	ReviewDecision domain.ReviewDecision
-	CIState        domain.CIState
-	Mergeability   domain.Mergeability
-	SourceBranch   string
-	TargetBranch   string
-	HeadSha        string
-	UpdatedAt      time.Time
-	ReviewComments bool
+	URL                      string
+	Number                   int64
+	PRState                  domain.PRState
+	ReviewDecision           domain.ReviewDecision
+	CIState                  domain.CIState
+	Mergeability             domain.Mergeability
+	SourceBranch             string
+	TargetBranch             string
+	HeadSha                  string
+	UpdatedAt                time.Time
+	ExternalComments         bool
+	ReviewComments           bool
+	ExternalApproved         bool
+	ExternalChangesRequested bool
 }
 
 // All PR snapshots for a session (every state), with source/target branch for
-// stack derivation and the unresolved-comment flag. The status aggregator
-// filters open vs merged/closed in Go and derives stacks from the branches.
+// stack derivation, the unresolved-comment flag, and the human review verdicts
+// AO did not author. The status aggregator filters open vs merged/closed in Go
+// and derives stacks from the branches; the Kanban reducer needs the
+// AO/external split because the aggregate review_decision mixes both sources.
 func (q *Queries) ListPRFactsBySession(ctx context.Context, sessionID domain.SessionID) ([]ListPRFactsBySessionRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPRFactsBySession, sessionID)
 	if err != nil {
@@ -257,7 +550,171 @@ func (q *Queries) ListPRFactsBySession(ctx context.Context, sessionID domain.Ses
 			&i.TargetBranch,
 			&i.HeadSha,
 			&i.UpdatedAt,
+			&i.ExternalComments,
 			&i.ReviewComments,
+			&i.ExternalApproved,
+			&i.ExternalChangesRequested,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRFactsBySessions = `-- name: ListPRFactsBySessions :many
+WITH wanted_session AS (
+    SELECT CAST(j.value AS TEXT) AS session_id
+    FROM json_each(?) AS j
+),
+current_pr AS (
+    SELECT pr.session_id, pr.url, pr.head_sha
+    FROM pr
+    JOIN wanted_session ON wanted_session.session_id = pr.session_id
+),
+eligible_external_review AS (
+    -- Each human reviewer's CURRENT verdict on the PR's current head. Reviews
+    -- for an older explicit target_sha are stale and must not drive current
+    -- readiness. Empty target_sha is kept as a compatibility fallback for
+    -- older provider rows that did not record which head they reviewed.
+    SELECT current_pr.session_id, pr_reviews.pr_url, pr_reviews.author, pr_reviews.review_id, pr_reviews.state, pr_reviews.submitted_at
+    FROM pr_reviews
+    JOIN current_pr ON current_pr.url = pr_reviews.pr_url
+    WHERE pr_reviews.is_bot = 0
+      AND pr_reviews.state IN ('approved', 'changes_requested')
+      AND (pr_reviews.target_sha = '' OR pr_reviews.target_sha = current_pr.head_sha)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM review_run
+          WHERE review_run.github_review_id != ''
+            AND review_run.github_review_id = pr_reviews.review_id
+      )
+),
+external_review AS (
+    -- Keep this query body ASCII. A multi-byte character anywhere in it makes
+    -- sqlc 1.31 truncate the tail of the generated SQL by the extra byte count
+    -- (an em dash here silently cut ` + "`" + `DESC` + "`" + ` to ` + "`" + `DE` + "`" + `), the same class of parser
+    -- bug documented in queries/sessions.sql and queries/changelog.sql.
+    SELECT
+        eligible_external_review.session_id,
+        eligible_external_review.pr_url,
+        eligible_external_review.state
+    FROM eligible_external_review
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM eligible_external_review newer
+        WHERE newer.pr_url = eligible_external_review.pr_url
+          AND newer.author = eligible_external_review.author
+          AND (
+              newer.submitted_at > eligible_external_review.submitted_at
+              OR (newer.submitted_at = eligible_external_review.submitted_at AND newer.review_id > eligible_external_review.review_id)
+          )
+    )
+)
+SELECT
+    pr.session_id,
+    pr.url,
+    pr.number,
+    pr.pr_state,
+    pr.review_decision,
+    pr.ci_state,
+    pr.mergeability,
+    pr.source_branch,
+    pr.target_branch,
+    pr.head_sha,
+    pr.updated_at,
+    EXISTS (
+        SELECT 1
+        FROM pr_comment
+        WHERE pr_comment.pr_url = pr.url
+          AND pr_comment.resolved = 0
+          AND pr_comment.is_bot = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM review_run
+              WHERE pr_comment.review_id != ''
+                AND review_run.github_review_id != ''
+                AND review_run.github_review_id = pr_comment.review_id
+          )
+    ) AS external_comments,
+    EXISTS (
+        SELECT 1
+        FROM pr_comment
+        WHERE pr_comment.pr_url = pr.url
+          AND pr_comment.resolved = 0
+          AND pr_comment.is_bot = 0
+    ) AS review_comments,
+    EXISTS (
+        SELECT 1
+        FROM external_review
+        WHERE external_review.pr_url = pr.url
+          AND external_review.session_id = pr.session_id
+          AND external_review.state = 'approved'
+    ) AS external_approved,
+    EXISTS (
+        SELECT 1
+        FROM external_review
+        WHERE external_review.pr_url = pr.url
+          AND external_review.session_id = pr.session_id
+          AND external_review.state = 'changes_requested'
+    ) AS external_changes_requested
+FROM pr
+JOIN wanted_session ON wanted_session.session_id = pr.session_id
+ORDER BY pr.session_id, pr.updated_at DESC
+`
+
+type ListPRFactsBySessionsRow struct {
+	SessionID                domain.SessionID
+	URL                      string
+	Number                   int64
+	PRState                  domain.PRState
+	ReviewDecision           domain.ReviewDecision
+	CIState                  domain.CIState
+	Mergeability             domain.Mergeability
+	SourceBranch             string
+	TargetBranch             string
+	HeadSha                  string
+	UpdatedAt                time.Time
+	ExternalComments         bool
+	ReviewComments           bool
+	ExternalApproved         bool
+	ExternalChangesRequested bool
+}
+
+// Batch form of ListPRFactsBySession for board/session-list reads. The JSON
+// array of session ids keeps the list path bounded instead of issuing one PR
+// query per card.
+func (q *Queries) ListPRFactsBySessions(ctx context.Context, jsonEach interface{}) ([]ListPRFactsBySessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPRFactsBySessions, jsonEach)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPRFactsBySessionsRow{}
+	for rows.Next() {
+		var i ListPRFactsBySessionsRow
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.URL,
+			&i.Number,
+			&i.PRState,
+			&i.ReviewDecision,
+			&i.CIState,
+			&i.Mergeability,
+			&i.SourceBranch,
+			&i.TargetBranch,
+			&i.HeadSha,
+			&i.UpdatedAt,
+			&i.ExternalComments,
+			&i.ReviewComments,
+			&i.ExternalApproved,
+			&i.ExternalChangesRequested,
 		); err != nil {
 			return nil, err
 		}
@@ -273,8 +730,8 @@ func (q *Queries) ListPRFactsBySession(ctx context.Context, sessionID domain.Ses
 }
 
 const listPRsBySession = `-- name: ListPRsBySession :many
-SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci FROM pr
-WHERE session_id = ?
+SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci, provider_id, author_avatar_url, review_partial FROM pr
+WHERE pr.session_id = ?
 ORDER BY updated_at DESC
 `
 
@@ -329,6 +786,9 @@ func (q *Queries) ListPRsBySession(ctx context.Context, sessionID domain.Session
 			&i.LastNudgeSignature,
 			&i.StateChangedAt,
 			&i.AutoInjectCI,
+			&i.ProviderID,
+			&i.AuthorAvatarURL,
+			&i.ReviewPartial,
 		); err != nil {
 			return nil, err
 		}
@@ -341,6 +801,161 @@ func (q *Queries) ListPRsBySession(ctx context.Context, sessionID domain.Session
 		return nil, err
 	}
 	return items, nil
+}
+
+const movePRAliasChecks = `-- name: MovePRAliasChecks :exec
+UPDATE OR IGNORE pr_checks SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasChecksParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasChecks(ctx context.Context, arg MovePRAliasChecksParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasChecks, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const movePRAliasComments = `-- name: MovePRAliasComments :exec
+UPDATE OR IGNORE pr_comment SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasCommentsParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasComments(ctx context.Context, arg MovePRAliasCommentsParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasComments, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const movePRAliasNotifications = `-- name: MovePRAliasNotifications :exec
+UPDATE notifications SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasNotificationsParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasNotifications(ctx context.Context, arg MovePRAliasNotificationsParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasNotifications, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const movePRAliasReviewRuns = `-- name: MovePRAliasReviewRuns :exec
+UPDATE OR IGNORE review_run SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasReviewRunsParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasReviewRuns(ctx context.Context, arg MovePRAliasReviewRunsParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasReviewRuns, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const movePRAliasReviewState = `-- name: MovePRAliasReviewState :exec
+UPDATE review SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasReviewStateParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasReviewState(ctx context.Context, arg MovePRAliasReviewStateParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasReviewState, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const movePRAliasReviewThreads = `-- name: MovePRAliasReviewThreads :exec
+UPDATE OR IGNORE pr_review_threads SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasReviewThreadsParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasReviewThreads(ctx context.Context, arg MovePRAliasReviewThreadsParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasReviewThreads, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const movePRAliasReviews = `-- name: MovePRAliasReviews :exec
+UPDATE OR IGNORE pr_reviews SET pr_url = ?1 WHERE pr_url = ?2
+`
+
+type MovePRAliasReviewsParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) MovePRAliasReviews(ctx context.Context, arg MovePRAliasReviewsParams) error {
+	_, err := q.db.ExecContext(ctx, movePRAliasReviews, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const repointPRAliases = `-- name: RepointPRAliases :exec
+UPDATE pr_url_alias
+SET canonical_url = ?1
+WHERE canonical_url = ?2
+`
+
+type RepointPRAliasesParams struct {
+	CanonicalURL string
+	PreviousURL  string
+}
+
+func (q *Queries) RepointPRAliases(ctx context.Context, arg RepointPRAliasesParams) error {
+	_, err := q.db.ExecContext(ctx, repointPRAliases, arg.CanonicalURL, arg.PreviousURL)
+	return err
+}
+
+const resolveConflictingPRAliasNotifications = `-- name: ResolveConflictingPRAliasNotifications :exec
+UPDATE notifications
+SET status = 'read', resolved_at = COALESCE(notifications.resolved_at, notifications.created_at)
+WHERE notifications.pr_url = ?1
+  AND (notifications.status = 'unread' OR notifications.resolved_at IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM notifications AS current
+      WHERE current.pr_url = ?2
+        AND current.session_id = notifications.session_id
+        AND current.type = notifications.type
+        AND (current.status = 'unread' OR current.resolved_at IS NULL)
+  )
+`
+
+type ResolveConflictingPRAliasNotificationsParams struct {
+	PreviousURL  string
+	CanonicalURL string
+}
+
+// Preserve both notification records when their open-dedupe keys collide:
+// the canonical notification stays open and the older alias notification
+// becomes resolved history before its URL is updated.
+func (q *Queries) ResolveConflictingPRAliasNotifications(ctx context.Context, arg ResolveConflictingPRAliasNotificationsParams) error {
+	_, err := q.db.ExecContext(ctx, resolveConflictingPRAliasNotifications, arg.PreviousURL, arg.CanonicalURL)
+	return err
+}
+
+const setPRAutoInjectCIBySession = `-- name: SetPRAutoInjectCIBySession :exec
+UPDATE pr SET auto_inject_ci = ? WHERE session_id = ?
+`
+
+type SetPRAutoInjectCIBySessionParams struct {
+	AutoInjectCI bool
+	SessionID    domain.SessionID
+}
+
+func (q *Queries) SetPRAutoInjectCIBySession(ctx context.Context, arg SetPRAutoInjectCIBySessionParams) error {
+	_, err := q.db.ExecContext(ctx, setPRAutoInjectCIBySession, arg.AutoInjectCI, arg.SessionID)
+	return err
 }
 
 const updatePRLastNudgeSignature = `-- name: UpdatePRLastNudgeSignature :exec
@@ -360,9 +975,9 @@ func (q *Queries) UpdatePRLastNudgeSignature(ctx context.Context, arg UpdatePRLa
 const upsertLegacyPR = `-- name: UpsertLegacyPR :exec
 INSERT INTO pr (
     url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at,
-    is_draft, is_merged, is_closed, auto_inject_ci
+    is_draft, is_merged, is_closed, review_observed_at, review_partial, auto_inject_ci
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     number = excluded.number,
@@ -378,23 +993,32 @@ ON CONFLICT (url) DO UPDATE SET
     updated_at = excluded.updated_at,
     is_draft = excluded.is_draft,
     is_merged = excluded.is_merged,
-    is_closed = excluded.is_closed
+    is_closed = excluded.is_closed,
+    -- Same completeness-pair contract as UpsertPR: a writer without a review
+    -- observation (NULL timestamp) keeps the stored pair.
+    review_observed_at = COALESCE(excluded.review_observed_at, pr.review_observed_at),
+    review_partial = CASE
+        WHEN excluded.review_observed_at IS NULL THEN pr.review_partial
+        ELSE excluded.review_partial
+    END
 `
 
 type UpsertLegacyPRParams struct {
-	URL            string
-	SessionID      domain.SessionID
-	Number         int64
-	PRState        domain.PRState
-	ReviewDecision domain.ReviewDecision
-	CIState        domain.CIState
-	Mergeability   domain.Mergeability
-	UpdatedAt      time.Time
-	StateChangedAt sql.NullTime
-	IsDraft        int64
-	IsMerged       int64
-	IsClosed       int64
-	ID             domain.SessionID
+	URL              string
+	SessionID        domain.SessionID
+	Number           int64
+	PRState          domain.PRState
+	ReviewDecision   domain.ReviewDecision
+	CIState          domain.CIState
+	Mergeability     domain.Mergeability
+	UpdatedAt        time.Time
+	StateChangedAt   sql.NullTime
+	IsDraft          int64
+	IsMerged         int64
+	IsClosed         int64
+	ReviewObservedAt sql.NullTime
+	ReviewPartial    bool
+	ID               domain.SessionID
 }
 
 func (q *Queries) UpsertLegacyPR(ctx context.Context, arg UpsertLegacyPRParams) error {
@@ -411,6 +1035,8 @@ func (q *Queries) UpsertLegacyPR(ctx context.Context, arg UpsertLegacyPRParams) 
 		arg.IsDraft,
 		arg.IsMerged,
 		arg.IsClosed,
+		arg.ReviewObservedAt,
+		arg.ReviewPartial,
 		arg.ID,
 	)
 	return err
@@ -419,14 +1045,14 @@ func (q *Queries) UpsertLegacyPR(ctx context.Context, arg UpsertLegacyPRParams) 
 const upsertPR = `-- name: UpsertPR :exec
 INSERT INTO pr (
     url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at,
-    provider, host, repo, source_branch, target_branch, head_sha, title,
-    additions, deletions, changed_files, author, base_sha, merge_commit_sha,
+    provider, host, repo, provider_id, source_branch, target_branch, head_sha, title,
+    additions, deletions, changed_files, author, author_avatar_url, base_sha, merge_commit_sha,
     is_draft, is_merged, is_closed,
     provider_state, provider_mergeable, provider_merge_state_status, html_url,
     created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider,
-    metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, auto_inject_ci
+    metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, review_partial, auto_inject_ci
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     number = excluded.number,
@@ -448,6 +1074,7 @@ ON CONFLICT (url) DO UPDATE SET
     provider = excluded.provider,
     host = excluded.host,
     repo = excluded.repo,
+    provider_id = CASE WHEN excluded.provider_id != '' THEN excluded.provider_id ELSE pr.provider_id END,
     source_branch = excluded.source_branch,
     target_branch = excluded.target_branch,
     head_sha = excluded.head_sha,
@@ -456,6 +1083,7 @@ ON CONFLICT (url) DO UPDATE SET
     deletions = excluded.deletions,
     changed_files = excluded.changed_files,
     author = excluded.author,
+    author_avatar_url = excluded.author_avatar_url,
     base_sha = excluded.base_sha,
     merge_commit_sha = excluded.merge_commit_sha,
     is_draft = excluded.is_draft,
@@ -474,7 +1102,15 @@ ON CONFLICT (url) DO UPDATE SET
     review_hash = excluded.review_hash,
     observed_at = excluded.observed_at,
     ci_observed_at = excluded.ci_observed_at,
-    review_observed_at = excluded.review_observed_at
+    -- The review completeness pair travels together: a writer that did not
+    -- fetch review threads passes a NULL review_observed_at, and must keep the
+    -- stored pair untouched instead of manufacturing a complete-looking
+    -- observation (NULL timestamp, stale certainty kept).
+    review_observed_at = COALESCE(excluded.review_observed_at, pr.review_observed_at),
+    review_partial = CASE
+        WHEN excluded.review_observed_at IS NULL THEN pr.review_partial
+        ELSE excluded.review_partial
+    END
 `
 
 type UpsertPRParams struct {
@@ -490,6 +1126,7 @@ type UpsertPRParams struct {
 	Provider                 string
 	Host                     string
 	Repo                     string
+	ProviderID               string
 	SourceBranch             string
 	TargetBranch             string
 	HeadSha                  string
@@ -498,6 +1135,7 @@ type UpsertPRParams struct {
 	Deletions                int64
 	ChangedFiles             int64
 	Author                   string
+	AuthorAvatarURL          string
 	BaseSha                  string
 	MergeCommitSha           string
 	IsDraft                  int64
@@ -517,6 +1155,7 @@ type UpsertPRParams struct {
 	ObservedAt               sql.NullTime
 	CIObservedAt             sql.NullTime
 	ReviewObservedAt         sql.NullTime
+	ReviewPartial            bool
 	ID                       domain.SessionID
 }
 
@@ -534,6 +1173,7 @@ func (q *Queries) UpsertPR(ctx context.Context, arg UpsertPRParams) error {
 		arg.Provider,
 		arg.Host,
 		arg.Repo,
+		arg.ProviderID,
 		arg.SourceBranch,
 		arg.TargetBranch,
 		arg.HeadSha,
@@ -542,6 +1182,7 @@ func (q *Queries) UpsertPR(ctx context.Context, arg UpsertPRParams) error {
 		arg.Deletions,
 		arg.ChangedFiles,
 		arg.Author,
+		arg.AuthorAvatarURL,
 		arg.BaseSha,
 		arg.MergeCommitSha,
 		arg.IsDraft,
@@ -561,7 +1202,24 @@ func (q *Queries) UpsertPR(ctx context.Context, arg UpsertPRParams) error {
 		arg.ObservedAt,
 		arg.CIObservedAt,
 		arg.ReviewObservedAt,
+		arg.ReviewPartial,
 		arg.ID,
 	)
+	return err
+}
+
+const upsertPRAlias = `-- name: UpsertPRAlias :exec
+INSERT INTO pr_url_alias(alias_url, canonical_url)
+VALUES (?1, ?2)
+ON CONFLICT(alias_url) DO UPDATE SET canonical_url = excluded.canonical_url
+`
+
+type UpsertPRAliasParams struct {
+	AliasURL     string
+	CanonicalURL string
+}
+
+func (q *Queries) UpsertPRAlias(ctx context.Context, arg UpsertPRAliasParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPRAlias, arg.AliasURL, arg.CanonicalURL)
 	return err
 }

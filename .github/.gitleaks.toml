@@ -175,6 +175,13 @@ title = "gitleaks config"
     # Ignore false positives on the public company URL (rule matches brand name + nearby alnum).
     regexes = [
         '''(?i)linkedin\.com/company/agent-orchestrator''',
+        # Ordinary testimonial form identifiers and copy that overlap the legacy
+        # LinkedIn credential rules' overly broad character-count patterns.
+        '''(?i)linkedinprofileurl\(trimmedlinkedinurl''',
+        '''(?i)linkedinurl:\s*trimmedlinkedinurl''',
+        '''(?i)linkedinurl,\s*setlinkedinurl''',
+        '''(?i)linkedin profile for the accompanying''',
+        '''(?i)linkedin,\s*messagesquarequote''',
     ]
     # Historical false positives from the ReverbCode rewrite graft (#2166).
     # All offenders are example secret-patterns in security docs and

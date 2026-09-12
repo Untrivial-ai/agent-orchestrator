@@ -20,7 +20,7 @@ import type {
 	DecisionOption,
 	TurnSettings,
 } from "./types";
-import { parseSseFrame, takeSseFrames, type ConversationEvent } from "./sse";
+import { parseSseFrame, readSseFrameSeq, takeSseFrames, type ConversationEvent } from "./sse";
 import { mergeConversationPages, type ConversationPage } from "./snapshot";
 
 export { parseSseFrame } from "./sse";
@@ -55,6 +55,7 @@ export type SessionInterfaceTransition = {
 	createdAt: string;
 	updatedAt: string;
 	completedAt?: string;
+	noticeAcknowledgedAt?: string;
 };
 
 export type SessionInterfaceTransitionStatus = {
@@ -94,6 +95,20 @@ export async function cancelSessionInterfaceTransition(
 	await apiRequest(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/interface-transition`, {
 		method: "DELETE",
 	});
+}
+
+export async function acknowledgeSessionInterfaceTransitionNotice(
+	cfg: ServerConfig,
+	sessionId: string,
+	transitionId: string,
+): Promise<SessionInterfaceTransition> {
+	const res = await apiRequest(
+		cfg,
+		`${API}/sessions/${encodeURIComponent(sessionId)}/interface-transition/${encodeURIComponent(transitionId)}/notice-acknowledgement`,
+		{ method: "PUT" },
+	);
+	const body = (await res.json()) as { transition: SessionInterfaceTransition };
+	return body.transition;
 }
 
 type WireSnapshot = Omit<ConversationSnapshot, "items" | "controller"> & {
@@ -283,12 +298,35 @@ export async function closeShellTerminal(cfg: ServerConfig, handleId: string): P
  * deliberately because React Native's global fetch does not expose a streaming
  * response body consistently under Hermes.
  */
+export type ConversationStreamOptions = {
+	/** Frames handled between cooperative yields back to the event loop. */
+	yieldEvery?: number;
+	/** When this returns false, frames advance the cursor without being parsed. */
+	wantsPayload?: () => boolean;
+	/** A frame that advanced the cursor without being parsed. */
+	onCursorAdvance?: (seq: number) => void;
+};
+
+/**
+ * Frames handled before the reader hands the event loop back.
+ *
+ * React Native services touches on the JS thread, and `await`ing an
+ * already-buffered read only queues a microtask — which the runtime drains
+ * completely before any touch is delivered. A replay big enough to keep that
+ * queue fed therefore renders the UI untappable for its whole duration. Yielding
+ * a macrotask periodically bounds that stall no matter how large the backlog is.
+ */
+const STREAM_YIELD_EVERY = 256;
+
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 export async function streamGlobalConversationEvents(
 	cfg: ServerConfig,
 	after: number,
 	signal: AbortSignal,
 	onEvent: (event: ConversationEvent) => void,
 	onCursorReset?: (cursor: number) => void,
+	options?: ConversationStreamOptions,
 ): Promise<number> {
 	const res = await expoFetch(`${httpBase(cfg)}${API}/events?after=${Math.max(0, after)}`, {
 		headers: { ...authHeaders(cfg), Accept: "text/event-stream" },
@@ -307,6 +345,9 @@ export async function streamGlobalConversationEvents(
 	const reader = res.body.getReader();
 	let buffer = "";
 	let cursor = effectiveAfter;
+	const yieldEvery = Math.max(1, options?.yieldEvery ?? STREAM_YIELD_EVERY);
+	const wantsPayload = options?.wantsPayload;
+	let sinceYield = 0;
 	try {
 		while (!signal.aborted) {
 			const { done, value } = await reader.read();
@@ -315,10 +356,25 @@ export async function streamGlobalConversationEvents(
 			const split = takeSseFrames(buffer);
 			buffer = split.remainder;
 			for (const frame of split.frames) {
-				const parsed = parseSseFrame(frame);
-				if (parsed) {
-					cursor = Math.max(cursor, parsed.seq);
-					onEvent(parsed);
+				if (wantsPayload && !wantsPayload()) {
+					// Nothing is subscribed, so the payload has no reader. Take the
+					// sequence and skip the parse entirely.
+					const seq = readSseFrameSeq(frame);
+					if (seq !== undefined && seq > cursor) {
+						cursor = seq;
+						options?.onCursorAdvance?.(seq);
+					}
+				} else {
+					const parsed = parseSseFrame(frame);
+					if (parsed) {
+						cursor = Math.max(cursor, parsed.seq);
+						onEvent(parsed);
+					}
+				}
+				if (++sinceYield >= yieldEvery) {
+					sinceYield = 0;
+					await yieldToEventLoop();
+					if (signal.aborted) break;
 				}
 			}
 		}

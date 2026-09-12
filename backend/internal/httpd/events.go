@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+
+	"time"
 )
 
 const (
@@ -37,6 +40,11 @@ func (c *EventsController) Register(r chi.Router) {
 	r.Get("/events", c.stream)
 }
 
+// eventsHeartbeatInterval paces the idle comment frame. Short enough that a
+// buffering intermediary forwards a real event promptly, long enough to be
+// negligible on a metered connection. A var so tests need not wait it out.
+var eventsHeartbeatInterval = 10 * time.Second
+
 func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	if c.Source == nil || c.Live == nil {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/events")
@@ -55,8 +63,13 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 			"Could not inspect the event cursor", nil)
 		return
 	}
+	// A cursor ahead of head means the change_log was truncated or replaced. Fall
+	// back to head rather than zero: replaying from zero costs the client the whole
+	// backlog, and since every connected client is reset at the same moment, they
+	// stampede together. Falling back to head loses at most the events in the gap,
+	// which clients recover from their next snapshot fetch.
 	if after > latestSeq {
-		after = 0
+		after = latestSeq
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -95,8 +108,26 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep the pipe moving while nothing is happening.
+	//
+	// An idle stream that writes nothing is fine on a LAN but not behind a
+	// proxy: an intermediary buffers a lone small write and has nothing to push
+	// it through, so a single event can sit unseen for minutes while the same
+	// stream is instant directly. The bulk replay always arrives because it is
+	// large enough to flush on its own.
+	//
+	// A comment frame is the SSE no-op — clients ignore it and no cursor moves —
+	// and it carries any buffered event out with it.
+	heartbeat := time.NewTicker(eventsHeartbeatInterval)
+	defer heartbeat.Stop()
+
 	for {
 		select {
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ":\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-ctx.Done():
 			return
 		case e := <-live:

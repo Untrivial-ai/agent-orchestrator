@@ -1,6 +1,7 @@
 package kimchiacp
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 )
 
 func TestConfigureReturnsACPMode(t *testing.T) {
-	args, env, err := configure(acpdriver.LaunchConfig{})
+	args, env, err := configure(context.Background(), acpdriver.LaunchConfig{})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -23,7 +24,7 @@ func TestConfigureReturnsACPMode(t *testing.T) {
 }
 
 func TestConfigurePassesModel(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{Model: "glm-5.2"})
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{Model: "glm-5.2"})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestConfigurePassesAutoPermission(t *testing.T) {
 		ports.PermissionModeAuto,
 	}
 	for _, perm := range tests {
-		args, _, err := configure(acpdriver.LaunchConfig{Permissions: perm})
+		args, _, err := configure(context.Background(), acpdriver.LaunchConfig{Permissions: perm})
 		if err != nil {
 			t.Fatalf("configure(%q): %v", perm, err)
 		}
@@ -51,7 +52,7 @@ func TestConfigurePassesAutoPermission(t *testing.T) {
 }
 
 func TestConfigurePassesYoloPermission(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{Permissions: ports.PermissionModeBypassPermissions})
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{Permissions: ports.PermissionModeBypassPermissions})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestConfigurePassesYoloPermission(t *testing.T) {
 }
 
 func TestConfigurePassesModelAndPermissionTogether(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{
 		Model: "glm-5.2", Permissions: ports.PermissionModeBypassPermissions,
 	})
 	if err != nil {
@@ -75,7 +76,7 @@ func TestConfigurePassesModelAndPermissionTogether(t *testing.T) {
 }
 
 func TestConfigureAppendsSystemPromptWhenProvided(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{SystemPrompt: "Follow AO worker rules."})
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: "Follow AO worker rules."})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestConfigureAppendsSystemPromptWhenProvided(t *testing.T) {
 }
 
 func TestConfigureOmitsBlankSystemPrompt(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{SystemPrompt: "   "})
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: "   "})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}

@@ -70,19 +70,25 @@ function switchPresentation(
 }
 
 function SwitchControlHarness({
+	onOpenChangeObserved,
 	presentation,
 	session,
 }: {
+	onOpenChangeObserved?: (open: boolean) => void;
 	presentation?: AgentSwitchPresentation;
 	session: WorkspaceSession;
 }) {
 	const [container, setContainer] = useState<HTMLDivElement | null>(null);
 	const [open, setOpen] = useState(false);
+	const handleOpenChange = (nextOpen: boolean) => {
+		onOpenChangeObserved?.(nextOpen);
+		setOpen(nextOpen);
+	};
 	return (
 		<div className="relative" data-testid="terminal-container" ref={setContainer}>
 			<TerminalSwitchAgentButton
 				container={container}
-				onOpenChange={setOpen}
+				onOpenChange={handleOpenChange}
 				open={open}
 				presentation={presentation}
 				session={session}
@@ -95,6 +101,7 @@ function SwitchControlHarness({
 function renderControl(
 	session: WorkspaceSession = worker,
 	presentation?: AgentSwitchPresentation,
+	onOpenChangeObserved?: (open: boolean) => void,
 ) {
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -102,7 +109,12 @@ function renderControl(
 	const control = (nextSession: WorkspaceSession, nextPresentation = presentation) => (
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
-				<SwitchControlHarness key={nextSession.id} presentation={nextPresentation} session={nextSession} />
+				<SwitchControlHarness
+					key={nextSession.id}
+					onOpenChangeObserved={onOpenChangeObserved}
+					presentation={nextPresentation}
+					session={nextSession}
+				/>
 			</TooltipProvider>
 		</QueryClientProvider>
 	);
@@ -195,6 +207,21 @@ describe("TerminalSwitchAgentButton", () => {
 		});
 		expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+	});
+
+	it("keeps the open selector stable when the toolbar button is reactivated", async () => {
+		const openChanges = vi.fn();
+		renderControl(worker, undefined, openChanges);
+		const button = await screen.findByRole("button", { name: "Switch agent" });
+
+		await userEvent.click(button);
+		expect(screen.getByRole("dialog", { name: "Switch agent" })).toBeInTheDocument();
+		openChanges.mockClear();
+
+		await userEvent.click(button);
+
+		expect(openChanges).not.toHaveBeenCalled();
+		expect(screen.getByRole("dialog", { name: "Switch agent" })).toBeInTheDocument();
 	});
 
 	it("closes after accepted admission without waiting for durable observer invalidations", async () => {

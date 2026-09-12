@@ -35,6 +35,7 @@ func TestGetAgentHooksFootprintIsGitignored(t *testing.T) {
 			if ha.Harness == "kimi" {
 				cfg.Env = map[string]string{"KIMI_CODE_HOME": filepath.Join(cfg.DataDir, "kimi")}
 			}
+			ensureAgentBinary(t, string(ha.Harness))
 			if err := ha.Agent.GetAgentHooks(context.Background(), cfg); err != nil {
 				t.Fatalf("GetAgentHooks: %v", err)
 			}
@@ -60,17 +61,7 @@ func TestGetAgentHooksFootprintIsGitignored(t *testing.T) {
 }
 
 func TestEveryHarnessReportsAuthStatus(t *testing.T) {
-	authCheckerExempt := map[string]string{
-		"continue":    "Continue auth probes require sending a model prompt, so catalog refresh must not run them",
-		"prime-agent": "Prime Agent has no documented non-interactive local auth probe; spawn remains authoritative",
-	}
 	for _, ha := range Harnessed() {
-		if reason, exempt := authCheckerExempt[string(ha.Harness)]; exempt {
-			if _, ok := ha.Agent.(ports.AgentAuthChecker); ok {
-				t.Errorf("%s implements ports.AgentAuthChecker but is exempt: %s", ha.Harness, reason)
-			}
-			continue
-		}
 		if _, ok := ha.Agent.(ports.AgentAuthChecker); !ok {
 			t.Errorf("%s does not implement ports.AgentAuthChecker", ha.Harness)
 		}
@@ -97,6 +88,28 @@ func TestRegistryIncludesPrimeAgent(t *testing.T) {
 		}
 	}
 	t.Fatal("Harnessed does not contain prime-agent")
+}
+
+func TestRegistryIncludesOMP(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("omp")
+	if !ok {
+		t.Fatal("registry does not contain omp")
+	}
+	manifest := adapter.Manifest()
+	if manifest.Name != "OMP" {
+		t.Fatalf("omp manifest name = %q, want OMP", manifest.Name)
+	}
+
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessOMP {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain omp")
 }
 
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
@@ -145,6 +158,23 @@ func workspaceFiles(t *testing.T, root string) []string {
 		t.Fatalf("walk workspace: %v", err)
 	}
 	return files
+}
+
+func ensureAgentBinary(t *testing.T, name string) {
+	t.Helper()
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, name)
+	version := "0.80.6"
+	if name == "omp" {
+		version = "17.1.0"
+	}
+	script := "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"--version\" ]; then\n  echo \"" + name + " " + version + "\"\nfi\nexit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake agent binary %q: %v", binPath, err)
+	}
+
+	old := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+old)
 }
 
 func hasLine(content, line string) bool {

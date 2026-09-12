@@ -9,9 +9,27 @@ import type {
 	BrowserTabsState,
 } from "../../main/browser-view-host";
 import type { BrowserAnnotationCancelPayload, BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
+import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
 
 export type { BrowserNavState };
+
+export type ClosedBrowserTab = {
+	id: string;
+	title: string;
+	url: string;
+	favicon?: string;
+};
+
+const MAX_CLOSED_TABS = 5;
+
+// Mirrors the main process's isBlankBrowserEntry (browser-view-host.ts):
+// a freshly-opened tab reports its URL as the literal string "about:blank"
+// once its initial load settles, not an empty string — a plain truthiness
+// check on `url` treats that as "real" content worth remembering.
+function isBlankTabUrl(url: string): boolean {
+	return !url || url === "about:blank";
+}
 
 type UseBrowserViewOptions = {
 	sessionId: string;
@@ -51,9 +69,13 @@ export type BrowserViewModel = {
 	tabNotice: string;
 	selectTab: (tabId: string) => Promise<void>;
 	closeTab: (tabId: string) => Promise<void>;
-	openTab: () => Promise<void>;
+	openTab: (url?: string) => Promise<void>;
+	openLink: (url: string) => Promise<void>;
 	reorderTabs: (orderedIds: string[]) => void;
+	closedTabs: ClosedBrowserTab[];
+	reopenClosedTab: (tabId?: string) => Promise<void>;
 	devtoolsState: BrowserDevToolsState;
+	profileState: BrowserProfileViewState;
 	openDevTools: () => Promise<void>;
 	closeDevTools: () => Promise<void>;
 	setDevToolsPlacement: (placement: BrowserDevToolsPlacement) => Promise<void>;
@@ -86,6 +108,12 @@ const EMPTY_DEVTOOLS_STATE: BrowserDevToolsState = {
 	placement: "undocked",
 };
 
+const EMPTY_PROFILE_STATE: BrowserProfileViewState = {
+	viewId: "",
+	profileId: null,
+	temporary: true,
+};
+
 type PreviewTrigger = { revision: number | null; target: string };
 
 // The native view survives React session switches, so remember which preview
@@ -97,7 +125,28 @@ export function resetConsumedPreviewTriggersForTest(): void {
 	consumedPreviewTriggers.clear();
 }
 
+// Recently Closed has no main-process backing (unlike live tabs, which
+// survive a session switch because they're kept alive in the main process
+// and simply re-fetched) — it's built up purely from this hook's own
+// bookkeeping. Without this, switching sessions and back lost the list for
+// good, even though nothing about it actually changed.
+const closedTabsBySession = new Map<string, ClosedBrowserTab[]>();
+
+export function resetClosedTabsForTest(): void {
+	closedTabsBySession.clear();
+}
+
 const HIDDEN_RECT: BrowserRect = { x: 0, y: 0, width: 0, height: 0 };
+
+// ResizeHandle.tsx sits at the inspector panel's left edge with a
+// `--size-resize-handle-offset` (6px) negative inset, so only its right half
+// (0 to 6px, inside the panel) survives the panel's `overflow-hidden` — the
+// left half is clipped away. That surviving 6px is inside `[data-panel]`, the
+// same territory the browser view fills, so without this reserve the native
+// view covers the handle at rest and a drag can never start once a page is
+// loaded (only continuing an already-started drag is handled elsewhere, via
+// the `is-resizing-x` watcher below). Keep in sync with tokens.css.
+const RESIZE_HANDLE_RESERVE_PX = 6;
 
 // The native WebContentsView is a window-level overlay, so DOM `overflow:
 // hidden` never clips it — it paints wherever the slot's bounding box lands.
@@ -106,10 +155,17 @@ const HIDDEN_RECT: BrowserRect = { x: 0, y: 0, width: 0, height: 0 };
 function visibleSlotRect(node: HTMLElement): BrowserRect {
 	const rect = node.getBoundingClientRect();
 	let { left, top, right, bottom } = rect;
-	const clips = [node.closest<HTMLElement>("[data-panel]"), node.closest<HTMLElement>(".session-split")];
-	for (const clip of clips) {
-		if (!clip) continue;
-		const bounds = clip.getBoundingClientRect();
+	const panel = node.closest<HTMLElement>("[data-panel]");
+	if (panel) {
+		const bounds = panel.getBoundingClientRect();
+		left = Math.max(left, bounds.left + RESIZE_HANDLE_RESERVE_PX);
+		top = Math.max(top, bounds.top);
+		right = Math.min(right, bounds.right);
+		bottom = Math.min(bottom, bounds.bottom);
+	}
+	const split = node.closest<HTMLElement>(".session-split");
+	if (split) {
+		const bounds = split.getBoundingClientRect();
 		left = Math.max(left, bounds.left);
 		top = Math.max(top, bounds.top);
 		right = Math.min(right, bounds.right);
@@ -150,7 +206,9 @@ export function useBrowserView({
 	// authoritative and browser:tabsState pushes on every nav/title event.
 	const [tabOrder, setTabOrder] = useState<string[]>([]);
 	const [devtoolsState, setDevtoolsState] = useState<BrowserDevToolsState>(EMPTY_DEVTOOLS_STATE);
+	const [profileState, setProfileState] = useState<BrowserProfileViewState>(EMPTY_PROFILE_STATE);
 	const [tabNotice, setTabNotice] = useState("");
+	const [closedTabs, setClosedTabs] = useState<ClosedBrowserTab[]>([]);
 	const [agentBrowserActive, setAgentBrowserActive] = useState(false);
 	const [agentBrowserActivity, setAgentBrowserActivity] = useState<BrowserAgentActivityState | null>(null);
 	const [stateSessionId, setStateSessionId] = useState(sessionId);
@@ -165,6 +223,7 @@ export function useBrowserView({
 	const previewTriggerRef = useRef<{ revision: number | null; target: string } | null>(null);
 	const overlayOpenRef = useRef(false);
 	const tabNoticeTimerRef = useRef<number | null>(null);
+	const tabsStateRef = useRef(tabsState);
 	const hasNativeBrowser = Boolean(window.ao?.browser);
 
 	useEffect(() => {
@@ -172,8 +231,34 @@ export function useBrowserView({
 	}, [active]);
 
 	useEffect(() => {
+		tabsStateRef.current = tabsState;
+	}, [tabsState]);
+
+	useEffect(() => {
 		annotationModeRef.current = annotationMode;
 	}, [annotationMode]);
+
+	const showTabNotice = useCallback((message: string) => {
+		setTabNotice(message);
+		if (tabNoticeTimerRef.current !== null) window.clearTimeout(tabNoticeTimerRef.current);
+		tabNoticeTimerRef.current = window.setTimeout(() => {
+			tabNoticeTimerRef.current = null;
+			setTabNotice("");
+		}, 3_000);
+	}, []);
+
+	// Single choke point for every closedTabs mutation, so the module-level
+	// per-session cache (closedTabsBySession) can never drift from what's
+	// actually shown.
+	const updateClosedTabs = useCallback(
+		(updater: (current: ClosedBrowserTab[]) => ClosedBrowserTab[]) => {
+			const current = closedTabsBySession.get(sessionId) ?? [];
+			const next = updater(current);
+			closedTabsBySession.set(sessionId, next);
+			setClosedTabs(next);
+		},
+		[sessionId],
+	);
 
 	const sendHiddenBounds = useCallback((id = viewIdRef.current) => {
 		if (!id) return;
@@ -279,7 +364,12 @@ export function useBrowserView({
 		// previous session could otherwise silently reapply to the new one.
 		setTabOrder([]);
 		setDevtoolsState(EMPTY_DEVTOOLS_STATE);
+		setProfileState(EMPTY_PROFILE_STATE);
 		setTabNotice("");
+		// Restore this session's own Recently Closed list rather than wiping it —
+		// switching away and back should find it exactly as it was, same as the
+		// live tabs the native view already keeps.
+		setClosedTabs(closedTabsBySession.get(sessionId) ?? []);
 		setAgentBrowserActive(false);
 		setAgentBrowserActivity(null);
 		if (tabNoticeTimerRef.current !== null) {
@@ -297,6 +387,7 @@ export function useBrowserView({
 			setViewId(state.viewId);
 			setNavState(state);
 			setDevtoolsState((current) => ({ ...current, viewId: state.viewId, activeTabId: "" }));
+			setProfileState({ viewId: state.viewId, profileId: null, temporary: true });
 			return () => {
 				disposed = true;
 				viewIdRef.current = "";
@@ -307,6 +398,12 @@ export function useBrowserView({
 			viewIdRef.current = state.viewId;
 			setViewId(state.viewId);
 			setNavState(state);
+			void window.ao?.browser
+				.getProfile(state.viewId)
+				.then((profile) => {
+					if (!disposed && viewIdRef.current === profile.viewId) setProfileState(profile);
+				})
+				.catch(() => undefined);
 			void window.ao?.browser
 				.getTabs(state.viewId)
 				.then((tabs) => {
@@ -345,15 +442,19 @@ export function useBrowserView({
 		return window.ao?.browser.onTabsState((state) => {
 			if (state.viewId !== viewIdRef.current) return;
 			setTabsState(state);
-			if (state.change?.kind !== "popup") return;
-			setTabNotice("Opened new tab");
-			if (tabNoticeTimerRef.current !== null) window.clearTimeout(tabNoticeTimerRef.current);
-			tabNoticeTimerRef.current = window.setTimeout(() => {
-				tabNoticeTimerRef.current = null;
-				setTabNotice("");
-			}, 3_000);
+			const change = state.change;
+			if (change?.kind === "popup") {
+				showTabNotice("Opened new tab");
+				return;
+			}
+			if (change?.kind !== "closed" || !change.tab || isBlankTabUrl(change.tab.url)) return;
+			const { id, title, url, favicon } = change.tab;
+			updateClosedTabs((current) => [
+				{ id, title, url, favicon },
+				...current.filter((tab) => tab.id !== id),
+			].slice(0, MAX_CLOSED_TABS));
 		});
-	}, []);
+	}, [showTabNotice, updateClosedTabs]);
 
 	// Re-project the persisted display order onto every incoming tabsState push:
 	// browser:tabsState fires on every nav/title-update/loading-state change for
@@ -379,6 +480,13 @@ export function useBrowserView({
 		return window.ao?.browser.onDevToolsState((state) => {
 			if (state.viewId !== viewIdRef.current) return;
 			setDevtoolsState(state);
+		});
+	}, []);
+
+	useEffect(() => {
+		return window.ao?.browser.onProfileState((state) => {
+			if (state.viewId !== viewIdRef.current) return;
+			setProfileState(state);
 		});
 	}, []);
 
@@ -422,7 +530,9 @@ export function useBrowserView({
 	useEffect(() => {
 		if (!hasNativeBrowser) return;
 		const update = () => {
-			const open = document.querySelector(OPEN_BROWSER_OVERLAY_SELECTOR) !== null;
+			const open =
+				document.body.classList.contains("is-resizing-x") ||
+				document.querySelector(OPEN_BROWSER_OVERLAY_SELECTOR) !== null;
 			if (open === overlayOpenRef.current) return;
 			overlayOpenRef.current = open;
 			// The live page never moves or becomes a bitmap. Reordering the explicit
@@ -446,8 +556,19 @@ export function useBrowserView({
 			attributes: true,
 			attributeFilter: ["data-state"],
 		});
+		// useResizable.ts toggles `is-resizing-x` on <body> (outside React) while the
+		// inspector's own drag handle is held — that handle sits right at the edge of
+		// the browser panel, and the WebContentsView swallows every pointer event the
+		// instant the cursor crosses into it, killing the drag dead mid-resize. Raise
+		// the shell for the same duration so the drag keeps receiving events there too.
+		// A dedicated, non-subtree observer keeps this cheap: unlike `data-state` above,
+		// `class` churns on nearly every render throughout the app, so watching it
+		// subtree-wide would run `update()` far more often than the dialog/menu case.
+		const resizeObserver = new MutationObserver(update);
+		resizeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
 		return () => {
 			observer.disconnect();
+			resizeObserver.disconnect();
 			window.ao?.browser.setOverlayOpen(false);
 			overlayOpenRef.current = false;
 		};
@@ -499,28 +620,122 @@ export function useBrowserView({
 		async (tabId: string) => {
 			const viewId = viewIdRef.current;
 			if (!viewId || !hasNativeBrowser) return;
-			const state = await window.ao!.browser.selectTab({ viewId, tabId });
-			if (viewIdRef.current === state.viewId) setTabsState(state);
+			try {
+				const state = await window.ao!.browser.selectTab({ viewId, tabId });
+				if (viewIdRef.current === state.viewId) setTabsState(state);
+			} catch {
+				// Fire-and-forget from the rail (`void onSelectTab(...)`) — without
+				// this the click just silently does nothing, with no way to tell a
+				// slow response from a dead button.
+				showTabNotice("Couldn't switch to that tab");
+			}
 		},
-		[hasNativeBrowser],
+		[hasNativeBrowser, showTabNotice],
 	);
 
 	const closeTab = useCallback(
 		async (tabId: string) => {
 			const viewId = viewIdRef.current;
 			if (!viewId || !hasNativeBrowser) return;
-			const state = await window.ao!.browser.closeTab({ viewId, tabId });
-			if (viewIdRef.current === state.viewId) setTabsState(state);
+			// Read from the ref, not the tabsState closure, so this callback's
+			// identity stays stable across tab updates instead of churning on
+			// every nav/title-update/loading-state push (it cascades into
+			// handleCloseTab in BrowserTabsRail.tsx otherwise).
+			const closing = tabsStateRef.current.tabs.find((tab) => tab.id === tabId);
+			try {
+				const state = await window.ao!.browser.closeTab({ viewId, tabId });
+				if (viewIdRef.current !== state.viewId) return;
+				setTabsState(state);
+				// Only remember it once the main process confirms it's actually gone —
+				// closeTab can silently no-op (the tab stays in state.tabs), and
+				// recording it as "closed" anyway would show it in Recently Closed
+				// while it's still sitting right there in the live tab list. Only real,
+				// distinguishable tabs are worth keeping — a blank tab has nothing to
+				// reopen.
+				const stillOpen = state.tabs.some((tab) => tab.id === tabId);
+				if (closing && !stillOpen && !isBlankTabUrl(closing.url)) {
+					const { id, title, url, favicon } = closing;
+					updateClosedTabs((current) => [{ id, title, url, favicon }, ...current.filter((t) => t.id !== id)].slice(0, MAX_CLOSED_TABS));
+				}
+			} catch {
+				showTabNotice("Couldn't close that tab");
+				// The main process can mutate its own tab state before reporting a
+				// close as failed (e.g. the automation runtime's own closeTarget
+				// callback already removed the tab, then the overall command still
+				// reports failure) — resync instead of leaving this tab's row
+				// showing in the rail after it's genuinely gone, which just
+				// re-fails identically on every retry.
+				window.ao?.browser
+					.getTabs(viewId)
+					.then((state) => {
+						if (viewIdRef.current === state.viewId) setTabsState(state);
+					})
+					.catch(() => undefined);
+			}
 		},
-		[hasNativeBrowser],
+		[hasNativeBrowser, showTabNotice, updateClosedTabs],
 	);
 
-	const openTab = useCallback(async () => {
-		const viewId = viewIdRef.current;
-		if (!viewId || !hasNativeBrowser) return;
-		const state = await window.ao!.browser.openTab({ viewId });
-		if (viewIdRef.current === state.viewId) setTabsState(state);
-	}, [hasNativeBrowser]);
+	const openTab = useCallback(
+		async (url?: string) => {
+			if (!hasNativeBrowser) return;
+			let viewId = viewIdRef.current;
+			if (!viewId) {
+				const ensured = await window.ao!.browser.ensure(sessionId);
+				viewId = ensured.viewId;
+				viewIdRef.current = viewId;
+				setViewId(viewId);
+				setNavState(ensured);
+			}
+			const state = await window.ao!.browser.openTab({ viewId, url });
+			if (viewIdRef.current === state.viewId) setTabsState(state);
+		},
+		[hasNativeBrowser, sessionId],
+	);
+	const openLink = useCallback(
+		async (url: string) => {
+			if (!hasNativeBrowser) return;
+			let id = viewIdRef.current;
+			if (!id) {
+				const ensured = await window.ao!.browser.ensure(sessionId);
+				id = ensured.viewId;
+				viewIdRef.current = id;
+				setViewId(id);
+				setNavState(ensured);
+			}
+			let tabs = tabsStateRef.current.tabs;
+			if (tabs.length === 0) {
+				const next = await window.ao!.browser.getTabs(id);
+				tabs = next.tabs;
+				if (viewIdRef.current === id) setTabsState(next);
+			}
+			const activeTab = tabs.find((tab) => tab.active);
+			if (activeTab && isBlankTabUrl(activeTab.url)) {
+				const state = await window.ao!.browser.navigate({ viewId: id, url });
+				if (viewIdRef.current === state.viewId) setNavState(state);
+				return;
+			}
+			await openTab(url);
+		},
+		[hasNativeBrowser, openTab, sessionId],
+	);
+
+	const reopenClosedTab = useCallback(
+		async (tabId?: string) => {
+			const current = closedTabsBySession.get(sessionId) ?? [];
+			const entry = tabId ? current.find((tab) => tab.id === tabId) : current[0];
+			if (!entry) return;
+			updateClosedTabs((tabs) => tabs.filter((tab) => tab.id !== entry.id));
+			try {
+				await openTab(entry.url);
+			} catch {
+				// Restore the entry instead of losing it when tab creation fails.
+				updateClosedTabs((tabs) => [entry, ...tabs.filter((tab) => tab.id !== entry.id)].slice(0, MAX_CLOSED_TABS));
+				showTabNotice("Couldn't reopen that tab");
+			}
+		},
+		[openTab, sessionId, showTabNotice, updateClosedTabs],
+	);
 
 	const runDevtools = useCallback(
 		async (operation: "open" | "close" | "setPlacement", placement?: BrowserDevToolsPlacement) => {
@@ -618,6 +833,7 @@ export function useBrowserView({
 		setViewId("");
 		setNavState(EMPTY_NAV_STATE);
 		setTabsState(EMPTY_TABS_STATE);
+		setClosedTabs([]);
 	}, [sendHiddenBounds]);
 
 	// Termination invalidates the complete session-owned browser, including all
@@ -626,6 +842,7 @@ export function useBrowserView({
 	useEffect(() => {
 		if (!terminated || !viewId) return;
 		consumedPreviewTriggers.delete(sessionId);
+		closedTabsBySession.delete(sessionId);
 		destroy();
 	}, [destroy, sessionId, terminated, viewId]);
 
@@ -650,8 +867,12 @@ export function useBrowserView({
 		selectTab,
 		closeTab,
 		openTab,
+		openLink,
 		reorderTabs,
+		closedTabs: stateBelongsToSession ? closedTabs : [],
+		reopenClosedTab,
 		devtoolsState: stateBelongsToSession ? devtoolsState : EMPTY_DEVTOOLS_STATE,
+		profileState: stateBelongsToSession ? profileState : EMPTY_PROFILE_STATE,
 		openDevTools: () => runDevtools("open"),
 		closeDevTools: () => runDevtools("close"),
 		setDevToolsPlacement: (placement) => runDevtools("setPlacement", placement),

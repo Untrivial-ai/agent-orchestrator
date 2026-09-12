@@ -14,11 +14,40 @@ describe("resolveDaemonLaunch", () => {
 		});
 	});
 
-	it("runs the backend daemon from source in dev without an explicit command", () => {
+	it("runs the backend daemon from source in non-Windows dev without an explicit command", () => {
 		expect(resolveDaemonLaunch({}, false, "/resources", "/repo/frontend", "/home/user", "darwin")).toEqual({
 			command: "go",
 			args: ["run", "./cmd/ao", "daemon"],
 			cwd: "/repo/frontend/../backend",
+			shell: false,
+			source: "dev",
+		});
+	});
+
+	it("uses the prebuilt daemon exe in Windows dev", () => {
+		expect(resolveDaemonLaunch({}, false, "/resources", "C:\\repo\\frontend", "C:\\Users\\alice", "win32")).toEqual({
+			command: "C:\\repo\\frontend/daemon/ao.exe",
+			args: ["daemon"],
+			cwd: "C:\\repo\\frontend",
+			shell: false,
+			source: "dev",
+		});
+	});
+
+	it("uses the versioned daemon exe in Windows dev when build-daemon wrote one", () => {
+		expect(
+			resolveDaemonLaunch(
+				{ AO_DEV_DAEMON_BINARY: "C:\\repo\\frontend\\daemon\\dev-123\\ao.exe" },
+				false,
+				"/resources",
+				"C:\\repo\\frontend",
+				"C:\\Users\\alice",
+				"win32",
+			),
+		).toEqual({
+			command: "C:\\repo\\frontend\\daemon\\dev-123\\ao.exe",
+			args: ["daemon"],
+			cwd: "C:\\repo\\frontend",
 			shell: false,
 			source: "dev",
 		});

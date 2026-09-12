@@ -35,7 +35,7 @@ func TestLiveOpenCodeACP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer conversation.Close()
+	defer conversation.(ports.ChatProviderTerminator).Terminate()
 
 	ref, err := conversation.SendTurn(ctx, ports.ChatUserMessage{
 		Text: "Reply with exactly: AO OpenCode ACP works", ClientMessageID: "live-1",
@@ -64,6 +64,11 @@ func TestLiveOpenCodeACP(t *testing.T) {
 				}
 				if !strings.Contains(answer.String(), "AO OpenCode ACP works") {
 					t.Fatalf("answer = %q", answer.String())
+				}
+				if acknowledger, ok := conversation.(ports.ChatProviderEventAcknowledger); ok {
+					if err := acknowledger.AcknowledgeProviderEvent(context.Background(), event.ProviderEventID); err != nil {
+						t.Fatalf("acknowledge turn: %v", err)
+					}
 				}
 				return
 			}

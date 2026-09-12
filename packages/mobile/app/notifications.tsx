@@ -12,6 +12,7 @@ import type { Theme } from "../lib/theme";
 import { haptics } from "../lib/haptics";
 import { notificationTarget, notificationVisual, relativeTime } from "../lib/notificationView";
 import { useApp } from "../lib/store";
+import { MINUTE_MS, useNow } from "../lib/useNow";
 import { Dot, EmptyState } from "../lib/ui";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 
@@ -25,6 +26,9 @@ export default function NotificationsScreen() {
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
 	const { config } = useApp();
+	// This screen fetches once and pages; nothing else redraws a row, so the
+	// relative stamps need their own clock.
+	const now = useNow(MINUTE_MS);
 	const [items, setItems] = useState<NotificationRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [refreshing, setRefreshing] = useState(false);
@@ -151,14 +155,14 @@ export default function NotificationsScreen() {
 							}
 						/>
 					}
-					renderItem={({ item }) => <NotificationRow item={item} onPress={() => open(item)} />}
+					renderItem={({ item }) => <NotificationRow item={item} now={now} onPress={() => open(item)} />}
 				/>
 			)}
 		</View>
 	);
 }
 
-function NotificationRow({ item, onPress }: { item: NotificationRecord; onPress: () => void }) {
+function NotificationRow({ item, now, onPress }: { item: NotificationRecord; now: number; onPress: () => void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const v = notificationVisual(t, item.type);
@@ -174,7 +178,7 @@ function NotificationRow({ item, onPress }: { item: NotificationRecord; onPress:
 						{item.title || v.label}
 					</Text>
 					{unread ? <Dot color={t.blue} size={7} /> : null}
-					<Text style={styles.time}>{relativeTime(item.createdAt)}</Text>
+					<Text style={styles.time}>{relativeTime(item.createdAt, now)}</Text>
 				</View>
 				{item.body ? (
 					<Text style={styles.body} numberOfLines={2}>

@@ -136,6 +136,26 @@ func (s *transitionStore) AdvanceSessionInterfaceTransition(_ context.Context, i
 	return true, nil
 }
 
+func (s *transitionStore) AcknowledgeSessionInterfaceTransitionNotice(
+	_ context.Context,
+	sessionID domain.SessionID,
+	transitionID string,
+	now time.Time,
+) (domain.SessionInterfaceTransition, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.transitions[transitionID]
+	if !ok || rec.SessionID != sessionID ||
+		(rec.Phase != domain.SessionInterfaceTransitionFailed && rec.Phase != domain.SessionInterfaceTransitionRecovery) {
+		return domain.SessionInterfaceTransition{}, false, nil
+	}
+	if rec.NoticeAcknowledgedAt.IsZero() {
+		rec.NoticeAcknowledgedAt = now
+		s.transitions[transitionID] = rec
+	}
+	return rec, true, nil
+}
+
 func (s *transitionStore) EnqueueSessionInterfaceTransitionMessage(_ context.Context, transitionID, clientMessageID, message string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -205,15 +225,68 @@ func (transitionDetectorAgent) DetectTerminalActivity(output string) (domain.Act
 	return "", false
 }
 
+type transitionSurfaceAgent struct{ transitionAgent }
+
+func (transitionSurfaceAgent) InspectTerminalSurface(output string) ports.TerminalSurfaceObservation {
+	switch output {
+	case idleTerminalOutput:
+		return ports.TerminalSurfaceObservation{
+			Work: ports.TerminalSurfaceWorkIdle, Composer: ports.TerminalComposerEmpty,
+		}
+	case draftTerminalOutput:
+		return ports.TerminalSurfaceObservation{
+			Work: ports.TerminalSurfaceWorkIdle, Composer: ports.TerminalComposerDraft,
+		}
+	case activeDraftTerminalOutput:
+		return ports.TerminalSurfaceObservation{
+			Work: ports.TerminalSurfaceWorkActive, Composer: ports.TerminalComposerDraft,
+		}
+	case decisionTerminalOutput:
+		return ports.TerminalSurfaceObservation{
+			Work: ports.TerminalSurfaceWorkBlocked, Composer: ports.TerminalComposerDraft,
+		}
+	case activeTerminalOutput:
+		return ports.TerminalSurfaceObservation{Work: ports.TerminalSurfaceWorkActive}
+	default:
+		return ports.TerminalSurfaceObservation{}
+	}
+}
+
+type transitionSurfaceDetectorAgent struct{ transitionSurfaceAgent }
+
+func (transitionSurfaceDetectorAgent) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
+	if output == idleTerminalOutput || output == draftTerminalOutput {
+		return domain.ActivityIdle, true
+	}
+	return "", false
+}
+
+func (transitionSurfaceDetectorAgent) ComposerIsEmpty(output string) bool {
+	return output == idleTerminalOutput
+}
+
 const (
-	idleTerminalOutput      = "idle"
-	ambiguousTerminalOutput = "ambiguous"
+	idleTerminalOutput        = "idle"
+	draftTerminalOutput       = "draft"
+	activeDraftTerminalOutput = "active-draft"
+	decisionTerminalOutput    = "decision"
+	activeTerminalOutput      = "active"
+	ambiguousTerminalOutput   = "ambiguous"
 )
 
 type emptyTransitionAgent struct{ transitionAgent }
 
 func (emptyTransitionAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
 	return false, nil
+}
+
+type untouchedEmptyTransitionAgent struct{ emptyTransitionAgent }
+
+func (untouchedEmptyTransitionAgent) InspectTerminalSurface(string) ports.TerminalSurfaceObservation {
+	return ports.TerminalSurfaceObservation{
+		Work: ports.TerminalSurfaceWorkIdle, Composer: ports.TerminalComposerEmpty,
+		NativeConversationNotStarted: true,
+	}
 }
 
 type transitionRuntime struct {
@@ -223,7 +296,34 @@ type transitionRuntime struct {
 	runtimeOccupied            bool
 	outputForCall              func(int) string
 	outputCallTimes            []time.Time
+	styledOutputCalls          int
+	styledOutputErr            error
 	blockAliveUntilContextDone bool
+}
+
+// unstyledTransitionRuntime models a legacy runtime that cannot return a
+// current rendered screen with SGR styling. Embedding would promote the optional
+// styled capability, so delegate the required Runtime methods only.
+type unstyledTransitionRuntime struct{ runtime *transitionRuntime }
+
+func (r *unstyledTransitionRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	return r.runtime.Create(ctx, cfg)
+}
+
+func (r *unstyledTransitionRuntime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
+	return r.runtime.Destroy(ctx, handle)
+}
+
+func (r *unstyledTransitionRuntime) GetOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
+	return r.runtime.GetOutput(ctx, handle, lines)
+}
+
+func (r *unstyledTransitionRuntime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	return r.runtime.IsAlive(ctx, handle)
+}
+
+func (r *unstyledTransitionRuntime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
+	return r.runtime.ProbeFencedRuntime(ctx, ref)
 }
 
 func (r *transitionRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
@@ -276,6 +376,19 @@ func (r *transitionRuntime) GetOutput(ctx context.Context, handle ports.RuntimeH
 	return r.outputForCall(r.outputCalls), nil
 }
 
+func (r *transitionRuntime) GetStyledOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
+	r.outputCallTimes = append(r.outputCallTimes, time.Now())
+	r.styledOutputCalls++
+	if r.styledOutputErr != nil {
+		return "", r.styledOutputErr
+	}
+	if r.outputForCall == nil {
+		return r.fakeRuntime.GetOutput(ctx, handle, lines)
+	}
+	r.outputCalls++
+	return r.outputForCall(r.outputCalls), nil
+}
+
 type transitionChat struct {
 	log              *[]string
 	armed            chan domain.SessionInterfaceTransitionPolicy
@@ -296,7 +409,11 @@ func (c *transitionChat) SupportsChat(_ domain.AgentHarness) bool {
 	return c.supportsChat
 }
 
-func (c *transitionChat) PreflightChat(ctx context.Context, _ domain.AgentHarness) error {
+func (c *transitionChat) PreflightChat(
+	ctx context.Context,
+	_ domain.AgentHarness,
+	_ ports.PermissionMode,
+) error {
 	if c.preflightStarted != nil {
 		select {
 		case c.preflightStarted <- struct{}{}:
@@ -312,7 +429,12 @@ func (c *transitionChat) PreflightChat(ctx context.Context, _ domain.AgentHarnes
 	}
 	return c.preflightErr
 }
-func (c *transitionChat) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+func (c *transitionChat) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	var err error
+	cfg, err = prepareTestChatStart(ctx, cfg)
+	if err != nil {
+		return ChatStarted{}, err
+	}
 	c.start = cfg
 	*c.log = append(*c.log, "start:chat")
 	if c.startErr != nil {
@@ -320,7 +442,7 @@ func (c *transitionChat) StartChat(_ context.Context, cfg ChatStart) (ChatStarte
 	}
 	started := ChatStarted{ProviderConversationID: cfg.ProviderConversationID, ControllerGeneration: "chat-generation"}
 	if cfg.ControllerReady != nil {
-		if err := cfg.ControllerReady(started); err != nil {
+		if _, err := cfg.ControllerReady(started); err != nil {
 			return ChatStarted{}, err
 		}
 	}
@@ -407,6 +529,7 @@ func newTransitionManager(t *testing.T, mode domain.SessionMode) (*Manager, *tra
 	} else {
 		metadata.RuntimeHandleID = "runtime-1"
 		metadata.RuntimeLaunchID = "old-tui-generation"
+		metadata.AgentSessionIDLaunchID = "old-tui-generation"
 	}
 	store.sessions["session-1"] = domain.SessionRecord{
 		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
@@ -476,6 +599,98 @@ func TestInterfaceTransitionStatusAllowsSwitchToTUIWhenChatUnsupported(t *testin
 	}
 }
 
+func TestInterfaceTransitionRejectsNativeIdentityNotConfirmedByCurrentTUILaunch(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	rec := store.sessions["session-1"]
+	// MarkSpawned clears this receipt for every new runtime generation. Until a
+	// hook from that generation lands, AgentSessionID can only be an old resume
+	// hint; it is not proof that the visible TUI is still on that conversation.
+	rec.FirstSignalAt = time.Time{}
+	rec.Metadata.AgentSessionIDLaunchID = "previous-tui-generation"
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if status.Supported {
+		t.Fatal("stale native identity unexpectedly enabled interface switching")
+	}
+	if status.ReasonCode != "NATIVE_SESSION_UNVERIFIED" {
+		t.Fatalf("reasonCode = %q, want NATIVE_SESSION_UNVERIFIED", status.ReasonCode)
+	}
+	if _, err := manager.StartInterfaceTransition(
+		context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
+	); err == nil {
+		t.Fatal("interface transition started without current-launch native identity proof")
+	}
+}
+
+func TestInterfaceTransitionChatIdentityDoesNotDependOnTUIHookReceipt(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
+	rec := store.sessions["session-1"]
+	rec.FirstSignalAt = time.Time{}
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if !status.Supported {
+		t.Fatalf("Chat controller identity should remain supported: %s (%s)", status.Reason, status.ReasonCode)
+	}
+}
+
+func TestInterfaceTransitionStatusBlocksFreshStartWithoutPositiveTerminalProof(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.agents = singleAgent{agent: emptyTransitionAgent{}}
+	rec := store.sessions["session-1"]
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.AgentSessionIDLaunchID = ""
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if status.Supported {
+		t.Fatal("history probing alone enabled a fresh handoff without positive current-screen proof")
+	}
+	if status.ReasonCode != "NATIVE_SESSION_MISSING" {
+		t.Fatalf("reasonCode = %q, want NATIVE_SESSION_MISSING", status.ReasonCode)
+	}
+}
+
+func TestInterfaceTransitionStatusBlocksFreshStartWhenConversationMetadataExists(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.agents = singleAgent{agent: codexagent.New()}
+	runtime.outputForCall = func(int) string {
+		return "╭────────────────────────╮\n" +
+			"│ >_ OpenAI Codex (v0.147.0) │\n" +
+			"╰────────────────────────╯\n\n" +
+			"Tip: Try the Desktop app.\n\n" +
+			"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\n" +
+			"gpt-5.6-sol low · /ws/session-1\n"
+	}
+	rec := store.sessions["session-1"]
+	rec.Harness = domain.HarnessCodex
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.AgentSessionIDLaunchID = ""
+	rec.Metadata.LatestUserPrompt = "implement the feature"
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if status.Supported {
+		t.Fatal("expected switch to be blocked when conversation history exists but native id is empty")
+	}
+	if status.ReasonCode != "NATIVE_SESSION_MISSING" {
+		t.Fatalf("reasonCode = %q, want NATIVE_SESSION_MISSING", status.ReasonCode)
+	}
+}
+
 func awaitTransition(t *testing.T, store *transitionStore, id string) domain.SessionInterfaceTransition {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -495,6 +710,9 @@ func awaitTransition(t *testing.T, store *transitionStore, id string) domain.Ses
 
 func TestInterfaceTransitionTUIToChatStopsBeforeStartingAndReusesNativeConversation(t *testing.T) {
 	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeTUI)
+	manager.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{{
+		token: "transition-chat-token", verifier: "transition-chat-verifier",
+	}}}
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
 	if err != nil {
 		t.Fatal(err)
@@ -509,6 +727,15 @@ func TestInterfaceTransitionTUIToChatStopsBeforeStartingAndReusesNativeConversat
 	}
 	if chat.start.ProviderConversationID != "native-1" {
 		t.Fatalf("provider conversation = %q, want native-1", chat.start.ProviderConversationID)
+	}
+	if !chat.start.RequireNativeHistory {
+		t.Fatal("TUI to Chat handoff did not require native history replay")
+	}
+	if got := chat.start.Env[EnvBrowserCapability]; got != "transition-chat-token" {
+		t.Fatalf("Chat transition capability = %q, want transition-chat-token", got)
+	}
+	if got := rec.Metadata.BrowserCapabilityVerifier; got != "transition-chat-verifier" {
+		t.Fatalf("Chat transition verifier = %q, want transition-chat-verifier", got)
 	}
 	if runtime.created != 0 {
 		t.Fatalf("terminal runtime created %d times while switching to Chat", runtime.created)
@@ -546,10 +773,41 @@ func TestInterfaceTransitionRollbackClearsStaleTUIRuntimeBeforeRestore(t *testin
 	}
 }
 
+func TestInterfaceTransitionReportsNativeHistoryReplayFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "unavailable", err: ports.ErrChatHistoryUnavailable, code: "TARGET_HISTORY_UNAVAILABLE"},
+		{name: "unsettled", err: ports.ErrChatHistoryUnsettled, code: "TARGET_HISTORY_UNSETTLED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+			runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+			chat.startErr = tt.err
+
+			transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settled := awaitTransition(t, store, transition.ID)
+			if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != tt.code {
+				t.Fatalf("transition = %+v, want failed %s", settled, tt.code)
+			}
+			if got := store.sessions["session-1"].Mode; got != domain.SessionModeTUI {
+				t.Fatalf("mode = %s, want restored TUI", got)
+			}
+		})
+	}
+}
+
 func TestInterfaceTransitionTUIToChatDrainsAVisibleIdleComposerAfterNonSubmittingInput(t *testing.T) {
 	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
 	useFastInterfaceTransitionTimings(manager)
-	manager.agents = singleAgent{agent: transitionDetectorAgent{}}
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
 	now := time.Now()
 	rec := store.sessions["session-1"]
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}
@@ -571,13 +829,191 @@ func TestInterfaceTransitionTUIToChatDrainsAVisibleIdleComposerAfterNonSubmittin
 	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
 		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
 	}
-	if runtime.outputCalls < interfaceTransitionStaleIdleSamples {
+	if runtime.outputCalls < interfaceTransitionSurfaceIdleSamples {
 		t.Fatalf("terminal output calls = %d, want at least %d consecutive idle samples",
-			runtime.outputCalls, interfaceTransitionStaleIdleSamples)
+			runtime.outputCalls, interfaceTransitionSurfaceIdleSamples)
 	}
 	if firstCapture := runtime.outputCallTimes[0]; firstCapture.Before(now.Add(manager.interfaceTransition.idleSettle)) {
 		t.Fatalf("first terminal capture at %s, before input settled at %s",
 			firstCapture, now.Add(manager.interfaceTransition.idleSettle))
+	}
+}
+
+func TestInterfaceTransitionTUIToChatPreservesAVisibleDraftEvenAfterFreshIdle(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{draftTerminalOutput}
+	gate := &transitionInputGate{
+		acquired:    make(chan string, 1),
+		released:    make(chan string, 1),
+		lastInputAt: now,
+	}
+	manager.SetTerminalInputGate(gate)
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "DRAIN_DRAFT_PRESENT" {
+		t.Fatalf("transition = %+v, want failed DRAIN_DRAFT_PRESENT", settled)
+	}
+	if !strings.Contains(settled.ErrorDetail, "unsent text") || !strings.Contains(settled.ErrorDetail, "left untouched") {
+		t.Fatalf("error detail = %q, want preserved-draft guidance", settled.ErrorDetail)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times with a visible draft", runtime.destroyed)
+	}
+	if runtime.outputCalls == 0 {
+		t.Fatal("terminal surface was not inspected despite a fresh idle timestamp")
+	}
+	select {
+	case <-gate.released:
+	case <-time.After(time.Second):
+		t.Fatal("terminal input gate remained closed after draft detection")
+	}
+}
+
+func TestInterfaceTransitionTUIToChatPreservesDraftWhenSurfaceAlsoLooksActive(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{activeDraftTerminalOutput}
+	gate := &transitionInputGate{
+		acquired: make(chan string, 1),
+		released: make(chan string, 1),
+	}
+	manager.SetTerminalInputGate(gate)
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "DRAIN_DRAFT_PRESENT" {
+		t.Fatalf("transition = %+v, want failed DRAIN_DRAFT_PRESENT", settled)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times with a visible draft", runtime.destroyed)
+	}
+	select {
+	case <-gate.released:
+	case <-time.After(time.Second):
+		t.Fatal("terminal input gate remained closed after draft detection")
+	}
+}
+
+func TestInterfaceTransitionTUIToChatReportsAPendingDecisionBeforeComposerDraft(t *testing.T) {
+	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{decisionTerminalOutput}
+	gate := &transitionInputGate{
+		acquired: make(chan string, 2),
+		released: make(chan string, 2),
+	}
+	manager.SetTerminalInputGate(gate)
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "DRAIN_DECISION_PENDING" {
+		t.Fatalf("transition = %+v, want failed DRAIN_DECISION_PENDING", settled)
+	}
+	if !strings.Contains(settled.ErrorDetail, "decision") || !strings.Contains(settled.ErrorDetail, "Terminal") {
+		t.Fatalf("error detail = %q, want guidance to answer the decision in Terminal", settled.ErrorDetail)
+	}
+	if strings.Contains(settled.ErrorDetail, "unsent text") {
+		t.Fatalf("error detail = %q, pending decision was misreported as a draft", settled.ErrorDetail)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times with a pending decision", runtime.destroyed)
+	}
+	select {
+	case <-gate.released:
+	case <-time.After(time.Second):
+		t.Fatal("terminal input gate remained closed after decision detection")
+	}
+
+	recovery, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionInterrupt)
+	if err != nil {
+		t.Fatalf("start decision cancellation: %v", err)
+	}
+	completed := awaitTransition(t, store, recovery.ID)
+	if completed.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("decision cancellation = %+v, want completed", completed)
+	}
+	if !strings.Contains(fmt.Sprint(*log), "interrupt:tui:runtime-1") {
+		t.Fatalf("controller log = %v, explicit decision cancellation did not interrupt the provider", *log)
+	}
+}
+
+func TestInterfaceTransitionTUIToChatCanInterruptAfterDraftDrainFailure(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{draftTerminalOutput}
+	manager.SetTerminalInputGate(&transitionInputGate{
+		acquired: make(chan string, 2), released: make(chan string, 2), lastInputAt: now,
+	})
+
+	drain, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := awaitTransition(t, store, drain.ID)
+	if failed.Phase != domain.SessionInterfaceTransitionFailed || failed.ErrorCode != "DRAIN_DRAFT_PRESENT" {
+		t.Fatalf("drain transition = %+v, want failed DRAIN_DRAFT_PRESENT", failed)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times before explicit discard", runtime.destroyed)
+	}
+
+	recovery, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionInterrupt)
+	if err != nil {
+		t.Fatalf("start interrupt recovery: %v", err)
+	}
+	settled := awaitTransition(t, store, recovery.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("interrupt recovery = %+v, want completed", settled)
+	}
+	if settled.Policy != domain.SessionInterfaceTransitionInterrupt {
+		t.Fatalf("recovery policy = %q, want interrupt", settled.Policy)
+	}
+	if runtime.destroyed != 1 {
+		t.Fatalf("source runtime destroyed %d times after explicit discard, want 1", runtime.destroyed)
+	}
+	if got := store.sessions["session-1"].Mode; got != domain.SessionModeChat {
+		t.Fatalf("session mode = %q, want chat", got)
 	}
 }
 
@@ -621,6 +1057,7 @@ func TestInterfaceTransitionTUIToChatFailsClosedWhenStaleIdleCannotBeVerified(t 
 	}{
 		{name: "detector unavailable", agent: transitionAgent{}},
 		{name: "detector ambiguous", agent: transitionDetectorAgent{}, outputs: []string{ambiguousTerminalOutput}, wantCaptures: true},
+		{name: "surface inspector ambiguous", agent: transitionSurfaceAgent{}, outputs: []string{ambiguousTerminalOutput}, wantCaptures: true},
 		{
 			name:  "idle and ambiguous captures keep alternating",
 			agent: transitionDetectorAgent{},
@@ -687,6 +1124,178 @@ func TestInterfaceTransitionTUIToChatFailsClosedWhenStaleIdleCannotBeVerified(t 
 	}
 }
 
+func TestInterfaceTransitionTUIToChatFallsBackWhenStyledOutputIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name         string
+		agent        ports.Agent
+		activityAt   func(time.Time) time.Time
+		wantCaptures bool
+	}{
+		{
+			name:       "causally fresh durable idle",
+			agent:      transitionSurfaceAgent{},
+			activityAt: func(inputAt time.Time) time.Time { return inputAt },
+		},
+		{
+			name:         "stale idle verified by legacy detector",
+			agent:        transitionSurfaceDetectorAgent{},
+			activityAt:   func(inputAt time.Time) time.Time { return inputAt.Add(-time.Minute) },
+			wantCaptures: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+			useFastInterfaceTransitionTimings(manager)
+			manager.agents = singleAgent{agent: tt.agent}
+			manager.runtime = &unstyledTransitionRuntime{runtime: runtime}
+			runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+			runtime.outputs = []string{idleTerminalOutput}
+			inputAt := time.Now()
+			rec := store.sessions["session-1"]
+			rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: tt.activityAt(inputAt)}
+			store.sessions["session-1"] = rec
+			manager.SetTerminalInputGate(&transitionInputGate{
+				acquired: make(chan string, 1), released: make(chan string, 1), lastInputAt: inputAt,
+			})
+
+			transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settled := awaitTransition(t, store, transition.ID)
+			if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+				t.Fatalf("transition = %+v, want completed fallback drain", settled)
+			}
+			if tt.wantCaptures && runtime.outputCalls == 0 {
+				t.Fatal("legacy terminal detector was not consulted")
+			}
+			if !tt.wantCaptures && runtime.outputCalls != 0 {
+				t.Fatalf("plain terminal captures = %d, want fresh durable idle to avoid capture", runtime.outputCalls)
+			}
+		})
+	}
+}
+
+func TestInterfaceTransitionTUIToChatFallsBackForARecoveredHostWithoutStyledOutput(t *testing.T) {
+	tests := []struct {
+		name         string
+		agent        ports.Agent
+		activityAt   func(time.Time) time.Time
+		wantCaptures bool
+	}{
+		{
+			name:       "causally fresh durable idle",
+			agent:      transitionSurfaceAgent{},
+			activityAt: func(inputAt time.Time) time.Time { return inputAt },
+		},
+		{
+			name:         "stale idle verified by legacy detector",
+			agent:        transitionSurfaceDetectorAgent{},
+			activityAt:   func(inputAt time.Time) time.Time { return inputAt.Add(-time.Minute) },
+			wantCaptures: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+			useFastInterfaceTransitionTimings(manager)
+			manager.agents = singleAgent{agent: tt.agent}
+			runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+			runtime.outputs = []string{idleTerminalOutput}
+			runtime.styledOutputErr = ports.ErrStyledTerminalOutputUnavailable
+			inputAt := time.Now()
+			rec := store.sessions["session-1"]
+			rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: tt.activityAt(inputAt)}
+			store.sessions["session-1"] = rec
+			manager.SetTerminalInputGate(&transitionInputGate{
+				acquired: make(chan string, 1), released: make(chan string, 1), lastInputAt: inputAt,
+			})
+
+			transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settled := awaitTransition(t, store, transition.ID)
+			if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+				t.Fatalf("transition = %+v, want completed per-handle fallback drain", settled)
+			}
+			if runtime.styledOutputCalls != 1 {
+				t.Fatalf("styled output probes = %d, want one capability probe", runtime.styledOutputCalls)
+			}
+			if tt.wantCaptures && runtime.outputCalls == 0 {
+				t.Fatal("legacy terminal detector was not consulted")
+			}
+			if !tt.wantCaptures && runtime.outputCalls != 0 {
+				t.Fatalf("plain terminal captures = %d, want fresh durable idle to avoid capture", runtime.outputCalls)
+			}
+		})
+	}
+}
+
+func TestInterfaceTransitionTUIToChatUnstyledFallbackDoesNotApproveAnIdleDraft(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceDetectorAgent{}}
+	manager.runtime = &unstyledTransitionRuntime{runtime: runtime}
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{draftTerminalOutput}
+	inputAt := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: inputAt.Add(-time.Minute)}
+	store.sessions["session-1"] = rec
+	manager.SetTerminalInputGate(&transitionInputGate{
+		acquired: make(chan string, 1), released: make(chan string, 1), lastInputAt: inputAt,
+	})
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "DRAIN_QUIESCENCE_UNVERIFIED" {
+		t.Fatalf("transition = %+v, want failed DRAIN_QUIESCENCE_UNVERIFIED", settled)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times with an unverified draft", runtime.destroyed)
+	}
+}
+
+func TestInterfaceTransitionTUIToChatTreatsCurrentSurfaceActivityAsBusy(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{activeTerminalOutput}
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * manager.interfaceTransition.staleIdleLimit)
+	current, _, err := store.GetSessionInterfaceTransition(context.Background(), transition.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Phase != domain.SessionInterfaceTransitionDraining {
+		t.Fatalf("phase = %s, want draining while current terminal surface is active", current.Phase)
+	}
+	if err := manager.CancelInterfaceTransition(context.Background(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times while surface was active", runtime.destroyed)
+	}
+}
+
 func TestInterfaceTransitionTUIToChatAcceptsConfirmedRuntimeExitDuringStaleIdle(t *testing.T) {
 	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
 	useFastInterfaceTransitionTimings(manager)
@@ -715,60 +1324,76 @@ func TestInterfaceTransitionTUIToChatAcceptsConfirmedRuntimeExitDuringStaleIdle(
 	}
 }
 
-func TestInterfaceTransitionTUIToChatDoesNotTimeOutActiveWorkOrDecisions(t *testing.T) {
-	for _, state := range []domain.ActivityState{
-		domain.ActivityActive,
-		domain.ActivityWaitingInput,
-		domain.ActivityBlocked,
-	} {
+func TestInterfaceTransitionTUIToChatDoesNotTimeOutActiveWork(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now().Add(-time.Hour)}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{idleTerminalOutput}
+	gate := &transitionInputGate{
+		acquired:    make(chan string, 1),
+		released:    make(chan string, 1),
+		lastInputAt: time.Now(),
+	}
+	manager.SetTerminalInputGate(gate)
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, _, readErr := store.GetSessionInterfaceTransition(context.Background(), transition.ID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if current.Phase == domain.SessionInterfaceTransitionDraining {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(2 * manager.interfaceTransition.staleIdleLimit)
+	current, _, err := store.GetSessionInterfaceTransition(context.Background(), transition.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Phase != domain.SessionInterfaceTransitionDraining {
+		t.Fatalf("phase = %s, want draining while source is active", current.Phase)
+	}
+	if err := manager.CancelInterfaceTransition(context.Background(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.destroyed != 0 {
+		t.Fatalf("source runtime destroyed %d times while cancelling active drain", runtime.destroyed)
+	}
+	select {
+	case <-gate.released:
+	case <-time.After(time.Second):
+		t.Fatal("terminal input gate remained closed after cancellation")
+	}
+}
+
+func TestInterfaceTransitionTUIToChatReportsDurablePendingDecisionWithoutSurfaceProof(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityWaitingInput, domain.ActivityBlocked} {
 		t.Run(string(state), func(t *testing.T) {
 			manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
 			useFastInterfaceTransitionTimings(manager)
 			rec := store.sessions["session-1"]
-			rec.Activity = domain.Activity{State: state, LastActivityAt: time.Now().Add(-time.Hour)}
+			rec.Activity = domain.Activity{State: state, LastActivityAt: time.Now()}
 			store.sessions["session-1"] = rec
 			runtime.aliveByHandle = map[string]bool{"runtime-1": true}
-			gate := &transitionInputGate{
-				acquired:    make(chan string, 1),
-				released:    make(chan string, 1),
-				lastInputAt: time.Now(),
-			}
-			manager.SetTerminalInputGate(gate)
 
-			transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
-				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
-			if err != nil {
-				t.Fatal(err)
-			}
-			deadline := time.Now().Add(time.Second)
-			for time.Now().Before(deadline) {
-				current, _, readErr := store.GetSessionInterfaceTransition(context.Background(), transition.ID)
-				if readErr != nil {
-					t.Fatal(readErr)
-				}
-				if current.Phase == domain.SessionInterfaceTransitionDraining {
-					break
-				}
-				time.Sleep(time.Millisecond)
-			}
-			time.Sleep(2 * manager.interfaceTransition.staleIdleLimit)
-			current, _, err := store.GetSessionInterfaceTransition(context.Background(), transition.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if current.Phase != domain.SessionInterfaceTransitionDraining {
-				t.Fatalf("phase = %s, want draining while source is %s", current.Phase, state)
-			}
-			if err := manager.CancelInterfaceTransition(context.Background(), "session-1"); err != nil {
-				t.Fatal(err)
-			}
-			if runtime.destroyed != 0 {
-				t.Fatalf("source runtime destroyed %d times while cancelling %s drain", runtime.destroyed, state)
-			}
-			select {
-			case <-gate.released:
-			case <-time.After(time.Second):
-				t.Fatal("terminal input gate remained closed after cancellation")
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			err := manager.prepareSourceHandoff(
+				ctx, rec, domain.SessionInterfaceTransitionDrain, time.Time{},
+			)
+			if !errors.Is(err, errDrainDecisionPending) {
+				t.Fatalf("prepare source with durable %s = %v, want errDrainDecisionPending", state, err)
 			}
 		})
 	}
@@ -865,9 +1490,90 @@ func TestInterfaceTransitionTUIToChatRebuildsOrchestratorStandingContext(t *test
 	}
 }
 
-func TestInterfaceTransitionTUIToChatStartsFreshWhenReservedIDHasNoHistory(t *testing.T) {
+func TestInterfaceTransitionTUIToChatRejectsReservedIDWhenHistoryIsMissing(t *testing.T) {
 	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeTUI)
 	manager.agents = singleAgent{agent: emptyTransitionAgent{}}
+
+	_, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if !errors.Is(err, ErrNativeConversationMissing) {
+		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
+	}
+	if len(store.transitions) != 0 || runtime.destroyed != 0 || chat.start.ProviderConversationID != "" || len(*log) != 0 {
+		t.Fatalf("missing native history mutated the source: transitions=%d destroyed=%d chat=%q log=%v",
+			len(store.transitions), runtime.destroyed, chat.start.ProviderConversationID, *log)
+	}
+}
+
+func TestInterfaceTransitionTUIToChatStartsFreshWithPositiveUntouchedSurfaceProof(t *testing.T) {
+	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: untouchedEmptyTransitionAgent{}}
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatalf("StartInterfaceTransition: %v", err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("transition = %+v, want completed", settled)
+	}
+	if settled.NativeConversationID != "" || chat.start.ProviderConversationID != "" {
+		t.Fatalf("untouched native session did not start fresh: transition=%q chat=%q",
+			settled.NativeConversationID, chat.start.ProviderConversationID)
+	}
+}
+
+func TestInterfaceTransitionTUIToChatRejectsExistingCodexIDWhenRolloutIsMissing(t *testing.T) {
+	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	manager.agents = singleAgent{agent: codexagent.New()}
+	rec := store.sessions["session-1"]
+	rec.Harness = domain.HarnessCodex
+	rec.Metadata.AgentSessionID = "019fc430-1234-7abc-8def-0123456789ab"
+	rec.Metadata.LatestUserPrompt = "keep the completed terminal work"
+	store.sessions["session-1"] = rec
+
+	_, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if !errors.Is(err, ErrNativeConversationMissing) {
+		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
+	}
+	if runtime.destroyed != 0 || chat.start.ProviderConversationID != "" {
+		t.Fatalf("missing Codex rollout destroyed=%d or started Chat=%q",
+			runtime.destroyed, chat.start.ProviderConversationID)
+	}
+}
+
+func TestInterfaceTransitionPromptlessCodexStartsFreshWithoutNativeID(t *testing.T) {
+	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.agents = singleAgent{agent: codexagent.New()}
+	useFastInterfaceTransitionTimings(manager)
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	initialSurface := "╭────────────────────────╮\n" +
+		"│ >_ OpenAI Codex (v0.147.0) │\n" +
+		"╰────────────────────────╯\n\n" +
+		"Tip: Try the Desktop app.\n\n" +
+		"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\n" +
+		"gpt-5.6-sol low · /ws/session-1\n"
+	runtime.outputForCall = func(int) string { return initialSurface }
+	rec := store.sessions["session-1"]
+	rec.Harness = domain.HarnessCodex
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.AgentSessionIDLaunchID = ""
+	rec.Metadata.Prompt = ""
+	store.sessions["session-1"] = rec
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Supported {
+		t.Fatalf("promptless initial Codex TUI should be switchable: %+v", status)
+	}
 
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
 		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
@@ -876,29 +1582,103 @@ func TestInterfaceTransitionTUIToChatStartsFreshWhenReservedIDHasNoHistory(t *te
 	}
 	settled := awaitTransition(t, store, transition.ID)
 	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
-		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
+		t.Fatalf("phase = %s, code = %s, error = %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
 	}
-	if settled.NativeConversationID != "" {
-		t.Fatalf("native conversation = %q, want fresh sentinel", settled.NativeConversationID)
-	}
-	if chat.start.ProviderConversationID != "" {
-		t.Fatalf("Chat resumed %q, want a fresh conversation", chat.start.ProviderConversationID)
-	}
-	if runtime.created != 0 {
-		t.Fatalf("terminal runtime created %d times while switching to Chat", runtime.created)
-	}
-	if got := fmt.Sprint(*log); got != "[stop:tui:runtime-1 start:chat]" {
-		t.Fatalf("controller order = %s", got)
+	if settled.NativeConversationID != "" || chat.start.ProviderConversationID != "" {
+		t.Fatalf("promptless Codex handoff did not start fresh: transition=%q target=%q",
+			settled.NativeConversationID, chat.start.ProviderConversationID)
 	}
 }
 
-func TestInterfaceTransitionTUIToChatStartsFreshWhenCodexRolloutIsMissing(t *testing.T) {
-	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
-	t.Setenv("CODEX_HOME", t.TempDir())
+func TestInterfaceTransitionRefreshesNativeIDAfterPromptlessAdmission(t *testing.T) {
+	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
 	manager.agents = singleAgent{agent: codexagent.New()}
+	useFastInterfaceTransitionTimings(manager)
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	id := "019fc430-1234-7abc-8def-0123456789ab"
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "08", "14")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-2026-08-14T10-00-00-"+id+".jsonl"),
+		[]byte("{\"type\":\"session_meta\"}\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	initialSurface := "╭────────────────────────╮\n" +
+		"│ >_ OpenAI Codex (v0.147.0) │\n" +
+		"╰────────────────────────╯\n\n" +
+		"Tip: Try the Desktop app.\n\n" +
+		"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\n" +
+		"gpt-5.6-sol low · /ws/session-1\n"
+	runtime.outputForCall = func(call int) string {
+		if call == 1 {
+			// Model the provider hook arriving immediately after the admission
+			// snapshot but before the background worker freezes terminal input.
+			rec := store.sessions["session-1"]
+			rec.Metadata.AgentSessionID = id
+			rec.Metadata.AgentSessionIDLaunchID = rec.Metadata.RuntimeLaunchID
+			store.sessions["session-1"] = rec
+		}
+		return initialSurface
+	}
 	rec := store.sessions["session-1"]
 	rec.Harness = domain.HarnessCodex
-	rec.Metadata.AgentSessionID = "019fc430-1234-7abc-8def-0123456789ab"
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.AgentSessionIDLaunchID = ""
+	store.sessions["session-1"] = rec
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition.NativeConversationID != "" {
+		t.Fatalf("admission native id = %q, want initial fresh sentinel", transition.NativeConversationID)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s, code = %s, error = %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
+	}
+	if settled.NativeConversationID != id || chat.start.ProviderConversationID != id {
+		t.Fatalf("late native id was not transferred: transition=%q target=%q, want %q",
+			settled.NativeConversationID, chat.start.ProviderConversationID, id)
+	}
+}
+
+func TestInterfaceTransitionPromptlessAdmissionFailsBeforeStoppingWhenTurnStartsWithoutNativeID(t *testing.T) {
+	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeTUI)
+	manager.agents = singleAgent{agent: codexagent.New()}
+	useFastInterfaceTransitionTimings(manager)
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	initialSurface := "╭────────────────────────╮\n" +
+		"│ >_ OpenAI Codex (v0.147.0) │\n" +
+		"╰────────────────────────╯\n\n" +
+		"Tip: Try the Desktop app.\n\n" +
+		"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\n" +
+		"gpt-5.6-sol low · /ws/session-1\n"
+	completedTurnSurface := "╭────────────────────────╮\n" +
+		"│ >_ OpenAI Codex (v0.147.0) │\n" +
+		"╰────────────────────────╯\n\n" +
+		"› Do work\n\n• Done\n\n" +
+		"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\n" +
+		"gpt-5.6-sol low · /ws/session-1\n"
+	runtime.outputForCall = func(call int) string {
+		if call == 1 {
+			return initialSurface
+		}
+		return completedTurnSurface
+	}
+	rec := store.sessions["session-1"]
+	rec.Harness = domain.HarnessCodex
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.AgentSessionIDLaunchID = ""
 	store.sessions["session-1"] = rec
 
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
@@ -907,15 +1687,14 @@ func TestInterfaceTransitionTUIToChatStartsFreshWhenCodexRolloutIsMissing(t *tes
 		t.Fatal(err)
 	}
 	settled := awaitTransition(t, store, transition.ID)
-	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
-		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "NATIVE_SESSION_MISSING" {
+		t.Fatalf("transition = %+v, want fail-closed missing native identity", settled)
 	}
-	if settled.NativeConversationID != "" {
-		t.Fatalf("native conversation = %q, want fresh sentinel", settled.NativeConversationID)
+	if got := fmt.Sprint(*log); strings.Contains(got, "stop:tui") || strings.Contains(got, "start:chat") {
+		t.Fatalf("source was stopped or incomplete target started: %s", got)
 	}
-	if chat.start.ProviderConversationID != "" {
-		t.Fatalf("Chat resumed missing Codex rollout %q, want a fresh conversation",
-			chat.start.ProviderConversationID)
+	if got := domain.NormalizeSessionMode(store.sessions["session-1"].Mode); got != domain.SessionModeTUI {
+		t.Fatalf("session mode = %s, want TUI source preserved", got)
 	}
 }
 
@@ -956,12 +1735,47 @@ func TestInterfaceTransitionTUIToChatReusesPersistedCodexRollout(t *testing.T) {
 	}
 }
 
-func TestInterfaceTransitionChatToTUIStartsFreshWhenReservedIDHasNoHistory(t *testing.T) {
-	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeChat)
-	manager.agents = singleAgent{agent: emptyTransitionAgent{}}
+// TestInterfaceTransitionFreshTUISessionResumesAfterHookCapture is a regression
+// test for a fresh TUI session where the SessionStart hook captures the native
+// session id. The transition must resume the persisted Codex conversation
+// rather than starting fresh, proving the identifiers are populated before
+// transition and the original conversation is resumed afterward.
+func TestInterfaceTransitionFreshTUISessionResumesAfterHookCapture(t *testing.T) {
+	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	manager.agents = singleAgent{agent: codexagent.New()}
+
+	id := "019fc430-1234-7abc-8def-0123456789ab"
+	rec := store.sessions["session-1"]
+	rec.Harness = domain.HarnessCodex
+	rec.Metadata.AgentSessionID = ""
+	store.sessions["session-1"] = rec
+
+	rec = store.sessions["session-1"]
+	rec.Metadata.AgentSessionID = id
+	store.sessions["session-1"] = rec
+
+	preRec, ok, err := store.GetSession(context.Background(), "session-1")
+	if err != nil || !ok {
+		t.Fatalf("read pre-transition session: %v %v", err, ok)
+	}
+	if preRec.Metadata.AgentSessionID != id {
+		t.Fatalf("pre-transition AgentSessionID = %q, want %q (hook capture failed)",
+			preRec.Metadata.AgentSessionID, id)
+	}
+
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "08", "08")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(rolloutDir, "rollout-2026-08-08T10-00-00-"+id+".jsonl")
+	if err := os.WriteFile(rollout, []byte("{\"type\":\"session_meta\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
-		domain.SessionModeTUI, domain.SessionInterfaceTransitionDrain)
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -969,17 +1783,28 @@ func TestInterfaceTransitionChatToTUIStartsFreshWhenReservedIDHasNoHistory(t *te
 	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
 		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
 	}
-	if settled.NativeConversationID != "" {
-		t.Fatalf("native conversation = %q, want fresh sentinel", settled.NativeConversationID)
+	if settled.NativeConversationID != id {
+		t.Fatalf("native conversation = %q, want %q (transition did not resume the captured id)",
+			settled.NativeConversationID, id)
 	}
-	if runtime.created != 1 {
-		t.Fatalf("terminal runtime created %d times, want 1", runtime.created)
+	if chat.start.ProviderConversationID != id {
+		t.Fatalf("Chat resumed %q, want persisted Codex rollout %q (fresh-started instead of resuming)",
+			chat.start.ProviderConversationID, id)
 	}
-	if got := runtime.lastCfg.Argv; len(got) != 1 || got[0] != "launch" {
-		t.Fatalf("terminal argv = %#v, want fresh launch", got)
+}
+
+func TestInterfaceTransitionChatToTUIRejectsReservedIDWhenHistoryIsMissing(t *testing.T) {
+	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeChat)
+	manager.agents = singleAgent{agent: emptyTransitionAgent{}}
+
+	_, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeTUI, domain.SessionInterfaceTransitionDrain)
+	if !errors.Is(err, ErrNativeConversationMissing) {
+		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
 	}
-	if got := fmt.Sprint(*log); got != "[prepare:chat:drain stop:chat start:tui]" {
-		t.Fatalf("controller order = %s", got)
+	if len(store.transitions) != 0 || runtime.created != 0 || chat.preparedPolicy != "" || len(*log) != 0 {
+		t.Fatalf("missing native history mutated the source: transitions=%d created=%d policy=%q log=%v",
+			len(store.transitions), runtime.created, chat.preparedPolicy, *log)
 	}
 }
 
@@ -1002,6 +1827,17 @@ func TestInterfaceTransitionChatToTUIInterruptsThenStopsBeforeStarting(t *testin
 	}
 	if rec.Metadata.AgentSessionID != "native-1" {
 		t.Fatalf("agent session = %q, want native-1", rec.Metadata.AgentSessionID)
+	}
+	if rec.Metadata.AgentSessionIDLaunchID == "" || rec.Metadata.AgentSessionIDLaunchID != rec.Metadata.RuntimeLaunchID {
+		t.Fatalf("native identity launch proof = %q, runtime launch = %q; controlled Chat-to-TUI resume must be immediately switchable",
+			rec.Metadata.AgentSessionIDLaunchID, rec.Metadata.RuntimeLaunchID)
+	}
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Supported || status.TargetMode != domain.SessionModeChat {
+		t.Fatalf("resumed TUI is not immediately switchable: %+v", status)
 	}
 	if runtime.created != 1 {
 		t.Fatalf("terminal runtime created %d times, want 1", runtime.created)
@@ -1295,6 +2131,68 @@ func TestCancelInterfaceTransitionDoesNotAcknowledgeALostStopBoundaryRace(t *tes
 	}
 }
 
+func TestAcknowledgeInterfaceTransitionNoticePersistsAndIsIdempotent(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	settledAt := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	store.transitions["transition-1"] = domain.SessionInterfaceTransition{
+		ID: "transition-1", SessionID: "session-1",
+		SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeTUI,
+		Policy: domain.SessionInterfaceTransitionDrain,
+		Phase:  domain.SessionInterfaceTransitionRecovery, ErrorCode: "DAEMON_RESTARTED",
+		CreatedAt: settledAt.Add(-time.Minute), UpdatedAt: settledAt, CompletedAt: settledAt,
+	}
+
+	acknowledged, err := manager.AcknowledgeInterfaceTransitionNotice(
+		context.Background(), "session-1", "transition-1",
+	)
+	if err != nil {
+		t.Fatalf("acknowledge notice: %v", err)
+	}
+	if acknowledged.NoticeAcknowledgedAt.IsZero() {
+		t.Fatal("notice acknowledgement was not persisted")
+	}
+	if !acknowledged.UpdatedAt.Equal(settledAt) {
+		t.Fatalf("acknowledgement changed transition settlement time to %v", acknowledged.UpdatedAt)
+	}
+
+	again, err := manager.AcknowledgeInterfaceTransitionNotice(
+		context.Background(), "session-1", "transition-1",
+	)
+	if err != nil {
+		t.Fatalf("acknowledge notice again: %v", err)
+	}
+	if !again.NoticeAcknowledgedAt.Equal(acknowledged.NoticeAcknowledgedAt) {
+		t.Fatalf("idempotent acknowledgement changed timestamp from %v to %v",
+			acknowledged.NoticeAcknowledgedAt, again.NoticeAcknowledgedAt)
+	}
+}
+
+func TestAcknowledgeInterfaceTransitionNoticeIsScopedToTerminalFailureNotice(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	now := time.Now()
+	store.transitions["transition-1"] = domain.SessionInterfaceTransition{
+		ID: "transition-1", SessionID: "session-1",
+		SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Policy: domain.SessionInterfaceTransitionDrain,
+		Phase:  domain.SessionInterfaceTransitionCompleted, CreatedAt: now, UpdatedAt: now,
+	}
+
+	if _, err := manager.AcknowledgeInterfaceTransitionNotice(
+		context.Background(), "session-1", "transition-1",
+	); !errors.Is(err, ErrInterfaceTransitionNoticeNotAcknowledgeable) {
+		t.Fatalf("completed acknowledgement error = %v, want ErrInterfaceTransitionNoticeNotAcknowledgeable", err)
+	}
+
+	transition := store.transitions["transition-1"]
+	transition.Phase = domain.SessionInterfaceTransitionFailed
+	store.transitions["transition-1"] = transition
+	if _, err := manager.AcknowledgeInterfaceTransitionNotice(
+		context.Background(), "different-session", "transition-1",
+	); !errors.Is(err, ErrInterfaceTransitionNotFound) {
+		t.Fatalf("cross-session acknowledgement error = %v, want ErrInterfaceTransitionNotFound", err)
+	}
+}
+
 func TestInterfaceTransitionRetriesAnAmbiguousSourceStopBeforeStartingTarget(t *testing.T) {
 	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeTUI)
 	runtime.stopErrors = []error{errors.New("tmux command timed out"), nil}
@@ -1333,5 +2231,34 @@ func TestInterfaceTransitionDoesNotStartTargetWhenSourceStopRemainsAmbiguous(t *
 	}
 	if chat.start.ProviderConversationID != "" {
 		t.Fatalf("target Chat controller started with %q", chat.start.ProviderConversationID)
+	}
+}
+
+func TestRecoverInterruptedTUIToChatRollsBackCommittedModeBeforeReconcile(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
+	now := time.Now()
+	store.transitions["transition-1"] = domain.SessionInterfaceTransition{
+		ID: "transition-1", SessionID: "session-1",
+		SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Policy:               domain.SessionInterfaceTransitionDrain,
+		Phase:                domain.SessionInterfaceTransitionTargetStarting,
+		NativeConversationID: "native-1",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+
+	recovered, err := manager.recoverInterruptedInterfaceTransitions(context.Background())
+	if err != nil {
+		t.Fatalf("recover interrupted transition: %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].Phase != domain.SessionInterfaceTransitionRecovery {
+		t.Fatalf("recovered transitions = %+v", recovered)
+	}
+	rec := store.sessions["session-1"]
+	if rec.Mode != domain.SessionModeTUI {
+		t.Fatalf("committed mode = %s, want source TUI until native replay can be required again", rec.Mode)
+	}
+	if rec.Metadata.AgentSessionID != "native-1" {
+		t.Fatalf("source native conversation = %q, want native-1", rec.Metadata.AgentSessionID)
 	}
 }

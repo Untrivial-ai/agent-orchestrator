@@ -3,7 +3,11 @@ title: Git worktrees
 description: Isolated branches and files for sessions in Git projects.
 ---
 
-Each Git-backed session receives a worktree and branch created from the project's configured default branch. Worktrees share the repository's object database while keeping checked-out files separate.
+Each Git-backed session receives an isolated worktree and branch. By default, AO resolves the repository's Git default automatically instead of assuming `main`; multi-repository workspaces resolve their root and children independently. Worktrees share each repository's object database while keeping checked-out files separate.
+
+Automatic resolution uses the selected remote's live symbolic `HEAD`, with its cached `HEAD` as an offline fallback. A fetched request-specific remote branch can still seed an explicitly requested session branch when the remote has no symbolic `HEAD`. AO does not use the branch currently checked out in the source repository.
+
+AO records the resolved base ref for every repository in the session. Workspace and review diffs can therefore recompute their merge base after a rebase or after the repository default advances, without treating upstream-only changes as agent edits.
 
 ```bash
 ao project add --path /path/to/repo --worker-agent codex
@@ -16,7 +20,7 @@ The daemon stores project configuration as validated JSON in SQLite. Relevant fi
 
 | Field | Purpose |
 | --- | --- |
-| `defaultBranch` | Base branch for new session worktrees. |
+| `defaultBranch` | Base branch for new session worktrees; `auto` resolves each repository's Git default. |
 | `env` | Extra environment variables passed to agent runtimes. |
 | `symlinks` | Repository-relative paths linked into each workspace. |
 | `postCreate` | Commands run after workspace creation. |

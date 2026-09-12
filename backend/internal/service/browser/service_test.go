@@ -61,6 +61,9 @@ func TestServiceRequiresOwningCapabilityAndLiveSession(t *testing.T) {
 	if _, action, err := service.Execute(context.Background(), "s1", token, "dblclick", nil); err != nil || action != "dblclick" || runtime.action != "dblclick" {
 		t.Fatalf("expanded action=%q runtime=%q err=%v", action, runtime.action, err)
 	}
+	if _, action, err := service.Execute(context.Background(), "s1", token, "act", nil); err != nil || action != "act" || runtime.action != "act" {
+		t.Fatalf("act action=%q runtime=%q err=%v", action, runtime.action, err)
+	}
 	if _, action, err := service.Execute(context.Background(), "s1", token, "DEVTOOLS-OPEN", nil); err != nil || action != "devtools-open" || runtime.action != "devtools-open" {
 		t.Fatalf("devtools action=%q runtime=%q err=%v", action, runtime.action, err)
 	}
@@ -102,6 +105,32 @@ func TestAuthorityUsesLaunchScopedSessionSecrets(t *testing.T) {
 	}
 	if firstToken == "" || firstToken == secondToken || firstToken == otherToken || firstVerifier == secondVerifier {
 		t.Fatal("issued capabilities are not random and launch-scoped")
+	}
+}
+
+func TestServiceRotationRejectsOldBearerAndDispatchesNewBearer(t *testing.T) {
+	authority := NewAuthority()
+	oldToken, _, err := authority.Issue("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newToken, newVerifier, err := authority.Issue("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{}
+	service := New(fakeSessions{session: domain.Session{SessionRecord: domain.SessionRecord{
+		ID:       "s1",
+		Metadata: domain.SessionMetadata{BrowserCapabilityVerifier: newVerifier},
+	}}}, runtime, authority)
+	if _, _, err := service.Execute(context.Background(), "s1", oldToken, "snapshot", nil); apiErrorCode(err) != "BROWSER_CAPABILITY_INVALID" {
+		t.Fatalf("old bearer error = %v, want BROWSER_CAPABILITY_INVALID", err)
+	}
+	if _, _, err := service.Execute(context.Background(), "s1", newToken, "snapshot", nil); err != nil {
+		t.Fatalf("new bearer execute: %v", err)
+	}
+	if runtime.action != "snapshot" {
+		t.Fatalf("browser runtime action = %q, want snapshot", runtime.action)
 	}
 }
 

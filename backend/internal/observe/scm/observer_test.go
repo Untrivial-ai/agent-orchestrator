@@ -209,6 +209,10 @@ func (p *fakeProvider) ListPRsByRepo(_ context.Context, repo ports.SCMRepo, _ ti
 func (p *fakeProvider) CommitChecksGuard(_ context.Context, repo ports.SCMRepo, sha, _ string) (ports.SCMGuardResult, error) {
 	return p.checkGuards[commitKey(repo, sha)], nil
 }
+
+// FetchPullRequests honors the positional-alignment contract: out[i] answers
+// refs[i], with a zero-value Fetched=false placeholder for refs the fake has
+// no observation for.
 func (p *fakeProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -216,25 +220,25 @@ func (p *fakeProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRe
 	if p.fetchErr != nil {
 		return nil, p.fetchErr
 	}
-	out := make([]ports.SCMObservation, 0, len(refs))
-	for _, ref := range refs {
+	out := make([]ports.SCMObservation, len(refs))
+	for i, ref := range refs {
 		key := prKey(ref.Repo, ref.Number)
 		// Per-observation error mimics the multi dispatcher's per-provider
 		// Error metadata: a Fetched=false placeholder carrying the failure
 		// so the observer can route it to cooldown / refresh-incomplete.
 		if err, ok := p.fetchObsErrors[key]; ok {
-			out = append(out, ports.SCMObservation{
+			out[i] = ports.SCMObservation{
 				Fetched:  false,
 				Provider: ref.Repo.Provider,
 				Host:     ref.Repo.Host,
 				Repo:     ref.Repo.Repo,
 				PR:       ports.SCMPRObservation{Number: ref.Number, URL: ref.URL},
 				Error:    err,
-			})
+			}
 			continue
 		}
 		if obs, ok := p.observations[key]; ok {
-			out = append(out, obs)
+			out[i] = obs
 		}
 	}
 	return out, nil
@@ -329,6 +333,31 @@ func testObs(num int) ports.SCMObservation {
 		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: "sha" + fmt.Sprint(num), Checks: []ports.SCMCheckObservation{{Name: "build", Status: string(domain.PRCheckPassed), Conclusion: "success", URL: "ci"}}},
 		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewNone)},
 		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true},
+	}
+}
+
+func TestDomainFromObservationPreservesStableIdentityAndAliases(t *testing.T) {
+	oldURL := "https://github.com/old-owner/repo/pull/7"
+	currentURL := "https://github.com/new-owner/repo/pull/7"
+	obs := ports.SCMObservation{
+		Fetched:  true,
+		Provider: "github",
+		Host:     "github.com",
+		Repo:     "new-owner/repo",
+		PR: ports.SCMPRObservation{
+			ProviderID: "PR_stable_7",
+			URL:        currentURL,
+			URLAlias:   oldURL,
+			Number:     7,
+		},
+	}
+
+	pr, _, _, _, _ := domainFromObservation("repo-1", domain.SessionRecord{}, obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
+	if pr.ProviderID != "PR_stable_7" {
+		t.Fatalf("ProviderID = %q, want PR_stable_7", pr.ProviderID)
+	}
+	if pr.URLAlias != oldURL {
+		t.Fatalf("URLAlias = %q, want %s", pr.URLAlias, oldURL)
 	}
 }
 
@@ -599,7 +628,7 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	store := testStoreWithSession()
 	provider := &fakeProvider{
 		repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
-		openPRs:      map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1"}}},
+		openPRs:      map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{ProviderID: "PR_stable_1", URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1"}}},
 		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): testObs(1)},
 	}
 	lc := &fakeLifecycle{}
@@ -615,6 +644,9 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	}
 	if len(store.writes) < 1 || len(lc.observed) != 1 {
 		t.Fatalf("write/lifecycle missing: writes=%d lifecycle=%d", len(store.writes), len(lc.observed))
+	}
+	if store.writes[0].pr.ProviderID != "PR_stable_1" {
+		t.Fatalf("discovery ProviderID = %q, want PR_stable_1", store.writes[0].pr.ProviderID)
 	}
 }
 
@@ -2976,5 +3008,324 @@ func TestPoll_RepoRefreshMonotonicity_ListingFailsButPRSucceeds(t *testing.T) {
 	// The sync cursor must NOT advance.
 	if got := obs.Cache.LastSyncCursor[prKey(testRepo, 0)]; got != cursorBefore {
 		t.Fatalf("sync cursor advanced when listing failed: got %v, want %v (unchanged)", got, cursorBefore)
+	}
+}
+
+// After a repository rename or org transfer, the provider serves fetches for
+// the old owner/name through a redirect: the tracked subject still carries the
+// stale repo recorded on the stored PR row, while the fetched observation
+// canonicalizes to the new owner/name. These tests pin that such observations
+// are dispatched under the tracked subject's key (and persisted with the
+// canonical repo so the identities converge) instead of being dropped, which
+// left CI/mergeability permanently "unknown" while review stayed fresh.
+
+func renamedRepoFixture() (*fakeStore, *fakeProvider, ports.SCMRepo) {
+	oldRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old", Name: "r", Repo: "old/r"}
+	store := &fakeStore{
+		sessions: []domain.SessionRecord{{ID: "p-1", ProjectID: "p", Metadata: domain.SessionMetadata{Branch: "feat"}}},
+		projects: map[string]domain.ProjectRecord{"p": {ID: "p", RepoOriginURL: "https://github.com/old/r.git"}},
+		prs: map[domain.SessionID][]domain.PullRequest{"p-1": {{
+			URL: "https://github.com/new/r/pull/1", SessionID: "p-1", Number: 1,
+			Provider: "github", Host: "github.com", Repo: "old/r", SourceBranch: "feat",
+		}}},
+		checks: map[string][]domain.PullRequestCheck{},
+	}
+	canonical := ports.SCMObservation{
+		Fetched: true, Provider: "github", Host: "github.com", Repo: "new/r",
+		PR:           ports.SCMPRObservation{URL: "https://github.com/new/r/pull/1", Number: 1, State: "open", SourceBranch: "feat", TargetBranch: "main", HeadSHA: "sha1", Title: "PR"},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: "sha1"},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewRequired)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeBlocked), Blockers: []string{"review_required"}},
+	}
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(oldRepo, 0): {ETag: "v1"}},
+		openPRs:      map[string][]ports.SCMPRObservation{},
+		observations: map[string]ports.SCMObservation{prKey(oldRepo, 1): canonical},
+	}
+	return store, provider, oldRepo
+}
+
+func TestPoll_RenamedRepoObservationPersistsUnderTrackedRef(t *testing.T) {
+	store, provider, _ := renamedRepoFixture()
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.fetchBatches) != 1 {
+		t.Fatalf("fetch batches = %d, want 1", len(provider.fetchBatches))
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("renamed-repo observation was dropped: no writes")
+	}
+	final := store.writes[len(store.writes)-1].pr
+	if final.Repo != "new/r" || final.Title != "PR" || final.CI != domain.CIPassing || final.Mergeability != domain.MergeBlocked {
+		t.Fatalf("persisted PR = repo %q title %q ci %q mergeability %q; want canonical new/r metadata", final.Repo, final.Title, final.CI, final.Mergeability)
+	}
+	if len(lc.observed) != 1 {
+		t.Fatalf("lifecycle notifications = %d, want 1", len(lc.observed))
+	}
+}
+
+func TestPoll_RenamedRepoReconciliationPersistsUnderTrackedRef(t *testing.T) {
+	store, provider, oldRepo := renamedRepoFixture()
+	// A fully-observed local row keeps the PR out of the normal refresh
+	// candidate set; the empty incremental listing then routes it through
+	// terminal reconciliation, which must survive the rename the same way.
+	local := &store.prs["p-1"][0]
+	local.MetadataHash = "stale-meta"
+	local.CIHash = "stale-ci"
+	local.ReviewHash = "stale-review"
+	local.Review = domain.ReviewRequired
+	local.ReviewObservedAt = time.Unix(60, 0).UTC()
+	local.HeadSHA = "sha0"
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(100, 0).UTC())
+	obs.Cache.LastSyncCursor[prKey(oldRepo, 0)] = time.Unix(50, 0).UTC()
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("renamed-repo reconciliation observation was dropped: no writes")
+	}
+	final := store.writes[len(store.writes)-1].pr
+	if final.Repo != "new/r" || final.CI != domain.CIPassing {
+		t.Fatalf("persisted PR = repo %q ci %q; want canonical new/r with passing CI", final.Repo, final.CI)
+	}
+}
+
+func TestKeyForTrackedPR(t *testing.T) {
+	repo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "o", Name: "r", Repo: "o/r"}
+	withID := domain.PullRequest{Provider: "GitHub", Host: "GitHub.com", ProviderID: "PR_x", Number: 7}
+	if got, want := keyForTrackedPR(withID, repo), "github:github.com@PR_x"; got != want {
+		t.Fatalf("identity key = %q, want %q", got, want)
+	}
+	withoutID := domain.PullRequest{Number: 7}
+	if got, want := keyForTrackedPR(withoutID, repo), prKey(repo, 7); got != want {
+		t.Fatalf("legacy key = %q, want %q", got, want)
+	}
+}
+
+// The discovery clobber (issue #4089, mechanism 2): a second scan name for the
+// same repository (stale upstream remote after a transfer) lists the same PRs.
+// A tracked PR recognized by its provider identity must NOT be re-discovered —
+// the baseline write would overwrite the row's CI/mergeability facts and wipe
+// its semantic hashes, flapping the PR panel back to "Checking merge
+// readiness" on every listing change.
+func TestPoll_SecondScanNameDoesNotRebaselineTrackedPR(t *testing.T) {
+	oldRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old", Name: "r", Repo: "old/r"}
+	newRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "new", Name: "r", Repo: "new/r"}
+	restoreRemotes := gitRemoteURLsFunc
+	gitRemoteURLsFunc = func(string) []string {
+		return []string{"https://github.com/new/r.git", "https://github.com/old/r.git"}
+	}
+	defer func() { gitRemoteURLsFunc = restoreRemotes }()
+
+	listing := []ports.SCMPRObservation{{
+		ProviderID: "PR_stable_1", URL: "https://github.com/new/r/pull/1", Number: 1,
+		SourceBranch: "feat", HeadRepo: "new/r", TargetBranch: "main", HeadSHA: "sha1",
+	}}
+	for _, tt := range []struct {
+		name       string
+		providerID string
+	}{
+		{name: "provider identity already stored", providerID: "PR_stable_1"},
+		{name: "legacy row associated by listing identity"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tracked := domain.PullRequest{
+				URL: "https://github.com/new/r/pull/1", SessionID: "p-1", Number: 1,
+				Provider: "github", Host: "github.com", Repo: "old/r", ProviderID: tt.providerID,
+				SourceBranch: "feat", HeadSHA: "sha1", CI: domain.CIPassing, Mergeability: domain.MergeBlocked,
+				MetadataHash: "m", CIHash: "c", ReviewHash: "r", Review: domain.ReviewRequired,
+				ObservedAt: time.Unix(50, 0).UTC(), CIObservedAt: time.Unix(50, 0).UTC(), ReviewObservedAt: time.Unix(50, 0).UTC(),
+			}
+			store := &fakeStore{
+				sessions: []domain.SessionRecord{{ID: "p-1", ProjectID: "p", Metadata: domain.SessionMetadata{Branch: "feat"}}},
+				projects: map[string]domain.ProjectRecord{"p": {ID: "p", Path: "/proj", RepoOriginURL: "https://github.com/new/r.git"}},
+				prs:      map[domain.SessionID][]domain.PullRequest{"p-1": {tracked}},
+				checks:   map[string][]domain.PullRequestCheck{},
+			}
+			provider := &fakeProvider{
+				repoGuards: map[string]ports.SCMGuardResult{
+					prKey(newRepo, 0): {ETag: "vN"},
+					prKey(oldRepo, 0): {ETag: "vO"},
+				},
+				// Both scan names list the same PR: the canonical listing and the
+				// stale-remote listing served through GitHub's rename redirect.
+				openPRs: map[string][]ports.SCMPRObservation{
+					prKey(newRepo, 0): listing,
+					prKey(oldRepo, 0): listing,
+				},
+				observations: map[string]ports.SCMObservation{},
+			}
+			obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(100, 0).UTC())
+			if err := obs.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range store.writes {
+				if w.pr.Number == 1 && w.pr.CI == domain.CIUnknown {
+					t.Fatalf("tracked PR was re-baselined by a second scan name: %+v", w.pr)
+				}
+			}
+		})
+	}
+}
+
+// Identity-first dispatch: when the tracked row carries a provider id, a
+// canonical observation for a renamed repo is delivered by identity — no URL
+// fallback involved — and the persisted row heals to the canonical repo.
+func TestPoll_IdentityKeyedDispatchSurvivesRename(t *testing.T) {
+	oldRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old", Name: "r", Repo: "old/r"}
+	store := &fakeStore{
+		sessions: []domain.SessionRecord{{ID: "p-1", ProjectID: "p", Metadata: domain.SessionMetadata{Branch: "feat"}}},
+		projects: map[string]domain.ProjectRecord{"p": {ID: "p", RepoOriginURL: "https://github.com/old/r.git"}},
+		prs: map[domain.SessionID][]domain.PullRequest{"p-1": {{
+			// URL intentionally differs from the canonical URL so the legacy
+			// URL fallback cannot be what delivers this observation.
+			URL: "https://github.com/old/r/pull/1", SessionID: "p-1", Number: 1,
+			Provider: "github", Host: "github.com", Repo: "old/r", ProviderID: "PR_stable_1",
+			SourceBranch: "feat",
+		}}},
+		checks: map[string][]domain.PullRequestCheck{},
+	}
+	canonical := ports.SCMObservation{
+		Fetched: true, Provider: "github", Host: "github.com", Repo: "new/r",
+		PR:           ports.SCMPRObservation{URL: "https://github.com/new/r/pull/1", Number: 1, ProviderID: "PR_stable_1", State: "open", SourceBranch: "feat", TargetBranch: "main", HeadSHA: "sha1", Title: "PR"},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: "sha1"},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewRequired)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeBlocked), Blockers: []string{"review_required"}},
+	}
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(oldRepo, 0): {ETag: "v1"}},
+		openPRs:      map[string][]ports.SCMPRObservation{},
+		observations: map[string]ports.SCMObservation{prKey(oldRepo, 1): canonical},
+	}
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("identity-keyed observation was dropped")
+	}
+	final := store.writes[len(store.writes)-1].pr
+	if final.Repo != "new/r" || final.CI != domain.CIPassing || final.ProviderID != "PR_stable_1" {
+		t.Fatalf("persisted PR = repo %q ci %q providerID %q; want canonical new/r, passing, PR_stable_1", final.Repo, final.CI, final.ProviderID)
+	}
+	if len(lc.observed) != 1 {
+		t.Fatalf("lifecycle notifications = %d, want 1", len(lc.observed))
+	}
+}
+
+// A permanently unresolvable tracked PR (provider returns an ErrSCMNotFound
+// placeholder every tick) must stay quiet at Warn level — Debug only — while
+// still pinning the repo ETag/cursor and never entering a rate-limit
+// cooldown. Guards the ~2.9k-warnings/day regression flagged in review.
+func TestPoll_NotFoundObservationLogsDebugAndPinsRepo(t *testing.T) {
+	store := testStoreWithSession()
+	store.prs["p-1"] = []domain.PullRequest{knownPR(1)}
+	provider := &fakeProvider{
+		repoGuards:     map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs:        map[string][]ports.SCMPRObservation{},
+		observations:   map[string]ports.SCMObservation{},
+		fetchObsErrors: map[string]error{prKey(testRepo, 1): fmt.Errorf("%w: pull request o/r#1 not in batch response", ports.ErrSCMNotFound)},
+	}
+	var logs bytes.Buffer
+	obs := New(provider, store, &fakeLifecycle{}, Config{
+		Clock:            func() time.Time { return time.Unix(1, 0).UTC() },
+		Tick:             time.Hour,
+		Logger:           slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		CacheMax:         128,
+		IdentityResolver: provider,
+	})
+	obs.Cache.RepoPRListETag[prKey(testRepo, 0)] = "v1"
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "provider fetch failed") || strings.Contains(logs.String(), "rate-limited") {
+		t.Fatalf("not-found placeholder logged at warn: %s", logs.String())
+	}
+	if obs.inRateLimitCooldown(time.Unix(1, 0).UTC(), "github") {
+		t.Fatal("not-found placeholder must not trigger a rate-limit cooldown")
+	}
+	if got := obs.Cache.RepoPRListETag[prKey(testRepo, 0)]; got != "v1" {
+		t.Fatalf("repo ETag advanced past a not-found ref: %q, want pinned v1", got)
+	}
+	if len(store.writes) != 0 {
+		t.Fatalf("not-found placeholder was persisted: %#v", store.writes)
+	}
+}
+
+func TestPoll_FailedFirstReviewFetchDoesNotManufactureCompleteness(t *testing.T) {
+	store := testStoreWithSession()
+	local := knownPR(1)
+	// The PR has never had a successful review fetch. A metadata change in the
+	// same poll must not turn that into a complete-looking review observation:
+	// the summary gate treats (zero timestamp, non-partial) as unknown, and a
+	// manufactured timestamp would publish a known-looking zero count.
+	local.ReviewObservedAt = time.Time{}
+	store.prs["p-1"] = []domain.PullRequest{local}
+	obsValue := testObs(1)
+	obsValue.PR.Title = "PR (updated)"
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo"}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): obsValue},
+		reviewErr:    errors.New("review window unavailable"),
+	}
+	obs := newTestObserver(store, provider, nil, time.Unix(300, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("metadata change should still be persisted")
+	}
+	written := store.writes[0].pr
+	if written.Title != "PR (updated)" {
+		t.Fatalf("metadata change not persisted: %+v", written)
+	}
+	if !written.ReviewObservedAt.IsZero() {
+		t.Fatalf("failed first review fetch manufactured a review observation at %v; only a successful fetch may establish one", written.ReviewObservedAt)
+	}
+	if written.ReviewPartial {
+		t.Fatalf("never-fetched review storage must stay non-partial (the zero timestamp carries the unknown): %+v", written)
+	}
+}
+
+func TestPoll_CompletenessUpgradePersistsWithUnchangedReviewContent(t *testing.T) {
+	store := testStoreWithSession()
+	local := knownPR(1)
+	// Simulate a row upgraded by the conservative review_partial default: the
+	// stored flag says partial even though the review hash was computed from a
+	// full observation. A later full fetch with identical content must still
+	// persist the completeness repair — the content-hash match must not skip it.
+	local.ReviewPartial = true
+	store.prs["p-1"] = []domain.PullRequest{local}
+	obsValue := testObs(1)
+	review := ports.SCMReviewObservation{Decision: string(domain.ReviewNone)}
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo"}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): obsValue},
+		reviews:      map[string]ports.SCMReviewObservation{prKey(testRepo, 1): review},
+	}
+	obs := newTestObserver(store, provider, nil, time.Unix(300, 0).UTC())
+	// Force a review retry without touching any content: the retry cache slot
+	// is what a failed-fetch recovery or a post-upgrade poll would hit.
+	obs.cacheSetBool(obs.Cache.ReviewRefreshFailed, &obs.Cache.reviewFailedOrder, prKey(testRepo, 1), true)
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) != 1 {
+		t.Fatalf("completeness repair was skipped on unchanged content: writes=%d", len(store.writes))
+	}
+	written := store.writes[0].pr
+	if written.ReviewPartial {
+		t.Fatalf("full fetch did not clear the partial flag: %+v", written)
+	}
+	if written.ReviewObservedAt.IsZero() {
+		t.Fatalf("successful review fetch left no review observation: %+v", written)
+	}
+	if store.writes[0].reviewMode != ports.ReviewWriteReplace {
+		t.Fatalf("review mode = %v, want replace", store.writes[0].reviewMode)
 	}
 }

@@ -1,4 +1,4 @@
-import { ChevronDown, RefreshCw, Search } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentModelCatalog } from "../../hooks/useAgentModelsQuery";
@@ -14,7 +14,7 @@ import {
 } from "../ui/dropdown-menu";
 
 const MAX_VISIBLE_MODELS = 50;
-const MODEL_SEARCH_THRESHOLD = 8;
+const MODEL_SEARCH_THRESHOLD = 10;
 const MAX_RECENT_MODELS = 3;
 const RECENT_MODELS_STORAGE_KEY = "ao.recentModels.v1";
 
@@ -48,10 +48,11 @@ export function AgentModelCombobox({
 	value,
 	models,
 	allowCustom,
+	customModelEntry,
+	agentLabel,
+	onRefresh,
 	onChange,
 	onCustom,
-	onRefresh,
-	refreshing = false,
 	emptyLabel,
 	triggerLabel,
 	triggerClassName,
@@ -64,12 +65,12 @@ export function AgentModelCombobox({
 }: {
 	value: string;
 	models: AgentModel[];
-	allowCustom: boolean;
+	allowCustom?: boolean;
+	customModelEntry?: AgentModelCatalog["customModelEntry"];
+	agentLabel?: string;
+	onRefresh?: () => void | Promise<void>;
 	onChange: (value: string) => void;
 	onCustom: (value: string) => void;
-	/** Rediscovery action, offered inside the menu instead of as standing chrome. */
-	onRefresh?: () => void;
-	refreshing?: boolean;
 	/** Names what happens with no override, e.g. "Use codex's default". */
 	emptyLabel?: string;
 	triggerLabel?: string;
@@ -78,8 +79,8 @@ export function AgentModelCombobox({
 	renderTrigger?: (label: string) => ReactNode;
 	/** Persists explicit model choices for this agent and pins them below defaults. */
 	recentScope?: string;
-	/** Flat "no override" + plain model names — no groups, badges, or refresh
-	 *  action. Search still shows once the catalog passes MODEL_SEARCH_THRESHOLD,
+	/** Flat "no override" + plain model names with no groups or badges.
+	 *  Search still shows once the catalog passes MODEL_SEARCH_THRESHOLD,
 	 *  same as non-compact mode; only the grouping/decoration is stripped. For
 	 *  contexts where the menu should read like a simple choice, not a
 	 *  model-management surface. */
@@ -88,8 +89,11 @@ export function AgentModelCombobox({
 	"aria-label": string;
 }) {
 	const { t } = useTranslation();
+	const entryMode = customModelEntry ?? (allowCustom ? "direct" : "none");
+	const allowDirectCustom = entryMode === "direct";
 	const [search, setSearch] = useState("");
 	const [menuOpen, setMenuOpen] = useState(false);
+	const [refreshFailed, setRefreshFailed] = useState(false);
 	const [sessionRecentModels, setSessionRecentModels] = useState<Record<string, string[]>>({});
 	const recentKey = recentScope ?? "";
 	const storedRecentModels = useMemo(() => readRecentModels(recentScope), [recentScope]);
@@ -97,7 +101,16 @@ export function AgentModelCombobox({
 	const normalizedSearch = normalizeSearch(search);
 	const searchIndex = useMemo(() => buildModelSearchIndex(models), [models]);
 	const selected = searchIndex.byID.get(normalizeSearch(value));
-	const showSearch = models.length > MODEL_SEARCH_THRESHOLD;
+	const showSearch = allowDirectCustom || models.length >= MODEL_SEARCH_THRESHOLD;
+	const hasMultipleProviders = useMemo(
+		() =>
+			new Set(
+				models
+					.map((model) => model.provider?.trim().toLocaleLowerCase())
+					.filter((provider): provider is string => Boolean(provider)),
+			).size > 1,
+		[models],
+	);
 
 	const rankedModels = useMemo(() => {
 		if (!normalizedSearch) {
@@ -120,9 +133,9 @@ export function AgentModelCombobox({
 		[compact, normalizedSearch, recentModelIDs, t, value, visibleModels],
 	);
 	const customSearchValue = search.trim();
-	const showCustomSearchAction = allowCustom && customSearchValue !== "" && rankedModels.length === 0;
+	const showCustomSearchAction = allowDirectCustom && customSearchValue !== "" && rankedModels.length === 0;
 	const noOverrideLabel = emptyLabel ?? t("settings.models.agentDefault");
-	const currentLabel = triggerLabel ?? selected?.label ?? noOverrideLabel;
+	const currentLabel = (triggerLabel ?? selected?.label ?? value) || noOverrideLabel;
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
 	const updateScrollCue = useCallback(() => {
@@ -155,6 +168,7 @@ export function AgentModelCombobox({
 			onOpenChange={(open) => {
 				setMenuOpen(open);
 				if (!open) setSearch("");
+				if (!open) setRefreshFailed(false);
 			}}
 		>
 			<DropdownMenuTrigger asChild disabled={disabled}>
@@ -195,7 +209,11 @@ export function AgentModelCombobox({
 							aria-label={t("settings.models.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
 							value={search}
 							onChange={(event) => setSearch(event.target.value)}
-							placeholder={t("settings.models.searchPlaceholder")}
+							placeholder={t(
+								hasMultipleProviders
+									? "settings.models.searchModelsOrProvidersPlaceholder"
+									: "settings.models.searchPlaceholder",
+							)}
 							className="menu-search-input pl-8!"
 						/>
 					</div>
@@ -261,37 +279,36 @@ export function AgentModelCombobox({
 								{t("settings.models.useCustom", { model: customSearchValue })}
 							</DropdownMenuItem>
 						)}
-						{normalizedSearch !== "" && rankedModels.length === 0 && !allowCustom && (
+						{normalizedSearch !== "" && rankedModels.length === 0 && !allowDirectCustom && (
 							<p className="px-2 py-1.5 text-xs text-settings-muted">{t("settings.models.noMatches")}</p>
 						)}
-						{normalizedSearch === "" && allowCustom && (
+						{normalizedSearch === "" && entryMode !== "direct" && (
 							<>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => onCustom("")} className={modelItemClass(false)}>
-									{t("settings.models.custom")}
-								</DropdownMenuItem>
-							</>
-						)}
-						{/* Rediscovery lives here, not as a standing link beside the field: it is
-						    a rare repair action, and the daemon revalidates a stale catalog on its
-						    own. Keeping it in the menu costs no layout in the calm state. */}
-						{!compact && onRefresh && (
-							<>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									disabled={refreshing}
-									onSelect={(event) => {
-										event.preventDefault();
-										onRefresh();
-									}}
-									className={modelItemClass(false)}
-								>
-									<RefreshCw
-										className={cn("size-icon-sm shrink-0 opacity-70", refreshing && "animate-spin")}
-										aria-hidden="true"
-									/>
-									{refreshing ? t("settings.models.refreshing") : t("settings.models.refreshList")}
-								</DropdownMenuItem>
+								<div className="space-y-1 px-2 py-1.5 text-xs text-settings-muted">
+									<p className="text-settings-label">{t("settings.models.cantFind")}</p>
+									<p>
+										{entryMode === "configured"
+											? t("settings.models.configureThenRefresh", {
+													agent: agentLabel || t("settings.models.selectedAgent"),
+												})
+											: t("settings.models.unavailable")}
+									</p>
+									{onRefresh && (
+										<button
+											type="button"
+											className="text-settings-label underline underline-offset-2"
+											onClick={(event) => {
+												event.stopPropagation();
+												setRefreshFailed(false);
+												void Promise.resolve(onRefresh()).catch(() => setRefreshFailed(true));
+											}}
+										>
+											{t("settings.models.refresh")}
+										</button>
+									)}
+									{refreshFailed && <p className="text-warning">{t("settings.models.refreshFailed")}</p>}
+								</div>
 							</>
 						)}
 						{showSearch && (

@@ -1,10 +1,13 @@
 // agent-orchestrator: managed opencode activity plugin (do not edit)
 //
-// It maps opencode's native lifecycle events onto AO's three normalized
+// It maps opencode's native lifecycle events onto AO's normalized
 // activity events:
 //   session.created                       -> `ao hooks opencode session-start`
 //   message.updated / message.part.updated -> `ao hooks opencode user-prompt-submit`
+//   tool.execute.before / tool.execute.after -> `ao hooks opencode active`
 //   session.status (status.type == idle)   -> `ao hooks opencode stop`
+//   permission.asked / question.asked      -> `ao hooks opencode permission-blocked`
+//   permission/question reply or rejection -> `ao hooks opencode active`
 //
 // The opencode-native session id (and prompt/model where known) is piped to the
 // hook command as JSON on stdin, run with cwd set to the worktree so AO can
@@ -30,6 +33,10 @@ export const aoActivity: Plugin = async ({ directory, client }) => {
   let currentSessionID: string | null = null
   // The model of the most recent assistant message, forwarded for context.
   let currentModel: string | null = null
+  // AO fences each provider generation with AO_RUNTIME_LAUNCH_ID; carry it in
+  // the payload so hooks work even when child-process env inheritance is
+  // trimmed by the host runtime.
+  const launchID: string = (process.env.AO_RUNTIME_LAUNCH_ID ?? "").trim()
   const messageStore = new Map<string, any>()
 
   // Wrap in `sh -c` with a guard so a missing `ao` binary is a silent no-op
@@ -68,7 +75,8 @@ export const aoActivity: Plugin = async ({ directory, client }) => {
     try {
       const result = Bun.spawnSync(hookCmd(hookName), {
         cwd: directory,
-        stdin: new TextEncoder().encode(JSON.stringify(payload) + "\n"),
+        env: { ...process.env, AO_RUNTIME_LAUNCH_ID: launchID },
+        stdin: new TextEncoder().encode(JSON.stringify({ ...payload, launch_id: launchID }) + "\n"),
         stdout: "ignore",
         stderr: "pipe",
         timeout: HOOK_TIMEOUT_MS,
@@ -163,12 +171,38 @@ export const aoActivity: Plugin = async ({ directory, client }) => {
             callHookSync("stop", { session_id: sessionID, model: currentModel ?? "" })
             break
           }
+
+          case "permission.asked":
+          case "question.asked": {
+            const sessionID = (event as any).properties?.sessionID ?? currentSessionID
+            if (!sessionID) break
+            callHookSync("permission-blocked", { session_id: sessionID, model: currentModel ?? "" })
+            break
+          }
+
+          case "permission.replied":
+          case "question.replied":
+          case "question.rejected": {
+            const sessionID = (event as any).properties?.sessionID ?? currentSessionID
+            if (!sessionID) break
+            callHookSync("active", { session_id: sessionID, model: currentModel ?? "" })
+            break
+          }
+
         }
       } catch (err) {
         // A malformed/unexpected event payload must never crash opencode; log
         // it (tagged with the event type) for diagnosis and move on.
         logHookFailure(`event:${(event as any)?.type ?? "unknown"}`, err instanceof Error ? err.message : String(err))
       }
+    },
+    "tool.execute.before": async (input) => {
+      callHookSync("active", { session_id: input.sessionID, model: currentModel ?? "" })
+    },
+    "tool.execute.after": async (input) => {
+      // Tool completion is still activity; session.status(idle) owns the
+      // transition back to idle after the turn finishes.
+      callHookSync("active", { session_id: input.sessionID, model: currentModel ?? "" })
     },
   }
 }

@@ -11,6 +11,7 @@ export function ProductExternalLink({
 			{...props}
 			aria-label={ariaLabel}
 			onClick={stopPropagation ? (event) => event.stopPropagation() : undefined}
+			onPointerDown={stopPropagation ? (event) => event.stopPropagation() : undefined}
 			rel="noopener noreferrer"
 			target="_blank"
 		>

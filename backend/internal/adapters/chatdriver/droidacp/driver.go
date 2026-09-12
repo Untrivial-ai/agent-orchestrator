@@ -3,6 +3,7 @@
 package droidacp
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 
@@ -23,7 +24,7 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 	}, log)
 }
 
-func configure(cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	settingsMode := cfg.Permissions
 	bypass := ports.NormalizePermissionMode(cfg.Permissions) == ports.PermissionModeBypassPermissions
 	if bypass {

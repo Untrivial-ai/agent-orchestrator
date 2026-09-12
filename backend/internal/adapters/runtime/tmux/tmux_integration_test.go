@@ -69,8 +69,8 @@ func TestRuntimeIntegration(t *testing.T) {
 
 	// Destroy and verify liveness goes false. When this was the server's last
 	// session the server itself exits with it, and the probe reports the
-	// server-level outage as an inconclusive ErrRuntimeUnavailable rather than
-	// a per-session death (issue #3475); both outcomes mean the handle is gone.
+	// server-level outage as ErrRuntimeUnavailable rather than a per-session
+	// false result (issue #3475); both outcomes mean the tmux handle is gone.
 	if err := r.Destroy(ctx, h); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
@@ -125,6 +125,135 @@ func TestRuntimeIntegrationExactSessionParsing(t *testing.T) {
 	if prefixAlive {
 		_ = r.Destroy(ctx, h)
 		t.Fatal("prefix handle reported alive; tmux session matching is not exact")
+	}
+}
+
+func TestRuntimeIntegrationLegacyDefaultSocketIgnoresInheritedTMUX(t *testing.T) {
+	systemTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+
+	// tmux's Unix socket path has a small platform limit; Go's ordinary test
+	// temp root is long enough to exceed it on macOS.
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "ao-tmux-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTmpDir) })
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+	legacyID := strings.ReplaceAll(t.Name(), "/", "_") + "_legacy"
+	spoofID := strings.ReplaceAll(t.Name(), "/", "_") + "_spoof"
+	privateID := strings.ReplaceAll(t.Name(), "/", "_") + "_private"
+	for _, socketName := range []string{"default", "spoof", "ao"} {
+		t.Cleanup(func() {
+			_ = exec.Command(systemTmux, "-L", socketName, "kill-server").Run()
+		})
+	}
+	start := func(socketName, sessionID string) {
+		t.Helper()
+		if out, startErr := exec.Command(
+			systemTmux,
+			"-L", socketName,
+			"new-session", "-d", "-s", sessionID,
+			"sleep 30",
+		).CombinedOutput(); startErr != nil {
+			t.Fatalf("start tmux -L %s: %v: %s", socketName, startErr, out)
+		}
+	}
+	start("default", legacyID)
+	start("spoof", spoofID)
+	start("ao", privateID)
+
+	spoofIdentity, err := exec.Command(
+		systemTmux,
+		"-L", "spoof",
+		"display-message", "-p", "#{socket_path},#{pid},0",
+	).Output()
+	if err != nil {
+		t.Fatalf("read spoof socket identity: %v", err)
+	}
+	t.Setenv("TMUX", strings.TrimSpace(string(spoofIdentity)))
+	if out, err := exec.Command(systemTmux, "has-session", "-t", spoofID).CombinedOutput(); err != nil {
+		t.Fatalf("test setup did not redirect plain tmux through inherited TMUX: %v: %s", err, out)
+	}
+
+	r := New(Options{
+		Binary:       systemTmux,
+		LegacyBinary: systemTmux,
+		SocketName:   "ao",
+		Timeout:      5 * time.Second,
+	})
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: legacyID})
+	if err != nil || !alive {
+		t.Fatalf("legacy default-socket session = (%v, %v), want (true, nil)", alive, err)
+	}
+	alive, err = r.IsAlive(context.Background(), ports.RuntimeHandle{ID: spoofID})
+	if err != nil {
+		t.Fatalf("spoof-only session probe: %v", err)
+	}
+	if alive {
+		t.Fatal("spoof-only session was misclassified as AO's legacy session")
+	}
+}
+
+func TestRuntimeIntegrationAdoptsLegacyDefaultWhenNamedSocketDoesNotExist(t *testing.T) {
+	systemTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+
+	// Isolate both socket names so the test starts with a live legacy default
+	// server and no named AO server, matching an untouched pre-cutover install.
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "ao-tmux-migration-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTmpDir) })
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+	legacyID := strings.ReplaceAll(t.Name(), "/", "_") + "_legacy"
+	for _, socketName := range []string{"default", "ao"} {
+		t.Cleanup(func() {
+			_ = exec.Command(systemTmux, "-L", socketName, "kill-server").Run()
+		})
+	}
+	if out, startErr := exec.Command(
+		systemTmux,
+		"-L", "default",
+		"new-session", "-d", "-s", legacyID,
+		"sh",
+	).CombinedOutput(); startErr != nil {
+		t.Fatalf("start legacy tmux session: %v: %s", startErr, out)
+	}
+	missingOut, missingErr := exec.Command(systemTmux, "-L", "ao", "has-session", "-t", legacyID).CombinedOutput()
+	if missingErr == nil {
+		t.Fatal("test setup unexpectedly found a named AO server")
+	}
+	if !migrationSocketAbsentOutput(string(missingOut)) {
+		t.Fatalf("named AO probe = %q, want missing-socket diagnostic", missingOut)
+	}
+
+	r := New(Options{
+		Binary:       systemTmux,
+		LegacyBinary: systemTmux,
+		SocketName:   "ao",
+		Timeout:      5 * time.Second,
+	})
+	r.enterDelay = 0
+	handle := ports.RuntimeHandle{ID: legacyID}
+	alive, err := r.IsAlive(context.Background(), handle)
+	if err != nil || !alive {
+		t.Fatalf("legacy default-socket session = (%v, %v), want (true, nil)", alive, err)
+	}
+	if err := r.SendMessage(context.Background(), handle, "echo legacy-send-ok"); err != nil {
+		t.Fatalf("SendMessage to adopted legacy session: %v", err)
+	}
+	out := waitForOutput(t, r, handle, "legacy-send-ok", 5*time.Second)
+	if !strings.Contains(out, "legacy-send-ok") {
+		t.Fatalf("legacy output = %q, want legacy-send-ok", out)
+	}
+	if out, probeErr := exec.Command(systemTmux, "-L", "ao", "list-sessions").CombinedOutput(); probeErr == nil {
+		t.Fatalf("legacy discovery unexpectedly created named AO server: %s", out)
 	}
 }
 

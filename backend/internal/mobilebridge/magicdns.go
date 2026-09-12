@@ -3,9 +3,10 @@ package mobilebridge
 import (
 	"context"
 	"encoding/json"
-	"os/exec"
 	"strings"
 	"time"
+
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // tailscaleTimeout bounds every CLI call. The Connect Mobile status endpoint is
@@ -18,7 +19,7 @@ type TailscaleRunner func(ctx context.Context, args ...string) ([]byte, error)
 
 // execTailscale is the production TailscaleRunner.
 func execTailscale(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "tailscale", args...).Output()
+	return aoprocess.CommandContext(ctx, "tailscale", args...).Output()
 }
 
 // TailscaleInfo is what the local daemon can tell us about this node.

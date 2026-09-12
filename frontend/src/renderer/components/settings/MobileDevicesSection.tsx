@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Smartphone, X } from "lucide-react";
+import { Bell, Loader2, Smartphone, Trash2 } from "lucide-react";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../../lib/api-client";
-import { cn } from "../../lib/utils";
 import { Switch } from "../ui/switch";
 
 export const mobileDevicesQueryKey = ["mobile-devices"] as const;
@@ -36,34 +35,7 @@ class MobileDevicesQueryError extends Error {
 	}
 }
 
-// Relative time is rendered here, on the desktop, and must stay here: Hermes has
-// no Intl.RelativeTimeFormat, so reusing this in the mobile app crashes at runtime
-// and vitest would not catch it.
-//
-// The formatter locale is threaded through as a parameter (i18next's resolved
-// language) rather than left to default: `new Intl.RelativeTimeFormat(undefined, ...)`
-// resolves to the OS locale, which can disagree with the app's own language
-// setting (e.g. app running in `ja` on an en-US machine) — exactly the mismatch
-// the multi-locale translation work above is meant to prevent.
-function lastSeenLabel(iso: string, language: string): string {
-	const relative = new Intl.RelativeTimeFormat(language, { numeric: "auto" });
-	const seconds = Math.round((Date.parse(iso) - Date.now()) / 1000);
-	const units: [Intl.RelativeTimeFormatUnit, number][] = [
-		["second", 60],
-		["minute", 60],
-		["hour", 24],
-		["day", 30],
-		["month", 12],
-	];
-	let value = seconds;
-	for (const [unit, size] of units) {
-		if (Math.abs(value) < size) return relative.format(Math.round(value), unit);
-		value /= size;
-	}
-	return relative.format(Math.round(value), "year");
-}
-
-async function fetchDevices(): Promise<MobileDevice[]> {
+export async function fetchDevices(): Promise<MobileDevice[]> {
 	const { data, error } = await apiClient.GET("/api/v1/mobile/devices");
 	if (error || !data) throw new MobileDevicesQueryError(apiErrorMessage(error), apiErrorCode(error));
 	return data.devices as MobileDevice[];
@@ -72,12 +44,8 @@ async function fetchDevices(): Promise<MobileDevice[]> {
 // MobileDevicesSection lists every paired phone with whether its app is open right
 // now, a per-device mute switch, and a remove action. Live status comes from the
 // daemon's presence tracker, which is fed by each phone's own REST poll.
-//
-// The caller (ConnectMobileModal) must only mount this while the bridge is
-// enabled — it is not gated on that itself, and its Switch/remove buttons issue
-// real PATCH/DELETE calls the moment they're interacted with.
 export function MobileDevicesSection() {
-	const { t, i18n } = useTranslation();
+	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null);
 
@@ -133,6 +101,10 @@ export function MobileDevicesSection() {
 	// (an unreadable on-disk registry) that showing a stale list next to it would
 	// be misleading.
 	const hasData = query.data !== undefined;
+
+	// No paired devices (or still loading with nothing cached) → no section at
+	// all. Errors and an unreadable registry still render so they stay visible.
+	if (!registryUnavailable && !queryError && devices.length === 0) return null;
 	const mutationError =
 		(mute.error instanceof Error && mute.error.message) ||
 		(remove.error instanceof Error && remove.error.message) ||
@@ -140,8 +112,7 @@ export function MobileDevicesSection() {
 
 	return (
 		<section className="mt-6">
-			<h3 className="text-sm font-medium">{t("mobile.devices.title")}</h3>
-			<p className="mt-1 text-caption text-settings-muted">{t("mobile.devices.description")}</p>
+			<h3 className="text-sm font-medium text-settings-label">{t("mobile.devices.title")}</h3>
 
 			{query.isLoading ? (
 				<div className="mt-3 flex items-center gap-2 text-caption text-settings-muted">
@@ -156,55 +127,35 @@ export function MobileDevicesSection() {
 			) : (
 				<>
 					{queryError && <p className="mt-3 text-caption text-error">{queryError.message}</p>}
-					<ul className="mt-3 space-y-2">
+					<ul className="mt-2 divide-y divide-[var(--color-border-settings-input)]">
 						{sortedDevices.map((device) => {
 							const name = device.deviceName || t("mobile.devices.unnamed");
 							return (
 								<li
 									key={device.installId}
-									className="flex items-center gap-3 rounded-(--radius-settings-dialog-lg) border border-[var(--color-border-settings-input)] bg-[var(--color-bg-settings-input)] p-3"
+									className="flex min-h-12 items-center gap-3 py-2.5"
 								>
-									<Smartphone className="size-4 shrink-0 text-settings-muted" />
+									<Smartphone className="size-4 shrink-0 text-settings-muted" aria-hidden="true" />
 									<div className="min-w-0 flex-1">
 										<div className="truncate text-sm">{name}</div>
-										<div className="flex items-center gap-1.5 text-caption text-settings-muted">
-											{device.live ? (
-												<>
-													<span className={cn("size-1.5 rounded-full bg-success")} aria-hidden />
-													<span>{t("mobile.devices.live")}</span>
-												</>
-											) : (
-												<span>{lastSeenLabel(device.lastSeenAt, i18n.language)}</span>
-											)}
-										</div>
-										{!device.notificationsEnabled && (
-											<div className="text-caption text-settings-muted">
-												{t("mobile.devices.notificationsNotEnabled")}
-											</div>
-										)}
 									</div>
 
-									<Switch
-										checked={device.notificationsEnabled && !device.muted}
-										disabled={mute.isPending || !device.notificationsEnabled}
-										aria-label={t("mobile.devices.notificationsFor", { name })}
-										onCheckedChange={(next) =>
-											mute.mutate({ installId: device.installId, muted: !next })
-										}
-										className={cn(
-											"h-(--size-settings-mobile-switch-h) w-(--size-settings-mobile-switch-w) transition-colors duration-300 ease-out",
-											"data-[state=checked]:bg-settings-switch-on data-[state=unchecked]:bg-[var(--color-border-settings-input)]",
-											"focus-visible:ring-0 focus-visible:ring-offset-0",
-											"**:data-[slot=switch-thumb]:size-5 **:data-[slot=switch-thumb]:bg-white **:data-[slot=switch-thumb]:transition-transform **:data-[slot=switch-thumb]:duration-300 **:data-[slot=switch-thumb]:ease-out",
-											"data-[state=checked]:**:data-[slot=switch-thumb]:translate-x-(--size-settings-mobile-switch-travel)",
-											"data-[state=unchecked]:**:data-[slot=switch-thumb]:translate-x-0.5",
-										)}
-									/>
+									<div className="flex items-center gap-2" title={t("mobile.devices.notificationsFor", { name })}>
+										<Bell className="size-4 text-settings-muted" aria-hidden="true" data-testid="bell" />
+										<Switch
+											checked={device.notificationsEnabled && !device.muted}
+											disabled={mute.isPending || !device.notificationsEnabled}
+											aria-label={t("mobile.devices.notificationsFor", { name })}
+											onCheckedChange={(next) =>
+												mute.mutate({ installId: device.installId, muted: !next })
+											}
+										/>
+									</div>
 
 									{confirmingRemoval === device.installId ? (
 										<button
 											type="button"
-											className="text-caption text-error"
+											className="min-h-10 px-1 text-caption text-error"
 											disabled={remove.isPending}
 											onClick={() => remove.mutate(device.installId)}
 										>
@@ -214,10 +165,10 @@ export function MobileDevicesSection() {
 										<button
 											type="button"
 											aria-label={t("mobile.devices.removeAria", { name })}
-											className="text-settings-muted hover:text-settings-label"
+											className="grid size-10 place-items-center rounded-md text-settings-muted transition-colors hover:bg-interactive-hover hover:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 											onClick={() => setConfirmingRemoval(device.installId)}
 										>
-											<X className="size-4" />
+											<Trash2 className="size-4" />
 										</button>
 									)}
 								</li>

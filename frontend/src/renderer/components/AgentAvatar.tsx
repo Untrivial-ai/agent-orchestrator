@@ -25,6 +25,7 @@ import kimiLogo from "../assets/agents/kimi.png";
 import kimchiLogo from "../assets/agents/kimchi.svg";
 import kiroLogo from "../assets/agents/kiro.png";
 import museLogo from "../assets/agents/muse.png";
+import ompLogo from "../assets/agents/omp.png";
 import opencodeLogo from "../assets/agents/opencode.svg";
 import piLogo from "../assets/agents/pi.png";
 import primeAgentLogo from "../assets/agents/prime-agent.png";
@@ -50,6 +51,7 @@ const LOGOS: AgentLogoSources = {
 	devin: devinLogo,
 	kimi: kimiLogo,
 	muse: museLogo,
+	omp: ompLogo,
 	kiro: kiroLogo,
 	kilocode: kilocodeLogo,
 	vibe: vibeLogo,

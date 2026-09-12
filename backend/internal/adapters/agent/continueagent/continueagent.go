@@ -10,9 +10,9 @@
 // dispatches Claude-format hook events (SessionStart, UserPromptSubmit,
 // PreToolUse, PostToolUse, Stop, Notification) with the standard hook payload
 // (session_id, hook_event_name, hookSpecificOutput, permissionDecision,
-// additionalContext). So we reuse the claudecode hook installer and route hook
-// callbacks through the existing "ao hooks claude-code <evt>" dispatcher — no
-// Continue-specific native hook config or activity deriver is needed.
+// additionalContext). So we install Claude-shaped hook specs, but route them
+// through the Continue hook token ("ao hooks continue <evt>") so activity and
+// session metadata stay attributed to the Continue harness.
 //
 // Launch is interactive via `cn [--auto|--readonly] [--rule <rule>] [-- <prompt>]`.
 // Restore continues a specific native session by id with `cn --fork <sessionId>`
@@ -22,6 +22,7 @@ package continueagent
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -29,12 +30,21 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // adapterID is the AO harness / manifest id. It is the string "continue"
 // (NOT the Go package name "continueagent").
 const adapterID = "continue"
+
+const (
+	continueClaudeSettingsDirName  = ".claude"
+	continueClaudeSettingsFileName = "settings.local.json"
+	continueHookCommandPrefix      = "ao hooks continue "
+	continueHookTimeout            = 30
+)
 
 var continueBinarySpec = binaryutil.BinarySpec{
 	Label:         "cn",
@@ -47,6 +57,34 @@ var continueBinarySpec = binaryutil.BinarySpec{
 		{Base: binaryutil.WinAppData, Parts: []string{"npm", "cn.cmd"}},
 		{Base: binaryutil.WinAppData, Parts: []string{"npm", "cn.exe"}},
 	},
+}
+
+var continueSessionStartMatcher = "startup|resume|clear|compact"
+
+// continueManagedHooks is Claude Code's hook event shape with Continue-specific
+// AO hook commands. Continue reads this file through its Claude compatibility
+// layer, while `ao hooks continue` keeps activity and session metadata
+// attributed to the Continue harness.
+var continueManagedHooks = []hooksjson.HookSpec{
+	{Event: "SessionStart", Matcher: &continueSessionStartMatcher, Command: continueHookCommandPrefix + "session-start"},
+	{Event: "UserPromptSubmit", Command: continueHookCommandPrefix + "user-prompt-submit"},
+	{Event: "PreToolUse", Command: continueHookCommandPrefix + "pre-tool-use"},
+	{Event: "PostToolUse", Command: continueHookCommandPrefix + "post-tool-use"},
+	{Event: "PostToolUseFailure", Command: continueHookCommandPrefix + "post-tool-use-failure"},
+	{Event: "PermissionRequest", Command: continueHookCommandPrefix + "permission-request"},
+	{Event: "Stop", Command: continueHookCommandPrefix + "stop"},
+	{Event: "Notification", Command: continueHookCommandPrefix + "notification"},
+	{Event: "SubagentStop", Command: continueHookCommandPrefix + "subagent-stop"},
+	{Event: "SessionEnd", Command: continueHookCommandPrefix + "session-end"},
+}
+
+var continueHooks = hooksjson.Manager{
+	Label:                 adapterID,
+	CommandPrefix:         continueHookCommandPrefix,
+	LegacyCommandPrefixes: []string{"ao hooks claude-code "},
+	Timeout:               continueHookTimeout,
+	Path:                  continueClaudeSettingsPath,
+	Managed:               continueManagedHooks,
 }
 
 // Plugin is the Continue CLI agent adapter. It is safe for concurrent use; the
@@ -120,20 +158,17 @@ func (p *Plugin) GetPromptDeliveryStrategy(ctx context.Context, cfg ports.Launch
 	return ports.PromptDeliveryAfterStart, nil
 }
 
-// GetAgentHooks reuses the Claude Code hook installer because the Continue CLI
+// GetAgentHooks installs Claude Code-shaped hooks because the Continue CLI
 // natively reads Claude Code hook settings.
 //
-// The installed commands are "ao hooks claude-code <evt>", so the existing CLI
-// hook dispatcher routes them to the claude derive logic. The Continue CLI reads
-// .claude/settings.local.json from the worktree and fires Claude-format events
-// (SessionStart / UserPromptSubmit / Stop / Notification), giving AO
-// title/summary/agentSessionId + activity for free without a Continue-specific
-// hook implementation or code duplication.
+// The installed commands are "ao hooks continue <evt>". Continue still fires
+// Claude-format events, but the Continue token makes AO store activity under the
+// actual harness instead of under claude-code.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return (&claudecode.Plugin{}).GetAgentHooks(ctx, cfg)
+	return continueHooks.Install(ctx, cfg.WorkspacePath)
 }
 
 // GetRestoreCommand builds `cn [--auto|--readonly] --fork <agentSessionId>` when
@@ -175,6 +210,11 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 	return info, ok, nil
 }
 
+// DeriveActivityState interprets Continue's Claude-compatible hook payloads.
+func DeriveActivityState(event string, payload []byte) (domain.ActivityState, bool) {
+	return claudecode.DeriveActivityState(event, payload)
+}
+
 // ResolveContinueBinary finds the `cn` binary (Continue CLI), searching PATH then
 // common npm/global install locations. It returns a wrapped
 // ports.ErrAgentBinaryNotFound when Continue is absent.
@@ -196,6 +236,10 @@ func (p *Plugin) continueBinary(ctx context.Context) (string, error) {
 	}
 	p.resolvedBinary = binary
 	return binary, nil
+}
+
+func continueClaudeSettingsPath(workspacePath string) string {
+	return filepath.Join(workspacePath, continueClaudeSettingsDirName, continueClaudeSettingsFileName)
 }
 
 // appendApprovalFlags maps AO's 4 permission modes onto Continue's two boolean

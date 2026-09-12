@@ -5,15 +5,10 @@
  * the parts that are easy to get wrong — where a trigger starts, what a selection
  * replaces, where the caret lands — are testable without a DOM or a provider.
  *
- * Why a textarea and an anchored popup rather than a rich contenteditable editor:
- * both things AO inserts are plain text the agent has to resolve for itself (a
- * skill name and a worktree-relative path). Neither needs a non-text node in the
- * document, so the only thing a contenteditable buys is chips-in-the-flow — a
- * presentation change paid for with IME composition handling, paste sanitization,
- * an undo stack AO would own, and a11y semantics a textarea gets for free. The
- * existing keyboard contract (Enter sends, Shift+Enter newlines) is load-bearing
- * and already correct on a textarea; re-implementing it on a contenteditable is
- * risk with no user-visible gain.
+ * The editor renders accepted suggestions as atomic chips, but trigger matching
+ * and ranking stay plain-text operations here. Keeping that policy independent
+ * of Lexical makes the menu deterministic and lets the wire representation remain
+ * ordinary text for the agent.
  */
 
 import type { ChatSkill } from "../../types/conversation";
@@ -47,11 +42,8 @@ const TRIGGER_BOUNDARY = /\s/;
  *
  * A sigil only counts at the start of the text or after whitespace. Without that
  * rule an email address or a path like `src/app` would open a menu mid-word, and
- * `and/or` would hijack Enter.
- *
- * `/` additionally only counts at the very start of the message. A slash command
- * is the whole instruction, not something dropped into a sentence — and prose is
- * full of slashes.
+ * `and/or` would hijack Enter. Both commands and file mentions can be added after
+ * existing prose.
  */
 export function findActiveTrigger(text: string, caret: number): ActiveTrigger | undefined {
 	for (let i = caret - 1; i >= 0; i -= 1) {
@@ -63,12 +55,11 @@ export function findActiveTrigger(text: string, caret: number): ActiveTrigger | 
 		const atBoundary = preceding === undefined || TRIGGER_BOUNDARY.test(preceding);
 		if (!atBoundary) return undefined;
 
-		if (char === "/") {
-			// Anchored to the start of the message, ignoring leading whitespace.
-			if (text.slice(0, i).trim() !== "") return undefined;
-			return { kind: "skill", start: i, query: text.slice(i + 1, caret) };
-		}
-		return { kind: "file", start: i, query: text.slice(i + 1, caret) };
+		return {
+			kind: char === "/" ? "skill" : "file",
+			start: i,
+			query: text.slice(i + 1, caret),
+		};
 	}
 	return undefined;
 }
@@ -213,44 +204,6 @@ function firstLine(text: string | undefined): string | undefined {
 	if (!text) return undefined;
 	const line = text.split("\n", 1)[0]!.trim();
 	return line === "" ? undefined : line;
-}
-
-/** The result of accepting a suggestion: new text and where the caret goes. */
-export interface Insertion {
-	text: string;
-	caret: number;
-}
-
-/**
- * Replace an active trigger with the chosen value.
- *
- * A trailing space is added because the trigger is finished: without it the menu
- * would reopen on the text just inserted, and the next keystroke would filter a
- * list the user is done with.
- *
- * The sigil is kept for a skill (`/review`) and dropped for a file (a bare path),
- * because that is what each side has to resolve: Codex reads a leading slash as a
- * skill invocation, while a path only resolves if nothing is prefixed to it.
- */
-export function applySuggestion(
-	text: string,
-	trigger: ActiveTrigger,
-	value: string,
-): Insertion {
-	const caret = trigger.start + 1 + trigger.query.length;
-	const inserted = trigger.kind === "skill" ? `/${value} ` : `${quotePath(value)} `;
-	const next = text.slice(0, trigger.start) + inserted + text.slice(caret);
-	return { text: next, caret: trigger.start + inserted.length };
-}
-
-/**
- * Quote a path that contains whitespace.
- *
- * An unquoted `my notes/todo.md` reads as two arguments to anything that splits on
- * spaces, which is most of what an agent does with a path.
- */
-function quotePath(path: string): string {
-	return /\s/.test(path) ? `"${path}"` : path;
 }
 
 /**

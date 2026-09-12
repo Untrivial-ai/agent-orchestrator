@@ -26,6 +26,7 @@ export function createWindowComposition(options: {
 	mainWindow: MainWindowHost;
 	WebContentsView: WebContentsViewConstructor;
 	preload: string;
+	platform: NodeJS.Platform;
 }): WindowComposition {
 	const shellView = new options.WebContentsView({
 		webPreferences: {
@@ -48,6 +49,21 @@ export function createWindowComposition(options: {
 	};
 	options.mainWindow.contentView.on("bounds-changed", resize);
 
+	// Forces the compositor to rebuild the shell's surface. Identical bounds are
+	// ignored, so shrink by a pixel and restore on the next tick — the two calls
+	// would otherwise coalesce into a single no-op resize.
+	const forceSurfaceRefresh = (): void => {
+		if (options.mainWindow.isDestroyed?.()) return;
+		const bounds = options.mainWindow.contentView.getBounds();
+		if (bounds.width <= 0 || bounds.height <= 0) return;
+		shellView.setBounds({ x: 0, y: 0, width: bounds.width, height: Math.max(1, bounds.height - 1) });
+		setTimeout(() => {
+			if (options.mainWindow.isDestroyed?.()) return;
+			const current = options.mainWindow.contentView.getBounds();
+			shellView.setBounds({ x: 0, y: 0, width: current.width, height: current.height });
+		}, 0);
+	};
+
 	const setOverlayOpen = (open: boolean): void => {
 		if (overlayOpen === open) return;
 		overlayOpen = open;
@@ -58,6 +74,17 @@ export function createWindowComposition(options: {
 			// Index zero leaves every live native surface above the transparent shell.
 			options.mainWindow.contentView.addChildView(shellView, 0);
 		}
+		// Restacking alone does not re-establish the shell's compositing surface:
+		// on macOS the freshly-raised shell can present a stale surface that hides
+		// the live page beneath it, leaving the viewport blank until some real
+		// geometry change rebuilds it. (Symptom: blank on a fresh launch, but
+		// correct at every size once the window has been resized or fullscreened
+		// even once.) Re-applying identical bounds is a no-op, so nudge the height
+		// by a pixel and restore it on the next tick to force a real resize. Keep
+		// that workaround macOS-only: on Windows, resizing the transparent shell while a
+		// maximized native browser view is underneath can invalidate that shell
+		// to opaque black for the lifetime of the overlay.
+		if (open && options.platform === "darwin") forceSurfaceRefresh();
 	};
 
 	resize();
@@ -68,8 +95,13 @@ export function createWindowComposition(options: {
 		setOverlayOpen,
 		resize,
 		dispose: () => {
-			options.mainWindow.contentView.removeListener("bounds-changed", resize);
 			try {
+				// Reading `contentView` on an already-destroyed BaseWindow throws
+				// "Object has been destroyed". On window close the `closed` event
+				// fires after the native window is gone, so both calls here can
+				// throw — keep them together and out of the way of the shell
+				// WebContents teardown below, which must always run.
+				options.mainWindow.contentView.removeListener("bounds-changed", resize);
 				options.mainWindow.contentView.removeChildView(shellView);
 			} catch {
 				// The BaseWindow may already have destroyed its content hierarchy.

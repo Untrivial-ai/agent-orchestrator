@@ -23,12 +23,9 @@
 // out-of-band; GetRestoreCommand reads it back from metadata. ok=false when no
 // native id is known (manager falls back to a fresh launch).
 //
-// Hooks/activity: Pi exposes lifecycle hooks only through in-process TypeScript
-// extensions (pi.on("session_start", ...), etc.), not a config file AO can
-// install, and it has no Claude Code hook compatibility. There is therefore no
-// Tier A native hook installer nor a Tier B Claude-compat delegation; hook
-// installation and SessionInfo are intentionally no-ops until a Pi-specific
-// extension exists.
+// Hooks/activity: AO installs a workspace-local TypeScript extension and passes
+// it explicitly with --extension. It reports Pi's session and agent lifecycle
+// without depending on project-local extension auto-discovery or trust state.
 package pi
 
 import (
@@ -104,6 +101,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	}
 
 	cmd = []string{binary}
+	appendPiExtensionFlag(&cmd, cfg.WorkspacePath)
 	if cfg.SystemPrompt != "" {
 		cmd = append(cmd, "--append-system-prompt", cfg.SystemPrompt)
 	} else if cfg.SystemPromptFile != "" {
@@ -138,6 +136,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 	cmd = []string{binary}
+	appendPiExtensionFlag(&cmd, cfg.Session.WorkspacePath)
 	if cfg.SystemPrompt != "" {
 		cmd = append(cmd, "--append-system-prompt", cfg.SystemPrompt)
 	} else if cfg.SystemPromptFile != "" {
@@ -150,6 +149,16 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendModelFlag(&cmd, cfg.Config)
 	cmd = append(cmd, "--session", agentSessionID)
 	return cmd, true, nil
+}
+
+// SessionInfo surfaces the native Pi session id captured by the managed
+// extension's lifecycle callbacks.
+func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (ports.SessionInfo, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.SessionInfo{}, false, err
+	}
+	info, ok := agentbase.StandardSessionInfo(session)
+	return info, ok, nil
 }
 
 func appendModelFlag(cmd *[]string, cfg ports.AgentConfig) {

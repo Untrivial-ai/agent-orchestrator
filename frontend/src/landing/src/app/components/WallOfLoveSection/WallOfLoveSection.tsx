@@ -42,13 +42,14 @@ function TestimonialCard({
 }) {
 	const [showOriginal, setShowOriginal] = useState(false);
 	const hasTranslation = !!testimonial.originalContent;
+	const isExternal = testimonial.url.startsWith("http");
 
 	return (
 		<a
 			href={testimonial.url}
-			target="_blank"
-			rel="noopener noreferrer"
-			className={`mb-px w-full break-inside-avoid bg-card p-5 align-top hover:bg-muted/60 transition-colors md:mb-0 md:block md:h-[220px] ${className}`}
+			target={isExternal ? "_blank" : undefined}
+			rel={isExternal ? "noopener noreferrer" : undefined}
+			className={`mb-px w-full break-inside-avoid bg-card p-5 align-top hover:bg-muted/60 transition-colors md:mb-0 md:block md:min-h-[220px] ${className}`}
 		>
 			<div className="flex items-start gap-3">
 				<Avatar src={testimonial.avatar} name={testimonial.author} />
@@ -99,7 +100,7 @@ export function WallOfLoveSection() {
 						In the wild
 					</h2>
 					<p className="mt-3 text-base text-muted-foreground">
-						Real posts from builders, researchers, and early users, pulled straight from X.
+						Real feedback from builders using AO.
 					</p>
 				</div>
 

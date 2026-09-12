@@ -15,7 +15,18 @@ export type ShellContextValue = {
 		trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 		asWorkspace?: boolean;
 	}) => Promise<void>;
+	cloneProject: (input: {
+		remoteUrl: string;
+		destinationParent: string;
+		workerAgent: string;
+		orchestratorAgent: string;
+		trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
+	}) => Promise<void>;
 	initializeProjectRepository: (path: string) => Promise<void>;
+	validateImport?: (input: {
+		path: string;
+		importKind: "project" | "workspace";
+	}) => Promise<components["schemas"]["ImportValidationResult"]>;
 };
 
 const ShellContext = createContext<ShellContextValue | null>(null);

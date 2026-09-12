@@ -1,8 +1,20 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
-import { ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
+import { renderMermaidDiagram } from "../../lib/mermaid-diagram";
+import { ActivityTitle, ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
+
+// Mermaid needs real SVG layout APIs jsdom lacks; pin the routing boundary and
+// let MermaidBlock.test.tsx own the block's states.
+vi.mock("../../lib/mermaid-diagram", () => ({
+	isRenderableDiagram: (code: string) => code.trim().length > 0 && code.length <= 20_000,
+	renderMermaidDiagram: vi.fn(async () => '<svg xmlns="http://www.w3.org/2000/svg"><g>diagram</g></svg>'),
+}));
+
+beforeEach(() => {
+	vi.mocked(renderMermaidDiagram).mockClear();
+});
 
 // The point of these is that the SYNTAX stops being visible. Every case here is a
 // shape agents actually emit, and the assertion is that structure replaced markup.
@@ -141,6 +153,66 @@ describe("ChatMarkdown", () => {
 		openExternal.mockRestore();
 	});
 
+	it("opens a web link in the system browser on Cmd-click", () => {
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [the issue](https://example.com/i/1)", onLinkOpen);
+
+		fireEvent.click(screen.getByRole("link", { name: "the issue" }), { metaKey: true });
+
+		expect(openExternal).toHaveBeenCalledWith("https://example.com/i/1");
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("opens a web link in the system browser on Ctrl-click", () => {
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [the issue](https://example.com/i/1)", onLinkOpen);
+
+		fireEvent.click(screen.getByRole("link", { name: "the issue" }), { ctrlKey: true });
+
+		expect(openExternal).toHaveBeenCalledWith("https://example.com/i/1");
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("offers 'Open in system browser' on right-click, without opening in the panel", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [the issue](https://example.com/i/1)", onLinkOpen);
+
+		fireEvent.contextMenu(screen.getByRole("link", { name: "the issue" }));
+		await user.click(await screen.findByRole("menuitem", { name: "Open in system browser" }));
+
+		expect(openExternal).toHaveBeenCalledWith("https://example.com/i/1");
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("offers 'Copy link address' on right-click", async () => {
+		const user = userEvent.setup();
+		const writeText = vi.spyOn(aoBridge.clipboard, "writeText").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [the issue](https://example.com/i/1)", vi.fn());
+
+		fireEvent.contextMenu(screen.getByRole("link", { name: "the issue" }));
+		await user.click(await screen.findByRole("menuitem", { name: "Copy link address" }));
+
+		expect(writeText).toHaveBeenCalledWith("https://example.com/i/1");
+		writeText.mockRestore();
+	});
+
+	it("omits the system-browser item for non-web links but still offers copying", async () => {
+		// mailto must never reach shell.openExternal from the menu.
+		renderWithLinkHandler("[Email support](mailto:support@example.com)", vi.fn());
+
+		fireEvent.contextMenu(screen.getByRole("link", { name: "Email support" }));
+
+		expect(await screen.findByRole("menuitem", { name: "Copy link address" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Open in system browser" })).not.toBeInTheDocument();
+	});
+
 	it("opens non-web links in the system browser", async () => {
 		const user = userEvent.setup();
 		const onLinkOpen = vi.fn();
@@ -165,6 +237,30 @@ describe("ChatMarkdown", () => {
 		render(<ChatMarkdown text={"```ts\nconst x = 1;"} />);
 		expect(document.querySelector("pre code")).toHaveTextContent("const x = 1;");
 		expect(document.body.textContent).not.toContain("```");
+	});
+
+	it("renders a mermaid fence as a diagram rather than source text", async () => {
+		render(<ChatMarkdown text={"```mermaid\nflowchart TD\n    A --> B\n```"} />);
+
+		expect(await screen.findByTestId("mermaid-diagram")).toBeInTheDocument();
+		expect(vi.mocked(renderMermaidDiagram)).toHaveBeenCalledWith(
+			"flowchart TD\n    A --> B",
+			expect.stringMatching(/light|dark/),
+		);
+	});
+
+	it("treats the mermaid label case-insensitively", async () => {
+		render(<ChatMarkdown text={"```Mermaid\nflowchart TD\n    A --> B\n```"} />);
+
+		expect(await screen.findByTestId("mermaid-diagram")).toBeInTheDocument();
+	});
+
+	it("keeps a mermaid fence as source text while streaming", () => {
+		render(<ChatMarkdown text={"```mermaid\nflowchart TD\n    A --> B\n```"} streaming />);
+
+		expect(screen.queryByTestId("mermaid-diagram")).not.toBeInTheDocument();
+		expect(screen.getByText(/A --> B/)).toBeInTheDocument();
+		expect(vi.mocked(renderMermaidDiagram)).not.toHaveBeenCalled();
 	});
 
 	it("renders a fence with no language as a block, not as inline code", () => {
@@ -238,5 +334,22 @@ describe("ChatMarkdown code highlighting", () => {
 
 		await user.click(wrap);
 		expect(wrapper).toHaveAttribute("data-wrap", "false");
+	});
+});
+
+
+describe("ActivityTitle", () => {
+	it("keeps code delimiters inside multi-backtick code spans", () => {
+		const { container } = render(<ActivityTitle text={"Edit ``file`name.ts``"} />);
+		expect(container.querySelector("code")).toHaveTextContent("file`name.ts");
+	});
+
+	it("keeps disclosure titles inline and non-interactive", () => {
+		const { container } = render(
+			<button><ActivityTitle text={'# **Edit** [file](https://example.com) `path.ts` ![image](https://example.com/image.png) <input autofocus />'} /></button>,
+		);
+		expect(screen.getByRole("button")).toHaveTextContent("Edit file path.ts");
+		expect(container.querySelector("strong")).toHaveTextContent("Edit");
+		expect(container.querySelector("a, img, input, p, h1, pre")).toBeNull();
 	});
 });

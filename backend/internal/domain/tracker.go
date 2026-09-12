@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -112,22 +113,49 @@ type TrackerIntakeConfig struct {
 	Assignee string `json:"assignee,omitempty"`
 }
 
-// WithDefaults fills the provider only when intake is enabled. Disabled intake
-// leaves the zero value untouched so empty project configs still store as NULL.
+// WithDefaults leaves the provider empty when not explicitly set so the
+// caller can infer it from the project's repo origin URL at use time (see
+// InferTrackerProvider). Disabled intake leaves the zero value untouched so
+// empty project configs still store as NULL.
 func (c TrackerIntakeConfig) WithDefaults() TrackerIntakeConfig {
-	if c.Enabled && c.Provider == "" {
-		c.Provider = TrackerProviderGitHub
-	}
 	return c
 }
 
-// Validate rejects accidental broad intake and unknown providers.
+// InferTrackerProvider guesses the tracker provider from a repo origin URL.
+// GitHub hosts (github.com, *.github.com, *.ghe.io) map to github; any other
+// host maps to gitlab (self-managed GitLab uses arbitrary hostnames). The
+// empty-string fallback is github for backward compatibility.
+func InferTrackerProvider(repoURL string) TrackerProvider {
+	raw := strings.TrimSpace(repoURL)
+	if raw == "" {
+		return TrackerProviderGitHub
+	}
+	// SSH form git@host:path → normalise to https://host/path
+	if strings.HasPrefix(raw, "git@") {
+		if _, rest, ok := strings.Cut(raw, "@"); ok {
+			if host, path, ok := strings.Cut(rest, ":"); ok {
+				raw = "https://" + host + "/" + path
+			}
+		}
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return TrackerProviderGitHub
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	if host == "github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io") {
+		return TrackerProviderGitHub
+	}
+	return TrackerProviderGitLab
+}
+
+// Validate rejects accidental broad intake and unknown providers. An empty
+// provider is accepted here and inferred from the repo URL at use time.
 func (c TrackerIntakeConfig) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	c = c.WithDefaults()
-	if c.Enabled && c.Provider != TrackerProviderGitHub && c.Provider != TrackerProviderGitLab {
+	if c.Provider != "" && c.Provider != TrackerProviderGitHub && c.Provider != TrackerProviderGitLab {
 		return fmt.Errorf("trackerIntake.provider: unsupported provider %q", c.Provider)
 	}
 	if err := validateNoWhitespaceField("trackerIntake.repo", c.Repo); err != nil {

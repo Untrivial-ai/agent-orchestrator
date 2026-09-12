@@ -1,7 +1,7 @@
 -- name: InsertShellTerminal :one
 INSERT INTO shell_terminals (
-    handle_id, project_id, session_id, working_dir, title, app_run_id, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    handle_id, project_id, session_id, working_dir, title, app_run_id, created_at, transient
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: SelectShellTerminalByHandleID :one
@@ -40,3 +40,8 @@ WHERE handle_id = ?;
 -- name: DeleteShellTerminalsFromPreviousAppRuns :execrows
 DELETE FROM shell_terminals
 WHERE app_run_id <> ?;
+
+-- name: SelectRestorableShellTerminals :many
+SELECT * FROM shell_terminals
+WHERE transient = FALSE OR app_run_id = ?
+ORDER BY created_at;

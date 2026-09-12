@@ -311,6 +311,21 @@ func (c AgentSwitchErrorCode) Valid() bool {
 	}
 }
 
+// RetainedRecoveryMarker reports whether this code belongs only to a
+// nonterminal ownership boundary. Such markers must never be stored on failed
+// rows because doing so would release the operation gate while ownership is
+// still unresolved.
+func (c AgentSwitchErrorCode) RetainedRecoveryMarker() bool {
+	switch c {
+	case AgentSwitchErrorSourceStopUnconfirmed,
+		AgentSwitchErrorTargetStartUnconfirmed,
+		AgentSwitchErrorSourceRestoreUnconfirmed:
+		return true
+	default:
+		return false
+	}
+}
+
 // AgentSwitch is one durable switch saga. The optional source-authored handoff
 // is tracked independently from the AO-finalized handoff that was actually
 // delivered to the target. The finalized artifact also exists for fallback-
@@ -338,6 +353,7 @@ type AgentSwitch struct {
 	TargetRuntimeHandleID   string                            `json:"-"`
 	TargetAcknowledgedAt    *time.Time                        `json:"targetAcknowledgedAt,omitempty"`
 	ErrorCode               AgentSwitchErrorCode              `json:"errorCode,omitempty"`
+	FailurePoint            AgentSwitchFailurePoint           `json:"-"`
 	RequestedAt             time.Time                         `json:"requestedAt"`
 	UpdatedAt               time.Time                         `json:"updatedAt"`
 }
@@ -351,7 +367,6 @@ func (s AgentSwitch) RequiresRecovery() bool {
 // RequiresTargetStartRecovery reports the ambiguous target-start boundary.
 func (s AgentSwitch) RequiresTargetStartRecovery() bool {
 	return s.State == AgentSwitchStartingTarget &&
-		s.TargetRuntimeHandleID == "" &&
 		s.ErrorCode == AgentSwitchErrorTargetStartUnconfirmed
 }
 
@@ -395,18 +410,38 @@ type AgentSwitchTargetActivation struct {
 	ActivatedAt                   time.Time
 }
 
-// AgentSwitchSourceStopConfirmation records the conclusive source-process
+// AgentSwitchSourceStopConfirmation records the conclusive source-controller
 // boundary without transferring ownership. The sessions row remains bound to
-// SourceHarness and ExpectedSourceRuntimeLaunchID, but its activity becomes
-// exited in the same transaction that advances the switch saga.
+// SourceHarness and the source mode's generation fence (runtime launch for TUI,
+// controller generation for Chat), but its activity becomes exited in the same
+// transaction that advances the switch saga.
 type AgentSwitchSourceStopConfirmation struct {
-	SwitchID                      AgentSwitchID
-	SessionID                     SessionID
-	SourceHarness                 AgentHarness
-	SourceGenerationID            AgentGenerationID
-	ExpectedSourceRuntimeLaunchID string
-	TargetGenerationID            AgentGenerationID
-	StoppedAt                     time.Time
+	SwitchID                           AgentSwitchID
+	SessionID                          SessionID
+	SourceMode                         SessionMode
+	SourceHarness                      AgentHarness
+	SourceGenerationID                 AgentGenerationID
+	ExpectedSourceRuntimeLaunchID      string
+	ExpectedSourceControllerGeneration string
+	TargetGenerationID                 AgentGenerationID
+	StoppedAt                          time.Time
+}
+
+// AgentSwitchChatTargetActivation transfers a stopped Chat session to a fresh
+// structured controller. The stopped source controller generation remains the
+// durable owner until this command atomically commits the target generation.
+type AgentSwitchChatTargetActivation struct {
+	SwitchID                           AgentSwitchID
+	SessionID                          SessionID
+	SourceHarness                      AgentHarness
+	SourceGenerationID                 AgentGenerationID
+	ExpectedSourceControllerGeneration string
+	TargetHarness                      AgentHarness
+	TargetNativeSessionRef             AgentNativeSessionID
+	TargetGenerationID                 AgentGenerationID
+	ProviderConversationID             string
+	ControllerGeneration               string
+	ActivatedAt                        time.Time
 }
 
 var (

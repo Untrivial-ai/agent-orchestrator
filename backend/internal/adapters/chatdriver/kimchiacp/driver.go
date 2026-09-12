@@ -3,6 +3,7 @@
 package kimchiacp
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 
@@ -24,7 +25,7 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 	}, log)
 }
 
-func configure(cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	args := []string{"--mode", "acp"}
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		args = append(args, "--model", model)

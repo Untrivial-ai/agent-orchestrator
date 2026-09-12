@@ -104,6 +104,57 @@ func TestReadHistoryMakesMissingItemIDsUniqueAcrossTurns(t *testing.T) {
 	}
 }
 
+func TestReadHistoryRejectsAnUnsettledNativeTurnInsteadOfOmittingIt(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"completed","items":[{"type":"agentMessage","text":"settled"}]},`+
+		`{"id":"turn-b","status":"inProgress","items":[{"type":"agentMessage","text":"partial"}]}`+
+		`]}}`)
+
+	events, err := conv.ReadHistory(context.Background())
+	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+		t.Fatalf("ReadHistory error = %v, want ErrChatHistoryUnsettled", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("ReadHistory returned %d partial events with an unsettled turn", len(events))
+	}
+}
+
+func TestRefreshHistoryPerformsANewThreadRead(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"inProgress"}`+
+		`]}}`)
+
+	if _, err := conv.ReadHistory(context.Background()); !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+		t.Fatalf("ReadHistory error = %v, want ErrChatHistoryUnsettled", err)
+	}
+
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"completed"}`+
+		`]}}`)
+	events, err := conv.RefreshHistory(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshHistory: %v", err)
+	}
+	if len(events) != 2 || events[0].Kind != ports.ChatEventTurnStarted ||
+		events[1].Kind != ports.ChatEventTurnCompleted || events[1].TurnState != "completed" {
+		t.Fatalf("refreshed events = %#v, want settled turn replay", events)
+	}
+
+	srv.mu.Lock()
+	reads := 0
+	for _, seen := range srv.seen {
+		if seen.Method == "thread/read" {
+			reads++
+		}
+	}
+	srv.mu.Unlock()
+	if reads != 2 {
+		t.Fatalf("thread/read requests = %d, want one initial read and one refresh", reads)
+	}
+}
+
 // The provider takes a COUNT from the end of the thread, not a turn id, so the whole
 // correctness of rollback rests on turning the named turn into the right number.
 // Naming the middle of three turns must discard that turn and the one after it.
