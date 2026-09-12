@@ -1665,7 +1665,7 @@ function ProjectImportDialog({
 						</div>
 						{mustImportAsWorkspace ? (
 							<p className="text-[14px] leading-6 text-[var(--color-text-import-muted)]">
-								{t("createProject.projectMustBeWorkspace", { defaultValue: "This folder contains projects and needs to be imported as a workspace." })}
+								{t("createProject.projectMustBeWorkspace", { defaultValue: "This folder contains child Git repositories. Import it as a workspace instead." })}
 							</p>
 						) : null}
 						{validation.warning ? (
