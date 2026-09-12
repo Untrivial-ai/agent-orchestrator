@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -554,10 +555,12 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		return fmt.Errorf("ACP update for unexpected session %q", params.SessionId)
 	}
 	sourceID := stableACPEventID(params.Meta)
+	sourceFresh := c.freshProviderEvent(sourceID, turnID)
 	sourceIndex := 0
 	emit := func(event ports.ChatEvent) {
 		if sourceID != "" {
 			event.ProviderEventID = fmt.Sprintf("%s:%d", sourceID, sourceIndex)
+			event.ProviderEventFresh = sourceFresh
 			sourceIndex++
 		}
 		c.emit(event)
@@ -673,6 +676,25 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 func stableACPEventID(meta map[string]any) string {
 	eventID, _ := meta[persistenthost.ACPEventIDMetaKey].(string)
 	return strings.TrimSpace(eventID)
+}
+
+func (c *conversation) freshProviderEvent(sourceID, turnID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if sourceID == "" || c.proc == nil || c.proc.terminate == nil {
+		return false
+	}
+	state := c.liveState
+	if state != nil && state.EventIDPrefix != "" {
+		if !strings.HasPrefix(sourceID, state.EventIDPrefix) {
+			return false
+		}
+		sequence, err := strconv.ParseUint(strings.TrimPrefix(sourceID, state.EventIDPrefix), 10, 64)
+		return err == nil && sequence > state.EventSequence
+	}
+	// Hosts predating the watermark may replay the first resumed prompt. Only
+	// a new prompt dispatched by this client proves those older hosts are live.
+	return c.freshTurn && turnID != "" && c.activeTurn == turnID
 }
 
 func contentText(content acpsdk.ContentBlock) string {

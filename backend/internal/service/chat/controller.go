@@ -190,6 +190,12 @@ type Controller struct {
 	// the complete option catalog and updates durable next-turn settings, so
 	// concurrent writes could otherwise persist an older catalog last.
 	configMu sync.Mutex
+	// projectionGate couples each durable provider projection to the processed
+	// snapshot cursor. Waiting snapshot requests can cancel; live intake uses a
+	// separate lock and never waits for this gate.
+	projectionGate controllerGate
+	liveSequence   int64
+	live           *liveJournal
 
 	mu sync.Mutex
 	// suppressStoppedActivity marks a deliberate branch-controller retirement.
@@ -366,6 +372,11 @@ func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) s
 // been imported. Keeping construction and consumption separate prevents a resume
 // notification from racing ahead of the older turns it follows.
 func (c *Controller) start() {
+	c.projectionGate = make(controllerGate, 1)
+	c.live = &liveJournal{
+		generation: c.generation, conversationID: c.conversation.ID,
+		branchID: c.conversation.ActiveBranchID, subscribers: make(map[*LiveSubscription]struct{}),
+	}
 	go c.project()
 	if c.harness != domain.HarnessCodex {
 		go c.readRateLimits()
@@ -2177,17 +2188,30 @@ func (c *Controller) Wait() { <-c.stopped }
 // deliberate detach from a provider that remains alive in a persistent host.
 func (c *Controller) project() {
 	defer close(c.stopped)
+	defer c.live.close()
+	events := make(chan sequencedChatEvent, liveQueueSize)
+	receiveCtx, stopReceiving := context.WithCancel(context.Background())
+	defer stopReceiving()
+	receivedAll := make(chan struct{})
+	go func() {
+		defer close(receivedAll)
+		c.receiveLive(receiveCtx, events)
+	}()
 
 	// Detached from any request context: this outlives the call that started the
 	// controller, and must keep persisting until the provider stream ends.
 	ctx := context.WithoutCancel(context.Background())
 	acknowledger, persistent := c.conv.(ports.ChatProviderEventAcknowledger)
 
-	for event := range c.conv.Events() {
+	for received := range coalesceChatDeltas(events) {
+		event := received.ChatEvent
 		c.mu.Lock()
 		preserveProvider := c.preserveProviderOnStop
 		c.mu.Unlock()
 		if preserveProvider && event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped {
+			_ = c.projectionGate.lock(ctx)
+			c.liveSequence = received.sequence
+			c.projectionGate.unlock()
 			continue
 		}
 		// A lifecycle event and a concurrent Send must agree on whether the root
@@ -2197,6 +2221,7 @@ func (c *Controller) project() {
 		if lifecycle {
 			c.sendMu.Lock()
 		}
+		_ = c.projectionGate.lock(ctx)
 		projected, primaryTurn, err := c.projectEvent(ctx, event)
 		// A terminal receipt compacts the entire prompt, so it cannot pass a
 		// failed earlier projection. Retry transient store errors in order; if
@@ -2208,6 +2233,13 @@ func (c *Controller) project() {
 		if err == nil && persistent && event.ProviderEventID != "" {
 			err = acknowledger.AcknowledgeProviderEvent(ctx, event.ProviderEventID)
 		}
+		// This is a processed cursor: rejected duplicates and failed projections
+		// also advance it, so a durable refresh discards their transient preview.
+		c.liveSequence = received.sequence
+		c.projectionGate.unlock()
+		if err != nil || !projected {
+			c.live.reset(received.sequence)
+		}
 		if err != nil && persistent {
 			c.log.Error("persistent chat projection stopped; provider retained for replay",
 				"session", c.sessionID, "kind", event.Kind, "error", err)
@@ -2218,6 +2250,11 @@ func (c *Controller) project() {
 			if lifecycle {
 				c.sendMu.Unlock()
 			}
+			stopReceiving()
+			<-receivedAll
+			_ = c.projectionGate.lock(ctx)
+			c.liveSequence = c.live.discard()
+			c.projectionGate.unlock()
 			c.once.Do(func() { c.closeErr = c.conv.Close() })
 			return
 		}

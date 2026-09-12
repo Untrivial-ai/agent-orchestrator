@@ -418,6 +418,7 @@ func TestPersistentACPResumeAdoptsLivePromptWithoutSecondSetup(t *testing.T) {
 			ACPState: &persistenthost.ACPState{
 				InitializeResult: initialize, SessionResult: session,
 				SessionID: "provider-session", ActivePrompt: true,
+				EventIDPrefix: "acp-host:test:", EventSequence: 1,
 			},
 		}, nil
 	}
@@ -445,8 +446,9 @@ func TestPersistentACPResumeAdoptsLivePromptWithoutSecondSetup(t *testing.T) {
 	}
 
 	go func() {
-		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","method":"session/update","params":{"_meta":{"ao.persistentEventId":"acp-host:1"},"sessionId":"provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"survived"}}}}`)
-		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","method":"_ao/persistent_prompt_result","params":{"eventId":"acp-host:2","result":{"stopReason":"end_turn","_meta":{"ao.persistentEventId":"acp-host:2"}}}}`)
+		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","method":"session/update","params":{"_meta":{"ao.persistentEventId":"acp-host:test:1"},"sessionId":"provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"survived"}}}}`)
+		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","method":"session/update","params":{"_meta":{"ao.persistentEventId":"acp-host:test:2"},"sessionId":"provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" live"}}}}`)
+		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","method":"_ao/persistent_prompt_result","params":{"eventId":"acp-host:test:3","result":{"stopReason":"end_turn","_meta":{"ao.persistentEventId":"acp-host:test:3"}}}}`)
 	}()
 
 	ready := nextEvent(t, conv.Events())
@@ -455,15 +457,19 @@ func TestPersistentACPResumeAdoptsLivePromptWithoutSecondSetup(t *testing.T) {
 	}
 	delta := nextEvent(t, conv.Events())
 	if delta.Kind != ports.ChatEventMessageDelta || delta.Delta != "survived" ||
-		delta.ProviderTurnID != "durable-turn" || delta.ProviderEventID != "acp-host:1:0" {
+		delta.ProviderTurnID != "durable-turn" || delta.ProviderEventID != "acp-host:test:1:0" || delta.ProviderEventFresh {
 		t.Fatalf("replayed delta = %#v", delta)
+	}
+	fresh := nextEvent(t, conv.Events())
+	if fresh.Kind != ports.ChatEventMessageDelta || fresh.Delta != " live" || fresh.ProviderEventID != "acp-host:test:2:0" || !fresh.ProviderEventFresh {
+		t.Fatalf("fresh delta after reconnect = %#v", fresh)
 	}
 	completed := nextEvent(t, conv.Events())
 	for completed.Kind != ports.ChatEventTurnCompleted {
 		completed = nextEvent(t, conv.Events())
 	}
 	if completed.ProviderTurnID != "durable-turn" || completed.TurnState != domain.TurnStateCompleted ||
-		completed.ProviderEventID != "acp-host:2" {
+		completed.ProviderEventID != "acp-host:test:3" {
 		t.Fatalf("replayed completion = %#v", completed)
 	}
 	ackResult := make(chan []byte, 1)

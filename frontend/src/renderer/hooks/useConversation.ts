@@ -21,6 +21,7 @@ import { useCallback, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { useConversationLive } from "./useConversationLive";
 import type {
 	ActivityKind,
 	ApprovalMode,
@@ -231,8 +232,9 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 		queryKey: conversationQueryKey(sessionId ?? ""),
 		enabled: Boolean(sessionId),
 		initialPageParam: undefined as number | undefined,
-		queryFn: async ({ pageParam }) => {
+		queryFn: async ({ pageParam, signal }) => {
 			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/conversation", {
+				signal,
 				params: {
 					path: { sessionId: sessionId as string },
 					query: {
@@ -257,8 +259,9 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 		},
 	});
 
-	if (query.error) {
-		const code = apiErrorCode(query.error);
+	const liveSnapshot = useConversationLive(sessionId, query.data);
+	const code = apiErrorCode(query.error);
+	if (query.error && (!liveSnapshot || (code && PERMANENT_CODES.has(code)) || code === "CHAT_CONTROLLER_NOT_READY")) {
 		// The session is currently owned by Terminal UI (or its Chat controller is
 		// absent). A deliberate interface switch can change that later, but this
 		// request cannot, so explain it rather than retrying.
@@ -281,7 +284,7 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 	}
 
 	return {
-		snapshot: query.data,
+		snapshot: liveSnapshot,
 		isLoading: query.isLoading,
 		hasOlder: query.hasNextPage,
 		isLoadingOlder: query.isFetchingNextPage,
@@ -1281,12 +1284,14 @@ export function useStageAttachments(sessionId: string | undefined) {
  */
 function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 	const items: ConversationItem[] = [
-		...(wire.messages ?? []).map(toMessage),
+		...(wire.messages ?? []).map((message) => ({ ...toMessage(message), liveGeneration: wire.liveGeneration, liveSequence: wire.liveSequence })),
 		...(wire.activities ?? []).map(toActivity),
 	].sort((a, b) => a.sequence - b.sequence);
 
 	return {
 		conversationId: wire.conversationId,
+		liveGeneration: wire.liveGeneration,
+		liveSequence: wire.liveSequence,
 		sessionId: wire.sessionId,
 		harness: wire.harness ?? "",
 		mode: wire.mode as SessionMode,
@@ -1477,6 +1482,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		kind: "message",
 		id: wire.id,
 		turnId: wire.turnId,
+		providerItemId: wire.providerItemId,
 		sequence: wire.sequence,
 		revision: wire.revision,
 		role: wire.role as MessageRole,

@@ -72,6 +72,26 @@ func TestACPRelayReclaimsPromptAcrossAttachment(t *testing.T) {
 	}
 }
 
+func TestACPRelayAttachmentWatermarkSeparatesReplayFromFreshFrames(t *testing.T) {
+	relay := newTestACPRelay(t)
+	relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s","prompt":[]}}`+"\n"), 1)
+	update := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{}}}` + "\n")
+	first, _ := relayProviderFrame(t, relay, update, 1, true)
+	attached := relay.snapshot()
+	second, _ := relayProviderFrame(t, relay, update, 2, true)
+	if attached.EventIDPrefix == "" || attached.EventSequence != 1 || relay.snapshot().EventSequence != 2 {
+		t.Fatalf("attachment watermark drifted or was omitted: %+v", attached)
+	}
+	if frameMetaString(t, first, ACPEventIDMetaKey) != attached.EventIDPrefix+"1" ||
+		frameMetaString(t, second, ACPEventIDMetaKey) != attached.EventIDPrefix+"2" {
+		t.Fatal("event identities cannot be compared with the attachment watermark")
+	}
+	frames := relayReplayFrames(t, relay)
+	if len(frames) != 2 || !bytes.Equal(frames[0], first) || !bytes.Equal(frames[1], second) {
+		t.Fatalf("replay changed the original event identities: %q", frames)
+	}
+}
+
 func TestACPRelayGivesReplayedProviderRequestStableIdentity(t *testing.T) {
 	relay := newTestACPRelay(t)
 	frame := []byte(`{"jsonrpc":"2.0","id":"permission-7","method":"session/request_permission","params":{"sessionId":"s","options":[]}}` + "\n")

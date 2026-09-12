@@ -2197,6 +2197,7 @@ func newHarnessWithConversationAndStoreForHarness(
 	chatStore := wrapStore(st)
 	svc := chatsvc.New(chatsvc.Options{
 		Store:    chatStore,
+		Reader:   fullSnapshotReader(st),
 		Sessions: st,
 		StopProviderHost: func(context.Context, domain.SessionID) error {
 			h.hostStops.Add(1)
@@ -3793,6 +3794,10 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 		Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID,
 		ProviderConversationID: firstProvider.ProviderConversationID(),
 	})
+	firstProvider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventMessageDelta, ProviderTurnID: turn.ProviderTurnID,
+		ProviderItemID: "surviving-reply", Delta: "before restart",
+	})
 	h := &harness{st: st, ctrl: firstController}
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		for _, candidate := range s.Turns {
@@ -3819,6 +3824,27 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("reconnect Start: %v", err)
+	}
+	baseline, err := second.Snapshot(context.Background(), testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.LiveSequence != 0 || baseline.LiveGeneration == firstController.Generation() ||
+		len(baseline.Messages) != 2 || baseline.Messages[1].Text != "before restart" {
+		t.Fatalf("reconnected snapshot lost the durable prefix or reused its stream epoch: %+v", baseline)
+	}
+	sub, err := second.SubscribeLive(context.Background(), testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	secondProvider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventMessageDelta, ProviderTurnID: turn.ProviderTurnID,
+		ProviderItemID: "surviving-reply", Delta: " after restart",
+	})
+	frame := awaitLiveFrame(t, sub, 1)
+	if len(frame.Events) != 1 || baseline.Messages[1].Text+frame.Events[0].Delta != "before restart after restart" {
+		t.Fatalf("reconnected live stream duplicated the saved prefix: %+v", frame)
 	}
 	queued, err := secondController.Send(context.Background(), ports.ChatUserMessage{Text: "after restart"})
 	if err != nil {

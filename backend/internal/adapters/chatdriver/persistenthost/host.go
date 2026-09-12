@@ -110,6 +110,11 @@ type PreparedProvider struct {
 // ACPState is the connection-scoped state needed to reconstruct an ACP client
 // without initializing or resuming the same live provider a second time.
 type ACPState struct {
+	// EventIDPrefix and EventSequence form the attachment's replay watermark.
+	// Frames assigned a later sequence belong to new output on this connection.
+	// Older hosts omit the prefix, which means freshness is unknown.
+	EventIDPrefix        string          `json:"eventIdPrefix,omitempty"`
+	EventSequence        uint64          `json:"eventSequence,omitempty"`
 	InitialPermissions   string          `json:"initialPermissions,omitempty"`
 	InitializeResult     json.RawMessage `json:"initializeResult,omitempty"`
 	SessionResult        json.RawMessage `json:"sessionResult,omitempty"`

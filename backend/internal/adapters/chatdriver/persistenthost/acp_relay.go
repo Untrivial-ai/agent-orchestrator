@@ -93,6 +93,8 @@ func newACPRelay(ctx context.Context, journalPath string) (*acpRelay, error) {
 
 func (r *acpRelay) snapshot() *ACPState {
 	state := r.state
+	state.EventIDPrefix = "acp-host:" + r.identity + ":"
+	state.EventSequence = r.nextEventID
 	state.InitializeResult = append(json.RawMessage(nil), state.InitializeResult...)
 	state.SessionResult = append(json.RawMessage(nil), state.SessionResult...)
 	return &state
