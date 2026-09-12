@@ -52,6 +52,7 @@ const state = vi.hoisted(() => ({
 				enable: ReturnType<typeof vi.fn>;
 				shouldForceSelection: (event: MouseEvent) => boolean;
 				_mouseMoveListener?: EventListener;
+				_dragScrollAmount?: number;
 			};
 		};
 	},
@@ -107,6 +108,7 @@ vi.mock("@xterm/xterm", () => ({
 				enable: vi.fn(),
 				shouldForceSelection: () => false,
 				_mouseMoveListener: state.mouseMoveListener,
+				_dragScrollAmount: 0,
 			},
 		};
 
@@ -2045,12 +2047,17 @@ describe("XtermTerminal", () => {
 		expect(saveDroppedFile).not.toHaveBeenCalled();
 	});
 
-	it("does not extend a drag selection into a neighboring pane", () => {
+	it("does not extend a drag selection into a neighboring pane or keep auto-scrolling", () => {
 		render(<XtermTerminal theme="dark" />);
-		const listener = state.lastTerminal!._core._selectionService._mouseMoveListener!;
+		const selectionService = state.lastTerminal!._core._selectionService;
+		const listener = selectionService._mouseMoveListener!;
 
+		// Simulate xterm's timer having been armed by a previous drag below the
+		// terminal before the pointer crosses horizontally into the sidebar.
+		selectionService._dragScrollAmount = 1;
 		listener(new MouseEvent("mousemove", { clientX: 801 }));
 		expect(state.mouseMoveListener).not.toHaveBeenCalled();
+		expect(selectionService._dragScrollAmount).toBe(0);
 
 		listener(new MouseEvent("mousemove", { clientX: 800 }));
 		expect(state.mouseMoveListener).toHaveBeenCalledTimes(1);

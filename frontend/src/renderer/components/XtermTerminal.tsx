@@ -274,6 +274,7 @@ type XtermInternal = Terminal & {
 			// active. It is private, but xterm exposes no public hook for changing
 			// the document-wide drag behavior.
 			_mouseMoveListener?: EventListener;
+			_dragScrollAmount?: number;
 		};
 	};
 };
@@ -352,7 +353,14 @@ function confineDragSelectionToTerminalWidth(term: Terminal): void {
 	selectionService._mouseMoveListener = (event: Event) => {
 		if (!(event instanceof MouseEvent)) return;
 		const { left, right } = element.getBoundingClientRect();
-		if (event.clientX < left || event.clientX > right) return;
+		if (event.clientX < left || event.clientX > right) {
+			// xterm's document-level drag timer continues using its last vertical
+			// overflow value. Clear that value when the pointer enters a sibling
+			// pane, otherwise a previous below-the-terminal drag keeps scrolling and
+			// extends the frozen selection.
+			selectionService._dragScrollAmount = 0;
+			return;
+		}
 		originalMouseMoveListener(event);
 	};
 }
