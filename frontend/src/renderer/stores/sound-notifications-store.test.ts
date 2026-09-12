@@ -2,12 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getUiSettings = vi.fn();
 const setUiSettings = vi.fn();
+const chooseSound = vi.fn();
+const clearSound = vi.fn();
+const previewSound = vi.fn();
 
 vi.mock("../lib/bridge", () => ({
 	aoBridge: {
 		uiSettings: {
 			get: (...args: unknown[]) => getUiSettings(...args),
 			set: (...args: unknown[]) => setUiSettings(...args),
+		},
+		notificationSound: {
+			choose: () => chooseSound(),
+			clear: () => clearSound(),
+			preview: () => previewSound(),
 		},
 	},
 }));
@@ -18,9 +26,72 @@ describe("sound-notifications-store", () => {
 	beforeEach(() => {
 		getUiSettings.mockReset();
 		setUiSettings.mockReset();
+		chooseSound.mockReset();
+		clearSound.mockReset();
+		previewSound.mockReset();
+		previewSound.mockResolvedValue(undefined);
 		getUiSettings.mockResolvedValue({ locale: "en", soundNotificationsEnabled: true });
 		setUiSettings.mockImplementation(async (settings: { soundNotificationsEnabled: boolean }) => settings);
-		useSoundNotificationsStore.setState({ enabled: true, loaded: false, saving: false, saveError: false });
+		useSoundNotificationsStore.setState({
+			enabled: true,
+			soundPath: null,
+			loaded: false,
+			saving: false,
+			saveError: false,
+			soundError: null,
+		});
+	});
+
+	it("loads the custom sound path alongside the toggle", async () => {
+		getUiSettings.mockResolvedValue({
+			locale: "en",
+			soundNotificationsEnabled: true,
+			notificationSoundPath: "/state/notification-sound/ding.wav",
+		});
+		await useSoundNotificationsStore.getState().load();
+		expect(useSoundNotificationsStore.getState().soundPath).toBe("/state/notification-sound/ding.wav");
+	});
+
+	it("adopts the imported sound returned by the picker", async () => {
+		chooseSound.mockResolvedValue({
+			settings: { locale: "en", soundNotificationsEnabled: true, notificationSoundPath: "/state/x.mp3" },
+			error: null,
+		});
+		await useSoundNotificationsStore.getState().chooseSound();
+		expect(useSoundNotificationsStore.getState()).toMatchObject({
+			soundPath: "/state/x.mp3",
+			saving: false,
+			soundError: null,
+		});
+	});
+
+	it("keeps the current sound when the picker is cancelled", async () => {
+		useSoundNotificationsStore.setState({ soundPath: "/state/keep.mp3" });
+		chooseSound.mockResolvedValue({ settings: null, error: null });
+		await useSoundNotificationsStore.getState().chooseSound();
+		expect(useSoundNotificationsStore.getState()).toMatchObject({ soundPath: "/state/keep.mp3", saving: false });
+	});
+
+	it("surfaces an import rejection without changing the sound", async () => {
+		chooseSound.mockResolvedValue({ settings: null, error: "unsupported_type" });
+		await useSoundNotificationsStore.getState().chooseSound();
+		expect(useSoundNotificationsStore.getState()).toMatchObject({
+			soundPath: null,
+			saving: false,
+			soundError: "unsupported_type",
+		});
+	});
+
+	it("clears the custom sound back to the system default", async () => {
+		useSoundNotificationsStore.setState({ soundPath: "/state/x.mp3", soundError: "too_large" });
+		clearSound.mockResolvedValue({ locale: "en", soundNotificationsEnabled: true, notificationSoundPath: null });
+		await useSoundNotificationsStore.getState().clearSound();
+		expect(useSoundNotificationsStore.getState()).toMatchObject({ soundPath: null, saving: false, soundError: null });
+	});
+
+	it("asks the main process to play a preview", async () => {
+		await useSoundNotificationsStore.getState().previewSound();
+		expect(previewSound).toHaveBeenCalledTimes(1);
 	});
 
 	it("defaults to enabled before load", () => {

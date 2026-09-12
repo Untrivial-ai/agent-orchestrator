@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ThemePreference, ThemeStyle } from "../../lib/theme";
-import type { AppLocale } from "../../i18n";
+import type { AppLocale, MessageKey } from "../../i18n";
 import { useLocaleStore } from "../../stores/locale-store";
 import { useSoundNotificationsStore } from "../../stores/sound-notifications-store";
 import { useUiStore } from "../../stores/ui-store";
@@ -11,12 +11,25 @@ import { useTerminalShellStore } from "../../stores/terminal-shell-store";
 import { SettingsOptionMenu, type SettingsOption } from "./SettingsOptionMenu";
 import { SettingsInputRow, SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
+import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { cn } from "../../lib/utils";
 import { useSettings, useUpdateCloudOffering, useUpdateSessionInterface } from "../../hooks/useSettings";
 import type { SessionMode } from "../../types/workspace";
 import type { TerminalShellKind } from "../../../shared/ui-locale";
+import type { NotificationSoundImportErrorCode } from "../../../shared/notification-sound";
 import { isWindowsPlatform } from "../../lib/platform";
+
+/** Last path segment of the imported sound; the copy under ~/.ao keeps the original file name. */
+function fileName(filePath: string): string {
+	return filePath.split(/[\\/]/).pop() ?? filePath;
+}
+
+const NOTIFICATION_SOUND_ERROR_KEYS = {
+	unsupported_type: "settings.notificationSound.error.unsupportedType",
+	too_large: "settings.notificationSound.error.tooLarge",
+	unreadable: "settings.notificationSound.error.unreadable",
+} as const satisfies Record<NotificationSoundImportErrorCode, MessageKey>;
 
 /**
  * Default interface for new sessions. Daemon-owned so `ao spawn` and mobile
@@ -151,6 +164,11 @@ export function GeneralSettingsSection({
 	const setSoundNotificationsEnabled = useSoundNotificationsStore((state) => state.setEnabled);
 	const soundNotificationsSaving = useSoundNotificationsStore((state) => state.saving);
 	const soundNotificationsSaveError = useSoundNotificationsStore((state) => state.saveError);
+	const notificationSoundPath = useSoundNotificationsStore((state) => state.soundPath);
+	const notificationSoundError = useSoundNotificationsStore((state) => state.soundError);
+	const chooseNotificationSound = useSoundNotificationsStore((state) => state.chooseSound);
+	const clearNotificationSound = useSoundNotificationsStore((state) => state.clearSound);
+	const previewNotificationSound = useSoundNotificationsStore((state) => state.previewSound);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const setDeveloperMode = useUiStore((state) => state.setDeveloperMode);
 
@@ -226,6 +244,52 @@ export function GeneralSettingsSection({
 				{soundNotificationsSaveError ? (
 					<p role="alert" className="px-3 text-caption leading-4 text-error">
 						{t("settings.soundNotifications.saveFailed")}
+					</p>
+				) : null}
+				<SettingsRow label={t("settings.notificationSound")}>
+					<div className="flex min-w-0 items-center gap-2">
+						<span className="settings-row-value" title={notificationSoundPath ?? undefined}>
+							{notificationSoundPath ? fileName(notificationSoundPath) : t("settings.notificationSound.systemDefault")}
+						</span>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={soundNotificationsSaving}
+							onClick={() => {
+								void chooseNotificationSound();
+							}}
+						>
+							{t("settings.notificationSound.choose")}
+						</Button>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={() => {
+								void previewNotificationSound();
+							}}
+						>
+							{t("settings.notificationSound.test")}
+						</Button>
+						{notificationSoundPath ? (
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								disabled={soundNotificationsSaving}
+								onClick={() => {
+									void clearNotificationSound();
+								}}
+							>
+								{t("settings.notificationSound.reset")}
+							</Button>
+						) : null}
+					</div>
+				</SettingsRow>
+				{notificationSoundError ? (
+					<p role="alert" className="px-3 text-caption leading-4 text-error">
+						{t(NOTIFICATION_SOUND_ERROR_KEYS[notificationSoundError])}
 					</p>
 				) : null}
 			</SettingsSection>

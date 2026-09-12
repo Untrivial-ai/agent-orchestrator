@@ -313,6 +313,12 @@ if (typeof window !== "undefined") {
 			get: async () => ({ ...DEFAULT_UI_SETTINGS }),
 			set: async (settings) => coerceUiSettings({ ...DEFAULT_UI_SETTINGS, ...settings }),
 		},
+		notificationSound: {
+			choose: async () => ({ settings: null, error: null }),
+			clear: async () => ({ ...DEFAULT_UI_SETTINGS }),
+			preview: async () => undefined,
+			onPlay: () => () => undefined,
+		},
 		keybindings: {
 			get: async () => ({}),
 			set: async (overrides) => overrides,
