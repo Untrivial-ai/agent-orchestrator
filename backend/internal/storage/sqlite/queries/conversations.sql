@@ -1408,7 +1408,7 @@ WHERE conversation_id = sqlc.arg(conversation_id)
   AND client_message_id = sqlc.arg(client_message_id)
   AND state = 'reserved' AND provider_work_started = 0
   AND EXISTS (
-    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.session_id
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.current_session_id
     WHERE c.id = conversation_edit_deliveries.conversation_id
       AND s.controller_generation = sqlc.arg(generation)
       AND s.session_mode = 'chat' AND s.is_terminated = 0
