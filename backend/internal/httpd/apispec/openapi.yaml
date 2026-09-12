@@ -2583,6 +2583,173 @@ paths:
       summary: Report a reviewer-owned hook signal
       tags:
       - reviews
+  /api/v1/session-import/refresh:
+    post:
+      operationId: refreshSessionSearch
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportSearchStatus'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: refreshSessionSearch
+      tags:
+      - sessions
+  /api/v1/session-import/search:
+    get:
+      operationId: searchImportableSessions
+      parameters:
+      - description: Title query, at most 120 Unicode characters. Empty returns a
+          bounded recent page.
+        in: query
+        name: query
+        schema:
+          description: Title query, at most 120 Unicode characters. Empty returns
+            a bounded recent page.
+          type: string
+      - description: Page size from 1 to 100; defaults to 50.
+        in: query
+        name: limit
+        schema:
+          description: Page size from 1 to 100; defaults to 50.
+          type: integer
+      - description: Continuation cursor returned by the preceding page.
+        in: query
+        name: cursor
+        schema:
+          description: Continuation cursor returned by the preceding page.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportSearchPage'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: searchImportableSessions
+      tags:
+      - sessions
+  /api/v1/session-import/search/{resultId}/destination:
+    get:
+      operationId: getSessionImportDestination
+      parameters:
+      - in: path
+        name: resultId
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: locateFolder
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportDestination'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: getSessionImportDestination
+      tags:
+      - sessions
+  /api/v1/session-import/search/{resultId}/import:
+    post:
+      operationId: importSelectedSession
+      parameters:
+      - in: path
+        name: resultId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionImportSelectedInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionImportSelectedResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: importSelectedSession
+      tags:
+      - sessions
   /api/v1/sessions:
     get:
       operationId: listSessions
@@ -6522,6 +6689,139 @@ paths:
       summary: Clean up terminated session workspaces
       tags:
       - sessions
+  /api/v1/sessions/import:
+    post:
+      operationId: importSession
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersImportSessionRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersImportSessionResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersImportSessionResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Import an existing agent conversation as a resumable session
+      tags:
+      - sessions
+  /api/v1/sessions/import/batch:
+    post:
+      operationId: importSessions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportSessionsRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportSessionsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Register existing conversation histories without starting agents
+      tags:
+      - sessions
+  /api/v1/sessions/importable:
+    get:
+      operationId: listImportableSessions
+      parameters:
+      - description: Restrict to one provider, e.g. claude-code or codex.
+        in: query
+        name: provider
+        schema:
+          description: Restrict to one provider, e.g. claude-code or codex.
+          type: string
+      - description: Required registered project. Only conversations active within
+          15 days with at least 15000 provider tokens are listed.
+        in: query
+        name: projectId
+        required: true
+        schema:
+          description: Required registered project. Only conversations active within
+            15 days with at least 15000 provider tokens are listed.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListImportableSessionsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List agent conversations on disk that can be imported
+      tags:
+      - sessions
   /api/v1/settings:
     get:
       operationId: getSettings
@@ -8227,6 +8527,93 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersImportSessionRequest:
+      properties:
+        nativeSessionId:
+          description: The provider's own session id from the discovery list.
+          type: string
+        projectId:
+          description: Registered project that owns this conversation.
+          type: string
+        provider:
+          description: Agent harness of the conversation, e.g. claude-code or codex.
+          type: string
+      required:
+      - projectId
+      - provider
+      - nativeSessionId
+      type: object
+    ControllersImportSessionResponse:
+      properties:
+        alreadyImported:
+          description: True when the session already existed and was returned as-is.
+          type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+      required:
+      - session
+      - alreadyImported
+      type: object
+    ControllersImportableSessionView:
+      properties:
+        alreadyImported:
+          description: True when an AO session is already bound to this native session
+            id.
+          type: boolean
+        branch:
+          description: Git branch recorded in the transcript, when present.
+          type: string
+        cwd:
+          description: Working directory the conversation ran in, read from the transcript.
+          type: string
+        lastActivity:
+          description: RFC3339 timestamp of the most recent activity.
+          type: string
+        messageCount:
+          description: Retained for compatibility; discovery leaves this zero to avoid
+            counting every message.
+          type: integer
+        nativeSessionId:
+          description: The provider's own session id, used to bind and resume the
+            imported session.
+          type: string
+        provider:
+          description: Agent harness that wrote the transcript, e.g. claude-code or
+            codex.
+          type: string
+        sizeBytes:
+          description: Transcript size on disk in bytes.
+          format: int64
+          type: integer
+        title:
+          description: 'Human label: the provider''s title, else the first prompt,
+            else the file name.'
+          type: string
+        tokenCount:
+          description: Observed lower bound of cumulative provider usage including
+            cached input; scanning may stop once the import threshold is met.
+          format: int64
+          type: integer
+      required:
+      - tokenCount
+      - provider
+      - nativeSessionId
+      - title
+      - cwd
+      - lastActivity
+      - messageCount
+      - sizeBytes
+      - alreadyImported
+      type: object
+    ControllersListImportableSessionsResponse:
+      properties:
+        sessions:
+          items:
+            $ref: '#/components/schemas/ControllersImportableSessionView'
+          type: array
+      required:
+      - sessions
+      type: object
     ControllersRequestRereviewRequest:
       properties:
         pullRequestUrl:
@@ -8336,6 +8723,8 @@ components:
           type: string
         id:
           type: string
+        importedHistory:
+          type: boolean
         isPinned:
           type: boolean
         isTerminated:
@@ -8942,6 +9331,8 @@ components:
         harness:
           type: string
         hasMoreBefore:
+          type: boolean
+        importedHistory:
           type: boolean
         latestSequence:
           format: int64
@@ -9582,12 +9973,60 @@ components:
       - projectsImported
       - projectsSkipped
       type: object
+    ImportResult:
+      properties:
+        alreadyImported:
+          type: boolean
+        error:
+          type: string
+        nativeSessionId:
+          type: string
+        provider:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - provider
+      - nativeSessionId
+      - alreadyImported
+      type: object
     ImportRunResponse:
       properties:
         report:
           $ref: '#/components/schemas/ImportReport'
       required:
       - report
+      type: object
+    ImportSelection:
+      properties:
+        nativeSessionId:
+          type: string
+        provider:
+          type: string
+      required:
+      - provider
+      - nativeSessionId
+      type: object
+    ImportSessionsRequest:
+      properties:
+        projectId:
+          type: string
+        sessions:
+          items:
+            $ref: '#/components/schemas/ImportSelection'
+          type: array
+      required:
+      - projectId
+      - sessions
+      type: object
+    ImportSessionsResponse:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/ImportResult'
+          type: array
+      required:
+      - results
       type: object
     ImportStatusResponse:
       properties:
@@ -10904,6 +11343,125 @@ components:
       - ok
       - sessionId
       - message
+      type: object
+    SessionImportDestination:
+      properties:
+        action:
+          enum:
+          - import
+          - add_project
+          - open
+          - unavailable
+          type: string
+        confirmationToken:
+          type: string
+        id:
+          type: string
+        path:
+          type: string
+        projectId:
+          type: string
+        provider:
+          type: string
+        reason:
+          type: string
+        sessionId:
+          type: string
+        sourceCwd:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - title
+      - provider
+      - action
+      type: object
+    SessionImportSearchPage:
+      properties:
+        nextCursor:
+          type: string
+        results:
+          items:
+            $ref: '#/components/schemas/SessionImportSearchResult'
+          type: array
+        status:
+          $ref: '#/components/schemas/SessionImportSearchStatus'
+      required:
+      - results
+      - status
+      type: object
+    SessionImportSearchResult:
+      properties:
+        folderHint:
+          type: string
+        id:
+          type: string
+        lastActivity:
+          type: string
+        projectId:
+          type: string
+        provider:
+          type: string
+        sessionId:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - title
+      - provider
+      - lastActivity
+      type: object
+    SessionImportSearchStatus:
+      properties:
+        completedAt:
+          type: string
+        errors:
+          items:
+            type: string
+          type: array
+        running:
+          type: boolean
+        scanned:
+          type: integer
+        startedAt:
+          type: string
+        updated:
+          type: integer
+      required:
+      - running
+      - scanned
+      - updated
+      - errors
+      type: object
+    SessionImportSelectedInput:
+      properties:
+        addProject:
+          type: boolean
+        confirmationToken:
+          type: string
+        locateFolder:
+          type: string
+      required:
+      - confirmationToken
+      - addProject
+      type: object
+    SessionImportSelectedResult:
+      properties:
+        alreadyImported:
+          type: boolean
+        error:
+          type: string
+        projectCreated:
+          type: boolean
+        projectId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - alreadyImported
+      - projectCreated
       type: object
     SessionInterfaceTransition:
       properties:

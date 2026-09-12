@@ -1343,6 +1343,7 @@ function ChatWorkspaceContent({
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
+						importedHistory={snapshot.importedHistory}
 						transitioning={controllerTransitioning}
 						onResume={newWorkDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
@@ -1799,6 +1800,7 @@ function ChatHeader({
  */
 function ControllerBanner({
 	controller,
+	importedHistory,
 	transitioning,
 	onResume,
 	resuming,
@@ -1808,6 +1810,7 @@ function ControllerBanner({
 	shellError,
 }: {
 	controller: { state: ControllerState; error?: string };
+	importedHistory?: boolean;
 	transitioning?: boolean;
 	onResume?: () => void;
 	resuming?: boolean;
@@ -1832,8 +1835,8 @@ function ControllerBanner({
 			tone: "text-warning",
 		},
 		stopped: {
-			title: "The agent controller stopped",
-			tone: "text-destructive",
+			title: resuming ? "Resuming the agent…" : importedHistory ? "Imported conversation" : "The agent controller stopped",
+			tone: resuming || importedHistory ? "text-muted-foreground" : "text-destructive",
 		},
 	};
 	const shown = copy[controller.state];
@@ -1841,11 +1844,11 @@ function ControllerBanner({
 
 	return (
 		<div
-			role={controller.state === "stopped" ? "alert" : "status"}
+			role={controller.state === "stopped" && !importedHistory && !resuming ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
-			{controller.state === "connecting" ? (
+			{controller.state === "connecting" || resuming ? (
 				<Loader2
 					aria-hidden="true"
 					className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
@@ -1861,7 +1864,7 @@ function ControllerBanner({
 				{controller.state === "stopped" ? (
 					<>
 						<span className="text-[11px] leading-snug text-muted-foreground">
-							History is kept. Resume the agent or open a shell in the same worktree.
+							{resuming ? "Preparing the agent and restoring your conversation." : importedHistory ? "Your saved history is available. Resume the agent when you want to continue working." : "History is kept. Resume the agent or open a shell in the same worktree."}
 						</span>
 						{resumeError || shellError ? (
 							<span className="text-[11px] leading-snug text-destructive">
@@ -1880,7 +1883,7 @@ function ControllerBanner({
 									{resuming ? "Resuming…" : "Resume agent"}
 								</Button>
 							) : null}
-							{onOpenShell ? (
+							{onOpenShell && !importedHistory ? (
 								<Button
 									type="button"
 									size="sm"

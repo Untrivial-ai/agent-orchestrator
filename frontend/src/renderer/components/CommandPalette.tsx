@@ -29,12 +29,14 @@ import { useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { Button } from "./ui/button";
 import { CreateProjectFlow } from "./CreateProjectFlow";
+import { FindSessionToImport } from "./FindSessionToImport";
 import { TaskComposer } from "./TaskComposer";
 import { CommandDialog, CommandEmpty, CommandFooter, CommandGroup, CommandInput, CommandItem, CommandList } from "./ui/command";
 
 const PALETTE_REVIEW_STALE_TIME_MS = 60_000;
 type PaletteView =
 	| { mode: "root" }
+	| { mode: "import-search" }
 	| { mode: "session-actions"; sessionId: string }
 	| { mode: "new-task"; projectId: string };
 
@@ -77,6 +79,15 @@ export function CommandPalette() {
 	const viewRef = useRef(view);
 	viewRef.current = view;
 	const closeResetTimerRef = useRef<number | null>(null);
+	const returnFocusRef = useRef<HTMLElement | null>(null);
+	const rootInputRef = useRef<HTMLInputElement>(null);
+	const focusRootRef = useRef(false);
+	useEffect(() => {
+		if (view.mode === "root" && focusRootRef.current) {
+			rootInputRef.current?.focus();
+			focusRootRef.current = false;
+		}
+	}, [view.mode]);
 
 	const currentSession = params.sessionId ? findSession(workspaces, params.sessionId)?.session : undefined;
 	const currentProjectId = currentSession?.workspaceId ?? params.projectId;
@@ -154,7 +165,16 @@ export function CommandPalette() {
 		if (view.mode === "session-actions") {
 			return [{ id: "actions", label: "", items: filterCommands(sessionActionItems, query) }];
 		}
-		return displayGroups(rootItems, query, t);
+		return [
+			...displayGroups(rootItems, query, t),
+			{
+				id: "import-search", label: "",
+				items: [{
+					id: "find-import-session", group: "global" as const,
+					title: t("importSearch.entry"), action: { kind: "find-import-session" as const },
+				}],
+			},
+		];
 	}, [view.mode, rootItems, sessionActionItems, query, t, i18n.resolvedLanguage]);
 
 	const visibleItems = useMemo(() => groups.flatMap((group) => group.items), [groups]);
@@ -219,9 +239,11 @@ export function CommandPalette() {
 	);
 
 	const popToRoot = useCallback(() => {
+		const wasImport = viewRef.current.mode === "import-search";
+		focusRootRef.current = wasImport;
 		setView({ mode: "root" });
 		setPendingDismiss(null);
-		resetTransient();
+		if (!wasImport) resetTransient();
 	}, [resetTransient]);
 
 	const pushView = useCallback(
@@ -367,6 +389,9 @@ export function CommandPalette() {
 			const isCurrentRun = () => runGenerationRef.current === generation;
 			try {
 				switch (action.kind) {
+					case "find-import-session":
+						setView({ mode: "import-search" });
+						break;
 					case "navigate":
 						navigateToTarget(action.target);
 						closePalette();
@@ -499,7 +524,7 @@ export function CommandPalette() {
 	const contextLabel =
 		view.mode === "session-actions"
 			? (scoped?.session.title ?? t("command.sessionFallback"))
-			: view.mode === "new-task"
+			: view.mode === "import-search" ? t("importSearch.title") : view.mode === "new-task"
 				? t("command.newTask")
 				: "";
 
@@ -507,9 +532,19 @@ export function CommandPalette() {
 		<>
 			<CommandDialog
 				open={isOpen}
+				title={view.mode === "import-search" ? t("importSearch.title") : t("command.palette")}
 				onOpenChange={(open) => (open ? setOpen(true) : requestDismiss("close"))}
 				contentProps={{
 					onAnimationEnd: handlePaletteAnimationEnd,
+					onOpenAutoFocus: () => {
+						returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+					},
+					onCloseAutoFocus: (event) => {
+						if (returnFocusRef.current?.isConnected) {
+							event.preventDefault();
+							returnFocusRef.current.focus();
+						}
+					},
 					onEscapeKeyDown: (event) => {
 						event.preventDefault();
 						if (event.isComposing) return;
@@ -517,7 +552,7 @@ export function CommandPalette() {
 							setPendingDismiss(null);
 							return;
 						}
-						requestDismiss(viewRef.current.mode === "root" ? "close" : "pop");
+						requestDismiss(viewRef.current.mode === "root" || viewRef.current.mode === "import-search" ? "close" : "pop");
 					},
 				}}
 				commandProps={{
@@ -544,7 +579,9 @@ export function CommandPalette() {
 					</div>
 				)}
 
-				{view.mode === "new-task" ? (
+				{view.mode === "import-search" ? (
+					<FindSessionToImport onPendingChange={onComposerSubmittingChange} initialQuery={query} onOpen={(projectId, sessionId) => void handleTaskCreated(projectId, sessionId)} />
+				) : view.mode === "new-task" ? (
 					<div onKeyDown={(event) => event.stopPropagation()}>
 						{pendingDismiss !== null && (
 							<div className="mx-3 mt-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-foreground">
@@ -570,9 +607,11 @@ export function CommandPalette() {
 				) : (
 					<>
 						<CommandInput
+							ref={rootInputRef}
 							value={query}
 								onValueChange={(next) => {
 									setQuery(next);
+									setSelectedValue("");
 									setError(null);
 								}}
 							placeholder={

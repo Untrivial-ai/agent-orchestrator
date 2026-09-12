@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   decryptString: vi.fn((value: Buffer) => value.toString("utf8")),
   encryptString: vi.fn((value: string) => Buffer.from(value, "utf8")),
   encryptionAvailable: true,
+  encryptionCheck: vi.fn(),
   selectedStorageBackend: "gnome_libsecret",
   getAuthorizationUrlWithPKCE: vi.fn(),
   openExternal: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock("electron", () => ({
     decryptString: mocks.decryptString,
     encryptString: mocks.encryptString,
     getSelectedStorageBackend: () => mocks.selectedStorageBackend,
-    isEncryptionAvailable: () => mocks.encryptionAvailable,
+    isEncryptionAvailable: () => { mocks.encryptionCheck(); return mocks.encryptionAvailable; },
   },
   shell: { openExternal: mocks.openExternal },
 }));
@@ -53,6 +54,7 @@ vi.mock("electron", () => ({
 import {
   beginCloudSignIn,
   getCloudSession,
+  readAuthStore,
   handleCloudDeepLink,
   showCloudSignInFailure,
   signOutCloud,
@@ -87,6 +89,12 @@ describe("native WorkOS authentication", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("does not consult the OS keychain when a fresh profile has no auth file", async () => {
+    await readAuthStore(dataDir);
+    expect(mocks.encryptionCheck).not.toHaveBeenCalled();
+    expect(mocks.decryptString).not.toHaveBeenCalled();
   });
 
   it("starts PKCE and exchanges the callback without an AO website", async () => {

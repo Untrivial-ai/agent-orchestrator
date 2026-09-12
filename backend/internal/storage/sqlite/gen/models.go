@@ -591,6 +591,7 @@ type Session struct {
 	LatestUserPromptAt        sql.NullTime
 	ReviewerAgentConfig       string
 	SessionPermissions        string
+	SourceBranch              string
 }
 
 type SessionCleanupFact struct {

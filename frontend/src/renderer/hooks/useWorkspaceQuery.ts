@@ -87,6 +87,7 @@ function toWorkspaceSession(
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
 		mode: session.mode === "chat" ? "chat" : "tui",
 		branch: session.branch || undefined,
+		importedHistory: session.importedHistory,
 		status,
 		scmStatus,
 		kanbanColumn,

@@ -365,7 +365,7 @@ export function ShellTopbar({
 						    have no local workspace to hand off to an editor: the local daemon
 						    has never heard of them, so querying it just surfaces its 404 as a
 						    confusing "Unknown session" error (see workspace.ts's `kind` doc). */}
-						{session && project?.kind !== CLOUD_PROJECT_KIND ? (
+						{session && !session.importedHistory && project?.kind !== CLOUD_PROJECT_KIND ? (
 							// Keyed per session so a stale launch error does not carry over
 							// when switching sessions. The prefix keeps it distinct from the
 							// kill button's key: identical sibling keys make React duplicate

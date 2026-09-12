@@ -225,3 +225,7 @@ describe("session presentation", () => {
 		expect(getSessionTimelinePillView(status)).toMatchObject({ label, tone, breathe: false });
 	});
 });
+
+ it("shows an unstarted imported conversation without an error-coloured status dot", () => {
+ expect(getSessionStatusDotView({...sessionWith({status: "exited"}), importedHistory: true})).toEqual({className: "bg-muted-foreground", breathe: false});
+ });

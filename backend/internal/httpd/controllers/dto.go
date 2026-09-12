@@ -245,6 +245,7 @@ type WorkspaceTreeEntry struct {
 // prs is a list. The embedded domain.Session.Metadata and domain.Session.PRs
 // fields are json:"-"; these curated fields are what serialize.
 type SessionView struct {
+	ImportedHistory bool `json:"importedHistory,omitempty"`
 	domain.Session
 	Branch string `json:"branch,omitempty"`
 	// TerminalGeneration is an opaque renderer fence. A restarted controller
@@ -2213,6 +2214,7 @@ type ConversationActivityResponse struct {
 
 // ConversationSnapshotResponse is the durable read model a client bootstraps from.
 type ConversationSnapshotResponse struct {
+	ImportedHistory            bool   `json:"importedHistory,omitempty"`
 	ConversationID             string `json:"conversationId"`
 	ActiveBranchID             string `json:"activeBranchId,omitempty"`
 	BranchedFromEarlierMessage bool   `json:"branchedFromEarlierMessage"`
@@ -2561,4 +2563,21 @@ type MuteDeviceRequest struct {
 // routes.
 type InstallIDParam struct {
 	InstallID string `path:"installId" description:"The device's stable install id."`
+}
+
+// SessionSearchQuery searches cached metadata without starting a provider scan.
+type SessionSearchQuery struct {
+	Query  string `query:"query,omitempty" description:"Title query, at most 120 Unicode characters. Empty returns a bounded recent page."`
+	Limit  int    `query:"limit,omitempty" description:"Page size from 1 to 100; defaults to 50."`
+	Cursor string `query:"cursor,omitempty" description:"Continuation cursor returned by the preceding page."`
+}
+
+// SessionSearchResultParam identifies a server-resolved provider conversation.
+type SessionSearchResultParam struct {
+	ResultID string `path:"resultId"`
+}
+
+// SessionSearchDestinationQuery optionally locates another checkout of the same repository.
+type SessionSearchDestinationQuery struct {
+	LocateFolder string `query:"locateFolder,omitempty"`
 }

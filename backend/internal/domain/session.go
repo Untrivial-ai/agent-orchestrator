@@ -28,7 +28,16 @@ type SessionMetadata struct {
 	// Permissions pins the resolved launch policy independently of future project defaults.
 	Permissions PermissionMode `json:"permissions,omitempty"`
 
-	Branch            string `json:"branch,omitempty"`
+	Branch string `json:"branch,omitempty"`
+	// SourceBranch is the branch an imported conversation actually ran on, which
+	// is not always the branch its session owns. Git allows one checkout per
+	// branch, so when the original is already checked out in the user's own
+	// clone the session is created on a fresh one instead.
+	//
+	// It exists so the pull request behind an imported conversation is still
+	// discoverable. Matching PRs on Branch alone meant an import either failed
+	// or lost its PR, and it always lost it.
+	SourceBranch      string `json:"sourceBranch,omitempty"`
 	WorkspacePath     string `json:"workspacePath,omitempty"`
 	WorkspaceRepoPath string `json:"workspaceRepoPath,omitempty"`
 	DiffBaseSHA       string `json:"diffBaseSha,omitempty"`

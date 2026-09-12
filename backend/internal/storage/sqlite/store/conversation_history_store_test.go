@@ -1312,3 +1312,47 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderHistoryBatchRollsBackArchiveAndProjection(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	fail := errors.New("later event failed")
+	project := func(ctx context.Context) error {
+		_, err := s.ProjectProviderEvent(ctx, conversation, session, "gen-1", "history-1", "activity.completed", `{}`, histClock, func(tx context.Context) error {
+			return s.UpsertActivity(tx, conversation, "", domain.ConversationActivity{ID: "batch-activity", Kind: domain.ActivityKindCommand, Status: domain.ActivityStatusCompleted, Summary: "saved command"}, histClock)
+		})
+		return err
+	}
+	err := s.ProjectProviderHistory(ctx, func(tx context.Context) error {
+		if err := project(tx); err != nil {
+			return err
+		}
+		return fail
+	})
+	if !errors.Is(err, fail) {
+		t.Fatalf("batch error=%v", err)
+	}
+	events, err := s.ProviderEventsSince(ctx, conversation, 0, 10)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("rolled back events=%v err=%v", events, err)
+	}
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil || len(snapshot.Activities) != 0 {
+		t.Fatalf("rolled back activities=%v err=%v", snapshot.Activities, err)
+	}
+	for range 2 {
+		if err := s.ProjectProviderHistory(ctx, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err = s.ProviderEventsSince(ctx, conversation, 0, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("deduplicated events=%v err=%v", events, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	called := false
+	if err := s.ProjectProviderHistory(canceled, func(context.Context) error { called = true; return nil }); err == nil || called {
+		t.Fatal("cancelled batch ran")
+	}
+}

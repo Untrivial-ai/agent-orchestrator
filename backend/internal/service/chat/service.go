@@ -273,6 +273,14 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 // conversation: presenting unrelated history as continuous is worse than an error
 // the user can act on.
 func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, error) {
+	started, phaseStarted := time.Now(), time.Now()
+	phase := func(name string) {
+		s.log.Debug("chat startup phase", "session", cfg.SessionID, "phase", name, "duration_ms", time.Since(phaseStarted).Milliseconds())
+		phaseStarted = time.Now()
+	}
+	defer func() {
+		s.log.Debug("chat startup completed", "session", cfg.SessionID, "duration_ms", time.Since(started).Milliseconds())
+	}()
 	gate := s.controllerGate(cfg.SessionID)
 	if err := gate.lock(ctx); err != nil {
 		return nil, err
@@ -323,6 +331,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		return nil, fmt.Errorf("chat driver for %s: %w", cfg.Harness, err)
 	}
 
+	phase("admission")
 	var caps ports.ChatCapabilities
 	if cfg.ProviderConversationID == "" {
 		caps, err = s.driverCapabilities(ctx, cfg.Harness, driver)
@@ -334,6 +343,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		}
 	}
 
+	phase("capabilities")
 	scope := domain.ConversationScopeSession
 	if cfg.Kind == domain.KindOrchestrator {
 		scope = domain.ConversationScopeProject
@@ -456,6 +466,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		}
 	}
 
+	phase("storage_and_environment")
 	var conv ports.ChatConversation
 	if cfg.ProviderConversationID != "" {
 		conv, err = driver.Resume(ctx, ports.ChatResumeConfig{
@@ -500,6 +511,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			returned, cfg.ProviderConversationID,
 		)
 	}
+	phase("provider_connect")
 	liveReconnect := false
 	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
 		liveReconnect = reconnected.ReconnectedLive()
@@ -621,6 +633,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			cleanupUnpublishedConversation(conv, false)
 			return nil, historyErr
 		}
+		phase("history_read")
+		s.log.Debug("native history replay", "session", cfg.SessionID, "events", len(events))
 		if providerBoundary != nil {
 			// The pending branch does not exist yet. Carry its stable replay into
 			// ControllerReady so SQLite can insert/activate the boundary, stage the
@@ -635,6 +649,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, err
 		}
 	}
+	phase("history_projection")
 	commit, err := notifyControllerReady(
 		cfg, controller, providerBoundary, commitProviderHistory,
 	)
@@ -953,6 +968,7 @@ func (s *Service) StopAll(ctx context.Context) {
 
 // Snapshot is the durable read model a client bootstraps from.
 type Snapshot struct {
+	ImportedHistory                  bool
 	Conversation                     domain.ConversationRecord
 	ActiveBranch                     domain.ConversationBranch
 	EditFloorSequence                int64
@@ -1026,8 +1042,14 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		return Snapshot{}, err
 	}
 
+	if record.Metadata.NativeTranscriptPath != "" && record.Metadata.ControllerGeneration == "" {
+		return importedHistorySnapshot(ctx, record, 0, 0)
+	}
 	conversation, err := s.store.ConversationForSession(ctx, id)
 	if errors.Is(err, domain.ErrNoConversation) {
+		if record.Metadata.NativeTranscriptPath != "" {
+			return importedHistorySnapshot(ctx, record, 0, 0)
+		}
 		// A chat session has no conversation until its controller first starts.
 		// That is an empty conversation, not a failure — returning an error here
 		// would make a brand-new session look broken.
@@ -1081,8 +1103,14 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if record.Metadata.NativeTranscriptPath != "" && record.Metadata.ControllerGeneration == "" {
+		return importedHistorySnapshot(ctx, record, beforeSequence, limit)
+	}
 	conversation, err := s.store.ConversationForSession(ctx, id)
 	if errors.Is(err, domain.ErrNoConversation) {
+		if record.Metadata.NativeTranscriptPath != "" {
+			return importedHistorySnapshot(ctx, record, beforeSequence, limit)
+		}
 		return Snapshot{
 			SessionID:  id,
 			Harness:    record.Harness,

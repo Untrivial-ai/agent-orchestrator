@@ -131,11 +131,21 @@ func New(opts Options) (*Workspace, error) {
 	return w, nil
 }
 
-// ResolveDefaultBranch selects a canonical remote-tracking ref using only local
-// repository state. A slash is treated as a remote qualifier only when its
+// ResolveDefaultBranch selects the authoritative default, refreshing automatic
+// remote HEAD metadata when available. A slash is a remote qualifier only when its
 // prefix exactly matches a configured remote; otherwise it remains part of an
 // origin branch name such as release/2026.
 func (w *Workspace) ResolveDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
+	return w.resolveDefaultBranch(ctx, repoPath, configuredBranch, false)
+}
+
+// ResolveLocalDefaultBranch resolves cached repository metadata for imports
+// without contacting a remote. Ordinary spawns retain live HEAD resolution.
+func (w *Workspace) ResolveLocalDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
+	return w.resolveDefaultBranch(ctx, repoPath, configuredBranch, true)
+}
+
+func (w *Workspace) resolveDefaultBranch(ctx context.Context, repoPath, configuredBranch string, localOnly bool) (ports.WorkspaceDefaultBranch, error) {
 	repo, err := physicalAbs(repoPath)
 	if err != nil {
 		return ports.WorkspaceDefaultBranch{}, fmt.Errorf("gitworktree: repo path: %w", err)
@@ -143,7 +153,12 @@ func (w *Workspace) ResolveDefaultBranch(ctx context.Context, repoPath, configur
 	branch := strings.TrimSpace(configuredBranch)
 	if branch == "" {
 		resolver := gitdefault.New(w.binary, gitdefault.Runner(w.run))
-		resolution, err := resolver.Resolve(ctx, ctx, repo)
+		var resolution gitdefault.Resolution
+		if localOnly {
+			resolution, err = resolver.Inspect(ctx, repo)
+		} else {
+			resolution, err = resolver.Resolve(ctx, ctx, repo)
+		}
 		if err != nil {
 			return ports.WorkspaceDefaultBranch{}, fmt.Errorf("gitworktree: resolve repository default for %q: %w", repo, err)
 		}
@@ -1277,7 +1292,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 		// when the requested branch already exists. Restore already has durable
 		// base metadata and only needs to reattach that branch; making it resolve
 		// again can fail after remote metadata becomes unavailable.
-		if resolveExistingBase {
+		if resolveExistingBase && baseRef == "" {
 			refs, err := w.resolveWorktreeRefsWithBudget(ctx, repo, branch, baseBranch)
 			if err != nil {
 				if errors.Is(err, errNoBaseRef) {

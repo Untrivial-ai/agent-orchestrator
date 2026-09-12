@@ -105,15 +105,30 @@ type providerTurn struct {
 // terminal visible in AO's structured timeline as well; resuming the thread alone
 // preserves model context but does not make app-server re-emit old notifications.
 func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	snapshot := c.resumeHistory
+	c.resumeHistory = nil
+	c.mu.Unlock()
+	if snapshot != nil {
+		return c.historyEvents(*snapshot)
+	}
+	return c.readFreshHistory(ctx)
+}
+
+func (c *conversation) readFreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
 	var resp codexproto.ThreadReadResponse
 	includeTurns := true
-	if err := c.conn.request(ctx, codexproto.MethodThreadRead, codexproto.ThreadReadParams{
-		ThreadID:     c.threadID,
-		IncludeTurns: &includeTurns,
-	}, &resp); err != nil {
+	if err := c.conn.request(ctx, codexproto.MethodThreadRead, codexproto.ThreadReadParams{ThreadID: c.threadID, IncludeTurns: &includeTurns}, &resp); err != nil {
 		return nil, asRefusal(fmt.Errorf("thread/read history: %w", err))
 	}
-	for _, turn := range resp.Thread.Turns {
+	return c.historyEvents(resp.Thread)
+}
+
+func (c *conversation) historyEvents(thread codexproto.Thread) ([]ports.ChatEvent, error) {
+	for _, turn := range thread.Turns {
 		state := turnStateFrom(string(turn.Status))
 		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
 			return nil, fmt.Errorf("%w: Codex turn %s is %s",
@@ -121,8 +136,8 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 		}
 	}
 
-	events := make([]ports.ChatEvent, 0, len(resp.Thread.Turns)*4)
-	for _, turn := range resp.Thread.Turns {
+	events := make([]ports.ChatEvent, 0, len(thread.Turns)*4)
+	for _, turn := range thread.Turns {
 		state := turnStateFrom(string(turn.Status))
 
 		events = append(events, ports.ChatEvent{
@@ -165,15 +180,7 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 				continue
 			}
 
-			params, err := json.Marshal(map[string]any{
-				"threadId": c.threadID,
-				"turnId":   turn.ID,
-				"item":     item,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("encode history item %s: %w", itemID, err)
-			}
-			for eventIndex, event := range normalizeItem(params, true) {
+			for eventIndex, event := range normalizeTypedItem(turn.ID, threadItem{ThreadItem: item}, true) {
 				event.ProviderEventID = historyEventID(
 					c.threadID, turn.ID, "item", eventItemID, string(event.Kind), fmt.Sprint(eventIndex))
 				events = append(events, event)
@@ -198,7 +205,10 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 // repeatable native read rather than a replay captured during resume, so bounded
 // settle polling can observe provider progress here.
 func (c *conversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
-	return c.ReadHistory(ctx)
+	c.mu.Lock()
+	c.resumeHistory = nil
+	c.mu.Unlock()
+	return c.readFreshHistory(ctx)
 }
 
 func historyEventID(parts ...string) string {

@@ -250,6 +250,9 @@ func migrate(db *sql.DB) error {
 	if err := prepareSessionReviewerAgentConfigMigration(db); err != nil {
 		return fmt.Errorf("prepare session reviewer agent-config migration: %w", err)
 	}
+	if err := prepareSessionSourceBranchMigration(db); err != nil {
+		return fmt.Errorf("prepare session source-branch migration: %w", err)
+	}
 	// Builds can advance a database past a migration that is added or
 	// renumbered later (notably across fast-moving Nightly releases). Apply
 	// those embedded migrations instead of permanently wedging daemon startup

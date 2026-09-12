@@ -520,6 +520,25 @@ func (q *Queries) CompleteQueuedConversationTurnPromotion(ctx context.Context, a
 	return result.RowsAffected()
 }
 
+const conversationActivityExistsByProviderItem = `-- name: ConversationActivityExistsByProviderItem :one
+SELECT EXISTS(SELECT 1 FROM conversation_activities
+WHERE conversation_id = ? AND provider_item_id = ? AND provider_item_id <> '')
+`
+
+type ConversationActivityExistsByProviderItemParams struct {
+	ConversationID string
+	ProviderItemID string
+}
+
+// A replay insert only needs existence. The explicit nonempty predicate lets
+// SQLite use the partial provider-item index instead of scanning large payloads.
+func (q *Queries) ConversationActivityExistsByProviderItem(ctx context.Context, arg ConversationActivityExistsByProviderItemParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, conversationActivityExistsByProviderItem, arg.ConversationID, arg.ProviderItemID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const conversationActivityExistsForProviderItem = `-- name: ConversationActivityExistsForProviderItem :one
 SELECT EXISTS(
     SELECT 1
@@ -3239,7 +3258,7 @@ func (q *Queries) SettleConversationActivity(ctx context.Context, arg SettleConv
 const settleConversationActivityStreamedText = `-- name: SettleConversationActivityStreamedText :execrows
 UPDATE conversation_activities
 SET streamed_text = ?, streamed_text_truncated = 0, revision = revision + 1, updated_at = ?
-WHERE conversation_id = ? AND provider_item_id = ? AND status <> 'cancelled'
+WHERE conversation_id = ? AND provider_item_id = ? AND provider_item_id <> '' AND status <> 'cancelled'
 `
 
 type SettleConversationActivityStreamedTextParams struct {

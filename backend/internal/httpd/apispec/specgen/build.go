@@ -19,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimportsvc"
 )
 
 // Build reflects the Go contract types and the operation registry below into
@@ -143,6 +144,16 @@ func schemaName(_ reflect.Type, defaultName string) string {
 // by projectOperations(). Add an entry when a new contract type is introduced;
 // the drift test fails until the spec is regenerated, which flags the gap.
 var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names include reset-credit contracts; no credential value is stored here.
+	"SessionimportsvcSearchStatus":                         "SessionImportSearchStatus",
+	"SessionimportsvcSearchResult":                         "SessionImportSearchResult",
+	"SessionimportsvcSearchPage":                           "SessionImportSearchPage",
+	"SessionimportsvcDestination":                          "SessionImportDestination",
+	"SessionimportsvcSelectedInput":                        "SessionImportSelectedInput",
+	"SessionimportsvcSelectedResult":                       "SessionImportSelectedResult",
+	"ControllersImportSessionsRequest":                     "ImportSessionsRequest",
+	"ControllersImportSessionsResponse":                    "ImportSessionsResponse",
+	"SessionimportsvcSelection":                            "ImportSelection",
+	"SessionimportsvcImportResult":                         "ImportResult",
 	"ControllersSettingsResponse":                          "SettingsResponse",
 	"ControllersDesktopWorkspaceLocationResponse":          "DesktopWorkspaceLocationResponse",
 	"ControllersUpdateSessionInterfaceRequest":             "UpdateSessionInterfaceRequest",
@@ -1851,6 +1862,41 @@ func sessionOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{method: http.MethodGet, path: "/api/v1/session-import/search", id: "searchImportableSessions", tag: "sessions", summary: "searchImportableSessions", pathParams: []any{controllers.SessionSearchQuery{}}, resps: []respUnit{{http.StatusOK, sessionimportsvc.SearchPage{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusUnprocessableEntity, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/session-import/refresh", id: "refreshSessionSearch", tag: "sessions", summary: "refreshSessionSearch", resps: []respUnit{{http.StatusOK, sessionimportsvc.SearchStatus{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusUnprocessableEntity, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/session-import/search/{resultId}/destination", id: "getSessionImportDestination", tag: "sessions", summary: "getSessionImportDestination", pathParams: []any{controllers.SessionSearchResultParam{}, controllers.SessionSearchDestinationQuery{}}, resps: []respUnit{{http.StatusOK, sessionimportsvc.Destination{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusUnprocessableEntity, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/session-import/search/{resultId}/import", id: "importSelectedSession", tag: "sessions", summary: "importSelectedSession", pathParams: []any{controllers.SessionSearchResultParam{}}, reqBody: sessionimportsvc.SelectedInput{}, resps: []respUnit{{http.StatusOK, sessionimportsvc.SelectedResult{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusUnprocessableEntity, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/importable", id: "listImportableSessions", tag: "sessions",
+			summary:    "List agent conversations on disk that can be imported",
+			pathParams: []any{controllers.ListImportableSessionsQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListImportableSessionsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/import/batch", id: "importSessions", tag: "sessions",
+			summary: "Register existing conversation histories without starting agents",
+			reqBody: controllers.ImportSessionsRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.ImportSessionsResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/import", id: "importSession", tag: "sessions",
+			summary: "Import an existing agent conversation as a resumable session",
+			reqBody: controllers.ImportSessionRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.ImportSessionResponse{}},
+				{http.StatusOK, controllers.ImportSessionResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
 		{

@@ -14,7 +14,7 @@ export function BoardWelcome() {
 	return (
 		<WelcomePanel>
 			<div
-				className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-8"
+				className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto px-6 py-8"
 				data-testid="board-welcome"
 			>
 				<div className="flex w-full flex-col items-center gap-3">

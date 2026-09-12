@@ -56,6 +56,8 @@ import (
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
+	sessionimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimportsvc"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
@@ -743,8 +745,22 @@ func Run() error {
 
 	bs.HostID = hostIdentity.HostID
 
+	// Session import discovers Claude Code / Codex conversations on disk and
+	// imports one as a resumable chat session. Provider-agnostic: add a source
+	// here to support another IDE.
+	sessionImportSvc := sessionimportsvc.New(sessionSvc, store, projectSvc,
+		sessionimport.NewClaudeSource(),
+		sessionimport.NewCodexSource(),
+	)
+
+	if err := sessionImportSvc.EnableSearch(ctx, cfg.DataDir); err != nil {
+		log.Warn("session search unavailable", "error", err)
+	}
+	defer func() { _ = sessionImportSvc.CloseSearch() }()
+
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Projects:           projectSvc,
+		SessionImport:      sessionImportSvc,
 		HostID:             hostIdentity.HostID,
 		Endpoints:          bs,
 		Agents:             agentSvc,

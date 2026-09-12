@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // frame is the union of every shape that crosses the wire.
@@ -328,6 +329,8 @@ func (c *conn) write(v any) error {
 // request sends a client->server request and waits for its response. The caller's
 // context bounds the wait; a late response is discarded by deliver.
 func (c *conn) request(ctx context.Context, method string, params, out any) error {
+	started := time.Now()
+	trace := method == "thread/resume" || method == "thread/read" || method == "initialize"
 	id := c.nextID.Add(1)
 	ch := make(chan frame, 1)
 
@@ -364,10 +367,17 @@ func (c *conn) request(ctx context.Context, method string, params, out any) erro
 		if f.Error != nil {
 			return fmt.Errorf("%s: %w", method, f.Error)
 		}
+		received := time.Now()
+		if trace {
+			c.log.Debug("provider response received", "method", method, "duration_ms", received.Sub(started).Milliseconds(), "bytes", len(f.Result))
+		}
 		if out != nil && len(f.Result) > 0 {
 			if err := json.Unmarshal(f.Result, out); err != nil {
 				return fmt.Errorf("%s: decode result: %w", method, err)
 			}
+		}
+		if trace {
+			c.log.Debug("provider response decoded", "method", method, "duration_ms", time.Since(received).Milliseconds())
 		}
 		return nil
 	}

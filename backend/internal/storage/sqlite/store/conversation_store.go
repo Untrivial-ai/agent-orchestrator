@@ -2061,12 +2061,15 @@ func (s *Store) UpsertActivity(
 	detail := string(activity.Detail)
 
 	if activity.ProviderItemID != "" {
-		_, err := q.SelectConversationActivityByProviderItem(ctx,
-			gen.SelectConversationActivityByProviderItemParams{
+		exists, err := q.ConversationActivityExistsByProviderItem(ctx,
+			gen.ConversationActivityExistsByProviderItemParams{
 				ConversationID: conversationID,
 				ProviderItemID: activity.ProviderItemID,
 			})
-		if err == nil {
+		if err != nil {
+			return fmt.Errorf("lookup activity %s: %w", activity.ProviderItemID, err)
+		}
+		if exists {
 			if settleErr := q.SettleConversationActivity(ctx,
 				gen.SettleConversationActivityParams{
 					Status:         activity.Status,
@@ -2079,9 +2082,6 @@ func (s *Store) UpsertActivity(
 				return fmt.Errorf("settle activity %s: %w", activity.ProviderItemID, settleErr)
 			}
 			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("lookup activity %s: %w", activity.ProviderItemID, err)
 		}
 	}
 
@@ -2258,6 +2258,22 @@ func (s *Store) FailPendingInputs(ctx context.Context, conversationID string, no
 		return fmt.Errorf("fail pending inputs for %s: %w", conversationID, err)
 	}
 	return nil
+}
+
+// ProjectProviderHistory commits a bounded group of replay events together.
+// Per-event ownership fences, deduplication, projections and CDC still execute
+// through ProjectProviderEvent on the same transaction.
+func (s *Store) ProjectProviderHistory(ctx context.Context, project func(context.Context) error) error {
+	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
+		return project(ctx)
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "project provider history", func(q *gen.Queries) error {
+		return project(context.WithValue(ctx, conversationProjectionTxKey{}, q))
+	})
 }
 
 // ProjectProviderEvent commits a raw provider event and the durable projection

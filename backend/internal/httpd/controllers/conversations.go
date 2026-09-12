@@ -888,6 +888,7 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 // Items arrive already ordered by sequence, so nothing is re-sorted here.
 func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotResponse {
 	out := ConversationSnapshotResponse{
+		ImportedHistory:                  s.ImportedHistory,
 		ConversationID:                   s.Conversation.ID,
 		ActiveBranchID:                   s.Conversation.ActiveBranchID,
 		BranchedFromEarlierMessage:       s.BranchedFromEarlierMessage,

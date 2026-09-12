@@ -495,6 +495,12 @@ describe("ShellTopbar inspector state", () => {
 });
 
 describe("ShellTopbar open-in-editor control", () => {
+	it("does not request an editor workspace for imported history", () => {
+		renderTopbarSessions([{ ...worker, importedHistory: true }], "sess-1");
+		expect(screen.queryByRole("button", { name: "Open in Cursor" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Choose editor" })).not.toBeInTheDocument();
+	});
+
 	it("shows the open-in-editor control for a local session", async () => {
 		renderTopbarSessions([worker], "sess-1");
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/processenv"
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
@@ -367,8 +368,9 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	resumeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	var resp struct {
-		Model           string `json:"model"`
-		ReasoningEffort string `json:"reasoningEffort"`
+		Thread          *codexproto.Thread `json:"thread"`
+		Model           string             `json:"model"`
+		ReasoningEffort string             `json:"reasoningEffort"`
 	}
 	err = conv.conn.request(resumeCtx, "thread/resume", params, &resp)
 	if err != nil {
@@ -378,6 +380,23 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, err)
 	}
 
+	// A missing turns field is not evidence of empty history. Older providers
+	// without a complete resume snapshot retain the authoritative read fallback.
+	if resp.Thread != nil && resp.Thread.ID == cfg.ProviderConversationID && resp.Thread.Turns != nil {
+		complete := true
+		for _, turn := range resp.Thread.Turns {
+			// A metadata-only turn must not erase its saved messages. An
+			// unsettled turn is retained so the existing refresh path handles it.
+			state := turnStateFrom(string(turn.Status))
+			if turn.Items == nil && state != domain.TurnStateRunning && state != domain.TurnStateQueued {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			conv.resumeHistory = resp.Thread
+		}
+	}
 	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }

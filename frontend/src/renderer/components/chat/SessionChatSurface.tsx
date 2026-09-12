@@ -167,7 +167,7 @@ export function SessionChatSurface({
 		(snapshot.controller?.state === "ready" || snapshot.controller?.state === "busy");
 	// Mode commits before the target controller starts. A cached ready snapshot
 	// can also outlive the source, so wait for the handoff's final snapshot refresh.
-	const controllerCatalogsEnabled = targetChatControllerReady && !controllerTransitioning && !newWorkDisabled;
+	const controllerCatalogsEnabled = targetChatControllerReady && !controllerTransitioning && !newWorkDisabled && !snapshot?.importedHistory;
 	// Agent-switch presentation for the chat surface progress track and input locks.
 	const switchMutation = useSwitchAgentState(session.id);
 	const agentSwitches = useAgentSwitches(session.id).data ?? [];
@@ -278,7 +278,7 @@ export function SessionChatSurface({
 		session.id,
 		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot),
 	);
-	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
+	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot) && !snapshot?.importedHistory);
 	const stageAttachments = useStageAttachments(session.id);
 	const openLinkInBrowser = useSessionBrowserLink(session);
 	const observedSuccessfulSwitch = Boolean(

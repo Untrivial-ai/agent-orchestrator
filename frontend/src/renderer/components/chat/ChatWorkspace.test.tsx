@@ -987,6 +987,24 @@ describe("ChatWorkspace timeline", () => {
 		expect(onLinkOpen).toHaveBeenCalledWith("http://localhost:5173");
 	});
 
+	it("shows imported history as available without a controller error or shell action", async () => {
+		const resume = vi.fn();
+		render(<ChatWorkspace snapshot={{...chatFixtureSettled, importedHistory: true, controller: {state: "stopped"}}} onResumeAgent={resume} onOpenShell={vi.fn()} />);
+		expect(screen.getByText("Imported conversation")).toBeInTheDocument();
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", {name: "Open shell"})).not.toBeInTheDocument();
+		expect(resume).not.toHaveBeenCalled();
+		await userEvent.setup().click(screen.getByRole("button", {name: "Resume agent"}));
+		expect(resume).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows resume progress immediately while the stored controller is still stopped", () => {
+ render(<ChatWorkspace snapshot={{...chatFixtureSettled, controller: {state: "stopped"}}} resumingAgent onResumeAgent={vi.fn()} />);
+ expect(screen.getByText("Resuming the agent…")).toBeInTheDocument();
+ expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+ expect(screen.getByRole("button", {name: "Resuming…"})).toBeDisabled();
+ });
+
 	it("offers real recovery actions when the controller stops", async () => {
 		const user = userEvent.setup();
 		const resume = vi.fn();

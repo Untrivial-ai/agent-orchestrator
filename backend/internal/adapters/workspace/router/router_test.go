@@ -208,3 +208,16 @@ func TestRouterPreservesWorkspaceProjectDelegation(t *testing.T) {
 		t.Fatalf("scratch create calls = %d, want 0", scratch.createCalls)
 	}
 }
+
+// A distinct local result proves imports are not routed to the live resolver.
+func (w *recordingWorkspace) ResolveLocalDefaultBranch(_ context.Context, _ string, _ string) (ports.WorkspaceDefaultBranch, error) {
+	return ports.WorkspaceDefaultBranch{Remote: "origin", Branch: "cached", BaseRef: "refs/remotes/origin/cached"}, nil
+}
+
+func TestLocalDefaultBranchResolutionUsesLocalCapability(t *testing.T) {
+	workspace := workspacerouter.New(workspacerouter.Deps{Git: &recordingWorkspace{}})
+	got, err := workspace.ResolveLocalDefaultBranch(context.Background(), "/repo", "")
+	if err != nil || got.Branch != "cached" {
+		t.Fatalf("local resolution = %#v, %v; want cached", got, err)
+	}
+}

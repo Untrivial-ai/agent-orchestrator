@@ -33,6 +33,43 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	return rec, nil
 }
 
+// CreateSessions assigns identities and inserts a batch atomically, amortizing
+// the durable commit. Existing SQLite triggers emit each row's change event.
+func (s *Store) CreateSessions(ctx context.Context, records []domain.SessionRecord) ([]domain.SessionRecord, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	defer s.writeMu.Unlock()
+	out := make([]domain.SessionRecord, 0, len(records))
+	err := s.inTx(ctx, "create sessions", func(q *gen.Queries) error {
+		next := map[domain.ProjectID]int64{}
+		for _, rec := range records {
+			num, ok := next[rec.ProjectID]
+			if !ok {
+				var err error
+				num, err = q.NextSessionNum(ctx, rec.ProjectID)
+				if err != nil {
+					return err
+				}
+			}
+			rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", rec.ProjectID, num))
+			if err := q.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
+				return err
+			}
+			next[rec.ProjectID] = num + 1
+			out = append(out, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UpdateSession writes the full mutable state of an existing session. The
 // id/project/num/created_at are immutable and not touched here.
 func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
@@ -448,6 +485,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
 			Branch:                    row.Branch,
+			SourceBranch:              row.SourceBranch,
 			WorkspacePath:             row.WorkspacePath,
 			WorkspaceRepoPath:         row.WorkspaceRepoPath,
 			DiffBaseSHA:               row.DiffBaseSha,
@@ -507,6 +545,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		IsPinned:                  rec.IsPinned,
 		PinnedAt:                  timePtrToNullTime(rec.PinnedAt),
 		Branch:                    rec.Metadata.Branch,
+		SourceBranch:              rec.Metadata.SourceBranch,
 		WorkspacePath:             rec.Metadata.WorkspacePath,
 		WorkspaceRepoPath:         rec.Metadata.WorkspaceRepoPath,
 		DiffBaseSha:               rec.Metadata.DiffBaseSHA,
@@ -557,6 +596,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		IsPinned:                  rec.IsPinned,
 		PinnedAt:                  timePtrToNullTime(rec.PinnedAt),
 		Branch:                    rec.Metadata.Branch,
+		SourceBranch:              rec.Metadata.SourceBranch,
 		WorkspacePath:             rec.Metadata.WorkspacePath,
 		WorkspaceRepoPath:         rec.Metadata.WorkspaceRepoPath,
 		DiffBaseSha:               rec.Metadata.DiffBaseSHA,

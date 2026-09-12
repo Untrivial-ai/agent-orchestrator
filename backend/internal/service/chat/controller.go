@@ -682,11 +682,33 @@ func (c *Controller) readNativeHistory(
 // Re-running it is safe because history events carry stable identities and
 // ProjectProviderEvent deduplicates archive+projection together.
 func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.ChatEvent) error {
-	for _, event := range events {
-		if _, _, err := c.projectEvent(ctx, event); err != nil {
-			return fmt.Errorf("import native history event %s: %w", event.Kind, err)
+	project := func(ctx context.Context, events []ports.ChatEvent) error {
+		for _, event := range events {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if _, _, err := c.projectEvent(ctx, event); err != nil {
+				return fmt.Errorf("import native history event %s: %w", event.Kind, err)
+			}
+		}
+		return nil
+	}
+	batcher, ok := c.store.(interface {
+		ProjectProviderHistory(context.Context, func(context.Context) error) error
+	})
+	if !ok {
+		return project(ctx, events)
+	}
+	// Limit writer ownership so other sessions and cancellation remain responsive.
+	// The controller is not published until all replay batches succeed.
+	const batchSize = 128
+	for start := 0; start < len(events); start += batchSize {
+		batch := events[start:min(start+batchSize, len(events))]
+		if err := batcher.ProjectProviderHistory(ctx, func(txCtx context.Context) error { return project(txCtx, batch) }); err != nil {
+			return err
 		}
 	}
+
 	return nil
 }
 

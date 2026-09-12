@@ -176,7 +176,7 @@ export function SessionInspector({
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const filesChangedCount = useSessionWorkspaceFilesChangedCount(session?.id);
+	const filesChangedCount = useSessionWorkspaceFilesChangedCount(session?.importedHistory ? undefined : session?.id);
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);
@@ -1267,7 +1267,7 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 	pushEvent(
 		{
 			tone: "neutral",
-			content: <>{appI18n.t("inspector.timeline.createdWorkspace")}</>,
+			content: <>{session.importedHistory ? appI18n.t("importSession.imported") : appI18n.t("inspector.timeline.createdWorkspace")}</>,
 			timestamp: formatTimeCompact(createdAt),
 		},
 		createdAt,
