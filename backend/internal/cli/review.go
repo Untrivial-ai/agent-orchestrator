@@ -251,7 +251,7 @@ func (c *commandContext) postReviewJSON(ctx context.Context, path string, body s
 		}
 		lastErr = err
 		if retryCtx.Err() != nil {
-			return fmt.Errorf("%w (review result was not recorded after retrying for %s)", lastErr, reviewSubmitRetryWindow)
+			return fmt.Errorf("%w; could not confirm the review result after retrying for %s. It may already be recorded; retry with the same review results", lastErr, reviewSubmitRetryWindow)
 		}
 
 		// Deps.Sleep keeps this loop deterministic in unit tests. The short
@@ -261,7 +261,7 @@ func (c *commandContext) postReviewJSON(ctx context.Context, path string, body s
 			return ctx.Err()
 		}
 		if retryCtx.Err() != nil {
-			return fmt.Errorf("%w (review result was not recorded after retrying for %s)", lastErr, reviewSubmitRetryWindow)
+			return fmt.Errorf("%w; could not confirm the review result after retrying for %s. It may already be recorded; retry with the same review results", lastErr, reviewSubmitRetryWindow)
 		}
 	}
 }
