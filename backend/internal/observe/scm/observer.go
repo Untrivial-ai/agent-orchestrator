@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -315,10 +316,11 @@ type subject struct {
 // origin). For same-repo PRs repo == headRepo; for a cross-fork PR (fork head,
 // upstream base) repo is the upstream base and headRepo is the fork origin.
 type sessionRepo struct {
-	session  domain.SessionRecord
-	repo     ports.SCMRepo
-	headRepo ports.SCMRepo
-	branch   string
+	session   domain.SessionRecord
+	repo      ports.SCMRepo
+	headRepo  ports.SCMRepo
+	branch    string
+	workspace bool
 }
 
 type repoGuardState struct {
@@ -768,7 +770,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
 		if origin, ok := originRepos[sess.ProjectID]; ok {
 			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch})
+				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace})
 				repos = append(repos, repo)
 			}
 		}
@@ -865,7 +867,7 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 				continue
 			}
 			seen[key] = true
-			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch})
+			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch, workspace: true})
 		}
 	}
 	return repos, nil
@@ -1198,14 +1200,6 @@ func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []session
 	return map[string]ports.SCMIdentity{fallbackIdentityKey: identity}, true
 }
 
-// matchSession picks the session that owns sourceBranch. A session owns the
-// branch when it is an exact match or a stacked descendant ("branch/..."). The
-// default worker branch is a leaf named "<namespace>/root"; for that shape the
-// session also owns sibling branches under "<namespace>/..." so Git can create
-// child PR branches without colliding with the root ref. When several session
-// branches are prefixes of the same source branch the longest (most specific)
-// one wins, so a child session claims its own stacked PRs rather than the
-// ancestor session.
 // candidatesForHeadRepo narrows the scanned repo's session candidates to those
 // whose head branch lives in headRepo (the PR's head repository full name). This
 // is the fork guard: a PR is only attributable when its head repo equals a
@@ -1224,28 +1218,58 @@ func candidatesForHeadRepo(candidates []sessionRepo, headRepo string) []sessionR
 	return out
 }
 
+// matchSession prefers exact branches, then the longest owned prefix. Root
+// leaves own slash siblings. Legacy workspace branches are bare refs, so they
+// also own hyphen siblings, but only under the validated AO session branch.
+// Equal specificity across different sessions is ambiguous: leave the PR for
+// explicit claiming rather than assigning it according to store iteration order.
 func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, bool) {
-	for _, sr := range candidates {
-		if sr.branch != "" && sr.branch == sourceBranch {
-			return sr, true
-		}
-	}
 	var best sessionRepo
 	bestLen := -1
+	ambiguous := false
+	consider := func(sr sessionRepo, length int) {
+		if length > bestLen {
+			best, bestLen, ambiguous = sr, length, false
+		} else if length == bestLen && best.session.ID != sr.session.ID {
+			ambiguous = true
+		}
+	}
 	for _, sr := range candidates {
 		if sr.branch == "" {
 			continue
 		}
+		if sr.branch == sourceBranch {
+			consider(sr, len(sourceBranch)+1)
+		}
 		for _, prefix := range sessionBranchPrefixes(sr.branch) {
 			if prefix == sourceBranch || strings.HasPrefix(sourceBranch, prefix+"/") {
-				if len(prefix) > bestLen {
-					best = sr
-					bestLen = len(prefix)
-				}
+				consider(sr, len(prefix))
 			}
 		}
+		if workspaceHyphenBranch(sr) && strings.HasPrefix(sourceBranch, sr.branch+"-") && len(sourceBranch) > len(sr.branch)+1 {
+			consider(sr, len(sr.branch))
+		}
 	}
-	return best, bestLen >= 0
+	return best, bestLen >= 0 && !ambiguous
+}
+
+func workspaceHyphenBranch(sr sessionRepo) bool {
+	if !sr.workspace || sr.session.ID == "" {
+		return false
+	}
+	base := "ao/" + string(sr.session.ID)
+	if sr.branch == base {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(sr.branch, base+"-")
+	if !ok {
+		return false
+	}
+	// workspaceProjectBranch appends -2, -3, ... when a ref already exists.
+	// Do not treat arbitrary topics, another session ID, or padded numbers as
+	// a generated branch and broaden their ownership.
+	n, err := strconv.Atoi(suffix)
+	return err == nil && n >= 2 && strconv.Itoa(n) == suffix
 }
 
 func sessionBranchPrefixes(branch string) []string {

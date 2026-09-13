@@ -3204,11 +3204,14 @@ func TestSessionsAPI_ClaimPRErrors(t *testing.T) {
 			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/pr/claim", tc.body)
 			assertErrorCode(t, body, status, tc.code, tc.want)
 			if tc.want == "PR_PROJECT_MISMATCH" {
-				for _, hint := range []string{"canonicalRepoURL", "--canonical-repo-url", "--config-json", "Git remotes"} {
+				for _, hint := range []string{"registered workspace child origin", "ao project get", "full PR/MR URL", "valid root origin", "For single-repo forks", "canonicalRepoURL", "--canonical-repo-url", "--config-json", "Git remotes"} {
 					if !strings.Contains(string(body), hint) {
 						t.Fatalf("mismatch missing %q guidance: %s", hint, body)
 					}
 				}
+			}
+			if tc.want == "INVALID_PR_REF" && !strings.Contains(string(body), "For a workspace child repository, pass its full PR/MR URL") {
+				t.Fatalf("invalid ref missing workspace guidance: %s", body)
 			}
 		})
 	}

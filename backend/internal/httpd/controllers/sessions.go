@@ -1782,7 +1782,7 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 	var claimed ports.PRClaimedByActiveSessionError
 	switch {
 	case errors.Is(err, sessionsvc.ErrInvalidPRRef):
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR_REF", "PR reference must be a PR/MR URL or a number", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR_REF", "PR reference must be a full PR/MR URL or a number resolved against the project origin or canonical repository. For a workspace child repository, pass its full PR/MR URL; a root without a remote cannot resolve numbers.", nil)
 	case errors.Is(err, sessionsvc.ErrPRNotFound):
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PR_NOT_FOUND", "Unknown PR", nil)
 	case errors.Is(err, sessionsvc.ErrPRNotOpen):
@@ -1794,7 +1794,7 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, sessionsvc.ErrSessionNoWorkspace):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "SESSION_NO_WORKSPACE", "Session has no workspace", nil)
 	case errors.Is(err, sessionsvc.ErrProjectMismatch):
-		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PROJECT_MISMATCH", "PR repository must match the project origin or its explicit canonicalRepoURL. For a fork, configure the upstream HTTPS repository URL with ao project set-config <project-id> --canonical-repo-url <url> (replaces config; preserve existing fields with --config-json). Git remotes alone do not grant trust.", nil)
+		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PROJECT_MISMATCH", "PR repository must match the project origin, its explicit canonicalRepoURL, or a registered workspace child origin. For workspace projects, check the registered repositories with ao project get <project-id> --json and pass the child's full PR/MR URL. canonicalRepoURL requires a valid root origin and is not a child-repository allowlist. For single-repo forks, configure the upstream HTTPS repository URL with ao project set-config <project-id> --canonical-repo-url <url> (replaces config; preserve existing fields with --config-json). Git remotes alone do not grant trust.", nil)
 	case errors.Is(err, sessionsvc.ErrSCMUnavailable):
 		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SCM_UNAVAILABLE", "SCM unavailable", nil)
 	default:

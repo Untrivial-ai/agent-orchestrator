@@ -100,6 +100,10 @@ func newFakeStore() *fakeStore {
 	}
 }
 
+func (f *fakeStore) ListWorkspaceRepos(context.Context, string) ([]domain.WorkspaceRepoRecord, error) {
+	return nil, nil
+}
+
 func TestListBatchesKanbanReads(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
