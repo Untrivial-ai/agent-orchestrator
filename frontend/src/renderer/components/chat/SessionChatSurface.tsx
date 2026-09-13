@@ -54,7 +54,7 @@ export interface ConversationWorkState {
 }
 
 const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
-const autoOpenedAgentMessageKeys = new Set<string>();
+const autoOpenedLinkSessions = new Set<string>();
 
 function cleanExtractedLink(value: string): string {
 	return value.replace(/[.,!?;:`\\]+$/, "");
@@ -325,6 +325,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const conversationBaselineReady = useRef(false);
 	useEffect(() => {
 		if (!snapshot || isLoading) return;
+		if (autoOpenedLinkSessions.has(session.id)) return;
 		const isInitialSnapshot = !conversationBaselineReady.current;
 		const latestUserMessage = snapshot.items
 			.filter((item) => item.kind === "message" && item.role === "user")
@@ -337,12 +338,11 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 		for (const item of snapshot.items) {
 			if (item.kind !== "message" || item.role !== "assistant" || item.streaming) continue;
 			if (isInitialSnapshot && (!latestUserMessage || item.sequence <= latestUserMessage.sequence)) continue;
-			const messageKey = `${session.id}:${item.id}`;
-			if (autoOpenedAgentMessageKeys.has(messageKey)) continue;
 			const url = firstBrowserLink(item.text, paths);
 			if (url) {
-				autoOpenedAgentMessageKeys.add(messageKey);
+				autoOpenedLinkSessions.add(session.id);
 				openLinkInBrowser(url);
+				break;
 			}
 		}
 	}, [isLoading, openLinkInBrowser, paths, snapshot]);

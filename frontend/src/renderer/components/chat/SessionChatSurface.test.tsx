@@ -448,6 +448,14 @@ describe("SessionChatSurface link routing", () => {
 
 		await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith("https://example.com/result"));
 		expect(openInBrowser).toHaveBeenCalledTimes(1);
+		conversationState.snapshot = {
+			capabilities: [],
+			items: [{
+				kind: "message", id: "assistant-2", sequence: 2, revision: 1,
+				role: "assistant", origin: "provider", text: "Also see https://example.com/second",
+				streaming: false, createdAt: "2026-08-08T00:00:02Z",
+			}],
+		};
 		view.rerender(
 			<Wrapper client={queryClient}>
 				<SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} />
@@ -458,14 +466,15 @@ describe("SessionChatSurface link routing", () => {
 
 	it("automatically previews a newly completed workspace HTML link", async () => {
 		workspacePathsState.paths = ["test-ui.html"];
+		const localSession = { ...session, id: "session-local-html" };
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 		const openInBrowser = vi.fn().mockResolvedValue(undefined);
-		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
+		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
 		conversationState.snapshot = {
 			capabilities: [],
 			items: [{ kind: "message", id: "assistant-html", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Done: [`test-ui.html`](/tmp/worktree/test-ui.html)", streaming: false, createdAt: "2026-08-08T00:00:01Z" }],
 		};
-		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
+		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
 		await waitFor(() => expect(postMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/preview",
 			expect.objectContaining({ body: { url: "/tmp/worktree/test-ui.html" } }),
