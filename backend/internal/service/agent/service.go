@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -278,7 +279,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		return cached.Catalog, nil
 	}
 
-	discovered, discoverErr := s.discoverer.Discover(ctx, request)
+	discovered, discoverErr := s.discoverModels(ctx, item, agentID, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	if discoverErr != nil {
@@ -444,6 +445,42 @@ func (s *Service) saveCatalog(ctx context.Context, projectID string, catalog por
 		Source:        catalog.Source,
 		FetchedAt:     catalog.FetchedAt,
 	})
+}
+
+// errAgentNotSignedIn marks a discovery run AO declined to start. It flows
+// through the normal discovery-failure path, so the caller still gets the
+// cached, shared, or manual catalog exactly as it would for a failed run.
+var errAgentNotSignedIn = errors.New("agent is not signed in")
+
+// discoverModels runs the adapter's model-discovery command, unless the adapter
+// can tell us the agent is signed out.
+//
+// Discovery executes the agent's own CLI, and some of those commands are the
+// agent's interactive entrypoint: Kiro's is `chat --list-models`, which starts a
+// browser OAuth sign-in when it finds no token. Rendering a model picker must
+// never be able to do that, so an adapter that positively reports "signed out"
+// stops the run before it begins.
+//
+// Only an explicit Unauthorized blocks. Unknown means the probe could not tell,
+// which is not a denial — treating it as one would silently disable discovery
+// for every adapter whose probe is imprecise.
+func (s *Service) discoverModels(
+	ctx context.Context,
+	item agentregistry.HarnessAgent,
+	agentID string,
+	request ports.AgentModelDiscoveryRequest,
+) (ports.AgentModelCatalog, error) {
+	checker, ok := item.Agent.(ports.AgentAuthChecker)
+	if !ok {
+		return s.discoverer.Discover(ctx, request)
+	}
+	status, err := checker.AuthStatus(ctx)
+	if err == nil && status == ports.AgentAuthStatusUnauthorized {
+		return ports.AgentModelCatalog{}, fmt.Errorf(
+			"%s is signed out, so AO did not run its model-discovery command: %w. Sign in to the agent, then refresh",
+			agentID, errAgentNotSignedIn)
+	}
+	return s.discoverer.Discover(ctx, request)
 }
 
 func (s *Service) agent(agentID string) (agentregistry.HarnessAgent, bool) {
