@@ -9,26 +9,20 @@ import { Button, EmptyState } from "./ui";
  * What a route shows when it throws while rendering, instead of the app
  * terminating. expo-router only installs one where a route file opts in with
  * `export { RouteErrorBoundary as ErrorBoundary }` (or `SheetErrorBoundary`).
+ * `RouteErrorBoundary.test.ts` requires every route file to be placed.
  *
- * Never export one from a route that can render the first content of a launch —
- * `app/_layout.tsx`, `app/(tabs)/_layout.tsx`, `app/(tabs)/index.tsx`, and
- * `app/pair.tsx`, which the desktop's pairing QR (`aomobile://pair#…`) opens
- * directly — and never set `unstable_settings.screenErrorBoundary` on either
- * layout, which would wrap the board. First content is what expo-updates takes as
- * proof a launch worked: `ErrorRecovery.handleContentDidAppear` marks the launched
- * update successful and keeps only `waitForRemoteUpdate` and `crash` in its
- * recovery pipeline, dropping `launchNew` and `launchCached`. A fallback rendered
- * there would record a broken over-the-air update as a good launch that can never
- * roll back, where a fatal throw is what triggers the rollback.
+ * Not on `app/_layout.tsx` with these fallbacks. expo-router wraps the route's own
+ * component, and for that layout the component is what renders ThemeProvider. Both
+ * fallbacks read the theme, and `useTheme` throws outside the provider, so the
+ * fallback would throw in its turn.
  *
- * Every other route is reached by navigating from content that has already
- * appeared, so rollback is already off by the time it renders, and the choice is
- * only between this screen and a crash. The exception is a hand-made
- * `aomobile://` link: expo-router would cold-start any route from one, but nothing
- * AO sends links anywhere except `pair`. A fixed update still arrives either way:
- * `checkAutomatically` is `ON_LOAD`, and UpdatesManager checks again on a resume
- * after MIN_BACKGROUND_MS. `RouteErrorBoundary.test.ts` requires every route file
- * to be placed on one side of that line.
+ * A fallback on any route leaves expo-updates' rollback as it was.
+ * `ErrorRecovery.handleContentDidAppear` counts a launch as good once native
+ * content first appears, and ExpoRoot's own SafeAreaProvider mounts a native view
+ * before any route renders (it renders its children only once that view reports
+ * insets; expo-router 57 passes it no `initialMetrics` on native). So by the time
+ * a route renders, rollback is already off, boundary or not; it still covers a
+ * throw before that mount, while the router sets itself up.
  */
 export function RouteErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 	const router = useRouter();
@@ -63,9 +57,11 @@ export function RouteErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 /**
  * The same, for a sheet route: its only action is Close. A sheet's opener parks a
- * callback that the route releases when it unmounts (`sheetResult.ts`), and the
- * throw has already unmounted it, so retrying in place would bring back a sheet
- * whose choice goes nowhere. Opening it again parks a fresh one.
+ * callback that the route releases when it unmounts (`sheetResult.ts`). A throw
+ * after the sheet mounted runs that release, so retrying in place would bring back
+ * a sheet whose choice goes nowhere. A throw on its first render never mounted it,
+ * so the callback stays parked until the app restarts. The fallback cannot tell
+ * the two apart, so it closes; opening the sheet again parks a fresh callback.
  */
 export function SheetErrorBoundary({ error }: ErrorBoundaryProps) {
 	const router = useRouter();
