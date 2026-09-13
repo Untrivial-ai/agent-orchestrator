@@ -1,7 +1,7 @@
 import { fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "./bridge";
-import { handleModifierLinkClick, openLinkInSystemBrowser } from "./external-link-policy";
+import { handleModifierLinkClick, isWorkspaceHtmlLink, openLinkInSystemBrowser, requiresSystemBrowser } from "./external-link-policy";
 
 describe("external link policy", () => {
 	beforeEach(() => {
@@ -62,5 +62,26 @@ describe("external link policy", () => {
 		await openLinkInSystemBrowser("https://docs.example.com");
 
 		expect(warn).toHaveBeenCalledWith("Unable to open link in system browser", error);
+	});
+
+	it.each([
+		"dash.cloudflare.com",
+		"https://dash.cloudflare.com/login",
+		"https://identity.dash.cloudflare.com/",
+	])("routes Cloudflare dashboard URLs to the system browser", (url) => {
+		expect(requiresSystemBrowser(url)).toBe(true);
+	});
+
+	it.each(["https://cloudflare.com/", "https://example.com/"])(
+		"keeps unrelated URLs in the AO Browser",
+		(url) => expect(requiresSystemBrowser(url)).toBe(false),
+	);
+
+	it("recognizes only existing safe workspace HTML links", () => {
+		expect(isWorkspaceHtmlLink("./test-ui.html", ["test-ui.html"])).toBe(true);
+		expect(isWorkspaceHtmlLink("/tmp/worktree/test-ui.html", ["test-ui.html"])).toBe(true);
+		expect(isWorkspaceHtmlLink("README.md", ["README.md"])).toBe(false);
+		expect(isWorkspaceHtmlLink("../test-ui.html", ["../test-ui.html"])).toBe(false);
+		expect(isWorkspaceHtmlLink("missing.html", ["test-ui.html"])).toBe(false);
 	});
 });

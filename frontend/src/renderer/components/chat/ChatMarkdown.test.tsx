@@ -19,9 +19,9 @@ beforeEach(() => {
 // The point of these is that the SYNTAX stops being visible. Every case here is a
 // shape agents actually emit, and the assertion is that structure replaced markup.
 
-function renderWithLinkHandler(text: string, onLinkOpen: (url: string) => void) {
+function renderWithLinkHandler(text: string, onLinkOpen: (url: string) => void, workspacePaths: string[] = []) {
 	return render(
-		<ChatLinkProvider onLinkOpen={onLinkOpen}>
+		<ChatLinkProvider onLinkOpen={onLinkOpen} workspacePaths={workspacePaths}>
 			<ChatMarkdown text={text} />
 		</ChatLinkProvider>,
 	);
@@ -137,6 +137,19 @@ describe("ChatMarkdown", () => {
 		await user.click(screen.getByRole("link", { name: "the issue" }));
 
 		expect(onLinkOpen).toHaveBeenCalledWith("https://example.com/i/1");
+		expect(openExternal).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("routes workspace file clicks to the AO Browser handler", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [test-ui-2.html](test-ui-2.html)", onLinkOpen, ["test-ui-2.html"]);
+
+		await user.click(screen.getByRole("link", { name: "test-ui-2.html" }));
+
+		expect(onLinkOpen).toHaveBeenCalledWith("test-ui-2.html");
 		expect(openExternal).not.toHaveBeenCalled();
 		openExternal.mockRestore();
 	});

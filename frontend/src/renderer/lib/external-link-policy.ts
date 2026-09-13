@@ -9,6 +9,30 @@ export function isWebLink(url: string): boolean {
 	}
 }
 
+export function isWorkspaceFileLink(url: string, workspacePaths: string[]): boolean {
+	const normalized = url.trim().replace(/^\.\//, "");
+	if (!normalized || normalized.split("/").includes("..")) return false;
+	const path = normalized.split(/[?#]/, 1)[0];
+	return workspacePaths.some((workspacePath) =>
+		workspacePath === path || (path.startsWith("/") && path.endsWith(`/${workspacePath}`)),
+	);
+}
+
+export function isWorkspaceHtmlLink(url: string, workspacePaths: string[]): boolean {
+	return /\.html?$/i.test(url.split(/[?#]/, 1)[0]) && isWorkspaceFileLink(url, workspacePaths);
+}
+
+/** Cloudflare challenges do not reliably complete in embedded Electron views. */
+export function requiresSystemBrowser(url: string): boolean {
+	try {
+		const parsed = new URL(url.includes("://") ? url : `https://${url}`);
+		const host = parsed.hostname.toLowerCase();
+		return host === "dash.cloudflare.com" || host.endsWith(".dash.cloudflare.com");
+	} catch {
+		return false;
+	}
+}
+
 export async function openLinkInSystemBrowser(url: string): Promise<void> {
 	try {
 		await aoBridge.app.openExternal(url);

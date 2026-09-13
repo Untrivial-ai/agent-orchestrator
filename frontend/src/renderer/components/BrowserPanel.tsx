@@ -75,7 +75,7 @@ import { reorderBrowserTabs } from "../lib/browser-tab-order";
 import { handleTabListKeyDown } from "../lib/terminal-tabs";
 import { useBrowserDownloads } from "../hooks/useBrowserDownloads";
 import { BrowserDownloadsList } from "./BrowserDownloadsList";
-import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { isWebLink, openLinkInSystemBrowser, requiresSystemBrowser } from "../lib/external-link-policy";
 
 // One-click viewport width presets for responsive testing — height is shown
 // for reference but not enforced (only width drives CSS breakpoints, and
@@ -602,6 +602,10 @@ export function BrowserPanelView({
 		setUrlEditing(false);
 		setUrlInput(url);
 		setHistorySuggestions([]);
+		if (requiresSystemBrowser(url)) {
+			void openLinkInSystemBrowser(url.includes("://") ? url : `https://${url}`);
+			return;
+		}
 		void navigate(url);
 	};
 

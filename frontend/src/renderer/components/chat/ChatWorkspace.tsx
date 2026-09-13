@@ -1367,7 +1367,7 @@ function ChatWorkspaceContent({
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
-						<ChatLinkProvider onLinkOpen={onLinkOpen}>
+						<ChatLinkProvider onLinkOpen={onLinkOpen} workspacePaths={filePaths}>
 							<Timeline
 								key={draftScopeKey}
 								snapshot={snapshot}

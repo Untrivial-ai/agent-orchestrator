@@ -40,7 +40,7 @@ import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
-import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
+import { isWebLink, isWorkspaceFileLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import { AppLink } from "../AppLink";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
@@ -73,16 +73,18 @@ const PLUGINS = [remarkGfm];
  * and re-parse every message on every poll.
  */
 const StreamingProse = createContext(false);
-const OpenChatLink = createContext<((url: string) => void) | undefined>(undefined);
+const OpenChatLink = createContext<{ open?: (url: string) => void; workspacePaths: string[] }>({ workspacePaths: [] });
 
 export function ChatLinkProvider({
 	onLinkOpen,
+	workspacePaths = [],
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
+	workspacePaths?: string[];
 	children: ReactNode;
 }) {
-	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
+	return <OpenChatLink.Provider value={{ open: onLinkOpen, workspacePaths }}>{children}</OpenChatLink.Provider>;
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
@@ -208,13 +210,14 @@ function compactEmoji(children: ReactNode): ReactNode {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
-	const onLinkOpen = useContext(OpenChatLink);
+	const { open: onLinkOpen, workspacePaths } = useContext(OpenChatLink);
 	return (
 		<AppLink
 			href={href}
 			onBrowserOpen={onLinkOpen}
+			inAppLink={href ? (url) => isWebLink(url) || isWorkspaceFileLink(url, workspacePaths) : undefined}
 			onClick={(event) => {
-				if (href && !isWebLink(href)) {
+				if (href && !isWebLink(href) && !isWorkspaceFileLink(href, workspacePaths)) {
 					event.preventDefault();
 					void openLinkInSystemBrowser(href);
 				}
@@ -237,7 +240,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
  */
 function MermaidFence({ code }: { code: string }) {
 	const streaming = useContext(StreamingProse);
-	const onLinkOpen = useContext(OpenChatLink);
+	const { open: onLinkOpen } = useContext(OpenChatLink);
 	return <MermaidBlock code={code} streaming={streaming} onLinkOpen={onLinkOpen} />;
 }
 

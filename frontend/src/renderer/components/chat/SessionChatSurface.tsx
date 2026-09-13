@@ -8,7 +8,7 @@
  */
 
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
-import { memo, useEffect, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	findActiveAgentSwitch,
@@ -31,6 +31,7 @@ import {
 import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
+import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
 	deriveAgentSwitchPresentation,
@@ -50,6 +51,25 @@ export interface ConversationWorkState {
 	controllerBusy: boolean;
 	hasRunningTurn: boolean;
 	queuedTurnCount: number;
+}
+
+const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
+const autoOpenedLinkSessions = new Set<string>();
+
+function cleanExtractedLink(value: string): string {
+	return value.replace(/[.,!?;:`\\]+$/, "");
+}
+
+function firstBrowserLink(text: string, workspacePaths: string[]): string | undefined {
+	const candidates: Array<{ index: number; value: string }> = [];
+	const webMatch = HTTP_LINK_PATTERN.exec(text);
+	if (webMatch) candidates.push({ index: webMatch.index, value: cleanExtractedLink(webMatch[0]) });
+	const markdownLink = /\[[^\]]+\]\(([^)\s]+)\)/.exec(text);
+	if (markdownLink?.[1]) candidates.push({ index: markdownLink.index, value: cleanExtractedLink(markdownLink[1]) });
+	for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
+		if (isWebLink(candidate.value) || isWorkspaceHtmlLink(candidate.value, workspacePaths)) return candidate.value;
+	}
+	return undefined;
 }
 
 export const SessionChatSurface = memo(function SessionChatSurface({
@@ -301,7 +321,31 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	);
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
-	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser);
+	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser, paths);
+	const conversationBaselineReady = useRef(false);
+	useEffect(() => {
+		if (!snapshot || isLoading) return;
+		if (autoOpenedLinkSessions.has(session.id)) return;
+		const isInitialSnapshot = !conversationBaselineReady.current;
+		const latestUserMessage = snapshot.items
+			.filter((item) => item.kind === "message" && item.role === "user")
+			.at(-1);
+		// Do not surprise users by opening links from history when a session is first
+		// mounted. The exception is the current turn: a fast agent can finish before
+		// the first conversation request resolves, so its response is already present
+		// in the initial snapshot and must not be mistaken for old history.
+		conversationBaselineReady.current = true;
+		for (const item of snapshot.items) {
+			if (item.kind !== "message" || item.role !== "assistant" || item.streaming) continue;
+			if (isInitialSnapshot && (!latestUserMessage || item.sequence <= latestUserMessage.sequence)) continue;
+			const url = firstBrowserLink(item.text, paths);
+			if (url) {
+				autoOpenedLinkSessions.add(session.id);
+				openLinkInBrowser(url);
+				break;
+			}
+		}
+	}, [isLoading, openLinkInBrowser, paths, snapshot]);
 	const observedSuccessfulSwitch = Boolean(
 		agentSwitch &&
 			observedSettledSwitchId === agentSwitch.id &&
