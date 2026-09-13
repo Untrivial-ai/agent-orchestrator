@@ -390,8 +390,12 @@ func reviewAfter(a, b domain.PullRequestReview) bool {
 }
 
 func summarizeMergeability(pr domain.PullRequest, _ []domain.PullRequestReviewThread) PRMergeabilitySummary {
+	state := domain.MergeUnknown
+	if !pr.Merged && !pr.Closed {
+		state = mergeabilityOrUnknown(pr.Mergeability)
+	}
 	return PRMergeabilitySummary{
-		State:   mergeabilityOrUnknown(pr.Mergeability),
+		State:   state,
 		Reasons: mergeabilityReasons(pr),
 		PRURL:   firstNonEmpty(pr.HTMLURL, pr.URL),
 	}

@@ -1428,6 +1428,74 @@ describe("SessionInspector Activity section", () => {
     expect(within(activityRow).getByText("Conflict")).toBeInTheDocument();
   });
 
+  it.each(["closed", "merged"] as const)(
+    "does not render stale SCM states from a %s PR in the current Activity row",
+    (state) => {
+      renderWithQuery(
+        <SessionInspector
+          session={session(
+            [
+              pr(7, state, {
+                ci: "failing",
+                review: "changes_requested",
+                mergeability: "conflicting",
+              }),
+            ],
+            {
+              status: "working",
+              activity: {
+                state: "idle",
+                lastActivityAt: "2026-06-15T10:00:00Z",
+              },
+            },
+          )}
+        />,
+      );
+
+      const activityRow = activitySection()
+        .getByText("Idle")
+        .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+      expect(within(activityRow).queryByText("CI Failed")).not.toBeInTheDocument();
+      expect(
+        within(activityRow).queryByText("Changes Requested"),
+      ).not.toBeInTheDocument();
+      expect(within(activityRow).queryByText("Conflict")).not.toBeInTheDocument();
+    },
+  );
+
+  it("aggregates live SCM states across open PRs while ignoring a closed PR", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session(
+          [
+            pr(7, "closed", {
+              ci: "failing",
+              review: "changes_requested",
+              mergeability: "conflicting",
+            }),
+            pr(8, "open", { ci: "failing" }),
+            pr(9, "draft", { review: "changes_requested" }),
+            pr(10, "open", { mergeability: "conflicting" }),
+          ],
+          {
+            status: "working",
+            activity: {
+              state: "idle",
+              lastActivityAt: "2026-06-15T10:00:00Z",
+            },
+          },
+        )}
+      />,
+    );
+
+    const activityRow = activitySection()
+      .getByText("Idle")
+      .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+    expect(within(activityRow).getAllByText("CI Failed")).toHaveLength(1);
+    expect(within(activityRow).getAllByText("Changes Requested")).toHaveLength(1);
+    expect(within(activityRow).getAllByText("Conflict")).toHaveLength(1);
+  });
+
   it("timestamps the live Activity state so it participates in chronological ordering", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-15T12:00:00Z"));
