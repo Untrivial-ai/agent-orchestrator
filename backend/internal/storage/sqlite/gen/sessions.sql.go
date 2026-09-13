@@ -110,13 +110,13 @@ func (q *Queries) CommitSessionControllerEpoch(ctx context.Context, arg CommitSe
 const getSession = `-- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?
 `
 
@@ -135,6 +135,7 @@ type GetSessionRow struct {
 	RuntimeHandleID           string
 	AgentSessionID            string
 	AgentSessionIDLaunchID    string
+	NativeIdentityObservedAt  sql.NullTime
 	Prompt                    string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
@@ -159,6 +160,7 @@ type GetSessionRow struct {
 	LatestUserPrompt          string
 	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
+	LatestAssistantUpdateAt   sql.NullTime
 	NativeTranscriptPath      string
 	AutoInjectReview          bool
 	AutoInjectCI              bool
@@ -185,6 +187,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.RuntimeHandleID,
 		&i.AgentSessionID,
 		&i.AgentSessionIDLaunchID,
+		&i.NativeIdentityObservedAt,
 		&i.Prompt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -209,6 +212,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.LatestUserPrompt,
 		&i.LatestUserPromptAt,
 		&i.LatestAssistantUpdate,
+		&i.LatestAssistantUpdateAt,
 		&i.NativeTranscriptPath,
 		&i.AutoInjectReview,
 		&i.AutoInjectCI,
@@ -224,8 +228,8 @@ INSERT INTO sessions (
     id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
-    runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
+    runtime_launch_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at, native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
@@ -233,7 +237,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -261,10 +265,12 @@ type InsertSessionParams struct {
 	RuntimeLaunchID           string
 	AgentSessionID            string
 	AgentSessionIDLaunchID    string
+	NativeIdentityObservedAt  sql.NullTime
 	Prompt                    string
 	LatestUserPrompt          string
 	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
+	LatestAssistantUpdateAt   sql.NullTime
 	NativeTranscriptPath      string
 	PreviewURL                string
 	PreviewRevision           int64
@@ -309,10 +315,12 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.RuntimeLaunchID,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.Prompt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,
@@ -337,13 +345,13 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 const listAllSessions = `-- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num
 `
 
@@ -362,6 +370,7 @@ type ListAllSessionsRow struct {
 	RuntimeHandleID           string
 	AgentSessionID            string
 	AgentSessionIDLaunchID    string
+	NativeIdentityObservedAt  sql.NullTime
 	Prompt                    string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
@@ -386,6 +395,7 @@ type ListAllSessionsRow struct {
 	LatestUserPrompt          string
 	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
+	LatestAssistantUpdateAt   sql.NullTime
 	NativeTranscriptPath      string
 	AutoInjectReview          bool
 	AutoInjectCI              bool
@@ -418,6 +428,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.RuntimeHandleID,
 			&i.AgentSessionID,
 			&i.AgentSessionIDLaunchID,
+			&i.NativeIdentityObservedAt,
 			&i.Prompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -442,6 +453,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.LatestUserPrompt,
 			&i.LatestUserPromptAt,
 			&i.LatestAssistantUpdate,
+			&i.LatestAssistantUpdateAt,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
@@ -465,13 +477,13 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 const listSessionsByProject = `-- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE project_id = ? ORDER BY num
 `
 
@@ -490,6 +502,7 @@ type ListSessionsByProjectRow struct {
 	RuntimeHandleID           string
 	AgentSessionID            string
 	AgentSessionIDLaunchID    string
+	NativeIdentityObservedAt  sql.NullTime
 	Prompt                    string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
@@ -514,6 +527,7 @@ type ListSessionsByProjectRow struct {
 	LatestUserPrompt          string
 	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
+	LatestAssistantUpdateAt   sql.NullTime
 	NativeTranscriptPath      string
 	AutoInjectReview          bool
 	AutoInjectCI              bool
@@ -546,6 +560,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.RuntimeHandleID,
 			&i.AgentSessionID,
 			&i.AgentSessionIDLaunchID,
+			&i.NativeIdentityObservedAt,
 			&i.Prompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -570,6 +585,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.LatestUserPrompt,
 			&i.LatestUserPromptAt,
 			&i.LatestAssistantUpdate,
+			&i.LatestAssistantUpdateAt,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
@@ -895,8 +911,8 @@ UPDATE sessions SET
     issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, native_identity_observed_at = ?, prompt = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, latest_assistant_update_at = ?, native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
@@ -925,10 +941,12 @@ type UpdateSessionParams struct {
 	RuntimeLaunchID           string
 	AgentSessionID            string
 	AgentSessionIDLaunchID    string
+	NativeIdentityObservedAt  sql.NullTime
 	Prompt                    string
 	LatestUserPrompt          string
 	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
+	LatestAssistantUpdateAt   sql.NullTime
 	NativeTranscriptPath      string
 	PreviewURL                string
 	PreviewRevision           int64
@@ -968,10 +986,12 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.RuntimeLaunchID,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.Prompt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,

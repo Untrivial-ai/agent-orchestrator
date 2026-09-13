@@ -390,9 +390,12 @@ type nativeHistoryHighWater struct {
 // completed while Chat was not attached; the AO high-water mark covers an
 // immediate round trip before a resumed TUI has emitted another hook.
 type nativeHistoryCheckpoint struct {
-	latestUserPrompt      string
-	latestAssistantUpdate string
-	aoHighWater           nativeHistoryHighWater
+	latestUserPrompt        string
+	latestAssistantUpdate   string
+	latestUserPromptAt      time.Time
+	latestAssistantUpdateAt time.Time
+	requireNewerTurn        bool
+	aoHighWater             nativeHistoryHighWater
 }
 
 // dropObsoleteHookFacts retires checkpoint text that AO durably recorded on a
@@ -415,12 +418,13 @@ type nativeHistoryCheckpoint struct {
 // hooks, so requiring the older hook text to remain the replay's latest answer
 // would reject complete history. The newer AO high-water mark remains required.
 func (p *nativeHistoryCheckpoint) dropObsoleteHookFacts(
+	sessionID domain.SessionID,
 	turnsByID map[string]*domain.ConversationTurn,
 	messages []domain.ConversationMessage,
 	latestSettled *domain.ConversationTurn,
 	providerBoundary time.Time,
 ) {
-	obsolete := func(text string, role domain.MessageRole) bool {
+	obsolete := func(text string, role domain.MessageRole, observedAt time.Time) bool {
 		var newest *domain.ConversationTurn
 		var streaming bool
 		for _, message := range messages {
@@ -428,7 +432,8 @@ func (p *nativeHistoryCheckpoint) dropObsoleteHookFacts(
 				continue
 			}
 			turn := turnsByID[message.TurnID]
-			if turn == nil {
+			if turn == nil || turn.HandledBySessionID != sessionID ||
+				(!providerBoundary.IsZero() && !turn.RequestedAt.After(providerBoundary)) {
 				continue
 			}
 			// The newest matching turn decides: the same prompt can be sent again
@@ -438,21 +443,21 @@ func (p *nativeHistoryCheckpoint) dropObsoleteHookFacts(
 				streaming = message.Streaming
 			}
 		}
-		if newest == nil {
+		if newest == nil || streaming || newest.RolledBackAt != nil {
 			return false
 		}
-		if newest.State != domain.TurnStateCompleted {
-			return true
+		if newest.State != domain.TurnStateCompleted && newest.State != domain.TurnStateRecovered {
+			return !observedAt.IsZero() && newest.CompletedAt != nil && !observedAt.After(*newest.CompletedAt)
 		}
-		return latestSettled != nil && !streaming && newest.RolledBackAt == nil &&
+		return latestSettled != nil && !observedAt.IsZero() && observedAt.Before(latestSettled.RequestedAt) &&
 			newest.HandledBySessionID == latestSettled.HandledBySessionID &&
 			(providerBoundary.IsZero() || newest.RequestedAt.After(providerBoundary)) &&
 			latestSettled.RequestedAt.After(newest.RequestedAt)
 	}
-	if p.latestUserPrompt != "" && obsolete(p.latestUserPrompt, domain.MessageRoleUser) {
+	if p.latestUserPrompt != "" && obsolete(p.latestUserPrompt, domain.MessageRoleUser, p.latestUserPromptAt) {
 		p.latestUserPrompt = ""
 	}
-	if p.latestAssistantUpdate != "" && obsolete(p.latestAssistantUpdate, domain.MessageRoleAssistant) {
+	if p.latestAssistantUpdate != "" && obsolete(p.latestAssistantUpdate, domain.MessageRoleAssistant, p.latestAssistantUpdateAt) {
 		p.latestAssistantUpdate = ""
 	}
 }
@@ -486,13 +491,13 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	var latest *domain.ConversationTurn
 	for i := range turns {
 		turn := &turns[i]
-		// Only completed turns anchor the high-water mark. A provider promises to
+		// Completed and recovered turns anchor the high-water mark. A provider promises to
 		// reproduce settled work during history load, but a failed or interrupted
 		// turn's items carry no such promise: Claude forks its next prompt from the
 		// pre-failure transcript entry, leaving the failed turn (e.g. a synthetic
 		// auth-error message) on a dead branch that session/load never replays.
 		// Requiring one of those items would make every future switch time out.
-		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" || turn.RolledBackAt != nil ||
+		if turn.HandledBySessionID != sessionID || (turn.State != domain.TurnStateCompleted && turn.State != domain.TurnStateRecovered) || turn.ProviderTurnID == "" || turn.RolledBackAt != nil ||
 			(!providerBoundary.IsZero() && !turn.RequestedAt.After(providerBoundary)) {
 			continue
 		}
@@ -500,9 +505,18 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 			latest = turn
 		}
 	}
-	p.dropObsoleteHookFacts(turnsByID, messages, latest, providerBoundary)
+	p.dropObsoleteHookFacts(sessionID, turnsByID, messages, latest, providerBoundary)
 	if latest == nil {
 		return
+	}
+	// A hook observed after the last durable completion describes new Terminal
+	// work, even when its text repeats that completion. Require another settled
+	// turn; text equality (and provider IDs reassigned during load) cannot prove
+	// progress beyond the durable snapshot.
+	if latest.CompletedAt != nil &&
+		((p.latestUserPrompt != "" && p.latestUserPromptAt.After(*latest.CompletedAt)) ||
+			(p.latestAssistantUpdate != "" && p.latestAssistantUpdateAt.After(*latest.CompletedAt))) {
+		p.requireNewerTurn = true
 	}
 	p.aoHighWater.providerTurnID = latest.ProviderTurnID
 	for _, message := range messages {
@@ -656,8 +670,31 @@ func (c *Controller) readNativeHistory(
 	defer cancel()
 	events, err := reader.ReadHistory(historyCtx)
 	refresher, refreshable := reader.(ports.ChatHistoryRefresher)
+	ready := func() bool {
+		if !checkpoint.reached(events) {
+			return false
+		}
+		if !checkpoint.requireNewerTurn {
+			return true
+		}
+		// Reconciliation recognizes the old turn even when ACP reassigns its
+		// IDs. Only settled work after that anchor proves Terminal made progress;
+		// failed turns or older ancestors elsewhere in the replay cannot do so.
+		pastHighWater := false
+		for _, event := range reconcileNativeHistory(events, existingTurns, existingMessages, existingActivities) {
+			if event.Kind != ports.ChatEventTurnCompleted {
+				continue
+			}
+			if event.ProviderTurnID == checkpoint.aoHighWater.providerTurnID {
+				pastHighWater = true
+			} else if pastHighWater && (event.TurnState == domain.TurnStateCompleted || event.TurnState == domain.TurnStateRecovered) {
+				return true
+			}
+		}
+		return false
+	}
 	sawUnsettled := false
-	for err != nil || (required && !checkpoint.reached(events)) {
+	for err != nil || (required && !ready()) {
 		if err == nil {
 			err = ports.ErrChatHistoryUnsettled
 		}

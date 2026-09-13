@@ -70,7 +70,9 @@ func TestCheckpointIgnoresPromptFromUnsettledTurn(t *testing.T) {
 	} {
 		t.Run(string(state), func(t *testing.T) {
 			turns, messages := poisonedRows(state)
-			checkpoint := nativeHistoryCheckpoint{latestUserPrompt: "Say hi to"}
+			completedAt := turns[1].RequestedAt.Add(time.Second)
+			turns[1].CompletedAt = &completedAt
+			checkpoint := nativeHistoryCheckpoint{latestUserPrompt: "Say hi to", latestUserPromptAt: turns[1].RequestedAt}
 			checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
 
 			if !checkpoint.reached(completedReplay()) {
@@ -157,7 +159,7 @@ func TestCheckpointRetiresOnlySupersededHookFacts(t *testing.T) {
 				ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "native-new", ProviderItemID: "new-answer", Text: "New answer"},
 				ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "native-new"},
 			)
-			checkpoint := nativeHistoryCheckpoint{latestUserPrompt: "Old prompt", latestAssistantUpdate: "Old answer"}
+			checkpoint := nativeHistoryCheckpoint{latestUserPrompt: "Old prompt", latestAssistantUpdate: "Old answer", latestUserPromptAt: base, latestAssistantUpdateAt: base.Add(time.Second)}
 			if tc.edit != nil {
 				tc.edit(&checkpoint, turns, messages)
 			}

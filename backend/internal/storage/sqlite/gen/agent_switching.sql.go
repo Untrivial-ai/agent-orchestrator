@@ -1118,24 +1118,26 @@ UPDATE sessions SET
     first_signal_at = ?3,
     agent_session_id = ?4,
     agent_session_id_launch_id = ?5,
-    latest_user_prompt = ?6,
-    latest_user_prompt_at = ?7,
-    latest_assistant_update = ?8,
-    native_transcript_path = ?9,
-    updated_at = ?10
-WHERE sessions.id = ?11
+    native_identity_observed_at = ?6,
+    latest_user_prompt = ?7,
+    latest_user_prompt_at = ?8,
+    latest_assistant_update = ?9,
+    latest_assistant_update_at = ?10,
+    native_transcript_path = ?11,
+    updated_at = ?12
+WHERE sessions.id = ?13
   AND sessions.is_terminated = 0
-  AND sessions.harness = ?12
-  AND sessions.session_mode = ?13
+  AND sessions.harness = ?14
+  AND sessions.session_mode = ?15
   AND (
       (
-          ?13 <> 'chat'
-          AND sessions.runtime_launch_id = ?14
+          ?15 <> 'chat'
+          AND sessions.runtime_launch_id = ?16
       )
       OR
       (
-          ?13 = 'chat'
-          AND sessions.controller_generation = ?15
+          ?15 = 'chat'
+          AND sessions.controller_generation = ?17
       )
   )
   AND NOT EXISTS (
@@ -1155,9 +1157,11 @@ type UpdateSessionFromActivitySignalParams struct {
 	FirstSignalAt                sql.NullTime
 	AgentSessionID               string
 	AgentSessionIDLaunchID       string
+	NativeIdentityObservedAt     sql.NullTime
 	LatestUserPrompt             string
 	LatestUserPromptAt           sql.NullTime
 	LatestAssistantUpdate        string
+	LatestAssistantUpdateAt      sql.NullTime
 	NativeTranscriptPath         string
 	UpdatedAt                    time.Time
 	ID                           domain.SessionID
@@ -1179,9 +1183,11 @@ func (q *Queries) UpdateSessionFromActivitySignal(ctx context.Context, arg Updat
 		arg.FirstSignalAt,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
 		arg.NativeTranscriptPath,
 		arg.UpdatedAt,
 		arg.ID,

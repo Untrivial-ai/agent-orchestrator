@@ -86,37 +86,3 @@ func (m *Manager) prepareChatProviderHandoff(ctx context.Context, rec domain.Ses
 		ExpectedControllerOwner: rec.ControllerOwner(),
 	}, nil
 }
-
-// A missing native transcript is not permission to reset established Chat work.
-// This check belongs above the adapter's command selection so it covers every
-// harness, including adapters whose native IDs are assigned by the provider.
-func (m *Manager) protectChatHistoryOnFreshRestore(ctx context.Context, rec domain.SessionRecord) error {
-	store, ok := m.store.(interface {
-		ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
-		HasConversationTurns(context.Context, string) (bool, error)
-	})
-	if !ok {
-		if rec.Metadata.ProviderConversationID != "" {
-			return fmt.Errorf("%w: cannot verify whether existing Chat history is unused", ErrNotResumable)
-		}
-		return nil
-	}
-	conversation, err := store.ConversationForSession(ctx, rec.ID)
-	if errors.Is(err, domain.ErrNoConversation) {
-		if rec.Metadata.ProviderConversationID != "" {
-			return fmt.Errorf("%w: existing Chat conversation ownership is unavailable", ErrNotResumable)
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	hasTurns, err := store.HasConversationTurns(ctx, conversation.ID)
-	if err != nil {
-		return err
-	}
-	if conversation.LatestSequence > 0 || hasTurns {
-		return fmt.Errorf("%w: native conversation is unavailable; restore its transcript to resume existing Chat history (no fresh conversation was started)", ErrNotResumable)
-	}
-	return nil
-}

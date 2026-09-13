@@ -32,7 +32,7 @@ func TestCheckpointAcceptsCurrentPromptWithSupersededAssistant(t *testing.T) {
 		{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "chat-native-turn", ProviderItemID: "new-answer", Text: newAnswer},
 		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "chat-native-turn"},
 	}
-	checkpoint := nativeHistoryCheckpoint{latestUserPrompt: newPrompt, latestAssistantUpdate: oldAnswer}
+	checkpoint := nativeHistoryCheckpoint{latestUserPrompt: newPrompt, latestAssistantUpdate: oldAnswer, latestUserPromptAt: base.Add(time.Minute), latestAssistantUpdateAt: base.Add(time.Second)}
 	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
 	if !checkpoint.reached(events) {
 		t.Fatal("complete replay rejected a current prompt with a superseded assistant checkpoint")

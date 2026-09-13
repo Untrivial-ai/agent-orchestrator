@@ -190,13 +190,13 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 						}
 						restored, err := m.ResumeAgentWithMode(ctx, sess.ID)
 						if tc.removeTranscript {
-							if !errors.Is(err, ErrNotResumable) {
-								t.Fatalf("missing established history must refuse fresh fallback: result=%+v err=%v", restored, err)
+							if err != nil || restored.Mode != RestoreModeFresh {
+								t.Fatalf("missing transcript must recover Terminal without erasing Chat history: result=%+v err=%v", restored, err)
 							}
-							if getSession().Metadata.RuntimeLaunchID != terminal.Metadata.RuntimeLaunchID {
-								t.Fatal("refused restore launched a new runtime")
+							rows, err := st.LoadConversationSnapshot(ctx, conv.ID)
+							if err != nil || len(rows.Messages) != 2 || rows.Conversation.ActiveBranchID != initial.ID {
+								t.Fatalf("Terminal fallback changed retained Chat history: %+v err=%v", rows, err)
 							}
-							return
 						}
 						if err != nil {
 							t.Fatal(err)
@@ -217,7 +217,7 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 						// Simulate a native context change after launch.
 						terminalID = freshID(string(sess.ID))
 					}
-					if tc.replaceOrchestrator || tc.changeTerminalIdentity {
+					if tc.replaceOrchestrator || tc.changeTerminalIdentity || tc.removeTranscript {
 						expectedNativeID = freshID(string(sess.ID))
 					}
 					if terminalID != expectedNativeID {

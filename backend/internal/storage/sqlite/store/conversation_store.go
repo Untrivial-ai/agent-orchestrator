@@ -225,6 +225,7 @@ func (s *Store) createConversation(
 			ProviderConversationID: owner.ProviderConversationID,
 			ForkAfterSequence:      0,
 			ProviderScopeID:        rootBranchID,
+			ProviderIdsScoped:      1,
 			CreatedAt:              options.now,
 		})
 	})
@@ -318,6 +319,7 @@ func insertConversationBranchTx(
 		ReplayCutoffSequence:   branch.ReplayCutoffSequence,
 		ReplayTruncated:        boolInt(branch.ReplayTruncated),
 		ProviderScopeID:        branch.ProviderScopeID,
+		ProviderIdsScoped:      boolInt(branch.ProviderIDsScoped),
 		CreatedAt:              now,
 	}); err != nil {
 		return fmt.Errorf("insert conversation branch %s: %w", branch.ID, err)
@@ -3062,6 +3064,7 @@ func conversationBranchToDomain(row gen.SelectConversationBranchRow) domain.Conv
 		ReplayTruncated:        row.ReplayTruncated != 0,
 		ProviderBindingID:      row.ProviderBindingID,
 		ProviderScopeID:        row.EffectiveProviderScopeID,
+		ProviderIDsScoped:      row.ProviderIdsScoped != 0,
 		Active:                 row.Active,
 		CreatedAt:              row.CreatedAt,
 	}
@@ -3083,6 +3086,7 @@ func conversationBranchListToDomain(row gen.SelectConversationBranchesRow) domai
 		ReplayTruncated:        row.ReplayTruncated != 0,
 		ProviderBindingID:      row.ProviderBindingID,
 		ProviderScopeID:        row.EffectiveProviderScopeID,
+		ProviderIDsScoped:      row.ProviderIdsScoped != 0,
 		Active:                 row.Active,
 		CreatedAt:              row.CreatedAt,
 	}

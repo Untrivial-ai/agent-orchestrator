@@ -302,6 +302,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		}
 		replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
 		replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
+		replayCheckpoint.latestUserPromptAt = rec.Metadata.LatestUserPromptAt
+		replayCheckpoint.latestAssistantUpdateAt = rec.Metadata.LatestAssistantUpdateAt
 	}
 
 	s.mu.RLock()
@@ -495,11 +497,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Permissions:            cfg.Permissions,
 			SystemPrompt:           cfg.SystemPrompt,
 			ProviderScopeID:        providerScopeID,
+			LegacyProviderIDs:      providerBoundaryID == "" && !activeBranch.ProviderIDsScoped,
 			AdditionalDirectories:  cfg.AdditionalDirectories,
 			MCPServers:             cfg.MCPServers,
 		})
 	} else {
 		conv, err = driver.Start(ctx, ports.ChatStartConfig{
+			LegacyProviderIDs:     providerBoundaryID == "" && !activeBranch.ProviderIDsScoped,
 			SessionID:             cfg.SessionID,
 			DataDir:               cfg.DataDir,
 			WorkspacePath:         cfg.WorkspacePath,
@@ -590,7 +594,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			ID: providerBoundaryID, ConversationID: conversation.ID, SessionID: cfg.SessionID,
 			ProviderConversationID: conv.ProviderConversationID(), ParentBranchID: activeBranch.ID,
 			ForkAfterSequence: conversation.LatestSequence, ProviderScopeID: providerScopeID,
-			CreatedAt: s.now(),
+			ProviderIDsScoped: true,
+			CreatedAt:         s.now(),
 		}
 	}
 	// Whatever the previous controller left in flight is not this controller's, and
@@ -679,6 +684,20 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			// live session as one transaction. Until then the terminated target is
 			// not exposed to input and no event can be attributed to the old root.
 			commitProviderHistory = func(commitCtx context.Context) error {
+				if handoff := cfg.ProviderHandoff; handoff != nil {
+					// Settle the retired owner's work in the publication transaction.
+					// A failed replay must leave it untouched; a successful handoff
+					// must not dispatch its queue into an independent native context.
+					if err := s.store.SettleOrphanedTurns(commitCtx, handoff.PreviousSessionID, s.now()); err != nil {
+						return err
+					}
+					if err := s.store.FailPendingApprovals(commitCtx, conversation.ID, s.now()); err != nil {
+						return err
+					}
+					if err := s.store.FailPendingInputs(commitCtx, conversation.ID, s.now()); err != nil {
+						return err
+					}
+				}
 				return controller.projectNativeHistory(commitCtx, events)
 			}
 		} else if err := controller.projectNativeHistory(ctx, events); err != nil {
@@ -739,6 +758,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A committed reservation is consumed. Internal controller restarts must
 	// resume the now-current branch, not retry its old ownership snapshot.
 	cfg.ProviderHandoff = nil
+	cfg.ProviderScopeID = ""
+	cfg.RequireNativeHistory = false
 	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()

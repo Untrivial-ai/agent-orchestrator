@@ -183,7 +183,7 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
-	conv, err := d.connect(probeCtx, workdir, nil)
+	conv, err := d.connect(probeCtx, workdir, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func (d *Driver) DiscoverModels(ctx context.Context, workdir string, env map[str
 			workdir = os.TempDir()
 		}
 	}
-	conv, err := d.connect(ctx, workdir, env)
+	conv, err := d.connect(ctx, workdir, env, "")
 	if err != nil {
 		return nil, err
 	}
@@ -262,6 +262,9 @@ func installedCodexVersion(ctx context.Context, bin string) (string, error) {
 
 // Start opens a new Codex thread in the session worktree.
 func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+	if cfg.LegacyProviderIDs {
+		cfg.ProviderScopeID = ""
+	}
 	if !filepath.IsAbs(cfg.WorkspacePath) {
 		// app-server resolves a relative cwd against its own process directory,
 		// which would silently put the agent in the wrong tree.
@@ -269,7 +272,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 
 	conv, reconnected, err := d.connectSession(
-		ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.PrepareEnv,
+		ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.PrepareEnv, cfg.ProviderScopeID,
 	)
 	if err != nil {
 		return nil, err
@@ -320,6 +323,9 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 // Resume reattaches to a stored Codex thread after a daemon or app-server
 // restart. A thread that is still running is rejoined rather than restarted.
 func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+	if cfg.LegacyProviderIDs {
+		cfg.ProviderScopeID = ""
+	}
 	if cfg.ProviderConversationID == "" {
 		return nil, fmt.Errorf("%w: no stored thread id", ports.ErrChatResumeFailed)
 	}
@@ -328,7 +334,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	}
 
 	conv, reconnected, err := d.connectSession(
-		ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.PrepareEnv,
+		ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.PrepareEnv, cfg.ProviderScopeID,
 	)
 	if err != nil {
 		return nil, err
@@ -383,7 +389,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 }
 
 // connect spawns app-server and completes the initialize handshake.
-func (d *Driver) connect(ctx context.Context, workdir string, env map[string]string) (*conversation, error) {
+func (d *Driver) connect(ctx context.Context, workdir string, env map[string]string, providerScopeID string) (*conversation, error) {
 	bin, err := d.plugin.ResolveBinary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
@@ -394,7 +400,7 @@ func (d *Driver) connect(ctx context.Context, workdir string, env map[string]str
 		return nil, fmt.Errorf("%w: launch app-server: %w", ports.ErrChatDriverUnavailable, err)
 	}
 
-	conv := newConversation(proc, d.log)
+	conv := newConversation(proc, d.log, providerScopeID)
 	if err := d.initialize(ctx, conv); err != nil {
 		_ = conv.Close()
 		return nil, err
@@ -408,6 +414,7 @@ func (d *Driver) connectSession(
 	dataDir, workdir string,
 	env map[string]string,
 	prepareEnv func(context.Context) (map[string]string, error),
+	providerScopeID string,
 ) (*conversation, bool, error) {
 	// Injected driver tests intentionally retain the direct pipe launcher. The
 	// shipped driver uses spawnAppServer and therefore the persistent host.
@@ -419,7 +426,7 @@ func (d *Driver) connectSession(
 				return nil, false, err
 			}
 		}
-		conv, err := d.connect(ctx, workdir, env)
+		conv, err := d.connect(ctx, workdir, env, providerScopeID)
 		return conv, false, err
 	}
 	bin, err := d.plugin.ResolveBinary(ctx)
@@ -467,7 +474,7 @@ func (d *Driver) connectSession(
 			return persistenthost.Shutdown(shutdownCtx, dataDir, string(sessionID))
 		},
 	}
-	conv := newConversation(proc, d.log)
+	conv := newConversation(proc, d.log, providerScopeID)
 	if transport.Reconnected {
 		return conv, true, nil
 	}

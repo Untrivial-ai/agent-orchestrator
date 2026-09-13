@@ -248,6 +248,7 @@ type ConversationBranch struct {
 	// reopenable by the same provider binding.
 	ProviderBindingID string    `json:"-"`
 	ProviderScopeID   string    `json:"-"`
+	ProviderIDsScoped bool      `json:"-"`
 	Active            bool      `json:"active"`
 	CreatedAt         time.Time `json:"createdAt"`
 }
