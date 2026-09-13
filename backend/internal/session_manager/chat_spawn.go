@@ -163,7 +163,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	}
 	defer releaseCodexAdmission()
 	agentConfig := applySpawnAgentConfig(
-		effectiveAgentConfig(in.cfg.Kind, in.project.Config),
+		effectiveAgentConfig(in.cfg.Harness, in.cfg.Kind, in.project.Config),
 		in.cfg.AgentConfig,
 	)
 
