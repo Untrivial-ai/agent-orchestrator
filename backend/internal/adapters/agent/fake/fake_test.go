@@ -218,11 +218,16 @@ func (s *lifecycleStore) GetSession(_ context.Context, id domain.SessionID) (dom
 }
 
 func (s *lifecycleStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
+	rec.Revision = s.sessions[rec.ID].Revision + 1
 	s.sessions[rec.ID] = rec
 	return nil
 }
 
-func (s *lifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, _ int64) (bool, error) {
+func (s *lifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, expected int64) (bool, error) {
+	if s.sessions[rec.ID].Revision != expected {
+		return false, nil
+	}
+	rec.Revision = expected + 1
 	s.sessions[rec.ID] = rec
 	return true, nil
 }

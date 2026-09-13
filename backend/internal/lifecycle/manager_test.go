@@ -151,6 +151,7 @@ func (f *fakeStore) CommitChatSpawn(
 		return f.chatSpawnErr
 	}
 	f.chatSpawnCalls = append(f.chatSpawnCalls, boundary)
+	rec.Revision = f.sessions[rec.ID].Revision + 1
 	f.sessions[rec.ID] = rec
 	return nil
 }
@@ -202,6 +203,7 @@ func (f *fakeStore) changeSessionControllerEpoch(
 	}
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
 	rec.UpdatedAt = now
+	rec.Revision++
 	f.sessions[id] = rec
 	return true, nil
 }
@@ -291,6 +293,7 @@ func (f *fakeAgentSwitchLifecycleStore) GetSession(_ context.Context, id domain.
 func (f *fakeAgentSwitchLifecycleStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	rec.Revision = f.sessions[rec.ID].Revision + 1
 	f.sessions[rec.ID] = rec
 	return nil
 }

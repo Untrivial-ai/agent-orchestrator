@@ -2,6 +2,8 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +16,13 @@ type promptConflictStore struct {
 	*fakeStore
 	conflict       bool
 	alwaysConflict bool
+	writeErr       error
 }
 
 func (s *promptConflictStore) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord, expected int64) (bool, error) {
+	if s.writeErr != nil {
+		return false, s.writeErr
+	}
 	if s.conflict || s.alwaysConflict {
 		s.conflict = false
 		current := s.sessions[rec.ID]
@@ -29,12 +35,27 @@ func (s *promptConflictStore) UpdateSessionFromActivitySignal(ctx context.Contex
 	return s.fakeStore.UpdateSessionFromActivitySignal(ctx, rec, expected)
 }
 
+func TestActivityProjectionFailurePreservesBlockedToolCorrelation(t *testing.T) {
+	s := &promptConflictStore{fakeStore: newFakeStore(), writeErr: errors.New("write failed")}
+	s.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityBlocked}}
+	m := New(s, nil)
+	m.flights["mer-1"] = &toolFlight{inflight: map[string]string{"tool-1": "Bash"}, blockedCandidate: "tool-1"}
+	before := cloneToolFlight(m.flights["mer-1"])
+	err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "post-tool-use", ToolName: "Bash", ToolUseID: "tool-1",
+	})
+	if !errors.Is(err, s.writeErr) || !reflect.DeepEqual(before, m.flights["mer-1"]) {
+		t.Fatalf("failed projection lost blocked correlation: error=%v flight=%+v", err, m.flights["mer-1"])
+	}
+}
+
 func TestActivityProjectionExhaustionReturnsError(t *testing.T) {
 	s := &promptConflictStore{fakeStore: newFakeStore(), alwaysConflict: true}
 	s.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", Mode: domain.SessionModeTUI}
 	m := New(s, nil)
 	err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
-		Valid: true, State: domain.ActivityActive, Event: "pre-tool", ToolUseID: "tool-1",
+		Valid: true, State: domain.ActivityActive, Event: "pre-tool-use", ToolName: "Bash", ToolUseID: "tool-1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "exhausted 4 attempts") {
 		t.Fatalf("contention must not acknowledge a lost signal: %v", err)
