@@ -176,6 +176,7 @@ function Wrapper({ client, children }: { client: QueryClient; children: ReactNod
 }
 
 beforeEach(() => {
+	workspacePathsState.paths = [];
 	configState.options = [];
 	configState.loaded = false;
 	configState.error = undefined;
@@ -434,7 +435,7 @@ describe("SessionChatSurface link routing", () => {
 				revision: 1,
 				role: "assistant",
 				origin: "provider",
-				text: "Done — see https://example.com/result.",
+				text: "Done — see `https://example.com/result`.",
 				streaming: false,
 				createdAt: "2026-08-08T00:00:01Z",
 			}],

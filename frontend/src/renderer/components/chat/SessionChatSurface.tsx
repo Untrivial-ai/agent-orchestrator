@@ -56,7 +56,7 @@ export interface ConversationWorkState {
 const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
 
 function cleanExtractedLink(value: string): string {
-	return value.replace(/[.,!?;:\\]+$/, "");
+	return value.replace(/[.,!?;:`\\]+$/, "");
 }
 
 function firstBrowserLink(text: string, workspacePaths: string[]): string | undefined {
@@ -334,11 +334,13 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 		for (const item of snapshot.items) {
 			if (item.kind !== "message" || item.role !== "assistant" || item.streaming) continue;
 			if (autoOpenedMessageIds.current.has(item.id)) continue;
-			autoOpenedMessageIds.current.add(item.id);
 			const url = firstBrowserLink(item.text, paths);
-			if (url) openLinkInBrowser(url);
+			if (url) {
+				autoOpenedMessageIds.current.add(item.id);
+				openLinkInBrowser(url);
+			}
 		}
-	}, [openLinkInBrowser, snapshot]);
+	}, [openLinkInBrowser, paths, snapshot]);
 	const observedSuccessfulSwitch = Boolean(
 		agentSwitch &&
 			observedSettledSwitchId === agentSwitch.id &&
