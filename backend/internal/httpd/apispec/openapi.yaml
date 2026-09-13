@@ -1204,6 +1204,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
         "500":
           content:
             application/json:
@@ -1261,6 +1267,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
         "500":
           content:
             application/json:
@@ -1273,8 +1285,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: 'Run a cue: message the active session, or spawn a worker when none
-        could be messaged'
+      summary: Dispatch a cue to the specified session; create a worker only when
+        sessionId is omitted
       tags:
       - cues
   /api/v1/desktop/sessions/{sessionId}/workspace:
@@ -2476,6 +2488,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
         "500":
           content:
             application/json:
@@ -9419,7 +9437,8 @@ components:
     CreateCueRequest:
       properties:
         command:
-          description: Shell command for a command cue. Ignored for agent cues.
+          description: Shell command for a command cue. At most 4096 bytes; cleared
+            when saving agent cues.
           type: string
         description:
           description: Optional human note about the cue, at most 240 bytes.
@@ -9429,11 +9448,12 @@ components:
             non-empty and at most 64 bytes.
           type: string
         prompt:
-          description: Agent instruction for an agent cue. Ignored for command cues.
+          description: Agent instruction for an agent cue. At most 16384 bytes; cleared
+            when saving command cues.
           type: string
         type:
-          description: 'Cue kind: command runs a shell command through an agent; agent
-            sends a prompt to an agent.'
+          description: 'Cue kind: command asks an agent to run a shell command; agent
+            sends an authored prompt. Definition body limit: 128 KiB.'
           type: string
       required:
       - name
@@ -10106,8 +10126,9 @@ components:
     InvokeCueRequest:
       properties:
         sessionId:
-          description: Active session to message. Omit to spawn a worker session for
-            the cue's project; a stale or unusable session also falls back to spawning.
+          description: 'Session to message. Omit to create a worker in the cue''s
+            project. An explicit unavailable or incompatible session returns an error
+            and never creates a replacement worker. Invocation body limit: 4 KiB.'
           type: string
       type: object
     InvokeCueResponse:
@@ -12429,7 +12450,8 @@ components:
     UpdateCueRequest:
       properties:
         command:
-          description: Shell command for a command cue. Ignored for agent cues.
+          description: Shell command for a command cue. At most 4096 bytes; cleared
+            when saving agent cues.
           type: string
         description:
           description: Optional human note about the cue, at most 240 bytes.
@@ -12439,11 +12461,12 @@ components:
             non-empty and at most 64 bytes.
           type: string
         prompt:
-          description: Agent instruction for an agent cue. Ignored for command cues.
+          description: Agent instruction for an agent cue. At most 16384 bytes; cleared
+            when saving command cues.
           type: string
         type:
-          description: 'Cue kind: command runs a shell command through an agent; agent
-            sends a prompt to an agent.'
+          description: 'Cue kind: command asks an agent to run a shell command; agent
+            sends an authored prompt. Definition body limit: 128 KiB.'
           type: string
       required:
       - name

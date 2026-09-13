@@ -15,6 +15,8 @@ export function useProjectCuesQuery(projectId: string, enabled = true) {
 		queryKey: projectCuesQueryKey(projectId),
 		queryFn: () => fetchProjectCues(projectId),
 		enabled: enabled && Boolean(projectId),
+		refetchOnMount: "always",
+		retry: false,
 	});
 }
 
@@ -52,5 +54,6 @@ export function useDeleteCueMutation(projectId: string) {
 export function useInvokeCueMutation() {
 	return useMutation({
 		mutationFn: ({ cueId, sessionId }: { cueId: string; sessionId?: string }) => invokeCue(cueId, sessionId),
+		retry: false,
 	});
 }

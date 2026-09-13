@@ -96,6 +96,12 @@ func (c Cue) Validate() error {
 	if !c.Type.Valid() {
 		return ErrInvalidCueType
 	}
+	if len(c.Command) > MaxCueCommandLength {
+		return ErrInvalidCueCommand
+	}
+	if len(c.Prompt) > MaxCuePromptLength {
+		return ErrInvalidCuePrompt
+	}
 	switch c.Type {
 	case CueTypeCommand:
 		if strings.TrimSpace(c.Command) == "" || len(c.Command) > MaxCueCommandLength {

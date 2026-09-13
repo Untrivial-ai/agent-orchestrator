@@ -63,8 +63,7 @@ func (c *CuesController) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateCueRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeCueBody(w, r, &req, 128<<10) {
 		return
 	}
 	cue, err := c.Svc.Create(r.Context(), projectCueID(r), cueInput(UpdateCueRequest(req)))
@@ -103,8 +102,7 @@ func (c *CuesController) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req UpdateCueRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeCueBody(w, r, &req, 128<<10) {
 		return
 	}
 	cueID, err := url.PathUnescape(chi.URLParam(r, "cueId"))
@@ -145,8 +143,7 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req InvokeCueRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeCueBody(w, r, &req, 4<<10) {
 		return
 	}
 	cueID, err := url.PathUnescape(chi.URLParam(r, "cueId"))
@@ -162,6 +159,32 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 	envelope.WriteJSON(w, http.StatusOK, InvokeCueResponse{
 		SessionID: string(sessionID),
 	})
+}
+
+// Bound allocation before decoding, and consume the entire body so trailing
+// JSON or oversized whitespace cannot bypass validation. Empty bodies retain
+// the existing default request behavior (notably project-dialog invocation).
+func decodeCueBody(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	err := decoder.Decode(dst)
+	if err == nil {
+		var trailing any
+		err = decoder.Decode(&trailing)
+		if err == nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Expected a single JSON body", nil)
+			return false
+		}
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		envelope.WriteAPIError(w, r, http.StatusRequestEntityTooLarge, "bad_request", "CUE_BODY_TOO_LARGE", "Cue request body is too large", nil)
+	} else {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	}
+	return false
 }
 
 func projectCueID(r *http.Request) domain.ProjectID {

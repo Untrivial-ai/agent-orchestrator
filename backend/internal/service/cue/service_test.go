@@ -422,26 +422,21 @@ func TestInvokeWithoutSessionSpawnsWorker(t *testing.T) {
 	}
 }
 
-func TestInvokeStaleSessionFallsBackToSpawn(t *testing.T) {
-	store := newFakeStore()
-	store.cues["cue-a"] = agentCue("cue-a", "mer", "Bump the version.")
-	sessions := newFakeSessions()
-	sessions.getErr = errors.New("session not found")
-	svc := newInvokeService(t, store, sessions)
-
-	got, err := svc.Invoke(context.Background(), "cue-a", "sess-gone")
-	if err != nil {
-		t.Fatalf("invoke: %v", err)
-	}
-	if got != "sess-worker" {
-		t.Fatalf("invoke returned %s, want spawned worker", got)
-	}
-	if len(sessions.spawned) != 1 {
-		t.Fatalf("spawned %d worker(s), want 1", len(sessions.spawned))
+func TestInvokeLookupErrorsNeverSpawn(t *testing.T) {
+	for _, lookupErr := range []error{apierr.NotFound("SESSION_NOT_FOUND", "Unknown session"), errors.New("storage unavailable"), context.Canceled} {
+		store := newFakeStore()
+		store.cues["cue-a"] = agentCue("cue-a", "mer", "Bump the version.")
+		sessions := newFakeSessions()
+		sessions.getErr = lookupErr
+		svc := newInvokeService(t, store, sessions)
+		got, err := svc.Invoke(context.Background(), "cue-a", "sess-gone")
+		if got != "" || !errors.Is(err, lookupErr) || len(sessions.spawned) != 0 || len(sessions.sent) != 0 {
+			t.Fatalf("lookup error: got=%q err=%v sent=%v spawned=%v", got, err, sessions.sent, sessions.spawned)
+		}
 	}
 }
 
-func TestInvokeUnmessageableSessionFallsBackToSpawn(t *testing.T) {
+func TestInvokeUnmessageableSessionNeverSpawns(t *testing.T) {
 	tests := []struct {
 		name string
 		sess domain.Session
@@ -460,17 +455,15 @@ func TestInvokeUnmessageableSessionFallsBackToSpawn(t *testing.T) {
 			svc := newInvokeService(t, store, sessions)
 
 			got, err := svc.Invoke(context.Background(), "cue-a", "sess-1")
-			if err != nil {
-				t.Fatalf("invoke: %v", err)
-			}
-			if got != "sess-worker" {
-				t.Fatalf("invoke returned %s, want spawned worker", got)
+			wantCode(t, err, apierr.KindConflict, "CUE_TARGET_UNAVAILABLE")
+			if got != "" {
+				t.Fatalf("unexpected destination %s", got)
 			}
 			if len(sessions.sent) != 0 {
 				t.Fatalf("sent %d message(s), want none", len(sessions.sent))
 			}
-			if len(sessions.spawned) != 1 {
-				t.Fatalf("spawned %d worker(s), want 1", len(sessions.spawned))
+			if len(sessions.spawned) != 0 {
+				t.Fatalf("spawned %d worker(s), want 0", len(sessions.spawned))
 			}
 		})
 	}
@@ -523,4 +516,60 @@ func TestInvokeErrors(t *testing.T) {
 			t.Fatal("invoke without sessions succeeded")
 		}
 	})
+}
+
+func TestCueSaveNormalizesOnlyInactivePayload(t *testing.T) {
+	for _, typ := range []domain.CueType{domain.CueTypeCommand, domain.CueTypeAgent} {
+		t.Run(string(typ), func(t *testing.T) {
+			store := newFakeStore()
+			svc := cue.New(cue.Deps{Store: store})
+			input := cue.Input{Name: " Test ", Type: typ, Command: "  echo ok\n", Prompt: "  explain this\n"}
+			created, err := svc.Create(context.Background(), "mer", input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, err := svc.Update(context.Background(), created.ID, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, got := range []domain.Cue{created, updated, store.cues[created.ID]} {
+				if got.Name != "Test" {
+					t.Fatalf("name=%q", got.Name)
+				}
+				if typ == domain.CueTypeCommand && (got.Command != input.Command || got.Prompt != "") {
+					t.Fatalf("command cue=%+v", got)
+				}
+				if typ == domain.CueTypeAgent && (got.Prompt != input.Prompt || got.Command != "") {
+					t.Fatalf("agent cue=%+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestInvokeCanceledDoesNotDispatch(t *testing.T) {
+	store := newFakeStore()
+	store.cues["cue-a"] = agentCue("cue-a", "mer", "hello")
+	sessions := newFakeSessions()
+	svc := newInvokeService(t, store, sessions)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, target := range []domain.SessionID{"", "sess-1"} {
+		_, err := svc.Invoke(ctx, "cue-a", target)
+		if !errors.Is(err, context.Canceled) || len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
+			t.Fatalf("cancellation: %v", err)
+		}
+	}
+}
+
+func TestInvokeBlankExplicitTargetDoesNotSpawn(t *testing.T) {
+	store := newFakeStore()
+	store.cues["cue-a"] = agentCue("cue-a", "mer", "hello")
+	sessions := newFakeSessions()
+	svc := newInvokeService(t, store, sessions)
+	_, err := svc.Invoke(context.Background(), "cue-a", "  ")
+	wantCode(t, err, apierr.KindInvalid, "INVALID_SESSION_ID")
+	if len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
+		t.Fatal("blank target dispatched")
+	}
 }

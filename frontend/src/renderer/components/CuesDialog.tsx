@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, MessageSquare, Pencil, Play, Plus, Trash2, X, Zap } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -51,7 +51,11 @@ function CueTypeIcon({ type, className }: { type: CueType; className?: string })
 	return <Zap aria-hidden="true" className={className} />;
 }
 
-export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
+export function CuesDialog(props: CuesDialogProps) {
+	return props.open ? <OpenCuesDialog key={props.projectId} {...props} /> : null;
+}
+
+function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	const { t } = useTranslation();
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const navigateToSession = useNavigateToSession();
@@ -71,6 +75,12 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	const [formError, setFormError] = useState<string | null>(null);
 	const [invokeError, setInvokeError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
+	const pending = useRef(false);
+	const mounted = useRef(true);
+	useEffect(() => {
+		mounted.current = true;
+		return () => { mounted.current = false; };
+	}, []);
 	const [runningCueId, setRunningCueId] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -80,6 +90,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	}, [open, projectId]);
 
 	const openNew = () => {
+		if (pending.current) return;
 		setName("");
 		setDescription("");
 		setType("command");
@@ -90,6 +101,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	};
 
 	const openEdit = (cue: CueDTO) => {
+		if (pending.current) return;
 		setName(cue.name);
 		setDescription(cue.description ?? "");
 		setType(cueType(cue));
@@ -100,7 +112,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	};
 
 	const handleSave = async () => {
-		if (formOpen === null) return;
+		if (formOpen === null || pending.current) return;
 		const trimmedName = name.trim();
 		if (!trimmedName) {
 			setFormError(t("cues.nameRequired"));
@@ -109,61 +121,86 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 		const input: CreateCueInput = {
 			name: trimmedName,
 			type,
-			description: description.trim() || undefined,
+			description: description || undefined,
 		};
 		if (type === "command") {
-			input.command = command.trim() || undefined;
+			input.command = command;
 		} else {
-			input.prompt = prompt.trim() || undefined;
+			input.prompt = prompt;
 		}
+		const content = type === "command" ? command : prompt;
+		if (!content.trim()) {
+			setFormError(t(type === "command" ? "cues.commandRequired" : "cues.promptRequired"));
+			return;
+		}
+		const encoder = new TextEncoder();
+		for (const [value, limit, field] of [[trimmedName, 64, t("cues.nameLabel")], [description, 240, t("cues.descriptionLabel")], [content, type === "command" ? 4096 : 16384, t(type === "command" ? "cues.commandLabel" : "cues.agentLabel")]] as const) {
+			if (encoder.encode(value).length > limit) {
+				setFormError(t("cues.fieldTooLong", { field, limit }));
+				return;
+			}
+		}
+		pending.current = true;
 		setSaving(true);
 		setFormError(null);
 		try {
 			if (formOpen === "new") {
 				await createMutation.mutateAsync(input);
+				if (!mounted.current) return;
 				showGlobalToast(t("cues.created"), t("cues.createdBody", { name: trimmedName }));
 			} else {
 				await updateMutation.mutateAsync({ cueId: formOpen.id, input });
+				if (!mounted.current) return;
 				showGlobalToast(t("cues.saved"), t("cues.savedBody", { name: trimmedName }));
 			}
 			setFormOpen(null);
 		} catch (error) {
+			if (!mounted.current) return;
 			setFormError(apiErrorMessage(error, t("cues.saveFailed")));
 		} finally {
-			setSaving(false);
+			pending.current = false;
+			if (mounted.current) setSaving(false);
 		}
 	};
 
 	const handleInvoke = async (cue: CueDTO) => {
-		if (runningCueId) return;
+		if (pending.current || !cuesQuery.isFetchedAfterMount || cuesQuery.isFetching || cuesQuery.isError) return;
+		pending.current = true;
 		setInvokeError(null);
 		setRunningCueId(cue.id);
 		try {
 			const sessionId = await invokeMutation.mutateAsync({ cueId: cue.id });
+			if (!mounted.current) return;
 			showGlobalToast(t("cues.invokeSent"), t("cues.invokeSentBody", { name: cue.name }));
 			onOpenChange(false);
 			navigateToSession(projectId, sessionId);
 		} catch (error) {
+			if (!mounted.current) return;
 			setInvokeError(apiErrorMessage(error, t("cues.invokeFailed")));
 		} finally {
-			setRunningCueId(null);
+			pending.current = false;
+			if (mounted.current) setRunningCueId(null);
 		}
 	};
 
 	const handleDelete = async () => {
-		if (!deletingCue) return;
+		if (!deletingCue || pending.current) return;
+		pending.current = true;
 		try {
 			await deleteMutation.mutateAsync(deletingCue.id);
+			if (!mounted.current) return;
 			showGlobalToast(t("cues.deleted"), t("cues.deletedBody", { name: deletingCue.name }));
 			setDeletingCue(null);
 		} catch (error) {
+			if (!mounted.current) return;
 			showGlobalToast(t("cues.deleteFailed"), apiErrorMessage(error, t("cues.deleteFailed")), "error");
-			setDeletingCue(null);
+		} finally {
+			pending.current = false;
 		}
 	};
 
 	const renderList = () => {
-		if (cuesQuery.isLoading) {
+		if (!cuesQuery.isFetchedAfterMount || cuesQuery.isFetching) {
 			return (
 				<div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
 					<Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -215,10 +252,10 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 									type="button"
 									variant="ghost"
 									size="icon-sm"
-									disabled={runningCueId !== null}
+									disabled={runningCueId !== null || saving || deleteMutation.isPending}
 									onClick={() => void handleInvoke(cue)}
-									aria-label={t("cues.run")}
-									title={t("cues.run")}
+									aria-label={t("cues.runNewSession")}
+									title={t("cues.runNewSession")}
 									className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
 								>
 									{runningCueId === cue.id ? (
@@ -231,7 +268,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 									type="button"
 									variant="ghost"
 									size="icon-sm"
-									disabled={runningCueId !== null || saving}
+									disabled={runningCueId !== null || saving || deleteMutation.isPending}
 									onClick={() => openEdit(cue)}
 									aria-label={t("cues.edit")}
 									title={t("cues.edit")}
@@ -243,8 +280,8 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 									type="button"
 									variant="ghost"
 									size="icon-sm"
-									disabled={runningCueId !== null || saving}
-									onClick={() => setDeletingCue(cue)}
+									disabled={runningCueId !== null || saving || deleteMutation.isPending}
+									onClick={() => { if (!pending.current) { deleteMutation.reset(); setDeletingCue(cue); } }}
 									aria-label={t("cues.delete")}
 									title={t("cues.delete")}
 									className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-destructive"
@@ -350,15 +387,16 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 
 	return (
 		<>
-			<Dialog open={open} onOpenChange={onOpenChange}>
+			<Dialog open={open} onOpenChange={(next) => { if (!pending.current) onOpenChange(next); }}>
 				<DialogContent
+					aria-describedby={undefined}
 					showCloseButton={false}
 					className={cn(settingsDialogContentClass, "w-[min(640px,calc(100vw-24px))]")}
 				>
 					<DialogClose asChild>
 						<button
 							type="button"
-							disabled={saving || deleteMutation.isPending}
+							disabled={saving || deleteMutation.isPending || runningCueId !== null}
 							className="settings-dialog-close-button settings-close-button"
 							aria-label={t("confirm.close")}
 							title={t("confirm.closeEsc")}
@@ -379,7 +417,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 						</div>
 					) : null}
 
-					<div className={cn(settingsDialogBodyClass, "p-5")}>{formOpen ? renderForm() : renderList()}</div>
+					<div className={cn(settingsDialogBodyClass, "p-5")}><fieldset disabled={saving || deleteMutation.isPending || runningCueId !== null}>{formOpen ? renderForm() : renderList()}</fieldset></div>
 
 					<div className={cn(settingsDialogFooterClass, "gap-2 p-4")}>
 						{formOpen ? (
@@ -393,7 +431,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 								</Button>
 							</>
 						) : (
-							<Button type="button" variant="footer-primary" onClick={openNew}>
+							<Button type="button" variant="footer-primary" disabled={saving || deleteMutation.isPending || runningCueId !== null} onClick={openNew}>
 								<Plus className="size-4" aria-hidden="true" />
 								{t("cues.newCue")}
 							</Button>
@@ -412,7 +450,7 @@ export function CuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 				error={deleteMutation.isError ? apiErrorMessage(deleteMutation.error, t("cues.deleteFailed")) : null}
 				onConfirm={() => void handleDelete()}
 				onOpenChange={(nextOpen) => {
-					if (!nextOpen) setDeletingCue(null);
+					if (!nextOpen && !pending.current) setDeletingCue(null);
 				}}
 			/>
 		</>

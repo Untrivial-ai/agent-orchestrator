@@ -492,7 +492,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Run a cue: message the active session, or spawn a worker when none could be messaged */
+        /** Dispatch a cue to the specified session; create a worker only when sessionId is omitted */
         post: operations["invokeCue"];
         delete?: never;
         options?: never;
@@ -3254,15 +3254,15 @@ export interface components {
             totalTokens: number;
         };
         CreateCueRequest: {
-            /** @description Shell command for a command cue. Ignored for agent cues. */
+            /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
             command?: string;
             /** @description Optional human note about the cue, at most 240 bytes. */
             description?: string;
             /** @description Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes. */
             name: string;
-            /** @description Agent instruction for an agent cue. Ignored for command cues. */
+            /** @description Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues. */
             prompt?: string;
-            /** @description Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent. */
+            /** @description Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB. */
             type: string;
         };
         CueEnvelope: {
@@ -3504,7 +3504,7 @@ export interface components {
             updatedAt?: null | string;
         };
         InvokeCueRequest: {
-            /** @description Active session to message. Omit to spawn a worker session for the cue's project; a stale or unusable session also falls back to spawning. */
+            /** @description Session to message. Omit to create a worker in the cue's project. An explicit unavailable or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB. */
             sessionId?: string;
         };
         InvokeCueResponse: {
@@ -4402,15 +4402,15 @@ export interface components {
             token: string;
         };
         UpdateCueRequest: {
-            /** @description Shell command for a command cue. Ignored for agent cues. */
+            /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
             command?: string;
             /** @description Optional human note about the cue, at most 240 bytes. */
             description?: string;
             /** @description Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes. */
             name: string;
-            /** @description Agent instruction for an agent cue. Ignored for command cues. */
+            /** @description Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues. */
             prompt?: string;
-            /** @description Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent. */
+            /** @description Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB. */
             type: string;
         };
         UpdateProjectSettingsInput: {
@@ -6197,6 +6197,15 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Request Entity Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -6262,6 +6271,15 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7877,6 +7895,15 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
