@@ -36,6 +36,7 @@ import {
 } from "./useInterfaceTransition";
 import { terminalInterfaceFailureRecovery } from "./terminalInterfaceRecovery";
 import { adjustTerminalViewport } from "./terminalViewport";
+import type { RouteSession } from "./sessionRoute";
 
 const FONT_SIZE = 12;
 
@@ -550,7 +551,13 @@ function terminalInterfacePhaseLabel(phase?: string): string {
 	}
 }
 
-export default function TerminalScreen() {
+/**
+ * `session` is what the route resolved when the board's lists do not hold this
+ * id (see `sessionRouteView`); the lists still win whenever they have it, since
+ * they are refreshed on every poll. A session from that lookup is not refreshed.
+ * The shell route passes nothing.
+ */
+export default function TerminalScreen({ session: resolved }: { session?: RouteSession }) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const styles = useThemedStyles(makeStyles);
@@ -620,7 +627,10 @@ export default function TerminalScreen() {
 	const previewWebRef = useRef<WebView>(null);
 
 	const { sessions, orchestrators, restore, refresh, config: activeConfig } = useApp();
-	const known = sessions.find((s) => s.id === sessionId) ?? orchestrators.find((o) => o.id === sessionId) ?? null;
+	const known =
+		sessions.find((s) => s.id === sessionId) ??
+		orchestrators.find((o) => o.id === sessionId) ??
+		(!shellOnly && resolved?.id === sessionId ? resolved : null);
 	// Runtime handles are opaque. Native macOS PTYs are versioned (ptyhost-v1:),
 	// so using the session id here would incorrectly route the attach to legacy
 	// tmux. Older daemons omit terminalHandleId and retain the historical

@@ -1,4 +1,4 @@
-import { classifyConnectionFailure } from "../connectionError";
+import { classifyConnectionFailure, isSessionGone } from "../connectionError";
 import type { SessionInterfaceTransitionStatus } from "../chat/api";
 
 type InterfaceTransition = { phase: string };
@@ -68,18 +68,6 @@ export function interfaceTransitionPollInterval(
 	return undefined;
 }
 
-// A failed request never advances `status`, so a poll rescheduled from the last
-// known status re-arms on it: a session deleted mid-transition would 404 at
-// 300ms indefinitely. But only a 404 or 410 is the daemon's word that the
-// session is gone. A timeout, a refused connection or a 5xx is a fact about the
-// link, not the session, and a link comes back.
-//
-// 401/403/429 never reach the scheduler: the hook stops polling on those (see
-// `shouldKeepPolling`), because retrying a rejected password arms the lockout.
-export function interfaceTransitionSessionGone(status: number | undefined): boolean {
-	return status === 404 || status === 410;
-}
-
 const failureBackoff = [1_000, 2_000, 4_000, 8_000];
 
 /**
@@ -133,7 +121,12 @@ export function interfaceTransitionNextPoll(args: {
 }): number | undefined {
 	const failures = args.consecutiveFailures ?? 0;
 	if (failures > 0) {
-		if (interfaceTransitionSessionGone(args.failureStatus)) return undefined;
+		// A failed request never advances `status`, so a poll rescheduled from the
+		// last known status re-arms on it: a session deleted mid-transition would
+		// 404 at 300ms indefinitely. 401/403/429 never reach the scheduler: the hook
+		// stops polling on those (see `shouldKeepPolling`), because retrying a
+		// rejected password arms the lockout.
+		if (isSessionGone(args.failureStatus)) return undefined;
 		// A live handoff is retried for as long as the screen is open; anything
 		// else is speculative and stops. See speculativeFailureAttempts.
 		const live = mobileInterfaceTransitionIsActive(args.status?.transition);

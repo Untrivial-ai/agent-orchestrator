@@ -4,10 +4,10 @@ import {
 	interfaceSwitchUnavailableMessage,
 	interfaceTransitionNextPoll,
 	interfaceTransitionPollInterval,
-	interfaceTransitionSessionGone,
 	nativeSessionReadinessAttempts,
 	speculativeFailureAttempts,
 } from "./interfaceTransition";
+import { isSessionGone } from "../connectionError";
 
 const daemonReason =
 	"session: native conversation id is not confirmed for the current terminal launch for claude-code";
@@ -178,7 +178,7 @@ describe("failed rechecks back off on their own count", () => {
 
 	it.each([500, 502, 503])("treats a %s as the link's problem, not the session's", (failureStatus) => {
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 1, failureStatus })).toBe(1_000);
-		expect(interfaceTransitionSessionGone(failureStatus)).toBe(false);
+		expect(isSessionGone(failureStatus)).toBe(false);
 	});
 
 	it.each([404, 410])("stops at once on a %s, the daemon's word that the session is gone", (failureStatus) => {
@@ -188,11 +188,11 @@ describe("failed rechecks back off on their own count", () => {
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 0 })).toBe(300);
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 1, failureStatus })).toBeUndefined();
 		expect(interfaceTransitionNextPoll({ status: waiting, consecutiveFailures: 1, failureStatus })).toBeUndefined();
-		expect(interfaceTransitionSessionGone(failureStatus)).toBe(true);
+		expect(isSessionGone(failureStatus)).toBe(true);
 	});
 
 	it("does not mistake a request that never landed for a gone session", () => {
-		expect(interfaceTransitionSessionGone(undefined)).toBe(false);
+		expect(isSessionGone(undefined)).toBe(false);
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 1, failureStatus: undefined })).toBe(1_000);
 	});
 
