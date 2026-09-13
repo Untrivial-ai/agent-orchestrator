@@ -53,3 +53,5 @@ const makeStyles = (t: Theme) =>
 		center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: t.bgBase },
 		copy: { color: t.textSecondary, fontSize: 14 },
 	});
+
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
