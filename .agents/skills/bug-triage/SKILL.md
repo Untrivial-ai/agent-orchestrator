@@ -41,8 +41,9 @@ Example human report:
 > After I switched projects, the terminal stayed blank. I expected to see the session
 > prompt. It happened twice today on macOS; I don't know how to reproduce it reliably.
 
-Keep agent-discovered information in a separate attachment labeled **Agent-collected
-evidence**, even when it confirms the report. Include only relevant excerpts and:
+Keep agent-discovered information separate from the human report and label it
+**Agent-collected evidence**, even when it confirms the report. Include only relevant
+excerpts and:
 
 - The command or read-only query used, collection time, and relevant AO version or
   checkout commit, so another person can interpret the result.
@@ -84,20 +85,16 @@ actual database location and schema, open it read-only, and select only relevant
 and columns. Never attach an entire database or broad log dump. Redact tokens,
 credentials, private prompts, and unrelated personal or repository data from every
 artifact, including screenshots. Keep diagnostic artifacts under `~/.ao` and out of
-Git commits. Share a useful excerpt rather than a wall of output.
+Git commits. Preserve evidentiary content when redacting, and verify that unrelated
+content did not change. Share a useful excerpt rather than a wall of output.
 
 Try a safe reproduction when practical, recording the build actually tested. Failure
 to reproduce does not invalidate the human report. Code tracing or dependency research
-is optional when it can add concrete evidence. Keep findings in the attachment.
+is optional when it can add concrete evidence. Keep findings in the separate evidence.
 
 ## Check for duplicates
 
-Search open and closed issues and related PRs using the symptom or exact error:
-
-```bash
-gh issue list --repo Untrivial-ai/agent-orchestrator --state all --search '<symptom or error>'
-gh pr list --repo Untrivial-ai/agent-orchestrator --state all --search '<symptom or error>'
-```
+Search open and closed issues and related PRs using the symptom or exact error.
 
 Read likely matches before calling a report a duplicate. If one matches, give the
 reporter its link and draft only their new observation for a comment, with evidence
@@ -107,23 +104,18 @@ state that briefly; it does not block preparing the report.
 
 ## Preserve attribution and submission scope
 
-Recommend that the reporter submit the issue or comment from their own GitHub account.
-Do not use AO Bot or another shared bot account to file human reports on their behalf.
-A local coding agent may help draft and gather attachments. If explicitly asked to
-submit using the reporter's account, verify the authenticated identity first; do not
-silently publish under a different identity. Existing authorization still applies;
-triage alone is not permission to publish.
+A local coding agent may help draft and gather attachments. Existing authorization
+still applies; triage alone is not permission to publish.
 
-For an existing issue, preserve its human body and attribution. Add evidence as a
-separate attachment in a clearly labeled comment when authorized. Don't rewrite the
-report into an investigation narrative.
+For an existing issue, preserve its human body and attribution. Add evidence separately
+when authorized. Don't rewrite the report into an investigation narrative.
 
-Use the GitHub attachment UI when available. Otherwise give the reporter the local
-artifact paths and ask them to drag the files into the issue or comment. Never invent
+When authorized to publish, include useful collected evidence before finishing. Use a
+clearly labeled comment or attachment, whichever fits the evidence. If evidence cannot
+be published, state the exact blocker and provide its local path. Never invent
 attachment URLs or create asset branches to host diagnostics. Keep the report body
-limited to human details and attachment links, with analysis inside the attachments.
-When submitting via CLI, use `--body-file` for reviewed text. Apply only existing,
-relevant labels; don't add priority/confidence prose just to fill a template.
+limited to human details. Apply only existing, relevant labels; don't add
+priority/confidence prose just to fill a template.
 
 Finish with the concise draft (or issue link if submitted), any duplicate link, and
 attachment paths/links. Do not automatically file an issue, implement a fix, push a
