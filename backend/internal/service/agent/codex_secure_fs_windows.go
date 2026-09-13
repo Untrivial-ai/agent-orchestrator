@@ -148,6 +148,10 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 	if err != nil {
 		return false, false, false, err
 	}
+	trustedInstaller, err := codexWindowsTrustedInstallerSID()
+	if err != nil {
+		return false, false, false, err
+	}
 	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil || sd == nil {
 		return false, false, false, errors.New("codex path security descriptor is unavailable")
@@ -157,7 +161,7 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		return false, false, false, errors.New("codex path owner is unavailable")
 	}
 	ownerCurrent := owner.Equals(user.User.Sid)
-	ownerTrusted := ownerCurrent || owner.Equals(system) || owner.Equals(administrators)
+	ownerTrusted := ownerCurrent || owner.Equals(system) || owner.Equals(administrators) || owner.Equals(trustedInstaller)
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		return ownerCurrent, ownerTrusted, false, nil
@@ -177,7 +181,7 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		ace := codexWindowsACE{Allowed: allowed, Mask: uint32(prefix.mask)}
 		if allowed {
 			sid := (*windows.SID)(unsafe.Pointer(&raw.SidStart))
-			ace.PrincipalTrusted = sid.Equals(user.User.Sid) || sid.Equals(system) || sid.Equals(administrators)
+			ace.PrincipalTrusted = sid.Equals(user.User.Sid) || sid.Equals(system) || sid.Equals(administrators) || sid.Equals(trustedInstaller)
 		} else if prefix.header.AceType == 5 || prefix.header.AceType == 9 || prefix.header.AceType == 11 {
 			ace.Allowed = true
 		}
@@ -188,6 +192,17 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		aclSafe = codexWindowsVaultACLIsSafe(ownerTrusted, aces)
 	}
 	return ownerCurrent, ownerTrusted, aclSafe, nil
+}
+
+// codexWindowsTrustedInstallerSIDString is NT SERVICE\TrustedInstaller. Windows
+// makes it the owner of the system drive root and of everything under
+// %SystemRoot%, so it is an unavoidable ancestor owner for any path AO creates.
+// It is a service SID that no interactive account can assume without already
+// holding SYSTEM, which makes it at least as trustworthy as BUILTIN\Administrators.
+const codexWindowsTrustedInstallerSIDString = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+
+func codexWindowsTrustedInstallerSID() (*windows.SID, error) {
+	return windows.StringToSid(codexWindowsTrustedInstallerSIDString)
 }
 
 func protectCodexPrivateDirectory(path string) error {

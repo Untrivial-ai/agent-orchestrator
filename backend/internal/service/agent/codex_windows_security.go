@@ -59,6 +59,19 @@ const codexWindowsMutationMask = codexWindowsWriteData | codexWindowsAppendData 
 	codexWindowsDeleteChild | codexWindowsWriteAttributes | codexWindowsDelete | codexWindowsWriteDAC |
 	codexWindowsWriteOwner | codexWindowsGenericAll | codexWindowsGenericWrite
 
+// codexWindowsAncestorMutationMask drops the two "add a new child" rights from
+// the vault mask. On a directory, FILE_WRITE_DATA is FILE_ADD_FILE and
+// FILE_APPEND_DATA is FILE_ADD_SUBDIRECTORY: both only permit creating a NEW
+// entry beside the vault chain, and neither can rename, delete, or redirect an
+// ancestor that already exists -- that needs DELETE, FILE_DELETE_CHILD,
+// WRITE_DAC, WRITE_OWNER, or a generic right, all of which stay disqualifying.
+//
+// Stock Windows grants exactly FILE_ADD_SUBDIRECTORY to Authenticated Users on
+// the system drive root ("Authenticated Users:(AD)" in icacls). Treating that
+// default as an unsafe ancestor made every ancestor walk fail on every Windows
+// machine, so Codex account storage could never be created.
+const codexWindowsAncestorMutationMask = codexWindowsMutationMask &^ (codexWindowsWriteData | codexWindowsAppendData)
+
 type codexWindowsACE struct {
 	Allowed          bool
 	PrincipalTrusted bool
@@ -85,7 +98,7 @@ func codexWindowsAncestorACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bo
 		return false
 	}
 	for _, ace := range aces {
-		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsMutationMask != 0 {
+		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsAncestorMutationMask != 0 {
 			return false
 		}
 	}

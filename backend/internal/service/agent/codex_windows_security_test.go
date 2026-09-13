@@ -83,3 +83,39 @@ func TestWindowsPathMetadataPolicyRejectsReparseOwnerACLTypeAndHardLinks(t *test
 		t.Fatal("stable Windows file identity rejected")
 	}
 }
+
+func TestWindowsAncestorACLPolicyAcceptsDefaultSystemDriveRoot(t *testing.T) {
+	// Stock Windows grants Authenticated Users FILE_ADD_SUBDIRECTORY on the
+	// system drive root ("Authenticated Users:(AD)"). Creating a new entry
+	// beside the vault chain cannot redirect an ancestor that already exists,
+	// so the ancestor walk must accept it or no Windows machine can ever hold
+	// Codex account storage. The vault policy stays strict.
+	for name, mask := range map[string]uint32{
+		"add subdirectory": codexWindowsAppendData,
+		"add file":         codexWindowsWriteData,
+	} {
+		t.Run(name, func(t *testing.T) {
+			aces := []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: mask}}
+			if !codexWindowsAncestorACLIsSafe(true, aces) {
+				t.Fatal("ancestor ACL that only permits creating a new child rejected")
+			}
+			if codexWindowsVaultACLIsSafe(true, aces) {
+				t.Fatal("vault ACL accepted an untrusted principal")
+			}
+		})
+	}
+	for name, mask := range map[string]uint32{
+		"delete":        codexWindowsDelete,
+		"delete child":  codexWindowsDeleteChild,
+		"write DAC":     codexWindowsWriteDAC,
+		"write owner":   codexWindowsWriteOwner,
+		"generic all":   codexWindowsGenericAll,
+		"generic write": codexWindowsGenericWrite,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: mask}}) {
+				t.Fatalf("ancestor ACL granting %s to an untrusted principal accepted", name)
+			}
+		})
+	}
+}
