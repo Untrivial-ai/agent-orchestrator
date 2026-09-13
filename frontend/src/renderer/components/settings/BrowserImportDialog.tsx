@@ -1,5 +1,5 @@
 import { CheckCircle2, Cookie, History as HistoryIcon, LoaderCircle, TriangleAlert, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AoBridge } from "../../../preload";
 import type {
@@ -53,6 +53,7 @@ export function BrowserImportDialog({
 	const [safariAccessDenied, setSafariAccessDenied] = useState(false);
 	const [progress, setProgress] = useState<BrowserImportProgress | null>(null);
 	const [result, setResult] = useState<BrowserImportResult | null>(null);
+	const errorRef = useRef<HTMLParagraphElement>(null);
 
 	const source = sources.find((candidate) => candidate.id === sourceId);
 	const selectedProfiles = source?.profiles.filter((profile) => selectedProfileIds.includes(profile.id)) ?? [];
@@ -88,7 +89,13 @@ export function BrowserImportDialog({
 			},
 			(reason) => setError(reason instanceof Error ? reason.message : t("settings.browserImport.discoveryFailed")),
 		).finally(() => setLoading(false));
-	}, [bridge, open, t]);
+		// Translation changes must not reset an active import or its outcome.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [bridge, open]);
+
+	useEffect(() => {
+		if (error) errorRef.current?.focus();
+	}, [error]);
 
 	useEffect(() => {
 		if (!bridge || !open) return;
@@ -180,6 +187,9 @@ export function BrowserImportDialog({
 				</div>
 
 				<div className={settingsDialogBodyClass}>
+					{view === "form" && error ? (
+						<p ref={errorRef} tabIndex={-1} className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</p>
+					) : null}
 					{view === "form" && safariAccessDenied ? (
 						<p className="text-xs text-warning" role="status">{t("settings.browserImport.safariAccessUnavailable")}</p>
 					) : null}
@@ -310,7 +320,7 @@ function ImportForm({
 	);
 	if (sources.length === 0) {
 		return error
-			? <p className="text-sm text-destructive" role="alert">{error}</p>
+			? null
 			: <p className="text-sm text-muted-foreground">{t("settings.browserImport.noneFound")}</p>;
 	}
 	return (
@@ -349,7 +359,6 @@ function ImportForm({
 					<OptionsStep
 						destinationMode={destinationMode}
 						destinationNames={destinationNames}
-						error={error}
 						includeCookies={includeCookies}
 						includeHistory={includeHistory}
 						mergeName={mergeName}
@@ -401,7 +410,6 @@ function OptionsStep({
 	destinationMode,
 	destinationNames,
 	mergeName,
-	error,
 	setIncludeCookies,
 	setIncludeHistory,
 	setDestinationMode,
@@ -415,7 +423,6 @@ function OptionsStep({
 	destinationMode: "separate" | "merge";
 	destinationNames: Record<string, string>;
 	mergeName: string;
-	error: string;
 	setIncludeCookies: (value: boolean) => void;
 	setIncludeHistory: (value: boolean) => void;
 	setDestinationMode: (value: "separate" | "merge") => void;
@@ -475,35 +482,45 @@ function OptionsStep({
 					</div>
 				)}
 			</section>
-			{error ? (
-				<p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
-					<TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-					{error}
-				</p>
-			) : null}
 		</div>
 	);
 }
 
 function ResultStep({ result }: { result: BrowserImportResult }) {
 	const { t } = useTranslation();
+	const empty = result.entries.every((entry) => entry.importedCookies + entry.importedHistoryEntries === 0);
+	const partial = result.entries.some((entry) =>
+		entry.warnings.some((warning) => !isExpectedSkip(warning))
+		|| entry.skippedCookies > entry.warnings.reduce((count, warning) => count + (isExpectedSkip(warning) ? warning.count ?? 0 : 0), 0),
+	);
+	const warning = empty || partial;
 	return (
 		<div className="space-y-4">
-			<div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
-				<CheckCircle2 aria-hidden="true" className="mt-0.5 size-5 text-success" />
-				<div><p className="text-sm font-semibold">{t("settings.browserImport.complete")}</p><p className="text-xs text-muted-foreground">{t("settings.browserImport.completeDescription", { browser: result.sourceName })}</p></div>
+			<div className={`flex items-start gap-3 rounded-lg border p-3 ${warning ? "border-warning/30 bg-warning/10" : "border-success/30 bg-success/10"}`} role="status">
+				{warning ? <TriangleAlert aria-hidden="true" className="mt-0.5 size-5 text-warning" /> : <CheckCircle2 aria-hidden="true" className="mt-0.5 size-5 text-success" />}
+				<div><p className="text-sm font-semibold">{t(empty ? "settings.browserImport.empty" : partial ? "settings.browserImport.partial" : "settings.browserImport.complete")}</p>{!empty ? <p className="text-xs text-muted-foreground">{t("settings.browserImport.completeDescription", { browser: result.sourceName })}</p> : null}</div>
 			</div>
 			{result.entries.map((entry) => (
 				<div className="rounded-lg border border-border p-3" key={entry.destinationProfile.id}>
 					<p className="text-sm font-semibold">{entry.destinationProfile.name}</p>
 					<p className="mt-1 text-xs text-muted-foreground">{t("settings.browserImport.resultCounts", { cookies: entry.importedCookies, history: entry.importedHistoryEntries })}</p>
-					{entry.skippedCookies > 0 ? <p className="mt-1 text-xs text-warning">{t("settings.browserImport.skippedCookies", { count: entry.skippedCookies })}</p> : null}
-					{entry.warnings.map((warning) => <p className="mt-1 text-xs text-warning" key={warning.code}>{warningText(warning)}</p>)}
+					{entry.warnings.filter((warning) => !isExpectedSkip(warning)).map((warning) => <p className="mt-1 text-xs text-warning" key={warning.code}>{warningText(warning)}</p>)}
+					{entry.skippedCookies > 0 ? (
+						<details className="mt-2 text-xs text-muted-foreground">
+							<summary className="cursor-pointer">{t("settings.browserImport.skippedItems")} · {t("settings.browserImport.skippedCookies", { count: entry.skippedCookies })}</summary>
+							{entry.warnings.filter(isExpectedSkip).map((warning) => <p className="mt-1" key={warning.code}>{warningText(warning)}</p>)}
+							<p className="mt-1">{t("settings.browserImport.signInAgain")}</p>
+						</details>
+					) : null}
 				</div>
 			))}
-			<p className="text-xs text-muted-foreground">{t("settings.browserImport.useProfile")}</p>
+			{!empty ? <p className="text-xs text-muted-foreground">{t("settings.browserImport.useProfile")}</p> : null}
 		</div>
 	);
+}
+
+function isExpectedSkip(warning: BrowserImportWarning): boolean {
+	return warning.code === "expired-cookies-skipped" || warning.code === "isolated-cookies-skipped";
 }
 
 function warningText(warning: BrowserImportWarning): string {

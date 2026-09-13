@@ -6,11 +6,33 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserHistoryStore } from "./browser-history-store";
-import { BrowserProfileImportService, decryptWindowsChromiumCookie } from "./browser-profile-import";
+import { BrowserProfileImportService, decryptWindowsChromiumCookie, readMacChromiumPassword } from "./browser-profile-import";
 import { BrowserProfileStore } from "./browser-profile-store";
 import { BROWSER_PROFILE_MAX_COUNT } from "../shared/browser-profiles";
 
 const temporaryDirectories: string[] = [];
+
+describe("macOS import credentials", () => {
+	it("allows time for the prompt and only falls back for a missing item", async () => {
+		const run = vi.fn().mockRejectedValueOnce({ code: 44 }).mockResolvedValueOnce({ stdout: "secret\n" });
+		const signal = new AbortController().signal;
+		expect(await readMacChromiumPassword(["Chrome", "Google Chrome"], signal, run)).toEqual(Buffer.from("secret"));
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(run).toHaveBeenLastCalledWith("security", ["find-generic-password", "-w", "-s", "Google Chrome Safe Storage"], expect.objectContaining({ timeout: 120_000, signal }));
+	});
+
+	it.each([{ code: 51 }, { killed: true, signal: "SIGTERM" }])("stops after denied or timed-out access: %j", async (failure) => {
+		const run = vi.fn().mockRejectedValue(failure);
+		await expect(readMacChromiumPassword(["Chrome", "Google Chrome"], new AbortController().signal, run)).rejects.toThrow("turn off cookies");
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it("does not prompt again when the credential response is empty", async () => {
+		const run = vi.fn().mockResolvedValue({ stdout: "\n" });
+		await expect(readMacChromiumPassword(["Chrome", "Google Chrome"], new AbortController().signal, run)).rejects.toThrow("turn off cookies");
+		expect(run).toHaveBeenCalledOnce();
+	});
+});
 
 afterEach(async () => {
 	vi.restoreAllMocks();
