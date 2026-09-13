@@ -21,6 +21,7 @@ import {
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
+import { useSettings } from "../hooks/useSettings";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
@@ -42,7 +43,7 @@ type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
 type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 
-const PERMISSION_MODE_VALUES = ["default", "accept-edits", "auto", "bypass-permissions"] as const;
+const PERMISSION_MODE_VALUES = ["read-only", "default", "accept-edits", "auto", "bypass-permissions"] as const;
 const DEFAULT_BRANCH_AUTO = "auto";
 
 const projectQueryKey = (id: string) => ["project", id] as const;
@@ -127,6 +128,7 @@ function SettingsBody({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
+	const { settings } = useSettings();
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const workspaceQuery = useWorkspaceQuery();
@@ -488,6 +490,7 @@ function SettingsBody({
 							control: (
 								<PermissionModeSelect
 									value={form.permissions}
+									supportsReadOnly={[form.workerAgent, form.orchestratorAgent].every((harness) => settings?.chatPermissionModes?.[harness]?.includes("read-only"))}
 									onChange={(v) => setForm((f) => ({ ...f, permissions: v }))}
 								/>
 							),
@@ -735,14 +738,14 @@ function AgentModelField({
 	);
 }
 
-function PermissionModeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function PermissionModeSelect({ value, onChange, supportsReadOnly }: { value: string; onChange: (value: string) => void; supportsReadOnly: boolean }) {
 	const { t } = useTranslation();
 	const options = [
 		{ value: "__default__", label: `${t("settings.project.permissionAuto")} (${t("settings.project.default")})` },
-		...PERMISSION_MODE_VALUES.map((value) => ({
+		...PERMISSION_MODE_VALUES.filter((mode) => mode !== "read-only" || supportsReadOnly || value === "read-only").map((value) => ({
 			value,
 			label:
-				value === "default"
+				value === "read-only" ? "Read-only (Chat only)" : value === "default"
 					? t("settings.project.permissionDefault")
 					: value === "accept-edits"
 						? t("settings.project.permissionAcceptEdits")

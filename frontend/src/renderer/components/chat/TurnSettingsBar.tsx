@@ -42,6 +42,7 @@ import type {
 
 /** AO's generic approval modes, used by harnesses without a native vocabulary. */
 const APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
+	"read-only": { label: "Read-only" },
 	default: { label: "Default approvals" },
 	"accept-edits": { label: "Accept edits" },
 	auto: { label: "Auto-approve" },
@@ -55,10 +56,11 @@ const APPROVAL_ORDER: ApprovalMode[] = [
 	"bypass-permissions",
 ];
 
-// Codex has three distinct permission profiles. Its default is already full
+// Codex uses its native permission vocabulary. Its default is already full
 // access in AO's isolated worktree posture, so expose it as that rather than a
 // fourth, ambiguous "default" option.
 const CODEX_APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
+	"read-only": { label: "Read-only" },
 	default: { label: "Full access" },
 	"accept-edits": { label: "Ask for approval" },
 	auto: { label: "Approve for me" },
@@ -80,6 +82,8 @@ export function TurnSettingsBar({
 	models,
 	settings,
 	harness,
+	permissions,
+	supportsReadOnly = false,
 	reroute,
 	onChange,
 	onRememberPermissions,
@@ -97,6 +101,8 @@ export function TurnSettingsBar({
 	settings: TurnSettings;
 	/** The active provider selects its own supported permission vocabulary. */
 	harness?: string;
+	permissions?: ApprovalMode;
+	supportsReadOnly?: boolean;
 	/**
 	 * The provider answered with a different model than the one chosen. Separate from
 	 * `settings` all the way down: settings are what the user asked for, this is what
@@ -136,7 +142,10 @@ export function TurnSettingsBar({
 	const effortLabel =
 		settings.reasoningEffort ?? (selected ?? fallback)?.defaultEffort ?? undefined;
 	const approvalCopy = harness === "codex" ? CODEX_APPROVAL_COPY : APPROVAL_COPY;
-	const approvalOrder = harness === "codex" ? CODEX_APPROVAL_ORDER : APPROVAL_ORDER;
+	const mutableApprovalOrder = harness === "codex" ? CODEX_APPROVAL_ORDER : APPROVAL_ORDER;
+	const approvalOrder: ApprovalMode[] = permissions === "read-only"
+		? ["read-only"]
+		: supportsReadOnly ? ["read-only", ...mutableApprovalOrder] : mutableApprovalOrder;
 	const approvalLabel = approvalCopy[settings.approvalMode ?? "default"].label;
 	const modelGroupLabel = effortLabel
 		? `${modelLabel} ${capitalize(effortLabel)}`

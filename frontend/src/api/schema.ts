@@ -3001,7 +3001,7 @@ export interface components {
             groupName?: string;
             name: string;
             /** @enum {string} */
-            permissionMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
+            permissionMode?: "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
             value: string;
         };
         ConversationConfigOptionResponse: {
@@ -3143,6 +3143,8 @@ export interface components {
             nativeForkAvailableAfterSequence: number;
             /** Format: int64 */
             oldestSequence?: number;
+            /** @enum {string} */
+            permissions?: "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
             rateLimits?: components["schemas"]["ConversationRateLimitsPayload"];
             sessionId: string;
             settings: components["schemas"]["ConversationTurnSettingsPayload"];
@@ -3179,7 +3181,7 @@ export interface components {
         };
         ConversationTurnSettingsPayload: {
             /** @enum {string} */
-            approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
+            approvalMode?: "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
             model?: string;
             reasoningEffort?: string;
         };
@@ -3211,7 +3213,7 @@ export interface components {
             /** @enum {string} */
             agent?: "claude-code" | "codex" | "aider" | "opencode" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "prime-agent" | "autohand" | "fake";
             /** @enum {string} */
-            approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
+            approvalMode?: "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
             /** @enum {string} */
@@ -4062,7 +4064,7 @@ export interface components {
         };
         SetProjectPermissionsInput: {
             /** @enum {string} */
-            permissions: "default" | "accept-edits" | "auto" | "bypass-permissions";
+            permissions: "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
             sourceHarness?: string;
         };
         SetReviewActivityRequest: {
@@ -4120,6 +4122,9 @@ export interface components {
         };
         SettingsResponse: {
             chatHarnesses: string[];
+            chatPermissionModes: {
+                [key: string]: string[];
+            } | null;
             client: string;
             cloudControlPlaneUrl: string;
             cloudEnabled: boolean;
@@ -4161,6 +4166,8 @@ export interface components {
             /** @enum {string} */
             mode?: "chat" | "tui";
             model?: string;
+            /** @enum {string} */
+            permissions?: "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
             projectId: string;
             prompt?: string;
             /** @enum {string} */

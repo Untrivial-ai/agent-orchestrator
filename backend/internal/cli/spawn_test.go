@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -994,5 +995,41 @@ func TestSpawnModelFlagWiring(t *testing.T) {
 	}
 	if req.Model != "gpt-5.6-sol" {
 		t.Fatalf("spawn request model = %q, want gpt-5.6-sol", req.Model)
+	}
+}
+
+func TestSpawnPermissionFlagWiring(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var req spawnRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+		case "/api/v1/sessions":
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Error(err)
+			}
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-20","status":"idle"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+	_, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--name", "reader", "--mode", "chat", "--permission", "read-only", "--skip-agent-check")
+	if err != nil {
+		t.Fatalf("spawn: %v; %s", err, stderr)
+	}
+	if req.Permissions != "read-only" || req.Mode != "chat" {
+		t.Fatalf("request=%+v", req)
+	}
+}
+
+func TestSpawnInvalidPermissionIsUsageError(t *testing.T) {
+	_, _, err := executeCLI(t, Deps{}, "spawn", "--name", "reader", "--permission", "plan")
+	var usage usageError
+	if !errors.As(err, &usage) {
+		t.Fatalf("invalid permission error=%T %v", err, err)
 	}
 }

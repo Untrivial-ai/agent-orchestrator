@@ -1394,6 +1394,7 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 		conversationId: wire.conversationId,
 		sessionId: wire.sessionId,
 		harness: wire.harness ?? "",
+		permissions: wire.permissions,
 		mode: wire.mode as SessionMode,
 		controller: { state: wire.controller as ControllerState },
 		latestSequence: wire.latestSequence,

@@ -859,6 +859,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// override) and validate the model before any durable state is created. A
 	// model the harness cannot honor should not leave a seed row behind.
 	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, project.Config), cfg.AgentConfig)
+	if !agentConfig.Permissions.Valid() {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: invalid permissions %q", ports.ErrChatPermissionModeUnsupported, agentConfig.Permissions)
+	}
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
@@ -877,7 +880,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	mode := m.resolveSessionMode(ctx, cfg.RequestedMode)
 	if mode == domain.SessionModeChat {
 		if m.chat == nil {
-			if modeExplicitlyRequested {
+			if modeExplicitlyRequested || agentConfig.Permissions == ports.PermissionModeReadOnly {
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: chat mode is not available in this build", ports.ErrChatUnsupported)
 			}
 			m.logger.Warn("spawn: default Chat unavailable; falling back to TUI",
@@ -888,7 +891,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 				errors.Is(err, ports.ErrChatDriverUnavailable) ||
 				errors.Is(err, ports.ErrChatDriverIncompatible) ||
 				errors.Is(err, ports.ErrChatAuthRequired)
-			if modeExplicitlyRequested || !fallbackAllowed ||
+			if modeExplicitlyRequested || agentConfig.Permissions == ports.PermissionModeReadOnly || !fallbackAllowed ||
 				errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 			}
@@ -902,6 +905,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// A chat session runs no agent inside a terminal runtime, so the terminal
 	// prerequisites are not its concern.
 	if mode == domain.SessionModeTUI {
+		if agentConfig.Permissions == ports.PermissionModeReadOnly {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: read-only requires Chat", ports.ErrChatPermissionModeUnsupported)
+		}
 		if err := m.validateRuntimePrerequisites(); err != nil {
 			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 		}
@@ -1431,6 +1437,15 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 		merged.Permissions = override.Permissions
 	}
 	return merged
+}
+
+// sessionPermissions preserves the launch policy across controller transitions.
+// Only legacy sessions without a recorded policy inherit current project settings.
+func sessionPermissions(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.PermissionMode {
+	if rec.Metadata.Permissions != "" {
+		return rec.Metadata.Permissions
+	}
+	return effectiveAgentConfig(rec.Kind, cfg).Permissions
 }
 
 // restoredAgentConfig resolves project settings while preserving a Claude
@@ -2264,8 +2279,9 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 
 	agentConfig := restoredAgentConfig(rec, project.Config)
-	if rec.Metadata.Permissions != "" {
-		agentConfig.Permissions = rec.Metadata.Permissions
+	agentConfig.Permissions = sessionPermissions(rec, project.Config)
+	if agentConfig.Permissions == ports.PermissionModeReadOnly {
+		return RestoreResult{}, fmt.Errorf("%s %s: %w: read-only requires Chat", operation, rec.ID, ports.ErrChatPermissionModeUnsupported)
 	}
 	var env map[string]string
 	rec, env, err = m.prepareWorkerLaunchEnv(ctx, rec, project.Config.Env)

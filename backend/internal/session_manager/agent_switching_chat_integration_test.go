@@ -184,6 +184,10 @@ type integrationChatDriver struct {
 	resume  func() ports.ChatConversation
 }
 
+func (d integrationChatDriver) Capabilities() ports.ChatCapabilities {
+	caps, _ := d.Probe(context.Background())
+	return caps
+}
 func (d integrationChatDriver) Harness() domain.AgentHarness { return d.harness }
 
 func (integrationChatDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
@@ -204,6 +208,11 @@ func (d integrationChatDriver) Resume(context.Context, ports.ChatResumeConfig) (
 }
 
 type integrationChatRegistry map[domain.AgentHarness]ports.ChatDriver
+
+func (r integrationChatRegistry) SupportsPermissionMode(h domain.AgentHarness, mode ports.PermissionMode) bool {
+	d, ok := r[h]
+	return ok && (mode != ports.PermissionModeReadOnly || d.Capabilities().Has(ports.ChatCapabilityPreventiveReadOnly))
+}
 
 func (r integrationChatRegistry) Driver(harness domain.AgentHarness) (ports.ChatDriver, error) {
 	driver, ok := r[harness]

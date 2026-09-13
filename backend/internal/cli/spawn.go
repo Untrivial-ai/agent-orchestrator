@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 // maxDisplayNameLen caps the sidebar label set by `--name`. Mirrored by the
@@ -29,6 +31,7 @@ type spawnOptions struct {
 	issue           string
 	name            string
 	model           string
+	permission      string
 	claimPR         string
 	noTakeover      bool
 	skipAgentCheck  bool
@@ -47,6 +50,7 @@ type spawnRequest struct {
 	Branch          string `json:"branch,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
 	Model           string `json:"model,omitempty"`
+	Permissions     string `json:"permissions,omitempty"`
 	DisplayName     string `json:"displayName"`
 }
 
@@ -85,6 +89,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			// error instead of reaching the daemon as an unsupported mode.
 			if opts.mode != "" && opts.mode != "chat" && opts.mode != "tui" {
 				return usageError{fmt.Errorf(`--mode must be "chat" or "tui"`)}
+			}
+			if !domain.PermissionMode(opts.permission).Valid() {
+				return usageError{fmt.Errorf("--permission must be read-only, default, accept-edits, auto, or bypass-permissions")}
 			}
 			if opts.kind != "" && opts.kind != "worker" && opts.kind != "orchestrator" {
 				return usageError{fmt.Errorf(`--kind must be "worker" or "orchestrator"`)}
@@ -142,6 +149,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				Branch:          opts.branch,
 				Prompt:          opts.prompt,
 				Model:           strings.TrimSpace(opts.model),
+				Permissions:     opts.permission,
 				DisplayName:     name,
 			}
 			var res spawnResult
@@ -196,6 +204,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.mode, "mode", "", "Initial session interface: chat (structured agent connection) or tui (the agent's native terminal). Omitted uses the daemon default; compatible sessions can switch later.")
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for Scratch)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
+	f.StringVar(&opts.permission, "permission", "", "Session permission override: read-only (capable Chat drivers only), default, accept-edits, auto, bypass-permissions")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
 	f.StringVar(&opts.trackerProvider, "tracker-provider", "github", "Issue tracker provider: github or gitlab (default: github)")
