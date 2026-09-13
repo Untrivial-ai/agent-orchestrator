@@ -5346,11 +5346,7 @@ func awaitStoreSnapshot(t *testing.T, st *sqlite.Store, conversationID string,
 	return last
 }
 
-// A Codex fork on the Terminal side gives the session a successor handle its
-// conversation branch has never seen. Session Manager answers that by reserving
-// a boundary; this proves what the boundary then does to the durable record —
-// the successor gets its own branch chained onto the head, and the branch that
-// owns the ancestor handle is left exactly as it was.
+// Publishing a reserved provider branch preserves its predecessor's ownership.
 func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -5361,7 +5357,6 @@ func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing
 	)
 	before, sourceBranch := seedProjectConversationWithProviderHistory(
 		t, st, "forked-handle-conversation", now)
-	// Whatever handle the seeded branch owns stands in for the pre-fork thread.
 	ancestor := sourceBranch.ProviderConversationID
 	if ancestor == "" || ancestor == successor {
 		t.Fatalf("seeded ancestor handle = %q, want a distinct recorded handle", ancestor)
@@ -5416,8 +5411,6 @@ func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing
 		t.Fatalf("successor boundary = %+v, want %q chained onto %q at sequence %d",
 			boundaryBranch, boundary, sourceBranch.ID, before.LatestSequence)
 	}
-	// The ancestor branch is evidence of what Chat already showed. Nothing in
-	// this path may rewrite the handle it recorded or detach it.
 	keptSource, err := st.ConversationBranch(ctx, before.ID, sourceBranch.ID)
 	if err != nil {
 		t.Fatalf("ancestor ConversationBranch: %v", err)
