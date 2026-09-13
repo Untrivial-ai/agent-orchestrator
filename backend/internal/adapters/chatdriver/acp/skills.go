@@ -23,9 +23,13 @@ func (c *conversation) ListSkills(ctx context.Context) ([]ports.ChatSkill, error
 
 func (c *conversation) replaceAvailableCommands(commands []acpsdk.AvailableCommand) {
 	skills := make([]ports.ChatSkill, 0, len(commands))
+	hasCompact := false
 	for _, command := range commands {
 		if command.Name == "" {
 			continue
+		}
+		if command.Name == "compact" {
+			hasCompact = true
 		}
 		inputHint := ""
 		if command.Input != nil && command.Input.Unstructured != nil {
@@ -47,6 +51,9 @@ func (c *conversation) replaceAvailableCommands(commands []acpsdk.AvailableComma
 	c.skillsKnown = true
 	if c.capabilities != nil {
 		c.capabilities[ports.ChatCapabilitySkills] = true
+		if hasCompact {
+			c.capabilities[ports.ChatCapabilityCompaction] = true
+		}
 	}
 	c.mu.Unlock()
 }
