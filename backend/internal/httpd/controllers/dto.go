@@ -1391,7 +1391,6 @@ type StartCodexAccountSwitchRequest struct {
 	TargetAccountID         string `json:"targetAccountId" minLength:"1"`
 	ExpectedAccountRevision int64  `json:"expectedAccountRevision" minimum:"0"`
 	IdempotencyKey          string `json:"idempotencyKey" minLength:"1"`
-	RestartRunningSessions  bool   `json:"restartRunningSessions,omitempty"`
 }
 
 // CodexAccountSwitchIDParam describes the durable switch path parameter.
@@ -1404,31 +1403,17 @@ type CodexAccountSwitchPhase string
 
 // CodexAccountSwitchResponse contains only safe AO identifiers and progress.
 type CodexAccountSwitchResponse struct {
-	ID                     string                              `json:"id"`
-	SourceKind             string                              `json:"sourceKind" enum:"managed,device,none"`
-	SourceAccountID        string                              `json:"sourceAccountId,omitempty"`
-	TargetAccountID        string                              `json:"targetAccountId"`
-	RestartRunningSessions bool                                `json:"restartRunningSessions"`
-	Phase                  CodexAccountSwitchPhase             `json:"phase" enum:"requested,stopping_sessions,sessions_stopped,checkpointing_source,activating_target,verifying_target,restarting_sessions,rollback_required,recovery_required,completed,failed"`
-	FailureCode            string                              `json:"failureCode,omitempty"`
-	Sessions               []CodexAccountSwitchSessionResponse `json:"sessions"`
-	CanRecover             bool                                `json:"canRecover"`
-	CredentialsCommittedAt *time.Time                          `json:"credentialsCommittedAt,omitempty"`
-	CreatedAt              time.Time                           `json:"createdAt"`
-	UpdatedAt              time.Time                           `json:"updatedAt"`
-	CompletedAt            *time.Time                          `json:"completedAt,omitempty"`
-}
-
-// CodexAccountSwitchSessionResponse is safe AO session progress for a switch.
-type CodexAccountSwitchSessionResponse struct {
-	SessionID     string     `json:"sessionId"`
-	InterfaceMode string     `json:"interfaceMode" enum:"tui,chat"`
-	WasRunning    bool       `json:"wasRunning"`
-	StopState     string     `json:"stopState"`
-	RestartState  string     `json:"restartState"`
-	ErrorCode     string     `json:"errorCode,omitempty"`
-	StoppedAt     *time.Time `json:"stoppedAt,omitempty"`
-	RestartedAt   *time.Time `json:"restartedAt,omitempty"`
+	ID                     string                  `json:"id"`
+	SourceKind             string                  `json:"sourceKind" enum:"managed,device,none"`
+	SourceAccountID        string                  `json:"sourceAccountId,omitempty"`
+	TargetAccountID        string                  `json:"targetAccountId"`
+	Phase                  CodexAccountSwitchPhase `json:"phase" enum:"requested,checkpointing_source,activating_target,verifying_target,rollback_required,recovery_required,completed,failed"`
+	FailureCode            string                  `json:"failureCode,omitempty"`
+	CanRecover             bool                    `json:"canRecover"`
+	CredentialsCommittedAt *time.Time              `json:"credentialsCommittedAt,omitempty"`
+	CreatedAt              time.Time               `json:"createdAt"`
+	UpdatedAt              time.Time               `json:"updatedAt"`
+	CompletedAt            *time.Time              `json:"completedAt,omitempty"`
 }
 
 // AgentReadinessSnapshot is one normalized harness readiness view.

@@ -93,7 +93,7 @@ func (c *CodexAccountsController) startSwitch(w http.ResponseWriter, r *http.Req
 	}
 	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{
 		TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision,
-		IdempotencyKey: request.IdempotencyKey, RestartRunningSessions: request.RestartRunningSessions,
+		IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
 		writeCodexAccountSwitchError(w, r, err)
@@ -133,8 +133,6 @@ func writeCodexAccountSwitchError(w http.ResponseWriter, r *http.Request, err er
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials", nil)
 	case errors.Is(err, ports.ErrCodexGlobalAccountChanged):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed during switching", nil)
-	case errors.Is(err, ports.ErrCodexRunningSessionNotResumable):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_RUNNING_SESSION_NOT_RESUMABLE", "A running AO Codex session cannot be resumed exactly", nil)
 	case errors.Is(err, ports.ErrCodexAccountLoginInProgress):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before switching accounts", nil)
 	default:

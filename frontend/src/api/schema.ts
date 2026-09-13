@@ -2770,28 +2770,13 @@ export interface components {
             failureCode?: string;
             id: string;
             /** @enum {string} */
-            phase: "requested" | "stopping_sessions" | "sessions_stopped" | "checkpointing_source" | "activating_target" | "verifying_target" | "restarting_sessions" | "rollback_required" | "recovery_required" | "completed" | "failed";
-            restartRunningSessions: boolean;
-            sessions: components["schemas"]["CodexAccountSwitchSessionResponse"][];
+            phase: "requested" | "checkpointing_source" | "activating_target" | "verifying_target" | "rollback_required" | "recovery_required" | "completed" | "failed";
             sourceAccountId?: string;
             /** @enum {string} */
             sourceKind: "managed" | "device" | "none";
             targetAccountId: string;
             /** Format: date-time */
             updatedAt: string;
-        };
-        CodexAccountSwitchSessionResponse: {
-            errorCode?: string;
-            /** @enum {string} */
-            interfaceMode: "tui" | "chat";
-            restartState: string;
-            /** Format: date-time */
-            restartedAt?: null | string;
-            sessionId: string;
-            stopState: string;
-            /** Format: date-time */
-            stoppedAt?: null | string;
-            wasRunning: boolean;
         };
         CodexAccountUsageSummaryResponse: {
             currentStreakDays?: null | number;
@@ -4235,7 +4220,6 @@ export interface components {
             /** Format: int64 */
             expectedAccountRevision: number;
             idempotencyKey: string;
-            restartRunningSessions?: boolean;
             targetAccountId: string;
         };
         StartPreviewServerRequest: {

@@ -7915,23 +7915,14 @@ components:
         phase:
           enum:
           - requested
-          - stopping_sessions
-          - sessions_stopped
           - checkpointing_source
           - activating_target
           - verifying_target
-          - restarting_sessions
           - rollback_required
           - recovery_required
           - completed
           - failed
           type: string
-        restartRunningSessions:
-          type: boolean
-        sessions:
-          items:
-            $ref: '#/components/schemas/CodexAccountSwitchSessionResponse'
-          type: array
         sourceAccountId:
           type: string
         sourceKind:
@@ -7949,46 +7940,10 @@ components:
       - id
       - sourceKind
       - targetAccountId
-      - restartRunningSessions
       - phase
-      - sessions
       - canRecover
       - createdAt
       - updatedAt
-      type: object
-    CodexAccountSwitchSessionResponse:
-      properties:
-        errorCode:
-          type: string
-        interfaceMode:
-          enum:
-          - tui
-          - chat
-          type: string
-        restartState:
-          type: string
-        restartedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        sessionId:
-          type: string
-        stopState:
-          type: string
-        stoppedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        wasRunning:
-          type: boolean
-      required:
-      - sessionId
-      - interfaceMode
-      - wasRunning
-      - stopState
-      - restartState
       type: object
     CodexAccountUsageSummaryResponse:
       properties:
@@ -11876,8 +11831,6 @@ components:
         idempotencyKey:
           minLength: 1
           type: string
-        restartRunningSessions:
-          type: boolean
         targetAccountId:
           minLength: 1
           type: string

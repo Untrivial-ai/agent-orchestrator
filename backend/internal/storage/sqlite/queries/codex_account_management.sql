@@ -20,7 +20,7 @@ INSERT INTO codex_account_switches (
 	 id, source_kind, source_account_id, target_account_id, idempotency_key,
 	 request_fingerprint, expected_account_revision, restart_running_sessions, phase, failure_code,
 	 created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?, '', ?, ?)
 ON CONFLICT DO NOTHING;
 
 -- name: GetCodexAccountSwitch :one
@@ -49,29 +49,3 @@ SET phase = sqlc.arg(next_phase), failure_code = sqlc.arg(failure_code),
     credentials_committed_at = sqlc.narg(credentials_committed_at),
     updated_at = sqlc.arg(updated_at), completed_at = sqlc.narg(completed_at)
 WHERE id = sqlc.arg(id) AND phase = sqlc.arg(expected_phase);
-
--- name: InsertCodexAccountSwitchSession :execrows
-INSERT INTO codex_account_switch_sessions (
-    switch_id, session_id, native_session_id, interface_mode, source_handle_id, source_generation,
-    was_running, stop_state, restart_state, reviewer_was_running,
-    reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state, reviewer_restart_state
-) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-ON CONFLICT DO NOTHING;
-
--- name: ListCodexAccountSwitchSessions :many
-SELECT switch_id, session_id, native_session_id, interface_mode,
-       source_handle_id, source_generation, was_running, stop_state, restart_state,
-       reviewer_was_running, reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state,
-       reviewer_restart_state, error_code, stopped_at, restarted_at
-FROM codex_account_switch_sessions WHERE switch_id = ? ORDER BY session_id;
-
--- name: UpdateCodexAccountSwitchSession :execrows
-UPDATE codex_account_switch_sessions
-SET stop_state = sqlc.arg(stop_state), restart_state = sqlc.arg(restart_state),
-    error_code = sqlc.arg(error_code),
-    reviewer_stop_state = sqlc.arg(reviewer_stop_state),
-    reviewer_restart_state = sqlc.arg(reviewer_restart_state),
-    stopped_at = sqlc.narg(stopped_at), restarted_at = sqlc.narg(restarted_at)
-WHERE switch_id = sqlc.arg(switch_id) AND session_id = sqlc.arg(session_id)
-  AND stop_state = sqlc.arg(expected_stop_state)
-  AND restart_state = sqlc.arg(expected_restart_state);

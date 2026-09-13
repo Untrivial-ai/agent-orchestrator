@@ -46,12 +46,12 @@ func TestCodexAccountSwitchIdempotencyAndSingleActiveConstraint(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	first := domain.CodexAccountSwitch{
 		ID: "switch-a", SourceKind: domain.CodexAccountSwitchSourceDevice, TargetAccountID: "account-b",
-		IdempotencyKey: "request-a", RequestFingerprint: "v1:first", ExpectedAccountRevision: 1,
+		IdempotencyKey: "request-a", RequestFingerprint: "v3:first", ExpectedAccountRevision: 1,
 		Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
 	}
 
 	created, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
-	if err != nil || !inserted || created.ID != first.ID || created.RestartRunningSessions || created.SourceKind != domain.CodexAccountSwitchSourceDevice || created.SourceAccountID != "" {
+	if err != nil || !inserted || created.ID != first.ID || created.SourceKind != domain.CodexAccountSwitchSourceDevice || created.SourceAccountID != "" {
 		t.Fatalf("create switch: got=%+v inserted=%v err=%v", created, inserted, err)
 	}
 	replayed, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
@@ -60,14 +60,14 @@ func TestCodexAccountSwitchIdempotencyAndSingleActiveConstraint(t *testing.T) {
 	}
 	conflict := first
 	conflict.ID = "switch-b"
-	conflict.RequestFingerprint = "v1:different"
+	conflict.RequestFingerprint = "v3:different"
 	if _, _, err := st.CreateCodexAccountSwitch(ctx, conflict); !errors.Is(err, ports.ErrCodexAccountSwitchIdempotencyConflict) {
 		t.Fatalf("idempotency conflict error = %v", err)
 	}
 	other := first
 	other.ID = "switch-c"
 	other.IdempotencyKey = "request-c"
-	other.RequestFingerprint = "v1:other"
+	other.RequestFingerprint = "v3:other"
 	if _, _, err := st.CreateCodexAccountSwitch(ctx, other); !errors.Is(err, ports.ErrCodexAccountSwitchInProgress) {
 		t.Fatalf("active switch conflict error = %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCodexAccountSwitchRejectsObsoletePhases(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Second)
 			switchRecord := domain.CodexAccountSwitch{
 				ID: "switch-" + phase, SourceAccountID: "account-a", TargetAccountID: "account-b",
-				IdempotencyKey: "request-" + phase, RequestFingerprint: "v1:" + phase, ExpectedAccountRevision: 1,
+				IdempotencyKey: "request-" + phase, RequestFingerprint: "v3:" + phase, ExpectedAccountRevision: 1,
 				Phase: domain.CodexAccountSwitchPhase(phase), CreatedAt: now, UpdatedAt: now,
 			}
 
@@ -93,129 +93,25 @@ func TestCodexAccountSwitchRejectsObsoletePhases(t *testing.T) {
 	}
 }
 
-func TestCodexAccountSwitchAndSessionTransitionsAreCompareAndSwap(t *testing.T) {
+func TestCodexAccountSwitchTransitionsAreCompareAndSwap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := newTestStore(t)
-	seedProject(t, st, "codex-switch")
-	rec := sampleRecord("codex-switch")
-	rec.Harness = domain.HarnessCodex
-	session, err := st.CreateSession(ctx, rec)
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC().Truncate(time.Second)
 	sw := domain.CodexAccountSwitch{
 		ID: "switch-cas", SourceAccountID: "account-a", TargetAccountID: "account-b",
-		IdempotencyKey: "request-cas", RequestFingerprint: "v1:cas", ExpectedAccountRevision: 1,
+		IdempotencyKey: "request-cas", RequestFingerprint: "v3:cas", ExpectedAccountRevision: 1,
 		Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
 	}
 	if _, _, err := st.CreateCodexAccountSwitch(ctx, sw); err != nil {
 		t.Fatal(err)
 	}
-	switchSession := domain.CodexAccountSwitchSession{
-		SessionID: session.ID, NativeSessionID: "native-a", InterfaceMode: domain.SessionModeTUI,
-		WasRunning: true, StopState: "pending", RestartState: "pending",
-		ReviewerStopState: "skipped", ReviewerRestartState: "skipped",
-	}
-	if err := st.InsertCodexAccountSwitchSession(ctx, sw.ID, switchSession); err != nil {
-		t.Fatal(err)
-	}
-	switchSession.StopState = "stopped"
-	stopped := now.Add(time.Second)
-	switchSession.StoppedAt = &stopped
-	if ok, err := st.UpdateCodexAccountSwitchSession(ctx, sw.ID, switchSession, "pending", "pending"); err != nil || !ok {
-		t.Fatalf("session transition: ok=%v err=%v", ok, err)
-	}
-	if ok, err := st.UpdateCodexAccountSwitchSession(ctx, sw.ID, switchSession, "pending", "pending"); err != nil || ok {
-		t.Fatalf("stale session transition: ok=%v err=%v", ok, err)
-	}
-	sw.Phase = domain.CodexAccountSwitchStoppingSessions
-	sw.UpdatedAt = stopped
+	sw.Phase = domain.CodexAccountSwitchCheckpointCredential
+	sw.UpdatedAt = now.Add(time.Second)
 	if ok, err := st.UpdateCodexAccountSwitch(ctx, sw, domain.CodexAccountSwitchRequested); err != nil || !ok {
 		t.Fatalf("switch transition: ok=%v err=%v", ok, err)
 	}
 	if ok, err := st.UpdateCodexAccountSwitch(ctx, sw, domain.CodexAccountSwitchRequested); err != nil || ok {
 		t.Fatalf("stale switch transition: ok=%v err=%v", ok, err)
-	}
-}
-
-func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := newTestStore(t)
-	seedProject(t, st, "codex-snapshot")
-	rec := sampleRecord("codex-snapshot")
-	rec.Harness = domain.HarnessCodex
-	session, err := st.CreateSession(ctx, rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Truncate(time.Second)
-	sw := domain.CodexAccountSwitch{
-		ID: "switch-snapshot", SourceAccountID: "account-a", TargetAccountID: "account-b",
-		IdempotencyKey: "request-snapshot", RequestFingerprint: "v1:snapshot", ExpectedAccountRevision: 1,
-		RestartRunningSessions: true,
-		Phase:                  domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
-		Sessions: []domain.CodexAccountSwitchSession{{
-			SessionID: session.ID, NativeSessionID: "native-worker", InterfaceMode: domain.SessionModeTUI,
-			SourceHandleID: "worker-handle", SourceGeneration: "worker-generation",
-			WasRunning: true, StopState: "pending", RestartState: "pending",
-			ReviewerWasRunning: true, ReviewerSourceHandleID: "reviewer-handle",
-			ReviewerNativeSessionID: "native-reviewer", ReviewerStopState: "pending", ReviewerRestartState: "pending",
-		}},
-	}
-
-	created, inserted, err := st.CreateCodexAccountSwitch(ctx, sw)
-	if err != nil || !inserted || len(created.Sessions) != 1 {
-		t.Fatalf("CreateCodexAccountSwitch = %+v, inserted=%v, err=%v", created, inserted, err)
-	}
-	loaded, ok, err := st.GetCodexAccountSwitch(ctx, sw.ID)
-	if err != nil || !ok || !loaded.RestartRunningSessions {
-		t.Fatalf("persisted restart policy = %+v, ok=%v, err=%v", loaded, ok, err)
-	}
-	got, err := st.ListCodexAccountSwitchSessions(ctx, sw.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("snapshot rows = %d, want 1", len(got))
-	}
-	if got[0].SourceHandleID != "worker-handle" || got[0].ReviewerSourceHandleID != "reviewer-handle" ||
-		got[0].NativeSessionID != "native-worker" || got[0].ReviewerNativeSessionID != "native-reviewer" {
-		t.Fatalf("private snapshot identities = %+v", got[0])
-	}
-}
-
-func TestCreateCodexAccountSwitchRollsBackWhenAnySnapshotRowFails(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := newTestStore(t)
-	seedProject(t, st, "codex-rollback")
-	rec := sampleRecord("codex-rollback")
-	rec.Harness = domain.HarnessCodex
-	session, err := st.CreateSession(ctx, rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Truncate(time.Second)
-	sw := domain.CodexAccountSwitch{
-		ID: "switch-rollback", SourceAccountID: "account-a", TargetAccountID: "account-b",
-		IdempotencyKey: "request-rollback", RequestFingerprint: "v1:rollback", ExpectedAccountRevision: 1,
-		Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
-		Sessions: []domain.CodexAccountSwitchSession{
-			{SessionID: session.ID, InterfaceMode: domain.SessionModeTUI, WasRunning: true, StopState: "pending", RestartState: "pending", ReviewerStopState: "skipped", ReviewerRestartState: "skipped"},
-			{SessionID: domain.SessionID("missing-session"), InterfaceMode: domain.SessionModeTUI, WasRunning: true, StopState: "pending", RestartState: "pending", ReviewerStopState: "skipped", ReviewerRestartState: "skipped"},
-		},
-	}
-
-	if _, _, err := st.CreateCodexAccountSwitch(ctx, sw); err == nil {
-		t.Fatal("CreateCodexAccountSwitch succeeded with invalid snapshot row")
-	}
-	if _, ok, err := st.GetCodexAccountSwitch(ctx, sw.ID); err != nil || ok {
-		t.Fatalf("switch survived rollback: ok=%v err=%v", ok, err)
-	}
-	if got, err := st.ListCodexAccountSwitchSessions(ctx, sw.ID); err != nil || len(got) != 0 {
-		t.Fatalf("snapshot rows survived rollback: rows=%+v err=%v", got, err)
 	}
 }

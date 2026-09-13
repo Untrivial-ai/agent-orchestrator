@@ -129,7 +129,7 @@ INSERT INTO codex_account_switches (
 	 id, source_kind, source_account_id, target_account_id, idempotency_key,
 	 request_fingerprint, expected_account_revision, restart_running_sessions, phase, failure_code,
 	 created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?, '', ?, ?)
 ON CONFLICT DO NOTHING
 `
 
@@ -141,7 +141,6 @@ type InsertCodexAccountSwitchParams struct {
 	IdempotencyKey          string
 	RequestFingerprint      string
 	ExpectedAccountRevision int64
-	RestartRunningSessions  bool
 	Phase                   string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
@@ -156,57 +155,9 @@ func (q *Queries) InsertCodexAccountSwitch(ctx context.Context, arg InsertCodexA
 		arg.IdempotencyKey,
 		arg.RequestFingerprint,
 		arg.ExpectedAccountRevision,
-		arg.RestartRunningSessions,
 		arg.Phase,
 		arg.CreatedAt,
 		arg.UpdatedAt,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const insertCodexAccountSwitchSession = `-- name: InsertCodexAccountSwitchSession :execrows
-INSERT INTO codex_account_switch_sessions (
-    switch_id, session_id, native_session_id, interface_mode, source_handle_id, source_generation,
-    was_running, stop_state, restart_state, reviewer_was_running,
-    reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state, reviewer_restart_state
-) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-ON CONFLICT DO NOTHING
-`
-
-type InsertCodexAccountSwitchSessionParams struct {
-	SwitchID                string
-	SessionID               string
-	NativeSessionID         string
-	InterfaceMode           string
-	SourceHandleID          string
-	SourceGeneration        string
-	WasRunning              bool
-	RestartState            string
-	ReviewerWasRunning      bool
-	ReviewerSourceHandleID  string
-	ReviewerNativeSessionID string
-	ReviewerStopState       string
-	ReviewerRestartState    string
-}
-
-func (q *Queries) InsertCodexAccountSwitchSession(ctx context.Context, arg InsertCodexAccountSwitchSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertCodexAccountSwitchSession,
-		arg.SwitchID,
-		arg.SessionID,
-		arg.NativeSessionID,
-		arg.InterfaceMode,
-		arg.SourceHandleID,
-		arg.SourceGeneration,
-		arg.WasRunning,
-		arg.RestartState,
-		arg.ReviewerWasRunning,
-		arg.ReviewerSourceHandleID,
-		arg.ReviewerNativeSessionID,
-		arg.ReviewerStopState,
-		arg.ReviewerRestartState,
 	)
 	if err != nil {
 		return 0, err
@@ -232,55 +183,6 @@ func (q *Queries) InsertCodexActiveAccount(ctx context.Context, arg InsertCodexA
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const listCodexAccountSwitchSessions = `-- name: ListCodexAccountSwitchSessions :many
-SELECT switch_id, session_id, native_session_id, interface_mode,
-       source_handle_id, source_generation, was_running, stop_state, restart_state,
-       reviewer_was_running, reviewer_source_handle_id, reviewer_native_session_id, reviewer_stop_state,
-       reviewer_restart_state, error_code, stopped_at, restarted_at
-FROM codex_account_switch_sessions WHERE switch_id = ? ORDER BY session_id
-`
-
-func (q *Queries) ListCodexAccountSwitchSessions(ctx context.Context, switchID string) ([]CodexAccountSwitchSession, error) {
-	rows, err := q.db.QueryContext(ctx, listCodexAccountSwitchSessions, switchID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []CodexAccountSwitchSession{}
-	for rows.Next() {
-		var i CodexAccountSwitchSession
-		if err := rows.Scan(
-			&i.SwitchID,
-			&i.SessionID,
-			&i.NativeSessionID,
-			&i.InterfaceMode,
-			&i.SourceHandleID,
-			&i.SourceGeneration,
-			&i.WasRunning,
-			&i.StopState,
-			&i.RestartState,
-			&i.ReviewerWasRunning,
-			&i.ReviewerSourceHandleID,
-			&i.ReviewerNativeSessionID,
-			&i.ReviewerStopState,
-			&i.ReviewerRestartState,
-			&i.ErrorCode,
-			&i.StoppedAt,
-			&i.RestartedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const updateCodexAccountSwitchPhase = `-- name: UpdateCodexAccountSwitchPhase :execrows
@@ -310,52 +212,6 @@ func (q *Queries) UpdateCodexAccountSwitchPhase(ctx context.Context, arg UpdateC
 		arg.CompletedAt,
 		arg.ID,
 		arg.ExpectedPhase,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const updateCodexAccountSwitchSession = `-- name: UpdateCodexAccountSwitchSession :execrows
-UPDATE codex_account_switch_sessions
-SET stop_state = ?1, restart_state = ?2,
-    error_code = ?3,
-    reviewer_stop_state = ?4,
-    reviewer_restart_state = ?5,
-    stopped_at = ?6, restarted_at = ?7
-WHERE switch_id = ?8 AND session_id = ?9
-  AND stop_state = ?10
-  AND restart_state = ?11
-`
-
-type UpdateCodexAccountSwitchSessionParams struct {
-	StopState            string
-	RestartState         string
-	ErrorCode            string
-	ReviewerStopState    string
-	ReviewerRestartState string
-	StoppedAt            sql.NullTime
-	RestartedAt          sql.NullTime
-	SwitchID             string
-	SessionID            string
-	ExpectedStopState    string
-	ExpectedRestartState string
-}
-
-func (q *Queries) UpdateCodexAccountSwitchSession(ctx context.Context, arg UpdateCodexAccountSwitchSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateCodexAccountSwitchSession,
-		arg.StopState,
-		arg.RestartState,
-		arg.ErrorCode,
-		arg.ReviewerStopState,
-		arg.ReviewerRestartState,
-		arg.StoppedAt,
-		arg.RestartedAt,
-		arg.SwitchID,
-		arg.SessionID,
-		arg.ExpectedStopState,
-		arg.ExpectedRestartState,
 	)
 	if err != nil {
 		return 0, err

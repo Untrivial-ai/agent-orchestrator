@@ -89,9 +89,7 @@ func (f *fakeCodexAccounts) CancelCodexAccountLogin(_ context.Context, id string
 }
 func (f *fakeCodexAccounts) StartCodexAccountSwitch(_ context.Context, cfg ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
 	f.switchConfig = cfg
-	result := f.switchResult
-	result.RestartRunningSessions = cfg.RestartRunningSessions
-	return result, f.switchErr
+	return f.switchResult, f.switchErr
 }
 func (f *fakeCodexAccounts) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
 	return f.switchResult, nil
@@ -143,11 +141,7 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	fixture := codexAccountsFixture()
 	fixture.CurrentSwitch = &domain.CodexAccountSwitch{
 		ID: "switch-1", SourceAccountID: "source-account", TargetAccountID: "target-account",
-		Phase: domain.CodexAccountSwitchRestartingSessions,
-		Sessions: []domain.CodexAccountSwitchSession{{
-			SessionID: "session-1", InterfaceMode: domain.SessionModeTUI, WasRunning: true,
-			RestartState: "in_progress", ErrorCode: "restart_in_progress:private-generation-id",
-		}},
+		Phase: domain.CodexAccountSwitchVerifyingAccount,
 	}
 	fake := &fakeCodexAccounts{result: fixture}
 	srv := newCodexAccountServer(t, fake)
@@ -362,11 +356,6 @@ func TestCodexAccountResetCreditRouteRequiresIdempotencyAndReturnsRefreshedAccou
 func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testing.T) {
 	fake := &fakeCodexAccounts{result: codexAccountsFixture(), switchResult: domain.CodexAccountSwitch{
 		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target", Phase: domain.CodexAccountSwitchRequested,
-		Sessions: []domain.CodexAccountSwitchSession{{
-			SessionID: "ao-1", InterfaceMode: domain.SessionModeChat, WasRunning: true, StopState: "pending", RestartState: "pending",
-			NativeSessionID: "native-secret", SourceHandleID: "source-handle-secret", SourceGeneration: "generation-secret",
-			ReviewerSourceHandleID: "reviewer-handle-secret", ReviewerNativeSessionID: "reviewer-native-secret",
-		}},
 		IdempotencyKey: "private-key", RequestFingerprint: "private-fingerprint", ExpectedAccountRevision: 3,
 	}}
 	srv := newCodexAccountServer(t, fake)
@@ -377,18 +366,18 @@ func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testi
 	}
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"request-key"}`)
 	text := string(body)
-	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" || fake.switchConfig.RestartRunningSessions ||
-		!strings.Contains(text, `"restartRunningSessions":false`) || !strings.Contains(text, `"sessionId":"ao-1"`) {
+	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" ||
+		strings.Contains(text, `"restartRunningSessions"`) || strings.Contains(text, `"sessions"`) {
 		t.Fatalf("switch status=%d config=%#v body=%s", status, fake.switchConfig, body)
 	}
-	for _, forbidden := range []string{"native-secret", "source-handle-secret", "generation-secret", "reviewer-handle-secret", "reviewer-native-secret", "private-key", "private-fingerprint"} {
+	for _, forbidden := range []string{"private-key", "private-fingerprint"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("switch leaked %q: %s", forbidden, body)
 		}
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"restart-key","restartRunningSessions":true}`)
-	if status != http.StatusAccepted || !fake.switchConfig.RestartRunningSessions || !strings.Contains(string(body), `"restartRunningSessions":true`) {
-		t.Fatalf("restart-enabled switch status=%d config=%#v body=%s", status, fake.switchConfig, body)
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"obsolete-key","restartRunningSessions":true}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
+		t.Fatalf("obsolete restart field status=%d body=%s", status, body)
 	}
 }
 

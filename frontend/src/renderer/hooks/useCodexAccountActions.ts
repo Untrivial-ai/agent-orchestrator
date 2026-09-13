@@ -195,10 +195,10 @@ export function useCodexAccountActions(queryClient: QueryClient) {
 		}
 	}, [queryClient, t]);
 
-	const switchAccount = useCallback(async (account: CodexAccount, revision: number, idempotencyKey: string, restartRunningSessions: boolean) => {
+	const switchAccount = useCallback(async (account: CodexAccount, revision: number, idempotencyKey: string) => {
 		setError(null);
 		try {
-			const nextSwitch = await startCodexAccountSwitch(account.id, revision, idempotencyKey, restartRunningSessions);
+			const nextSwitch = await startCodexAccountSwitch(account.id, revision, idempotencyKey);
 			writeCurrent((snapshot) => ({ ...snapshot, currentSwitch: nextSwitch }));
 		} catch (cause) {
 			setError(errorMessage(cause, t("settings.codexAccounts.switchFailed")));

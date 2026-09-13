@@ -1,8 +1,6 @@
 package controllers
 
 import (
-	"strings"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 )
@@ -138,28 +136,10 @@ func newCodexLoginResponse(input domain.CodexAccountLoginOperation) CodexAccount
 }
 
 func newCodexSwitchResponse(input domain.CodexAccountSwitch) CodexAccountSwitchResponse {
-	sessions := make([]CodexAccountSwitchSessionResponse, len(input.Sessions))
-	for i := range input.Sessions {
-		session := input.Sessions[i]
-		sessions[i] = CodexAccountSwitchSessionResponse{
-			SessionID: string(session.SessionID), InterfaceMode: string(session.InterfaceMode), WasRunning: session.WasRunning,
-			StopState: session.StopState, RestartState: session.RestartState, ErrorCode: redactedCodexSwitchSessionErrorCode(session.ErrorCode),
-			StoppedAt: session.StoppedAt, RestartedAt: session.RestartedAt,
-		}
-	}
 	return CodexAccountSwitchResponse{
 		ID: input.ID, SourceKind: string(input.SourceKind), SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
-		RestartRunningSessions: input.RestartRunningSessions,
-		Phase:                  CodexAccountSwitchPhase(input.Phase), FailureCode: input.FailureCode, Sessions: sessions,
+		Phase: CodexAccountSwitchPhase(input.Phase), FailureCode: input.FailureCode,
 		CanRecover: input.CanRecover, CredentialsCommittedAt: input.CredentialsCommittedAt,
 		CreatedAt: input.CreatedAt, UpdatedAt: input.UpdatedAt, CompletedAt: input.CompletedAt,
 	}
-}
-
-func redactedCodexSwitchSessionErrorCode(code string) string {
-	code = strings.TrimSpace(code)
-	if prefix, _, found := strings.Cut(code, ":"); found {
-		return prefix
-	}
-	return code
 }

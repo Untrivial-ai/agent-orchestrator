@@ -313,22 +313,20 @@ it("shows recovery as an action instead of indefinite switch progress", async ()
 		...accountResponse,
 		currentSwitch: {
 			id: "33333333-3333-4333-8333-333333333333",
-			restartRunningSessions: true,
 			phase: "recovery_required",
-			failureCode: "restart_unconfirmed",
+			failureCode: "activation_unconfirmed",
 			canRecover: true,
-			sessions: [],
 		},
 	};
 	getMock.mockResolvedValue({ data: recoveryResponse });
 	postMock.mockResolvedValue({ data: recoveryResponse });
 
 	renderSection();
-	expect(await screen.findByRole("button", { name: "Reconnect sessions" })).toBeInTheDocument();
+	expect(await screen.findByRole("button", { name: "Continue recovery" })).toBeInTheDocument();
 	expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
 	expect(screen.getByRole("button", { name: "Switch account" })).toBeDisabled();
-	expect(screen.getAllByText("Account switched. Some sessions couldn't reconnect.").length).toBeGreaterThan(0);
-	expect(screen.queryByText("restart_unconfirmed")).not.toBeInTheDocument();
+	expect(screen.getAllByText("Couldn't finish switching accounts.").length).toBeGreaterThan(0);
+	expect(screen.queryByText("activation_unconfirmed")).not.toBeInTheDocument();
 });
 
 it("keeps a visible live success outcome when an observed switch disappears on its target", async () => {
@@ -336,7 +334,6 @@ it("keeps a visible live success outcome when an observed switch disappears on i
 		...accountResponse,
 		currentSwitch: {
 			id: "33333333-3333-4333-8333-333333333333",
-			restartRunningSessions: true,
 			phase: "verifying_target",
 			failureCode: undefined,
 			canRecover: false,
@@ -345,7 +342,6 @@ it("keeps a visible live success outcome when an observed switch disappears on i
 			targetAccountId: inactiveAccount.id,
 			createdAt: "2026-08-31T10:00:00Z",
 			updatedAt: "2026-08-31T10:01:00Z",
-			sessions: [],
 		},
 	};
 	getMock.mockResolvedValue({ data: switchingResponse });
@@ -371,7 +367,6 @@ it("reports when a failed switch safely restores the previous account", async ()
 		...accountResponse,
 		currentSwitch: {
 			id: "33333333-3333-4333-8333-333333333333",
-			restartRunningSessions: true,
 			phase: "activating_target",
 			failureCode: "activation_unconfirmed",
 			canRecover: false,
@@ -380,7 +375,6 @@ it("reports when a failed switch safely restores the previous account", async ()
 			targetAccountId: inactiveAccount.id,
 			createdAt: "2026-08-31T10:00:00Z",
 			updatedAt: "2026-08-31T10:01:00Z",
-			sessions: [],
 		},
 	};
 	getMock.mockResolvedValue({ data: switchingResponse });
@@ -857,20 +851,17 @@ it("starts a global switch with the displayed account revision", async () => {
 	await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
 	await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
 	const dialog = await screen.findByRole("dialog");
-	const restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO sessions" });
-	expect(restartSwitch).not.toBeChecked();
 	expect(dialog).toHaveTextContent("Switch to other@example.com?");
 	expect(dialog).toHaveTextContent("New sessions will use this account.");
-	expect(dialog).toHaveTextContent("Running sessions stay open. New sessions will use this account.");
 	expect(dialog).not.toHaveTextContent("external terminals, IDEs, and ChatGPT");
 	fireEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
-		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1", restartRunningSessions: false },
+		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1" },
 	}));
 	vi.unstubAllGlobals();
 });
 
-it("offers an unpersisted restart option with dynamic labels and a locked busy state", async () => {
+it("locks the switch confirmation while the request is submitted", async () => {
 	vi.stubGlobal("crypto", { randomUUID: () => "restart-idempotency" });
 	let finishSwitch: ((value: { data: object }) => void) | undefined;
 	postMock.mockImplementation((path: string) => {
@@ -887,23 +878,11 @@ it("offers an unpersisted restart option with dynamic labels and a locked busy s
 		return screen.findByRole("dialog");
 	};
 
-	let dialog = await openSwitchDialog();
-	let restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO sessions" });
-	await userEvent.click(restartSwitch);
-	expect(restartSwitch).toBeChecked();
-	expect(within(dialog).getByRole("button", { name: "Switch account" })).toBeEnabled();
-	expect(dialog).toHaveTextContent("Running AO sessions will reconnect using this account.");
-	await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-
-	dialog = await openSwitchDialog();
-	restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO sessions" });
-	expect(restartSwitch).not.toBeChecked();
-	await userEvent.click(restartSwitch);
+	const dialog = await openSwitchDialog();
 	await userEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
-		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "restart-idempotency", restartRunningSessions: true },
+		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "restart-idempotency" },
 	}));
-	expect(restartSwitch).toBeDisabled();
 	expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
 	expect(within(dialog).getByRole("button", { name: "Switch account" })).toBeDisabled();
 

@@ -120,11 +120,11 @@ surface (`npm run sqlc`, `npm run api`).
   native login terminal, and shows structured authentication, capacity, usage,
   and confirmed reset-credit facts without parsing credentials. A manual global
   switch atomically changes the device credential while briefly fencing new
-  Codex mutations. It leaves running AO Codex controllers and reviewers alone
-  by default, with an explicit one-switch option to stop and resume them with
-  the same native thread IDs. Native history remains in the normal Codex home.
-  Users can sign accounts out and delete inactive signed-out accounts; external
-  Codex clients are not controlled in either mode.
+  Codex mutations. Running AO Codex controllers and reviewers are never
+  interrupted or restarted by account switching; new controllers use the
+  selected account, and an existing session can be resumed manually when the
+  user wants it relaunched. Native history remains in the normal Codex home.
+  Users can sign accounts out and delete inactive signed-out accounts.
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 

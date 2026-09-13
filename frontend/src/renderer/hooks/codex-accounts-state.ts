@@ -140,25 +140,16 @@ const reasonKeys = {
 	login_unauthorized: "settings.codexAccounts.reason.loginUnauthorized",
 	login_unverified: "settings.codexAccounts.reason.loginUnverified",
 	login_expired: "settings.codexAccounts.reason.loginExpired",
-	running_session_not_resumable: "settings.codexAccounts.reason.runningSessionNotResumable",
 	switch_state_unavailable: "settings.codexAccounts.reason.switchStateUnavailable",
-	session_operation_in_progress: "settings.codexAccounts.reason.sessionOperationInProgress",
-	stop_unconfirmed: "settings.codexAccounts.reason.stopUnconfirmed",
 	activation_unconfirmed: "settings.codexAccounts.reason.activationUnconfirmed",
-	restart_unconfirmed: "settings.codexAccounts.reason.restartUnconfirmed",
 	rollback_unconfirmed: "settings.codexAccounts.reason.rollbackUnconfirmed",
-	session_missing: "settings.codexAccounts.reason.sessionMissing",
-	source_generation_changed: "settings.codexAccounts.reason.sourceGenerationChanged",
-	reviewer_stop_unconfirmed: "settings.codexAccounts.reason.reviewerStopUnconfirmed",
-	reviewer_restart_unconfirmed: "settings.codexAccounts.reason.reviewerRestartUnconfirmed",
-	reviewer_native_history_changed: "settings.codexAccounts.reason.reviewerNativeHistoryChanged",
 	daemon_restart_recovery: "settings.codexAccounts.reason.daemonRestartRecovery",
 } as const;
 
 export const codexAccountReasonCodes = Object.keys(reasonKeys) as Array<keyof typeof reasonKeys>;
 
 export type CodexAccountMessageKey = (typeof reasonKeys)[keyof typeof reasonKeys]
-	| `settings.codexAccounts.switch.${CodexAccountSwitch["phase"] | "unknown" | "sessions_recovery_required"}`;
+	| `settings.codexAccounts.switch.${CodexAccountSwitch["phase"] | "unknown"}`;
 
 export function codexAccountReasonKey(reasonCode: string | null | undefined): CodexAccountMessageKey {
 	return reasonKeys[reasonCode as keyof typeof reasonKeys] ?? "settings.codexAccounts.reason.unknown";
@@ -170,31 +161,18 @@ export type CodexSwitchDisplay = {
 	busy: boolean;
 	mutationBlocked: boolean;
 	canRecover: boolean;
-	recoveryKind: "sessions" | "account" | null;
 };
-
-const sessionRecoveryFailureCodes = new Set([
-	"restart_unconfirmed",
-	"reviewer_restart_unconfirmed",
-]);
 
 export function codexSwitchDisplay(switchState: CodexAccountSwitch): CodexSwitchDisplay {
 	const phase = switchState.phase;
 	const canRecover = switchState.canRecover && (phase === "rollback_required" || phase === "recovery_required");
 	const terminal = phase === "completed" || phase === "failed" || phase === "recovery_required" || (phase === "rollback_required" && canRecover);
 	const busy = !terminal;
-	const recoveryKind = canRecover && switchState.restartRunningSessions && sessionRecoveryFailureCodes.has(switchState.failureCode ?? "")
-		? "sessions"
-		: canRecover
-			? "account"
-			: null;
 	let key: CodexAccountMessageKey;
 	if (busy) {
 		key = phase === "rollback_required"
 			? "settings.codexAccounts.switch.rollback_required"
 			: "settings.codexAccounts.switch.requested";
-	} else if (recoveryKind === "sessions") {
-		key = "settings.codexAccounts.switch.sessions_recovery_required";
 	} else if (canRecover) {
 		key = "settings.codexAccounts.switch.recovery_required";
 	} else if (phase === "completed") {
@@ -210,6 +188,5 @@ export function codexSwitchDisplay(switchState: CodexAccountSwitch): CodexSwitch
 		busy,
 		mutationBlocked: phase !== "completed" && phase !== "failed",
 		canRecover,
-		recoveryKind,
 	};
 }

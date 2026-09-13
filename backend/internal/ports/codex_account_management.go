@@ -27,8 +27,6 @@ var (
 	ErrCodexGlobalAccountChanged = errors.New("global codex account changed")
 	// ErrCodexGlobalCredentialStoreUnsupported rejects non-file-backed switching.
 	ErrCodexGlobalCredentialStoreUnsupported = errors.New("global codex credential store is not safely file-backed")
-	// ErrCodexRunningSessionNotResumable rejects switching before stopping a controller without exact native identity.
-	ErrCodexRunningSessionNotResumable = errors.New("running codex session cannot be resumed exactly")
 )
 
 // CodexOperationLease is one idempotently releasable ownership token for the
@@ -45,14 +43,6 @@ type CodexOperationGate interface {
 	AcquireSharedWait(context.Context) (release func(), err error)
 	AcquireExclusive(context.Context) (CodexOperationLease, error)
 	ExclusivePendingOrHeld() bool
-}
-
-// CodexReviewerControllerSnapshot is the exact daemon-private identity of one
-// AO-owned Codex reviewer controller.
-type CodexReviewerControllerSnapshot struct {
-	Running         bool
-	HandleID        string
-	NativeSessionID string
 }
 
 // CodexAccountCredentialManager is consumed by Session Manager's global switch
@@ -78,7 +68,6 @@ type CodexAccountSwitchConfig struct {
 	TargetAccountID         string
 	ExpectedAccountRevision int64
 	IdempotencyKey          string
-	RestartRunningSessions  bool
 }
 
 // CodexAccountSwitchStore persists global switch facts and CAS transitions.
@@ -88,6 +77,4 @@ type CodexAccountSwitchStore interface {
 	GetCodexAccountSwitchByIdempotency(context.Context, string) (domain.CodexAccountSwitch, bool, error)
 	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
 	UpdateCodexAccountSwitch(context.Context, domain.CodexAccountSwitch, domain.CodexAccountSwitchPhase) (bool, error)
-	ListCodexAccountSwitchSessions(context.Context, string) ([]domain.CodexAccountSwitchSession, error)
-	UpdateCodexAccountSwitchSession(context.Context, string, domain.CodexAccountSwitchSession, string, string) (bool, error)
 }

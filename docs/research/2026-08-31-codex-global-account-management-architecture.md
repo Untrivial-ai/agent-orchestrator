@@ -120,11 +120,9 @@ Manual Add account always creates a new slot, including when another slot has th
 
 ## Global switch transaction
 
-Switch admission always requires a valid target, expected active revision, idempotency key, safe file-backed global credential, and fresh target verification. The request also records `restartRunningSessions`, which defaults to `false` when omitted and participates in the idempotency fingerprint.
+Switch admission requires a valid target, expected active revision, idempotency key, safe file-backed global credential, and fresh target verification. The idempotency fingerprint depends only on the target account and expected revision.
 
-In the default credential-only mode, AO does not discover or validate running session identities, acquire their operation locks, freeze input, interrupt Chat, stop controllers or reviewers, or write switch-session rows. Existing turns continue best-effort and may later report an authentication or account-change error; the user can restart or resume them manually. New Codex launches and AO control mutations briefly wait behind the device-global credential gate and then use the selected account.
-
-When `restartRunningSessions` is `true`, admission additionally requires exact native IDs for every running AO Codex controller or reviewer that must resume. This opt-in path preserves the original exact stop-and-resume transaction.
+AO does not discover or validate running session identities, acquire their operation locks, freeze input, interrupt Chat, stop controllers or reviewers, or write switch-session rows. Existing turns continue best-effort and may later report an authentication or account-change error; the user can restart or resume them manually. New Codex launches and AO control mutations briefly wait behind the device-global credential gate and then use the selected account.
 
 Stopped sessions are not part of the switch journal. They naturally use the new device-global account the next time they resume.
 
@@ -137,44 +135,26 @@ sequenceDiagram
     participant G as Global auth.json
     participant C as Codex
 
-    UI->>SM: Start switch(target, revision, idempotency key, restart policy)
+    UI->>SM: Start switch(target, revision, idempotency key)
     SM->>V: Strictly verify target slot
-    alt restart running sessions
-        SM->>AO: Fence controller input and interrupt affected Chat work
-        SM->>AO: Stop exact running generations and prove AO-owned writers stopped
-    else leave running (default)
-        Note over SM,AO: Existing controllers continue best-effort
-    end
+    Note over SM,AO: Existing controllers continue best-effort
     SM->>C: Re-read normal global account
     SM->>V: Checkpoint refreshed source credential
     SM->>G: Stage + atomic rename target auth.json
     SM->>C: Verify target through normal global home
     SM->>SM: Commit active pointer + revision
-    opt restart running sessions
-        SM->>AO: Resume the same AO sessions and native thread IDs
-    end
     SM-->>UI: Completed or exact recovery state
 ```
 
-In restart-enabled mode, AO preserves each running controller's:
-
-- AO session ID;
-- worktree and branch;
-- TUI or Chat interface mode;
-- native Codex thread ID.
-
-It allocates only a new controller generation. No AO continuation session, semantic handoff, archive, worktree transfer, history search, or history copy is involved.
-
 ## External Codex clients
 
-AO cannot stop Terminal, VS Code, Cursor, or ChatGPT Codex processes. After the device credential changes, those processes may report Codex's account-changed/token-refresh error. Users restart or resume them manually. The Settings confirmation explains this before the switch.
+AO cannot stop Terminal, VS Code, Cursor, or ChatGPT Codex processes. After the device credential changes, those processes may report Codex's account-changed/token-refresh error. Users restart or resume them manually.
 
 ## Failure and recovery
 
 - Before target verification, AO restores and verifies the staged source credential.
 - An external write detected during the credential transaction moves the switch to `recovery_required`; AO does not overwrite uncertain state.
-- After target commitment in restart-enabled mode, individual restart failures do not roll back sessions already resumed successfully.
-- Recovery for credential-only switches touches only the credential transaction. Restart-enabled recovery retries only recorded incomplete stop, credential, or restart work.
+- Recovery touches only the credential transaction.
 - Startup reconciliation restores the daemon-wide mutation fence before accepting Codex mutations.
 - Closing the desktop does not cancel daemon-owned work.
 
@@ -182,12 +162,9 @@ Durable phases are:
 
 ```text
 requested
-stopping_sessions
-sessions_stopped
 checkpointing_source
 activating_target
 verifying_target
-restarting_sessions
 rollback_required
 recovery_required
 completed
@@ -199,8 +176,9 @@ failed
 SQLite contains only:
 
 - `codex_active_account` — singleton account UUID and monotonic revision;
-- `codex_account_switches` — idempotent phase journal, restart policy, and safe failure facts;
-- `codex_account_switch_sessions` — AO session stop/restart progress with private native/controller fields redacted from APIs.
+- `codex_account_switches` — idempotent credential-phase journal and safe failure facts.
+
+Historical restart-policy columns and switch-session tables remain in immutable migrations, but new switches keep them inert and the application does not expose them.
 
 SQLite never contains credential bytes, filesystem paths, email, plan, capacity, reset times, reset-credit facts, usage payloads, terminal output, or native history. Authentication, capacity, usage, reset-credit summaries, and unmanaged-global observations remain daemon-memory state.
 
@@ -208,7 +186,7 @@ SQLite never contains credential bytes, filesystem paths, email, plan, capacity,
 
 The daemon exposes cached account reads and explicit ensure; inline login create, verify, and cancel; confirmed logout and deletion; global-switch start and recovery; confirmed reset-credit consumption; and one latest-wins SSE stream. Cached reads do no filesystem or Codex work. Reset-credit responses expose only the available count and nearest expiry; opaque provider identifiers remain private, and consumption uses a client idempotency key before refreshing capacity.
 
-Settings shows the device's current Codex account, account usage details, inline login, and switch progress. The confirmation defaults to leaving running AO Codex sessions and reviewers untouched; its non-persistent switch enables exact stop and resume for that operation only. Device-global credential replacement briefly fences new Codex launches, messages, interface changes, and related AO control mutations in both modes. There is no Task Composer account selector, per-session account binding, assisted switching, or automatic account selection.
+Settings shows the device's current Codex account, account usage details, inline login, and switch progress. Account switching never interrupts or restarts running AO Codex sessions or reviewers. Device-global credential replacement briefly fences new Codex launches, messages, interface changes, and related AO control mutations. There is no Task Composer account selector, per-session account binding, assisted switching, or automatic account selection.
 
 ## Explicit omissions
 
