@@ -351,7 +351,7 @@ describe("useWorkspaceQuery", () => {
 		});
 		expect(result.current.data?.[0].sessions[0]).toMatchObject({
 			id: "standalone-1",
-			workspaceId: "",
+			workspaceId: "__standalone__",
 			workspaceName: "Standalone agents",
 			title: "Research",
 			branch: undefined,

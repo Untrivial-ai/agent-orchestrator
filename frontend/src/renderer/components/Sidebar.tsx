@@ -443,6 +443,22 @@ export function Sidebar({
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
+	const existingProjectPaths = useMemo(
+		() => workspaces
+			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
+			.map((workspace) => workspace.path)
+			.filter((path): path is string => Boolean(path)),
+		[workspaces],
+	);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find(
+				(candidate) => candidate.kind !== STANDALONE_PROJECT_KIND && candidate.path === path,
+			);
+			if (workspace) selection.goProject(workspace.id);
+		},
+		[selection, workspaces],
+	);
 	const initialActiveSessionProjectId = useRef(
 		selection.activeSessionId ? selection.activeProjectId : undefined,
 	).current;
@@ -766,10 +782,12 @@ export function Sidebar({
 						collapsible={false}
 						trailing={
 							<CreateProjectButton
+								existingProjectPaths={existingProjectPaths}
 								hideTrigger={workspaces.length === 0}
 								onCloneProject={onCloneProject}
 								onCreateProject={onCreateProject}
 								onInitializeProject={onInitializeProject}
+								onOpenExistingProject={openExistingProject}
 							/>
 						}
 					/>
@@ -1057,6 +1075,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		const id = requestAnimationFrame(() => setAnimReady(true));
 		return () => cancelAnimationFrame(id);
 	}, []);
+	const isProjectProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const projectIsDragging = draggingProjectId === workspace.id;
@@ -1134,7 +1153,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting) return;
+		if (isProjectProvisioning || isProjectRestarting) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1383,8 +1402,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																name: workspace.name,
 															})
 												}
-												className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-												disabled={isSpawning || isProjectRestarting}
+													className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
+													disabled={isSpawning || isProjectProvisioning || isProjectRestarting}
 												onClick={() => void openOrchestrator()}
 												type="button"
 											>
@@ -1392,10 +1411,10 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											</button>
 										</span>
 									</TooltipTrigger>
-									<TooltipContent>
-										{isProjectRestarting
-											? t("shell.restarting")
-											: isSpawning
+										<TooltipContent>
+											{isProjectProvisioning || isProjectRestarting
+												? t("shell.restarting")
+												: isSpawning
 												? t("shell.spawning")
 												: orchestrator
 													? t("shell.orchestrator")
@@ -2533,11 +2552,17 @@ function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
 }
 
 function CreateProjectButton({
+	existingProjectPaths,
 	hideTrigger = false,
 	onCloneProject,
 	onCreateProject,
 	onInitializeProject,
-}: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & { hideTrigger?: boolean }) {
+	onOpenExistingProject,
+}: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & {
+	existingProjectPaths: readonly string[];
+	hideTrigger?: boolean;
+	onOpenExistingProject: (path: string) => void | Promise<void>;
+}) {
 	const { t } = useTranslation();
 	// Single CreateProjectFlow owner for the sidebar: the header "+" stays mounted
 	// (CSS-hidden when collapsed or on the empty start page) so it can own
@@ -2548,10 +2573,12 @@ function CreateProjectButton({
 	return (
 		<CreateProjectFlow
 			droppedPath={folderDropRequest}
+			existingProjectPaths={existingProjectPaths}
 			mode="choose"
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
 			onInitializeProject={onInitializeProject}
+			onOpenExistingProject={onOpenExistingProject}
 			openSignal={createProjectNonce}
 		>
 			{({ disabled, choosePath, label }) => (
