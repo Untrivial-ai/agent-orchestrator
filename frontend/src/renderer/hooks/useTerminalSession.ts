@@ -105,6 +105,12 @@ const RETRY_MAX_MS = 8_000;
 // Exponential backoff here only adds dead seconds between "worker ready" and
 // "terminal attached" (a worker ready at 17s would wait for the 23s attempt).
 const CLOUD_CONNECT_RETRY_MS = 1_000;
+// Stop retrying and surface a real error after this many consecutive genuine
+// socket failures for a cloud session that has never successfully attached.
+// Only post-mint socket failures count; "worker still provisioning" (mint 409,
+// reported by the mux as "waiting") never trips this, so a slow cold start does
+// not false-fire a "check your firewall" error. ~8 socket failures ≈ 8s.
+const CLOUD_CONNECT_MAX_FAILURES = 8;
 const OPEN_TIMEOUT_MS = 3_000;
 // Trailing debounce on grid changes: a pane drag emits a burst of intermediate
 // sizes; the attached program should get one SIGWINCH when the drag settles,
@@ -205,6 +211,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// attachment's first successful open, which switches the cloud pane's
 		// flat readiness polling over to exponential reconnect backoff.
 		hasAttachedOnce: false,
+		// Consecutive genuine socket failures before the first successful attach.
+		// Reset on a real open and on a fresh attach; provisioning waits do not
+		// touch it. Trips the connect-failure circuit breaker at the cap.
+		cloudConnectFailures: 0,
 		detached: true,
 		// True only after this attachment opens parked at 0×0. The next visible
 		// activation must promote it back to a positive primary grid.
@@ -319,7 +329,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		r.openTimer = null;
 	}, []);
 
-	const scheduleReattach = useCallback(() => {
+	const scheduleReattach = useCallback((countAsCloudFailure = false) => {
 		const r = runtime.current;
 		if (r.detached || !r.terminal || !r.handle) {
 			return;
@@ -337,6 +347,23 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		}
 		if (r.retryTimer) {
 			return;
+		}
+		// Count only genuine post-mint socket failures for a cloud pane that has
+		// never attached. A "worker still provisioning" wait (mint 409) reaches
+		// here with countAsCloudFailure=false and must not accrue, so a slow cold
+		// start never false-fires the breaker. After CLOUD_CONNECT_MAX_FAILURES
+		// real socket failures we know it is a proxy/firewall/CSP block, not a
+		// transient, so we stop the loop and surface a real error.
+		if (countAsCloudFailure && !r.hasAttachedOnce && sessionRef.current?.cloud) {
+			r.cloudConnectFailures += 1;
+			if (r.cloudConnectFailures >= CLOUD_CONNECT_MAX_FAILURES) {
+				setError(
+					"Terminal ticket issued but the WebSocket cannot connect. " +
+						"Check proxy, firewall, or CSP settings.",
+				);
+				transition("error");
+				return;
+			}
 		}
 		// First connect of a cloud pane = polling for sandbox readiness; keep it
 		// flat (see CLOUD_CONNECT_RETRY_MS). After a real attachment, drops back
@@ -608,6 +635,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				clearOpenTimer(generation);
 				r.inputReady = true;
 				r.attempts = 0;
+				r.cloudConnectFailures = 0;
 				r.hasAttachedOnce = true;
 				setError(undefined);
 				setHasAttached(true);
@@ -665,7 +693,11 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			}),
 			mux.onConnectionChange((connectionState) => {
 				if (!isCurrentAttachment(generation, handle, mux)) return;
-				if (connectionState === "closed") {
+				// "closed" = a genuine socket failure (ticket minted but the
+				// WebSocket dropped or never opened); "waiting" = the worker is
+				// still provisioning (mint 409), which reconnects the same way but
+				// must not count against the connect-failure breaker.
+				if (connectionState === "closed" || connectionState === "waiting") {
 					// End the gate: no replay is coming over a dead socket. This is
 					// the ONLY settle path when the socket dies before `opened` —
 					// clearOpenTimer below drops the open timeout, and
@@ -676,7 +708,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 					flushReplay(false, true);
 					clearOpenTimer(generation);
 					r.inputReady = false;
-					scheduleReattach();
+					scheduleReattach(connectionState === "closed");
 				}
 			}),
 		);
@@ -807,6 +839,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			r.handle = handle;
 			r.detached = false;
 			r.attempts = 0;
+			r.cloudConnectFailures = 0;
 			r.hasAttachedOnce = false;
 			setError(undefined);
 			setHasAttached(false);

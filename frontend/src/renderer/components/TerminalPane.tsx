@@ -314,10 +314,18 @@ export function TerminalCacheProvider({
 			if (cached) return cached;
 			const sessionId = paneSession.id;
 			const orgId = cloud.orgId;
+			// One replay cursor per pane, shared across every mux the hook rebuilds
+			// on reconnect (the factory closure captures it and is itself cached
+			// per factoryKey). A rebuilt mux resumes from the last sequence it
+			// received instead of replaying the whole scrollback from 0, so the
+			// terminal settles instead of flickering. A different pane gets a
+			// different factory and therefore its own cursor starting at 0.
+			const cursor = { value: 0 };
 			const factory = () =>
 				createCloudTerminalMux({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
 					kind: "agent",
+					cursor,
 					mintTicket: async () => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
 							kind: "agent",
@@ -963,6 +971,11 @@ function AttachedTerminal({
 		};
 	}, [replayPaintPending, replaySettled, terminal]);
 	const handleId = shellTerminalHandleId ?? attachSession?.terminalHandleId;
+	const handleRetry = useCallback(() => {
+		// Re-attach from scratch: resets the connect-failure counter and starts a
+		// fresh connection attempt once the user has fixed their network policy.
+		if (terminal) attach(terminal);
+	}, [attach, terminal]);
 	const provider = terminalTarget?.kind === "reviewer" ? terminalTarget.harness : session?.provider;
 	const isSessionActive = session ? sessionIsActive(session) : false;
 	// A standalone shell is never restorable: there is no session row to restore.
@@ -1036,7 +1049,17 @@ function AttachedTerminal({
 		);
 	}
 
-	const banner = bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
+	// A cloud pane that hit the connect-failure breaker (ticket minted but the
+	// WebSocket kept failing) shows a dedicated retryable overlay instead of the
+	// generic banner. Any other error (PTY crash, pane error) keeps the banner.
+	const isCloudConnectError =
+		state === "error" &&
+		Boolean(attachSession?.cloud) &&
+		!hasAttached &&
+		Boolean(error?.includes("WebSocket cannot connect"));
+	const banner = isCloudConnectError
+		? undefined
+		: bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
 	const showEmptyState = !handleId;
 	// Cover xterm while the attachment buffers the initial replay, so the pane
 	// appears already drawn at the tail instead of visibly scrolling down to it.
@@ -1103,6 +1126,7 @@ function AttachedTerminal({
 					</div>
 				)}
 				{showReplayCover && <ReplayCover />}
+				{isCloudConnectError && <CloudConnectError onRetry={handleRetry} />}
 				{banner && (
 					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
 						{banner}
@@ -1119,6 +1143,31 @@ function AttachedTerminal({
 					}}
 				/>
 			)}
+		</div>
+	);
+}
+
+// Shown when a cloud terminal ticket was issued but the WebSocket permanently
+// failed to connect (proxy/firewall/CSP block). Distinct from a PTY error: it
+// is recoverable, so the user can retry once their network policy is fixed
+// without a full page reload.
+function CloudConnectError({ onRetry }: { onRetry: () => void }) {
+	const { t } = useTranslation();
+	return (
+		<div className="absolute inset-0 z-10 grid place-items-center bg-terminal-opaque pointer-events-auto">
+			<div className="flex max-w-sm flex-col items-center gap-4 rounded-lg border border-border bg-surface p-6 text-center shadow-lg">
+				<div className="font-mono text-sm font-medium text-foreground">{t("terminal.cloudConnectTitle")}</div>
+				<div className="text-xs leading-relaxed text-muted-foreground">{t("terminal.cloudConnectDescription")}</div>
+				<button
+					type="button"
+					id="cloud-terminal-retry"
+					className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-raised px-3 py-1.5 font-mono text-xs text-foreground transition hover:bg-interactive-hover"
+					onClick={onRetry}
+				>
+					<RotateCcw className="size-3" aria-hidden="true" />
+					{t("terminal.cloudConnectRetry")}
+				</button>
+			</div>
 		</div>
 	);
 }

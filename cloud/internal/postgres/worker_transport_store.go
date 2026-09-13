@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -22,6 +23,12 @@ const (
 	// interactiveSessionLease prevents the idle scanner from pausing a sandbox
 	// while a user is connecting to either terminal surface.
 	interactiveSessionLease = 2 * time.Minute
+	// unconsumedTicketThreshold is the number of unconsumed tickets minted in
+	// the last interactiveSessionLease window above which we stop refreshing
+	// the sandbox's interactive lease. A broken client that loops minting
+	// tickets but never opening a WebSocket would otherwise keep a sandbox
+	// awake — and billed — indefinitely.
+	unconsumedTicketThreshold = 10
 )
 
 func (s *Store) CreateWorkspaceRequest(
@@ -333,6 +340,38 @@ func (s *Store) IssueTerminalTicket(
 	// wake while the browser waits for the worker. The browser retries ticket
 	// creation while the reconciler resumes the provider and the worker
 	// heartbeats again.
+	// Count unconsumed tickets minted in the last interactiveSessionLease
+	// window. A legitimate viewer mints ≤1 ticket per connect; a broken
+	// client that loops WebSocket-attach failures produces O(100+) in the
+	// same window. Above the threshold we skip the interactive_until refresh
+	// so the idle scanner can eventually pause — and stop billing — the
+	// sandbox. We still wake a paused sandbox and insert the ticket so the
+	// client receives a normal 201; the suppression is invisible to the
+	// caller and does not block a real viewer whose policy fixes mid-session.
+	var unconsumedRecent int
+	if err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
+		return tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM ao_access_tickets
+			WHERE org_id = $1 AND session_id = $2
+			  AND purpose LIKE 'terminal:%'
+			  AND consumed_at IS NULL
+			  AND created_at > now() - $3::interval`,
+			orgID, sessionID, intervalString(interactiveSessionLease),
+		).Scan(&unconsumedRecent)
+	}); err != nil {
+		// Non-fatal: if the count query fails, default to refreshing the
+		// lease (safe path) and let the ticket flow proceed normally.
+		unconsumedRecent = 0
+	}
+	leaseThrottled := unconsumedRecent >= unconsumedTicketThreshold
+	if leaseThrottled {
+		slog.Default().Warn("terminal ticket lease suppressed: too many unconsumed tickets",
+			"org_id", orgID,
+			"session_id", sessionID,
+			"unconsumed_count", unconsumedRecent,
+			"threshold", unconsumedTicketThreshold,
+		)
+	}
 	if err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE ao_sandboxes
@@ -343,13 +382,14 @@ func (s *Store) IssueTerminalTicket(
 					ELSE startup_started_at
 				END,
 				interactive_until = CASE
-					WHEN interactive_until IS NULL OR interactive_until < now() + $3::interval
-						THEN now() + $3::interval
+					WHEN $3 THEN interactive_until
+					WHEN interactive_until IS NULL OR interactive_until < now() + $4::interval
+						THEN now() + $4::interval
 					ELSE interactive_until
 				END,
 				updated_at = now()
 			WHERE org_id = $1 AND session_id = $2`,
-			orgID, sessionID, intervalString(interactiveSessionLease),
+			orgID, sessionID, leaseThrottled, intervalString(interactiveSessionLease),
 		)
 		return err
 	}); err != nil {
