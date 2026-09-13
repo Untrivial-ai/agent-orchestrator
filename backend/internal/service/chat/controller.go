@@ -484,10 +484,11 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 			turnSequence[activity.TurnID] = activity.Sequence
 		}
 	}
-	// Timeline sequences order turns even when timestamps are equal or skewed.
+	// Queue reordering updates RequestedAt, not the message sequence. Preserve
+	// that order; use the durable sequence only to disambiguate timestamp ties.
 	after := func(turn, boundary *domain.ConversationTurn) bool {
-		if a, b := turnSequence[turn.ID], turnSequence[boundary.ID]; a > 0 && b > 0 {
-			return a > b
+		if turn.RequestedAt.Equal(boundary.RequestedAt) {
+			return turnSequence[turn.ID] > turnSequence[boundary.ID]
 		}
 		return turn.RequestedAt.After(boundary.RequestedAt)
 	}

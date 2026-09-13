@@ -59,6 +59,23 @@ func poisonedRows(state domain.TurnState) ([]domain.ConversationTurn, []domain.C
 
 const testCheckpointSession = domain.SessionID("checkpoint-session")
 
+func TestCheckpointKeepsReorderedQueueExecutionOrder(t *testing.T) {
+	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	// A was enqueued before B, then reordered to run after B. Reordering updates
+	// RequestedAt but leaves the already-allocated user-message sequence intact.
+	turns[0].RequestedAt = turns[1].RequestedAt.Add(time.Second)
+	turns[1].ProviderTurnID = "native-turn-2"
+	messages[1].Sequence = 4 // A's final answer arrives after B's answer.
+	messages[2].Sequence = 2
+	messages = append(messages, domain.ConversationMessage{TurnID: turns[1].ID,
+		Sequence: 3, Role: domain.MessageRoleAssistant, Text: "B answer"})
+	checkpoint := nativeHistoryCheckpoint{}
+	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+	if checkpoint.aoHighWater.providerTurnID != "native-turn-1" {
+		t.Fatalf("enqueue order overrode completed execution order: %+v", checkpoint.aoHighWater)
+	}
+}
+
 func TestNativeHistoryIndexDoesNotConsumeMatchesAcrossRefreshes(t *testing.T) {
 	turns, messages := poisonedRows(domain.TurnStateCompleted)
 	turns[1].ProviderTurnID = "native-turn-2"
