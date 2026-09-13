@@ -450,8 +450,6 @@ func (p *nativeHistoryCheckpoint) dropObsoleteHookFacts(
 			return !observedAt.IsZero() && newest.CompletedAt != nil && !observedAt.After(*newest.CompletedAt)
 		}
 		return latestSettled != nil && !observedAt.IsZero() && observedAt.Before(latestSettled.RequestedAt) &&
-			newest.HandledBySessionID == latestSettled.HandledBySessionID &&
-			(providerBoundary.IsZero() || newest.RequestedAt.After(providerBoundary)) &&
 			latestSettled.RequestedAt.After(newest.RequestedAt)
 	}
 	if p.latestUserPrompt != "" && obsolete(p.latestUserPrompt, domain.MessageRoleUser, p.latestUserPromptAt) {

@@ -234,7 +234,8 @@ type ChatStartConfig struct {
 	// ProviderScopeID identifies the AO ownership boundary for opaque provider
 	// identifiers. Fresh approximate branches receive a new value.
 	ProviderScopeID string
-	// LegacyProviderIDs keeps an existing, still-empty ownership scope's ID format.
+	// LegacyProviderIDs preserves the ID format of a scope created before the
+	// driver supported scoped IDs, even if its first provider starts after upgrade.
 	LegacyProviderIDs bool
 	// AdditionalDirectories are extra absolute workspace roots the provider may
 	// access alongside WorkspacePath. Workspace projects use this for child repo
