@@ -3,7 +3,9 @@ package gitworktree
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -65,6 +67,19 @@ var (
 // gone is success (os.RemoveAll's own semantics), and the last error is
 // returned unwrapped so callers can still match on it.
 //
+// Off Windows, a failed os.RemoveAll is real and immediate — except for one
+// case this function repairs first: os.RemoveAll cannot delete a tree that
+// contains owner-owned read-only directories (0o500/0o000). Unlinking an entry
+// inside such a directory fails with EACCES/EPERM no matter how many times you
+// retry the identical call, and renv-style worktrees do contain them (the
+// Linux cleanup failure in issue #3807). So after a failure we walk the
+// remaining tree with Lstat semantics — symlinks are leaves, never followed
+// and never chmodded, since chmod on a symlink path would modify a target that
+// lives outside the tree — restore owner write+exec on every real directory,
+// then retry once. On Windows, os.RemoveAll clears read-only attributes
+// itself, so the repair is skipped there and the retry budget, backoff, and
+// ctx handling below are byte-for-byte unchanged.
+//
 // Retries stop early when ctx is done: time.Sleep is uninterruptible, so
 // without this a caller that has already given up (client disconnected,
 // deadline passed) would still pay out the remaining budget — and with a
@@ -83,7 +98,29 @@ func removeAllWithRetry(ctx context.Context, path string) error {
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+
+	// Permission repair is an off-Windows concern: on Windows the retry loop
+	// below owns the failure mode and os.RemoveAll already copes with
+	// read-only attributes, so the repair path would only burn an attempt of
+	// the budget. Gate on Lstat first so a stub-removal failure on an already
+	// gone path (the retry-loop tests) still returns after a single attempt.
 	if !removeAllRetryEnabled {
+		if !errors.Is(err, fs.ErrPermission) {
+			return err
+		}
+
+		if _, statErr := os.Lstat(path); statErr != nil {
+			return err
+		}
+
+		if repairErr := makeTreeWritable(path); repairErr != nil {
+			return err
+		}
+
+		if err = removeAll(path); err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+
 		return err
 	}
 
@@ -110,4 +147,38 @@ func removeAllWithRetry(ctx context.Context, path string) error {
 		}
 	}
 	return err
+}
+
+// makeTreeWritable walks path using Lstat semantics so symlinks are always
+// leaves: never followed and never chmodded (chmod on a symlink path would
+// modify the target, which lives outside the tree and must survive with its
+// permissions untouched). Every real directory gets owner read/write/execute
+// restored — write so unlink/rmdir can succeed, read+execute so even a 0o000
+// directory can be listed on the way down. Modes are repaired before
+// descending so each level is traversable when its children are visited. The
+// tree is about to be deleted, so the repaired modes only need to last until
+// the next removeAll.
+func makeTreeWritable(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		// Symlinks are leaves, and regular files unlink with write on the
+		// parent directory alone — neither needs repair.
+		return nil
+	}
+	if err := os.Chmod(path, info.Mode().Perm()|0o700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := makeTreeWritable(filepath.Join(path, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
