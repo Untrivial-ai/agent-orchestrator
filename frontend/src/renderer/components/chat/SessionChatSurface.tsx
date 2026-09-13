@@ -54,6 +54,7 @@ export interface ConversationWorkState {
 }
 
 const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
+const autoOpenedAgentMessageKeys = new Set<string>();
 
 function cleanExtractedLink(value: string): string {
 	return value.replace(/[.,!?;:`\\]+$/, "");
@@ -321,22 +322,26 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
 	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser, paths);
-	const autoOpenedMessageIds = useRef(new Set<string>());
 	const conversationBaselineReady = useRef(false);
 	useEffect(() => {
 		if (!snapshot || isLoading) return;
+		const isInitialSnapshot = !conversationBaselineReady.current;
+		const latestUserMessage = snapshot.items
+			.filter((item) => item.kind === "message" && item.role === "user")
+			.at(-1);
 		// Do not surprise users by opening links from history when a session is first
-		// mounted. Only messages observed after this baseline represent new agent work.
-		if (!conversationBaselineReady.current) {
-			conversationBaselineReady.current = true;
-			return;
-		}
+		// mounted. The exception is the current turn: a fast agent can finish before
+		// the first conversation request resolves, so its response is already present
+		// in the initial snapshot and must not be mistaken for old history.
+		conversationBaselineReady.current = true;
 		for (const item of snapshot.items) {
 			if (item.kind !== "message" || item.role !== "assistant" || item.streaming) continue;
-			if (autoOpenedMessageIds.current.has(item.id)) continue;
+			if (isInitialSnapshot && (!latestUserMessage || item.sequence <= latestUserMessage.sequence)) continue;
+			const messageKey = `${session.id}:${item.id}`;
+			if (autoOpenedAgentMessageKeys.has(messageKey)) continue;
 			const url = firstBrowserLink(item.text, paths);
 			if (url) {
-				autoOpenedMessageIds.current.add(item.id);
+				autoOpenedAgentMessageKeys.add(messageKey);
 				openLinkInBrowser(url);
 			}
 		}
