@@ -543,7 +543,12 @@ export function Sidebar({
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
 	);
-	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
+	const projectIds = useMemo(
+		() => orderedWorkspaces
+			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
+			.map((workspace) => workspace.id),
+		[orderedWorkspaces],
+	);
 	const reorderSensors = useReorderSensors();
 	const projectDragClickGuard = usePostDragClickGuard();
 	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
@@ -615,9 +620,12 @@ export function Sidebar({
 	);
 	const onProjectDragStart = useCallback(({ active }: DragStartEvent) => {
 		const projectId = String(active.id);
+		if (!projectIds.includes(projectId)) return;
 		projectDragBoundsRef.current = null;
 		projectDropTargetRef.current = null;
-		const blocks = Array.from(document.querySelectorAll<HTMLElement>("[data-project-drop-target]"));
+		const blocks = Array.from(
+			document.querySelectorAll<HTMLElement>("[data-project-drop-target]"),
+		).filter((block) => block.dataset.projectId && projectIds.includes(block.dataset.projectId));
 		projectDropNodesRef.current = new Map(blocks.map((block) => [block.dataset.projectId ?? "", block]));
 		const activeRow = blocks.find((block) => block.dataset.projectId === projectId)
 			?.querySelector<HTMLElement>("[data-project-drag-row]");
@@ -629,7 +637,7 @@ export function Sidebar({
 			};
 		}
 		setDraggingProjectId(projectId);
-	}, []);
+	}, [projectIds]);
 	const updateProjectDropTarget = useCallback(({ active, activatorEvent, delta, over }: DragMoveEvent | DragOverEvent) => {
 		const activeId = String(active.id);
 		const overId = over ? String(over.id) : null;
@@ -991,11 +999,14 @@ type ProjectItemDndProps = Pick<ProjectDraggable, "listeners" | "setActivatorNod
 // project/session subtree. The content only rerenders when its visible props
 // change (drag start/end or a different drop boundary), not for every transform.
 const ProjectItem = memo(function ProjectItem(props: ProjectItemProps) {
+	const isStandaloneWorkspace = props.workspace.kind === STANDALONE_PROJECT_KIND;
 	const draggable = useDraggable({
 		id: props.workspace.id,
+		disabled: isStandaloneWorkspace,
 	});
 	const droppable = useDroppable({
 		id: props.workspace.id,
+		disabled: isStandaloneWorkspace,
 	});
 	// dnd-kit refreshes the objects returned by these hooks as the pointer moves.
 	// Keep that high-frequency churn in this thin wrapper: the project content
@@ -2586,6 +2597,7 @@ function CreateProjectButton({
 	// reuses this flow via requestCreateProject().
 	const createProjectNonce = useUiStore((state) => state.createProjectNonce);
 	const folderDropRequest = useUiStore((state) => state.folderDropRequest);
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<CreateProjectFlow
 			droppedPath={folderDropRequest}
@@ -2593,6 +2605,7 @@ function CreateProjectButton({
 			mode="choose"
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
+			onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 			onInitializeProject={onInitializeProject}
 			onOpenExistingProject={onOpenExistingProject}
 			openSignal={createProjectNonce}

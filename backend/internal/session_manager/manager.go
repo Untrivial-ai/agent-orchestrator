@@ -4215,16 +4215,10 @@ func workspaceRepoList(repos []domain.WorkspaceRepoRecord) string {
 // spawnEnv builds the runtime environment: the per-project env vars first, then
 // the AO-internal vars last so they always win (a project cannot override
 // AO_SESSION_ID and friends).
+var envKeysCaseInsensitive = runtime.GOOS == "windows"
+
 func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string) map[string]string {
-	env := make(map[string]string, len(projectEnv)+4)
-	for k, v := range projectEnv {
-		env[k] = v
-	}
-	env[EnvSessionID] = string(id)
-	env[EnvProjectID] = string(project)
-	env[EnvIssueID] = string(issue)
-	env[EnvDataDir] = dataDir
-	return env
+	return spawnEnvForOS(id, project, issue, dataDir, projectEnv, envKeysCaseInsensitive)
 }
 
 func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, caseInsensitive bool) map[string]string {
@@ -4257,7 +4251,8 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 // When the pin cannot be applied the inherited PATH is kept and a warning is
 // logged so the degradation isn't silent.
 func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
-	env := spawnEnv(id, project, issue, m.dataDir, projectEnv)
+	caseInsensitive := envKeysCaseInsensitive
+	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
 	// Project configuration must never redirect AO-owned hook callbacks to a
 	// different daemon. New receives the resolved absolute path in production;
 	// the environment fallback keeps focused embedders and tests compatible.
@@ -4265,21 +4260,58 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	if runFilePath == "" {
 		runFilePath = strings.TrimSpace(os.Getenv(EnvRunFile))
 	}
-	delete(env, EnvRunFile)
+	deleteProtectedEnv(env, EnvRunFile, caseInsensitive)
 	if runFilePath != "" {
 		env[EnvRunFile] = runFilePath
 	}
-	env[EnvBrowserCapability] = ""
-	env[EnvBrowserRuntimeToken] = ""
-	env[EnvBrowserRuntimeTokenStdin] = ""
-	path, err := HookPATH(m.executable, os.Getenv, projectEnv, m.dataDir)
+	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
+	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
+	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
+	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
 			"session", id, "error", err)
 		return env
 	}
-	env["PATH"] = path
+	setProtectedEnv(env, "PATH", path, caseInsensitive)
 	return env
+}
+
+func deleteProtectedEnv(env map[string]string, key string, caseInsensitive bool) {
+	if !caseInsensitive {
+		delete(env, key)
+		return
+	}
+	for existing := range env {
+		if strings.EqualFold(existing, key) {
+			delete(env, existing)
+		}
+	}
+}
+
+func setProtectedEnv(env map[string]string, key, value string, caseInsensitive bool) {
+	deleteProtectedEnv(env, key, caseInsensitive)
+	env[key] = value
+}
+
+func hookPATHForOS(executable func() (string, error), getenv func(string) string, projectEnv map[string]string, dataDir string, caseInsensitive bool) (string, error) {
+	if !caseInsensitive {
+		return HookPATH(executable, getenv, projectEnv, dataDir)
+	}
+	if _, ok := projectEnv["PATH"]; ok {
+		return HookPATH(executable, getenv, projectEnv, dataDir)
+	}
+	for key, value := range projectEnv {
+		if strings.EqualFold(key, "PATH") {
+			next := make(map[string]string, len(projectEnv)+1)
+			for k, v := range projectEnv {
+				next[k] = v
+			}
+			next["PATH"] = value
+			return HookPATH(executable, getenv, next, dataDir)
+		}
+	}
+	return HookPATH(executable, getenv, projectEnv, dataDir)
 }
 
 // pinRuntimePermissionEnv exposes the session's AO approval policy to hook

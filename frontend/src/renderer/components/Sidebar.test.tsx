@@ -662,6 +662,19 @@ describe("Sidebar", () => {
 		expect(request?.nonce ?? 0).toBeGreaterThan(before);
 	});
 
+	it("offers ad hoc agent creation from the project add flow before the ad hoc row exists", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
+
+		await user.click(screen.getByLabelText("New project"));
+		await user.click(await screen.findByRole("button", { name: "New standalone agent" }));
+
+		const request = useUiStore.getState().newTaskRequest;
+		expect(request?.projectId).toBe(STANDALONE_WORKSPACE_ID);
+		expect(request?.nonce ?? 0).toBeGreaterThan(before);
+	});
+
 	it("opens the create-project flow when the no-project shortcut signal arrives", async () => {
 		renderSidebar();
 
@@ -2341,6 +2354,53 @@ describe("Sidebar", () => {
 		});
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
+	});
+
+	it("keeps the ad hoc group out of project drag and drop ordering", () => {
+		renderSidebar({
+			workspaces: [
+				{ ...workspace, id: "alpha", name: "Alpha" },
+				{ ...workspace, id: "bravo", name: "Bravo" },
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Ad hoc agents",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [],
+				},
+			],
+		});
+		const labels = () => Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent);
+
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } });
+			dragOvers.get("sidebar-projects")?.({
+				active: { id: "alpha", rect: { current: { initial: null, translated: null } } },
+				activatorEvent: null,
+				delta: { x: 0, y: 0 },
+				over: { id: STANDALONE_WORKSPACE_ID, rect: { height: 20, top: 40 } },
+			});
+			dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: { id: STANDALONE_WORKSPACE_ID } });
+		});
+		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID } });
+			dragEnds.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID }, over: { id: "alpha" } });
+		});
+		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
+			dragOvers.get("sidebar-projects")?.({
+				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
+				activatorEvent: null,
+				delta: { x: 0, y: 0 },
+				over: { id: "alpha", rect: { height: 20, top: 0 } },
+			});
+			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
+		});
+		expect(labels()).toEqual(["Bravo", "Alpha", "Ad hoc agents"]);
 	});
 
 	it("commits a session drop within its project", () => {

@@ -55,6 +55,19 @@ WHERE projects.id = 'scratch'
   AND projects.kind = 'scratch'
   AND sessions.kind = 'worker';
 
+UPDATE usage_bindings
+SET state = 'finalizing',
+    updated_at = datetime('now')
+WHERE state IN ('discovering', 'active')
+  AND session_id IN (
+      SELECT sessions.id
+      FROM sessions
+      JOIN projects ON projects.id = sessions.project_id
+      WHERE projects.id = 'scratch'
+        AND projects.kind = 'scratch'
+        AND sessions.kind = 'orchestrator'
+  );
+
 UPDATE sessions
 SET is_terminated = TRUE,
     activity_state = 'exited',
