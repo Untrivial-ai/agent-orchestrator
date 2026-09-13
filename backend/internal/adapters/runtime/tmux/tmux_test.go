@@ -302,7 +302,7 @@ func TestSessionNameSanitizesSpecialChars(t *testing.T) {
 }
 
 func TestSessionNamePassesThroughShortConforming(t *testing.T) {
-	if got := SessionName("myproj-1"); got != "myproj-1" {
+	if got := domain.RuntimeHandleName("myproj-1"); got != "myproj-1" {
 		t.Fatalf("SessionName = %q, want unchanged", got)
 	}
 }
@@ -313,10 +313,10 @@ func TestSessionNameMatchesCreateNaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tmuxSessionName: %v", err)
 	}
-	if got := SessionName(string(long)); got != viaCreate {
+	if got := domain.RuntimeHandleName(string(long)); got != viaCreate {
 		t.Fatalf("SessionName = %q, but Create uses %q", got, viaCreate)
 	}
-	if SessionName(string(long)) == string(long) {
+	if domain.RuntimeHandleName(string(long)) == string(long) {
 		t.Fatal("expected long id to be sanitised to a different name")
 	}
 }
