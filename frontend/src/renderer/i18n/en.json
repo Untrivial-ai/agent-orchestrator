@@ -522,6 +522,7 @@
 	"mobile.devices.confirmRemove": "Confirm remove",
 	"mobile.devices.empty": "No devices paired yet.",
 	"mobile.devices.loading": "Loading devices…",
+	"mobile.devices.enableOnPhone": "To enable notifications, open Settings in the AO phone app and turn on Agent notifications.",
 	"mobile.devices.notificationsFor": "Notifications for {{name}}",
 	"mobile.devices.registryUnavailable": "Device registry unavailable — AO could not read your saved devices.",
 	"mobile.devices.removeAria": "Remove {{name}}",

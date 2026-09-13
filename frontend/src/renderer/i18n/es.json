@@ -524,6 +524,7 @@
 	"mobile.devices.confirmRemove": "Confirmar eliminación",
 	"mobile.devices.empty": "Aún no hay dispositivos emparejados.",
 	"mobile.devices.loading": "Cargando dispositivos…",
+	"mobile.devices.enableOnPhone": "Para activar las notificaciones, abre Ajustes en la app AO del teléfono y activa «Agent notifications».",
 	"mobile.devices.notificationsFor": "Notificaciones de {{name}}",
 	"mobile.devices.registryUnavailable": "Registro de dispositivos no disponible — AO no pudo leer tus dispositivos guardados.",
 	"mobile.devices.removeAria": "Eliminar {{name}}",

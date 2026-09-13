@@ -69,6 +69,40 @@ describe("MobileDevicesSection", () => {
 		});
 	});
 
+	it("updates the visible switch after muting and unmuting", async () => {
+		let muted = false;
+		vi.spyOn(apiClient, "GET").mockImplementation(async () => ({
+			data: { devices: [{ ...twoDevices.data.devices[0], muted }] },
+		}) as never);
+		const patch = vi.spyOn(apiClient, "PATCH").mockImplementation(async (_path, options) => {
+			muted = (options as { body: { muted: boolean } }).body.muted;
+			return { data: { muted } } as never;
+		});
+		renderSection();
+		const toggle = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		expect(toggle).toBeChecked();
+		fireEvent.click(toggle);
+		await waitFor(() => expect(toggle).not.toBeChecked());
+		fireEvent.click(toggle);
+		await waitFor(() => expect(toggle).toBeChecked());
+		expect(patch).toHaveBeenCalledTimes(2);
+	});
+
+	it("removes phone setup guidance after registration while keeping the preference", async () => {
+		const device = twoDevices.data.devices[0];
+		vi.spyOn(apiClient, "GET").mockResolvedValue({
+			data: { devices: [{ ...device, notificationsEnabled: false }] },
+		} as never);
+		const { client } = renderSection();
+		await screen.findByText(/open Settings in the AO phone app/i);
+		expect(screen.getByRole("switch")).toBeEnabled();
+		act(() => { client.setQueryData(mobileDevicesQueryKey, [device]); });
+		const toggle = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		expect(toggle).toBeEnabled();
+		expect(toggle).toBeChecked();
+		expect(screen.queryByText(/open Settings in the AO phone app/i)).not.toBeInTheDocument();
+	});
+
 	it("removes a device only after confirmation", async () => {
 		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
 		const del = vi.spyOn(apiClient, "DELETE").mockResolvedValue({ data: undefined } as never);
@@ -181,7 +215,7 @@ describe("MobileDevicesSection", () => {
 		expect(names).toEqual(["iPhone", "M31s"]);
 	});
 
-	it("keeps a device without a push token manageable without extra status copy", async () => {
+	it("lets a tokenless phone save its mute preference and explains phone setup", async () => {
 		const noToken = {
 			data: {
 				devices: [
@@ -199,10 +233,15 @@ describe("MobileDevicesSection", () => {
 
 		expect(await screen.findByText("Pixel Announce")).toBeInTheDocument();
 		expect(screen.queryByText("Live")).not.toBeInTheDocument();
-		expect(screen.queryByText(/Notifications not enabled on this device/i)).not.toBeInTheDocument();
+		expect(screen.getByText(/open Settings in the AO phone app and turn on Agent notifications/i)).toBeInTheDocument();
 
-		const toggle = screen.getByRole("switch", { name: /notifications for Pixel Announce/i });
-		expect(toggle).toBeDisabled();
+		expect(screen.getByRole("switch")).toBeEnabled();
+		expect(screen.getByTestId("bell")).toBeInTheDocument();
+		const patch = vi.spyOn(apiClient, "PATCH").mockResolvedValue({ data: { muted: true } } as never);
+		fireEvent.click(screen.getByRole("switch"));
+		await waitFor(() => expect(patch).toHaveBeenCalledWith("/api/v1/mobile/devices/{installId}", {
+			params: { path: { installId: "i3" } }, body: { muted: true },
+		}));
 
 		// Still removable.
 		fireEvent.click(screen.getByRole("button", { name: /remove Pixel Announce/i }));

@@ -522,6 +522,7 @@
 	"mobile.devices.confirmRemove": "确认移除",
 	"mobile.devices.empty": "尚未配对任何设备。",
 	"mobile.devices.loading": "正在加载设备…",
+	"mobile.devices.enableOnPhone": "要启用通知，请打开手机上 AO 应用的设置，然后开启“Agent notifications”。",
 	"mobile.devices.notificationsFor": "{{name}} 的通知",
 	"mobile.devices.registryUnavailable": "设备注册表不可用 — AO 无法读取已保存的设备。",
 	"mobile.devices.removeAria": "移除 {{name}}",
