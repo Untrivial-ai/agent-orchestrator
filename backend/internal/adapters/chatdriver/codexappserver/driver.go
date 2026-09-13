@@ -282,8 +282,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 
 	policy, sandbox := approvalSettings(cfg.Permissions)
+	// The provider process is already bound to WorkspacePath. An explicit cwd
+	// on thread/start is also a project-trust grant in Codex when permissions
+	// allow writes. Omit that grant: task permissions must not authorize loading
+	// executable repository config. Native tests cover unknown, denied and
+	// explicitly trusted projects, including linked worktrees.
 	params := map[string]any{
-		"cwd":               cfg.WorkspacePath,
 		"approvalPolicy":    policy,
 		"approvalsReviewer": approvalReviewer(cfg.Permissions),
 		"sandbox":           sandbox,

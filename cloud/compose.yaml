@@ -21,7 +21,8 @@ services:
 
   migrate:
     build:
-      context: .
+      context: ..
+      dockerfile: cloud/Dockerfile
       target: control-plane
     entrypoint: ["/ao-cloud-migrate"]
     environment:
@@ -34,7 +35,8 @@ services:
 
   control-plane:
     build:
-      context: .
+      context: ..
+      dockerfile: cloud/Dockerfile
       target: control-plane
     environment:
       AO_CLOUD_ENV: development
@@ -81,5 +83,6 @@ services:
     profiles: ["worker-image"]
     image: "${AO_CLOUD_DOCKER_WORKER_IMAGE:-ao-cloud-worker:local}"
     build:
-      context: .
+      context: ..
+      dockerfile: cloud/Dockerfile
       target: worker

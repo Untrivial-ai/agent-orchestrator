@@ -1,0 +1,13 @@
+# The build needs only the two modules from this exact checkout.
+**
+!backend/
+!backend/**
+!cloud/
+!cloud/**
+**/.env
+**/.env.*
+**/node_modules
+**/bin
+**/coverage.out
+**/*.test
+**/.git

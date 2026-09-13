@@ -83,7 +83,11 @@ func (b HarnessBuilder) BuildInteractive(
 	var providerArgs []string
 	switch launch.Harness {
 	case "codex":
-		providerArgs = codexActivityHookArgs()
+		var err error
+		providerArgs, err = codexActivityHookArgs()
+		if err != nil {
+			return Command{}, err
+		}
 	case "cursor":
 		providerArgs = []string{"--trust"}
 	}

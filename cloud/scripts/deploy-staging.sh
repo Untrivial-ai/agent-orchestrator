@@ -120,9 +120,10 @@ publish_image() {
 		docker build \
 			--platform linux/amd64 \
 			--provenance=false \
+			--file Dockerfile \
 			--target "$target" \
 			--tag "${PUBLISHED_URI}:${IMAGE_TAG}" \
-			.
+			..
 		docker push "${PUBLISHED_URI}:${IMAGE_TAG}"
 	fi
 	PUBLISHED_DIGEST="$(

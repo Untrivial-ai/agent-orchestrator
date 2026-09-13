@@ -456,10 +456,9 @@ func (c *commandContext) checkHarness(ctx context.Context, harness harnessProbe)
 }
 
 // checkCodexLaunchFlags smoke-tests AO's codex launch surface against the
-// installed binary: the hook-trust bypass flag and the `-c` session-flag
-// config AO injects at spawn (activity hooks, worktree trust, nudge
-// suppression). Codex has no stable hook-config contract, so a codex upgrade
-// can silently break activity tracking; this canary turns that breakage into
+// installed binary: the `-c` session-flag config AO injects at spawn
+// for scoped activity hooks and nudge suppression. Codex can change its hook
+// config contract on upgrade; this canary turns parsing failures into
 // a doctor warning. The probes come from the codex adapter itself so they
 // cannot drift from the real spawn argv.
 func (c *commandContext) checkCodexLaunchFlags(ctx context.Context) doctorCheck {
@@ -468,7 +467,11 @@ func (c *commandContext) checkCodexLaunchFlags(ctx context.Context) doctorCheck 
 	if err != nil || path == "" {
 		return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "skipped: codex not found in PATH"}
 	}
-	for _, probe := range codex.DoctorLaunchProbes() {
+	probes, err := codex.DoctorLaunchProbes()
+	if err != nil {
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: err.Error()}
+	}
+	for _, probe := range probes {
 		reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 		out, err := c.deps.CommandOutput(reqCtx, path, probe...)
 		cancel()

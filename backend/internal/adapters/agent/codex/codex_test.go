@@ -174,18 +174,12 @@ func sessionHookFlags(t *testing.T) []string {
 			t.Fatal(err)
 		}
 	}
-	if runtime.GOOS == "windows" {
-		executable = `& "` + executable + `"`
-	} else {
-		executable = `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
+	var flags []string
+	// Exact provider hashes and isolation are covered by the native contract test.
+	if err := appendSessionHookFlagsForExecutable(&flags, executable); err != nil {
+		t.Fatal(err)
 	}
-	prefix := executable + " hooks codex "
-	return []string{
-		"-c", `hooks.SessionStart=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"session-start") + `,timeout=5}]}]`,
-		"-c", `hooks.UserPromptSubmit=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"user-prompt-submit") + `,timeout=5}]}]`,
-		"-c", `hooks.PermissionRequest=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"permission-request") + `,timeout=5}]}]`,
-		"-c", `hooks.Stop=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"stop") + `,timeout=5}]}]`,
-	}
+	return flags
 }
 
 func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
@@ -339,7 +333,6 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 		"codex",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 		"--dangerously-bypass-approvals-and-sandbox",
 	}
 	want = append(want, sessionHookFlags(t)...)
@@ -347,7 +340,6 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 		want = append(want, "--no-alt-screen")
 	}
 	want = append(want,
-		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
 		"-c", "model_instructions_file="+systemFile,
 		"--", "-fix this",
 	)
@@ -556,44 +548,6 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 				t.Fatalf("command %#v contains %q", cmd, tt.notExpected)
 			}
 		})
-	}
-}
-
-func TestAppendWorkspaceTrustFlagCoversLiteralAndResolvedPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs extra privileges on Windows")
-	}
-	base := canonicalTempDir(t)
-	target := filepath.Join(base, "real")
-	if err := os.Mkdir(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(base, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-
-	var cmd []string
-	appendWorkspaceTrustFlag(&cmd, link)
-	want := []string{
-		"-c",
-		`projects={'` + link + `'={trust_level="trusted"},'` + target + `'={trust_level="trusted"}}`,
-	}
-	if !reflect.DeepEqual(cmd, want) {
-		t.Fatalf("trust flag\nwant: %#v\n got: %#v", want, cmd)
-	}
-
-	cmd = nil
-	appendWorkspaceTrustFlag(&cmd, target)
-	want = []string{"-c", `projects={'` + target + `'={trust_level="trusted"}}`}
-	if !reflect.DeepEqual(cmd, want) {
-		t.Fatalf("canonical-path trust flag\nwant: %#v\n got: %#v", want, cmd)
-	}
-
-	cmd = nil
-	appendWorkspaceTrustFlag(&cmd, "   ")
-	if cmd != nil {
-		t.Fatalf("blank workspace produced %#v, want no flag", cmd)
 	}
 }
 
@@ -841,7 +795,6 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		"resume",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 		"--ask-for-approval", "on-request",
 		"-c", `approvals_reviewer="auto_review"`,
 	}
@@ -850,7 +803,6 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		want = append(want, "--no-alt-screen")
 	}
 	want = append(want,
-		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
 		"-c", "model_instructions_file="+systemFile,
 		"thread-123",
 		"--", "continue from AO",
@@ -1042,11 +994,14 @@ func countCodexHookCommand(entries []codexMatcherGroup, command string) int {
 }
 
 func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
-	probes := DoctorLaunchProbes()
+	probes, err := DoctorLaunchProbes()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(probes) != 2 {
 		t.Fatalf("probes = %d, want 2", len(probes))
 	}
-	if !reflect.DeepEqual(probes[0], []string{"--dangerously-bypass-hook-trust", "--version"}) {
+	if !reflect.DeepEqual(probes[0], []string{"--version"}) {
 		t.Fatalf("flag probe = %#v", probes[0])
 	}
 	override := probes[1]
@@ -1057,7 +1012,6 @@ func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
 	for _, want := range []string{
 		"hooks.SessionStart=", "hooks.UserPromptSubmit=", "hooks.PermissionRequest=", "hooks.Stop=",
 		"notice.hide_rate_limit_model_nudge=true",
-		`projects={`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("override probe missing %q in %s", want, joined)
