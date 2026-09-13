@@ -15,6 +15,12 @@ import (
 // for a live session.
 var ErrAgentBinaryNotFound = errors.New("agent: binary not found on PATH")
 
+// ErrAgentBinaryIdentityUnknown is returned by a startup-only presence check
+// when a name-matching executable exists but the adapter's identity probe has
+// not confirmed it. It is deliberately distinct from ErrAgentBinaryNotFound:
+// callers must not present an unverified name-only match as installed.
+var ErrAgentBinaryIdentityUnknown = errors.New("agent: binary identity unknown")
+
 // AgentAuthStatus describes the result of a short local auth probe for an
 // installed agent. It is advisory only: credentials, quota, selected model
 // availability, or CLI state can still fail at session spawn/model-call time.
@@ -74,7 +80,9 @@ type AgentBinaryResolver interface {
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
 // adapter whose normal binary resolution performs additional validation. It
 // must only inspect local executable paths; it must not start the agent CLI.
-// AO uses it for the first-render prerequisite gate, where existence is enough.
+// AO uses it for the first-render prerequisite gate. Identity-sensitive
+// adapters may return ErrAgentBinaryIdentityUnknown when existence alone is
+// insufficient; that result remains unknown until a normal identity probe.
 type AgentBinaryPresenceResolver interface {
 	ResolveBinaryPresence(ctx context.Context) (path string, err error)
 }

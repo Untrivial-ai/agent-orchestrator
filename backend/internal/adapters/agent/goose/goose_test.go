@@ -4,13 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 func TestManifestIDIsGoose(t *testing.T) {
@@ -529,6 +536,409 @@ func TestSessionInfoFalseWhenNoHookMetadata(t *testing.T) {
 	if !reflect.DeepEqual(info, ports.SessionInfo{}) {
 		t.Fatalf("info = %#v, want zero value", info)
 	}
+}
+
+func TestOfficialGooseBinaryRequiresPositiveBlockHelpSignature(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		err  error
+		want bool
+	}{
+		{
+			name: "Block Goose",
+			out:  "Usage: goose [OPTIONS] <COMMAND>\n\nCommands:\n  session  Manage sessions\n  recipe   Manage recipes\n",
+			want: true,
+		},
+		{
+			name: "Pressly Goose",
+			out:  "Usage: goose [command]\n\nCommands:\n  up       Migrate up\n  down     Migrate down\n  status   Migration status\n  create   Create a migration\n",
+		},
+		{
+			name: "malformed help",
+			out:  "goose is not the expected CLI\n",
+		},
+		{
+			name: "non-zero output",
+			out:  "Commands:\n  session\n  recipe\n",
+			err:  errors.New("exit status 1"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := gooseIdentityCommand
+			gooseIdentityCommand = func(context.Context, string, ...string) ([]byte, error) {
+				return []byte(tt.out), tt.err
+			}
+			t.Cleanup(func() { gooseIdentityCommand = previous })
+
+			if got := isOfficialGooseBinary(context.Background(), testGooseBinaryPath()); got != tt.want {
+				t.Fatalf("isOfficialGooseBinary() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOfficialGooseBinaryProbeIsBounded(t *testing.T) {
+	previousTimeout := gooseIdentityProbeTimeout
+	gooseIdentityProbeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { gooseIdentityProbeTimeout = previousTimeout })
+	previousCommand := gooseIdentityCommand
+	gooseIdentityCommand = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+
+	started := time.Now()
+	if got := isOfficialGooseBinary(context.Background(), testGooseBinaryPath()); got {
+		t.Fatal("timed-out identity probe was accepted")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("identity probe took %s, want bounded probe", elapsed)
+	}
+}
+
+func TestGooseIdentityCommandBoundsDescendantHoldingOutputPipes(t *testing.T) {
+	const (
+		modeEnv   = "AO_TEST_GOOSE_WAIT_DELAY_MODE"
+		readyEnv  = "AO_TEST_GOOSE_WAIT_DELAY_READY"
+		signalEnv = "AO_TEST_GOOSE_WAIT_DELAY_SIGNAL"
+		doneEnv   = "AO_TEST_GOOSE_WAIT_DELAY_DONE"
+	)
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	signal := filepath.Join(dir, "stop")
+	done := filepath.Join(dir, "done")
+	t.Setenv(modeEnv, "parent")
+	t.Setenv(readyEnv, ready)
+	t.Setenv(signalEnv, signal)
+	t.Setenv(doneEnv, done)
+	t.Cleanup(func() {
+		_ = os.WriteFile(signal, nil, 0o600)
+		waitForGooseTestFile(done, time.Second)
+	})
+
+	started := time.Now()
+	result := make(chan struct {
+		out []byte
+		err error
+	}, 1)
+	go func() {
+		out, err := gooseIdentityCommand(context.Background(), os.Args[0], "-test.run=^TestGooseIdentityPipeHolder$", "--")
+		result <- struct {
+			out []byte
+			err error
+		}{out: out, err: err}
+	}()
+	if !waitForGooseTestFile(ready, time.Second) {
+		t.Fatal("pipe-holder subprocess did not start")
+	}
+
+	select {
+	case got := <-result:
+		if !errors.Is(got.err, osexec.ErrWaitDelay) {
+			t.Fatalf("identity command error = %v, want exec.ErrWaitDelay", got.err)
+		}
+		if !strings.Contains(string(got.out), "session recipe") {
+			t.Fatalf("identity command output = %q, want helper marker", got.out)
+		}
+		if elapsed := time.Since(started); elapsed > 2*time.Second {
+			t.Fatalf("identity command returned after %s, want bounded pipe cleanup", elapsed)
+		}
+	case <-time.After(3 * time.Second):
+		_ = os.WriteFile(signal, nil, 0o600)
+		got := <-result
+		t.Fatalf("identity command exceeded bound: err=%v output=%q", got.err, got.out)
+	}
+}
+
+// TestGooseIdentityPipeHolder is a subprocess fixture for the production
+// identity command. The parent exits while its child retains both output
+// descriptors; the test above then proves exec.Cmd.WaitDelay closes the
+// command's pipes instead of waiting for that descendant indefinitely.
+func TestGooseIdentityPipeHolder(t *testing.T) {
+	const (
+		modeEnv   = "AO_TEST_GOOSE_WAIT_DELAY_MODE"
+		readyEnv  = "AO_TEST_GOOSE_WAIT_DELAY_READY"
+		signalEnv = "AO_TEST_GOOSE_WAIT_DELAY_SIGNAL"
+		doneEnv   = "AO_TEST_GOOSE_WAIT_DELAY_DONE"
+	)
+	switch os.Getenv(modeEnv) {
+	case "child":
+		for {
+			if _, err := os.Stat(os.Getenv(signalEnv)); err == nil {
+				_ = os.WriteFile(os.Getenv(doneEnv), nil, 0o600)
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	case "parent":
+		child := aoprocess.Command(os.Args[0], "-test.run=^TestGooseIdentityPipeHolder$", "--")
+		child.Env = replaceGooseTestEnv(os.Environ(), modeEnv, "child")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv(readyEnv), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, "session recipe")
+		_, _ = fmt.Fprintln(os.Stderr, "session recipe")
+	default:
+		t.Skip("subprocess fixture")
+	}
+}
+
+func replaceGooseTestEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func waitForGooseTestFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+func TestOfficialGooseBinaryProbeHonorsCallerCancellation(t *testing.T) {
+	previousCommand := gooseIdentityCommand
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	gooseIdentityCommand = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+	result := make(chan bool, 1)
+	run := func() { result <- isOfficialGooseBinary(ctx, testGooseBinaryPath()) }
+	go run()
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("identity probe did not start")
+	}
+	select {
+	case got := <-result:
+		if got {
+			t.Fatal("cancelled identity probe was accepted")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("identity probe did not stop after cancellation")
+	}
+}
+
+func TestResolveGooseBinaryUsesValidFallbackAfterPathCollision(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native Windows candidate policy is tested without launching shims")
+	}
+	home := t.TempDir()
+	pathDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	t.Setenv("VOLTA_HOME", "")
+	t.Setenv("FNM_DIR", "")
+
+	foreign := filepath.Join(pathDir, "goose")
+	valid := filepath.Join(home, ".local", "share", "mise", "shims", "goose")
+	writeGooseIdentityFixture(t, foreign, `#!/bin/sh
+printf '%s\n' 'Usage: goose [command]' '  up  Migrate up' '  down  Migrate down'
+`)
+	writeGooseIdentityFixture(t, valid, `#!/bin/sh
+printf '%s\n' 'Usage: goose [OPTIONS] <COMMAND>' 'Commands:' '  session  Manage sessions' '  recipe  Manage recipes'
+`)
+
+	got, err := binaryutil.ResolveBinary(context.Background(), binaryutil.BinarySpec{
+		Label:            "goose",
+		Names:            []string{"goose"},
+		ValidateIdentity: isOfficialGooseBinary,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != valid {
+		t.Fatalf("resolved binary = %q, want valid fallback %q", got, valid)
+	}
+}
+
+func TestResolveGooseBinaryHangingPathCollisionStillReachesFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native Windows candidate policy is tested without launching shims")
+	}
+	home := t.TempDir()
+	pathDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	t.Setenv("VOLTA_HOME", "")
+	t.Setenv("FNM_DIR", "")
+	foreign := filepath.Join(pathDir, "goose")
+	valid := filepath.Join(home, ".local", "share", "mise", "shims", "goose")
+	writeGooseIdentityFixture(t, foreign, "#!/bin/sh\n")
+	writeGooseIdentityFixture(t, valid, "#!/bin/sh\n")
+
+	previousTimeout := gooseIdentityProbeTimeout
+	gooseIdentityProbeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { gooseIdentityProbeTimeout = previousTimeout })
+	previousCommand := gooseIdentityCommand
+	gooseIdentityCommand = func(ctx context.Context, binary string, _ ...string) ([]byte, error) {
+		switch binary {
+		case foreign:
+			<-ctx.Done()
+			return nil, ctx.Err()
+		case valid:
+			return []byte("Commands:\n  session\n  recipe\n"), nil
+		default:
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	got, err := ResolveGooseBinary(ctx)
+	if err != nil {
+		t.Fatalf("ResolveGooseBinary: %v", err)
+	}
+	if got != valid {
+		t.Fatalf("resolved binary = %q, want valid fallback %q", got, valid)
+	}
+}
+
+func TestResolveGooseBinaryPresenceDoesNotRunIdentityProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH fixture uses a Unix executable name")
+	}
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	t.Setenv("HOME", t.TempDir())
+	writeGooseIdentityFixture(t, filepath.Join(pathDir, "goose"), "#!/bin/sh\n")
+
+	previousCommand := gooseIdentityCommand
+	called := false
+	gooseIdentityCommand = func(context.Context, string, ...string) ([]byte, error) {
+		called = true
+		return nil, nil
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+
+	_, err := (&Plugin{}).ResolveBinaryPresence(context.Background())
+	if !errors.Is(err, ports.ErrAgentBinaryIdentityUnknown) {
+		t.Fatalf("ResolveBinaryPresence() error = %v, want identity-unknown", err)
+	}
+	if called {
+		t.Fatal("ResolveBinaryPresence() ran an identity process")
+	}
+}
+
+func TestResolveGooseBinaryPresenceDoesNotTrustReplacedCachedIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH fixture uses a Unix executable name")
+	}
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	t.Setenv("HOME", t.TempDir())
+	binary := filepath.Join(pathDir, "goose")
+	writeGooseIdentityFixture(t, binary, `#!/bin/sh
+printf '%s\n' 'Usage: goose [OPTIONS] <COMMAND>' 'Commands:' '  session  Manage sessions' '  recipe  Manage recipes'
+`)
+
+	previousCommand := gooseIdentityCommand
+	probeCalls := 0
+	gooseIdentityCommand = func(context.Context, string, ...string) ([]byte, error) {
+		probeCalls++
+		return []byte("Commands:\n  session\n  recipe\n"), nil
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+
+	plugin := &Plugin{}
+	if got, err := plugin.ResolveBinary(context.Background()); err != nil || got != binary {
+		t.Fatalf("ResolveBinary() = (%q, %v), want cached Block binary %q", got, err, binary)
+	}
+	if err := os.Remove(binary); err != nil {
+		t.Fatal(err)
+	}
+	writeGooseIdentityFixture(t, binary, `#!/bin/sh
+printf '%s\n' 'Usage: goose [command]' '  up  Migrate up' '  down  Migrate down'
+`)
+
+	got, err := plugin.ResolveBinaryPresence(context.Background())
+	if !errors.Is(err, ports.ErrAgentBinaryIdentityUnknown) || got != "" {
+		t.Fatalf("ResolveBinaryPresence() = (%q, %v), want empty identity-unknown result", got, err)
+	}
+	if probeCalls != 1 {
+		t.Fatalf("presence check ran %d identity probes, want only the initial fresh probe", probeCalls)
+	}
+}
+
+func TestWindowsGooseIdentityOnlyAcceptsNativeExecutables(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: `C:\Users\tester\goose.exe`, want: true},
+		{path: `C:\Users\tester\goose.EXE`, want: true},
+		{path: `C:\Users\tester\goose.cmd`},
+		{path: `C:\Users\tester\goose.bat`},
+		{path: `C:\Users\tester\goose`},
+	}
+	for _, tt := range tests {
+		if got := isNativelyLaunchableWindowsGoose(tt.path); got != tt.want {
+			t.Errorf("isNativelyLaunchableWindowsGoose(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		previousCommand := gooseIdentityCommand
+		called := false
+		gooseIdentityCommand = func(context.Context, string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		}
+		t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+		if isOfficialGooseBinary(context.Background(), `C:\Users\tester\goose.cmd`) || called {
+			t.Fatal("Windows shim reached the native Goose identity probe")
+		}
+	}
+	if !reflect.DeepEqual(gooseBinarySpec.WinNames, []string{"goose.exe"}) {
+		t.Fatalf("Windows PATH names = %#v, want only native goose.exe", gooseBinarySpec.WinNames)
+	}
+	for _, candidate := range gooseBinarySpec.WinPaths {
+		if filepath.Ext(filepath.Join(candidate.Parts...)) != ".exe" {
+			t.Fatalf("Windows fallback candidate %#v is not native", candidate)
+		}
+	}
+}
+
+func writeGooseIdentityFixture(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testGooseBinaryPath() string {
+	if runtime.GOOS == "windows" {
+		return `C:\goose.exe`
+	}
+	return "/usr/local/bin/goose"
 }
 
 func TestResolveGooseBinaryFallback(t *testing.T) {
