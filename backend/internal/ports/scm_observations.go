@@ -104,12 +104,6 @@ type SCMIdentity struct {
 	Human bool
 }
 
-// SCMIdentityResolver lazily resolves the account authenticated with the
-// active SCM provider.
-type SCMIdentityResolver interface {
-	AuthenticatedIdentity(ctx context.Context) (SCMIdentity, error)
-}
-
 // ScopedIdentityResolver resolves the authenticated identity for a specific
 // provider key and host. Multi-provider implementations use this to delegate
 // to the matching sub-provider's identity method, passing host through so

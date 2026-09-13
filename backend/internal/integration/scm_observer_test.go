@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	scmmulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/multi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	scmobserve "github.com/aoagents/agent-orchestrator/backend/internal/observe/scm"
@@ -143,6 +144,14 @@ func (p *cannedSCMProvider) FetchReviewThreads(_ context.Context, ref ports.SCMP
 	return p.reviews[ref.Number], nil
 }
 
+func (p *cannedSCMProvider) AuthenticatedIdentity(context.Context) (ports.SCMIdentity, error) {
+	return ports.SCMIdentity{Login: "octocat", Human: true}, nil
+}
+
+func (p *cannedSCMProvider) SCMCredentialsAvailable(context.Context) (bool, error) {
+	return true, nil
+}
+
 // scmFixture bundles the live collaborators a single SCM observer scenario
 // needs. Every test case constructs its own fixture against a fresh tmpdir DB
 // so writes/lifecycle/messenger state never leak between cases.
@@ -213,10 +222,12 @@ func newSCMFixture(t *testing.T, branch string) *scmFixture {
 	lcm := lifecycle.New(store, spy)
 	lcm.SetCompletionTerminator(lifecycleMarkTerminator{lcm: lcm})
 	provider := newCannedSCMProvider()
-	observer := scmobserve.New(provider, store, lcm, scmobserve.Config{
-		Tick:   time.Hour,
-		Clock:  func() time.Time { return now },
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	multi := scmmulti.New(scmmulti.NamedProvider{Key: "github", Provider: provider})
+	observer := scmobserve.New(multi, store, lcm, scmobserve.Config{
+		Tick:                   time.Hour,
+		Clock:                  func() time.Time { return now },
+		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ScopedIdentityResolver: multi,
 	})
 	return &scmFixture{
 		store:    store,
@@ -308,7 +319,7 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 			logTail = "setup\nsetup\nFAILED: build broke\n"
 		)
 		f.provider.detected["feat/x"] = ports.SCMPRObservation{
-			URL: prURL, Number: 42, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA,
+			URL: prURL, Number: 42, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA, Author: "octocat",
 		}
 		f.provider.observations[42] = failingSCMObservation(prURL, 42, headSHA, logTail)
 
@@ -409,7 +420,7 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 			headSHA = "cafef00d"
 		)
 		f.provider.detected["feat/x"] = ports.SCMPRObservation{
-			URL: prURL, Number: 77, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA, Merged: true,
+			URL: prURL, Number: 77, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA, Author: "octocat", Merged: true,
 		}
 		f.provider.observations[77] = mergedSCMObservation(prURL, 77, headSHA)
 
@@ -437,7 +448,7 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 		f.lcm.SetCompletionTerminator(terminator)
 		const prURL = "https://github.com/octocat/hello/pull/78"
 		f.provider.detected["feat/x"] = ports.SCMPRObservation{
-			URL: prURL, Number: 78, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: "deadbeef", Merged: true,
+			URL: prURL, Number: 78, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: "deadbeef", Author: "octocat", Merged: true,
 		}
 		f.provider.observations[78] = mergedSCMObservation(prURL, 78, "deadbeef")
 
@@ -527,7 +538,7 @@ func mergedSCMObservationBranches(prURL string, num int, headSHA, src, tgt strin
 // listed PR to a session by source-branch prefix, so only identity + branches
 // matter here.
 func detectedPR(prURL string, num int, src, tgt, headSHA string) ports.SCMPRObservation {
-	return ports.SCMPRObservation{URL: prURL, HTMLURL: prURL, Number: num, SourceBranch: src, HeadRepo: scmTestRepo.Repo, TargetBranch: tgt, HeadSHA: headSHA}
+	return ports.SCMPRObservation{URL: prURL, HTMLURL: prURL, Number: num, SourceBranch: src, HeadRepo: scmTestRepo.Repo, TargetBranch: tgt, HeadSHA: headSHA, Author: "octocat"}
 }
 
 // TestSCMObserverMultiPREndToEnd is the functional regression guard for the

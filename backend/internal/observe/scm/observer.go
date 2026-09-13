@@ -41,11 +41,6 @@ const (
 	DefaultPRMaxAge = 5 * time.Minute
 	// BatchSize is the maximum number of PRs in one provider batch fetch.
 	BatchSize = 25
-
-	// fallbackIdentityKey is the map key used when the observer falls back
-	// to the single-provider IdentityResolver path. It represents the
-	// unnamed identity that applies when no ScopedIdentityResolver is wired.
-	fallbackIdentityKey = ""
 )
 
 // identityKey builds the cache key for a per-provider, per-host identity.
@@ -166,12 +161,9 @@ type Config struct {
 	Logger *slog.Logger
 	// CacheMax bounds each in-memory ETag/review cache. Zero uses DefaultCacheMax.
 	CacheMax int
-	// IdentityResolver resolves the active SCM account lazily. Nil preserves branch-based discovery.
-	IdentityResolver ports.SCMIdentityResolver
-	// ScopedIdentityResolver resolves the authenticated identity per provider key.
-	// When set, the observer resolves identities for all providers upfront in
-	// each poll and checks PR authors against the matching provider's identity.
-	// When nil, the observer falls back to IdentityResolver (single-provider).
+	// ScopedIdentityResolver resolves the active human account per provider and
+	// host. Without a matching identity, new automatic attachments are disabled;
+	// existing attachments continue to refresh and explicit claims still work.
 	ScopedIdentityResolver ports.ScopedIdentityResolver
 }
 
@@ -244,8 +236,6 @@ type Observer struct {
 	credentialsChecked bool
 	// disabled is set after the credential gate reports unavailable credentials.
 	disabled bool
-	// identityResolver is the explicitly wired source of the active SCM account.
-	identityResolver ports.SCMIdentityResolver
 	// scopedIdentityResolver resolves the authenticated identity per provider key.
 	scopedIdentityResolver ports.ScopedIdentityResolver
 	// rateLimitUntil records, per provider key, the time until which that
@@ -260,7 +250,7 @@ type Observer struct {
 // New constructs an Observer with default cadence/cache settings for zero
 // values in cfg.
 func New(provider Provider, store Store, lifecycle Lifecycle, cfg Config) *Observer {
-	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, identityResolver: cfg.IdentityResolver, scopedIdentityResolver: cfg.ScopedIdentityResolver, Cache: newCache(cfg.CacheMax), rateLimitUntil: map[string]time.Time{}}
+	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, scopedIdentityResolver: cfg.ScopedIdentityResolver, Cache: newCache(cfg.CacheMax), rateLimitUntil: map[string]time.Time{}}
 	if o.tick <= 0 {
 		o.tick = DefaultTickInterval
 	}
@@ -389,8 +379,8 @@ func (o *Observer) Poll(ctx context.Context) error {
 			repoRefreshOK[key] = false
 		}
 	}
-	// markRepoListFailed is called only when the PR listing itself fails
-	// (ListPRsByRepo error in discoverNewPRs). It sets repoListFailed so
+	// markRepoListFailed marks incomplete discovery (a failed listing or missing
+	// human identity). It sets repoListFailed so
 	// markRepoRefreshOK cannot clear it within the same poll, and also
 	// marks the repo refresh-incomplete via markRepoRefreshFailed.
 	markRepoListFailed := func(repo ports.SCMRepo) {
@@ -974,11 +964,7 @@ func pendingRepoRefreshes(guards map[string]repoGuardState) map[string]bool {
 // NotModified against a known ETag are skipped, since nothing new can have
 // appeared since the last poll.
 func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
-	// Resolve identities per-provider when a ScopedIdentityResolver is wired.
-	// This ensures GitHub PRs are checked against the GitHub identity and
-	// GitLab PRs against the GitLab identity. Falls back to the single-
-	// provider IdentityResolver path for backward compatibility.
-	identities, identityKnown := o.resolveIdentities(ctx, sessionRepos)
+	identities := o.resolveIdentities(ctx, sessionRepos)
 	byRepo := map[string][]sessionRepo{}
 	repos := map[string]ports.SCMRepo{}
 	for _, sr := range sessionRepos {
@@ -994,6 +980,17 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	listedRepos = map[string]bool{}
 	pullsByRepo := map[string][]ports.SCMPRObservation{}
 	for repoKey, repo := range repos {
+		if _, ok := identities[identityKey(repo.Provider, repo.Host)]; !ok {
+			// Do not acknowledge discoveries we could not attribute. Clear even
+			// an older cursor/ETag so recovery retries a full listing after an
+			// identity outage longer than the incremental overlap window.
+			cacheDelete(o.Cache.RepoPRListETag, &o.Cache.repoOrder, repoKey)
+			delete(o.Cache.LastSyncCursor, repoKey)
+			if markRepoFailed != nil {
+				markRepoFailed(repo)
+			}
+			continue
+		}
 		g := guards[repoKey]
 		if g.err != nil {
 			continue
@@ -1062,14 +1059,9 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			if pr.Number <= 0 || pr.SourceBranch == "" {
 				continue
 			}
-			if identityKnown {
-				id, ok := identities[identityKey(repo.Provider, repo.Host)]
-				if !ok {
-					id, ok = identities[fallbackIdentityKey] // fallback single-identity
-				}
-				if ok && !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
-					continue
-				}
+			id := identities[identityKey(repo.Provider, repo.Host)]
+			if !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
+				continue
 			}
 			if _, ok := subjects[prKey(repo, pr.Number)]; ok {
 				continue
@@ -1107,6 +1099,7 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 				SourceBranch: pr.SourceBranch,
 				TargetBranch: pr.TargetBranch,
 				HeadSHA:      pr.HeadSHA,
+				Author:       strings.TrimSpace(pr.Author),
 				Provider:     repo.Provider,
 				Host:         repo.Host,
 				Repo:         repoFullName(repo),
@@ -1138,74 +1131,34 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	return listedPRs, listedRepos
 }
 
-func (o *Observer) authenticatedIdentity(ctx context.Context) (ports.SCMIdentity, bool) {
-	if o.identityResolver == nil {
-		return ports.SCMIdentity{}, false
+// resolveIdentities resolves each provider/host once per poll. Unknown or bot
+// accounts disable discovery only for that scope; other accounts keep working.
+func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) map[string]ports.SCMIdentity {
+	if o.scopedIdentityResolver == nil {
+		return nil
 	}
-	identity, err := o.identityResolver.AuthenticatedIdentity(ctx)
-	if err != nil {
-		o.logger.Debug("scm observer: authenticated identity unavailable; preserving branch-based discovery", "err", err)
-		return ports.SCMIdentity{}, false
-	}
-	identity.Login = strings.TrimSpace(identity.Login)
-	if !identity.Human || identity.Login == "" {
-		o.logger.Debug("scm observer: authenticated human identity unavailable; preserving branch-based discovery")
-		return ports.SCMIdentity{}, false
-	}
-	return identity, true
-}
-
-// resolveIdentities resolves the authenticated identity for each provider key
-// present in sessionRepos. When a ScopedIdentityResolver is wired, identities
-// are resolved upfront (one call per unique provider+host pair) and cached in
-// a map keyed by identityKey(provider, host). This ensures a self-managed
-// GitLab host gets its own identity, distinct from gitlab.com. If identity
-// resolution fails for one provider+host, PRs from that provider+host fall
-// back to branch-based discovery while other providers continue normally.
-// When no ScopedIdentityResolver is available, it falls back to the
-// single-provider IdentityResolver path.
-func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) (map[string]ports.SCMIdentity, bool) {
-	if o.scopedIdentityResolver != nil {
-		seen := map[string]bool{}
-		identities := make(map[string]ports.SCMIdentity)
-		anyKnown := false
-		for _, sr := range sessionRepos {
-			ik := identityKey(sr.repo.Provider, sr.repo.Host)
-			if seen[ik] {
-				continue
-			}
-			seen[ik] = true
-			id, err := o.scopedIdentityResolver.AuthenticatedIdentityForProvider(ctx, sr.repo.Provider, sr.repo.Host)
-			if err != nil {
-				o.logger.Debug("scm observer: per-provider identity unavailable; preserving branch-based discovery for provider", "provider", sr.repo.Provider, "host", sr.repo.Host, "err", err)
-				continue
-			}
-			id.Login = strings.TrimSpace(id.Login)
-			if !id.Human || id.Login == "" {
-				o.logger.Debug("scm observer: per-provider human identity unavailable; preserving branch-based discovery for provider", "provider", sr.repo.Provider, "host", sr.repo.Host)
-				continue
-			}
-			identities[ik] = id
-			anyKnown = true
+	seen := map[string]bool{}
+	identities := map[string]ports.SCMIdentity{}
+	for _, sr := range sessionRepos {
+		ik := identityKey(sr.repo.Provider, sr.repo.Host)
+		if seen[ik] {
+			continue
 		}
-		return identities, anyKnown
+		seen[ik] = true
+		id, err := o.scopedIdentityResolver.AuthenticatedIdentityForProvider(ctx, sr.repo.Provider, sr.repo.Host)
+		if err != nil {
+			o.logger.Debug("scm observer: identity unavailable; automatic discovery disabled for scope", "provider", sr.repo.Provider, "host", sr.repo.Host, "err", err)
+			continue
+		}
+		id.Login = strings.TrimSpace(id.Login)
+		if !id.Human || id.Login == "" {
+			continue
+		}
+		identities[ik] = id
 	}
-	// Fallback: single-provider IdentityResolver path.
-	identity, ok := o.authenticatedIdentity(ctx)
-	if !ok {
-		return nil, false
-	}
-	return map[string]ports.SCMIdentity{fallbackIdentityKey: identity}, true
+	return identities
 }
 
-// matchSession picks the session that owns sourceBranch. A session owns the
-// branch when it is an exact match or a stacked descendant ("branch/..."). The
-// default worker branch is a leaf named "<namespace>/root"; for that shape the
-// session also owns sibling branches under "<namespace>/..." so Git can create
-// child PR branches without colliding with the root ref. When several session
-// branches are prefixes of the same source branch the longest (most specific)
-// one wins, so a child session claims its own stacked PRs rather than the
-// ancestor session.
 // candidatesForHeadRepo narrows the scanned repo's session candidates to those
 // whose head branch lives in headRepo (the PR's head repository full name). This
 // is the fork guard: a PR is only attributable when its head repo equals a
@@ -1224,28 +1177,44 @@ func candidatesForHeadRepo(candidates []sessionRepo, headRepo string) []sessionR
 	return out
 }
 
+// matchSession picks the session that owns sourceBranch. A session owns the
+// branch when it is an exact match or a stacked descendant ("branch/..."). The
+// default worker branch is a leaf named "<namespace>/root"; for that shape the
+// session also owns sibling branches under "<namespace>/..." so Git can create
+// child PR branches without colliding with the root ref. When several session
+// branches are prefixes of the same source branch the longest (most specific)
+// one wins, so a child session claims its own stacked PRs rather than the
+// ancestor session. Equal-ranked matches between distinct sessions are ambiguous
+// and must be claimed explicitly.
 func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, bool) {
-	for _, sr := range candidates {
-		if sr.branch != "" && sr.branch == sourceBranch {
-			return sr, true
-		}
-	}
 	var best sessionRepo
-	bestLen := -1
+	bestRank := -1
+	ambiguous := false
 	for _, sr := range candidates {
 		if sr.branch == "" {
 			continue
 		}
-		for _, prefix := range sessionBranchPrefixes(sr.branch) {
-			if prefix == sourceBranch || strings.HasPrefix(sourceBranch, prefix+"/") {
-				if len(prefix) > bestLen {
-					best = sr
-					bestLen = len(prefix)
+		rank := -1
+		if sr.branch == sourceBranch {
+			// Exact matches outrank every possible namespace prefix.
+			rank = len(sourceBranch) + 1
+		} else {
+			for _, prefix := range sessionBranchPrefixes(sr.branch) {
+				if (prefix == sourceBranch || strings.HasPrefix(sourceBranch, prefix+"/")) && len(prefix) > rank {
+					rank = len(prefix)
 				}
 			}
 		}
+		if rank < 0 {
+			continue
+		}
+		if rank > bestRank {
+			best, bestRank, ambiguous = sr, rank, false
+		} else if rank == bestRank && sr.session.ID != best.session.ID {
+			ambiguous = true
+		}
 	}
-	return best, bestLen >= 0
+	return best, bestRank >= 0 && !ambiguous
 }
 
 func sessionBranchPrefixes(branch string) []string {
