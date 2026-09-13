@@ -3182,6 +3182,7 @@ func (m *Manager) reconcileAgentSwitches(ctx context.Context, allowQuarantine bo
 			m.retainAgentSwitch(rec.ID)
 		}
 		if reconcileErr != nil {
+			//nolint:errorlint // Only a top-level quarantine is safe to suppress; joined infrastructure errors must fail startup.
 			if _, quarantined := reconcileErr.(agentSwitchQuarantinedError); allowQuarantine && !resolved && quarantined {
 				m.logger.Warn("agent switch: startup quarantined session", "sessionID", rec.ID, "switchID", sw.ID, "error", reconcileErr)
 				continue

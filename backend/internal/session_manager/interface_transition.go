@@ -542,7 +542,7 @@ func (m *Manager) runInterfaceTransition(
 		// the retry inside this durable transition, after the source was stopped,
 		// so the source is not relaunched and two target controllers never overlap.
 		if stopErr := m.stopTransitionTargetConclusive(ctx, transition); stopErr != nil {
-			m.retainUnconfirmedTransitionTarget(transition, errors.Join(err, stopErr))
+			_ = m.retainUnconfirmedTransitionTarget(transition, errors.Join(err, stopErr))
 			return
 		}
 		err = m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true, transition.HistoryPolicy)
@@ -1156,7 +1156,7 @@ func (m *Manager) rollbackInterfaceTransition(
 		// identify before restoring the old writer. A detached event stream is not
 		// proof that a persistent provider host stopped.
 		if stopErr := m.stopTransitionTargetConclusive(ctx, transition); stopErr != nil {
-			m.retainUnconfirmedTransitionTarget(transition, errors.Join(cause, stopErr))
+			_ = m.retainUnconfirmedTransitionTarget(transition, errors.Join(cause, stopErr))
 			return
 		}
 		if m.lcm == nil {
