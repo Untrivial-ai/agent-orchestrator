@@ -65,6 +65,22 @@ type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
 }
 
+// AgentAuthCheckerWithEnv refines AgentAuthChecker for adapters whose
+// credentials can come from a project-scoped environment rather than only the
+// daemon's own.
+//
+// A caller that gates an agent command on auth must ask about the environment
+// that command will actually run in. AuthStatus alone answers for the daemon's
+// environment, so a project-supplied credential is invisible to it and the
+// agent looks signed out when it is not. Adapters that read credentials from
+// the environment should implement this; callers that apply an env overlay
+// should prefer it and must not treat a plain AuthStatus answer as authoritative
+// about an environment it never saw.
+type AgentAuthCheckerWithEnv interface {
+	AgentAuthChecker
+	AuthStatusInEnv(ctx context.Context, env map[string]string) (AgentAuthStatus, error)
+}
+
 // AgentBinaryResolver is the optional capability adapters expose when their
 // binary can be checked without constructing a real session launch command.
 type AgentBinaryResolver interface {
@@ -219,6 +235,12 @@ type AgentModelDiscoverer interface {
 	// stay cheap enough to compute before deciding to skip discovery.
 	CatalogFingerprint(ctx context.Context, request AgentModelDiscoveryRequest) string
 	Manual(agentID string) AgentModelCatalog
+	// RunsAgentCommand reports whether discovering this agent's catalog executes
+	// the agent itself. Static and config-derived catalogs do not, so a caller
+	// that declines discovery because of what running the agent might do has no
+	// reason to withhold those — and withholding them would remove a model list
+	// that was never at risk.
+	RunsAgentCommand(agentID string) bool
 }
 
 // AgentExitDetectionMode describes how AO learns that an agent CLI process
