@@ -100,6 +100,12 @@ describe("native runtime resources", () => {
 		expect(extraResourcesForPlatform("win32")).not.toContain("update-helper");
 	});
 
+	it("bundles the audited device runtime only in macOS builds", () => {
+		expect(extraResourcesForPlatform("darwin")).toContain("resources/device-runtime");
+		expect(extraResourcesForPlatform("linux")).not.toContain("resources/device-runtime");
+		expect(extraResourcesForPlatform("win32")).not.toContain("resources/device-runtime");
+	});
+
 	it.each(["darwin", "linux"] as const)("bundles tmux on %s", (platform) => {
 		expect(extraResourcesForPlatform(platform)).toContain("tmux");
 	});

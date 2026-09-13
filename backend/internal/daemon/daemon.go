@@ -25,6 +25,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	chatdriverregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/registry"
+	deviceadapter "github.com/aoagents/agent-orchestrator/backend/internal/adapters/device"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/systemexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry/policyauthority"
@@ -51,6 +52,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	devicesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/device"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
@@ -565,6 +567,15 @@ func Run() error {
 	// HostID is assigned below, once the identity file has been read.
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
+	deviceRuntime := deviceadapter.New(cfg.DataDir)
+	deviceService := devicesvc.NewWithDeps(sessionSvc, deviceRuntime, browserAuthority, browserRuntimeToken, devicesvc.Deps{SetupRuntime: deviceRuntime, SetupStore: store})
+	if err := deviceService.Recover(ctx); err != nil {
+		stop()
+		lcStack.Stop()
+		_ = cdcPipe.Stop()
+		return fmt.Errorf("recover device setup jobs: %w", err)
+	}
+	wiredSessMgr.SetDeviceLifecycle(deviceService)
 
 	// Standalone shell terminals: user-opened shells with no agent session
 	// behind them. They reuse the same runtime adapter (and therefore the same
@@ -781,6 +792,7 @@ func Run() error {
 			},
 		}),
 		Browser:             browserService,
+		LocalDevices:        deviceService,
 		PreviewServer:       managedPreview,
 		SessionCapabilities: browserAuthority,
 		AgentSwitchPolicy:   policyCoordinator,
@@ -888,6 +900,11 @@ func Run() error {
 		log.Error("harness installer shutdown", "err", err)
 	}
 	installStopCancel()
+	deviceStopCtx, deviceStopCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	if err := deviceService.Close(deviceStopCtx); err != nil {
+		log.Error("device installer shutdown", "err", err)
+	}
+	deviceStopCancel()
 	if startupReconcileDone != nil {
 		<-startupReconcileDone
 	}

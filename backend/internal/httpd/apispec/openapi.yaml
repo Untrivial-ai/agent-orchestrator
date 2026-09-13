@@ -1154,6 +1154,355 @@ paths:
       summary: Run the developer project-registry import through the daemon store
       tags:
       - dev
+  /api/v1/devices:
+    get:
+      operationId: listDevices
+      parameters:
+      - description: AO session identifier.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session identifier.
+          type: string
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceListResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: List local iOS Simulators and Android Emulators
+      tags:
+      - devices
+  /api/v1/devices/commands:
+    post:
+      operationId: executeDeviceCommand
+      parameters:
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceCommandRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceCommandResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Execute an allowlisted action on a session-scoped local virtual device
+      tags:
+      - devices
+  /api/v1/devices/setup:
+    get:
+      operationId: getDeviceSetup
+      parameters:
+      - description: AO session identifier.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session identifier.
+          type: string
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSetupResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Get durable managed virtual-device setup progress
+      tags:
+      - devices
+    post:
+      operationId: executeDeviceSetup
+      parameters:
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceSetupCommandRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSetupCommandResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Start, retry, or cancel a managed virtual-device setup
+      tags:
+      - devices
+  /api/v1/devices/status:
+    get:
+      operationId: getDeviceStatus
+      parameters:
+      - description: AO session identifier.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session identifier.
+          type: string
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceStatusResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Get local virtual-device capabilities and the session attachment
+      tags:
+      - devices
   /api/v1/endpoints:
     get:
       operationId: getEndpoints
@@ -9289,6 +9638,173 @@ components:
       required:
       - report
       type: object
+    DeviceCommandRequest:
+      properties:
+        action:
+          enum:
+          - open
+          - close
+          - shutdown
+          - screenshot
+          - ui-tree
+          - tap
+          - swipe
+          - fill
+          - type
+          - key
+          - back
+          - home
+          type: string
+        confirmed:
+          type: boolean
+        deviceId:
+          maxLength: 512
+          type: string
+        interactiveOnly:
+          type: boolean
+        key:
+          maxLength: 64
+          type: string
+        platform:
+          enum:
+          - ios
+          - android
+          type: string
+        ref:
+          maxLength: 256
+          type: string
+        sessionId:
+          type: string
+        text:
+          maxLength: 4096
+          type: string
+        x:
+          maximum: 100000
+          minimum: 0
+          type:
+          - "null"
+          - integer
+        x1:
+          maximum: 100000
+          minimum: 0
+          type:
+          - "null"
+          - integer
+        x2:
+          maximum: 100000
+          minimum: 0
+          type:
+          - "null"
+          - integer
+        "y":
+          maximum: 100000
+          minimum: 0
+          type:
+          - "null"
+          - integer
+        y1:
+          maximum: 100000
+          minimum: 0
+          type:
+          - "null"
+          - integer
+        y2:
+          maximum: 100000
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      required:
+      - sessionId
+      - action
+      type: object
+    DeviceCommandResponse:
+      properties:
+        action:
+          type: string
+        attachment:
+          $ref: '#/components/schemas/DomainDeviceAttachment'
+        result: {}
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - action
+      type: object
+    DeviceListResponse:
+      properties:
+        devices:
+          items:
+            $ref: '#/components/schemas/DomainDevice'
+          type: array
+        errors:
+          items:
+            $ref: '#/components/schemas/DomainDevicePlatformCapability'
+          type: array
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - devices
+      type: object
+    DeviceSetupCommandRequest:
+      properties:
+        action:
+          enum:
+          - start
+          - retry
+          - cancel
+          type: string
+        licenseAccepted:
+          type: boolean
+        platform:
+          enum:
+          - ios
+          - android
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - platform
+      - action
+      type: object
+    DeviceSetupCommandResponse:
+      properties:
+        sessionId:
+          type: string
+        setup:
+          $ref: '#/components/schemas/DomainDeviceSetup'
+      required:
+      - sessionId
+      - setup
+      type: object
+    DeviceSetupResponse:
+      properties:
+        sessionId:
+          type: string
+        setups:
+          items:
+            $ref: '#/components/schemas/DomainDeviceSetup'
+          type: array
+      required:
+      - sessionId
+      - setups
+      type: object
+    DeviceStatusResponse:
+      properties:
+        attachment:
+          $ref: '#/components/schemas/DomainDeviceAttachment'
+        capabilities:
+          items:
+            $ref: '#/components/schemas/DomainDevicePlatformCapability'
+          type: array
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - capabilities
+      type: object
     DomainActivity:
       properties:
         lastActivityAt:
@@ -9299,6 +9815,112 @@ components:
       required:
       - state
       - lastActivityAt
+      type: object
+    DomainDevice:
+      properties:
+        booted:
+          type: boolean
+        busy:
+          type: boolean
+        id:
+          type: string
+        kind:
+          type: string
+        name:
+          type: string
+        platform:
+          type: string
+      required:
+      - id
+      - name
+      - platform
+      - kind
+      - booted
+      - busy
+      type: object
+    DomainDeviceAttachment:
+      properties:
+        deviceId:
+          type: string
+        name:
+          type: string
+        platform:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - deviceId
+      - platform
+      - name
+      type: object
+    DomainDevicePlatformCapability:
+      properties:
+        available:
+          type: boolean
+        code:
+          type: string
+        message:
+          type: string
+        platform:
+          type: string
+      required:
+      - platform
+      - available
+      type: object
+    DomainDeviceSetup:
+      properties:
+        actionUrl:
+          type: string
+        availableBytes:
+          format: int64
+          minimum: 0
+          type: integer
+        cancelable:
+          type: boolean
+        downloadedBytes:
+          format: int64
+          minimum: 0
+          type: integer
+        error:
+          type: string
+        errorCode:
+          type: string
+        installedVersion:
+          type: string
+        licenseAccepted:
+          type: boolean
+        licenseUrl:
+          type: string
+        message:
+          type: string
+        platform:
+          type: string
+        progress:
+          maximum: 100
+          minimum: 0
+          type: integer
+        requiredBytes:
+          format: int64
+          minimum: 0
+          type: integer
+        retryable:
+          type: boolean
+        stage:
+          type: string
+        state:
+          type: string
+        totalBytes:
+          format: int64
+          minimum: 0
+          type: integer
+      required:
+      - platform
+      - state
+      - progress
+      - licenseAccepted
+      - cancelable
+      - retryable
       type: object
     DomainReviewerConfig:
       properties:
@@ -12618,6 +13240,9 @@ tags:
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+- description: Session-scoped iOS Simulator and Android Emulator control (loopback
+    only)
+  name: devices
 - description: Local machine readiness checks the desktop app runs before showing
     the board
   name: system

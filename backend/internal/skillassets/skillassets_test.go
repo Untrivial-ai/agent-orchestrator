@@ -23,7 +23,6 @@ func TestEmbeddedSkillFrontmatterIsValidYAML(t *testing.T) {
 	var frontmatter struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
-		Trigger     string `yaml:"trigger"`
 	}
 	if err := yaml.Unmarshal([]byte(parts[1]), &frontmatter); err != nil {
 		t.Fatalf("parse embedded SKILL.md frontmatter: %v", err)
@@ -33,9 +32,6 @@ func TestEmbeddedSkillFrontmatterIsValidYAML(t *testing.T) {
 	}
 	if strings.TrimSpace(frontmatter.Description) == "" {
 		t.Fatal("frontmatter description is empty")
-	}
-	if strings.TrimSpace(frontmatter.Trigger) == "" {
-		t.Fatal("frontmatter trigger is empty")
 	}
 }
 
@@ -98,6 +94,26 @@ func TestEmbeddedBrowserGuidanceKeepsNetworkCaptureOptional(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDeviceGuidanceKeepsControlScopedAndExplicit(t *testing.T) {
+	body, err := files.ReadFile("using-ao/commands/device.md")
+	if err != nil {
+		t.Fatalf("read embedded device guidance: %v", err)
+	}
+	text := strings.Join(strings.Fields(string(body)), " ")
+	for _, required := range []string{
+		"`AO_SESSION_ID` and the launch-scoped `AO_DEVICE_CAPABILITY`",
+		"one AO session at a time",
+		"untrusted external content",
+		"`shutdown` powers it off",
+		"requires explicit `--yes` confirmation",
+		"missing Xcode must not disable Android",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("device guidance missing %q:\n%s", required, body)
+		}
+	}
+}
+
 // TestInstall_WritesSkillAndIsIdempotent: Install must lay down the embedded
 // skill (SKILL.md plus a commands file) under <dataDir>/skills/using-ao, and a
 // second run must clobber cleanly, leaving no stale files. This is the whole
@@ -120,6 +136,9 @@ func TestInstall_WritesSkillAndIsIdempotent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(Dir(dataDir), "commands", "browser.md")); err != nil {
 		t.Fatalf("commands/browser.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(Dir(dataDir), "commands", "device.md")); err != nil {
+		t.Fatalf("commands/device.md missing: %v", err)
 	}
 
 	// A stale file inside the skill dir must not survive a reinstall (clobber).

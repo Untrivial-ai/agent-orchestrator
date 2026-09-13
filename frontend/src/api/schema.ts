@@ -498,6 +498,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List local iOS Simulators and Android Emulators */
+        get: operations["listDevices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Execute an allowlisted action on a session-scoped local virtual device */
+        post: operations["executeDeviceCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get durable managed virtual-device setup progress */
+        get: operations["getDeviceSetup"];
+        put?: never;
+        /** Start, retry, or cancel a managed virtual-device setup */
+        post: operations["executeDeviceSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get local virtual-device capabilities and the session attachment */
+        get: operations["getDeviceStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/endpoints": {
         parameters: {
             query?: never;
@@ -3251,10 +3320,104 @@ export interface components {
         DevImportProjectsResponse: {
             report: components["schemas"]["DevImportProjectsReport"];
         };
+        DeviceCommandRequest: {
+            /** @enum {string} */
+            action: "open" | "close" | "shutdown" | "screenshot" | "ui-tree" | "tap" | "swipe" | "fill" | "type" | "key" | "back" | "home";
+            confirmed?: boolean;
+            deviceId?: string;
+            interactiveOnly?: boolean;
+            key?: string;
+            /** @enum {string} */
+            platform?: "ios" | "android";
+            ref?: string;
+            sessionId: string;
+            text?: string;
+            x?: null | number;
+            x1?: null | number;
+            x2?: null | number;
+            y?: null | number;
+            y1?: null | number;
+            y2?: null | number;
+        };
+        DeviceCommandResponse: {
+            action: string;
+            attachment?: components["schemas"]["DomainDeviceAttachment"];
+            result?: unknown;
+            sessionId: string;
+        };
+        DeviceListResponse: {
+            devices: components["schemas"]["DomainDevice"][];
+            errors?: components["schemas"]["DomainDevicePlatformCapability"][];
+            sessionId: string;
+        };
+        DeviceSetupCommandRequest: {
+            /** @enum {string} */
+            action: "start" | "retry" | "cancel";
+            licenseAccepted?: boolean;
+            /** @enum {string} */
+            platform: "ios" | "android";
+            sessionId: string;
+        };
+        DeviceSetupCommandResponse: {
+            sessionId: string;
+            setup: components["schemas"]["DomainDeviceSetup"];
+        };
+        DeviceSetupResponse: {
+            sessionId: string;
+            setups: components["schemas"]["DomainDeviceSetup"][];
+        };
+        DeviceStatusResponse: {
+            attachment?: components["schemas"]["DomainDeviceAttachment"];
+            capabilities: components["schemas"]["DomainDevicePlatformCapability"][];
+            sessionId: string;
+        };
         DomainActivity: {
             /** Format: date-time */
             lastActivityAt: string;
             state: string;
+        };
+        DomainDevice: {
+            booted: boolean;
+            busy: boolean;
+            id: string;
+            kind: string;
+            name: string;
+            platform: string;
+        };
+        DomainDeviceAttachment: {
+            deviceId: string;
+            name: string;
+            platform: string;
+            sessionId: string;
+        };
+        DomainDevicePlatformCapability: {
+            available: boolean;
+            code?: string;
+            message?: string;
+            platform: string;
+        };
+        DomainDeviceSetup: {
+            actionUrl?: string;
+            /** Format: int64 */
+            availableBytes?: number;
+            cancelable: boolean;
+            /** Format: int64 */
+            downloadedBytes?: number;
+            error?: string;
+            errorCode?: string;
+            installedVersion?: string;
+            licenseAccepted: boolean;
+            licenseUrl?: string;
+            message?: string;
+            platform: string;
+            progress: number;
+            /** Format: int64 */
+            requiredBytes?: number;
+            retryable: boolean;
+            stage?: string;
+            state: string;
+            /** Format: int64 */
+            totalBytes?: number;
         };
         DomainReviewerConfig: {
             agentConfig?: components["schemas"]["AgentConfig"];
@@ -6016,6 +6179,418 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listDevices: {
+        parameters: {
+            query?: {
+                /** @description AO session identifier. */
+                sessionId?: string;
+            };
+            header?: {
+                /** @description Opaque capability injected into the owning AO worker. */
+                "X-AO-Device-Capability"?: string;
+                /** @description Private Electron-main capability; never available to renderer JavaScript. */
+                "X-AO-Desktop-Device-Capability"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceListResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    executeDeviceCommand: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Opaque capability injected into the owning AO worker. */
+                "X-AO-Device-Capability"?: string;
+                /** @description Private Electron-main capability; never available to renderer JavaScript. */
+                "X-AO-Desktop-Device-Capability"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceCommandResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getDeviceSetup: {
+        parameters: {
+            query?: {
+                /** @description AO session identifier. */
+                sessionId?: string;
+            };
+            header?: {
+                /** @description Opaque capability injected into the owning AO worker. */
+                "X-AO-Device-Capability"?: string;
+                /** @description Private Electron-main capability; never available to renderer JavaScript. */
+                "X-AO-Desktop-Device-Capability"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceSetupResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    executeDeviceSetup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Opaque capability injected into the owning AO worker. */
+                "X-AO-Device-Capability"?: string;
+                /** @description Private Electron-main capability; never available to renderer JavaScript. */
+                "X-AO-Desktop-Device-Capability"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceSetupCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceSetupCommandResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getDeviceStatus: {
+        parameters: {
+            query?: {
+                /** @description AO session identifier. */
+                sessionId?: string;
+            };
+            header?: {
+                /** @description Opaque capability injected into the owning AO worker. */
+                "X-AO-Device-Capability"?: string;
+                /** @description Private Electron-main capability; never available to renderer JavaScript. */
+                "X-AO-Desktop-Device-Capability"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceStatusResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -363,6 +363,27 @@ type ConversationTurn struct {
 	RetryOfTurnID        sql.NullString
 }
 
+type DeviceSetupJob struct {
+	Platform         string
+	State            string
+	Stage            string
+	Message          string
+	Progress         int64
+	DownloadedBytes  int64
+	TotalBytes       int64
+	RequiredBytes    int64
+	AvailableBytes   int64
+	LicenseURL       string
+	LicenseAccepted  int64
+	ActionURL        string
+	ErrorCode        string
+	Error            string
+	InstalledVersion string
+	StartedAt        time.Time
+	FinishedAt       sql.NullTime
+	UpdatedAt        time.Time
+}
+
 type ModelUsageEvent struct {
 	ID                    int64
 	BindingID             int64

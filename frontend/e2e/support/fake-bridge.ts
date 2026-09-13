@@ -126,6 +126,13 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 						return unsubscribe();
 					},
 				},
+				device: {
+					status: async (sessionId: string) => ({ sessionId, capabilities: [] }),
+					list: async (sessionId: string) => ({ sessionId, devices: [] }),
+					command: async ({ sessionId, action }: { sessionId: string; action: string }) => ({ sessionId, action }),
+					setupStatus: async (sessionId: string) => ({ sessionId, setups: [] }),
+					setup: async ({ sessionId, platform }: { sessionId: string; platform: "ios" | "android" }) => ({ sessionId, setup: { platform, state: "queued" as const, progress: 0, licenseAccepted: true, cancelable: true, retryable: false } }),
+				},
 				editorHandoff: {
 					getState: async () => ({
 						targets: [
@@ -662,6 +669,13 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						listener(status);
 						return unsubscribe();
 					},
+				},
+				device: {
+					status: async (sessionId: string) => ({ sessionId, capabilities: [] }),
+					list: async (sessionId: string) => ({ sessionId, devices: [] }),
+					command: async ({ sessionId, action }: { sessionId: string; action: string }) => ({ sessionId, action }),
+					setupStatus: async (sessionId: string) => ({ sessionId, setups: [] }),
+					setup: async ({ sessionId, platform }: { sessionId: string; platform: "ios" | "android" }) => ({ sessionId, setup: { platform, state: "queued" as const, progress: 0, licenseAccepted: true, cancelable: true, retryable: false } }),
 				},
 				editorHandoff: {
 					getState: async () => ({

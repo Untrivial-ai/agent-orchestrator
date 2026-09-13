@@ -672,6 +672,79 @@ type BrowserCommandResponse struct {
 	Result    interface{}      `json:"result"`
 }
 
+// DeviceStatusQuery selects the AO session whose local device is inspected.
+type DeviceStatusQuery struct {
+	SessionID domain.SessionID `query:"sessionId" description:"AO session identifier."`
+}
+
+// DeviceCredentialsHeaders documents the two mutually exclusive local callers.
+type DeviceCredentialsHeaders struct {
+	AgentCapability   string `header:"X-AO-Device-Capability" description:"Opaque capability injected into the owning AO worker."`
+	DesktopCapability string `header:"X-AO-Desktop-Device-Capability" description:"Private Electron-main capability; never available to renderer JavaScript."`
+}
+
+// DeviceStatusResponse is derived from live host and attachment facts.
+type DeviceStatusResponse struct {
+	SessionID    domain.SessionID                  `json:"sessionId"`
+	Capabilities []domain.DevicePlatformCapability `json:"capabilities"`
+	Attachment   *domain.DeviceAttachment          `json:"attachment,omitempty"`
+}
+
+// DeviceListResponse returns live inventory and independent platform failures.
+type DeviceListResponse struct {
+	SessionID domain.SessionID                  `json:"sessionId"`
+	Devices   []domain.Device                   `json:"devices"`
+	Errors    []domain.DevicePlatformCapability `json:"errors,omitempty"`
+}
+
+// DeviceSetupResponse reports durable managed setup state for both platforms.
+type DeviceSetupResponse struct {
+	SessionID domain.SessionID     `json:"sessionId"`
+	Setups    []domain.DeviceSetup `json:"setups"`
+}
+
+// DeviceSetupCommandRequest starts, retries, or cancels a fixed platform setup.
+type DeviceSetupCommandRequest struct {
+	SessionID       domain.SessionID      `json:"sessionId"`
+	Platform        domain.DevicePlatform `json:"platform" enum:"ios,android"`
+	Action          string                `json:"action" enum:"start,retry,cancel"`
+	LicenseAccepted bool                  `json:"licenseAccepted,omitempty"`
+}
+
+// DeviceSetupCommandResponse returns the affected setup.
+type DeviceSetupCommandResponse struct {
+	SessionID domain.SessionID   `json:"sessionId"`
+	Setup     domain.DeviceSetup `json:"setup"`
+}
+
+// DeviceCommandRequest contains only the initial typed device action surface.
+// It intentionally cannot carry argv, paths, URLs, environment, or helper routes.
+type DeviceCommandRequest struct {
+	SessionID       domain.SessionID      `json:"sessionId"`
+	Action          string                `json:"action" enum:"open,close,shutdown,screenshot,ui-tree,tap,swipe,fill,type,key,back,home"`
+	DeviceID        string                `json:"deviceId,omitempty" maxLength:"512"`
+	Platform        domain.DevicePlatform `json:"platform,omitempty" enum:"ios,android"`
+	InteractiveOnly bool                  `json:"interactiveOnly,omitempty"`
+	Ref             string                `json:"ref,omitempty" maxLength:"256"`
+	X               *int                  `json:"x,omitempty" minimum:"0" maximum:"100000"`
+	Y               *int                  `json:"y,omitempty" minimum:"0" maximum:"100000"`
+	X1              *int                  `json:"x1,omitempty" minimum:"0" maximum:"100000"`
+	Y1              *int                  `json:"y1,omitempty" minimum:"0" maximum:"100000"`
+	X2              *int                  `json:"x2,omitempty" minimum:"0" maximum:"100000"`
+	Y2              *int                  `json:"y2,omitempty" minimum:"0" maximum:"100000"`
+	Text            string                `json:"text,omitempty" maxLength:"4096"`
+	Key             string                `json:"key,omitempty" maxLength:"64"`
+	Confirmed       bool                  `json:"confirmed,omitempty"`
+}
+
+// DeviceCommandResponse returns the normalized helper result.
+type DeviceCommandResponse struct {
+	SessionID  domain.SessionID         `json:"sessionId"`
+	Action     string                   `json:"action"`
+	Attachment *domain.DeviceAttachment `json:"attachment,omitempty"`
+	Result     interface{}              `json:"result,omitempty"`
+}
+
 // SetSessionMergePolicyRequest is the body of PATCH /api/v1/sessions/{sessionId}/merge-policy.
 type SetSessionMergePolicyRequest struct {
 	TerminateOnPRMerge bool `json:"terminateOnPrMerge"`
