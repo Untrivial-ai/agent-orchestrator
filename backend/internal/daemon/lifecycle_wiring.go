@@ -181,6 +181,7 @@ type sessionLifecycle interface {
 	// AcquireSessionInput holds direct terminal writes across the actual pane
 	// write while ownership may move between provider processes.
 	AcquireSessionInput(id domain.SessionID) (release func(), ok bool)
+	ReserveTerminalInput(context.Context, []string) (func(), error)
 	// SessionMutationInProgress suppresses observation-driven termination while
 	// Session Manager deliberately replaces or relaunches a provider process.
 	SessionMutationInProgress(id domain.SessionID) bool

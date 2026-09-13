@@ -51,6 +51,7 @@ func TestInterruptActiveAgentInstallJobs(t *testing.T) {
 	for _, record := range []ports.AgentInstallJobRecord{
 		{Target: "codex", Status: "installing", Method: "npm", StartedAt: started, UpdatedAt: started},
 		{Target: "claude-code", Status: "verifying", Method: "homebrew", StartedAt: started, UpdatedAt: started},
+		{Target: "queued-agent", Status: "queued", Method: "update:npm", StartedAt: started, UpdatedAt: started},
 		{Target: "cursor", Status: "succeeded", Method: "manual", StartedAt: started, UpdatedAt: started},
 	} {
 		if err := store.UpsertAgentInstallJob(ctx, record); err != nil {
@@ -71,7 +72,7 @@ func TestInterruptActiveAgentInstallJobs(t *testing.T) {
 	for _, job := range jobs {
 		byTarget[job.Target] = job
 	}
-	for _, target := range []string{"codex", "claude-code"} {
+	for _, target := range []string{"codex", "claude-code", "queued-agent"} {
 		job := byTarget[target]
 		if job.Status != "interrupted" {
 			t.Errorf("%s status = %q, want interrupted", target, job.Status)

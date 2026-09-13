@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -660,13 +661,105 @@ func (r *Runtime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntim
 // still a descendant of this tmux pane. The initial launch is identified by
 // its exact AO supervisor. After that supervisor exits and leaves the
 // interactive shell behind, a child launched from that shell is treated as a
-// manually resumed workload. Command failures remain inconclusive.
+// manually resumed workload. A completely empty ref instead inspects every
+// pane for an unsupervised workload, without interpreting generation mismatch
+// as exit. Command failures and missing process evidence remain inconclusive.
 func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
-	entries, panePID, err := r.supervisedProcessTree(ctx, handle)
+	if ref != (ports.SupervisedProcessRef{}) {
+		entries, panePID, err := r.supervisedProcessTree(ctx, handle)
+		if err != nil {
+			return false, err
+		}
+		return containsManagedWorkload(entries, panePID, string(ref.SessionID), ref.LaunchID), nil
+	}
+	alive, err := r.IsAlive(ctx, handle)
+	if err != nil || !alive {
+		return false, err
+	}
+	// A user can split the review terminal or change its active pane. An idle
+	// active pane alone cannot prove the installation has no running workload.
+	out, err := r.runForSession(ctx, handle.ID, "list-panes", "-s", "-t", exactSessionTarget(handle.ID), "-F", "#{pane_pid}\t#{pane_dead}")
 	if err != nil {
 		return false, err
 	}
-	return containsManagedWorkload(entries, panePID, string(ref.SessionID), ref.LaunchID), nil
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 1 {
+		return false, fmt.Errorf("tmux runtime: extra workload panes require explicit cleanup: %w", ports.ErrRuntimeProbeInconclusive)
+	}
+	panes := make(map[int]bool)
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || (fields[1] != "0" && fields[1] != "1") {
+			return false, fmt.Errorf("tmux runtime: incomplete workload pane status %q: %w", line, ports.ErrRuntimeProbeInconclusive)
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid < 0 || (pid == 0 && fields[1] == "0") {
+			return false, fmt.Errorf("tmux runtime: invalid workload pane pid %q: %w", fields[0], ports.ErrRuntimeProbeInconclusive)
+		}
+		if fields[1] == "1" {
+			continue
+		}
+		if panes[pid] {
+			return false, fmt.Errorf("tmux runtime: duplicate workload pane pid %d: %w", pid, ports.ErrRuntimeProbeInconclusive)
+		}
+		panes[pid] = true
+	}
+	if len(panes) == 0 {
+		return false, nil // every pane has confirmed exit evidence
+	}
+	processOut, err := r.runCommand(ctx, "ps", "-ww", "-axo", "pid=,ppid=,args=")
+	if err != nil {
+		return false, err
+	}
+	entries, err := parseProcessTable(string(processOut))
+	if err != nil {
+		return false, fmt.Errorf("tmux runtime: inspect unsupervised processes: %w", err)
+	}
+	processes := make(map[int]processEntry, len(entries))
+	for _, entry := range entries {
+		if _, duplicate := processes[entry.pid]; duplicate || entry.pid < 0 || entry.ppid < 0 || (entry.pid > 0 && entry.pid == entry.ppid) {
+			return false, fmt.Errorf("tmux runtime: invalid workload process identity %d: %w", entry.pid, ports.ErrRuntimeProbeInconclusive)
+		}
+		processes[entry.pid] = entry
+	}
+	for pid := range panes {
+		if _, ok := processes[pid]; !ok {
+			return false, fmt.Errorf("tmux runtime: workload pane root %d missing from process snapshot: %w", pid, ports.ErrRuntimeProbeInconclusive)
+		}
+	}
+	for pid := range panes {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		descendants := descendantPIDs(entries, pid)
+		for child := range descendants {
+			if child != pid {
+				// Include manual supervisors too. There is no generation to reject
+				// in this mode, and an unrelated generation is still a workload.
+				return true, nil
+			}
+		}
+		// buildLaunchCommand execs an interactive shell after an unsupervised
+		// command exits. Only a bare shell can be idle: `sh -c ...` may still
+		// be launching a child, and `exec codex` replaces the pane root itself.
+		fields := strings.Fields(processes[pid].command)
+		switch strings.TrimPrefix(filepath.Base(fields[0]), "-") {
+		case "sh", "bash", "dash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh", "nu":
+			if len(fields) != 2 || fields[1] != "-i" {
+				return true, nil // only the launch wrapper's retained-shell shape proves completion
+			}
+		default:
+			return true, nil // retain custom shells/commands rather than assume exit
+		}
+	}
+	confirmed, err := r.runForSession(ctx, handle.ID, "list-panes", "-s", "-t", exactSessionTarget(handle.ID), "-F", "#{pane_pid}\t#{pane_dead}")
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(confirmed, out) {
+		return false, fmt.Errorf("tmux runtime: workload pane changed during process inspection: %w", ports.ErrRuntimeProbeInconclusive)
+	}
+	return false, nil
 }
 
 // IsExactSupervisedProcessAlive reports only the AO supervisor matching ref

@@ -579,6 +579,14 @@ func writeClaudeSettings(t *testing.T, dir, model string) {
 	}
 }
 
+func TestCodexCatalogFingerprintHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := CatalogFingerprint(ctx, "codex", filepath.Join(t.TempDir(), "codex"), "", nil); got != "" {
+		t.Fatalf("canceled catalog returned fingerprint %q", got)
+	}
+}
+
 func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_MODEL", "")
 	dir := t.TempDir()
@@ -606,10 +614,10 @@ func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
 func TestCatalogFingerprintKeepsTheExecutableOnlyValueForConfiglessAgents(t *testing.T) {
 	dir := t.TempDir()
 	writeClaudeSettings(t, dir, "opus")
-	// codex reads no configuration, so its fingerprint must stay byte-identical
+	// amp reads no configuration, so its fingerprint must stay byte-identical
 	// to the executable fingerprint earlier daemons cached under.
-	got := CatalogFingerprint(context.Background(), "codex", "codex", dir, nil)
-	if want := BinaryVersion(context.Background(), "codex"); got != want {
+	got := CatalogFingerprint(context.Background(), "amp", "amp", dir, nil)
+	if want := BinaryVersion(context.Background(), "amp"); got != want {
 		t.Fatalf("fingerprint = %q, want the executable fingerprint %q", got, want)
 	}
 }

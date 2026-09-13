@@ -348,6 +348,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	// InstallStatusResponse (they're the same Go type), so it reflects to one
 	// shared component — name it after the domain concept, not either alias.
 	"SysteminstallJob":                            "InstallJob",
+	"SysteminstallCodexUpdateAdvisory":            "CodexUpdateAdvisory",
+	"ControllersStartCodexUpdateRequest":          "StartCodexUpdateRequest",
 	"SysteminstallAgentPlan":                      "AgentInstallPlan",
 	"SysteminstallAgentInstallMethod":             "AgentInstallMethod",
 	"ControllersAgentInstallerCatalogResponse":    "AgentInstallerCatalogResponse",
@@ -1223,6 +1225,28 @@ func agentOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.ProbeAgentResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/agents/codex/update", id: "getCodexUpdate", tag: "agents",
+			summary:    "Check the user-owned Codex installation for updates",
+			pathParams: []any{controllers.CodexUpdateQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.CodexUpdateAdvisory{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/agents/codex/update", id: "startCodexUpdate", tag: "agents",
+			summary: "Explicitly update the verified owning Codex installation",
+			reqBody: controllers.StartCodexUpdateRequest{},
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.AgentInstallResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},

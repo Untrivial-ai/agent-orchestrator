@@ -112,6 +112,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 	useQueries: () => [],
 }));
 
+vi.mock("../hooks/useCodexUpdateInvalidation", () => ({ useCodexUpdateInvalidation: () => undefined }));
+
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@tanstack/react-router")>()),
 	createFileRoute: () => (options: unknown) => ({ options }),

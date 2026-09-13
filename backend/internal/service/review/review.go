@@ -139,7 +139,7 @@ func WithTelemetry(sink ports.EventSink) Option {
 }
 
 // WithCodexAccountOperationGate prevents new Codex reviewer controllers from
-// entering while the device-global Codex credential is changing.
+// entering while the device-global Codex credential or installation is changing.
 func WithCodexAccountOperationGate(gate ports.CodexOperationGate) Option {
 	return func(s *Service) { s.codexOperationGate = gate }
 }
@@ -560,7 +560,10 @@ func (s *Service) codexReviewUsesCodex(ctx context.Context, workerID domain.Sess
 		return false
 	}
 	rec, ok, err := s.store.GetSession(ctx, workerID)
-	return err == nil && ok && (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex)
+	// An unset preference is resolved from project configuration by the engine
+	// and can select Codex even for another worker harness. Fence unresolved
+	// selections conservatively before the engine can launch that reviewer.
+	return err != nil || !ok || rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex || rec.ReviewerHarness == ""
 }
 
 func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (func(), error) {

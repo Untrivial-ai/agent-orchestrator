@@ -30,7 +30,7 @@ import (
 )
 
 // Plugin is the Codex agent adapter. It is safe for concurrent use; the binary
-// path is resolved once and cached under binaryMu.
+// path is resolved for each operation so external installer changes are visible.
 type Plugin struct {
 	agentbase.Base
 	binaryMu       sync.Mutex
@@ -448,7 +448,9 @@ func (p *Plugin) codexBinary(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p.resolvedBinary = binary
+	// Resolve afresh for each new process. Windows package shims and standalone
+	// current links can change without a daemon restart. resolvedBinary, when
+	// explicitly supplied by an adapter, remains an intentional fixed selection.
 	return binary, nil
 }
 

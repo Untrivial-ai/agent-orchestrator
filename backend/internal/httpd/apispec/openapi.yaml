@@ -817,6 +817,78 @@ paths:
       summary: Open an inline native login terminal for a new AO Codex account
       tags:
       - agents
+  /api/v1/agents/codex/update:
+    get:
+      operationId: getCodexUpdate
+      parameters:
+      - in: query
+        name: refresh
+        schema:
+          type: boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexUpdateAdvisory'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Check the user-owned Codex installation for updates
+      tags:
+      - agents
+    post:
+      operationId: startCodexUpdate
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartCodexUpdateRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Explicitly update the verified owning Codex installation
+      tags:
+      - agents
   /api/v1/agents/install-jobs:
     get:
       operationId: listAgentInstallJobs
@@ -8174,6 +8246,47 @@ components:
       - reasonCode
       - reason
       type: object
+    CodexUpdateAdvisory:
+      properties:
+        availableVersion:
+          type: string
+        canUpdate:
+          type: boolean
+        checkedAt:
+          format: date-time
+          type: string
+        path:
+          type: string
+        realPath:
+          type: string
+        runningSessions:
+          type: integer
+        source:
+          type: string
+        stale:
+          type: boolean
+        token:
+          type: string
+        updateAvailable:
+          type: boolean
+        version:
+          type: string
+        versionSource:
+          type: string
+        warning:
+          type: string
+      required:
+      - path
+      - realPath
+      - version
+      - source
+      - versionSource
+      - updateAvailable
+      - canUpdate
+      - stale
+      - checkedAt
+      - runningSessions
+      type: object
     CompactConversationResponse:
       properties:
         tokensAfter:
@@ -9696,6 +9809,7 @@ components:
           description: Current lifecycle state of the job.
           enum:
           - idle
+          - queued
           - running
           - installing
           - verifying
@@ -11795,6 +11909,13 @@ components:
       - targetAccountId
       - expectedAccountRevision
       - idempotencyKey
+      type: object
+    StartCodexUpdateRequest:
+      properties:
+        token:
+          type: string
+      required:
+      - token
       type: object
     StartPreviewServerRequest:
       properties:

@@ -143,3 +143,65 @@ func eventuallySessionInput(t *testing.T, timeout time.Duration, fn func() bool)
 	}
 	t.Fatal("condition was not met before timeout")
 }
+
+func TestTerminalInputReservationIsExactAndReleasesPartialFailure(t *testing.T) {
+	m := newInputLeaseTestManager()
+	ctx := context.Background()
+	release, err := m.ReserveTerminalInput(ctx, []string{"ptyhost-v1:review-worker", "ptyhost-v1:review-worker", "review-other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []domain.SessionID{"ptyhost-v1:review-worker", "review-other"} {
+		if r, ok := m.AcquireSessionInput(id); ok {
+			r()
+			t.Fatalf("reserved terminal %s admitted input", id)
+		}
+	}
+	for _, id := range []domain.SessionID{"worker", "shell-worker", "review-unrelated"} {
+		r, ok := m.AcquireSessionInput(id)
+		if !ok {
+			t.Fatalf("unrelated terminal %s blocked", id)
+		}
+		r()
+	}
+	if _, err := m.ReserveTerminalInput(ctx, []string{"review-new", "review-other"}); err == nil {
+		t.Fatal("conflicting reservation succeeded")
+	}
+	if m.SessionMutationInProgress("review-new") {
+		t.Fatal("failed reservation leaked partial input fence")
+	}
+	release()
+	release()
+	if m.SessionMutationInProgress("review-other") {
+		t.Fatal("release retained input fence")
+	}
+}
+
+func TestTerminalInputReservationCancellationDrainsWithoutLeaking(t *testing.T) {
+	m := newInputLeaseTestManager()
+	write, ok := m.AcquireSessionInput("review-worker")
+	if !ok {
+		t.Fatal("initial write refused")
+	}
+	defer write()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		release, err := m.ReserveTerminalInput(ctx, []string{"review-first", "review-worker"})
+		if release != nil {
+			release()
+		}
+		done <- err
+	}()
+	eventuallySessionInput(t, time.Second, func() bool { return m.SessionMutationInProgress("review-worker") })
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("reservation error=%v", err)
+	}
+	for _, id := range []domain.SessionID{"review-first", "review-worker"} {
+		if m.SessionMutationInProgress(id) {
+			t.Fatalf("canceled reservation retained %s", id)
+		}
+	}
+}

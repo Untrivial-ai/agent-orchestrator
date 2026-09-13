@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1466,5 +1467,29 @@ func TestEnvSliceWithNoOverlayStillInheritsTheEnvironment(t *testing.T) {
 	}
 	if !sawHome {
 		t.Error("an empty overlay produced an environment with no HOME")
+	}
+}
+
+func TestDiscoverModelsUsesSelectedBinaryAndAccountEnvironment(t *testing.T) {
+	d, srv := newTestDriver(t)
+	originalSpawn := d.spawn
+	selected := filepath.Join(t.TempDir(), "selected-codex")
+	workdir := t.TempDir()
+	accountHome := filepath.Join(t.TempDir(), "account-overlay")
+	spawned := false
+	d.spawn = func(ctx context.Context, binary, cwd string, env []string) (*process, error) {
+		spawned = true
+		if binary != selected || cwd != workdir || !slices.Contains(env, "CODEX_HOME="+accountHome) || !slices.Contains(env, "OPENAI_BASE_URL=https://configured.invalid") {
+			t.Fatalf("discovery changed selection: binary=%q cwd=%q env=%v", binary, cwd, env)
+		}
+		return originalSpawn(ctx, binary, cwd, env)
+	}
+	models, err := d.DiscoverModelsWithBinary(context.Background(), selected, workdir, map[string]string{"CODEX_HOME": accountHome, "OPENAI_BASE_URL": "https://configured.invalid"})
+	if err != nil || !spawned || len(models) != 1 || srv.sentMethod("thread/start") {
+		t.Fatalf("models=%v fresh=%v err=%v", models, spawned, err)
+	}
+	binary, _ := d.plugin.ResolveBinary(context.Background())
+	if binary != "codex" {
+		t.Fatal("discovery mutated the shared driver's selector")
 	}
 }

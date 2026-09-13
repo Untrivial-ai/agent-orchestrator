@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/codexmaintenance"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
@@ -461,14 +462,17 @@ func BinaryVersion(ctx context.Context, binary string) string {
 		return ""
 	}
 	resolved, err := exec.LookPath(binary)
-	if err != nil {
+	if err != nil || ctx.Err() != nil {
 		return ""
 	}
 	if evaluated, evalErr := filepath.EvalSymlinks(resolved); evalErr == nil {
 		resolved = evaluated
 	}
+	if ctx.Err() != nil {
+		return ""
+	}
 	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || ctx.Err() != nil || !info.Mode().IsRegular() {
 		return ""
 	}
 	hash := sha256.New()
@@ -486,6 +490,12 @@ func BinaryVersion(ctx context.Context, binary string) string {
 // discovery must be represented here or an edit would never take effect.
 func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string, env map[string]string) string {
 	binaryVersion := BinaryVersion(ctx, binary)
+	if agentID == "codex" {
+		binaryVersion += codexmaintenance.ExecutableFingerprint(ctx, binary)
+	}
+	if ctx.Err() != nil {
+		return ""
+	}
 	config := discoveryConfigInputs(agentID, workingDir, env)
 	if config == "" {
 		// Keep the executable-only fingerprint byte-identical to what earlier

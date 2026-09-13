@@ -35,4 +35,4 @@ SET status = 'interrupted',
     END,
     finished_at = ?,
     updated_at = ?
-WHERE status IN ('installing', 'verifying');
+WHERE status IN ('queued', 'installing', 'verifying');

@@ -345,6 +345,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/codex/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check the user-owned Codex installation for updates */
+        get: operations["getCodexUpdate"];
+        put?: never;
+        /** Explicitly update the verified owning Codex installation */
+        post: operations["startCodexUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/install-jobs": {
         parameters: {
             query?: never;
@@ -2851,6 +2869,22 @@ export interface components {
             reason: string;
             reasonCode: string;
         };
+        CodexUpdateAdvisory: {
+            availableVersion?: string;
+            canUpdate: boolean;
+            /** Format: date-time */
+            checkedAt: string;
+            path: string;
+            realPath: string;
+            runningSessions: number;
+            source: string;
+            stale: boolean;
+            token?: string;
+            updateAvailable: boolean;
+            version: string;
+            versionSource: string;
+            warning?: string;
+        };
         CompactConversationResponse: {
             /** Format: int64 */
             tokensAfter?: number;
@@ -3412,7 +3446,7 @@ export interface components {
              * @description Current lifecycle state of the job.
              * @enum {string}
              */
-            status: "idle" | "running" | "installing" | "verifying" | "succeeded" | "failed" | "unsupported" | "interrupted";
+            status: "idle" | "queued" | "running" | "installing" | "verifying" | "succeeded" | "failed" | "unsupported" | "interrupted";
             /**
              * @description Fixed install target this job ran (or is running) for.
              * @enum {string}
@@ -4199,6 +4233,9 @@ export interface components {
             expectedAccountRevision: number;
             idempotencyKey: string;
             targetAccountId: string;
+        };
+        StartCodexUpdateRequest: {
+            token: string;
         };
         StartPreviewServerRequest: {
             /** @description Named preview configuration. Optional when exactly one configuration exists. */
@@ -5551,6 +5588,106 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getCodexUpdate: {
+        parameters: {
+            query?: {
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexUpdateAdvisory"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    startCodexUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartCodexUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallJob"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

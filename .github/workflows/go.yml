@@ -52,6 +52,18 @@ jobs:
         # protection while leaving enough headroom for migration coverage.
         run: go test -race -timeout=15m ./...
 
+      - name: Isolated reviewer workload integration
+        env:
+          AO_TEST_REQUIRE_TMUX: "1"
+        # Install after the full suite so adding this dependency does not
+        # activate unrelated optional tmux integration tests on lean images.
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends tmux
+          fi
+          go test -race -run '^TestReviewerWorkloadControlledProcessIntegration$' -count=1 -timeout=90s ./internal/adapters/runtime/runtimeselect
+
   # The suite above only ever runs on Linux, so the packages whose behaviour is
   # genuinely platform-specific have never been exercised on Windows: worktree
   # teardown renames and unlinks directories, and Windows is the platform where
@@ -83,6 +95,11 @@ jobs:
 
       - name: Test Windows Chat environment precedence
         run: go test -race ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
+
+      - name: Test Windows Codex maintenance and installer commands
+        run: |
+          go test -race ./internal/adapters/codexmaintenance/ ./internal/adapters/systemexec/
+          go test -race -run Codex ./internal/service/systeminstall/
 
       - name: Test Windows mobile tunnel subprocesses
         run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
