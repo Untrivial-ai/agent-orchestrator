@@ -517,8 +517,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const workspaceQuery = useWorkspaceSession(sessionId);
 	const theme = useResolvedTheme();
 	const prefersReducedMotion = useReducedMotion();
-	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? true);
-	const inspectorView = useUiStore((state) => state.inspectorSessions[sessionId]?.view ?? "summary");
+	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
+	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
+	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
 	const toggleInspector = useUiStore((state) => state.toggleInspector);
 	const setInspectorViewForSession = useUiStore((state) => state.setInspectorView);
@@ -1111,8 +1112,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		);
 	}, [availableReviewerTerminal, reviewerQuery.isFetched]);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
-	// Orchestrators get the full workspace width; only workers need the inspector rail.
-	const hasInspector = Boolean(session && !isOrchestrator);
+	const hasInspector = Boolean(session);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
 	const browserEntryWidthFloorRef = useRef<number | null>(null);
 
@@ -1405,8 +1405,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// only preview work arriving afterward may reveal Browser automatically.
 	useLayoutEffect(() => {
 		if (!session) return;
+		if (browserOnly) {
+			const current = useUiStore.getState().inspectorSessions[sessionId];
+			if (!current) setInspectorOpenForSession(sessionId, false);
+			if (current?.view !== "browser") setInspectorViewForSession(sessionId, "browser");
+			return;
+		}
 		initializeInspectorSession(sessionId, hasBrowserContent, hasInspector);
-	}, [hasBrowserContent, hasInspector, session, sessionId, initializeInspectorSession]);
+	}, [browserOnly, hasBrowserContent, hasInspector, session, sessionId, initializeInspectorSession, setInspectorOpenForSession, setInspectorViewForSession]);
 
 	useLayoutEffect(() => {
 		setTerminalTarget({ kind: "worker" });
@@ -1669,6 +1675,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (!hasInspector) return;
 		const current = useUiStore.getState().inspectorSessions[sessionId];
+		if (browserOnly) return;
 		if (!hasBrowserContent) {
 			if (current?.browserContentRevealed) setBrowserContentRevealed(sessionId, false);
 			else if (current?.browserUnseen) setBrowserUnseen(sessionId, false);
@@ -1678,6 +1685,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		setBrowserContentRevealed(sessionId, true);
 	}, [
 		hasBrowserContent,
+		browserOnly,
 		hasInspector,
 		previewRevision,
 		sessionId,
@@ -1697,11 +1705,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		if (baseline.key === previewKey) return;
 		previewBaselineRef.current = { sessionId, key: previewKey };
 		if (!previewKey) return;
+		if (browserOnly && !terminated && !useUiStore.getState().inspectorSessions[sessionId]?.browserContentRevealed) {
+			setInspectorOpenForSession(sessionId, true);
+		}
 		setBrowserContentRevealed(sessionId, true);
 		if (browserIsVisible(sessionId, browserPoppedOut)) {
 			setBrowserUnseen(sessionId, false);
 			return;
 		}
+		// Workers and already-revealed orchestrators badge new browser work.
 		// A new preview target used to force-switch the inspector to the Browser
 		// tab and pop it open, even if the user was looking at something else
 		// entirely (Reviews, a different session's Files tab, mid-typing in
@@ -1717,6 +1729,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		sessionId,
 		setBrowserContentRevealed,
 		setBrowserUnseen,
+		browserOnly,
+		terminated,
+		setInspectorOpenForSession,
 	]);
 
 	// Agent browser commands are genuine browser activity even when they do not
@@ -1726,6 +1741,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// on hasBrowserContent/browserContentRevealed missed exactly that case.
 	useEffect(() => {
 		if (!hasInspector || terminated || !browserView.agentBrowserActive) return;
+		if (browserOnly && !useUiStore.getState().inspectorSessions[sessionId]?.browserContentRevealed) {
+			setBrowserContentRevealed(sessionId, true);
+			setInspectorOpenForSession(sessionId, true);
+			return;
+		}
 		if (!browserIsVisible(sessionId, browserPoppedOut)) setBrowserUnseen(sessionId, true);
 	}, [
 		browserPoppedOut,
@@ -1736,6 +1756,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		sessionId,
 		setBrowserUnseen,
 		terminated,
+		browserOnly,
+		setBrowserContentRevealed,
+		setInspectorOpenForSession,
 	]);
 
 	// Opening Browser consumes the pending activity indicator, including the
@@ -1747,8 +1770,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	}, [browserPoppedOut, hasInspector, inspectorView, isInspectorOpen, sessionId, setBrowserUnseen]);
 
 	const handleToggleInspector = useCallback(() => {
+		if (browserOnly) setBrowserContentRevealed(sessionId, true);
 		toggleInspector(sessionId);
-	}, [sessionId, toggleInspector]);
+	}, [browserOnly, sessionId, toggleInspector, setBrowserContentRevealed]);
 
 	useEffect(() => {
 		if (!hasInspector) return;
@@ -2014,6 +2038,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						splitRef={sessionSplitRef}
 					>
 						<SessionInspector
+							browserOnly={browserOnly}
 							browserAnnotationQueue={browserAnnotationQueue}
 							browserPoppedOut={browserPoppedOut}
 							filesView={

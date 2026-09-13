@@ -1,13 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { apiClient } from "../lib/api-client";
-import { openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { useUiStore } from "../stores/ui-store";
-import {
-	isOrchestratorSession,
-	sessionIsActive,
-	type WorkspaceSession,
-} from "../types/workspace";
+import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
 /** Route an HTTP(S) link to the browser surface available for the active session. */
@@ -24,13 +19,6 @@ export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string)
 				const url = new URL(uri);
 				if (url.protocol !== "http:" && url.protocol !== "https:") return;
 			} catch {
-				return;
-			}
-			// Orchestrator sessions intentionally use the full workspace width and
-			// do not render an inspector rail, so keep their links actionable by
-			// opening them in the system browser.
-			if (isOrchestratorSession(session)) {
-				void openLinkInSystemBrowser(uri);
 				return;
 			}
 

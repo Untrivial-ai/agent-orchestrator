@@ -301,6 +301,15 @@ afterEach(() => {
 });
 
 describe("SessionInspector tabs", () => {
+  it("shows only Browser content without navigation tabs for an orchestrator", () => {
+    renderWithQuery(<SessionInspector browserOnly session={session([], { kind: "orchestrator" })} />);
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.getByText("Browser")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Session inspector" }).querySelector(".session-inspector__body--browser")).toBeInTheDocument();
+  });
+
   it("gives the Browser viewport the full inspector body without the default content gutter", async () => {
     renderWithQuery(<SessionInspector session={session([])} />);
 

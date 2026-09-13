@@ -142,6 +142,7 @@ const prStateLabelKeys: Record<SessionPRSummary["state"], MessageKey> = {
  * Tabbed inspector rail beside the terminal (Summary · Reviews · Browser · Files).
  */
 export function SessionInspector({
+	browserOnly = false,
 	session,
 	onOpenReviewerTerminal,
 	browserPoppedOut = false,
@@ -155,6 +156,7 @@ export function SessionInspector({
 	view: viewProp,
 	onViewChange,
 }: {
+	browserOnly?: boolean;
 	session?: WorkspaceSession;
 	onOpenReviewerTerminal?: OpenReviewerTerminal;
 	browserPoppedOut?: boolean;
@@ -186,10 +188,10 @@ export function SessionInspector({
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
 	const reviewsAvailable = reviewsTabVisible(session);
-	const availableViewDefs = reviewsAvailable
+	const availableViewDefs = browserOnly ? VIEW_DEFS.filter((entry) => entry.id === "browser") : reviewsAvailable
 		? VIEW_DEFS
 		: VIEW_DEFS.filter((entry) => entry.id !== "reviews");
-	const view: InspectorView = availableViewDefs.some((entry) => entry.id === requestedView) ? requestedView : "summary";
+	const view: InspectorView = browserOnly ? "browser" : availableViewDefs.some((entry) => entry.id === requestedView) ? requestedView : "summary";
 	useEffect(() => {
 		if (view === requestedView) return;
 		setInternalView(view);

@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSwitchesQueryKey } from "../../hooks/useAgentSwitches";
-import { aoBridge } from "../../lib/bridge";
 import type { ChatConfigOption, ConversationSnapshot } from "../../types/conversation";
 import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
 import { useUiStore } from "../../stores/ui-store";
@@ -413,12 +412,11 @@ describe("SessionChatSurface link routing", () => {
 		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: workspaceQueryKey }));
 	});
 
-	it("opens a plain Chat link from an active orchestrator in the system browser", async () => {
+	it("opens a plain Chat link from an active orchestrator in its Browser panel", async () => {
 		const user = userEvent.setup();
 		const queryClient = new QueryClient({
 			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
 		});
-		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
 		const orchestratorSession = {
 			...session,
 			id: "proj-1-orchestrator",
@@ -434,11 +432,12 @@ describe("SessionChatSurface link routing", () => {
 			);
 			await user.click(screen.getByRole("button", { name: "Open chat link" }));
 
-			expect(openExternal).toHaveBeenCalledWith(LINK);
-			expect(useUiStore.getState().inspectorSessions[orchestratorSession.id]).toBeUndefined();
-			expect(postMock).not.toHaveBeenCalled();
+			expect(useUiStore.getState().inspectorSessions[orchestratorSession.id]).toMatchObject({ isOpen: true, view: "browser" });
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+				params: { path: { sessionId: orchestratorSession.id } }, body: { url: LINK },
+			});
 		} finally {
-			openExternal.mockRestore();
+			queryClient.clear();
 		}
 	});
 
