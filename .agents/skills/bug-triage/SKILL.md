@@ -94,7 +94,12 @@ is optional when it can add concrete evidence. Keep findings in the separate evi
 
 ## Check for duplicates
 
-Search open and closed issues and related PRs using the symptom or exact error.
+Search open and closed issues and related PRs using the symptom or exact error:
+
+```bash
+gh issue list --repo Untrivial-ai/agent-orchestrator --state all --search '<symptom or error>'
+gh pr list --repo Untrivial-ai/agent-orchestrator --state all --search '<symptom or error>'
+```
 
 Read likely matches before calling a report a duplicate. If one matches, give the
 reporter its link and draft only their new observation for a comment, with evidence
