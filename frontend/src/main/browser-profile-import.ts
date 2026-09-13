@@ -589,10 +589,16 @@ export class BrowserProfileImportService {
 			onProgress({ requestId: request.requestId, phase: "preparing", completed: 0, total: selected.length });
 			await mkdir(staging, { recursive: true, mode: 0o700 });
 			const budget = new SourceBudget();
-			const decryptor = await ChromiumCookieDecryptor.create(source, this.context.platform);
+			if (request.includeCookies && source.descriptor.family === "chromium" && this.context.platform === "darwin") {
+				onProgress({ requestId: request.requestId, phase: "permission", completed: 0, total: selected.length });
+			}
+			const decryptor = request.includeCookies
+				? await ChromiumCookieDecryptor.create(source, this.context.platform, signal)
+				: null;
 			const readData: ReadProfileData[] = [];
 			for (const [index, profile] of selected.entries()) {
 				throwIfImportAborted(signal);
+				onProgress({ requestId: request.requestId, phase: "reading", completed: index, total: selected.length });
 				readData.push(await readProfileData(source, profile, request, staging, budget, decryptor, this.now()));
 				throwIfImportAborted(signal);
 				onProgress({ requestId: request.requestId, phase: "reading", completed: index + 1, total: selected.length });
@@ -622,6 +628,7 @@ export class BrowserProfileImportService {
 		try {
 			for (const [index, group] of groups.entries()) {
 				throwIfImportAborted(signal);
+				onProgress({ requestId: request.requestId, phase: "importing", completed: index, total: groups.length });
 				const profile = await this.options.profileStore.createProfile(group.name);
 				created.push(profile);
 				throwIfImportAborted(signal);
@@ -759,7 +766,7 @@ async function readProfileData(
 	request: BrowserImportRequest,
 	staging: string,
 	budget: SourceBudget,
-	decryptor: ChromiumCookieDecryptor,
+	decryptor: ChromiumCookieDecryptor | null,
 	now: Date,
 ): Promise<ReadProfileData> {
 	const warnings: BrowserImportWarning[] = [];
@@ -959,7 +966,7 @@ function readFirefoxCookies(file: string, now: Date): { cookies: ImportedCookie[
 
 function readChromiumCookies(
 	file: string,
-	decryptor: ChromiumCookieDecryptor,
+	decryptor: ChromiumCookieDecryptor | null,
 	now: Date,
 ): { cookies: ImportedCookie[]; skipped: number; warnings: BrowserImportWarning[] } {
 	return withReadOnlyDatabase(file, (database) => {
@@ -986,7 +993,7 @@ function readChromiumCookies(
 			let value = stringValue(row.value);
 			if (!value) {
 				const encrypted = Buffer.isBuffer(row.encrypted_value) ? row.encrypted_value : Buffer.alloc(0);
-				value = decryptor.decrypt(encrypted, domain) ?? "";
+				value = decryptor?.decrypt(encrypted, domain) ?? "";
 				if (!value && encrypted.length > 0) {
 					encryptedSkipped += 1;
 					continue;
@@ -1380,7 +1387,7 @@ class ChromiumCookieDecryptor {
 		private readonly key: Buffer | null,
 	) {}
 
-	static async create(source: InternalSource, platform: NodeJS.Platform): Promise<ChromiumCookieDecryptor> {
+	static async create(source: InternalSource, platform: NodeJS.Platform, signal: AbortSignal): Promise<ChromiumCookieDecryptor> {
 		if (source.descriptor.family !== "chromium") return new ChromiumCookieDecryptor(platform, null);
 		if (platform === "win32") {
 			try {
@@ -1396,19 +1403,7 @@ class ChromiumCookieDecryptor {
 			}
 		}
 		if (platform === "darwin") {
-			for (const name of source.descriptor.chromiumKeychainNames ?? []) {
-				try {
-					const { stdout } = await execFileAsync(
-						"security",
-						["find-generic-password", "-w", "-s", `${name} Safe Storage`],
-						{ timeout: 10_000, maxBuffer: 16 * 1024 },
-					);
-					const password = stdout.trim();
-					if (password) return new ChromiumCookieDecryptor(platform, Buffer.from(password));
-				} catch {
-					// Try the next legitimate Keychain service name.
-				}
-			}
+			return new ChromiumCookieDecryptor(platform, await readMacChromiumPassword(source.descriptor.chromiumKeychainNames ?? [], signal));
 		}
 		return new ChromiumCookieDecryptor(platform, null);
 	}
@@ -1419,6 +1414,33 @@ class ChromiumCookieDecryptor {
 		if (this.platform === "darwin") return decryptMacChromiumCookie(encrypted, this.key, host);
 		return null;
 	}
+}
+
+export async function readMacChromiumPassword(
+	names: string[],
+	signal: AbortSignal,
+	run: typeof execFileAsync = execFileAsync,
+): Promise<Buffer> {
+	for (const name of names) {
+		try {
+			const { stdout } = await run("security", ["find-generic-password", "-w", "-s", `${name} Safe Storage`], {
+				timeout: 120_000, maxBuffer: 16 * 1024, signal,
+			});
+			const password = stdout.trim();
+			if (password) return Buffer.from(password);
+			throw new Error("Empty Safe Storage key");
+		} catch (error) {
+			throwIfImportAborted(signal);
+			// security maps errSecItemNotFound (-25300) to exit status 44.
+			// Denial, cancellation and timeout must not trigger another prompt.
+			if ((error as { code?: unknown }).code === 44) continue;
+			if ((error as { killed?: boolean }).killed) {
+				throw new Error("Timed out waiting for macOS Safe Storage access. Retry and respond to the macOS prompt, or turn off cookies to import history only.");
+			}
+			throw new Error("macOS did not grant access to the browser's Safe Storage key. Retry and allow access, or turn off cookies to import history only.");
+		}
+	}
+	throw new Error("The browser's Safe Storage key was not found. Turn off cookies to import history only.");
 }
 
 export function decryptWindowsChromiumCookie(encrypted: Buffer, key: Buffer, host: string): string | null {
