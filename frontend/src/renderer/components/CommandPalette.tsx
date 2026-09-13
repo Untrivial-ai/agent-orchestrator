@@ -24,7 +24,13 @@ import { isMacPlatform } from "../lib/platform";
 import { sessionReviewsQueryOptions, type PRReviewState } from "../lib/session-reviews";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { useShell } from "../lib/shell-context";
-import { findProjectOrchestrator, hasConfiguredOrchestratorAgent, openPRs, workerSessions } from "../types/workspace";
+import {
+	findProjectOrchestrator,
+	hasConfiguredOrchestratorAgent,
+	openPRs,
+	STANDALONE_WORKSPACE_ID,
+	workerSessions,
+} from "../types/workspace";
 import { useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { Button } from "./ui/button";
@@ -338,6 +344,15 @@ export function CommandPalette() {
 		[navigate],
 	);
 
+	const sessionRoute = useCallback(
+		(projectId: string, sessionId: string): Extract<NavigateTarget, { to: "/sessions/$sessionId" | "/projects/$projectId/sessions/$sessionId" }> => {
+			return projectId === STANDALONE_WORKSPACE_ID
+				? { to: "/sessions/$sessionId", params: { sessionId } }
+				: { to: "/projects/$projectId/sessions/$sessionId", params: { projectId, sessionId } };
+		},
+		[],
+	);
+
 	const blockedByRestart = useCallback((projectId: string) => {
 		if (!useUiStore.getState().restartingProjectIds.has(projectId)) return false;
 		setError(t("command.orchestratorRestarting"));
@@ -349,10 +364,7 @@ export function CommandPalette() {
 			if (blockedByRestart(projectId)) return;
 			const orchestrator = findProjectOrchestrator(workspaces, projectId);
 			if (orchestrator) {
-				navigateToTarget({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId, sessionId: orchestrator.id },
-				});
+				navigateToTarget(sessionRoute(projectId, orchestrator.id));
 				closePalette();
 				return;
 			}
@@ -363,7 +375,7 @@ export function CommandPalette() {
 			if (workspace?.kind === "cloud") {
 				const sessionId = await spawnCloudOrchestrator(queryClient, projectId);
 				await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
-				navigateToTarget({ to: "/projects/$projectId/sessions/$sessionId", params: { projectId, sessionId } });
+				navigateToTarget(sessionRoute(projectId, sessionId));
 				closePalette();
 				return;
 			}
@@ -376,10 +388,10 @@ export function CommandPalette() {
 			}
 			const sessionId = await spawnOrchestrator(projectId, "command_palette");
 			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			navigateToTarget({ to: "/projects/$projectId/sessions/$sessionId", params: { projectId, sessionId } });
+			navigateToTarget(sessionRoute(projectId, sessionId));
 			closePalette();
 		},
-		[workspaces, navigateToTarget, queryClient, closePalette, blockedByRestart],
+		[workspaces, navigateToTarget, queryClient, closePalette, blockedByRestart, sessionRoute],
 	);
 
 	const resumeSession = useCallback(
@@ -443,10 +455,7 @@ export function CommandPalette() {
 						setError(message);
 						break;
 					}
-					navigateToTarget({
-						to: "/projects/$projectId/sessions/$sessionId",
-						params: { projectId: action.projectId, sessionId: action.sessionId },
-					});
+					navigateToTarget(sessionRoute(action.projectId, action.sessionId));
 						closePalette();
 						break;
 					}
@@ -484,12 +493,9 @@ export function CommandPalette() {
 		async (projectId: string, sessionId: string) => {
 			closePalette();
 			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			void navigate({
-				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId, sessionId },
-			});
+			void navigateToTarget(sessionRoute(projectId, sessionId));
 		},
-		[navigate, queryClient, closePalette],
+		[queryClient, closePalette, navigateToTarget, sessionRoute],
 	);
 
 	useEffect(() => {
