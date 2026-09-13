@@ -972,6 +972,7 @@
 	"settings.browserImport.discoveryFailed": "Could not inspect installed browsers.",
 	"settings.browserImport.failed": "Browser data could not be imported.",
 	"settings.browserImport.sourceDatabaseUnavailable": "AO couldn't access {{browser}}'s profile database. {{browser}} may still be using it, or the operating system may be blocking access. Fully close {{browser}}, including background processes, then try again. If it still fails, check that the browser profile files are accessible. Encrypted cookies are handled separately and did not cause this error.",
+	"settings.browserImport.safariAccessUnavailable": "AO couldn't access Safari's data. In System Settings, open Privacy & Security > Full Disk Access, allow AO, then restart AO and try the import again.",
 	"settings.browserImport.profileCount": "{{count}} profiles found",
 	"settings.browserImport.selectProfiles": "Choose the {{browser}} profiles you want to bring into AO.",
 	"settings.browserImport.defaultProfile": "Default",

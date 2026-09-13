@@ -1715,6 +1715,7 @@
 	"settings.browserImport.discoveryFailed": "インストール済みブラウザを確認できませんでした。",
 	"settings.browserImport.failed": "ブラウザデータをインポートできませんでした。",
 	"settings.browserImport.sourceDatabaseUnavailable": "AO は {{browser}} のプロファイルデータベースにアクセスできませんでした。{{browser}} がまだ使用しているか、OS がアクセスをブロックしている可能性があります。バックグラウンドプロセスを含めて {{browser}} を完全に終了し、もう一度お試しください。それでも失敗する場合は、ブラウザのプロファイルファイルにアクセスできることを確認してください。暗号化された Cookie は別途処理されるため、このエラーの原因ではありません。",
+	"settings.browserImport.safariAccessUnavailable": "AO は Safari のデータにアクセスできませんでした。システム設定で「プライバシーとセキュリティ」>「フルディスクアクセス」を開き、AO を許可してから AO を再起動し、もう一度インポートしてください。",
 	"settings.browserImport.profileCount": "{{count}} 件のプロファイルが見つかりました",
 	"settings.browserImport.selectProfiles": "AOに取り込む{{browser}}プロファイルを選択してください。",
 	"settings.browserImport.defaultProfile": "デフォルト",
