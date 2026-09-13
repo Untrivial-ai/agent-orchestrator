@@ -936,18 +936,43 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 // StopAll closes every controller, for daemon shutdown.
 func (s *Service) StopAll(ctx context.Context) {
 	s.mu.Lock()
-	controllers := make([]*Controller, 0, len(s.controllers))
+	type shutdownTarget struct {
+		id         domain.SessionID
+		controller *Controller
+	}
+	targets := make([]shutdownTarget, 0, len(s.controllers))
 	for id, controller := range s.controllers {
-		controllers = append(controllers, controller)
-		delete(s.controllers, id)
-		delete(s.startConfigs, id)
+		targets = append(targets, shutdownTarget{id: id, controller: controller})
 	}
 	s.mu.Unlock()
 
-	for _, controller := range controllers {
-		if err := controller.Close(ctx); err != nil {
-			s.log.Error("failed to close chat controller", "error", err)
+	for _, target := range targets {
+		gate := s.controllerGate(target.id)
+		if err := gate.lock(ctx); err != nil {
+			s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
+			continue
 		}
+		s.mu.RLock()
+		current, ok := s.controllers[target.id]
+		s.mu.RUnlock()
+		if !ok || current != target.controller {
+			gate.unlock()
+			continue
+		}
+		if err := target.controller.Close(ctx); err != nil {
+			s.log.Error("failed to close chat controller", "session", target.id, "error", err)
+		}
+		select {
+		case <-target.controller.stopped:
+			s.mu.Lock()
+			if current, ok := s.controllers[target.id]; ok && current == target.controller {
+				delete(s.controllers, target.id)
+				delete(s.startConfigs, target.id)
+			}
+			s.mu.Unlock()
+		default:
+		}
+		gate.unlock()
 	}
 }
 
