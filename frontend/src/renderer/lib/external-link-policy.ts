@@ -11,9 +11,12 @@ export function isWebLink(url: string): boolean {
 
 export function isWorkspaceHtmlLink(url: string, workspacePaths: string[]): boolean {
 	const normalized = url.trim().replace(/^\.\//, "");
-	if (!normalized || normalized.startsWith("/") || normalized.split("/").includes("..")) return false;
+	if (!normalized || normalized.split("/").includes("..")) return false;
 	const path = normalized.split(/[?#]/, 1)[0];
-	return /\.html?$/i.test(path) && workspacePaths.some((workspacePath) => workspacePath === path);
+	if (!/\.html?$/i.test(path)) return false;
+	return workspacePaths.some((workspacePath) =>
+		workspacePath === path || (path.startsWith("/") && path.endsWith(`/${workspacePath}`)),
+	);
 }
 
 /** Cloudflare challenges do not reliably complete in embedded Electron views. */

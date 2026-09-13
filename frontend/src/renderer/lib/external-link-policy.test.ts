@@ -79,6 +79,7 @@ describe("external link policy", () => {
 
 	it("recognizes only existing safe workspace HTML links", () => {
 		expect(isWorkspaceHtmlLink("./test-ui.html", ["test-ui.html"])).toBe(true);
+		expect(isWorkspaceHtmlLink("/tmp/worktree/test-ui.html", ["test-ui.html"])).toBe(true);
 		expect(isWorkspaceHtmlLink("README.md", ["README.md"])).toBe(false);
 		expect(isWorkspaceHtmlLink("../test-ui.html", ["../test-ui.html"])).toBe(false);
 		expect(isWorkspaceHtmlLink("missing.html", ["test-ui.html"])).toBe(false);
