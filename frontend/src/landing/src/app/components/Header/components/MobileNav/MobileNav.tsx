@@ -69,7 +69,7 @@ export function MobileNav({ ctaButtons }: MobileNavProps) {
 					<>
 						<motion.div
 							key="mobile-nav-backdrop"
-							className="fixed inset-x-0 bottom-0 top-14 z-40 bg-background/70 backdrop-blur-sm"
+							className="fixed inset-x-0 bottom-0 top-(--header-height) z-40 bg-background/70 backdrop-blur-sm"
 							initial={{ opacity: 0 }}
 							animate={{ opacity: 1 }}
 							exit={{ opacity: 0 }}
@@ -80,13 +80,13 @@ export function MobileNav({ ctaButtons }: MobileNavProps) {
 						<motion.div
 							key="mobile-nav-panel"
 							id="mobile-nav"
-							className="absolute inset-x-0 top-14 z-50 overflow-hidden border-t border-border bg-background"
+							className="absolute inset-x-0 top-(--header-height) z-50 overflow-hidden border-t border-border bg-background"
 							initial={{ height: 0 }}
 							animate={{ height: "auto" }}
 							exit={{ height: 0 }}
 							transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
 						>
-							<div className="max-h-[calc(100dvh-3.5rem)] overflow-y-auto overscroll-contain px-4 pb-[env(safe-area-inset-bottom)] sm:px-8 lg:px-[30px]">
+							<div className="max-h-[calc(100dvh-var(--header-height))] overflow-y-auto overscroll-contain px-4 pb-[env(safe-area-inset-bottom)] sm:px-8 lg:px-[30px]">
 								<div className="max-w-7xl mx-auto py-4 flex flex-col gap-6">
 									<MobileSection
 										title="Product"

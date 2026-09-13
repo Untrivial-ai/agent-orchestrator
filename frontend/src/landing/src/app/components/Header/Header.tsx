@@ -50,7 +50,7 @@ export function Header({ ctaButtons }: HeaderProps) {
     >
       <div className="px-4 sm:px-8 lg:px-[30px]">
         <div className="max-w-7xl mx-auto">
-          <div className="flex items-center justify-between h-14">
+          <div className="flex items-center justify-between h-(--header-height)">
             <div className="flex items-center">
               <Link
                 href="/"
