@@ -18,6 +18,20 @@ export interface PlatformInfo {
 	mobileOS: MobileOS;
 }
 
+export function macPlatformFromRenderer(
+	renderer: unknown,
+): typeof Platform.MacAppleSilicon | typeof Platform.MacIntel {
+	if (typeof renderer !== "string") return Platform.MacAppleSilicon;
+
+	// Apple Silicon only exposes Apple GPUs. Intel Macs can expose Intel's
+	// integrated GPU or a discrete AMD/Nvidia GPU, so require one of those
+	// explicit signals before offering the x64 build. Masked and software
+	// renderer strings are ambiguous and must keep the safer arm64 default.
+	return /\b(?:intel|amd|ati|nvidia)\b/i.test(renderer)
+		? Platform.MacIntel
+		: Platform.MacAppleSilicon;
+}
+
 function detectMacArch():
 	| typeof Platform.MacAppleSilicon
 	| typeof Platform.MacIntel {
@@ -36,10 +50,7 @@ function detectMacArch():
 		const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) as
 			| string
 			| undefined;
-		if (typeof renderer !== "string") return Platform.MacAppleSilicon;
-		return renderer.toLowerCase().includes("apple")
-			? Platform.MacAppleSilicon
-			: Platform.MacIntel;
+		return macPlatformFromRenderer(renderer);
 	} catch {
 		return Platform.MacAppleSilicon;
 	}
