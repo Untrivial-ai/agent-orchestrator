@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -451,12 +453,32 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	if hasActivity {
 		req.State = string(state)
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postActivityHook(ctx, path, req); err != nil {
 		// Surface the failure for diagnosis, but exit 0: a failed activity
 		// report must not disrupt the agent.
 		c.reportHookFailure(agent, event, sessionID, err)
 	}
 	return nil
+}
+
+func (c *commandContext) postActivityHook(ctx context.Context, path string, req setActivityAPIRequest) error {
+	for attempt := 0; ; attempt++ {
+		err := c.postJSON(ctx, path, req, nil)
+		var response apiResponseError
+		// Only this response guarantees the signal did not commit. Retrying
+		// transport errors or generic 503s could duplicate an applied Stop.
+		if attempt >= 3 || !errors.As(err, &response) || response.StatusCode != http.StatusServiceUnavailable ||
+			response.ErrorBody.Code != "ACTIVITY_PROJECTION_BUSY" {
+			return err
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func isCursorPermissionHook(agent, event string) bool {
@@ -488,7 +510,7 @@ func (c *commandContext) runCursorPermissionHook(ctx context.Context, agent, eve
 		AgentSessionID: hookAgentSessionID(payload),
 		LaunchID:       launchID,
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postActivityHook(ctx, path, req); err != nil {
 		c.reportHookFailure(agent, event, sessionID, err)
 		if decision.Permission == "ask" {
 			return fmt.Errorf("persist blocked Cursor activity: %w", err)

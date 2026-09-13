@@ -843,7 +843,7 @@ retryProjection:
 		}
 		if projectionAttempts >= maxActivitySignalProjectionRetries {
 			slog.Default().Warn("lifecycle: activity projection contention", "session", id, "event", s.Event, "attempts", projectionAttempts+1)
-			return false, false, fmt.Errorf("project activity signal for %s: concurrent session writes exhausted %d attempts", id, projectionAttempts+1)
+			return false, false, fmt.Errorf("%w for %s: concurrent session writes exhausted %d attempts", ports.ErrActivityProjectionContention, id, projectionAttempts+1)
 		}
 		projectionAttempts++
 		return false, true, nil

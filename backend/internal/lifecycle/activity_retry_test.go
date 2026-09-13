@@ -57,7 +57,7 @@ func TestActivityProjectionExhaustionReturnsError(t *testing.T) {
 	err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
 		Valid: true, State: domain.ActivityActive, Event: "pre-tool-use", ToolName: "Bash", ToolUseID: "tool-1",
 	})
-	if err == nil || !strings.Contains(err.Error(), "exhausted 4 attempts") {
+	if !errors.Is(err, ports.ErrActivityProjectionContention) || !strings.Contains(err.Error(), "exhausted 4 attempts") {
 		t.Fatalf("contention must not acknowledge a lost signal: %v", err)
 	}
 	if m.flights["mer-1"] != nil {

@@ -89,6 +89,23 @@ func TestSessionsAPI_ActivityForwardsUsageMetadataWithoutChangingActivity(t *tes
 	}
 }
 
+func TestSessionsAPI_ActivityContentionRemainsRetryableAndRecordsUsage(t *testing.T) {
+	activity := &fakeActivityRecorder{err: ports.ErrActivityProjectionContention}
+	usage := &fakeUsageHookRecorder{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil,
+		httpd.APIDeps{Activity: activity, UsageHooks: usage}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"idle","event":"stop","agentSessionId":"native-1","launchId":"launch-1","usage":{"harness":"claude-code","transcriptPath":"/tmp/main.jsonl"}}`)
+	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "ACTIVITY_PROJECTION_BUSY") {
+		t.Fatalf("contention should be explicitly retryable: %d %s", status, body)
+	}
+	if usage.calls != 1 || usage.gotSignal.TranscriptPath != "/tmp/main.jsonl" {
+		t.Fatalf("projection contention discarded independent usage signal: %+v", usage)
+	}
+}
+
 func TestSessionsAPI_ActivitySanitizesAndBoundsUsageMetadata(t *testing.T) {
 	usage := &fakeUsageHookRecorder{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

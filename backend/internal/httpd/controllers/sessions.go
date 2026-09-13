@@ -1614,8 +1614,10 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		TranscriptPath:               capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
 		LaunchID:                     capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
 	}
+	var activityErr error
 	if c.Activity != nil && (sig.Valid || sig.AgentSessionID != "") {
-		if err := c.Activity.ApplyActivitySignal(r.Context(), sessionID(r), sig); err != nil {
+		activityErr = c.Activity.ApplyActivitySignal(r.Context(), sessionID(r), sig)
+		if err := activityErr; err != nil && !errors.Is(err, ports.ErrActivityProjectionContention) {
 			if errors.Is(err, ports.ErrSessionNotFound) {
 				envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "SESSION_NOT_FOUND", "Unknown session", nil)
 				return
@@ -1650,6 +1652,13 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 				"err", err,
 			)
 		}
+	}
+	if activityErr != nil {
+		// The projection never committed, so the hook can retry the same payload.
+		// Usage observation is independent and must still run on contention.
+		w.Header().Set("Retry-After", "1")
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "ACTIVITY_PROJECTION_BUSY", "Concurrent session updates prevented this activity signal from committing; retry the hook", nil)
+		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, SetActivityResponse{OK: true, SessionID: sessionID(r), State: in.State})
 }
