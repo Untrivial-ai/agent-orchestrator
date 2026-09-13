@@ -35,7 +35,10 @@ export function useSessionBrowserLink(
 			const sessionId = session.id;
 			setInspectorView(sessionId, "browser");
 			setInspectorOpen(sessionId, true);
-			if (openInBrowser) {
+			// Local workspace paths must go through the daemon preview resolver first.
+			// Passing an absolute worktree path directly to BrowserView opens an empty
+			// tab because Chromium cannot navigate to the filesystem path.
+			if (openInBrowser && !isLocalWorkspaceHtml) {
 				void openInBrowser(uri).catch((error) => {
 					console.warn("Unable to open link in Browser tab", error);
 				});

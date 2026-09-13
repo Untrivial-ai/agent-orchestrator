@@ -459,12 +459,13 @@ describe("SessionChatSurface link routing", () => {
 	it("automatically previews a newly completed workspace HTML link", async () => {
 		workspacePathsState.paths = ["test-ui.html"];
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={session} /></Wrapper>);
+		const openInBrowser = vi.fn().mockResolvedValue(undefined);
+		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
 		conversationState.snapshot = {
 			capabilities: [],
 			items: [{ kind: "message", id: "assistant-html", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Done: [`test-ui.html`](/tmp/worktree/test-ui.html)", streaming: false, createdAt: "2026-08-08T00:00:01Z" }],
 		};
-		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={session} /></Wrapper>);
+		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
 		await waitFor(() => expect(postMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/preview",
 			expect.objectContaining({ body: { url: "/tmp/worktree/test-ui.html" } }),
