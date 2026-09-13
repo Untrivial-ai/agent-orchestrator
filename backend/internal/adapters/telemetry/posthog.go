@@ -152,6 +152,7 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"has_git_remote": {},
 		"kind":           {},
 		"github_org":     {},
+		"scm_provider":   {},
 	},
 	"ao.onboarding.first_session_spawned": {
 		"harness":                {},
@@ -184,6 +185,7 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"has_git_remote": {},
 		"kind":           {},
 		"github_org":     {},
+		"scm_provider":   {},
 	},
 	"ao.session.spawn_failed": {
 		"component":   {},

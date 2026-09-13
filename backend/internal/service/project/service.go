@@ -564,6 +564,13 @@ func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord
 		"kind":           string(row.Kind.WithDefault()),
 		"has_git_remote": row.RepoOriginURL != "",
 	}
+	// Classify the SCM provider (github / gitlab / bitbucket / other) so usage
+	// can be counted per provider. Only the closed-vocabulary category is
+	// derived, never the host, owner, or repo. Self-hosted instances resolve to
+	// "other" because the host is not published.
+	if provider := scmProvider(row.RepoOriginURL); provider != "" {
+		payload["scm_provider"] = provider
+	}
 	// Tag the GitHub org so usage can be attributed/ranked by organisation. Only
 	// the owner is derived — never the repo name or full URL.
 	if owner := githubOwner(row.RepoOriginURL); owner != "" {
@@ -617,6 +624,61 @@ func firstSegment(s string) string {
 		return s[:i]
 	}
 	return ""
+}
+
+// scmProvider classifies the SCM provider from a git remote URL into a closed
+// vocabulary (github / gitlab / bitbucket / other), or "" when the remote is
+// empty. Only the provider category is derived, never the host, owner, or repo,
+// so telemetry can count provider usage without shipping repository identity. A
+// remote whose host is not a known public provider — including any self-hosted
+// instance — resolves to "other" rather than leaking its host.
+func scmProvider(remote string) string {
+	if strings.TrimSpace(remote) == "" {
+		return "" //nolint:nlreturn // guard clause; a leading blank line adds no clarity
+	}
+	switch remoteHost(remote) {
+	case "github.com":
+		return "github"
+	case "gitlab.com":
+		return "gitlab"
+	case "bitbucket.org":
+		return "bitbucket"
+	default:
+		return "other"
+	}
+}
+
+// remoteHost extracts the lower-cased host from a git remote URL, supporting the
+// scp-like syntax (git@host:owner/repo) alongside https/http/ssh/git schemes,
+// stripping any userinfo and port. It returns "" when no host can be identified.
+// The host is used only to classify the provider; it is never emitted.
+func remoteHost(remote string) string {
+	r := strings.TrimSpace(remote)
+	if r == "" {
+		return "" //nolint:nlreturn // guard clause; a leading blank line adds no clarity
+	}
+	if idx := strings.Index(r, "://"); idx >= 0 {
+		// scheme://[user@]host[:port]/path
+		rest := r[idx+3:]
+		if at := strings.IndexByte(rest, '@'); at >= 0 {
+			rest = rest[at+1:]
+		}
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			rest = rest[:i]
+		}
+		if i := strings.IndexByte(rest, ':'); i >= 0 {
+			rest = rest[:i]
+		}
+		return strings.ToLower(rest)
+	}
+	// scp-like: [user@]host:path
+	if at := strings.IndexByte(r, '@'); at >= 0 {
+		r = r[at+1:]
+	}
+	if i := strings.IndexAny(r, ":/"); i >= 0 {
+		r = r[:i]
+	}
+	return strings.ToLower(r)
 }
 
 // UpdateSettings atomically replaces the project's stored display name and
