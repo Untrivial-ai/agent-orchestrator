@@ -9,6 +9,17 @@ export function isWebLink(url: string): boolean {
 	}
 }
 
+/** Cloudflare challenges do not reliably complete in embedded Electron views. */
+export function requiresSystemBrowser(url: string): boolean {
+	try {
+		const parsed = new URL(url.includes("://") ? url : `https://${url}`);
+		const host = parsed.hostname.toLowerCase();
+		return host === "dash.cloudflare.com" || host.endsWith(".dash.cloudflare.com");
+	} catch {
+		return false;
+	}
+}
+
 export async function openLinkInSystemBrowser(url: string): Promise<void> {
 	try {
 		await aoBridge.app.openExternal(url);

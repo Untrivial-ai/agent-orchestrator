@@ -272,6 +272,18 @@ describe("BrowserPanel", () => {
 		expect(input).not.toHaveFocus();
 	});
 
+	it("opens Cloudflare dashboard URLs in the system browser", async () => {
+		const openExternal = vi.spyOn(window.ao!.app, "openExternal").mockResolvedValue(undefined);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("textbox", { name: /browser url/i });
+
+		await userEvent.type(input, "dash.cloudflare.com{Enter}");
+
+		await waitFor(() => expect(openExternal).toHaveBeenCalledWith("https://dash.cloudflare.com"));
+		expect(hookState.navigate).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
 	it("supports consecutive address-bar navigations after refocusing", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		const input = screen.getByRole("textbox", { name: /browser url/i });

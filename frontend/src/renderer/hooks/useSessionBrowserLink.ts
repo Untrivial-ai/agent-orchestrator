@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { apiClient } from "../lib/api-client";
+import { openLinkInSystemBrowser, requiresSystemBrowser } from "../lib/external-link-policy";
 import { useUiStore } from "../stores/ui-store";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
@@ -22,6 +23,10 @@ export function useSessionBrowserLink(
 				const url = new URL(uri);
 				if (url.protocol !== "http:" && url.protocol !== "https:") return;
 			} catch {
+				return;
+			}
+			if (requiresSystemBrowser(uri)) {
+				void openLinkInSystemBrowser(uri);
 				return;
 			}
 
