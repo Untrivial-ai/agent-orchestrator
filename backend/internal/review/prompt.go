@@ -13,7 +13,7 @@ import (
 // into an already-running reviewer to review a new commit.
 //
 // The texts are self-contained — they carry the ids the reviewer needs to
-// submit — so no environment variables are required.
+// submit — without relying on session-id environment variables. AO_CLI selects the executable.
 func reviewTexts(spec LaunchSpec) (prompt, systemPrompt string) {
 	systemPrompt = reviewSystemPrompt()
 
@@ -34,7 +34,7 @@ Do these steps in order:
    - The printed number is the review id. If the call fails on the provider, leave the id empty.
 2. After every PR has its own GitHub review from step 1, record AO's bookkeeping for those already-posted reviews using one command. Pass JSON on stdin so nothing is ever written into the worktree (a file there could be committed onto the worker's branch). Include one object per PR/run from the queue:
 
-    printf '%%s' '{ "reviews": [ { "runId": "<run-id>", "verdict": "<approved|changes_requested>", "githubReviewId": "<id-from-step-1-or-empty>", "body": "<your full review markdown>" } ] }' | ao review submit --session %s --reviews -
+    printf '%%s' '{ "reviews": [ { "runId": "<run-id>", "verdict": "<approved|changes_requested>", "githubReviewId": "<id-from-step-1-or-empty>", "body": "<your full review markdown>" } ] }' | "$AO_CLI" review submit --session %s --reviews -
 
 Only if step 1 genuinely fails on the provider for a PR, still include that run in step 2 with an empty githubReviewId so the result is recorded.`,
 		spec.WorkerID, queueText, spec.WorkerID)
@@ -43,6 +43,8 @@ Only if step 1 genuinely fails on the provider for a PR, still include that run 
 
 func reviewSystemPrompt() string {
 	return `## Code reviewer role
+
+For all AO shell commands, use the canonical executable from AO_CLI: "$AO_CLI" on POSIX or & $env:AO_CLI in PowerShell. Do not resolve bare ao through PATH; login shells can select an older installation. If AO_CLI is missing or unavailable, report the failure instead of falling back.
 
 You are an AO code reviewer. You review the requested pull request changes in the current checkout — do not start unrelated work. Inspect what each PR changed by diffing the checkout against the PR's base branch, and review for correctness bugs, missing error handling, security issues, test coverage, and clear deviations from the surrounding code's conventions. Prefer a few high-confidence findings over nitpicks.
 

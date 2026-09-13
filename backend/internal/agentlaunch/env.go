@@ -14,6 +14,32 @@ import (
 
 const aoBinaryName = "ao"
 
+// EnvCLI is the canonical executable for managed tool commands. Unlike PATH,
+// this reference survives a nested login shell prepending another AO install.
+const EnvCLI = "AO_CLI"
+
+// PinCLI overwrites configured values, including Windows case variants. Never
+// inherit a foreign reference or resolve it through PATH when discovery fails.
+func PinCLI(env map[string]string, executable func() (string, error)) error {
+	for key := range env {
+		if key == EnvCLI || (runtime.GOOS == "windows" && strings.EqualFold(key, EnvCLI)) {
+			delete(env, key)
+		}
+	}
+	env[EnvCLI] = ""
+	exe, err := executable()
+	if err != nil {
+		return fmt.Errorf("resolve canonical AO CLI: %w", err)
+	}
+	if !filepath.IsAbs(exe) {
+		return fmt.Errorf("canonical AO CLI must be absolute, got %q", exe)
+	}
+	// Forward slashes also work in PowerShell and allow Git Bash hooks to use
+	// the same Windows executable reference without interpreting backslashes.
+	env[EnvCLI] = filepath.ToSlash(exe)
+	return nil
+}
+
 // PinnedPATH prepends an AO-only directory to the supplied
 // PATH. It rejects executables not named ao because their directory cannot
 // guarantee the identity of a bare ao command.

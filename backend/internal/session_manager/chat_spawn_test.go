@@ -960,6 +960,9 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 	if start.Env == nil {
 		t.Error("controller started with no environment; the agent could not resolve `ao`")
 	}
+	if start.Env["AO_CLI"] == "" {
+		t.Error("chat controller missing canonical AO_CLI")
+	}
 	if start.Env[EnvSessionID] == "" {
 		t.Errorf("controller env missing %s; session-scoped hooks would not identify the session", EnvSessionID)
 	}

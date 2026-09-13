@@ -220,10 +220,9 @@ const (
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
 )
 
-// hookBinaryName is the executable name the workspace hook commands invoke:
-// every agent adapter installs a bare `ao hooks <agent> <event>`. The session
-// PATH pin (hookPATH) only works when the daemon's own executable carries this
-// name, since prepending its directory must change what `ao` resolves to.
+// hookBinaryName is the bare executable name still used by some workspace hooks.
+// Claude uses AO_CLI and Codex an absolute executable; the PATH pin remains a
+// compatibility aid for other adapters and interactive commands.
 const hookBinaryName = "ao"
 
 type lifecycleRecorder interface {
@@ -4078,7 +4077,8 @@ func (m *Manager) aoSkillPointer() string {
 	browserFile := filepath.ToSlash(filepath.Join(dir, "commands", "browser.md"))
 	previewFile := filepath.ToSlash(filepath.Join(dir, "commands", "preview.md"))
 	return "\n\n" + "## Using the ao CLI\n\n" +
-		"When using `ao`, read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides.\n\n" +
+		"Invoke `ao` as `\"$AO_CLI\"` (POSIX) or `& $env:AO_CLI` (PowerShell).\n\n" +
+		"Read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides.\n\n" +
 		"## AO desktop Browser panel\n\n" +
 		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `ao preview` are relative to the session workspace root, regardless of the shell's current directory: use `ao preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
 		"For page inspection or interaction, read `" + browserFile + "` and use `ao browser` from this AO session. Browser network capture is optional and off by default; follow that guide and never enable it for routine browser actions. " +
@@ -4239,15 +4239,14 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 	return env
 }
 
-// runtimeEnv is spawnEnv plus the hook PATH pin: the session's PATH puts the
-// running daemon's own directory first, so the bare `ao` in workspace hook
-// commands resolves to the daemon that installed them rather than whatever
-// `ao` is first on the inherited PATH (e.g. a legacy CLI without the hooks
-// command, which fails every callback and silently kills activity tracking).
-// When the pin cannot be applied the inherited PATH is kept and a warning is
-// logged so the degradation isn't silent.
+// runtimeEnv adds the canonical AO_CLI reference and a best-effort PATH pin to
+// spawnEnv. Managed commands use AO_CLI because nested login shells can reorder
+// PATH after launch. Failure to resolve either reference is logged explicitly.
 func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
 	env := spawnEnv(id, project, issue, m.dataDir, projectEnv)
+	if err := agentlaunch.PinCLI(env, m.executable); err != nil {
+		m.logger.Warn("canonical AO CLI unavailable; managed commands cannot run", "session", id, "error", err)
+	}
 	// Project configuration must never redirect AO-owned hook callbacks to a
 	// different daemon. New receives the resolved absolute path in production;
 	// the environment fallback keeps focused embedders and tests compatible.

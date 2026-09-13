@@ -3,17 +3,36 @@ package claudecode
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 const (
-	claudeSettingsDirName   = ".claude"
-	claudeSettingsFileName  = "settings.local.json"
-	claudeHookCommandPrefix = "ao hooks claude-code "
+	claudeSettingsDirName  = ".claude"
+	claudeSettingsFileName = "settings.local.json"
+	// Claude shell-form hooks use sh on POSIX and Git Bash or PowerShell on
+	// Windows. Select PowerShell explicitly on Windows rather than depending on
+	// Git Bash availability: https://code.claude.com/docs/en/hooks#command-hook-fields
+	claudePOSIXHookPrefix   = `"${AO_CLI:?AO_CLI is not set}" hooks claude-code `
+	claudeWindowsHookPrefix = `if (-not $env:AO_CLI) { throw 'AO_CLI is not set' }; & "$env:AO_CLI" hooks claude-code `
 	claudeHookTimeout       = 30
 )
+
+var claudeHookCommandPrefix = func() string {
+	if runtime.GOOS == "windows" {
+		return claudeWindowsHookPrefix
+	}
+	return claudePOSIXHookPrefix
+}()
+
+var claudeHookShell = func() string {
+	if runtime.GOOS == "windows" {
+		return "powershell"
+	}
+	return "bash"
+}()
 
 // claudeSessionStartMatcher is referenced by pointer so SessionStart serializes
 // with Claude's documented source matcher. "startup" alone misses --resume
@@ -37,27 +56,33 @@ var claudeSessionStartMatcher = "startup|resume|clear|compact|fork"
 // dialog appears and carries the blocking tool_name; `ao hooks` writes nothing
 // to stdout, so installing it never injects a permission decision.
 var claudeManagedHooks = []hooksjson.HookSpec{
-	{Event: "SessionStart", Matcher: &claudeSessionStartMatcher, Command: claudeHookCommandPrefix + "session-start"},
-	{Event: "UserPromptSubmit", Command: claudeHookCommandPrefix + "user-prompt-submit"},
-	{Event: "PreToolUse", Command: claudeHookCommandPrefix + "pre-tool-use"},
-	{Event: "PostToolUse", Command: claudeHookCommandPrefix + "post-tool-use"},
-	{Event: "PostToolUseFailure", Command: claudeHookCommandPrefix + "post-tool-use-failure"},
-	{Event: "PermissionRequest", Command: claudeHookCommandPrefix + "permission-request"},
-	{Event: "Stop", Command: claudeHookCommandPrefix + "stop"},
-	{Event: "Notification", Command: claudeHookCommandPrefix + "notification"},
-	{Event: "SubagentStop", Command: claudeHookCommandPrefix + "subagent-stop"},
-	{Event: "SessionEnd", Command: claudeHookCommandPrefix + "session-end"},
+	{Shell: claudeHookShell, Event: "SessionStart", Matcher: &claudeSessionStartMatcher, Command: claudeHookCommandPrefix + "session-start"},
+	{Shell: claudeHookShell, Event: "UserPromptSubmit", Command: claudeHookCommandPrefix + "user-prompt-submit"},
+	{Shell: claudeHookShell, Event: "PreToolUse", Command: claudeHookCommandPrefix + "pre-tool-use"},
+	{Shell: claudeHookShell, Event: "PostToolUse", Command: claudeHookCommandPrefix + "post-tool-use"},
+	{Shell: claudeHookShell, Event: "PostToolUseFailure", Command: claudeHookCommandPrefix + "post-tool-use-failure"},
+	{Shell: claudeHookShell, Event: "PermissionRequest", Command: claudeHookCommandPrefix + "permission-request"},
+	{Shell: claudeHookShell, Event: "Stop", Command: claudeHookCommandPrefix + "stop"},
+	{Shell: claudeHookShell, Event: "Notification", Command: claudeHookCommandPrefix + "notification"},
+	{Shell: claudeHookShell, Event: "SubagentStop", Command: claudeHookCommandPrefix + "subagent-stop"},
+	{Shell: claudeHookShell, Event: "SessionEnd", Command: claudeHookCommandPrefix + "session-end"},
 }
 
 // claudeHooks manages AO's hooks in the workspace-local
 // .claude/settings.local.json file.
 var claudeHooks = hooksjson.Manager{
-	Label:                 "claude-code",
-	CommandPrefix:         claudeHookCommandPrefix,
-	LegacyCommandPrefixes: []string{"ao hooks continue "},
-	Timeout:               claudeHookTimeout,
-	Path:                  claudeSettingsPath,
-	Managed:               claudeManagedHooks,
+	Label:         "claude-code",
+	CommandPrefix: claudeHookCommandPrefix,
+	LegacyCommandPrefixes: func() []string {
+		prefixes := []string{"ao hooks continue ", "ao hooks claude-code "}
+		if runtime.GOOS == "windows" {
+			return append(prefixes, claudePOSIXHookPrefix)
+		}
+		return append(prefixes, claudeWindowsHookPrefix)
+	}(),
+	Timeout: claudeHookTimeout,
+	Path:    claudeSettingsPath,
+	Managed: claudeManagedHooks,
 }
 
 func claudeSettingsPath(workspacePath string) string {

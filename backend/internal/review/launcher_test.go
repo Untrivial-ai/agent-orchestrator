@@ -77,7 +77,7 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 func TestLauncherSpawnPinsPATHToAOExecutable(t *testing.T) {
 	aoDir := t.TempDir()
 	aoExe := filepath.Join(aoDir, "ao")
-	reviewer := &fakeReviewer{env: map[string]string{"PATH": "/reviewer/bin"}}
+	reviewer := &fakeReviewer{env: map[string]string{"PATH": "/reviewer/bin", "AO_CLI": "foreign"}}
 	rt := &fakeRuntime{}
 	l := NewLauncher(
 		fakeReviewerResolver{reviewer: reviewer, ok: true},
@@ -90,6 +90,9 @@ func TestLauncherSpawnPinsPATHToAOExecutable(t *testing.T) {
 		t.Fatalf("Spawn: %v", err)
 	}
 
+	if got := rt.createCfg.Env["AO_CLI"]; got != filepath.ToSlash(aoExe) {
+		t.Fatalf("AO_CLI = %q, want %q", got, aoExe)
+	}
 	parts := strings.Split(rt.createCfg.Env["PATH"], string(os.PathListSeparator))
 	if len(parts) < 2 || parts[0] != aoDir || parts[1] != "/reviewer/bin" {
 		t.Fatalf("reviewer PATH = %q, want AO dir before adapter PATH", rt.createCfg.Env["PATH"])
@@ -603,7 +606,7 @@ func TestLauncherRestoreTerminalUsesReviewerRestoreCommandWhenAvailable(t *testi
 		restoreOK: true,
 		restoreSpec: ports.ReviewCommandSpec{
 			Argv:           []string{"agent", "resume", "native-reviewer-1"},
-			Env:            map[string]string{"PATH": "/restore/bin"},
+			Env:            map[string]string{"PATH": "/restore/bin", "AO_CLI": "foreign"},
 			NativeResumed:  true,
 			InitialMessage: "restored task",
 		},
@@ -642,6 +645,9 @@ func TestLauncherRestoreTerminalUsesReviewerRestoreCommandWhenAvailable(t *testi
 	}
 	if strings.Join(rt.createCfg.Argv, " ") != "agent resume native-reviewer-1" {
 		t.Fatalf("runtime argv = %#v", rt.createCfg.Argv)
+	}
+	if got := rt.createCfg.Env["AO_CLI"]; got != filepath.ToSlash(aoExe) {
+		t.Fatalf("AO_CLI = %q, want %q", got, aoExe)
 	}
 	parts := strings.Split(rt.createCfg.Env["PATH"], string(os.PathListSeparator))
 	if len(parts) < 2 || parts[0] != aoDir || parts[1] != "/restore/bin" {
@@ -1073,5 +1079,15 @@ func TestLauncherPreflightEnvPrefixWithMissingBinary(t *testing.T) {
 	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{}, "")
 	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err = %v, want 'not found'", err)
+	}
+}
+
+func TestRuntimeEnvRetainsCanonicalAndPATHWarnings(t *testing.T) {
+	l := &agentLauncher{executable: func() (string, error) { return "", errors.New("executable unavailable") }}
+	env := l.runtimeEnv(t.Context(), launchSpec(), nil, nil)
+	for _, want := range []string{"resolve canonical AO CLI", "PATH pin failed", "AO shim fallback failed"} {
+		if !strings.Contains(env[EnvAOCommandWarning], want) {
+			t.Fatalf("warning %q missing %q", env[EnvAOCommandWarning], want)
+		}
 	}
 }

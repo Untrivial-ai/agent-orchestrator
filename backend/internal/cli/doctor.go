@@ -293,7 +293,7 @@ func (c *commandContext) checkAOBinary(daemonExe string) doctorCheck {
 	if err != nil || onPath == "" {
 		return doctorCheck{
 			Level: doctorWarn, Section: doctorSectionTools, Name: name,
-			Message: "ao not found in PATH; workspace hooks invoke `ao hooks <agent> <event>` (daemon-spawned sessions pin PATH to the daemon binary and are unaffected)",
+			Message: "ao not found in PATH; use the canonical AO_CLI executable in managed sessions",
 		}
 	}
 	if sameBinary(want, onPath) {
@@ -302,12 +302,12 @@ func (c *commandContext) checkAOBinary(daemonExe string) doctorCheck {
 	if daemonExe != "" {
 		return doctorCheck{
 			Level: doctorWarn, Section: doctorSectionTools, Name: name,
-			Message: fmt.Sprintf("ao in PATH is %s, which shadows the running daemon's binary %s; remove or reorder the shadowing install so `ao` outside daemon-spawned sessions is the one the app runs", onPath, daemonExe),
+			Message: fmt.Sprintf("ao in PATH is %s, which shadows the running daemon's binary %s; use the absolute daemon executable (AO_CLI in managed sessions); login shells can override the session PATH pin", onPath, daemonExe),
 		}
 	}
 	return doctorCheck{
 		Level: doctorWarn, Section: doctorSectionTools, Name: name,
-		Message: fmt.Sprintf("ao in PATH is %s, not this binary (%s); workspace hooks run `ao hooks` and a foreign ao breaks activity tracking outside daemon-spawned sessions", onPath, self),
+		Message: fmt.Sprintf("ao in PATH is %s, not this binary (%s); login shells can override the session PATH pin; use the canonical AO_CLI executable in managed sessions", onPath, self),
 	}
 }
 
