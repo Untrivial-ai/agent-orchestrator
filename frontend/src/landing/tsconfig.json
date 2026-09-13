@@ -35,6 +35,7 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
+    "**/*.test.tsx",
     "node_modules"
   ]
 }

@@ -116,7 +116,7 @@ function advanceCard(card: Card): Card {
 const INITIAL_CARDS: Card[] = [
 	{
 		id: "c1", title: "Confirm download labels are platform-aware",
-		branch: "landing/platform-copy", icon: "/app-icons/cursor.svg",
+		branch: "landing/platform-copy", icon: "/app-icons/agents/cursor.svg",
 		column: "working", activity: "Editing copy", activityState: "running",
 		pr: "draft", time: "14m ago",
 	},
@@ -416,102 +416,106 @@ function BoardColumn({ cards, color, title }: { cards: Card[]; color: string; ti
 
 export function FleetBoardDemo() {
 	const [cards, setCards] = useState<Card[]>(INITIAL_CARDS);
-	const incomingIdx = useRef(0);
+	const simulation = useRef({ cards: INITIAL_CARDS, incomingIdx: 0 });
 	const { viewportRef, viewportStyle, canvasStyle } = usePreviewScale(570, 318);
-
-	// Remove a merged card after its exit animation
-	const mergeCard = (id: string) => {
-		setCards((c) => c.filter((card) => card.id !== id));
-	};
 
 	useEffect(() => {
 		let timeoutId: number;
+		let mergeTimeoutId: number | undefined;
 		const scheduleNext = () => { timeoutId = window.setTimeout(runStep, randomDelay()); };
+		const mergeCard = (id: string) => {
+			simulation.current.cards = simulation.current.cards.filter((card) => card.id !== id);
+			setCards(simulation.current.cards);
+		};
 
 		const runStep = () => {
-			setCards((current) => {
-				// Pick a card to advance (weighted towards earlier columns)
-				let total = 0;
-				for (const c of current) {
-					if (!c.merging) total += COLUMN_CONFIG[c.column].weight;
-				}
-				let threshold = Math.random() * total;
-				let chosen: Card | null = null;
-				for (const c of current) {
-					if (c.merging) continue;
-					threshold -= COLUMN_CONFIG[c.column].weight;
-					if (threshold <= 0) { chosen = c; break; }
-				}
-				if (!chosen) chosen = current.find((c) => !c.merging) ?? null;
+			// Advance the simulation once per timer tick, outside React updater callbacks.
+			const current = simulation.current.cards;
+			// Pick a card to advance (weighted towards earlier columns)
+			let total = 0;
+			for (const c of current) {
+				if (!c.merging) total += COLUMN_CONFIG[c.column].weight;
+			}
+			let threshold = Math.random() * total;
+			let chosen: Card | null = null;
+			for (const c of current) {
+				if (c.merging) continue;
+				threshold -= COLUMN_CONFIG[c.column].weight;
+				if (threshold <= 0) { chosen = c; break; }
+			}
+			if (!chosen) chosen = current.find((c) => !c.merging) ?? null;
 
-				let next = current;
-				if (chosen) {
-					if (chosen.column === "merge") {
-						window.setTimeout(() => mergeCard(chosen!.id), 0);
-						next = next.map((c) => c.id === chosen!.id ? { ...c, merging: true } : c);
-					} else {
-						next = next.map((c) => c.id === chosen!.id ? advanceCard(c) : c);
-					}
+			let next = current;
+			if (chosen) {
+				if (chosen.column === "merge") {
+					mergeTimeoutId = window.setTimeout(() => mergeCard(chosen!.id), 0);
+					next = next.map((c) => c.id === chosen!.id ? { ...c, merging: true } : c);
+				} else {
+					next = next.map((c) => c.id === chosen!.id ? advanceCard(c) : c);
 				}
+			}
 
-				// Ensure no column is ever empty
-				for (let i = 1; i < COLUMN_ORDER.length; i++) {
-					const col = COLUMN_ORDER[i]!;
-					const prev = COLUMN_ORDER[i - 1]!;
-					if (next.filter((c) => c.column === col && !c.merging).length === 0) {
-						const donor = next.find((c) => c.column === prev && !c.merging);
-						if (donor) next = next.map((c) => c.id === donor.id ? advanceCard(c) : c);
-					}
+			// Ensure no column is ever empty
+			for (let i = 1; i < COLUMN_ORDER.length; i++) {
+				const col = COLUMN_ORDER[i]!;
+				const prev = COLUMN_ORDER[i - 1]!;
+				if (next.filter((c) => c.column === col && !c.merging).length === 0) {
+					const donor = next.find((c) => c.column === prev && !c.merging);
+					if (donor) next = next.map((c) => c.id === donor.id ? advanceCard(c) : c);
 				}
+			}
 
-				// Occasionally flip a card to waiting
-				if (Math.random() < 0.1) {
-					const candidates = next.filter((c) => !c.merging && c.activityState !== "waiting" && c.column !== "merge");
-					const target = candidates[Math.floor(Math.random() * candidates.length)];
-					if (target) {
-						next = next.map((c) =>
-							c.id === target.id ? {
-								...c,
-								activityState: "waiting" as const,
-								activity: c.column === "in_review" ? "Changes requested" : "Needs your input",
-								time: randomTime(),
-							} : c,
-						);
-					}
+			// Occasionally flip a card to waiting
+			if (Math.random() < 0.1) {
+				const candidates = next.filter((c) => !c.merging && c.activityState !== "waiting" && c.column !== "merge");
+				const target = candidates[Math.floor(Math.random() * candidates.length)];
+				if (target) {
+					next = next.map((c) =>
+						c.id === target.id ? {
+							...c,
+							activityState: "waiting" as const,
+							activity: c.column === "in_review" ? "Changes requested" : "Needs your input",
+							time: randomTime(),
+						} : c,
+					);
 				}
+			}
 
-				// Spawn a new working card if column is thin
-				const workingCount = next.filter((c) => c.column === "working" && !c.merging).length;
-				if (workingCount < 2 && next.filter((c) => !c.merging).length < 8) {
-					const newId = `spawned-${++incomingIdx.current}`;
-					const templates = [
-						{ title: "Throttle agent spawn rate under load",      branch: "backend/spawn-throttle",      icon: "/app-icons/coverage-claude-code.svg" },
-						{ title: "Add keyboard shortcut for session focus",    branch: "feat/session-focus-shortcut", icon: "/app-icons/coverage-codex.svg"       },
-						{ title: "Lazy-load session terminal on first open",   branch: "perf/lazy-terminal",          icon: "/app-icons/cursor.svg"               },
-						{ title: "Fix memory leak in terminal resize handler", branch: "fix/terminal-resize-leak",    icon: "/app-icons/coverage-claude-code.svg" },
-						{ title: "Migrate auth tokens to short-lived JWTs",   branch: "auth/jwt-rotation",           icon: "/app-icons/opencode.svg"             },
-					];
-					const t = templates[incomingIdx.current % templates.length]!;
-					next = [{
-						id: newId,
-						title: t.title,
-						branch: t.branch,
-						icon: t.icon,
-						column: "working",
-						activity: "Writing implementation",
-						activityState: "running",
-						pr: "draft",
-						time: randomTime(),
-					}, ...next];
-				}
+			// Spawn a new working card if column is thin
+			const workingCount = next.filter((c) => c.column === "working" && !c.merging).length;
+			if (workingCount < 2 && next.filter((c) => !c.merging).length < 8) {
+				const newId = `spawned-${++simulation.current.incomingIdx}`;
+				const templates = [
+					{ title: "Throttle agent spawn rate under load",      branch: "backend/spawn-throttle",      icon: "/app-icons/coverage-claude-code.svg" },
+					{ title: "Add keyboard shortcut for session focus",    branch: "feat/session-focus-shortcut", icon: "/app-icons/coverage-codex.svg"       },
+					{ title: "Lazy-load session terminal on first open",   branch: "perf/lazy-terminal",          icon: "/app-icons/agents/cursor.svg"        },
+					{ title: "Fix memory leak in terminal resize handler", branch: "fix/terminal-resize-leak",    icon: "/app-icons/coverage-claude-code.svg" },
+					{ title: "Migrate auth tokens to short-lived JWTs",   branch: "auth/jwt-rotation",           icon: "/app-icons/opencode.svg"             },
+				];
+				const t = templates[simulation.current.incomingIdx % templates.length]!;
+				next = [{
+					id: newId,
+					title: t.title,
+					branch: t.branch,
+					icon: t.icon,
+					column: "working",
+					activity: "Writing implementation",
+					activityState: "running",
+					pr: "draft",
+					time: randomTime(),
+				}, ...next];
+			}
 
-				return next;
-			});
+			simulation.current.cards = next;
+			setCards(next);
 			scheduleNext();
 		};
 
 		scheduleNext();
-		return () => window.clearTimeout(timeoutId);
+		return () => {
+			window.clearTimeout(timeoutId);
+			window.clearTimeout(mergeTimeoutId);
+		};
 	}, []);
 
 	const boardColumns = COLUMN_ORDER.map((id) => ({

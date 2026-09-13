@@ -1,0 +1,53 @@
+/* Resolve container units to lengths before atan2. WebKit can miscompute the
+ * ratio when unresolved container units are passed directly to the function. */
+@property --mockup-available-w {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --mockup-available-h {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+/* An engine without @property leaves this undefined, so the window stays
+ * hidden until the JavaScript fallback measures it. */
+@property --mockup-css-visibility {
+	syntax: "visible | hidden";
+	inherits: false;
+	initial-value: visible;
+}
+
+/* The overlay gets a definite size from ProductDemo's aspect ratio / minimum
+ * height. Its inset reserves the margin without mixed-unit atan2 arithmetic.
+ * Do not put size containment on ProductDemo's auto-height frame itself. */
+.hero-mockup-viewport {
+	position: absolute;
+	inset: 4px;
+	container-type: size;
+}
+
+.hero-mockup-window {
+	left: 50%;
+	top: 50%;
+	width: var(--mockup-design-w);
+	height: var(--mockup-design-h);
+	transform: translate(-50%, -50%) scale(var(--mockup-scale, 1));
+	transform-origin: center;
+	visibility: hidden;
+}
+
+@supports (container-type: size) and (transform: scale(min(1, tan(atan2(100cqw, 1px)), tan(atan2(100cqh, 1px))))) {
+	.hero-mockup-window {
+		--mockup-available-w: 100cqw;
+		--mockup-available-h: 100cqh;
+		/* tan(atan2(available, design)) gives the unitless scale without
+		 * requiring newer CSS typed division. Keep the whole board fixed-size. */
+		--mockup-scale: min(
+			1,
+			tan(atan2(var(--mockup-available-w), var(--mockup-design-w))),
+			tan(atan2(var(--mockup-available-h), var(--mockup-design-h)))
+		);
+		visibility: var(--mockup-css-visibility, hidden);
+	}
+}
