@@ -324,7 +324,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const autoOpenedMessageIds = useRef(new Set<string>());
 	const conversationBaselineReady = useRef(false);
 	useEffect(() => {
-		if (!snapshot) return;
+		if (!snapshot || isLoading) return;
 		// Do not surprise users by opening links from history when a session is first
 		// mounted. Only messages observed after this baseline represent new agent work.
 		if (!conversationBaselineReady.current) {
@@ -340,7 +340,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				openLinkInBrowser(url);
 			}
 		}
-	}, [openLinkInBrowser, paths, snapshot]);
+	}, [isLoading, openLinkInBrowser, paths, snapshot]);
 	const observedSuccessfulSwitch = Boolean(
 		agentSwitch &&
 			observedSettledSwitchId === agentSwitch.id &&
