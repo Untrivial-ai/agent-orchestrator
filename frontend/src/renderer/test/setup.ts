@@ -200,6 +200,12 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 			historySuggestions: async () => [],
+			getSiteSettings: async ({ viewId }: { viewId: string }) => ({ viewId, tabId: "t1", profileId: null, origin: "https://example.com", permissions: { camera: "block" as const, microphone: "block" as const, location: "block" as const, notifications: "block" as const } }),
+			setSitePermission: async () => { throw new Error("Site settings unavailable"); },
+			resetSitePermissions: async () => { throw new Error("Site settings unavailable"); },
+			clearSiteData: async () => { throw new Error("Site settings unavailable"); },
+			respondToPermissionRequest: () => undefined,
+			onPermissionRequest: () => () => undefined,
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",

@@ -126,6 +126,10 @@ const config: ForgeConfig = {
 		executableName: EXECUTABLE_NAME,
 		protocols: [AUTH_PROTOCOL],
 		appCategoryType: "public.app-category.developer-tools",
+		extendInfo: {
+			NSCameraUsageDescription: "Allow websites you approve to use your camera.",
+			NSMicrophoneUsageDescription: "Allow websites you approve to use your microphone.",
+		},
 		// App icon. electron-packager appends the per-platform extension
 		// (.icns on macOS, .ico on Windows); Linux menu icons come from the
 		// deb/rpm makers below, and the runtime window icon from src/main.ts.

@@ -15,6 +15,8 @@ import {
 import { browserProfilePartition, type BrowserProfile } from "../shared/browser-profiles";
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
+import { BrowserSiteSettingsStore } from "./browser-site-settings-store";
+import type { BrowserSiteSettings } from "../shared/browser-site-settings";
 import {
 	FOCUS_TERMINAL_SHORTCUT_CHANNEL,
 	NEW_SESSION_SHORTCUT_CHANNEL,
@@ -536,6 +538,7 @@ function setupTabHost(
 	failViewConstruction = false,
 	loadURLHook?: (viewIndex: number, url: string) => Promise<void>,
 	browserHistoryStore?: BrowserHistoryStore,
+	browserSiteSettingsStore?: BrowserSiteSettingsStore,
 ) {
 	const constructorOptions: Array<{ webPreferences: { partition?: string } }> = [];
 	const handlers = new Map<string, InvokeHandler>();
@@ -595,6 +598,7 @@ function setupTabHost(
 		const webContents = {
 			id: nextID++,
 			mainFrame: {},
+			isDestroyed: () => false,
 			canGoBack: () => false,
 			canGoForward: () => false,
 			clearHistory: () => undefined,
@@ -724,6 +728,7 @@ function setupTabHost(
 		agentBrowserRuntime: runtime,
 		browserProfileStore,
 		browserHistoryStore,
+		browserSiteSettingsStore,
 		// Kept only as a regression tripwire: the removed auto-send path used
 		// this option to discover the daemon before calling net.fetch.
 		...({ getDaemonPort: () => 43123 } as Record<string, unknown>),
@@ -1771,6 +1776,23 @@ describe("agent browser runtime", () => {
 		expect(result).toMatchObject({ text: "t1" });
 	});
 
+	it("scopes site-setting mutations to the owned active tab, origin, and profile", async () => {
+		const store = new BrowserSiteSettingsStore("unused-temporary-settings");
+		const { invoke } = setupTabHost(undefined, false, undefined, undefined, store);
+		const nav = await invoke("browser:ensure", "site-worker") as BrowserNavState;
+		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://example.com" });
+		const target = await invoke("browser:site:get", { viewId: nav.viewId }) as BrowserSiteSettings;
+		expect(target.permissions.camera).toBe("ask");
+		const input = { ...target, permission: "camera", setting: "allow" };
+		await expect(invoke("browser:site:setPermission", { ...input, profileId: "another-profile" })).rejects.toThrow();
+		await expect(invoke("browser:site:setPermission", { ...input, viewId: "unowned" })).rejects.toThrow();
+		await expect(invoke("browser:site:setPermission", input)).resolves.toMatchObject({ permissions: { camera: "allow" } });
+		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://other.example" });
+		await expect(invoke("browser:site:setPermission", input)).rejects.toThrow("page changed");
+		const other = await invoke("browser:site:get", { viewId: nav.viewId }) as BrowserSiteSettings;
+		expect(other.permissions.camera).toBe("ask");
+	});
+
 	it("denies browser-partition permissions by default", async () => {
 		const { host, setPermissionCheckHandler, setPermissionRequestHandler } = setupHost();
 		await host.execute("sess-1", "tabs");
@@ -1780,6 +1802,44 @@ describe("agent browser runtime", () => {
 		const callback = vi.fn();
 		setPermissionRequestHandler.mock.calls[0][0]({}, "camera", callback);
 		expect(callback).toHaveBeenCalledWith(false);
+	});
+
+	it("routes a visible tab's permission prompt through its owning renderer", async () => {
+		const store = new BrowserSiteSettingsStore("unused-temporary-settings");
+		const { constructorOptions, emit, invoke, sent, views } = setupTabHost(undefined, false, undefined, undefined, store);
+		const nav = await invoke("browser:ensure", "permission-worker") as BrowserNavState;
+		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://example.com" });
+		await store.set(constructorOptions[0]!.webPreferences.partition!, "https://example.com", "microphone", "ask");
+		emit("browser:setBounds", {
+			viewId: nav.viewId,
+			rect: { x: 0, y: 40, width: 640, height: 420 },
+			visible: true,
+		});
+
+		const callback = vi.fn();
+		const requestHandler = views[0]!.webContents.session.setPermissionRequestHandler.mock.calls[0]![0] as
+			(contents: unknown, permission: string, callback: (allowed: boolean) => void, details: unknown) => void;
+		requestHandler(views[0]!.webContents, "media", callback, {
+			requestingUrl: "https://example.com/test",
+			mediaTypes: ["audio"],
+		});
+
+		const request = sent.find(({ channel }) => channel === "browser:site:permissionRequest")?.payload as
+			{ requestId: string; viewId: string; tabId: string; origin: string; permissions: string[] };
+		expect(request).toMatchObject({
+			viewId: nav.viewId,
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["microphone"],
+		});
+		expect(callback).not.toHaveBeenCalled();
+
+		emit("browser:site:permissionDecision", {
+			requestId: request.requestId,
+			viewId: nav.viewId,
+			decision: "allow-once",
+		});
+		await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(true));
 	});
 
 	it("rounds every native browser tab view to match the renderer shell", async () => {

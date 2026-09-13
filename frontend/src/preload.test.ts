@@ -283,6 +283,33 @@ describe("preload uiSettings bridge", () => {
 });
 
 describe("preload browser profile bridge", () => {
+	it("delivers site permission requests and sends the user's decision", () => {
+		const bridge = exposedBridge();
+		const listener = vi.fn();
+		const dispose = bridge.browser.onPermissionRequest(listener);
+		const wrapped = electronMocks.listeners.get("browser:site:permissionRequest");
+		const request = {
+			requestId: "permission-1",
+			viewId: "1:worker-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["microphone" as const],
+		};
+
+		wrapped?.({}, request);
+		expect(listener).toHaveBeenCalledWith(request);
+
+		bridge.browser.respondToPermissionRequest({ requestId: request.requestId, viewId: request.viewId, decision: "allow-always" });
+		expect(electronMocks.send).toHaveBeenCalledWith("browser:site:permissionDecision", {
+			requestId: request.requestId,
+			viewId: request.viewId,
+			decision: "allow-always",
+		});
+
+		dispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("browser:site:permissionRequest", wrapped);
+	});
+
 	it("routes profile state, native menu, and CRUD calls over IPC", async () => {
 		const bridge = exposedBridge();
 		await bridge.browser.getProfile("1:worker-1");

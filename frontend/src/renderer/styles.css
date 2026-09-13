@@ -4309,6 +4309,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__toolbar {
+	position: relative;
+	z-index: 4;
 	container-name: browser-toolbar;
 	container-type: inline-size;
 	display: flex;
@@ -4658,6 +4660,281 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	color: var(--fg-muted);
 	opacity: 0;
 	pointer-events: none;
+}
+
+.browser-panel__site-info {
+	position: absolute;
+	top: 3px;
+	left: 3px;
+	z-index: 3;
+	width: 23px;
+	height: 23px;
+	color: var(--fg-muted);
+	transition: left 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.browser-panel__toolbar--url-takeover .browser-panel__site-info {
+	left: calc(var(--browser-url-expand-left, 0px) + 3px);
+}
+
+.browser-panel__site-info-content {
+	width: min(288px, calc(100vw - 16px));
+	max-height: var(--radix-popover-content-available-height);
+	overflow-y: auto;
+	padding: 4px;
+	font-size: var(--font-size-base);
+	box-shadow: var(--shadow-lg);
+}
+
+.browser-site__header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 32px;
+	padding: 4px 4px 4px 8px;
+}
+
+.browser-site__header-icon {
+	width: var(--size-icon-base);
+	height: var(--size-icon-base);
+	flex-shrink: 0;
+	color: var(--fg-muted);
+}
+
+.browser-site__host {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 500;
+}
+
+.browser-site__subtitle {
+	color: var(--fg-muted);
+	font-size: var(--font-size-caption);
+	line-height: 1.35;
+}
+
+.browser-site__connection {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 7px 8px;
+	border-top: 1px solid var(--color-border);
+	color: var(--fg-muted);
+	font-size: var(--font-size-caption);
+}
+
+.browser-site__connection > svg {
+	flex-shrink: 0;
+	margin-top: 2px;
+	color: var(--fg-muted);
+}
+
+.browser-site__permissions {
+	border-top: 1px solid var(--color-border);
+	padding: 3px 4px 4px;
+}
+
+.browser-site__actions {
+	border-top: 1px solid var(--color-border);
+	padding: 4px;
+}
+
+.browser-site__section-label {
+	padding: 4px 8px 2px;
+	color: var(--fg-muted);
+	font-size: var(--font-size-xs);
+}
+
+.browser-site__permission {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 32px;
+	padding: 4px 8px;
+	border-radius: var(--radius-md);
+}
+
+.browser-site__permission > svg {
+	color: var(--fg-muted);
+	flex-shrink: 0;
+}
+
+.browser-site__select-wrap {
+	position: relative;
+	flex-shrink: 0;
+}
+
+.browser-site__select-wrap select {
+	appearance: none;
+	width: 76px;
+	height: 24px;
+	padding: 2px 20px 2px 7px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--fg);
+	font-size: var(--font-size-caption);
+	cursor: pointer;
+}
+
+.browser-site__select-wrap select:hover,
+.browser-site__select-wrap select:focus-visible {
+	border-color: var(--color-border);
+	outline: none;
+}
+
+.browser-site__select-wrap > svg {
+	position: absolute;
+	right: 6px;
+	top: 50%;
+	transform: translateY(-50%);
+	pointer-events: none;
+}
+
+.browser-site__permission-placeholder {
+	width: 76px;
+	height: 24px;
+	flex-shrink: 0;
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	opacity: 0.6;
+}
+
+.browser-site__action {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 30px;
+	padding: 5px 8px;
+	border-radius: var(--radius-md);
+	color: var(--fg-muted);
+	font-size: var(--font-size-base);
+	text-align: left;
+	cursor: pointer;
+}
+
+.browser-site__action:hover {
+	background: var(--surface);
+	color: var(--fg);
+}
+
+.browser-site__action:disabled,
+.browser-site__select-wrap select:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.browser-site__feedback {
+	border-top: 1px solid var(--color-border);
+	padding: 7px 8px;
+	font-size: var(--font-size-caption);
+}
+
+.browser-panel__permission-prompt {
+	position: absolute;
+	top: calc(100% + 5px);
+	left: 0;
+	z-index: var(--z-overlay, 50);
+	width: min(348px, calc(100vw - 24px));
+	padding: 10px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	background: var(--color-card);
+	color: var(--fg);
+	box-shadow: var(--shadow-lg);
+}
+
+.browser-permission__message {
+	display: flex;
+	align-items: flex-start;
+	gap: 9px;
+	padding: 2px;
+	font-size: var(--font-size-base);
+	line-height: 1.4;
+}
+
+.browser-permission__icon {
+	display: grid;
+	width: 28px;
+	height: 28px;
+	place-items: center;
+	flex-shrink: 0;
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--fg-muted);
+}
+
+.browser-permission__actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 4px;
+	margin-top: 8px;
+}
+
+.browser-permission__actions > :first-child {
+	margin-right: auto;
+}
+
+.browser-permission__actions button {
+	white-space: nowrap;
+}
+
+.browser-panel__suggestions {
+	position: absolute;
+	top: calc(100% + 5px);
+	left: 0;
+	right: 0;
+	z-index: var(--z-overlay, 50);
+	min-width: 0;
+	max-height: min(320px, var(--browser-suggestions-height, 40vh));
+	overflow-y: auto;
+	overflow-x: hidden;
+	overscroll-behavior: contain;
+	border: 1px solid var(--color-border);
+	border-radius: 8px;
+	background: var(--surface);
+	box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+	padding: 4px;
+}
+
+.browser-panel__toolbar--url-takeover .browser-panel__suggestions {
+	left: var(--browser-url-expand-left, 0);
+	right: var(--browser-url-expand-right, 0);
+}
+
+.browser-panel__suggestion {
+	min-width: 0;
+	padding: 7px 9px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.browser-panel__suggestion:hover,
+.browser-panel__suggestion[aria-selected="true"] {
+	background: var(--accent-weak);
+}
+
+.browser-panel__suggestion-title,
+.browser-panel__suggestion-url {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+}
+
+.browser-panel__suggestion-url {
+	color: var(--fg-muted);
+	font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.browser-panel__site-info {
+		transition: none;
+	}
 }
 
 .browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) .browser-panel__url-external,

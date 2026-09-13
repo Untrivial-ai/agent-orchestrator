@@ -139,6 +139,7 @@ import {
 } from "./main/browser-view-host";
 import { createBrowserProfileStore } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
+import { BrowserSiteSettingsStore } from "./main/browser-site-settings-store";
 import { createBrowserDownloadManager } from "./main/browser-download-manager";
 import { BrowserProfileImportService } from "./main/browser-profile-import";
 import {
@@ -566,6 +567,13 @@ async function createWindowInternal(): Promise<void> {
 	}
 	const browserProfileStore = await createBrowserProfileStore({ stateDir: browserProfileStateDir() });
 	const browserHistoryStore = new BrowserHistoryStore({ stateDir: browserProfileStateDir() });
+	let browserSiteSettingsStore: BrowserSiteSettingsStore | undefined = new BrowserSiteSettingsStore(browserProfileStateDir());
+	try {
+		await browserSiteSettingsStore.initialize();
+	} catch {
+		console.error("Browser site settings could not be loaded; permissions remain blocked.");
+		browserSiteSettingsStore = undefined;
+	}
 	const profileImporter = new BrowserProfileImportService({
 		stateDir: browserProfileStateDir(),
 		profileStore: browserProfileStore,
@@ -721,6 +729,7 @@ async function createWindowInternal(): Promise<void> {
 		isCloseShellTerminalShortcutEnabled: () => closeShellTerminalShortcutEnabled,
 		browserProfileStore,
 		browserHistoryStore,
+		browserSiteSettingsStore,
 		browserDownloadManager: createBrowserDownloadManager({
 			downloadsDirectory: app.getPath("downloads"),
 			historyPath: path.join(desktopDataDir, "browser-downloads.json"),

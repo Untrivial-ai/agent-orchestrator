@@ -35,6 +35,17 @@ import type { AgentBrowserRuntime } from "./agent-browser-runtime";
 import type { AgentBrowserTarget, AgentBrowserTargetProvider } from "./agent-browser-cdp-bridge";
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
+import type { BrowserSiteSettingsStore } from "./browser-site-settings-store";
+import { clearBrowserSiteData, installBrowserSitePermissions, type BrowserPermissionPrompt } from "./browser-site-permissions";
+import {
+	browserSiteOrigin,
+	type BrowserSiteTarget,
+	type BrowserSiteSettings,
+	type BrowserSitePermissionInput,
+	type BrowserSitePermissionRequest,
+	type BrowserSitePermissionDecision,
+	type BrowserSitePermissionDecisionValue,
+} from "../shared/browser-site-settings";
 import type { BrowserDownloadManager } from "./browser-download-manager";
 import type { BrowserDownloadActionInput } from "../shared/browser-downloads";
 import { matchInstruction } from "./browser-act-matcher";
@@ -241,7 +252,8 @@ type BrowserWebContents = Pick<
 	openDevTools?: (options?: Pick<OpenDevToolsOptions, "mode" | "activate">) => void;
 	closeDevTools?: () => void;
 	close?: () => void;
-	session?: Pick<Session, "on" | "removeListener" | "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest">;
+	session?: Pick<Session, "on" | "removeListener" | "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest"> &
+		Partial<Pick<Session, "cookies" | "clearStorageData">>;
 };
 
 type BrowserElectronSession = NonNullable<BrowserWebContents["session"]>;
@@ -315,6 +327,7 @@ export type BrowserViewHostOptions = {
 	isCloseShellTerminalShortcutEnabled?: () => boolean;
 	browserProfileStore?: BrowserProfileStore;
 	browserHistoryStore?: BrowserHistoryStore;
+	browserSiteSettingsStore?: BrowserSiteSettingsStore;
 	browserDownloadManager?: BrowserDownloadManager;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
 	clipboard?: Pick<Clipboard, "writeImage">;
@@ -557,7 +570,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	if (!shellWebContents) throw new Error("Browser view host requires shell WebContents");
 	const viewIdsBySessionId = new Map<string, string>();
 	const rendererOwnersByViewId = new Map<string, Set<number>>();
+	const permissionSessions = new WeakSet<BrowserElectronSession>();
 	const tabsByWebContentsId = new Map<number, BrowserEntry>();
+	const pendingPermissionPrompts = new Map<string, {
+		viewId: string;
+		resolve: (decision: BrowserSitePermissionDecisionValue) => void;
+		timer: ReturnType<typeof setTimeout>;
+	}>();
+	const permissionPromptByViewId = new Map<string, string>();
 	const ipcDisposers: Array<() => void> = [];
 	let disposePromise: Promise<void> | null = null;
 	// viewId of the panel that most recently held focus; cleared when it is hidden or destroyed.
@@ -568,6 +588,39 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const forgetIfFocused = (viewId: string): void => {
 		if (lastFocusedViewId === viewId) lastFocusedViewId = null;
 		if (lastUsedViewId === viewId) lastUsedViewId = null;
+	};
+	const settlePermissionPrompt = (requestId: string, decision: BrowserSitePermissionDecisionValue): void => {
+		const pending = pendingPermissionPrompts.get(requestId);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		pendingPermissionPrompts.delete(requestId);
+		if (permissionPromptByViewId.get(pending.viewId) === requestId) permissionPromptByViewId.delete(pending.viewId);
+		pending.resolve(decision);
+	};
+	const cancelPermissionPromptForView = (viewId: string): void => {
+		const requestId = permissionPromptByViewId.get(viewId);
+		if (requestId) settlePermissionPrompt(requestId, "dismiss");
+	};
+	const promptBrowserPermission: BrowserPermissionPrompt = (contents, origin, permissions) => {
+		const entry = tabsByWebContentsId.get(contents.id);
+		const viewId = entry ? viewIdsBySessionId.get(entry.sessionId) : undefined;
+		const session = viewId ? entries.get(viewId) : undefined;
+		if (!entry || !viewId || !session || !session.visible || session.activeTabId !== entry.tabId || shellWebContents.isDestroyed?.()) {
+			return Promise.resolve("dismiss");
+		}
+		cancelPermissionPromptForView(viewId);
+		const requestId = randomUUID();
+		const request: BrowserSitePermissionRequest = { requestId, viewId, tabId: entry.tabId, origin, permissions };
+		return new Promise<BrowserSitePermissionDecisionValue>((resolve) => {
+			const timer = setTimeout(() => settlePermissionPrompt(requestId, "dismiss"), 30_000);
+			pendingPermissionPrompts.set(requestId, { viewId, resolve, timer });
+			permissionPromptByViewId.set(viewId, requestId);
+			try {
+				shellWebContents.send("browser:site:permissionRequest", request);
+			} catch {
+				settlePermissionPrompt(requestId, "dismiss");
+			}
+		});
 	};
 	const setAgentBrowserActivity = (
 		session: BrowserSessionEntry,
@@ -649,8 +702,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		applyBrowserViewBounds(view, OFFSCREEN_BOUNDS, false);
 		options.mainWindow.contentView.addChildView(view);
 		view.setBorderRadius?.(BROWSER_VIEW_BORDER_RADIUS);
-		view.webContents.session?.setPermissionCheckHandler?.(() => false);
-		view.webContents.session?.setPermissionRequestHandler?.((_contents, _permission, callback) => callback(false));
+		if (view.webContents.session && !permissionSessions.has(view.webContents.session)) {
+			installBrowserSitePermissions(view.webContents.session, session.profileId ?? session.profilePartition,
+				options.browserSiteSettingsStore, promptBrowserPermission);
+			permissionSessions.add(view.webContents.session);
+		}
 		options.browserDownloadManager?.attach(view.webContents.session);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();
@@ -1529,7 +1585,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const destroy = (viewId: string): void => {
 		const session = entries.get(viewId);
 		if (!session) return;
+		cancelPermissionPromptForView(viewId);
 		session.signals.entries.length = 0;
+		if (!session.profileId) void options.browserSiteSettingsStore?.reset(session.profilePartition).catch(() => undefined);
 		unregisterBrowserSignalWatcher(session);
 		if (options.mainWindow.isDestroyed?.()) session.devtools = undefined;
 		else destroyDevTools(session);
@@ -1780,6 +1838,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		await Promise.all([
 			options.clearBrowserProfileData(partition),
 			options.browserHistoryStore?.clear(profileId) ?? Promise.resolve(),
+			options.browserSiteSettingsStore?.reset(profileId) ?? Promise.resolve(),
 		]);
 	};
 
@@ -1889,6 +1948,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		options.ipcMain.on(channel, fn);
 		ipcDisposers.push(() => options.ipcMain.off(channel, fn));
 	};
+	on("browser:site:permissionDecision", (event, input: BrowserSitePermissionDecision) => {
+		if (!input || typeof input.requestId !== "string" || typeof input.viewId !== "string" ||
+			!(["dismiss", "block", "allow-once", "allow-always"] as const).includes(input.decision) ||
+			!isRendererOwned(event, input.viewId)) return;
+		const pending = pendingPermissionPrompts.get(input.requestId);
+		if (!pending || pending.viewId !== input.viewId) return;
+		settlePermissionPrompt(input.requestId, input.decision);
+	});
 
 	handle("browser:ensure", async (event, sessionId: string) => {
 		const session = await ensureSessionReady(sessionId, event.sender.id, () => event.sender.isDestroyed?.() ?? false);
@@ -1915,6 +1982,39 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const profileId = entries.get(input.viewId)?.profileId;
 		if (!profileId || !options.browserHistoryStore) return [];
 		return options.browserHistoryStore.suggest(profileId, input.query);
+	});
+	const siteTarget = (event: IpcMainInvokeEvent, input: { viewId: string } & Partial<BrowserSiteTarget>, mutation = false) => {
+		if (!input || typeof input.viewId !== "string" || !isRendererOwned(event, input.viewId)) throw browserError("INVALID_ARGUMENT", "Invalid browser target");
+		const session = entries.get(input.viewId);
+		if (!session) throw browserError("INVALID_ARGUMENT", "Browser target is unavailable");
+		assertProfileStable(session);
+		const entry = activeEntry(session);
+		const origin = browserSiteOrigin(entry.view.webContents.getURL());
+		if (!origin || (mutation && (input.origin !== origin || input.tabId !== entry.tabId || input.profileId !== session.profileId))) {
+			throw browserError("INVALID_ARGUMENT", "The page changed. Reopen site settings.");
+		}
+		const store = options.browserSiteSettingsStore;
+		if (!store) throw browserError("INVALID_ARGUMENT", "Site settings are unavailable");
+		const scope = session.profileId ?? session.profilePartition;
+		const state = (): BrowserSiteSettings => ({ viewId: input.viewId, tabId: entry.tabId, profileId: session.profileId, origin, permissions: store.get(scope, origin) });
+		return { session, entry, origin, scope, store, state };
+	};
+	handle("browser:site:get", (event, input: { viewId: string }) => siteTarget(event, input).state());
+	handle("browser:site:setPermission", async (event, input: BrowserSitePermissionInput) => {
+		const target = siteTarget(event, input, true);
+		await target.store.set(target.scope, target.origin, input.permission, input.setting);
+		return target.state();
+	});
+	handle("browser:site:reset", async (event, input: BrowserSiteTarget) => {
+		const target = siteTarget(event, input, true);
+		await target.store.reset(target.scope, target.origin);
+		return target.state();
+	});
+	handle("browser:site:clearData", async (event, input: BrowserSiteTarget) => {
+		const target = siteTarget(event, input, true);
+		const electronSession = target.entry.view.webContents.session;
+		if (!electronSession?.cookies || !electronSession.clearStorageData) throw browserError("INVALID_ARGUMENT", "Site storage is unavailable");
+		await clearBrowserSiteData({ cookies: electronSession.cookies, clearStorageData: electronSession.clearStorageData.bind(electronSession) }, target.origin);
 	});
 	handle("browser:clear", (event, viewId: string) =>
 		isRendererOwned(event, viewId) ? clear(viewId) : emptyNavState(viewId),
@@ -2326,6 +2426,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			if (disposePromise) return disposePromise;
 			disposePromise = (async () => {
 				ipcDisposers.splice(0).forEach((dispose) => dispose());
+				for (const requestId of [...pendingPermissionPrompts.keys()]) settlePermissionPrompt(requestId, "dismiss");
 				options.browserDownloadManager?.dispose();
 				for (const viewId of [...entries.keys()]) {
 					destroy(viewId);

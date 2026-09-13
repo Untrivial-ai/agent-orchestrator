@@ -14,6 +14,7 @@ import type {
 	BrowserAnnotationContext,
 	BrowserAnnotationSubmitPayload,
 } from "../../shared/browser-annotations";
+import type { BrowserSitePermissionRequest, BrowserSiteSettings } from "../../shared/browser-site-settings";
 
 function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -171,6 +172,7 @@ describe("BrowserPanel", () => {
 	const annotationCancelListeners = new Set<(payload: BrowserAnnotationCancelPayload) => void>();
 	let focusLocationListener: ((viewId: string) => void) | undefined;
 	let reopenClosedTabListener: ((viewId: string) => void) | undefined;
+	let permissionRequestListener: ((request: BrowserSitePermissionRequest) => void) | undefined;
 	const pageFocusListeners = new Set<(viewId: string) => void>();
 
 	async function openBrowserControls() {
@@ -228,6 +230,20 @@ describe("BrowserPanel", () => {
 			};
 		});
 		window.ao!.browser.historySuggestions = vi.fn(async () => []);
+		window.ao!.browser.respondToPermissionRequest = vi.fn();
+		window.ao!.browser.onPermissionRequest = vi.fn((listener: (request: BrowserSitePermissionRequest) => void) => {
+			permissionRequestListener = listener;
+			return () => {
+				if (permissionRequestListener === listener) permissionRequestListener = undefined;
+			};
+		});
+		window.ao!.browser.getSiteSettings = vi.fn(async ({ viewId }: { viewId: string }): Promise<BrowserSiteSettings> => ({
+			viewId,
+			tabId: "t1",
+			profileId: null,
+			origin: "https://example.com",
+			permissions: { camera: "block", microphone: "block", location: "block", notifications: "block" },
+		}));
 		window.ao!.browser.captureScreenshot = vi.fn(async () => undefined);
 		window.ao!.browser.downloads.list = vi.fn(async () => ({ downloads: [] }));
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
@@ -263,7 +279,7 @@ describe("BrowserPanel", () => {
 
 	it("navigates to the entered URL on submit", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 
 		await userEvent.clear(input);
 		await userEvent.type(input, "localhost:5173{Enter}");
@@ -274,7 +290,7 @@ describe("BrowserPanel", () => {
 
 	it("supports consecutive address-bar navigations after refocusing", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 
 		await userEvent.clear(input);
 		await userEvent.type(input, "first.example{Enter}");
@@ -287,7 +303,7 @@ describe("BrowserPanel", () => {
 		expect(input).not.toHaveFocus();
 	});
 
-	it("shows imported history through native address-bar suggestions without adding an overlay", async () => {
+	it("shows imported history together in a browser overlay and navigates on click", async () => {
 		hookState.profileState = {
 			viewId: "42:sess-1",
 			profileId: "11111111-1111-4111-8111-111111111111",
@@ -297,7 +313,7 @@ describe("BrowserPanel", () => {
 			{ url: "https://github.com/openai", title: "OpenAI" },
 		]);
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 
 		await userEvent.type(input, "git");
 
@@ -305,16 +321,173 @@ describe("BrowserPanel", () => {
 			viewId: "42:sess-1",
 			query: "git",
 		}), { timeout: 2_000 });
-		await waitFor(() => expect(document.querySelector("datalist option")).not.toBeNull());
-		const option = document.querySelector("datalist option")!;
-		expect(option).toHaveValue("https://github.com/openai");
-		expect(input).toHaveAttribute("list", option.closest("datalist")?.id);
-		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+		const option = await screen.findByRole("option");
+		expect(option).toHaveTextContent("https://github.com/openai");
+		expect(input).toHaveAttribute("aria-controls", screen.getByRole("listbox").id);
+		expect(screen.getByRole("listbox").matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
 
-		fireEvent.change(input, { target: { value: "https://github.com/openai" } });
+		await userEvent.click(option);
 		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/openai");
 		expect(input).not.toHaveFocus();
-		expect(document.querySelector("datalist option")).toBeNull();
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+	});
+
+	it("queries on the first character and supports keyboard selection without navigating while typing", async () => {
+		hookState.profileState.profileId = "11111111-1111-4111-8111-111111111111";
+		const longURL = `https://example.com/${"long-path/".repeat(100)}`;
+		window.ao!.browser.historySuggestions = vi.fn(async () => [
+			{ url: longURL, title: "Example" },
+			{ url: "https://example.com/second", title: "Second" },
+		]);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("combobox", { name: /browser url/i });
+		await userEvent.type(input, "e");
+		expect(window.ao!.browser.historySuggestions).toHaveBeenCalledWith({ viewId: "42:sess-1", query: "e" });
+		expect(await screen.findAllByRole("option")).toHaveLength(2);
+		expect(hookState.navigate).not.toHaveBeenCalled();
+		await userEvent.keyboard("{ArrowDown}{Enter}");
+		expect(hookState.navigate).toHaveBeenCalledWith(longURL);
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+	});
+
+	it("ignores stale history responses and dismisses suggestions with Escape", async () => {
+		hookState.profileState.profileId = "11111111-1111-4111-8111-111111111111";
+		let resolveOld!: (value: { url: string }[]) => void;
+		window.ao!.browser.historySuggestions = vi.fn(({ query }) => query === "a"
+			? new Promise<{ url: string }[]>((resolve) => { resolveOld = resolve; })
+			: Promise.resolve([{ url: "https://ab.example" }]));
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("combobox", { name: /browser url/i });
+		await userEvent.type(input, "ab");
+		expect(await screen.findByRole("option")).toHaveTextContent("https://ab.example");
+		await act(async () => resolveOld([{ url: "https://old.example" }]));
+		expect(screen.getAllByRole("option")).toHaveLength(1);
+		expect(screen.getByRole("option")).toHaveTextContent("https://ab.example");
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		expect(input).not.toHaveFocus();
+		expect(hookState.navigate).not.toHaveBeenCalled();
+	});
+
+	it("shows read-only site information for the current page, not the edited address", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("combobox", { name: /browser url/i });
+		await userEvent.clear(input);
+		await userEvent.type(input, "http://other.example");
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		const info = screen.getByRole("dialog", { name: "View site information" });
+		expect(info.matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
+		expect(info).toHaveTextContent("example.com");
+		expect(info).toHaveTextContent("HTTPS");
+		await waitFor(() => expect(within(info).getAllByRole("combobox")).toHaveLength(4));
+		expect(within(info).getByRole("combobox", { name: "Camera" })).toHaveValue("block");
+		expect(info).not.toHaveTextContent("other.example");
+		expect(hookState.navigate).not.toHaveBeenCalled();
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+	});
+
+	it("refreshes permission decisions when site information opens", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const initial = await window.ao!.browser.getSiteSettings({ viewId: "42:sess-1" });
+		window.ao!.browser.getSiteSettings = vi.fn(async () => ({
+			...initial, permissions: { ...initial.permissions, microphone: "allow" as const },
+		}));
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("allow"));
+	});
+
+	it("prefetches site settings and keeps permission rows stable while they load", async () => {
+		hookState.navState.url = "https://example.com/page";
+		let resolveSettings!: (value: BrowserSiteSettings) => void;
+		window.ao!.browser.getSiteSettings = vi.fn(() => new Promise<BrowserSiteSettings>((resolve) => { resolveSettings = resolve; }));
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await waitFor(() => expect(window.ao!.browser.getSiteSettings).toHaveBeenCalledWith({ viewId: "42:sess-1" }));
+
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		const info = screen.getByRole("dialog", { name: "View site information" });
+		const permissions = within(info).getByRole("region", { name: "Site permissions" });
+		expect(permissions).toHaveAttribute("aria-busy", "true");
+		for (const label of ["Camera", "Microphone", "Location", "Notifications"]) {
+			expect(within(permissions).getByText(label)).toBeInTheDocument();
+		}
+
+		resolveSettings({
+			viewId: "42:sess-1",
+			tabId: "t1",
+			profileId: null,
+			origin: "https://example.com",
+			permissions: { camera: "block", microphone: "block", location: "block", notifications: "block" },
+		});
+		await waitFor(() => expect(within(permissions).getAllByRole("combobox")).toHaveLength(4));
+		expect(permissions).toHaveAttribute("aria-busy", "false");
+	});
+
+	it("shows an AO permission prompt for the active browser tab and returns the decision", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		act(() => permissionRequestListener?.({
+			requestId: "permission-1",
+			viewId: "42:sess-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["microphone"],
+		}));
+		const prompt = screen.getByRole("alertdialog", { name: "Site permissions" });
+		expect(prompt.matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
+		expect(prompt).toHaveTextContent("example.com wants to use: Microphone.");
+		expect(within(prompt).getByRole("button", { name: "Block" })).toBeInTheDocument();
+		expect(within(prompt).getByRole("button", { name: "Always allow" })).toBeInTheDocument();
+		await userEvent.click(within(prompt).getByRole("button", { name: "Allow once" }));
+		expect(window.ao!.browser.respondToPermissionRequest).toHaveBeenCalledWith({
+			requestId: "permission-1",
+			viewId: "42:sess-1",
+			decision: "allow-once",
+		});
+		expect(screen.queryByRole("alertdialog", { name: "Site permissions" })).not.toBeInTheDocument();
+
+		act(() => permissionRequestListener?.({
+			requestId: "permission-2",
+			viewId: "42:sess-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["camera"],
+		}));
+		await userEvent.click(within(screen.getByRole("alertdialog", { name: "Site permissions" }))
+			.getByRole("button", { name: "Always allow" }));
+		expect(window.ao!.browser.respondToPermissionRequest).toHaveBeenLastCalledWith({
+			requestId: "permission-2",
+			viewId: "42:sess-1",
+			decision: "allow-always",
+		});
+	});
+
+	it("updates site permissions and requires confirmation before clearing site data", async () => {
+		hookState.navState.url = "https://example.com/page";
+		const target = await window.ao!.browser.getSiteSettings({ viewId: "42:sess-1" });
+		window.ao!.browser.setSitePermission = vi.fn(async (input) => ({ ...target, permissions: { ...target.permissions, [input.permission]: input.setting } }));
+		window.ao!.browser.clearSiteData = vi.fn(async () => undefined);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		const camera = await screen.findByRole("combobox", { name: "Camera" });
+		await userEvent.selectOptions(camera, "allow");
+		expect(window.ao!.browser.setSitePermission).toHaveBeenCalledWith(expect.objectContaining({ origin: "https://example.com", permission: "camera", setting: "allow" }));
+		await waitFor(() => expect(camera).toHaveValue("allow"));
+		await userEvent.click(screen.getByRole("button", { name: "Cookies and site data" }));
+		expect(window.ao!.browser.clearSiteData).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(window.ao!.browser.clearSiteData).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Cookies and site data" }));
+		await userEvent.click(screen.getByRole("button", { name: "Clear data" }));
+		expect(window.ao!.browser.clearSiteData).toHaveBeenCalledWith(expect.objectContaining({ origin: "https://example.com", profileId: null, tabId: "t1" }));
+	});
+
+	it("does not offer site information on an empty tab", () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(screen.queryByRole("button", { name: "View site information" })).not.toBeInTheDocument();
+		expect(screen.getByRole("combobox", { name: /browser url/i })).not.toHaveClass("pl-8");
 	});
 
 	it("does not search imported history until the address is edited", async () => {
@@ -325,7 +498,7 @@ describe("BrowserPanel", () => {
 		};
 		hookState.navState = { ...hookState.navState, url: "https://example.com/current" };
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 
 		fireEvent.focus(input);
 		await new Promise((resolve) => window.setTimeout(resolve, 150));
@@ -343,7 +516,7 @@ describe("BrowserPanel", () => {
 
 	it("marks browser UI as used and focuses the address bar for a matching shortcut request", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		const input = screen.getByRole("textbox", { name: /browser url/i }) as HTMLInputElement;
+		const input = screen.getByRole("combobox", { name: /browser url/i }) as HTMLInputElement;
 		input.value = "http://localhost:5173/path";
 
 		act(() => focusLocationListener?.("42:sess-1"));
@@ -374,7 +547,7 @@ describe("BrowserPanel", () => {
 
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 		expect(input).toHaveValue("google.com");
 		expect(input).toHaveClass("text-center");
 	});
@@ -385,7 +558,7 @@ describe("BrowserPanel", () => {
 		const user = userEvent.setup();
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		const toolbar = screen.getByTestId("browser-toolbar");
-		const input = screen.getByRole("textbox", { name: /browser url/i }) as HTMLInputElement;
+		const input = screen.getByRole("combobox", { name: /browser url/i }) as HTMLInputElement;
 
 		await user.click(input);
 
@@ -417,7 +590,7 @@ describe("BrowserPanel", () => {
 		const user = userEvent.setup();
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
 		const toolbar = screen.getByTestId("browser-toolbar");
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 
 		expect(input).toHaveValue(url);
 		expect(input).not.toHaveClass("text-center");
@@ -645,7 +818,7 @@ describe("BrowserPanel", () => {
 	it("keeps the URL input editable while the browser is maximized", async () => {
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
-		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const input = screen.getByRole("combobox", { name: /browser url/i });
 
 		await userEvent.clear(input);
 		await userEvent.type(input, "http://localhost:4173/");
