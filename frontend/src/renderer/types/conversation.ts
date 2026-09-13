@@ -402,7 +402,8 @@ export interface SystemEventDetail {
 		| "provider.failure"
 		| "steer"
 		| "plan"
-		| "context.reset";
+		| "context.reset"
+		| "context.boundary";
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;

@@ -323,6 +323,7 @@ func (s *Service) EditMessage(
 						DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 						Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 						ProviderScopeID:       sourceBranch.ProviderScopeID,
+						LegacyProviderIDs:     !sourceBranch.ProviderIDsScoped,
 						AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 					})
 				}
@@ -417,7 +418,8 @@ func (s *Service) EditMessage(
 		ProviderConversationID: providerConversationID, ParentBranchID: anchor.SourceBranchID,
 		ReplacedTurnID: anchor.ReplacedTurnID, ForkAfterSequence: anchor.ForkAfterSequence,
 		CreatedAt: s.now(), Strategy: domain.ConversationBranchStrategyNative,
-		ProviderScopeID: providerScopeID,
+		ProviderScopeID:   providerScopeID,
+		ProviderIDsScoped: providerScopeID != "" || sourceBranch.ProviderIDsScoped,
 	}
 	if replayContent.Type != "" {
 		branch.Strategy = domain.ConversationBranchStrategyApproximateContext
@@ -900,6 +902,7 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID:       branch.ProviderScopeID,
+		LegacyProviderIDs:     !branch.ProviderIDsScoped,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
 	if err != nil {
@@ -998,6 +1001,7 @@ func (s *Service) restoreClosedSourceController(
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID:       branch.ProviderScopeID,
+		LegacyProviderIDs:     !branch.ProviderIDsScoped,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
 	if err != nil {

@@ -1764,6 +1764,10 @@ func TestEditMessageForksBeforeMiddlePromptAndReusesStoredContent(t *testing.T) 
 		len(starts) != 1 || resumes[0].ProviderScopeID != starts[0].ProviderScopeID {
 		t.Fatalf("resume config = %#v", resumes)
 	}
+	branch, err := h.st.ConversationBranch(ctx, h.ctrl.ConversationID(), result.ActiveBranchID)
+	if err != nil || branch.ProviderScopeID == "" || branch.ProviderScopeID != resumes[0].ProviderScopeID || !branch.ProviderIDsScoped || resumes[0].LegacyProviderIDs {
+		t.Fatalf("native fork lost its durable replay namespace: branch=%+v err=%v", branch, err)
+	}
 }
 
 func TestEditMessageFirstPromptStartsFreshConversation(t *testing.T) {

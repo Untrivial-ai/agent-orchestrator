@@ -5345,3 +5345,78 @@ func awaitStoreSnapshot(t *testing.T, st *sqlite.Store, conversationID string,
 		len(last.Messages), len(last.Activities), len(last.Turns))
 	return last
 }
+
+// Publishing a reserved provider branch preserves its predecessor's ownership.
+func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 11, 4, 41, 0, 0, time.UTC)
+	const (
+		successor = "01a08d27-878b-7db0-9e84-9a921099f4a8"
+		boundary  = "handoff-309:provider"
+	)
+	before, sourceBranch := seedProjectConversationWithProviderHistory(
+		t, st, "forked-handle-conversation", now)
+	ancestor := sourceBranch.ProviderConversationID
+	if ancestor == "" || ancestor == successor {
+		t.Fatalf("seeded ancestor handle = %q, want a distinct recorded handle", ancestor)
+	}
+
+	resumedConversation := newFakeConversation()
+	resumedConversation.providerConversationID = successor
+	var resumed ports.ChatResumeConfig
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: resumedConversation, resumeCfg: &resumed}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "forked-handle-generation" },
+		Now:     func() time.Time { return now.Add(time.Minute) },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	lifecycleManager := lifecycle.New(st, nil)
+
+	var boundaryBranch domain.ConversationBranch
+	_, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID:  successor,
+		ProviderScopeID:         boundary,
+		SkipNativeHistoryImport: true,
+		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			if result.ProviderBoundary == nil {
+				return chatsvc.ControllerCommit{}, errors.New("successor boundary was not reserved")
+			}
+			boundaryBranch = *result.ProviderBoundary
+			if err := lifecycleManager.MarkChatSpawned(ctx, testSession, domain.SessionMetadata{
+				ProviderConversationID: result.ProviderConversationID,
+				ControllerGeneration:   result.ControllerGeneration,
+			}, boundaryBranch); err != nil {
+				return chatsvc.ControllerCommit{}, err
+			}
+			committed := result.Conversation
+			committed.ActiveBranchID = boundaryBranch.ID
+			committed.UpdatedAt = boundaryBranch.CreatedAt
+			return chatsvc.ControllerCommit{Conversation: committed}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start successor handle in reserved boundary: %v", err)
+	}
+	if resumed.ProviderConversationID != successor {
+		t.Fatalf("resumed handle = %q, want the successor thread", resumed.ProviderConversationID)
+	}
+	if boundaryBranch.ID != boundary || boundaryBranch.ParentBranchID != sourceBranch.ID ||
+		boundaryBranch.ProviderConversationID != successor ||
+		boundaryBranch.ForkAfterSequence != before.LatestSequence {
+		t.Fatalf("successor boundary = %+v, want %q chained onto %q at sequence %d",
+			boundaryBranch, boundary, sourceBranch.ID, before.LatestSequence)
+	}
+	keptSource, err := st.ConversationBranch(ctx, before.ID, sourceBranch.ID)
+	if err != nil {
+		t.Fatalf("ancestor ConversationBranch: %v", err)
+	}
+	if keptSource.ProviderConversationID != ancestor ||
+		keptSource.ProviderScopeID != sourceBranch.ProviderScopeID {
+		t.Fatalf("ancestor branch = %+v, want the recorded handle untouched", keptSource)
+	}
+}

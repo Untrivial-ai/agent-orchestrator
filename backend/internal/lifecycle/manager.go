@@ -78,6 +78,7 @@ type preparedChatSpawnStore interface {
 		context.Context,
 		domain.SessionRecord,
 		domain.ConversationBranch,
+		*domain.ChatProviderHandoff,
 		func(context.Context) error,
 	) error
 }
@@ -494,6 +495,11 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 // native agent session id carried alongside it. Metadata-only hooks leave the
 // existing activity and first-signal facts untouched.
 func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
+	// Subagent answers, including prompt suggestions, are not root-conversation
+	// facts. Their usage is collected independently from lifecycle metadata.
+	if s.Event == "subagent-stop" {
+		return nil
+	}
 	s.AgentSessionID = strings.TrimSpace(s.AgentSessionID)
 	s.LatestUserPrompt = strings.TrimSpace(s.LatestUserPrompt)
 	s.LatestAssistantUpdate = strings.TrimSpace(s.LatestAssistantUpdate)
@@ -588,6 +594,11 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
+	if s.AgentSessionID != "" && s.AgentSessionID != rec.Metadata.AgentSessionID &&
+		!rec.Metadata.NativeIdentityObservedAt.IsZero() && !s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt) {
+		m.mu.Unlock()
+		return nil
+	}
 	// An explicit prompt submission is proof that an agent was relaunched in the
 	// preserved shell. Other same-generation callbacks may have been delayed
 	// behind the process-exit report and cannot resurrect an exited workload.
@@ -603,10 +614,12 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	// last-writer-wins, exactly as before.
 	promptAt := timeOr(s.Timestamp, now)
 	metadataChanged := (s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID) ||
+		(s.AgentSessionID != "" && s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt)) ||
 		(s.AgentSessionID != "" && rec.Metadata.AgentSessionIDLaunchID != s.LaunchID) ||
-		(s.LatestUserPrompt != "" && (rec.Metadata.LatestUserPrompt != s.LatestUserPrompt ||
+		(s.LatestUserPrompt != "" && !promptAt.Before(rec.Metadata.LatestUserPromptAt) && (rec.Metadata.LatestUserPrompt != s.LatestUserPrompt ||
 			(s.Event == "user-prompt-submit" && promptAt.After(rec.Metadata.LatestUserPromptAt)))) ||
-		(s.LatestAssistantUpdate != "" && rec.Metadata.LatestAssistantUpdate != s.LatestAssistantUpdate) ||
+		(s.LatestAssistantUpdate != "" && !promptAt.Before(rec.Metadata.LatestAssistantUpdateAt) && (rec.Metadata.LatestAssistantUpdate != s.LatestAssistantUpdate ||
+			(s.Event == "stop" && promptAt.After(rec.Metadata.LatestAssistantUpdateAt)))) ||
 		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath)
 	if s.Valid {
 		s = m.applyToolPrecedenceLocked(id, rec.Activity.State, s)
@@ -1100,7 +1113,7 @@ func (m *Manager) resolveNotifications(ctx context.Context, resolutions ...ports
 
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.
 func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
-	return m.markSpawned(ctx, id, metadata, nil, nil)
+	return m.markSpawned(ctx, id, metadata, nil, nil, nil)
 }
 
 // MarkChatSpawned atomically marks a Chat controller live and publishes the
@@ -1117,7 +1130,7 @@ func (m *Manager) MarkChatSpawned(
 		strings.TrimSpace(metadata.ControllerGeneration) == "" {
 		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
 	}
-	return m.markSpawned(ctx, id, metadata, &boundary, nil)
+	return m.markSpawned(ctx, id, metadata, &boundary, nil, nil)
 }
 
 // MarkChatSpawnedPrepared publishes native history together with its reserved
@@ -1129,6 +1142,7 @@ func (m *Manager) MarkChatSpawnedPrepared(
 	id domain.SessionID,
 	metadata domain.SessionMetadata,
 	boundary domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	if prepare == nil {
@@ -1140,7 +1154,7 @@ func (m *Manager) MarkChatSpawnedPrepared(
 		strings.TrimSpace(metadata.ControllerGeneration) == "" {
 		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
 	}
-	return m.markSpawned(ctx, id, metadata, &boundary, prepare)
+	return m.markSpawned(ctx, id, metadata, &boundary, handoff, prepare)
 }
 
 func (m *Manager) markSpawned(
@@ -1148,6 +1162,7 @@ func (m *Manager) markSpawned(
 	id domain.SessionID,
 	metadata domain.SessionMetadata,
 	boundary *domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	launchID := strings.TrimSpace(metadata.RuntimeLaunchID)
@@ -1196,7 +1211,7 @@ func (m *Manager) markSpawned(
 			if !ok {
 				return nil, errors.New("lifecycle: atomic Chat provider-history persistence is unavailable")
 			}
-			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, prepare); err != nil {
+			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, handoff, prepare); err != nil {
 				return nil, err
 			}
 		}
@@ -1500,6 +1515,12 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	if !in.LatestUserPromptAt.IsZero() {
 		base.LatestUserPromptAt = in.LatestUserPromptAt
 	}
+	if !in.LatestAssistantUpdateAt.IsZero() {
+		base.LatestAssistantUpdateAt = in.LatestAssistantUpdateAt
+	}
+	if !in.NativeIdentityObservedAt.IsZero() {
+		base.NativeIdentityObservedAt = in.NativeIdentityObservedAt
+	}
 	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
 	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
 	set(&base.Model, in.Model)
@@ -1517,15 +1538,35 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 
 func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySignal, receivedAt time.Time) {
 	if signal.AgentSessionID != "" {
+		previousID := meta.AgentSessionID
+		if previousID == "" {
+			previousID = meta.ProviderConversationID
+		}
+		if previousID != "" && previousID != signal.AgentSessionID {
+			// Identity-scoped facts must not leak from A into a new native B. The
+			// caller has already fenced this signal to the current launch.
+			meta.LatestUserPrompt = ""
+			meta.LatestUserPromptAt = time.Time{}
+			meta.LatestAssistantUpdate = ""
+			meta.LatestAssistantUpdateAt = time.Time{}
+			meta.NativeTranscriptPath = ""
+		}
 		meta.AgentSessionID = signal.AgentSessionID
 		meta.AgentSessionIDLaunchID = signal.LaunchID
+		if signal.Timestamp.After(meta.NativeIdentityObservedAt) {
+			meta.NativeIdentityObservedAt = signal.Timestamp
+		}
 	}
-	if signal.LatestUserPrompt != "" {
+	observedAt := timeOr(signal.Timestamp, receivedAt)
+	if signal.LatestUserPrompt != "" && !observedAt.Before(meta.LatestUserPromptAt) &&
+		(signal.LatestUserPrompt != meta.LatestUserPrompt || signal.Event == "user-prompt-submit") {
 		meta.LatestUserPrompt = signal.LatestUserPrompt
-		meta.LatestUserPromptAt = timeOr(signal.Timestamp, receivedAt)
+		meta.LatestUserPromptAt = observedAt
 	}
-	if signal.LatestAssistantUpdate != "" {
+	if signal.LatestAssistantUpdate != "" && !observedAt.Before(meta.LatestAssistantUpdateAt) &&
+		(signal.LatestAssistantUpdate != meta.LatestAssistantUpdate || signal.Event == "stop") {
 		meta.LatestAssistantUpdate = signal.LatestAssistantUpdate
+		meta.LatestAssistantUpdateAt = observedAt
 	}
 	if signal.TranscriptPath != "" {
 		meta.NativeTranscriptPath = signal.TranscriptPath

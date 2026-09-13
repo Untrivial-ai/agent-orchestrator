@@ -83,6 +83,9 @@ type ChatStart struct {
 	// switching supplies its durable boundary before the target provider starts;
 	// ordinary starts leave it empty for Chat Service to derive or reserve.
 	ProviderScopeID string
+	// ProviderHandoff authorizes a separate history boundary, not an ordinary
+	// resume with its identity check disabled.
+	ProviderHandoff *domain.ChatProviderHandoff
 	// ControllerGeneration lets a durable coordinator reserve the generation
 	// before launch. Empty keeps the ordinary spawn/restore behavior where Chat
 	// Service allocates it.
@@ -119,13 +122,9 @@ type ChatControllerCommit struct {
 	ControllerOwner domain.SessionControllerOwner
 }
 
-// historicalChatProviderOwnershipStore is the narrow durable read boundary used
-// only when restoring a terminated Chat orchestrator created by an older build.
-// Those builds could complete a TUI -> Chat transition after rebinding the
-// project narrative without appending the provider-ownership branch for the new
-// native conversation. SQLite implements both reads; embedders without the
-// historical transition table retain the strict ordinary-resume behavior.
-type historicalChatProviderOwnershipStore interface {
+// chatProviderOwnershipStore supplies the durable handoff and history
+// facts. Embedders without these reads retain strict ordinary-resume behavior.
+type chatProviderOwnershipStore interface {
 	GetLatestSessionInterfaceTransition(context.Context, domain.SessionID) (domain.SessionInterfaceTransition, bool, error)
 	ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
 	ConversationBranch(context.Context, string, string) (domain.ConversationBranch, error)
@@ -228,7 +227,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			}
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, id, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, nil,
 			)
 			completionErr = commitErr
 			controllerCommitted = completionErr == nil
@@ -393,7 +392,7 @@ func (m *Manager) resumeChatController(
 	if agent, ok := m.agents.Agent(rec.Harness); ok {
 		m.augmentAgentRuntimeEnv(agent, env)
 	}
-	providerScopeID, err := m.historicalChatProviderScopeID(ctx, rec)
+	providerHandoff, err := m.prepareChatProviderHandoff(ctx, rec, requireNativeHistory)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
@@ -426,12 +425,7 @@ func (m *Manager) resumeChatController(
 		},
 		// The handle that makes this a resume rather than a new conversation.
 		ProviderConversationID: rec.Metadata.ProviderConversationID,
-		// Older TUI -> Chat handoffs could persist the native handle without
-		// appending its provider-ownership epoch to the project conversation. A
-		// completed transition matching this exact handle is the only authority
-		// allowed to reserve that missing boundary. Chat Service publishes it with
-		// the lifecycle owner only after provider resume/history import succeeds.
-		ProviderScopeID: providerScopeID,
+		ProviderHandoff:        providerHandoff,
 		// Ordinary resumes allocate a fresh generation. Switch recovery reuses
 		// the saga's reserved generation until delivery is durably settled so a
 		// second restart can still prove exact target ownership.
@@ -451,8 +445,13 @@ func (m *Manager) resumeChatController(
 
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, rec.ID, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, providerHandoff,
 			)
+			if commitErr == nil {
+				// Chat retains this callback for controller rebuilds. Consume the
+				// reservation after publication so those rebuilds resume normally.
+				providerHandoff = nil
+			}
 			completionErr = commitErr
 			return ChatControllerCommit{
 				Conversation: committedConversation,
@@ -479,65 +478,6 @@ func (m *Manager) resumeChatController(
 	return RestoreResult{Session: restored, Mode: RestoreModeNative}, nil
 }
 
-// historicalChatProviderScopeID recognizes one backward-compatibility state:
-// an older build completed a TUI -> Chat handoff for a project orchestrator, but
-// the project conversation's active provider branch still belongs to the prior
-// orchestrator. The transition's exact native id is the durable proof that the
-// terminated session owns the handle it asks the provider to resume.
-//
-// This function only reserves an id. Chat Service still resumes and imports
-// history first, then Lifecycle/CommitChatSpawn atomically appends and activates
-// the branch. A failed provider call, stale conversation owner, or changed head
-// therefore leaves both the root and the terminated session untouched.
-func (m *Manager) historicalChatProviderScopeID(
-	ctx context.Context,
-	rec domain.SessionRecord,
-) (string, error) {
-	providerConversationID := rec.Metadata.ProviderConversationID
-	if !rec.IsTerminated || rec.Kind != domain.KindOrchestrator ||
-		domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat ||
-		providerConversationID == "" {
-		return "", nil
-	}
-	store, ok := m.store.(historicalChatProviderOwnershipStore)
-	if !ok {
-		return "", nil
-	}
-	transition, found, err := store.GetLatestSessionInterfaceTransition(ctx, rec.ID)
-	if err != nil {
-		return "", err
-	}
-	if !found || transition.Phase != domain.SessionInterfaceTransitionCompleted ||
-		transition.SourceMode != domain.SessionModeTUI ||
-		transition.TargetMode != domain.SessionModeChat ||
-		transition.NativeConversationID != providerConversationID {
-		return "", nil
-	}
-	conversation, err := store.ConversationForSession(ctx, rec.ID)
-	if errors.Is(err, domain.ErrNoConversation) {
-		return "", fmt.Errorf("project conversation is no longer owned by the historical Chat session: %w", err)
-	}
-	if err != nil {
-		return "", err
-	}
-	if conversation.Scope != domain.ConversationScopeProject ||
-		conversation.SessionID != rec.ID || conversation.ActiveBranchID == "" {
-		return "", nil
-	}
-	activeBranch, err := store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
-	if err != nil {
-		return "", err
-	}
-	// Never rewrite or fork a branch already owned by this session, and never
-	// infer ownership from a legacy unowned/empty branch. The repair is only for
-	// the observed old-owner/old-provider project rebind state.
-	if activeBranch.SessionID == "" || activeBranch.SessionID == rec.ID ||
-		activeBranch.ProviderConversationID == "" {
-		return "", nil
-	}
-	return interfaceTransitionProviderBoundaryID(transition.ID), nil
-}
-
 func (m *Manager) markChatControllerSpawned(
 	ctx context.Context,
 	id domain.SessionID,
@@ -545,7 +485,11 @@ func (m *Manager) markChatControllerSpawned(
 	conversation domain.ConversationRecord,
 	providerBoundary *domain.ConversationBranch,
 	commitProviderHistory func(context.Context) error,
+	handoff *domain.ChatProviderHandoff,
 ) (domain.ConversationRecord, error) {
+	if handoff != nil && (providerBoundary == nil || commitProviderHistory == nil) {
+		return domain.ConversationRecord{}, errors.New("native Chat handoff requires atomic history publication")
+	}
 	if providerBoundary == nil {
 		return conversation, m.lcm.MarkSpawned(ctx, id, metadata)
 	}
@@ -559,6 +503,7 @@ func (m *Manager) markChatControllerSpawned(
 				domain.SessionID,
 				domain.SessionMetadata,
 				domain.ConversationBranch,
+				*domain.ChatProviderHandoff,
 				func(context.Context) error,
 			) error
 		})
@@ -568,13 +513,14 @@ func (m *Manager) markChatControllerSpawned(
 			)
 		}
 		err = prepared.MarkChatSpawnedPrepared(
-			ctx, id, metadata, *providerBoundary, commitProviderHistory,
+			ctx, id, metadata, *providerBoundary, handoff, commitProviderHistory,
 		)
 	}
 	if err != nil {
 		return domain.ConversationRecord{}, err
 	}
 	conversation.ActiveBranchID = providerBoundary.ID
+	conversation.SessionID = id
 	conversation.UpdatedAt = providerBoundary.CreatedAt
 	return conversation, nil
 }

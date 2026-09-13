@@ -1596,6 +1596,7 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 	// never match its pre/post counterpart, so overlong values are dropped by
 	// the CLI; the cap here is defense against non-AO callers).
 	sig := ports.ActivitySignal{
+		Timestamp:             in.ObservedAt,
 		Valid:                 state != "",
 		State:                 state,
 		Event:                 capActivityMeta(domain.SanitizeControlChars(in.Event)),

@@ -191,6 +191,9 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 		}
 		events = append(events, completed)
 	}
+	for i := range events {
+		events[i] = c.scopedEvent(events[i])
+	}
 	return events, nil
 }
 
@@ -254,6 +257,7 @@ func historicalUserText(item codexproto.ThreadItem) string {
 // It changes what the agent remembers. AO's rows have to follow, and that is the
 // caller's job — see the Chat controller.
 func (c *conversation) Rollback(ctx context.Context, providerTurnID string) error {
+	providerTurnID = c.nativeID(providerTurnID)
 	if strings.TrimSpace(providerTurnID) == "" {
 		return errors.New("rollback needs a provider turn id")
 	}
@@ -324,7 +328,7 @@ func (c *conversation) Fork(ctx context.Context, lastProviderTurnID *string) (st
 
 	params := codexproto.ThreadForkParams{ThreadID: c.threadID}
 	if lastProviderTurnID != nil {
-		anchor := strings.TrimSpace(*lastProviderTurnID)
+		anchor := c.nativeID(strings.TrimSpace(*lastProviderTurnID))
 		if anchor == "" {
 			return "", errors.New("fork anchor must not be blank")
 		}
