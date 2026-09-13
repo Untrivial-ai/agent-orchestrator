@@ -3340,3 +3340,98 @@ func (d *Driver) useTestProcess(spawn spawnFunc) {
 		return spawn(launch, cfg.WorkspacePath)
 	}
 }
+
+// TestPR5208FreshStartAppliesSelectedEffort verifies that the selected effort
+// level is passed to the ACP driver during session initialization and applied
+// via SetSessionConfigOption before any prompt is sent.
+func TestPR5208FreshStartAppliesSelectedEffort(t *testing.T) {
+	effortOption := selectConfigOption(
+		"effort", "Effort", "effort",
+		"default", // current
+		"default", "low", "high",
+	)
+	effortOptionLow := selectConfigOption(
+		"effort", "Effort", "effort",
+		"low", // current after selection
+		"default", "low", "high",
+	)
+	agent := &fakeAgent{
+		newConfig: []acpsdk.SessionConfigOption{effortOption},
+		setConfig: []acpsdk.SessionConfigOption{effortOptionLow}, // response after setting effort
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+			var options []SessionOption
+			if settings.Effort != "" {
+				options = append(options, SessionOption{
+					ID:    "effort",
+					Value: settings.Effort,
+				})
+			}
+			return options
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	// Start with effort="low" selected
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath: t.TempDir(),
+		Effort:        "low",
+	})
+	if err != nil {
+		t.Fatalf("Start with effort=low: %v", err)
+	}
+	defer conv.Close()
+
+	// Verify the config option was set on the provider
+	agent.mu.Lock()
+	setCalls := agent.setCalls
+	options := make(map[string]string)
+	if agent.options != nil {
+		for k, v := range agent.options {
+			options[k] = v
+		}
+	}
+	agent.mu.Unlock()
+
+	if setCalls == 0 {
+		t.Fatal("provider received no setter calls, want at least effort option set")
+	}
+
+	effortValue, effortSet := options["effort"]
+	if !effortSet {
+		t.Fatal("effort option was not set on provider")
+	}
+	if effortValue != "low" {
+		t.Fatalf("provider received effort=%q, want effort=low", effortValue)
+	}
+
+	// Verify that the live config options reflect the selected effort
+	configurer := conv.(ports.ChatConfigOptionController)
+	configOptions, err := configurer.ListConfigOptions(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigOptions: %v", err)
+	}
+
+	effortFound := false
+	for _, opt := range configOptions {
+		if opt.ID == "effort" {
+			effortFound = true
+			if opt.Current.Select != "low" {
+				t.Fatalf(
+					"live effort option = %q, want low",
+					opt.Current.Select,
+				)
+			}
+		}
+	}
+	if !effortFound {
+		t.Fatal("effort option not found in live config")
+	}
+}

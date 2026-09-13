@@ -257,7 +257,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 		conv.legacyWire.modelState(), resp.Modes,
 	)
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Approval: cfg.Permissions}); err != nil {
+	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
 		// Initial model and permission mode may have been applied via launch-time
 		// flags (e.g. kimchiacp passes --model, --auto, --yolo). An agent that
 		// does not implement the runtime ACP setters returns -32601; tolerate it
