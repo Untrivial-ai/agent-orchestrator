@@ -30,6 +30,8 @@ const (
 	agentTerminalTTL           = 24 * time.Hour
 	terminalInteractionTTL     = 2 * time.Minute
 	terminalInteractionRefresh = 30 * time.Second
+	terminalPingInterval       = 20 * time.Second
+	terminalPingTimeout        = 5 * time.Second
 )
 
 var errTerminalProcessUnavailable = errors.New("terminal process unavailable")
@@ -118,6 +120,14 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 		s.closeTerminal(r, terminal)
 		return
 	}
+	if s.logger != nil {
+		s.logger.Info("browser terminal attached",
+			"session_id", terminal.SessionID,
+			"terminal_id", terminal.ID,
+			"kind", terminal.Kind,
+			"worker_epoch", terminal.WorkerEpoch,
+		)
+	}
 	connection.SetReadLimit(maxTerminalFrame)
 	defer func() {
 		if terminal.Kind != "agent" {
@@ -151,10 +161,15 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		writeResult <- s.writeTerminalOutput(ctx, connection, terminal, after, structured, &writeMu)
 	}()
+	pingResult := make(chan error, 1)
+	go func() {
+		pingResult <- keepTerminalAlive(ctx, connection)
+	}()
 
 	select {
 	case err = <-readResult:
 	case err = <-writeResult:
+	case err = <-pingResult:
 	case <-ctx.Done():
 		err = ctx.Err()
 	}
@@ -165,6 +180,30 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	status, reason := terminalStreamClose(err, terminal.Kind)
 	_ = connection.Close(status, reason)
+}
+
+// keepTerminalAlive sends protocol-level pings often enough to keep idle
+// terminal connections active through the public load balancer. Browsers
+// answer WebSocket pings automatically while readTerminalInput continuously
+// reads the corresponding pong control frames. Ping serializes with Write on
+// the coder/websocket connection's internal writeFrameMu, so it is safe to call
+// here without the writeMu that guards writeTerminalOutput.
+func keepTerminalAlive(ctx context.Context, connection *websocket.Conn) error {
+	ticker := time.NewTicker(terminalPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, terminalPingTimeout)
+			err := connection.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (s *Server) refreshTerminalInteraction(ctx context.Context, terminal domain.TerminalSession) {
@@ -335,6 +374,14 @@ func (s *Server) writeTerminalOutput(
 			if state == "open" {
 				messageType = "ready"
 				ready = true
+				if s.logger != nil {
+					s.logger.Info("browser terminal ready",
+						"session_id", terminal.SessionID,
+						"terminal_id", terminal.ID,
+						"kind", terminal.Kind,
+						"worker_epoch", terminal.WorkerEpoch,
+					)
+				}
 			} else {
 				startingSent = true
 			}

@@ -428,6 +428,29 @@ paths:
                 $ref: "#/components/schemas/DeleteSessionResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/children:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listSessionChildren
+      tags: [Sessions]
+      description: >-
+        Lists the sessions this orchestrator spawned, newest first, with each
+        child's pull requests. Terminated children are included; a session
+        that spawned nothing returns an empty page.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of the orchestrator's child sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionChildrenPage"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -1059,17 +1082,25 @@ paths:
       tags: [Worker Orchestration]
       security:
         - workerAuth: []
-      description: Creates a trusted child by default and passes its required prompt directly to the coding-agent launch command.
+      description: >-
+        Lists this orchestrator's direct child sessions with their pull
+        requests. Terminated children are hidden unless includeTerminated.
       parameters:
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
+        - name: includeTerminated
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: A page of direct child sessions owned by this orchestrator.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionPage"
+                $ref: "#/components/schemas/SessionChildrenPage"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1156,6 +1187,46 @@ paths:
       responses:
         "202":
           description: The message was durably appended to the direct child.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/parent/messages:
+    post:
+      operationId: reportToParent
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      description: >-
+        Delivers a child worker's message into the conversation of the
+        orchestrator that spawned it. Requires the worker:report scope, which
+        is issued only to sessions with an orchestrator parent.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "202":
+          description: The message was durably appended to the parent orchestrator.
           content:
             application/json:
               schema:
@@ -2844,6 +2915,53 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Session"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    SessionPullRequestFacts:
+      type: object
+      additionalProperties: false
+      required: [url, number, state, ci, review, mergeability, reviewComments, updatedAt]
+      properties:
+        url:
+          type: string
+        number:
+          type: integer
+        state:
+          $ref: "#/components/schemas/PullRequestState"
+        ci:
+          $ref: "#/components/schemas/CIState"
+        review:
+          $ref: "#/components/schemas/ReviewDecision"
+        mergeability:
+          $ref: "#/components/schemas/MergeabilityState"
+        reviewComments:
+          type: boolean
+        sourceBranch:
+          type: string
+        targetBranch:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    SessionWithPullRequests:
+      allOf:
+        - $ref: "#/components/schemas/Session"
+        - type: object
+          required: [prs]
+          properties:
+            prs:
+              type: array
+              items:
+                $ref: "#/components/schemas/SessionPullRequestFacts"
+    SessionChildrenPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionWithPullRequests"
         page:
           $ref: "#/components/schemas/PageInfo"
     PullRequestState:

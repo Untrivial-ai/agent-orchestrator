@@ -16,6 +16,7 @@ import { useFileAttachments, type FileAttachment } from "../hooks/useFileAttachm
 const navigateMock = vi.hoisted(() => vi.fn());
 const openShellTerminalMock = vi.hoisted(() => vi.fn());
 const closeShellTerminalMock = vi.hoisted(() => vi.fn());
+const cloudResumeMock = vi.hoisted(() => vi.fn(async () => ({ session: {} })));
 const nativeFullScreenMock = vi.hoisted(() => vi.fn(() => false));
 const interfaceTransitionMock = vi.hoisted(() => ({
 	start: vi.fn(),
@@ -71,6 +72,13 @@ vi.mock("../lib/platform", () => ({
 }));
 vi.mock("../hooks/useWindowFullScreen", () => ({
 	useWindowFullScreen: () => nativeFullScreenMock(),
+}));
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({
+		baseUrl: "https://cloud.example.test",
+		client: { resumeSession: cloudResumeMock },
+		ready: true,
+	}),
 }));
 vi.mock("../hooks/useSessionInterfaceTransition", () => ({
 	interfaceTransitionIsActive: (transition?: { phase?: string }) =>
@@ -593,6 +601,7 @@ vi.mock("../lib/shell-context", () => ({
 	useShell: () => ({ daemonStatus: { state: "ready" } }),
 }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({
+	cloudSessionsQueryKey: ["cloud-sessions"],
 	useWorkspaceQuery: () => ({
 		data: workspaceQueryState.data,
 		isLoading: workspaceQueryState.isLoading,
@@ -703,6 +712,8 @@ describe("SessionView", () => {
 			delete session.previewUrl;
 			delete session.previewRevision;
 			delete session.isTerminated;
+			delete session.runtimeConnected;
+			delete session.cloud;
 			session.status = "working";
 			session.provider = "claude-code";
 			delete session.mode;
@@ -733,6 +744,8 @@ describe("SessionView", () => {
 			optimistic: true,
 		}));
 		closeShellTerminalMock.mockReset();
+		cloudResumeMock.mockReset();
+		cloudResumeMock.mockResolvedValue({ session: {} });
 		interfaceTransitionMock.start.mockReset();
 		interfaceTransitionMock.refreshStatus.mockReset();
 		interfaceTransitionMock.refreshStatus.mockImplementation(
@@ -914,6 +927,36 @@ describe("SessionView", () => {
 		fireEvent.click(newTerminalButton);
 		expect(openShellTerminalMock).toHaveBeenCalledWith({ projectId: "proj-1", sessionId: "sess-2" }, expect.anything());
 		expect(useUiStore.getState().activeShellTerminalHandleId).toBe("pending-shell:test");
+	});
+
+	it("routes a cloud session's new terminal through its control-plane identity", () => {
+		const session = workerSession("sess-2");
+		session.cloud = { orgId: "cloud-org" };
+
+		render(<SessionView sessionId="sess-2" />);
+		fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+
+		expect(openShellTerminalMock).toHaveBeenCalledWith(
+			{ projectId: "proj-1", sessionId: "sess-2", cloud: { orgId: "cloud-org" } },
+			expect.anything(),
+		);
+	});
+
+	it("resumes a cloud session only after its detail view is opened", async () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = false;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "paused",
+			observedState: "stopped",
+		};
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Paused by Coder");
+		await waitFor(() => expect(cloudResumeMock).toHaveBeenCalledWith("cloud-org", "sess-2"));
+		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("activates a new terminal opened while a file tab is selected", async () => {

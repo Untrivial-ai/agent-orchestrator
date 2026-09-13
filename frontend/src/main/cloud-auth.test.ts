@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   encryptionAvailable: true,
   selectedStorageBackend: "gnome_libsecret",
   getAuthorizationUrlWithPKCE: vi.fn(),
+  notifyRenderers: vi.fn(),
   openExternal: vi.fn(),
   showMessageBox: vi.fn(),
 }));
@@ -52,8 +53,10 @@ vi.mock("electron", () => ({
 
 import {
   beginCloudSignIn,
+  getCloudAccessToken,
   getCloudSession,
   handleCloudDeepLink,
+  installCloudIPC,
   showCloudSignInFailure,
   signOutCloud,
 } from "./cloud-auth";
@@ -66,6 +69,7 @@ describe("native WorkOS authentication", () => {
     mocks.encryptionAvailable = true;
     mocks.selectedStorageBackend = "gnome_libsecret";
     dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-cloud-auth-"));
+    installCloudIPC(() => dataDir, mocks.notifyRenderers);
     mocks.getAuthorizationUrlWithPKCE.mockResolvedValue({
       url: "https://workos.example/authorize",
       state: "state_123",
@@ -258,6 +262,19 @@ describe("native WorkOS authentication", () => {
     await expect(getCloudSession(dataDir)).resolves.toBeNull();
     await expect(getCloudSession(dataDir)).resolves.toBeNull();
     expect(mocks.authenticateWithRefreshToken).toHaveBeenCalledOnce();
+    expect(mocks.notifyRenderers).toHaveBeenCalledWith(null);
+  });
+
+  it("publishes signed-out state when a token request finds the auth store missing", async () => {
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+    await rm(path.join(dataDir, "cloud-auth.bin"), { force: true });
+
+    await expect(getCloudAccessToken(dataDir)).resolves.toBeNull();
+    expect(mocks.notifyRenderers).toHaveBeenCalledWith(null);
   });
 
   it("preserves encrypted credentials after a retryable refresh failure", async () => {

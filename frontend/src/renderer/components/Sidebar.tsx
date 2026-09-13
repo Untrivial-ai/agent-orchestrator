@@ -56,6 +56,7 @@ import {
 	type MouseEvent,
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
+	type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -342,6 +343,8 @@ type SidebarProps = {
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
 	onRemoveProject: (projectId: string) => Promise<void>;
+	/** Fixed shell chrome that also consumes the live sidebar width. */
+	resizeAuxiliaryTargetRef?: RefObject<HTMLElement | null>;
 };
 
 // Selection state comes from the URL: which project/session is active is the
@@ -423,6 +426,7 @@ export function Sidebar({
 	onCreateProject,
 	onInitializeProject,
 	onRemoveProject,
+	resizeAuxiliaryTargetRef,
 }: SidebarProps) {
 	const { t } = useTranslation();
 	const selection = useSelection();
@@ -489,15 +493,26 @@ export function Sidebar({
 
 	// agent-orchestrator's sidebar resize: drag the right edge (200-420px,
 	// persisted), double-click to reset to 240px. Drives --ao-sidebar-w on :root,
-	// which the provider forwards into shadcn's --sidebar-width. Dragging clamps
+	// only to the two layout consumers and fixed titlebar strip, rather than
+	// :root. Dragging clamps
 	// at SIDEBAR_MIN_WIDTH — collapsing stays on the explicit toggle (⌘B /
 	// titlebar button), never on a drag.
+	const resizeScopeRef = useRef<HTMLDivElement>(null);
+	const getResizeTargets = useCallback(() => {
+		const scope = resizeScopeRef.current;
+		return [
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-gap"]') ?? null,
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null,
+			resizeAuxiliaryTargetRef?.current ?? null,
+		];
+	}, [resizeAuxiliaryTargetRef]);
 	const {
 		onPointerDown: onResizePointerDown,
 		onCollapsedPointerDown: onCollapsedResizePointerDown,
 		onDoubleClick: onResizeDoubleClick,
 	} = useResizable({
 		cssVar: "--ao-sidebar-w",
+		getCssTargets: getResizeTargets,
 		storageKey: "ao-sidebar-w",
 		defaultWidth: SIDEBAR_DEFAULT_WIDTH,
 		min: SIDEBAR_MIN_WIDTH,
@@ -641,6 +656,7 @@ export function Sidebar({
 		// Pinned sidebars start below shell chrome.
 		<SidebarRoot
 			collapsible="offcanvas"
+			resizeScopeRef={resizeScopeRef}
 			data-expanded-chrome={expandedChromeVisible ? "visible" : "hidden"}
 			data-topbar-offset={underTopbar ? topbarOffset : undefined}
 			className={cn(

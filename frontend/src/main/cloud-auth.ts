@@ -318,7 +318,13 @@ export async function getCloudAccessToken(
   // The local opaque token is returned verbatim (no JWT refresh path).
   if (isLocalSession(store.session)) return store.session.accessToken;
   const account = await getCloudSession(dataDir);
-  if (account === null) return null;
+  if (account === null) {
+    // The auth store may also have been cleared by another dev-app process.
+    // A proxied request is authoritative evidence that this renderer can no
+    // longer use AO Cloud, so retire any cached signed-in UI.
+    notifyRenderersFn?.(null);
+    return null;
+  }
   const refreshed = await readAuthStore(dataDir);
   return refreshed.session?.accessToken ?? null;
 }
@@ -356,15 +362,22 @@ async function refreshCloudSession(
     if (!isTerminalRefreshFailure(error)) {
       return publicAccount(storedSession);
     }
-    await withAuthMutation(dataDir, async () => {
-      if (authGeneration(dataDir) !== generation) return;
+    const sessionCleared = await withAuthMutation(dataDir, async () => {
+      if (authGeneration(dataDir) !== generation) return false;
       const currentStore = await readAuthStore(dataDir);
       if (
         currentStore.session?.refreshToken === storedSession.refreshToken
       ) {
         await removeAuthStore(dataDir);
+        return true;
       }
+      return false;
     });
+    // Keep every renderer in lockstep with the credential store. Without this
+    // notification, a terminal refresh failure leaves the last public account
+    // (and its cached cloud projects/sessions) visible even though all future
+    // control-plane requests are unauthenticated.
+    if (sessionCleared) notifyRenderersFn?.(null);
     return null;
   }
 }

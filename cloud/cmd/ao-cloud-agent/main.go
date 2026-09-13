@@ -36,12 +36,27 @@ type client struct {
 }
 
 type session struct {
-	ID               string `json:"id"`
-	Kind             string `json:"kind"`
-	Harness          string `json:"harness"`
-	DisplayName      string `json:"displayName"`
-	Status           string `json:"status"`
-	RuntimeConnected bool   `json:"runtimeConnected"`
+	ID               string        `json:"id"`
+	Kind             string        `json:"kind"`
+	Harness          string        `json:"harness"`
+	DisplayName      string        `json:"displayName"`
+	Branch           string        `json:"branch"`
+	Status           string        `json:"status"`
+	ActivityState    string        `json:"activityState"`
+	RuntimeConnected bool          `json:"runtimeConnected"`
+	IsTerminated     bool          `json:"isTerminated"`
+	PRs              []pullRequest `json:"prs"`
+}
+
+type pullRequest struct {
+	URL          string `json:"url"`
+	Number       int    `json:"number"`
+	State        string `json:"state"`
+	CI           string `json:"ci"`
+	Review       string `json:"review"`
+	Mergeability string `json:"mergeability"`
+	SourceBranch string `json:"sourceBranch,omitempty"`
+	TargetBranch string `json:"targetBranch,omitempty"`
 }
 
 func main() {
@@ -93,6 +108,8 @@ func run(args []string) error {
 		return runList(ctx, c, args[1:])
 	case "send":
 		return runSend(ctx, c, args[1:])
+	case "report":
+		return runReport(ctx, c, args[1:])
 	case "kill", "delete", "rm":
 		return runDelete(ctx, c, args[1:])
 	case "claim-pr":
@@ -178,17 +195,20 @@ func runList(ctx context.Context, c *client, args []string) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	asJSON := flags.Bool("json", false, "print JSON")
+	all := flags.Bool("all", false, "include terminated workers")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	var response struct {
-		Items []session `json:"items"`
-	}
-	if err := c.request(ctx, http.MethodGet, "/worker/children?limit=100", nil, false, &response); err != nil {
+	items, err := listChildren(ctx, c, *all)
+	if err != nil {
 		return err
 	}
+	if items == nil {
+		// A childless listing must print [], not null: agents parse this.
+		items = []session{}
+	}
 	if *asJSON {
-		encoded, err := json.MarshalIndent(response.Items, "", "  ")
+		encoded, err := json.MarshalIndent(items, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -196,15 +216,66 @@ func runList(ctx context.Context, c *client, args []string) error {
 		return nil
 	}
 	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(out, "ID\tNAME\tHARNESS\tSTATUS\tCONNECTED")
-	for _, child := range response.Items {
+	fmt.Fprintln(out, "ID\tNAME\tHARNESS\tBRANCH\tSTATUS\tCONNECTED\tPR")
+	for _, child := range items {
 		fmt.Fprintf(
-			out, "%s\t%s\t%s\t%s\t%t\n",
-			child.ID, child.DisplayName, child.Harness, child.Status,
-			child.RuntimeConnected,
+			out, "%s\t%s\t%s\t%s\t%s\t%t\t%s\n",
+			child.ID, child.DisplayName, child.Harness, child.Branch, child.Status,
+			child.RuntimeConnected, pullRequestSummary(child.PRs),
 		)
 	}
 	return out.Flush()
+}
+
+// listChildren follows the listing's cursor so an orchestrator with more than
+// one page of workers still sees all of them; the page bound is a runaway
+// backstop, not an expected limit.
+func listChildren(ctx context.Context, c *client, includeTerminated bool) ([]session, error) {
+	const maxPages = 5
+	var items []session
+	cursor := ""
+	for page := 0; page < maxPages; page++ {
+		path := "/worker/children?limit=100"
+		if includeTerminated {
+			path += "&includeTerminated=true"
+		}
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var response struct {
+			Items []session `json:"items"`
+			Page  struct {
+				HasMore    bool   `json:"hasMore"`
+				NextCursor string `json:"nextCursor"`
+			} `json:"page"`
+		}
+		if err := c.request(ctx, http.MethodGet, path, nil, false, &response); err != nil {
+			return nil, err
+		}
+		items = append(items, response.Items...)
+		if !response.Page.HasMore || response.Page.NextCursor == "" {
+			return items, nil
+		}
+		cursor = response.Page.NextCursor
+	}
+	fmt.Fprintln(os.Stderr, "ao: worker list truncated after 500 entries")
+	return items, nil
+}
+
+// pullRequestSummary renders the row's PR column, e.g. "#12 ci:failing".
+func pullRequestSummary(prs []pullRequest) string {
+	if len(prs) == 0 {
+		return "-"
+	}
+	pr := prs[0]
+	summary := fmt.Sprintf("#%d %s", pr.Number, pr.State)
+	if pr.CI != "" && pr.CI != "unknown" {
+		summary += " ci:" + pr.CI
+	}
+	if len(prs) > 1 {
+		summary += fmt.Sprintf(" (+%d)", len(prs)-1)
+	}
+	return summary
 }
 
 func runSend(ctx context.Context, c *client, args []string) error {
@@ -231,7 +302,22 @@ func runSend(ctx context.Context, c *client, args []string) error {
 	); err != nil {
 		return err
 	}
-	fmt.Println("message queued")
+	fmt.Println("message queued (delivered when the child agent is ready)")
+	return nil
+}
+
+func runReport(ctx context.Context, c *client, args []string) error {
+	message := strings.TrimSpace(strings.Join(args, " "))
+	if message == "" {
+		return errors.New("report requires a message")
+	}
+	if err := c.request(
+		ctx, http.MethodPost, "/worker/parent/messages",
+		map[string]string{"text": message}, true, nil,
+	); err != nil {
+		return err
+	}
+	fmt.Println("reported to orchestrator")
 	return nil
 }
 
@@ -346,12 +432,14 @@ func newIdempotencyKey() string {
 
 func printUsage(out io.Writer) {
 	fmt.Fprintln(out, `AO Cloud orchestration commands:
-  ao spawn --name NAME [--agent claude-code] [--prompt TEXT] [--mode standard|trusted]
-  ao list [--json]
+  ao spawn --name NAME --prompt TEXT [--agent claude-code] [--mode standard|trusted]
+  ao list [--json] [--all]
   ao send SESSION_ID MESSAGE
+  ao report MESSAGE
   ao kill SESSION_ID
-	  ao claim-pr NUMBER_OR_URL
+  ao claim-pr NUMBER_OR_URL
 
-All commands are authenticated through the control plane. Child workers never
-connect directly to one another.`)
+All commands are authenticated through the control plane. spawn/list/send/kill
+require an orchestrator session; report requires an orchestrator parent. Child
+workers never connect directly to one another.`)
 }

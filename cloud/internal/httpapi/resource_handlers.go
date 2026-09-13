@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,14 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/go-chi/chi/v5"
 )
+
+// projectOrchestratorStore finds a project's single active orchestrator so a
+// top-level worker can be auto-linked to it as a child. It mirrors the
+// narrow-interface pattern used elsewhere so the concrete store carries the
+// method without widening Store.
+type projectOrchestratorStore interface {
+	ProjectActiveOrchestrator(ctx context.Context, orgID, projectID string) (orchestratorID, provider string, found bool, err error)
+}
 
 type createProjectRequest struct {
 	DisplayName   string         `json:"displayName"`
@@ -46,6 +56,10 @@ type createSessionRequest struct {
 	Mode                        string   `json:"mode,omitempty"`
 	DeniedCommands              []string `json:"deniedCommands,omitempty"`
 	SandboxProviderConnectionID string   `json:"sandboxProviderConnectionId,omitempty"`
+	// Provider selects which configured sandbox provider runs this session. It
+	// is optional: an empty value uses the control plane default. When set it
+	// must be one of the providers the deployment offers (see /me).
+	Provider string `json:"provider,omitempty"`
 }
 
 type sessionResponse struct {
@@ -61,6 +75,9 @@ type sessionResponse struct {
 	ActivityState    string    `json:"activityState"`
 	Status           string    `json:"status"`
 	RuntimeConnected bool      `json:"runtimeConnected"`
+	SandboxProvider  string    `json:"sandboxProvider,omitempty"`
+	DesiredState     string    `json:"desiredState,omitempty"`
+	ObservedState    string    `json:"observedState,omitempty"`
 	RuntimeState     string    `json:"runtimeState,omitempty"`
 	RuntimeError     string    `json:"runtimeError,omitempty"`
 	IsTerminated     bool      `json:"isTerminated"`
@@ -71,6 +88,62 @@ type sessionResponse struct {
 type pageInfo struct {
 	HasMore    bool   `json:"hasMore"`
 	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// sessionPRFactsResponse is one pull request as rendered on a session's
+// children listing: enough for a human row (number, url, lifecycle) and for an
+// orchestrator to route CI/review feedback without a second lookup.
+type sessionPRFactsResponse struct {
+	URL          string `json:"url"`
+	Number       int    `json:"number"`
+	State        string `json:"state"`
+	CI           string `json:"ci"`
+	Review       string `json:"review"`
+	Mergeability string `json:"mergeability"`
+	// The control plane does not track unresolved review comments yet; the
+	// field exists so the renderer's shared PullRequestFacts shape maps 1:1.
+	ReviewComments bool      `json:"reviewComments"`
+	SourceBranch   string    `json:"sourceBranch,omitempty"`
+	TargetBranch   string    `json:"targetBranch,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// sessionChildResponse is the single wire shape for a child session on both
+// the worker-facing /worker/children listing and the user-facing
+// /orgs/{orgId}/sessions/{sessionId}/children listing. Keep them identical so
+// `ao list --json` and the app's Workers view can never drift apart.
+type sessionChildResponse struct {
+	sessionResponse
+	PRs []sessionPRFactsResponse `json:"prs"`
+}
+
+func toSessionChildResponse(
+	session domain.Session,
+	facts []contract.PRFacts,
+	prs []domain.PullRequest,
+) sessionChildResponse {
+	rendered := make([]sessionPRFactsResponse, 0, len(prs))
+	for _, pr := range prs {
+		state := string(pr.State)
+		if pr.Draft && pr.State == contract.PRStateOpen {
+			state = "draft"
+		}
+		rendered = append(rendered, sessionPRFactsResponse{
+			URL:          pr.URL,
+			Number:       pr.Number,
+			State:        state,
+			CI:           string(pr.CIState),
+			Review:       string(pr.ReviewState),
+			Mergeability: string(pr.Mergeability),
+			SourceBranch: pr.SourceBranch,
+			TargetBranch: pr.TargetBranch,
+			UpdatedAt:    pr.UpdatedAt,
+		})
+	}
+	return sessionChildResponse{
+		sessionResponse: toSessionResponse(session, facts),
+		PRs:             rendered,
+	}
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +317,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Mode = strings.TrimSpace(request.Mode)
 	request.SandboxProviderConnectionID = strings.TrimSpace(request.SandboxProviderConnectionID)
+	request.Provider = strings.ToLower(strings.TrimSpace(request.Provider))
 	if request.Mode == "" {
 		request.Mode = "trusted"
 	}
@@ -287,10 +361,46 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A top-level worker created for a project that already has an active
+	// orchestrator is auto-linked to it: the orchestrator then sees, drives, and
+	// receives reports from it exactly as it would a worker it spawned itself,
+	// because ao list, the Workers view, ao send/kill, and the ao report reverse
+	// channel all key on parent_session_id. The worker also inherits the
+	// orchestrator's provider so the project's whole worker tree stays on one
+	// provider, matching ao spawn'ed children. An orchestrator, or a worker
+	// created before any orchestrator exists, stays unlinked.
+	parentSessionID := ""
+	if request.Kind == "worker" {
+		if orchStore, ok := s.store.(projectOrchestratorStore); ok {
+			orchestratorID, orchestratorProvider, found, lookupErr := orchStore.ProjectActiveOrchestrator(
+				r.Context(), orgID, request.ProjectID,
+			)
+			if lookupErr != nil {
+				s.writeStoreError(w, r, lookupErr)
+				return
+			}
+			if found {
+				parentSessionID = orchestratorID
+				request.Provider = orchestratorProvider
+			}
+		}
+	}
+	// Validate the sandbox provider AFTER the auto-link override above: an
+	// auto-linked worker inherits its orchestrator's provider, so the
+	// availability check must run on the final value, not the client-sent one.
+	// Otherwise a UI-created worker whose stale client selection differs from the
+	// orchestrator's provider is rejected before the override can take effect.
+	if request.Provider != "" && !slices.Contains(s.availableSandboxProviders, request.Provider) {
+		writeError(
+			w, r, http.StatusUnprocessableEntity, "provider_unavailable",
+			"The selected sandbox provider is not available on this control plane.",
+		)
+		return
+	}
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.
-	plan, err := s.provisioning.SessionPlan(request.Harness)
+	plan, err := s.provisioning.SessionPlanForProvider(request.Harness, request.Provider)
 	if err != nil {
 		s.logger.Error("resolve sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(
@@ -318,6 +428,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			ResourceProfile:     plan.ResourceProfile,
 			BootstrapContext:    plan.BootstrapContext,
 			Release:             s.release,
+			ParentSessionID:     parentSessionID,
 		},
 	)
 	if err != nil {
@@ -376,6 +487,69 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	page := pageInfo{HasMore: hasMore}
 	if hasMore && len(sessions) > 0 {
 		last := sessions[len(sessions)-1]
+		page.NextCursor = encodeCursor(last.UpdatedAt, last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": page})
+}
+
+// resumeSession records one explicit user intent and lets the reconciler own
+// every slow provider/worker transition. The response is the accepted intent,
+// not a claim that the workspace is connected yet.
+func (s *Server) resumeSession(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	lifecycle, err := s.store.ResumeSession(
+		r.Context(), principalFrom(r), orgID, sessionID,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"session": map[string]any{
+		"id": lifecycle.SessionID, "sandboxProvider": lifecycle.Provider,
+		"desiredState": lifecycle.DesiredState, "observedState": lifecycle.ObservedState,
+	}})
+}
+
+// listSessionChildren lists the sessions an orchestrator spawned, with their
+// pull requests, for the session inspector's Workers view. Same wire shape as
+// the worker-facing /worker/children listing (sessionChildResponse).
+func (s *Server) listSessionChildren(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	limit, err := parseLimit(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	cursor, err := parseCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_cursor", "The pagination cursor is invalid.")
+		return
+	}
+	children, hasMore, err := s.store.ListSessionChildren(
+		r.Context(), principalFrom(r), orgID, sessionID, cursor, limit,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	items, err := s.childItems(r, orgID, children)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	page := pageInfo{HasMore: hasMore}
+	if hasMore && len(children) > 0 {
+		last := children[len(children)-1]
 		page.NextCursor = encodeCursor(last.UpdatedAt, last.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": page})
@@ -522,6 +696,9 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		ActivityState:    string(session.ActivityState),
 		Status:           string(session.Status(time.Now().UTC(), prs)),
 		RuntimeConnected: session.RuntimeConnected,
+		SandboxProvider:  session.SandboxProvider,
+		DesiredState:     session.DesiredState,
+		ObservedState:    session.ObservedState,
 		RuntimeState:     session.RuntimeState,
 		RuntimeError:     session.RuntimeError,
 		IsTerminated:     session.IsTerminated,

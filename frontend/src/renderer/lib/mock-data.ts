@@ -1,3 +1,4 @@
+import type { CloudCpSessionChild } from "./cloud-cp";
 import type { PRState, PullRequestFacts, WorkspaceSummary } from "../types/workspace";
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
@@ -590,5 +591,71 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 				conflictFiles: [],
 			},
 		}),
+	],
+};
+
+// Children the demo orchestrator "spawned", for the inspector's Workers
+// section in browser preview mode (no control plane available there). Keyed by
+// orchestrator session id.
+const demoChild = (
+	id: string,
+	displayName: string,
+	status: string,
+	activityState: string,
+	prs: CloudCpSessionChild["prs"],
+	isTerminated = false,
+): CloudCpSessionChild => ({
+	id,
+	orgId: "demo-org",
+	projectId: "ao-demo",
+	kind: "worker",
+	harness: "claude-code",
+	displayName,
+	branch: `ao/${id.slice(0, 8)}`,
+	mode: "trusted",
+	deniedCommands: [],
+	activityState,
+	status,
+	runtimeConnected: !isTerminated,
+	isTerminated,
+	createdAt: hoursAgo(2),
+	updatedAt: minutesAgo(4),
+	prs,
+});
+
+export const mockOrchestratorChildren: Record<string, CloudCpSessionChild[]> = {
+	"ao-demo-orchestrator": [
+		demoChild("11111111-1111-4111-8111-111111111111", "Fix flaky CI", "ci_failed", "active", [
+			{
+				url: "https://github.com/me/ao-demo/pull/321",
+				number: 321,
+				state: "open",
+				ci: "failing",
+				review: "none",
+				mergeability: "unstable",
+				reviewComments: false,
+				updatedAt: minutesAgo(6),
+			},
+		]),
+		demoChild("22222222-2222-4222-8222-222222222222", "Dark mode toggle", "working", "active", []),
+		demoChild(
+			"33333333-3333-4333-8333-333333333333",
+			"Update onboarding copy",
+			"merged",
+			"idle",
+			[
+				{
+					url: "https://github.com/me/ao-demo/pull/318",
+					number: 318,
+					state: "merged",
+					ci: "passing",
+					review: "approved",
+					mergeability: "mergeable",
+					reviewComments: false,
+					updatedAt: hoursAgo(1),
+				},
+			],
+			true,
+		),
 	],
 };

@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from lib.deployment import (
+    CODER_SECRET_ENV,
     NODEOPS_SECRET_ENV,
     WORKER_SECRET_ENV,
     build_task_definition,
@@ -24,6 +25,14 @@ WORKER_IMAGE = f"registry/ao-cloud-worker@sha256:{'b' * 64}"
 def hosted_secret_overrides(environment="production"):
     return secret_environment(
         f"arn:secret:ao-cloud/{environment}/nodeops", NODEOPS_SECRET_ENV
+    ) | secret_environment(
+        f"arn:secret:ao-cloud/{environment}/worker", WORKER_SECRET_ENV
+    )
+
+
+def coder_secret_overrides(environment="production"):
+    return secret_environment(
+        f"arn:secret:ao-cloud/{environment}/coder", CODER_SECRET_ENV
     ) | secret_environment(
         f"arn:secret:ao-cloud/{environment}/worker", WORKER_SECRET_ENV
     )
@@ -48,6 +57,22 @@ def hosted_settings():
             "sandbox_startup_timeout": "3m",
             "worker_heartbeat_timeout": "1m",
         },
+    )
+
+
+def coder_settings():
+    return (
+        {
+            "url": "https://coder.example.com",
+            "token": "coder-secret",
+            "owner": "ao-integration",
+            "template_id": "template-uuid",
+            "agent_name": "main",
+            "parameters_json": '{"instance_type":"t3.medium"}',
+            "durable_root": "/home/coder",
+            "worker_token_ttl": "15m",
+        },
+        hosted_settings()[1],
     )
 
 
@@ -230,6 +255,46 @@ class TaskDefinitionTests(unittest.TestCase):
             worker_image=WORKER_IMAGE,
         )
 
+    def test_switches_from_nodeops_to_coder_without_retaining_credentials(self):
+        source = task_source("staging")
+        container = source["taskDefinition"]["containerDefinitions"][0]
+        container["environment"].append(
+            {
+                "name": "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
+                "value": '{"claude-code":"template"}',
+            }
+        )
+        container["secrets"].extend(
+            {"name": name, "valueFrom": value}
+            for name, value in hosted_secret_overrides("staging").items()
+        )
+        payload = build_task_definition(
+            source,
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="coder",
+            secret_overrides=coder_secret_overrides("staging"),
+        )
+        rendered = payload["containerDefinitions"][0]
+        environment = {item["name"]: item["value"] for item in rendered["environment"]}
+        secrets = {item["name"]: item["valueFrom"] for item in rendered["secrets"]}
+        self.assertEqual(environment["AO_CLOUD_SANDBOX_PROVIDER"], "coder")
+        self.assertFalse(set(NODEOPS_SECRET_ENV) & secrets.keys())
+        self.assertNotIn("AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS", environment)
+        self.assertTrue(set(CODER_SECRET_ENV) <= secrets.keys())
+        validate_task_artifacts(
+            {"taskDefinition": payload, "tags": payload["tags"]},
+            container_name="control-plane",
+            control_image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+        )
+
 
 class HostedSettingsTests(unittest.TestCase):
     def test_accepts_complete_environment_scoped_settings(self):
@@ -253,6 +318,28 @@ class HostedSettingsTests(unittest.TestCase):
         worker["sandbox_startup_timeout"] = "10s"
         with self.assertRaisesRegex(ValueError, "at least 30s"):
             validate_hosted_settings(nodeops, worker)
+
+    def test_accepts_coder_settings(self):
+        coder, worker = coder_settings()
+        validate_hosted_settings(coder, worker, provider="coder")
+
+    def test_rejects_invalid_coder_parameters(self):
+        coder, worker = coder_settings()
+        coder["parameters_json"] = '{"count":2}'
+        with self.assertRaisesRegex(ValueError, "object of string values"):
+            validate_hosted_settings(coder, worker, provider="coder")
+
+    def test_rejects_non_https_coder_url(self):
+        coder, worker = coder_settings()
+        coder["url"] = "http://coder.example.com"
+        with self.assertRaisesRegex(ValueError, "HTTPS origin"):
+            validate_hosted_settings(coder, worker, provider="coder")
+
+    def test_rejects_unsafe_coder_durable_root(self):
+        coder, worker = coder_settings()
+        coder["durable_root"] = "/home/coder/../ephemeral"
+        with self.assertRaisesRegex(ValueError, "safe absolute non-root path"):
+            validate_hosted_settings(coder, worker, provider="coder")
 
 
 class ServiceValidationTests(unittest.TestCase):

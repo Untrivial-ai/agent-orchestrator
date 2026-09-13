@@ -227,7 +227,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 		path: "Not attached to a project",
 		sessions: sessions
 			.filter((session) => !session.projectId)
-			.map((session) => toLocalWorkspaceSession(session, "", "Standalone agents")),
+			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, "Standalone agents")),
 	};
 	return standalone.sessions.length > 0 ? [standalone, ...projects] : projects;
 }
@@ -271,13 +271,19 @@ function toCloudWorkspaceSession(
 		branch: session.branch || undefined,
 		status: toSessionStatus(session.status, session.isTerminated),
 		isTerminated: session.isTerminated,
+		runtimeConnected: session.runtimeConnected,
 		createdAt: session.createdAt,
 		updatedAt: session.updatedAt,
 		activity: toSessionActivity({ state: session.activityState }),
 		prs: [],
 		// Marks this as a control-plane session so the terminal opens against the
 		// CP (ticket + sandbox WebSocket) instead of the local daemon mux.
-		cloud: { orgId },
+		cloud: {
+			orgId,
+			sandboxProvider: session.sandboxProvider,
+			desiredState: session.desiredState,
+			observedState: session.observedState,
+		},
 	};
 }
 
@@ -390,9 +396,10 @@ export function useWorkspaceSession(sessionId: string) {
 			if (error) throw error;
 			const session = data?.session;
 			if (!session) return undefined;
-			const project =
-				localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
-				({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">);
+			const project = session.projectId
+				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
+					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
+				: ({ id: STANDALONE_WORKSPACE_ID, name: "Standalone agents" } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});
