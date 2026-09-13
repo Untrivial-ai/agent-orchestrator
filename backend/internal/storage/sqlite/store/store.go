@@ -65,6 +65,33 @@ func (m *contextMutex) Unlock() {
 	m.token <- struct{}{}
 }
 
+// Ping verifies that both SQLite pools are available and that SQLite can read
+// the database. The writer check matters because a healthy reader pool alone
+// does not prove that durable mutations can make progress.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := pingDatabase(ctx, "writer", s.writeDB); err != nil {
+		return err
+	}
+	if err := pingDatabase(ctx, "reader", s.readDB); err != nil {
+		return err
+	}
+	return nil
+}
+
+func pingDatabase(ctx context.Context, role string, db *sql.DB) error {
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping sqlite %s: %w", role, err)
+	}
+	var result string
+	if err := db.QueryRowContext(ctx, "PRAGMA quick_check(1)").Scan(&result); err != nil {
+		return fmt.Errorf("check sqlite %s: %w", role, err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("check sqlite %s: quick_check returned %q", role, result)
+	}
+	return nil
+}
+
 type conversationProjectionTxKey struct{}
 
 // conversationWriter returns the transaction-bound query set when a provider
