@@ -125,6 +125,12 @@ OS browser. Take a new snapshot after switching tabs because element refs are
 invalidated at the tab boundary. The user can select or close these same tabs
 from the compact tab control in the Browser toolbar; the next agent command
 uses whichever tab the user selected.
+If the native automation runtime cannot reconcile its selected target with
+that AO tab, the command fails before reading or mutating a page with
+`BROWSER_TARGET_MISMATCH`; it never falls through to another tab. Structured
+native command results include `target.tabId`, plus the sanitized post-action
+URL and origin, so callers can retain evidence of the page that received the
+command.
 `devtools` opens Chromium's official DevTools frontend for the active AO tab in
 a separate, normal desktop window. The user can use Elements, Console, Network,
 Sources, and the other normal DevTools panels while the agent continues using

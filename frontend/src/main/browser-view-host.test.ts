@@ -1097,31 +1097,79 @@ describe("ensureNativeActiveTab automation-runtime resync", () => {
 		expect(result.tabs.map((tab) => tab.id)).toEqual(["t1"]);
 	});
 
-	// Regression: accepting the drift used to be silent — no log at all — so a
-	// later "the agent clicked the wrong tab" report would have nothing to go
-	// on. A resync attempt that also fails should leave a breadcrumb.
-	it("warns when the runtime is still desynced after a resync attempt, instead of failing silently", async () => {
-		const { invoke, runtime } = setupTabHost();
+	// Regression for #4705: after the refresh-and-retry also failed, AO used to
+	// mark t1 synchronized anyway. The next click then ran on the runtime's stale
+	// t2 target even though AO reported t1 active.
+	it("fails closed after a native target resync fails without mutating the stale tab", async () => {
+		const { activeTargets, host, invoke, runtime, views } = setupTabHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
 		const viewId = ensure.viewId;
 		await invoke("browser:openTab", { viewId }); // t1, t2 — t2 active, natively synced
 
 		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const dispatchedPageActions: string[] = [];
 		runAction.mockImplementation(async (_sessionId: string, action: string, args: Record<string, unknown>) => {
 			if (action === "tab-select" && String(args.tabId) === "t1") {
 				throw Object.assign(new Error("Tab t1 not found; run `agent-browser tab` to list open tabs"), {
 					code: "AGENT_BROWSER_COMMAND_FAILED",
 				});
 			}
+			if (action === "click" || action === "get") dispatchedPageActions.push(action);
 			return {};
 		});
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-		await invoke("browser:selectTab", { viewId, tabId: "t1" });
+		await expect(invoke("browser:selectTab", { viewId, tabId: "t1" })).rejects.toMatchObject({
+			code: "BROWSER_TARGET_MISMATCH",
+			message: "Browser automation could not target AO tab t1",
+		});
+		await expect(host.execute("sess-1", "click", { ref: "e1" })).rejects.toMatchObject({
+			code: "BROWSER_TARGET_MISMATCH",
+		});
+		await expect(host.execute("sess-1", "get", { property: "url" })).rejects.toMatchObject({
+			code: "BROWSER_TARGET_MISMATCH",
+		});
 
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("t1"));
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("sess-1"));
-		warnSpy.mockRestore();
+		expect(dispatchedPageActions).toEqual([]);
+		expect(activeTargets.get("sess-1")).toBe("t2");
+		const repeated = (await invoke("browser:selectTab", { viewId, tabId: "t1" }).catch((error) => error)) as Error;
+		expect(repeated.message).not.toContain("agent-browser");
+
+		const closed = (await invoke("browser:closeTab", { viewId, tabId: "t1" })) as {
+			activeTabId: string;
+			tabs: Array<{ id: string }>;
+		};
+		expect(closed.activeTabId).toBe("t2");
+		expect(closed.tabs.map((tab) => tab.id)).toEqual(["t2"]);
+		expect(views[0].webContents.close).toHaveBeenCalledOnce();
+		expect(views[1].webContents.close).not.toHaveBeenCalled();
+		expect(runAction.mock.calls.some(([, action]) => action === "tab-close")).toBe(false);
+	});
+
+	it("synchronizes screenshots and fails before capture when the popup target cannot be selected", async () => {
+		const { host, runtime, views } = setupTabHost();
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		let failedPopupSelects = 0;
+		runAction.mockImplementation(
+			async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown, signal?: AbortSignal) => {
+				if (action === "tab-select" && args.tabId === "t2") {
+					failedPopupSelects += 1;
+					throw Object.assign(new Error("Tab t2 not found; run `agent-browser tab` to list open tabs"), {
+						code: "AGENT_BROWSER_COMMAND_FAILED",
+					});
+				}
+				return originalRunAction(sessionId, action, args, provider, signal);
+			},
+		);
+
+		await host.execute("sess-1", "tabs");
+		views[0].webContents.openWindow("https://popup.example.test/");
+		await vi.waitFor(() => expect(failedPopupSelects).toBeGreaterThanOrEqual(2));
+
+		await expect(host.execute("sess-1", "screenshot")).rejects.toMatchObject({
+			code: "BROWSER_TARGET_MISMATCH",
+		});
+		expect(runtime.screenshot).not.toHaveBeenCalled();
 	});
 });
 
@@ -1813,7 +1861,9 @@ describe("agent browser runtime", () => {
 			"https://alice:password@example.test/access?token=opaque-high-entropy-value&state=another-secret#private";
 		const safe = "https://example.test/access?token=%5Bredacted%5D&state=%5Bredacted%5D";
 
-		const opened = (await host.execute("sess-1", "open", { url: signed })) as BrowserNavState;
+		const opened = (await host.execute("sess-1", "open", { url: signed })) as BrowserNavState & {
+			target: { tabId: string; url: string; origin: string };
+		};
 		const ensured = (await invoke("browser:ensure", "sess-1")) as BrowserNavState;
 		const agentTabs = (await host.execute("sess-1", "tabs")) as BrowserTabsState;
 		const current = await host.execute("sess-1", "get", { property: "url" });
@@ -1821,6 +1871,7 @@ describe("agent browser runtime", () => {
 		const rendererTabs = (await invoke("browser:getTabs", ensured.viewId)) as BrowserTabsState;
 
 		expect(opened).toMatchObject({ url: safe, title: `Title ${safe}` });
+		expect(opened.target).toEqual({ tabId: "t1", url: safe, origin: "https://example.test" });
 		expect(agentTabs.tabs[0]).toMatchObject({ url: safe, title: `Title ${safe}` });
 		expect(current).toMatchObject({ value: safe });
 		expect(unhighlighted).toMatchObject({ url: safe });
@@ -1829,6 +1880,47 @@ describe("agent browser runtime", () => {
 		expect(agentOutput).not.toContain("another-secret");
 		expect(agentOutput).not.toContain("password");
 		expect(rendererTabs.tabs[0]).toMatchObject({ url: signed, title: `Title ${signed}` });
+	});
+
+	it("reports open navigation state from its target when a popup becomes active before projection", async () => {
+		const { activeTargets, host, runtime } = setupTabHost();
+		const targetURL = "https://alice:password@example.test/page?token=target-secret#private";
+		const safeTargetURL = "https://example.test/page?token=%5Bredacted%5D";
+		const popupURL = "https://popup.example.test/new?token=popup-secret#private";
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		runAction.mockImplementation(
+			async (
+				sessionId: string,
+				action: string,
+				args: Record<string, unknown>,
+				provider: import("./agent-browser-cdp-bridge").AgentBrowserTargetProvider,
+			) => {
+				if (action !== "open") return originalRunAction(sessionId, action, args, provider);
+				const targets = provider.listTargets();
+				const target = targets.find((entry) => entry.id === activeTargets.get(sessionId)) ?? targets[0];
+				if (!target) throw new Error("Expected an initial browser target");
+				await target.debugger.sendCommand("Page.navigate", { url: args.url });
+				const popup = await provider.createTarget(popupURL);
+				activeTargets.set(sessionId, popup.id);
+				return {};
+			},
+		);
+
+		const opened = (await host.execute("sess-1", "open", { url: targetURL })) as BrowserNavState & {
+			target: { tabId: string; url: string; origin: string };
+		};
+		const tabs = (await host.execute("sess-1", "tabs")) as BrowserTabsState;
+
+		expect(opened).toMatchObject({
+			url: safeTargetURL,
+			title: `Title ${safeTargetURL}`,
+			target: { tabId: "t1", url: safeTargetURL, origin: "https://example.test" },
+		});
+		expect(opened.url).not.toContain("popup.example.test");
+		expect(JSON.stringify(opened)).not.toContain("target-secret");
+		expect(tabs.activeTabId).toBe("t2");
+		expect(tabs.tabs[1]).toMatchObject({ id: "t2", url: "https://popup.example.test/new?token=%5Bredacted%5D" });
 	});
 
 	it("destroys a headless session target through the daemon lifecycle command", async () => {
@@ -1960,6 +2052,129 @@ describe("agent browser runtime", () => {
 		await host.execute("sess-1", "tab-close", { tabId: "t2" });
 		const replacement = (await host.execute("sess-1", "tab-new")) as { id: string };
 		expect(replacement.id).toBe("t3");
+	});
+
+	it("keeps popup reads and mutations on the reported tab and returns their AO target identity", async () => {
+		const { activeTargets, host, runtime, views } = setupTabHost();
+		await host.execute("sess-1", "open", { url: "https://a.example.test/page" });
+		views[0].webContents.openWindow("https://b.example.test/popup?token=secret");
+		await vi.waitFor(() => expect(activeTargets.get("sess-1")).toBe("t2"));
+		await vi.waitFor(async () => {
+			const state = (await host.execute("sess-1", "tabs")) as { tabs: Array<{ id: string; url: string }> };
+			expect(state.tabs[1]).toMatchObject({
+				id: "t2",
+				url: "https://b.example.test/popup?token=%5Bredacted%5D",
+			});
+		});
+
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		const observedTargets: Array<{ action: string; tabId: string }> = [];
+		runAction.mockImplementation(
+			async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown, signal?: AbortSignal) => {
+				if (["snapshot", "click", "get"].includes(action)) {
+					observedTargets.push({ action, tabId: activeTargets.get(sessionId) ?? "" });
+				}
+				if (action === "snapshot") return { snapshot: '- button "Popup action" [ref=e2]', refs: {} };
+				if (action === "click") return { clicked: String(args.ref) };
+				return originalRunAction(sessionId, action, args, provider, signal);
+			},
+		);
+		vi.mocked(runtime.screenshot).mockImplementation(async (sessionId: string) => {
+			observedTargets.push({ action: "screenshot", tabId: activeTargets.get(sessionId) ?? "" });
+			return { data: "", width: 1, height: 1, untrustedExternalContent: true };
+		});
+
+		const snapshot = (await host.execute("sess-1", "snapshot")) as { target: { tabId: string; origin: string } };
+		const click = (await host.execute("sess-1", "click", { ref: "e2" })) as {
+			target: { tabId: string; url: string; origin: string };
+		};
+		const get = (await host.execute("sess-1", "get", { property: "url" })) as {
+			target: { tabId: string };
+		};
+		const screenshot = (await host.execute("sess-1", "screenshot")) as { target: { tabId: string } };
+
+		expect(observedTargets).toEqual([
+			{ action: "snapshot", tabId: "t2" },
+			{ action: "click", tabId: "t2" },
+			{ action: "get", tabId: "t2" },
+			{ action: "screenshot", tabId: "t2" },
+		]);
+		expect(snapshot.target).toMatchObject({ tabId: "t2", origin: "https://b.example.test" });
+		expect(click.target).toEqual({
+			tabId: "t2",
+			url: "https://b.example.test/popup?token=%5Bredacted%5D",
+			origin: "https://b.example.test",
+		});
+		expect(get.target.tabId).toBe("t2");
+		expect(screenshot.target.tabId).toBe("t2");
+
+		const listed = (await host.execute("sess-1", "tabs")) as { activeTabId: string; tabs: Array<{ id: string }> };
+		expect(listed.tabs.map((tab) => tab.id)).toEqual(["t1", "t2"]);
+		await host.execute("sess-1", "tab-select", { tabId: listed.tabs[0]!.id });
+		const firstTabClick = (await host.execute("sess-1", "click", { ref: "e1" })) as { target: { tabId: string } };
+		expect(firstTabClick.target.tabId).toBe("t1");
+		await host.execute("sess-1", "tab-close", { tabId: listed.tabs[1]!.id });
+		expect((await host.execute("sess-1", "tabs")) as { tabs: Array<{ id: string }> }).toMatchObject({
+			tabs: [{ id: "t1" }],
+		});
+	});
+
+	it("bounds popup target synchronization and lets a queued caller cancel promptly", async () => {
+		vi.useFakeTimers();
+		let syncStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			syncStarted = resolve;
+		});
+		let popupSelects = 0;
+		let popupSyncSignal: AbortSignal | undefined;
+		let releaseFirstSync: (() => void) | undefined;
+		const { activeTargets, host, runtime, views } = setupTabHost();
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		runAction.mockImplementation(
+			async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown, signal?: AbortSignal) => {
+				if (action === "tab-select" && args.tabId === "t2" && popupSelects++ === 0) {
+					syncStarted();
+					popupSyncSignal = signal;
+					return new Promise((resolve, reject) => {
+						releaseFirstSync = () => resolve({});
+						signal?.addEventListener(
+							"abort",
+							() => reject(Object.assign(new Error("cancelled"), { code: "AGENT_BROWSER_CANCELLED" })),
+							{ once: true },
+						);
+					});
+				}
+				return originalRunAction(sessionId, action, args, provider, signal);
+			},
+		);
+
+		try {
+			await host.execute("sess-1", "tabs");
+			views[0].webContents.openWindow("https://popup.example.test/");
+			await started;
+
+			const controller = new AbortController();
+			const cancelled = host.execute("sess-1", "get", { property: "url" }, controller.signal);
+			controller.abort();
+			await expect(cancelled).rejects.toMatchObject({ code: "BROWSER_COMMAND_CANCELED" });
+
+			const laterResult = host.execute("sess-1", "get", { property: "url" });
+			await vi.advanceTimersByTimeAsync(4_999);
+			expect(popupSyncSignal?.aborted).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(popupSyncSignal?.aborted).toBe(true);
+			await expect(laterResult).resolves.toMatchObject({
+				value: "https://popup.example.test/",
+				target: { tabId: "t2" },
+			});
+			expect(activeTargets.get("sess-1")).toBe("t2");
+		} finally {
+			releaseFirstSync?.();
+			await vi.runAllTimersAsync();
+			vi.useRealTimers();
+		}
 	});
 
 	it("shares one ephemeral profile across a worker's tabs and isolates other workers", async () => {
@@ -2116,8 +2331,14 @@ describe("agent browser runtime", () => {
 			expect(fetchSpy).not.toHaveBeenCalled();
 			const result = (await host.execute("sess-1", "errors")) as {
 				messages: Array<{ level: string; message: string }>;
+				target: { tabId: string; url: string; origin: string };
 			};
 
+			expect(result.target).toEqual({
+				tabId: "t1",
+				url: "http://localhost:3000/",
+				origin: "http://localhost:3000",
+			});
 			expect(result.messages).toHaveLength(3);
 			expect(result.messages[0]).toMatchObject({ level: "error" });
 			expect(result.messages[0]?.message).toContain(
