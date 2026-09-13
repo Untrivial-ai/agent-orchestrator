@@ -641,7 +641,7 @@ func codexProcessEnv(ctx context.Context, bin string, env map[string]string) []s
 // threadPermissions decodes only the provider's effective policy. Request
 // acceptance alone must not be advertised as preventive enforcement.
 type threadPermissions struct {
-	ApprovalPolicy string `json:"approvalPolicy"`
+	ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
 	Sandbox        struct {
 		Type string `json:"type"`
 	} `json:"sandbox"`
@@ -651,7 +651,10 @@ func (c *conversation) confirmPermissions(requested ports.PermissionMode, effect
 	if requested != ports.PermissionModeReadOnly {
 		return nil
 	}
-	if effective.ApprovalPolicy != "never" || effective.Sandbox.Type != "readOnly" {
+	// Other modes may return native granular policies. Only the fixed read-only
+	// contract requires the string policy "never".
+	var policy string
+	if json.Unmarshal(effective.ApprovalPolicy, &policy) != nil || policy != "never" || effective.Sandbox.Type != "readOnly" {
 		return fmt.Errorf("%w: Codex did not confirm approvalPolicy=never and sandbox=read-only", ports.ErrChatPermissionModeUnsupported)
 	}
 	c.readOnly = true

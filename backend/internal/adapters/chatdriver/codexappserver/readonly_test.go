@@ -66,6 +66,7 @@ func assertReadOnlyTurn(t *testing.T, srv *scriptedServer) {
 func TestReadOnlyRequiresProviderConfirmation(t *testing.T) {
 	for _, response := range []string{
 		`{"thread":{"id":"thread-1"}}`,
+		`{"thread":{"id":"thread-1"},"approvalPolicy":{"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true,"request_permissions":false,"skill_approval":true}},"sandbox":{"type":"readOnly"}}`,
 		`{"thread":{"id":"thread-1"},"approvalPolicy":"on-request","sandbox":{"type":"readOnly"}}`,
 		`{"thread":{"id":"thread-1"},"approvalPolicy":"never","sandbox":{"type":"workspaceWrite"}}`,
 	} {
@@ -86,6 +87,31 @@ func TestReadOnlyRequiresProviderConfirmation(t *testing.T) {
 			if srv.sentMethod("turn/start") {
 				t.Fatal("unconfirmed controller dispatched work")
 			}
+		}
+	}
+}
+
+func TestStartResumeAcceptGranularApprovalPolicyOutsideReadOnly(t *testing.T) {
+	for _, mode := range []ports.PermissionMode{ports.PermissionModeDefault, ports.PermissionModeAcceptEdits, ports.PermissionModeAuto, ports.PermissionModeBypassPermissions} {
+		for _, method := range []string{"thread/start", "thread/resume"} {
+			t.Run(string(mode)+"/"+method, func(t *testing.T) {
+				d, srv := newTestDriver(t)
+				srv.reply(method, `{"thread":{"id":"thread-1"},"approvalPolicy":{"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true,"request_permissions":false,"skill_approval":true}},"sandbox":{"type":"readOnly"}}`)
+				var conv ports.ChatConversation
+				var err error
+				if method == "thread/resume" {
+					conv, err = d.Resume(context.Background(), ports.ChatResumeConfig{WorkspacePath: "/tmp/ws", ProviderConversationID: "thread-1", Permissions: mode})
+				} else {
+					conv, err = d.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: "/tmp/ws", Permissions: mode})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = conv.Close() }()
+				if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{Text: "inspect"}); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }

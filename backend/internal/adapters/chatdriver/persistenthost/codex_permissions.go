@@ -17,8 +17,8 @@ func (h *host) observeCodexRequest(frame []byte) {
 	var request struct {
 		Method string `json:"method"`
 		Params struct {
-			ThreadID       string `json:"threadId"`
-			ApprovalPolicy string `json:"approvalPolicy"`
+			ThreadID       string          `json:"threadId"`
+			ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
 			SandboxPolicy  struct {
 				Type string `json:"type"`
 			} `json:"sandboxPolicy"`
@@ -35,7 +35,7 @@ func (h *host) observeCodexRequest(frame []byte) {
 		// read-only thread, including while its settings notification is in flight.
 		previous := h.codexPermissions[request.Params.ThreadID]
 		if previous.ApprovalPolicy == "never" && previous.SandboxType == "readOnly" &&
-			request.Params.ApprovalPolicy == "never" && request.Params.SandboxPolicy.Type == "readOnly" {
+			codexApprovalPolicy(request.Params.ApprovalPolicy) == "never" && request.Params.SandboxPolicy.Type == "readOnly" {
 			return
 		}
 		delete(h.codexPermissions, request.Params.ThreadID)
@@ -52,7 +52,7 @@ func (h *host) observeCodexPermissions(frame []byte) {
 			Thread struct {
 				ID string `json:"id"`
 			} `json:"thread"`
-			ApprovalPolicy string `json:"approvalPolicy"`
+			ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
 			Sandbox        struct {
 				Type string `json:"type"`
 			} `json:"sandbox"`
@@ -60,7 +60,7 @@ func (h *host) observeCodexPermissions(frame []byte) {
 		Params struct {
 			ThreadID       string `json:"threadId"`
 			ThreadSettings struct {
-				ApprovalPolicy string `json:"approvalPolicy"`
+				ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
 				SandboxPolicy  struct {
 					Type string `json:"type"`
 				} `json:"sandboxPolicy"`
@@ -71,23 +71,29 @@ func (h *host) observeCodexPermissions(frame []byte) {
 		return
 	}
 	id := message.Result.Thread.ID
-	policy := CodexPermissions{ApprovalPolicy: message.Result.ApprovalPolicy, SandboxType: message.Result.Sandbox.Type}
+	policy := CodexPermissions{ApprovalPolicy: codexApprovalPolicy(message.Result.ApprovalPolicy), SandboxType: message.Result.Sandbox.Type}
 	if message.Method == "thread/settings/updated" {
 		id = message.Params.ThreadID
-		policy = CodexPermissions{ApprovalPolicy: message.Params.ThreadSettings.ApprovalPolicy,
+		policy = CodexPermissions{ApprovalPolicy: codexApprovalPolicy(message.Params.ThreadSettings.ApprovalPolicy),
 			SandboxType: message.Params.ThreadSettings.SandboxPolicy.Type}
 	}
 	if id == "" {
 		return
 	}
 	if policy.ApprovalPolicy == "" || policy.SandboxType == "" {
-		if message.Method == "thread/settings/updated" {
-			delete(h.codexPermissions, id)
-		}
+		delete(h.codexPermissions, id)
 		return
 	}
 	if h.codexPermissions == nil {
 		h.codexPermissions = make(map[string]CodexPermissions)
 	}
 	h.codexPermissions[id] = policy
+}
+
+// Granular policies cannot prove "never". Decode them as unknown without losing
+// the enclosing thread identity needed to invalidate a previous receipt.
+func codexApprovalPolicy(raw json.RawMessage) string {
+	var policy string
+	_ = json.Unmarshal(raw, &policy)
+	return policy
 }
