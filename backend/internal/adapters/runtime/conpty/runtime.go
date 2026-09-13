@@ -46,8 +46,13 @@ func conptyPartialCreateFailure(err error, handle ports.RuntimeHandle, cleanup p
 	return runtimeEffectFailure{err: err, handle: handle, effect: ports.RuntimeEffectPossible, cleanup: cleanup}
 }
 
-// validSessionID matches agent-orchestrator's assertValidSessionId.
-var validSessionID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+// validSessionID matches the CLI's sessionIDPattern (internal/cli/hooks.go):
+// the daemon issues session ids derived from project names, so dots are legal
+// and must not be rejected here. The leading [a-zA-Z0-9] anchor keeps a bare
+// "." / ".." impossible. The id is used only as a map key, the host process's
+// argv[0], and the registry identity — never as a path or pipe component — so
+// the widened alphabet is safe.
+var validSessionID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // hostSession is the in-memory state for a live pty-host connection.
 type hostSession struct {
@@ -123,7 +128,7 @@ func New(opts Options) *Runtime {
 func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id := string(cfg.SessionID)
 	if !validSessionID.MatchString(id) {
-		return ports.RuntimeHandle{}, conptyCreateFailure(fmt.Errorf("conpty: invalid session id %q: must match ^[a-zA-Z0-9_-]+$", id))
+		return ports.RuntimeHandle{}, conptyCreateFailure(fmt.Errorf("conpty: invalid session id %q: must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$", id))
 	}
 	if cfg.WorkspacePath == "" {
 		return ports.RuntimeHandle{}, conptyCreateFailure(fmt.Errorf("conpty: workspace path required"))

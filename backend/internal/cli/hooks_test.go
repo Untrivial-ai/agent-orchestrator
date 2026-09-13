@@ -16,6 +16,21 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 )
 
+func TestSessionIDPattern(t *testing.T) {
+	accept := []string{"ao-7", "my-project-16", "my.project-16", "a.b.c-1"}
+	for _, id := range accept {
+		if !sessionIDPattern.MatchString(id) {
+			t.Errorf("sessionIDPattern should accept project-derived id %q (dotted project ids must stay usable)", id)
+		}
+	}
+	reject := []string{"", ".hidden", "../evil", "a/b", "..%2f"}
+	for _, id := range reject {
+		if sessionIDPattern.MatchString(id) {
+			t.Errorf("sessionIDPattern should reject %q", id)
+		}
+	}
+}
+
 type activityCapture struct {
 	body string
 	path string
