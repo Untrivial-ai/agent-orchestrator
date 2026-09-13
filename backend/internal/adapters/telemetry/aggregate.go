@@ -30,7 +30,12 @@ type AggregatingSink struct {
 	mu      sync.Mutex
 	buckets map[string]*aggBucket
 	closed  bool
-	done    chan struct{}
+
+	done      chan struct{}
+	flushDone chan struct{}
+	closeOnce sync.Once
+	closeDone chan struct{}
+	closeErr  error
 }
 
 type aggBucket struct {
@@ -54,6 +59,8 @@ func NewAggregatingSink(next ports.EventSink, names []string, flushEvery time.Du
 		flushEvery: flushEvery,
 		buckets:    make(map[string]*aggBucket),
 		done:       make(chan struct{}),
+		flushDone:  make(chan struct{}),
+		closeDone:  make(chan struct{}),
 	}
 	go s.flushLoop()
 	return s
@@ -69,6 +76,10 @@ func (s *AggregatingSink) Emit(ctx context.Context, ev ports.TelemetryEvent) {
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	b, ok := s.buckets[ev.Name]
 	if !ok {
 		b = &aggBucket{windowStart: time.Now()}
@@ -80,6 +91,7 @@ func (s *AggregatingSink) Emit(ctx context.Context, ev ports.TelemetryEvent) {
 }
 
 func (s *AggregatingSink) flushLoop() {
+	defer close(s.flushDone)
 	ticker := time.NewTicker(s.flushEvery)
 	defer ticker.Stop()
 	for {
@@ -126,18 +138,28 @@ func (s *AggregatingSink) flush(ctx context.Context) {
 	}
 }
 
-// Close stops the flush loop, emits one final rollup for anything buffered
-// since the last tick, and closes the wrapped sink.
+// Close stops and joins the flush loop before the final rollup and downstream
+// close. Calls share the first close operation and its result. A canceled caller
+// may stop waiting while shutdown continues in that order.
 func (s *AggregatingSink) Close(ctx context.Context) error {
-	s.mu.Lock()
-	if s.closed {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
 		s.mu.Unlock()
-		return s.next.Close(ctx)
-	}
-	s.closed = true
-	s.mu.Unlock()
 
-	close(s.done)
-	s.flush(ctx)
-	return s.next.Close(ctx)
+		close(s.done)
+		go func() {
+			<-s.flushDone
+			s.flush(ctx)
+			s.closeErr = s.next.Close(ctx)
+			close(s.closeDone)
+		}()
+	})
+
+	select {
+	case <-s.closeDone:
+		return s.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
