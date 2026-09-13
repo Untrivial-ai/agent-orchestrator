@@ -12,6 +12,7 @@ import (
 	stdctx "context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -265,7 +266,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		harness = override
 		if override == resolvedHarness {
 			config = mergeReviewerAgentConfig(resolvedConfig, overrideConfig)
-			hasConfigOverride = config != resolvedConfig
+			hasConfigOverride = !reflect.DeepEqual(config, resolvedConfig)
 		} else if !overrideConfig.IsZero() {
 			config = mergeReviewerAgentConfig(domain.AgentConfig{}, overrideConfig)
 		} else {
@@ -273,7 +274,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		}
 	} else if !overrideConfig.IsZero() {
 		config = mergeReviewerAgentConfig(config, overrideConfig)
-		hasConfigOverride = config != resolvedConfig
+		hasConfigOverride = !reflect.DeepEqual(config, resolvedConfig)
 	}
 	reviewRows, err := e.store.ListReviewsBySession(ctx, workerID)
 	if err != nil {
@@ -555,7 +556,7 @@ func (e *Engine) SwitchReviewer(
 	if err := e.destroyOtherReviewerHandles(ctx, workerID, selected, reviewRows); err != nil {
 		return SessionReviews{}, err
 	}
-	if previousSelected == selected && previousConfig != selectedConfig {
+	if previousSelected == selected && !reflect.DeepEqual(previousConfig, selectedConfig) {
 		if err := e.resetReviewerRuntimeLocked(ctx, workerID, selected); err != nil {
 			return SessionReviews{}, err
 		}

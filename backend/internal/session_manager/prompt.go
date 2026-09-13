@@ -35,6 +35,7 @@ type systemPromptConfig struct {
 	OrchestratorSessionID string
 	ProjectRules          string
 	OrchestratorRules     string
+	RolePrompt            string
 	AdditionalSections    []string
 }
 
@@ -87,6 +88,9 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 		}
 	default:
 		return ""
+	}
+	if rolePrompt := strings.TrimSpace(cfg.RolePrompt); rolePrompt != "" {
+		sections = append(sections, rolePrompt)
 	}
 	sections = append(sections, publishingScopePrompt(), systemPromptGuard())
 	for _, section := range cfg.AdditionalSections {
