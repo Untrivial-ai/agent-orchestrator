@@ -72,6 +72,50 @@ func TestPostHogSinkCapturesEvent(t *testing.T) {
 	}
 }
 
+func TestPostHogAccountObservationUsesInstallationIdentity(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	sink, err := NewPostHogSink(t.TempDir(), "phc_test", "https://example.test", "0.12.12", "codex", roundTripClient(func(req *http.Request) (*http.Response, error) {
+		defer req.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		requests <- body
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ao.github.account_observed", "ao.session.spawned"} {
+		sink.Emit(t.Context(), ports.TelemetryEvent{
+			Name: name, Source: "daemon", OccurredAt: time.Now(), Level: ports.TelemetryLevelInfo,
+			Payload: map[string]any{"github_login": "octocat", "email": "private@example.com", "token": "secret"},
+		})
+	}
+	if err := sink.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("captured %d events, want account observation and spawn", len(requests))
+	}
+	account, spawn := <-requests, <-requests
+	if account["distinct_id"] != spawn["distinct_id"] || !strings.HasPrefix(account["distinct_id"].(string), "ins_") {
+		t.Fatal("account observation must use the same anonymous installation key as spawns")
+	}
+	props := account["properties"].(map[string]any)
+	if props["github_login"] != "octocat" || props["app_version"] != "0.12.12" || props["$process_person_profile"] != false {
+		t.Fatalf("unexpected account properties: %#v", props)
+	}
+	for _, key := range []string{"email", "token"} {
+		if _, ok := props[key]; ok {
+			t.Fatalf("unexpected account field: %s", key)
+		}
+	}
+	if _, ok := spawn["properties"].(map[string]any)["github_login"]; ok {
+		t.Fatal("account identity must only be exported on the dedicated observation event")
+	}
+}
+
 func TestPostHogSinkSanitizesPayloads(t *testing.T) {
 	requests := make(chan map[string]any, 1)
 	sink, err := NewPostHogSink(t.TempDir(), "phc_test", "https://us.i.posthog.com", "", "", roundTripClient(func(req *http.Request) (*http.Response, error) {

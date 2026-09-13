@@ -1,7 +1,7 @@
 import { COMPANY } from "@ao/shared/constants";
 import type { Metadata } from "next";
 
-const LAST_UPDATED = "19 August 2026";
+const LAST_UPDATED = "11 September 2026";
 
 const description =
   "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and useao.dev: local-first operation, optional analytics, waitlists, and testimonial submissions.";
@@ -137,7 +137,7 @@ export default function PrivacyPage() {
               your work. We never see your source code, prompts, agent output,
               terminal contents, repository names, or file paths, and we never
               sell or rent data to anyone. The desktop app sends{" "}
-              <Strong>anonymous, redacted usage telemetry</Strong> so we can tell
+              <Strong>redacted usage telemetry</Strong> so we can tell
               whether releases are stable — you can turn it off. Website analytics
               stay off until you accept them. If you voluntarily join a
               waitlist or send us a testimonial, we process the details you
@@ -283,7 +283,7 @@ export default function PrivacyPage() {
             <p>
               To understand reliability and which features are actually used,
               the desktop app sends{" "}
-              <Strong>anonymous, sanitized usage events</Strong> to{" "}
+              <Strong>sanitized usage events</Strong> to{" "}
               <Ext href="https://posthog.com/privacy">PostHog</Ext>.
               Specifically:
             </p>
@@ -305,6 +305,18 @@ export default function PrivacyPage() {
               </Bullet>
               <Bullet>
                 AO version, operating system platform, and build mode.
+              </Bullet>
+              <Bullet>
+                The GitHub organization or account that owns a project, recorded
+                when it is added. Only the owner is sent, never the repository
+                name or URL.
+              </Bullet>
+              <Bullet>
+                The authenticated GitHub user account login, observed at daemon
+                startup and hourly while remote telemetry is enabled. We associate
+                it with the installation identifier to understand usage and agent
+                spawns and reach out for feedback. Bot accounts and failed lookups
+                are skipped. No credentials or email addresses are included.
               </Bullet>
             </Bullets>
             <p>Before anything leaves your machine:</p>
@@ -329,13 +341,13 @@ export default function PrivacyPage() {
               </Bullet>
             </Bullets>
             <p>
-              Events are sent as <Strong>anonymous</Strong> PostHog events — no
-              person profiles are created and the app never calls{" "}
+              PostHog person profiles are disabled and the app never calls{" "}
               <Code>identify()</Code>. A random install identifier generated on
               first run and stored at{" "}
               <Code>~/.ao/data/telemetry_install_id</Code> is used to
-              deduplicate counts. It is not linked to any account, email, or
-              name. Approximate country is derived by PostHog from the
+              deduplicate counts. GitHub account-observation events link this
+              identifier to the authenticated GitHub login, so this telemetry is
+              not anonymous. Approximate country is derived by PostHog from the
               connection's IP address; AO itself never sends location data.
             </p>
             <p>
@@ -431,9 +443,10 @@ export default function PrivacyPage() {
                 API keys, tokens, passwords, or any other credential.
               </Bullet>
               <Bullet>
-                Names or account information. The only email address or company
-                role we collect is information you voluntarily submit through an
-                optional waitlist.
+                Real names or account information other than the GitHub owner
+                and authenticated login disclosed above. The only email address
+                or company role we collect is information you voluntarily submit
+                through an optional waitlist.
               </Bullet>
               <Bullet>Precise location data.</Bullet>
               <Bullet>
@@ -534,10 +547,11 @@ export default function PrivacyPage() {
                 SQLite database for 30 days, then discarded.
               </Bullet>
               <Bullet>
-                <Strong>Anonymous analytics.</Strong> Retained by PostHog under
-                their standard retention schedule. Because these events carry no
-                identifier tied to you personally, we generally cannot link them
-                back to an individual.
+                <Strong>Product analytics.</Strong> Retained by PostHog under
+                their standard retention schedule. Account-observation events
+                associate an installation identifier with a GitHub login. You can
+                provide that login or installation identifier when requesting
+                access to or deletion of related telemetry.
               </Bullet>
               <Bullet>
                 <Strong>Waitlist details.</Strong> Retained in PostHog while
@@ -564,7 +578,7 @@ export default function PrivacyPage() {
             <p>
               In practice, nearly all data AO touches is already in your own
               hands: delete the app, delete <Code>~/.ao</Code>, and it is gone.
-              For the anonymous telemetry, the most direct way to exercise
+              For the product telemetry, the most direct way to exercise
               control is to turn it off using the settings described above. If
               you submitted a waitlist email or believe we hold other data about
               you, contact us privately at{" "}

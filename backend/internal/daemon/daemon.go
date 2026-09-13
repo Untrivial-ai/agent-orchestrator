@@ -280,6 +280,16 @@ func Run() error {
 	// graceful shutdown inside Server.Run and stops the background goroutines.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	stopGitHubAccountTelemetry := startGitHubAccountTelemetry(ctx, telemetryCfg.Telemetry, telemetrySink, func(ctx context.Context) (ports.SCMIdentity, error) {
+		// A fresh provider also refreshes its token and identity caches, so an
+		// account switch is reflected at the next observation.
+		provider, err := newGitHubSCMProvider(log)
+		if err != nil {
+			return ports.SCMIdentity{}, err
+		}
+		return provider.AuthenticatedIdentity(ctx)
+	})
+	defer stopGitHubAccountTelemetry()
 	policyCoordinator.StartWatcher(ctx)
 	defer func() { _ = policyCoordinator.CloseAndDrain(context.Background()) }()
 	// Constructing the synchronous sender performs no I/O. The hard production
