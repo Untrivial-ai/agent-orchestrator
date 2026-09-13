@@ -11,15 +11,25 @@ const h = vi.hoisted(() => ({
 	ensureReadiness: vi.fn(),
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
+	queryClient: null as QueryClient | null,
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../hooks/useAgentReadinessQuery")>();
+	const queryKey = ["agent-readiness"] as const;
 	return {
 		...actual,
 		ensureAgentReadiness: h.ensureTargetedReadiness,
-		useAgentReadinessQuery: () => ({ data: undefined, isFetching: false }),
+		useAgentReadinessQuery: () => {
+			// Return data from query client if it has been set, otherwise undefined
+			if (h.queryClient) {
+				const data = h.queryClient.getQueryData(queryKey);
+				return { data, isFetching: false };
+			}
+			return { data: undefined, isFetching: false };
+		},
 		useEnsureAgentReadiness: h.ensureReadiness,
+		agentReadinessQueryKey: queryKey,
 	};
 });
 
@@ -61,14 +71,33 @@ vi.mock("../lib/api-client", () => ({
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 
+vi.mock("../hooks/useWorkspaceQuery", () => ({
+	useCloudProjectsQuery: () => ({ data: undefined }),
+	cloudProjectsQueryKey: ["cloud-projects"] as const,
+	useCloudSessionsQuery: () => ({ data: [] }),
+	cloudSessionsQueryKey: ["cloud-sessions"] as const,
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined }),
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({ client: undefined }),
+}));
+
 import { TaskComposer } from "./TaskComposer";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
-import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
+import { agentReadinessQueryKey as realAgentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
+
+// Use hardcoded query key that matches the mock
+const agentReadinessQueryKey = ["agent-readiness"] as const;
 
 function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }) }: {
 	children: ReactNode;
 	queryClient?: QueryClient;
 }) {
+	h.queryClient = queryClient;
 	return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
@@ -842,4 +871,6 @@ describe("TaskComposer", () => {
 			),
 		);
 	});
+
+
 });
