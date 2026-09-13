@@ -6,6 +6,7 @@ import {
 	interfaceTransitionPollInterval,
 	interfaceTransitionSessionGone,
 	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsBusy,
 	mobileInterfaceTransitionIsCancellable,
 	mobileInterfaceTransitionRecoveryMessage,
 	nativeSessionReadinessAttempts,
@@ -19,12 +20,16 @@ describe("mobile interface transition polling", () => {
 	it("keeps an unconfirmed target fenced without polling indefinitely", () => {
 		const transition = { phase: "target_starting", errorCode: "TARGET_STOP_UNCONFIRMED" };
 		expect(mobileInterfaceTransitionIsActive(transition)).toBe(true);
+		expect(mobileInterfaceTransitionIsBusy(transition)).toBe(false);
 		expect(mobileInterfaceTransitionIsCancellable(transition)).toBe(false);
 		expect(interfaceTransitionNextPoll({ status: { transition } })).toBeUndefined();
 		expect(interfaceTransitionNextPoll({ status: { transition }, consecutiveFailures: 1 })).toBeUndefined();
 		expect(mobileInterfaceTransitionRecoveryMessage(transition)).toContain("Restart AO on your computer");
 		expect(mobileInterfaceTransitionRecoveryMessage({ ...transition, errorDetail: "Specific shutdown failure" })).toBe("Specific shutdown failure");
 		expect(mobileInterfaceTransitionRecoveryMessage({ ...transition, phase: "completed" })).toBeUndefined();
+		const resumed = { phase: "target_starting", errorCode: undefined };
+		expect(interfaceTransitionNextPoll({ status: { transition: resumed } })).toBe(300);
+		expect(mobileInterfaceTransitionIsBusy(resumed)).toBe(true);
 	});
 	it("polls quickly while a transition is active", () => {
 		expect(interfaceTransitionPollInterval({ transition: { phase: "draining" } })).toBe(300);

@@ -49,6 +49,10 @@ export function mobileInterfaceTransitionRecoveryMessage(transition?: InterfaceT
 	return transition.errorDetail || "AO could not confirm the target controller stopped. Restart AO on your computer to retry recovery. This session remains blocked; other sessions can still be used.";
 }
 
+export function mobileInterfaceTransitionIsBusy(transition?: InterfaceTransition): boolean {
+	return mobileInterfaceTransitionIsActive(transition) && !mobileInterfaceTransitionRecoveryMessage(transition);
+}
+
 export function mobileInterfaceTransitionIsCancellable(transition?: InterfaceTransition): boolean {
 	return Boolean(
 		transition && ["requested", "preflighting", "draining"].includes(transition.phase),

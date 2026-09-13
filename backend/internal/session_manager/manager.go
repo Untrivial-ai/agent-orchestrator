@@ -2761,9 +2761,8 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	return m.ReconcileBackground(ctx)
 }
 
-// ReconcileStartupSafety closes durable agent-switch and interface-transition
-// state that would otherwise lose its in-memory input fence across a daemon
-// restart. This must complete before the API accepts user input.
+// ReconcileStartupSafety closes interrupted operations or quarantines ambiguous
+// interface targets with a restored input fence before the API accepts input.
 func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	if err := m.ReconcileCodexAccountSwitches(ctx); err != nil {
 		return fmt.Errorf("reconcile: Codex account-switch pass: %w", err)

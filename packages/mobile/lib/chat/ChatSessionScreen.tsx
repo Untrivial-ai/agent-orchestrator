@@ -25,6 +25,7 @@ import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
 import { useApp } from "../store";
 import {
 	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsBusy,
 	mobileInterfaceTransitionIsCancellable,
 	mobileInterfaceTransitionRecoveryMessage,
 	useInterfaceTransition,
@@ -383,7 +384,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				onLoadFiles={loadWorkspaceFiles}
 				configOptions={conversation.configOptions}
 				steerUnavailable={steerUnsupported}
-				pending={interfaceTransitionActive || conversation.pendingSends.some((item) => item.state === "sending")}
+				disabled={interfaceTransitionActive}
+				pending={mobileInterfaceTransitionIsBusy(interfaceSwitch.transition) || conversation.pendingSends.some((item) => item.state === "sending")}
 				error={conversation.actionError}
 				onSend={conversation.send}
 				onSteer={conversation.steer}
