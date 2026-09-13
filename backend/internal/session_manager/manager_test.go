@@ -8748,13 +8748,13 @@ type activityProjectionBarrierStore struct {
 func (s *activityProjectionBarrierStore) UpdateSessionFromActivitySignal(
 	ctx context.Context,
 	rec domain.SessionRecord,
-	expectedUpdatedAt time.Time,
+	expectedRevision int64,
 ) (bool, error) {
 	s.barrierMu.Lock()
 	if s.skipUpdates > 0 {
 		s.skipUpdates--
 		s.barrierMu.Unlock()
-		return s.Store.UpdateSessionFromActivitySignal(ctx, rec, expectedUpdatedAt)
+		return s.Store.UpdateSessionFromActivitySignal(ctx, rec, expectedRevision)
 	}
 	blocked := false
 	s.blockOnce.Do(func() {
@@ -8769,7 +8769,7 @@ func (s *activityProjectionBarrierStore) UpdateSessionFromActivitySignal(
 			return false, ctx.Err()
 		}
 	}
-	return s.Store.UpdateSessionFromActivitySignal(ctx, rec, expectedUpdatedAt)
+	return s.Store.UpdateSessionFromActivitySignal(ctx, rec, expectedRevision)
 }
 
 func TestActivitySignal_CASRetryPreservesCorrelatedPermissionPost(t *testing.T) {

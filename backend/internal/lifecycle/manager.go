@@ -27,7 +27,7 @@ type sessionStore interface {
 	// UpdateSessionFromActivitySignal is a narrow, owner-generation-fenced
 	// write. It returns false when a concurrent lifecycle/agent-switch boundary
 	// made the reducer's previously read session stale.
-	UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord, expectedUpdatedAt time.Time) (bool, error)
+	UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord, expectedRevision int64) (bool, error)
 	// ListSessions returns every session in a project. The dispatcher reads it
 	// to resolve the current orchestrator at delivery time.
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
@@ -595,7 +595,9 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		}
 	}
 	projectionAttempts := 0
+	originalSignal := s
 retryProjection:
+	s = originalSignal
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		m.mu.Unlock()
@@ -605,7 +607,7 @@ retryProjection:
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s", ports.ErrSessionNotFound, id)
 	}
-	observedUpdatedAt := rec.UpdatedAt
+	observedRevision := rec.Revision
 	now := m.clock()
 	if rec.IsTerminated {
 		delete(m.flights, id)
@@ -825,17 +827,24 @@ retryProjection:
 		return nil
 	}
 	project := func(next domain.SessionRecord) (applied, retry bool, err error) {
-		applied, err = m.store.UpdateSessionFromActivitySignal(ctx, next, observedUpdatedAt)
-		if err != nil || applied || projectionAttempts >= maxActivitySignalProjectionRetries {
+		applied, err = m.store.UpdateSessionFromActivitySignal(ctx, next, observedRevision)
+		if applied {
 			return applied, false, err
+		}
+		m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
+		if err != nil {
+			return false, false, err
 		}
 		// Only revision misses may retry; unchanged ownership fences still reject
 		// the signal. Restore tool correlation before reducing the same signal again.
 		current, found, err := m.store.GetSession(ctx, id)
-		if err != nil || !found || current.UpdatedAt.Equal(observedUpdatedAt) {
+		if err != nil || !found || current.Revision == observedRevision {
 			return false, false, err
 		}
-		m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
+		if projectionAttempts >= maxActivitySignalProjectionRetries {
+			slog.Default().Warn("lifecycle: activity projection contention", "session", id, "event", s.Event, "attempts", projectionAttempts+1)
+			return false, false, fmt.Errorf("project activity signal for %s: concurrent session writes exhausted %d attempts", id, projectionAttempts+1)
+		}
 		projectionAttempts++
 		return false, true, nil
 	}

@@ -1705,6 +1705,9 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
+		if tc.saved == "" {
+			row.Revision++ // Pinning permissions writes even without changing updated_at.
+		}
 		rows = append(rows, row)
 	}
 	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeBypassPermissions); err != nil || !ok {

@@ -281,7 +281,7 @@ UPDATE sessions SET
     native_transcript_path = sqlc.arg(native_transcript_path),
     updated_at = sqlc.arg(updated_at)
 WHERE sessions.id = sqlc.arg(id)
-  AND sessions.updated_at = sqlc.arg(expected_updated_at)
+  AND sessions.revision = sqlc.arg(expected_revision)
   AND sessions.is_terminated = 0
   AND sessions.harness = sqlc.arg(expected_harness)
   AND sessions.session_mode = sqlc.arg(expected_session_mode)

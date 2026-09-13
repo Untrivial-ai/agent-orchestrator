@@ -118,7 +118,7 @@ const getSession = `-- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
@@ -148,6 +148,7 @@ type GetSessionRow struct {
 	Prompt                           string
 	CreatedAt                        time.Time
 	UpdatedAt                        time.Time
+	Revision                         int64
 	DisplayName                      string
 	FirstSignalAt                    sql.NullTime
 	PreviewURL                       string
@@ -203,6 +204,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.Prompt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Revision,
 		&i.DisplayName,
 		&i.FirstSignalAt,
 		&i.PreviewURL,
@@ -368,7 +370,7 @@ const listAllSessions = `-- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
@@ -398,6 +400,7 @@ type ListAllSessionsRow struct {
 	Prompt                           string
 	CreatedAt                        time.Time
 	UpdatedAt                        time.Time
+	Revision                         int64
 	DisplayName                      string
 	FirstSignalAt                    sql.NullTime
 	PreviewURL                       string
@@ -459,6 +462,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.Prompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Revision,
 			&i.DisplayName,
 			&i.FirstSignalAt,
 			&i.PreviewURL,
@@ -509,7 +513,7 @@ const listSessionsByProject = `-- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
@@ -539,6 +543,7 @@ type ListSessionsByProjectRow struct {
 	Prompt                           string
 	CreatedAt                        time.Time
 	UpdatedAt                        time.Time
+	Revision                         int64
 	DisplayName                      string
 	FirstSignalAt                    sql.NullTime
 	PreviewURL                       string
@@ -600,6 +605,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.Prompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Revision,
 			&i.DisplayName,
 			&i.FirstSignalAt,
 			&i.PreviewURL,

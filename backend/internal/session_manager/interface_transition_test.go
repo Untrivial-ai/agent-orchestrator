@@ -68,12 +68,13 @@ func (s *transitionLifecycleStore) UpdatePRLastNudgeSignature(context.Context, s
 func (s *transitionLifecycleStore) UpdateSessionFromActivitySignal(
 	_ context.Context,
 	rec domain.SessionRecord,
-	expectedUpdatedAt time.Time,
+	expectedRevision int64,
 ) (bool, error) {
 	current, ok := s.sessions[rec.ID]
-	if !ok || !current.UpdatedAt.Equal(expectedUpdatedAt) {
+	if !ok || current.Revision != expectedRevision {
 		return false, nil
 	}
+	rec.Revision = expectedRevision + 1
 	s.sessions[rec.ID] = rec
 	return true, nil
 }

@@ -77,7 +77,7 @@ func (s *Store) UpdateBrowserCapabilityVerifier(
 func (s *Store) UpdateSessionFromActivitySignal(
 	ctx context.Context,
 	rec domain.SessionRecord,
-	expectedUpdatedAt time.Time,
+	expectedRevision int64,
 ) (bool, error) {
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	s.writeMu.Lock()
@@ -99,7 +99,7 @@ func (s *Store) UpdateSessionFromActivitySignal(
 		NativeTranscriptPath:             rec.Metadata.NativeTranscriptPath,
 		UpdatedAt:                        rec.UpdatedAt,
 		ID:                               rec.ID,
-		ExpectedUpdatedAt:                expectedUpdatedAt,
+		ExpectedRevision:                 expectedRevision,
 		ExpectedHarness:                  rec.Harness,
 		ExpectedSessionMode:              domain.NormalizeSessionMode(rec.Mode),
 		ExpectedRuntimeLaunchID:          rec.Metadata.RuntimeLaunchID,
@@ -439,6 +439,7 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 
 func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
+		Revision:          row.Revision,
 		ID:                row.ID,
 		ProjectID:         row.ProjectID,
 		IssueID:           row.IssueID,

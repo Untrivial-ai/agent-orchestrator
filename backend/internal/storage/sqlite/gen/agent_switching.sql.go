@@ -1143,7 +1143,7 @@ UPDATE sessions SET
     native_transcript_path = ?14,
     updated_at = ?15
 WHERE sessions.id = ?16
-  AND sessions.updated_at = ?17
+  AND sessions.revision = ?17
   AND sessions.is_terminated = 0
   AND sessions.harness = ?18
   AND sessions.session_mode = ?19
@@ -1186,7 +1186,7 @@ type UpdateSessionFromActivitySignalParams struct {
 	NativeTranscriptPath             string
 	UpdatedAt                        time.Time
 	ID                               domain.SessionID
-	ExpectedUpdatedAt                time.Time
+	ExpectedRevision                 int64
 	ExpectedHarness                  domain.AgentHarness
 	ExpectedSessionMode              domain.SessionMode
 	ExpectedRuntimeLaunchID          string
@@ -1216,7 +1216,7 @@ func (q *Queries) UpdateSessionFromActivitySignal(ctx context.Context, arg Updat
 		arg.NativeTranscriptPath,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.ExpectedUpdatedAt,
+		arg.ExpectedRevision,
 		arg.ExpectedHarness,
 		arg.ExpectedSessionMode,
 		arg.ExpectedRuntimeLaunchID,

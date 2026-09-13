@@ -108,11 +108,16 @@ func (f *fakeStore) ListSessions(_ context.Context, project domain.ProjectID) ([
 }
 
 func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
+	rec.Revision = f.sessions[rec.ID].Revision + 1
 	f.sessions[rec.ID] = rec
 	return nil
 }
 
-func (f *fakeStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, _ time.Time) (bool, error) {
+func (f *fakeStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, expected int64) (bool, error) {
+	if f.sessions[rec.ID].Revision != expected {
+		return false, nil
+	}
+	rec.Revision = expected + 1
 	f.sessions[rec.ID] = rec
 	return true, nil
 }
@@ -125,16 +130,16 @@ type activityRevisionConflictStore struct {
 func (f *activityRevisionConflictStore) UpdateSessionFromActivitySignal(
 	ctx context.Context,
 	rec domain.SessionRecord,
-	expectedUpdatedAt time.Time,
+	expectedRevision int64,
 ) (bool, error) {
 	if f.conflictNext {
 		f.conflictNext = false
 		current := f.sessions[rec.ID]
-		current.UpdatedAt = expectedUpdatedAt.Add(time.Millisecond)
+		current.Revision = expectedRevision + 1
 		f.sessions[rec.ID] = current
 		return false, nil
 	}
-	return f.fakeStore.UpdateSessionFromActivitySignal(ctx, rec, expectedUpdatedAt)
+	return f.fakeStore.UpdateSessionFromActivitySignal(ctx, rec, expectedRevision)
 }
 
 func (f *fakeStore) CommitChatSpawn(
@@ -293,12 +298,12 @@ func (f *fakeAgentSwitchLifecycleStore) UpdateSession(_ context.Context, rec dom
 func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(
 	_ context.Context,
 	rec domain.SessionRecord,
-	expectedUpdatedAt time.Time,
+	expectedRevision int64,
 ) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	current, ok := f.sessions[rec.ID]
-	if !ok || !current.UpdatedAt.Equal(expectedUpdatedAt) || current.IsTerminated || current.Harness != rec.Harness ||
+	if !ok || current.Revision != expectedRevision || current.IsTerminated || current.Harness != rec.Harness ||
 		current.Metadata.RuntimeLaunchID != rec.Metadata.RuntimeLaunchID {
 		return false, nil
 	}
@@ -322,6 +327,7 @@ func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(
 	current.Metadata.ConversationCheckpointTurnID = rec.Metadata.ConversationCheckpointTurnID
 	current.Metadata.NativeTranscriptPath = rec.Metadata.NativeTranscriptPath
 	current.UpdatedAt = rec.UpdatedAt
+	current.Revision++
 	f.sessions[rec.ID] = current
 	return true, nil
 }

@@ -186,6 +186,7 @@ type SessionRecord struct {
 	// finalize started under an earlier terminal episode cannot satisfy a later
 	// one. Internal fact, not part of the API read model.
 	CleanupGeneration int64      `json:"-"`
+	Revision          int64      `json:"-"` // Database-owned row revision, independent of event timestamps.
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	IsPinned          bool       `json:"isPinned"`
