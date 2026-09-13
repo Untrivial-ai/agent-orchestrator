@@ -35,6 +35,38 @@ func TestWorkspaceLocationDoesNotFallBackToProjectCheckout(t *testing.T) {
 	assertAPIErrorCode(t, err, "SESSION_WORKSPACE_NOT_FOUND")
 }
 
+// TestWorkspaceLocationResolvesOrchestratorToProjectCheckout: orchestrators
+// run directly in the project checkout and are never assigned a per-session
+// worktree, so Metadata.WorkspacePath is empty by design. Their workspace
+// location is the project's own path — without it the desktop editor-handoff
+// probe 404s and the topbar permanently flags every orchestrator session as
+// "Session workspace is not available".
+func TestWorkspaceLocationResolvesOrchestratorToProjectCheckout(t *testing.T) {
+	store := newFakeStore()
+	projectDir := t.TempDir()
+	store.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", ProjectID: "ao", Kind: domain.KindOrchestrator}
+	store.projects["ao"] = domain.ProjectRecord{ID: "ao", Path: projectDir}
+
+	got, err := (&Service{store: store}).WorkspaceLocation(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != projectDir {
+		t.Fatalf("WorkspaceLocation() = %q, want %q", got, projectDir)
+	}
+}
+
+// TestWorkspaceLocationRejectsOrchestratorWithMissingProjectDirectory: an
+// orchestrator whose project checkout is gone has nothing to hand off either.
+func TestWorkspaceLocationRejectsOrchestratorWithMissingProjectDirectory(t *testing.T) {
+	store := newFakeStore()
+	store.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", ProjectID: "ao", Kind: domain.KindOrchestrator}
+	store.projects["ao"] = domain.ProjectRecord{ID: "ao", Path: t.TempDir() + "/gone"}
+
+	_, err := (&Service{store: store}).WorkspaceLocation(context.Background(), "ao-1")
+	assertAPIErrorCode(t, err, "SESSION_WORKSPACE_NOT_FOUND")
+}
+
 func TestWorkspaceLocationRejectsMissingDirectory(t *testing.T) {
 	store := newFakeStore()
 	store.sessions["ao-1"] = domain.SessionRecord{
