@@ -1439,6 +1439,15 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	return merged
 }
 
+// sessionPermissions preserves the launch policy across controller transitions.
+// Only legacy sessions without a recorded policy inherit current project settings.
+func sessionPermissions(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.PermissionMode {
+	if rec.Metadata.Permissions != "" {
+		return rec.Metadata.Permissions
+	}
+	return effectiveAgentConfig(rec.Kind, cfg).Permissions
+}
+
 // restoredAgentConfig resolves project settings while preserving a Claude
 // session's recorded model selection.
 func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
@@ -2270,9 +2279,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 
 	agentConfig := restoredAgentConfig(rec, project.Config)
-	if rec.Metadata.Permissions != "" {
-		agentConfig.Permissions = rec.Metadata.Permissions
-	}
+	agentConfig.Permissions = sessionPermissions(rec, project.Config)
 	if agentConfig.Permissions == ports.PermissionModeReadOnly {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: read-only requires Chat", operation, rec.ID, ports.ErrChatPermissionModeUnsupported)
 	}

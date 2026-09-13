@@ -16,6 +16,7 @@ ao spawn [flags]
 | `--claim-pr string` | Immediately claim an existing PR for the spawned session | - |
 | `--harness string` | Agent harness to use (see list below) | Project `worker.agent`; required if the project has none |
 | `--issue string` | Issue id to associate with the session | - |
+| `--permission string` | Session permission override: `read-only`, `default`, `accept-edits`, `auto`, `bypass-permissions` | Project/role default |
 | `--name string` | Display name shown in the sidebar (max 20 characters) | Required |
 | `--no-takeover` | Refuse if another active session owns the claimed PR (requires `--claim-pr`) | - |
 | `--project string` | Project id to spawn the session in | Required |
@@ -36,3 +37,13 @@ ao spawn --project agent-orchestrator --issue 142 --name "fix-session-leak" --pr
 # Spawn a worker and immediately claim an open PR
 ao spawn --project agent-orchestrator --name "review-pr-88" --claim-pr 88 --harness claude-code
 ```
+
+```bash
+# Inspect with a preventive filesystem restriction
+ao spawn --project agent-orchestrator --agent codex --mode chat --permission read-only --name reader --prompt "Inspect the code and report findings."
+```
+
+A worker launched `read-only` keeps that restriction across restarts and settings
+changes. Only Codex Chat currently supports it; unsupported harnesses and terminal
+mode fail before creating a session. `GET /api/v1/settings` reports supported
+`chatPermissionModes` by harness before launch.

@@ -448,7 +448,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if cfg.ProviderConversationID != "" && conversation.Settings.ReasoningEffort != "" {
 		cfg.Effort = conversation.Settings.ReasoningEffort
 	}
-	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" && permissionFloor != ports.PermissionModeReadOnly {
+	// A next-turn read-only choice on a mutable session has not necessarily
+	// reached the provider yet. Keep it for dispatch without requiring an idle
+	// or busy live host to have already adopted that future policy.
+	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" &&
+		conversation.Settings.ApprovalMode != ports.PermissionModeReadOnly && permissionFloor != ports.PermissionModeReadOnly {
 		cfg.Permissions = conversation.Settings.ApprovalMode
 	}
 	if permissionFloor == ports.PermissionModeReadOnly {
