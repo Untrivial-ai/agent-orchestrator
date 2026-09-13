@@ -84,7 +84,7 @@ export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaxim
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
 			<header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
 				<span className="min-w-0 flex-1 truncate text-sm font-medium">{t("files.reviewChanges")}</span>
-				<span aria-label="Cloud diff summary" className="shrink-0 font-mono text-2xs text-passive">
+				<span aria-label={t("files.reviewChanges")} className="shrink-0 font-mono text-2xs text-passive">
 					{files.length} {files.length === 1 ? "file" : "files"} · <span className="text-success">+{summary.additions}</span>{" "}
 					<span className="text-error">-{summary.deletions}</span>
 				</span>
@@ -140,13 +140,14 @@ export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaxim
 }
 
 function CloudDiffDetail({ detailQuery }: { detailQuery: UseQueryResult<CloudCpWorkspaceDiffFileDetail, Error> }) {
-	if (detailQuery.isPending) return <PanelMessage>Loading diff…</PanelMessage>;
+	const { t } = useTranslation();
+	if (detailQuery.isPending) return <PanelMessage>{t("files.loadingDiff")}</PanelMessage>;
 	if (detailQuery.isError) return <PanelMessage action={<RetryButton onClick={() => void detailQuery.refetch()} />}>{detailQuery.error.message}</PanelMessage>;
-	if (!detailQuery.data) return <PanelMessage>Select a changed file to review its patch.</PanelMessage>;
-	if (detailQuery.data.binary) return <PanelMessage>Binary file; no text diff is available.</PanelMessage>;
+	if (!detailQuery.data) return <PanelMessage>{t("files.explorer.selectFile")}</PanelMessage>;
+	if (detailQuery.data.binary) return <PanelMessage>{t("files.binaryUnavailable")}</PanelMessage>;
 	return (
 		<pre className="board-scrollbar min-h-0 overflow-auto whitespace-pre bg-background p-3 font-mono text-xs leading-5">
-			{detailQuery.data.diff || "No text diff is available for this file."}
+			{detailQuery.data.diff || t("files.deferredDiff")}
 		</pre>
 	);
 }
