@@ -424,6 +424,13 @@ var (
 	// ErrWorkspaceBranchInvalid reports the requested branch name is not a valid
 	// git ref (rejected by `git check-ref-format`).
 	ErrWorkspaceBranchInvalid = errors.New("workspace: invalid branch name")
+	// ErrWorkspaceProbeFailed reports that a git probe (for example
+	// `check-ref-format`) could not complete because the process was killed by a
+	// signal or its context was cancelled/timed out, so git never evaluated the
+	// request. This is a transient environment failure (e.g. OS memory pressure
+	// killing the child), not a bad branch name or a missing ref; callers may
+	// retry rather than tell the user their input is wrong.
+	ErrWorkspaceProbeFailed = errors.New("workspace: git probe failed")
 	// ErrWorkspaceDirty reports Destroy refused to remove a workspace because
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.

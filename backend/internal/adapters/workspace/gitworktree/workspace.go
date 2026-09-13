@@ -44,7 +44,11 @@ var (
 	ErrBranchCheckedOutElsewhere = ports.ErrWorkspaceBranchCheckedOutElsewhere
 	ErrBranchNotFetched          = ports.ErrWorkspaceBranchNotFetched
 	ErrBranchInvalid             = ports.ErrWorkspaceBranchInvalid
-	ErrDefaultBranchUnresolved   = ports.ErrWorkspaceDefaultBranchUnresolved
+	// ErrBranchProbeFailed is an adapter-local alias of ports.ErrWorkspaceProbeFailed:
+	// a check-ref-format probe that was killed by a signal or cancelled/timed out,
+	// so git never judged the name. Distinct from ErrBranchInvalid on purpose.
+	ErrBranchProbeFailed       = ports.ErrWorkspaceProbeFailed
+	ErrDefaultBranchUnresolved = ports.ErrWorkspaceDefaultBranchUnresolved
 	// ErrWorktreeLocked is an adapter-local alias of ports.ErrWorkspaceLocked,
 	// following the same aliasing convention as the branch sentinels above.
 	ErrWorktreeLocked = ports.ErrWorkspaceLocked
@@ -1533,9 +1537,38 @@ func (w *Workspace) revParse(ctx context.Context, repo, ref string) (string, err
 
 func (w *Workspace) validateBranch(ctx context.Context, repo, branch string) error {
 	if _, err := w.run(ctx, w.binary, checkRefFormatBranchArgs(repo, branch)...); err != nil {
+		// A probe that was killed by a signal or cut short by context
+		// cancellation/timeout never let git judge the name. Reporting that as
+		// INVALID_BRANCH sends users to check a ref that is actually fine and
+		// pollutes the invalid-name telemetry with environment failures.
+		if probeInterrupted(err) {
+			return fmt.Errorf("%w: %q (%w)", ErrBranchProbeFailed, branch, err)
+		}
 		return fmt.Errorf("%w: %q (%w)", ErrBranchInvalid, branch, err)
 	}
 	return nil
+}
+
+// signaledExitCode is what (*os.ProcessState).ExitCode() reports for a process
+// that did not exit normally — on Unix, one terminated by a signal such as
+// SIGKILL. It is the portable signal-kill marker (syscall.WaitStatus.Signaled()
+// does not exist on Windows).
+const signaledExitCode = -1
+
+// probeInterrupted reports whether a git probe failed because the process was
+// killed by a signal or its context was cancelled/timed out, rather than
+// because git ran and rejected its input. Such failures mean git never
+// evaluated the request, so callers must not classify them as user-facing
+// name/validation errors.
+func probeInterrupted(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == signaledExitCode {
+		return true
+	}
+	return false
 }
 
 // errNoBaseRef is an internal sentinel: every candidate base ref is missing.

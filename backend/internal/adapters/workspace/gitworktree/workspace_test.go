@@ -3,13 +3,16 @@ package gitworktree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -1021,6 +1024,115 @@ func TestCreateRejectsInvalidBranchName(t *testing.T) {
 	if !strings.Contains(err.Error(), "bad branch!!") {
 		t.Fatalf("err = %v, want message to include the rejected branch name", err)
 	}
+}
+
+// TestValidateBranchClassifiesTransientProbeFailures covers #5043: when the
+// `git check-ref-format` probe never gets to judge the name — because it was
+// killed by a signal (macOS jetsam) or its context was cancelled/timed out —
+// validateBranch must surface ErrWorkspaceProbeFailed (retryable), NOT
+// ErrWorkspaceBranchInvalid, so users are not told a perfectly valid ref is
+// bad and INVALID_BRANCH telemetry is not polluted with environment failures.
+// A genuine git rejection (real exit code) must still map to invalid.
+func TestValidateBranchClassifiesTransientProbeFailures(t *testing.T) {
+	const validBranch = "ao/agent-orchestrator-291/root" // the real, valid ref from the report
+
+	newWS := func(t *testing.T, runErr error) *Workspace {
+		t.Helper()
+		ws, err := New(Options{ManagedRoot: t.TempDir(), RepoResolver: StaticRepoResolver{"proj": t.TempDir()}})
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+		ws.run = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, runErr }
+		return ws
+	}
+
+	t.Run("context cancelled maps to probe failure", func(t *testing.T) {
+		ws := newWS(t, fmt.Errorf("git wrapper: %w", context.Canceled))
+		err := ws.validateBranch(context.Background(), "/repo", validBranch)
+		if !errors.Is(err, ports.ErrWorkspaceProbeFailed) {
+			t.Fatalf("err = %v, want ErrWorkspaceProbeFailed", err)
+		}
+		if errors.Is(err, ports.ErrWorkspaceBranchInvalid) {
+			t.Fatalf("valid branch must not be reported as invalid: %v", err)
+		}
+	})
+
+	t.Run("context deadline maps to probe failure", func(t *testing.T) {
+		ws := newWS(t, fmt.Errorf("git wrapper: %w", context.DeadlineExceeded))
+		err := ws.validateBranch(context.Background(), "/repo", validBranch)
+		if !errors.Is(err, ports.ErrWorkspaceProbeFailed) {
+			t.Fatalf("err = %v, want ErrWorkspaceProbeFailed", err)
+		}
+	})
+
+	t.Run("signal-killed probe maps to probe failure", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("signal termination (ExitCode -1) is a Unix concept; Windows kills yield a real exit code")
+		}
+		ws := newWS(t, signalKilledErr(t))
+		err := ws.validateBranch(context.Background(), "/repo", validBranch)
+		if !errors.Is(err, ports.ErrWorkspaceProbeFailed) {
+			t.Fatalf("err = %v, want ErrWorkspaceProbeFailed", err)
+		}
+		if errors.Is(err, ports.ErrWorkspaceBranchInvalid) {
+			t.Fatalf("signal-killed probe must not be reported as invalid branch: %v", err)
+		}
+	})
+
+	t.Run("genuine git rejection still maps to invalid branch", func(t *testing.T) {
+		// exitStatusOne is a real *exec.ExitError with a normal exit code — git
+		// ran and rejected the input. This is the true INVALID_BRANCH case and
+		// must be preserved.
+		ws := newWS(t, exitStatusOne(t))
+		err := ws.validateBranch(context.Background(), "/repo", "bad branch!!")
+		if !errors.Is(err, ports.ErrWorkspaceBranchInvalid) {
+			t.Fatalf("err = %v, want ErrWorkspaceBranchInvalid", err)
+		}
+		if errors.Is(err, ports.ErrWorkspaceProbeFailed) {
+			t.Fatalf("a real git rejection must not be reclassified as a probe failure: %v", err)
+		}
+	})
+}
+
+// sleepHelperEnv gates TestGitWorktreeSleepHelper so it only blocks when spawned
+// as a child of signalKilledErr; sleepHelperBackstop bounds that block as a leak
+// guard if the parent dies before killing it.
+const (
+	sleepHelperEnv      = "GO_WANT_GITWORKTREE_SLEEP"
+	sleepHelperBackstop = 30 * time.Second
+)
+
+// signalKilledErr returns a real *exec.ExitError produced by SIGKILL-ing a child
+// process, so (*exec.ExitError).ExitCode() reports -1 exactly as it does when
+// the OS kills git under memory pressure. Unix-only; guarded by the caller.
+func signalKilledErr(t *testing.T) error {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestGitWorktreeSleepHelper")
+	cmd.Env = append(os.Environ(), sleepHelperEnv+"=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep helper: %v", err)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill sleep helper: %v", err)
+	}
+	err := cmd.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("wait err = %v, want *exec.ExitError from a killed process", err)
+	}
+	if exitErr.ExitCode() != signaledExitCode {
+		t.Fatalf("killed process ExitCode = %d, want %d", exitErr.ExitCode(), signaledExitCode)
+	}
+	return err
+}
+
+func TestGitWorktreeSleepHelper(t *testing.T) {
+	if os.Getenv(sleepHelperEnv) != "1" {
+		return
+	}
+	// Block long enough for the parent to kill us; self-exit is only a backstop
+	// against a leaked process if the parent dies first.
+	time.Sleep(sleepHelperBackstop)
 }
 
 // TestAddWorktreeReportsBranchNotFetched covers Bug 3 (b): if no local head,

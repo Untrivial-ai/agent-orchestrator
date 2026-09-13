@@ -3141,6 +3141,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"default branch unresolved", fmt.Errorf("spawn mer-1: %w: configure defaultBranch", ports.ErrWorkspaceDefaultBranchUnresolved), apierr.KindInvalid, "DEFAULT_BRANCH_UNRESOLVED"},
 		{"not fetched", fmt.Errorf("spawn mer-1: workspace: %w: \"x\" has no local head", ports.ErrWorkspaceBranchNotFetched), apierr.KindInvalid, "BRANCH_NOT_FETCHED"},
 		{"invalid branch", fmt.Errorf("spawn mer-1: workspace: %w: \"bad!!\" (exit 1)", ports.ErrWorkspaceBranchInvalid), apierr.KindInvalid, "INVALID_BRANCH"},
+		{"probe failed", fmt.Errorf("spawn mer-1: workspace: %w: \"ao/mer-1/root\" (signal: killed)", ports.ErrWorkspaceProbeFailed), apierr.KindUnavailable, "WORKSPACE_PROBE_FAILED"},
 		{"agent binary not found", fmt.Errorf("spawn mer-1: %w", ports.ErrAgentBinaryNotFound), apierr.KindInvalid, "AGENT_BINARY_NOT_FOUND"},
 		{"runtime prerequisite missing", fmt.Errorf("spawn: %w: tmux required on macOS/Linux but not in PATH", ports.ErrRuntimePrerequisite), apierr.KindInvalid, "RUNTIME_PREREQUISITE_MISSING"},
 		{"Windows command line too long", fmt.Errorf("spawn: %w: escaped command line is 32769 UTF-16 code units", ports.ErrRuntimeCommandLineTooLong), apierr.KindInvalid, "WINDOWS_COMMAND_LINE_TOO_LONG"},

@@ -1145,6 +1145,8 @@ func mapSessionError(err error) error {
 		return apierr.Invalid("BRANCH_NOT_FETCHED", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceBranchInvalid):
 		return apierr.Invalid("INVALID_BRANCH", err.Error(), nil)
+	case errors.Is(err, ports.ErrWorkspaceProbeFailed):
+		return apierr.Unavailable("WORKSPACE_PROBE_FAILED", err.Error())
 	case errors.Is(err, ports.ErrAgentBinaryNotFound):
 		return apierr.Invalid("AGENT_BINARY_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimePrerequisite):
