@@ -178,6 +178,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		},
 		refetchInterval: (state) => {
 			const status = state.state.data;
+			if (interfaceTransitionNeedsRestart(status?.transition)) return false;
 			if (interfaceTransitionIsActive(status?.transition)) return 250;
 			// A missing or not-yet-current native identity is transient while the
 			// terminal's session-start hook is arriving. Recheck only those readiness
