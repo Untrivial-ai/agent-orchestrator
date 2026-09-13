@@ -61,9 +61,10 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: |
+            package-lock.json
             frontend/package-lock.json
             packages/product-ui/package-lock.json
       # The daemon is compiled by build-daemon.mjs during premake, so the Go
@@ -72,10 +73,8 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - run: npm ci
-      - name: Install product UI dependencies
-        run: npm ci
-        working-directory: packages/product-ui
+      - name: Bootstrap frontend dependencies
+        run: npm --prefix .. run bootstrap:frontend
       - name: Verify WorkOS build configuration
         shell: bash
         run: |
