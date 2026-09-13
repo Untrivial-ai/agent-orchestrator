@@ -2,7 +2,7 @@
 // one. Pure — no React Native or Expo imports — so every outcome is unit-testable,
 // the same split as orchestratorView.ts / projectFilter.ts.
 import type { DashboardSession, OrchestratorLink } from "../api";
-import { isSessionGone } from "../connectionError";
+import { isSessionGone, shouldKeepPolling } from "../connectionError";
 import type { ConnStatus } from "../store";
 
 export type RouteSession = DashboardSession | OrchestratorLink;
@@ -52,11 +52,18 @@ export function sessionLookupSettled(lookup: SessionLookup): boolean {
 /**
  * Whether the route should send `GET /sessions/{id}` now.
  *
- * Only while the board's own poll holds an open connection to this machine. That
- * is what keeps the lookup from spending the daemon's failed-auth budget: the
- * store sets "open" only after a tick succeeds with the current password, and a
- * rejected one leaves it "closed" and stops the poll. Asking on "closed" as well
- * cost an extra 401 on every app switch under a rotated password.
+ * Only while the board's own poll holds an open connection to this machine.
+ * Asking on "closed" as well cost an extra 401 on every app switch under a
+ * rotated password. "open" is still only a tick's result, though: it can be a
+ * poll interval behind a regenerated password, and a late tick from the machine
+ * the phone just left can set it (fetchAll has no staleness guard). So a lookup
+ * can still be rejected. `sessionRouteView` offers no Retry for a rejection, so a
+ * tap cannot repeat it; the route asks again when `connection` next turns "open".
+ *
+ * `appActive`, because a tick already in flight when the app is backgrounded
+ * still lands and sets "open", and every request carries the install id once it
+ * is primed (`api.ts`, `cachedInstallId`), which keeps the device live on the
+ * desktop after the user left (see `pollActiveRef` in store.tsx).
  *
  * `machineChanged` is true in the render where the paired machine changed. The
  * store restarts its poll from an effect that runs after this route's (React runs
@@ -67,11 +74,12 @@ export function sessionLookupDue(args: {
 	listed: boolean;
 	configured: boolean | null;
 	connection: ConnStatus;
+	appActive: boolean;
 	machineChanged: boolean;
 	lookup: SessionLookup;
 }): boolean {
 	if (args.listed || args.configured !== true) return false;
-	if (args.machineChanged || args.connection !== "open") return false;
+	if (!args.appActive || args.machineChanged || args.connection !== "open") return false;
 	return !sessionLookupSettled(args.lookup);
 }
 
@@ -93,13 +101,19 @@ export function sessionLookupDue(args: {
  * the one the daemon names as orchestrator in new workers' prompts
  * (`activeOrchestratorSessionID`), displacing the orchestrator that replaced it.
  *
- * While the board is not connected, the route does not diagnose the link itself:
- * the board already tells a rotated tunnel from a rejected password from an
- * unreachable machine, and a second copy of that rule would drift.
+ * While the board is not connected, the route does not diagnose the link itself.
+ * Telling a rotated tunnel from a rejected password from an unreachable machine
+ * is the board's rule: `app/(tabs)/index.tsx` composes `describeConnectionFailure`
+ * (`connectionError.ts`) with `tunnelMayHaveRotated` (`staleTunnel.ts`) over the
+ * store's `errorStatus` and `activeEndpoints`, which this route does not hold, and
+ * a second copy would drift. A rejected lookup (401/403/429) goes to that same
+ * state instead of offering a retry: retrying a rejected password is what arms
+ * the daemon's lockout, and retrying under one cannot succeed (`shouldKeepPolling`).
  *
- * `configured` is `null` until the store's first load has read the saved config;
- * it is checked before the lists, which still hold a forgotten machine's sessions.
- * `loading` is the store's: true until its poll's first tick for this config.
+ * `configured` is `null` until the store has resolved the saved machine's
+ * endpoint; it is checked before the lists, which still hold a forgotten machine's
+ * sessions. `loading` is the store's: true from each start of its poll until that
+ * poll's first tick.
  */
 export function sessionRouteView(args: {
 	listed: RouteSession | undefined;
@@ -119,5 +133,6 @@ export function sessionRouteView(args: {
 	if (args.connection !== "open") {
 		return args.loading || args.connection === "connecting" ? { kind: "loading" } : { kind: "offline" };
 	}
-	return lookup.state === "pending" ? { kind: "loading" } : { kind: "failed" };
+	if (lookup.state === "pending") return { kind: "loading" };
+	return shouldKeepPolling(lookup.status) ? { kind: "failed" } : { kind: "offline" };
 }

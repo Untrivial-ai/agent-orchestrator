@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { ActivityIndicator, AppState, StyleSheet, View } from "react-native";
+import { shouldPoll } from "../../lib/appStatePoll";
 import { ChatSessionScreen } from "../../lib/chat/ChatSessionScreen";
 import { isConfigured, machineIdentity } from "../../lib/config";
 import { lookUpSession } from "../../lib/session/sessionLookup";
@@ -42,9 +43,10 @@ export default function MobileSessionRoute() {
 
 	// Read by the lookup effect, not dependencies of it. An answer landing must not
 	// itself cause another request, or a persistent failure would loop; and the
-	// config object changes identity when the app re-races endpoints for the same
-	// machine, which restarts the store's poll and so re-runs the effect through
-	// `connection` anyway. Declared first, so it has run by the time that effect does.
+	// config object changes identity when a re-race lands on a different endpoint
+	// for the same machine, which restarts the store's poll and so re-runs the
+	// effect through `connection` anyway. Declared first, so it has run by the time
+	// that effect does.
 	const latest = useRef({ config, configured, lookup });
 	useEffect(() => {
 		latest.current = { config, configured, lookup };
@@ -66,10 +68,22 @@ export default function MobileSessionRoute() {
 		const now = latest.current;
 		if (
 			!now.config ||
-			!sessionLookupDue({ listed: isListed, configured: now.configured, connection, machineChanged, lookup: now.lookup })
+			!sessionLookupDue({
+				listed: isListed,
+				configured: now.configured,
+				connection,
+				// Read, not a dependency: a foreground restarts the store's poll, which
+				// re-runs this effect through `connection` once it opens.
+				appActive: shouldPoll(AppState.currentState),
+				machineChanged,
+				lookup: now.lookup,
+			})
 		) {
 			return;
 		}
+		// A failure from before the reconnect would otherwise stay on screen, Retry
+		// and all, while this request is in flight.
+		setStored(null);
 		let cancelled = false;
 		void lookUpSession(now.config, id).then((answer) => {
 			if (!cancelled) setStored({ key, lookup: answer });
@@ -78,8 +92,8 @@ export default function MobileSessionRoute() {
 			cancelled = true;
 		};
 		// `attempt` is read only through this list: bumping it is how Retry asks
-		// again. `connection` turning "open" is how a lookup that failed while the
-		// link was down gets asked again once the board has reconnected.
+		// again. `connection` turning "open" is how a lookup that failed, or was
+		// rejected, gets asked again once the board has reconnected.
 	}, [attempt, connection, id, isListed, key, machine]);
 
 	const retry = useCallback(() => {
@@ -122,7 +136,7 @@ export default function MobileSessionRoute() {
 					<EmptyState
 						icon="wifi-off"
 						title="Not connected to your desktop"
-						message="The Agents board shows why. This session loads once it reconnects."
+						message="This session loads once the app reconnects."
 						action={<Button title="Open board" icon="activity" variant="ghost" onPress={() => router.navigate("/")} />}
 					/>
 				</View>

@@ -36,7 +36,7 @@ const view = (over: Partial<ViewArgs> = {}) =>
 
 type DueArgs = Parameters<typeof sessionLookupDue>[0];
 const due = (over: Partial<DueArgs> = {}) =>
-	sessionLookupDue({ listed: false, configured: true, connection: "open", machineChanged: false, lookup: pending, ...over });
+	sessionLookupDue({ listed: false, configured: true, connection: "open", appActive: true, machineChanged: false, lookup: pending, ...over });
 
 describe("sessionRouteView", () => {
 	it("waits for the saved config before judging anything", () => {
@@ -98,8 +98,17 @@ describe("sessionRouteView", () => {
 		expect(view({ lookup: pending })).toEqual({ kind: "loading" });
 	});
 
-	it.each([undefined, 401, 429, 500, 503])("offers a retry when the board is connected but a %s lookup failed", (status) => {
+	it.each([undefined, 500, 503])("offers a retry when the board is connected but a %s lookup failed", (status) => {
 		expect(view({ lookup: failed(status) })).toEqual({ kind: "failed" });
+	});
+
+	// "open" can be a poll interval behind a regenerated password. A Retry on a 401
+	// would spend one failed auth per tap, and five lock the phone out for a minute,
+	// pairing scan included (`lan_listener.go`, `newLockout(5, time.Minute, ...)`).
+	// Under a 429 a retry spends nothing but cannot succeed either; 403 travels with
+	// them because `classifyConnectionFailure` groups it as "auth".
+	it.each([401, 403, 429])("hands a %s lookup to the board instead of offering a retry", (status) => {
+		expect(view({ lookup: failed(status) })).toEqual({ kind: "offline" });
 	});
 });
 
@@ -108,11 +117,17 @@ describe("sessionLookupDue", () => {
 		expect(due()).toBe(true);
 	});
 
-	// The store sets "open" only after a tick succeeds with the current password.
-	// Asking on "closed" too cost an extra 401 per app switch under a rotated one.
+	// Asking on "closed" too cost an extra 401 per app switch under a rotated password.
 	it.each(["closed", "connecting"] as const)("never asks while the board is %s, even to retry a failure", (connection) => {
 		for (const lookup of [pending, failed(undefined), failed(401), failed(429), failed(500)]) {
 			expect(due({ connection, lookup })).toBe(false);
+		}
+	});
+
+	// A tick in flight when the app was backgrounded still lands and sets "open".
+	it("never asks from the background", () => {
+		for (const lookup of [pending, failed(undefined), failed(500)]) {
+			expect(due({ appActive: false, lookup })).toBe(false);
 		}
 	});
 
