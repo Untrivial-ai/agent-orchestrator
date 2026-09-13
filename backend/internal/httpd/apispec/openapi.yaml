@@ -443,7 +443,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Conflict
-      summary: Retry incomplete restarts for one Codex account switch
+      summary: Retry recovery for one Codex account switch
       tags:
       - agents
   /api/v1/agents/codex/accounts:

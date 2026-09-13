@@ -8,14 +8,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-type codexExclusiveOperationContextKey struct{}
-
-func codexExclusiveOperationContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, codexExclusiveOperationContextKey{}, true)
-}
-
 func (m *Manager) acquireCodexControllerAdmission(ctx context.Context, harness domain.AgentHarness) (func(), error) {
-	if harness != domain.HarnessCodex || m.codexOperationGate == nil || ctx.Value(codexExclusiveOperationContextKey{}) == true {
+	if harness != domain.HarnessCodex || m.codexOperationGate == nil {
 		return func() {}, nil
 	}
 	// Device reconciliation uses this gate exclusively. A launch joins the

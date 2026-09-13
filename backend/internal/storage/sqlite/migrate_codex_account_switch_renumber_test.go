@@ -58,7 +58,7 @@ func TestMigrateRepairsRenumberedCodexAccountSwitchHistory(t *testing.T) {
 				t.Fatalf("migrate legacy Codex database: %v", err)
 			}
 
-			for _, column := range []string{"restart_running_sessions", "source_kind"} {
+			for _, column := range []string{"source_kind"} {
 				var count int
 				if err := db.QueryRow(
 					`SELECT COUNT(*) FROM pragma_table_info('codex_account_switches') WHERE name = ?`, column,
@@ -69,7 +69,16 @@ func TestMigrateRepairsRenumberedCodexAccountSwitchHistory(t *testing.T) {
 					t.Fatalf("column %s count = %d, want 1", column, count)
 				}
 			}
-			for _, version := range []int64{129, 130, 140, 141} {
+			var removedRestartColumn int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('codex_account_switches') WHERE name = 'restart_running_sessions'`,
+			).Scan(&removedRestartColumn); err != nil {
+				t.Fatal(err)
+			}
+			if removedRestartColumn != 0 {
+				t.Fatalf("restart_running_sessions count = %d, want 0", removedRestartColumn)
+			}
+			for _, version := range []int64{129, 130, 140, 141, 142} {
 				var applied int
 				if err := db.QueryRow(`
 SELECT COALESCE((

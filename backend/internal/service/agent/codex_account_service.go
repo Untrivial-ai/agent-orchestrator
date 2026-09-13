@@ -836,12 +836,13 @@ func (s *Service) CleanupCodexAccountSwitch(_ context.Context, switchID string) 
 
 var _ ports.CodexAccountCredentialManager = (*Service)(nil)
 
-// SetCodexAccountSwitchCoordinator wires the daemon-owned global switch coordinator.
-func (s *Service) SetCodexAccountSwitchCoordinator(coordinator CodexAccountSwitchCoordinator) {
-	s.codexSwitches = coordinator
+// CodexAccountSwitchInProgress reports whether the credential coordinator owns
+// the device-global mutation gate.
+func (s *Service) CodexAccountSwitchInProgress() bool {
+	return s.codexSwitches != nil && s.codexSwitches.CodexAccountSwitchInProgress()
 }
 
-// StartCodexAccountSwitch delegates an accepted switch to Session Manager.
+// StartCodexAccountSwitch starts a durable device credential switch.
 func (s *Service) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
 	if s.codexSwitches == nil {
 		return domain.CodexAccountSwitch{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account switching is unavailable")
@@ -855,4 +856,21 @@ func (s *Service) RecoverCodexAccountSwitch(ctx context.Context, id string) (dom
 		return domain.CodexAccountSwitch{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account switching is unavailable")
 	}
 	return s.codexSwitches.RecoverCodexAccountSwitch(ctx, id)
+}
+
+// ReconcileCodexAccountSwitches restores any durable credential mutation
+// before session startup is admitted.
+func (s *Service) ReconcileCodexAccountSwitches(ctx context.Context) error {
+	if s.codexSwitches == nil {
+		return nil
+	}
+	return s.codexSwitches.ReconcileCodexAccountSwitches(ctx)
+}
+
+// WaitCodexAccountSwitchWorkers drains credential workers during shutdown.
+func (s *Service) WaitCodexAccountSwitchWorkers(ctx context.Context) error {
+	if s.codexSwitches == nil {
+		return nil
+	}
+	return s.codexSwitches.Wait(ctx)
 }

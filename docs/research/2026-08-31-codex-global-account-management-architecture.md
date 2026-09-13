@@ -122,7 +122,7 @@ Manual Add account always creates a new slot, including when another slot has th
 
 Switch admission requires a valid target, expected active revision, idempotency key, safe file-backed global credential, and fresh target verification. The idempotency fingerprint depends only on the target account and expected revision.
 
-AO does not discover or validate running session identities, acquire their operation locks, freeze input, interrupt Chat, stop controllers or reviewers, or write switch-session rows. Existing turns continue best-effort and may later report an authentication or account-change error; the user can restart or resume them manually. New Codex launches and AO control mutations briefly wait behind the device-global credential gate and then use the selected account.
+AO does not discover or validate running session identities, acquire their operation locks, freeze input, interrupt Chat, stop controllers or reviewers, or write switch-session rows. Existing turns continue best-effort and may later report an authentication or account-change error; the user can restart or resume them manually. New Codex process launches briefly wait behind the device-global credential gate and then use the selected account; other account mutations are rejected until the switch finishes.
 
 Stopped sessions are not part of the switch journal. They naturally use the new device-global account the next time they resume.
 
@@ -186,7 +186,7 @@ SQLite never contains credential bytes, filesystem paths, email, plan, capacity,
 
 The daemon exposes cached account reads and explicit ensure; inline login create, verify, and cancel; confirmed logout and deletion; global-switch start and recovery; confirmed reset-credit consumption; and one latest-wins SSE stream. Cached reads do no filesystem or Codex work. Reset-credit responses expose only the available count and nearest expiry; opaque provider identifiers remain private, and consumption uses a client idempotency key before refreshing capacity.
 
-Settings shows the device's current Codex account, account usage details, inline login, and switch progress. Account switching never interrupts or restarts running AO Codex sessions or reviewers. Device-global credential replacement briefly fences new Codex launches, messages, interface changes, and related AO control mutations. There is no Task Composer account selector, per-session account binding, assisted switching, or automatic account selection.
+Settings shows the device's current Codex account, account usage details, inline login, and switch progress. Account switching never interrupts or restarts running AO Codex sessions or reviewers. Device-global credential replacement briefly delays new Codex process launches and rejects overlapping account mutations; existing sessions remain usable. There is no Task Composer account selector, per-session account binding, assisted switching, or automatic account selection.
 
 ## Explicit omissions
 

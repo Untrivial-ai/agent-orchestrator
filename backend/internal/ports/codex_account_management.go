@@ -45,8 +45,8 @@ type CodexOperationGate interface {
 	ExclusivePendingOrHeld() bool
 }
 
-// CodexAccountCredentialManager is consumed by Session Manager's global switch
-// coordinator. It exposes account identities and atomic credential activation,
+// CodexAccountCredentialManager is consumed by the account service's global
+// switch coordinator. It exposes account identities and atomic credential activation,
 // never credential bytes or homes.
 type CodexAccountCredentialManager interface {
 	WaitCodexAccountStoreReady(context.Context) error

@@ -1209,7 +1209,7 @@ func agentOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/codex/account-switches/{switchId}/recover", id: "recoverCodexAccountSwitch", tag: "agents",
-			summary: "Retry incomplete restarts for one Codex account switch", pathParams: []any{controllers.CodexAccountSwitchIDParam{}},
+			summary: "Retry recovery for one Codex account switch", pathParams: []any{controllers.CodexAccountSwitchIDParam{}},
 			resps: []respUnit{{http.StatusOK, controllers.CodexAccountSwitchResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}},
 		},
 		{

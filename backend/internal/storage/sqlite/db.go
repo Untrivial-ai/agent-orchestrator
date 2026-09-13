@@ -1455,6 +1455,17 @@ func repairRenumberedCodexAccountSwitchMigrationHistory(db *sql.DB) error {
 	if gooseTable == 0 {
 		return nil
 	}
+	var cleanupApplied int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 142 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&cleanupApplied); err != nil {
+		return err
+	}
+	if cleanupApplied != 0 {
+		return nil
+	}
 
 	var restartColumn, sourceKindColumn int
 	if err := db.QueryRow(`

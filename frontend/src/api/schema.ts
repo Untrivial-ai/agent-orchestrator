@@ -167,7 +167,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Retry incomplete restarts for one Codex account switch */
+        /** Retry recovery for one Codex account switch */
         post: operations["recoverCodexAccountSwitch"];
         delete?: never;
         options?: never;
