@@ -94,3 +94,27 @@ func TestRuntimeCommandOverride(t *testing.T) {
 		t.Fatalf("runtime = %#v", launch)
 	}
 }
+
+type fakePlugin struct{}
+
+func (fakePlugin) ResolveBinary(context.Context) (string, error) { return "/bin/echo", nil }
+func (fakePlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusAuthorized, nil
+}
+
+func TestClaudeAdvertisesCompactionCapability(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AO_CLAUDE_ACP_COMMAND", executable)
+
+	d := New(fakePlugin{}, nil)
+	caps, err := d.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !caps.Has(ports.ChatCapabilityCompaction) {
+		t.Fatal("Claude ACP driver should advertise compaction capability")
+	}
+}

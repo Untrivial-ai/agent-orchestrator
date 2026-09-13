@@ -671,6 +671,7 @@ type fakeAgent struct {
 	promptStarted       chan struct{}
 	cancelErr           error
 	cancelCalls         int
+	customPrompt        func(ctx context.Context, params acpsdk.PromptRequest) (acpsdk.PromptResponse, error)
 	mode                string
 	modeNotFound        bool // SetSessionMode returns -32601
 	configNotFound      bool // SetSessionConfigOption returns -32601
@@ -979,7 +980,11 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 	promptErr := a.promptErr
 	promptBlock := a.promptBlock
 	promptStarted := a.promptStarted
+	customPrompt := a.customPrompt
 	a.mu.Unlock()
+	if customPrompt != nil {
+		return customPrompt(ctx, params)
+	}
 	if promptErr != nil {
 		return acpsdk.PromptResponse{}, promptErr
 	}
@@ -3338,5 +3343,228 @@ func (d *Driver) useTestProcess(spawn spawnFunc) {
 			return nil, err
 		}
 		return spawn(launch, cfg.WorkspacePath)
+	}
+}
+
+func TestACPConversationImplementsCompactor(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+
+	compactor, ok := conv.(ports.ChatCompactor)
+	if !ok {
+		t.Fatal("conversation does not implement ChatCompactor")
+	}
+
+	// Refuses when another turn is already active
+	c := conv.(*conversation)
+	c.mu.Lock()
+	c.activeTurn = "active-turn"
+	c.mu.Unlock()
+
+	if _, err := compactor.Compact(context.Background()); err == nil {
+		t.Fatal("Compact should fail when another turn is in flight")
+	}
+}
+
+func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	_ = nextEvent(t, opened.Events()) // controller.ready
+
+	// Report initial usage
+	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
+		Update: acpsdk.SessionUpdate{
+			UsageUpdate: &acpsdk.SessionUsageUpdate{Used: 25000, Size: 200000},
+		},
+	}); err != nil {
+		t.Fatalf("SessionUpdate initial usage: %v", err)
+	}
+	_ = nextEvent(t, opened.Events()) // usage event
+
+	compactionPromptReceived := make(chan string, 1)
+	agent.mu.Lock()
+	agent.customPrompt = func(ctx context.Context, params acpsdk.PromptRequest) (acpsdk.PromptResponse, error) {
+		promptText := ""
+		for _, block := range params.Prompt {
+			if block.Text != nil {
+				promptText += block.Text.Text
+			}
+		}
+		compactionPromptReceived <- promptText
+
+		// Emit intermediate message chunk (should be suppressed by compaction turn)
+		_ = agent.conn.SessionUpdate(ctx, acpsdk.SessionNotification{
+			SessionId: params.SessionId,
+			Update: acpsdk.SessionUpdate{
+				AgentMessageChunk: &acpsdk.SessionUpdateAgentMessageChunk{
+					Content: acpsdk.TextBlock("Compacted conversation history."),
+				},
+			},
+		})
+
+		// Emit reduced token usage
+		_ = agent.conn.SessionUpdate(ctx, acpsdk.SessionNotification{
+			SessionId: params.SessionId,
+			Update: acpsdk.SessionUpdate{
+				UsageUpdate: &acpsdk.SessionUsageUpdate{Used: 10000, Size: 200000},
+			},
+		})
+
+		return acpsdk.PromptResponse{StopReason: acpsdk.StopReasonEndTurn}, nil
+	}
+	agent.mu.Unlock()
+
+	compactor := opened.(ports.ChatCompactor)
+	result, err := compactor.Compact(context.Background())
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if result.TokensBefore != 25000 {
+		t.Errorf("TokensBefore = %d, want 25000", result.TokensBefore)
+	}
+
+	select {
+	case prompt := <-compactionPromptReceived:
+		if prompt != "/compact" {
+			t.Errorf("prompt sent = %q, want /compact", prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for /compact prompt")
+	}
+
+	// Drain events and verify compaction event
+	var compactedEvent *ports.ChatEvent
+	for {
+		ev := nextEvent(t, opened.Events())
+		if ev.Kind == ports.ChatEventMessageDelta {
+			t.Fatalf("unexpected message delta emitted during compaction turn: %q", ev.Delta)
+		}
+		if ev.Kind == ports.ChatEventCompacted {
+			compactedEvent = &ev
+		}
+		if ev.Kind == ports.ChatEventTurnCompleted {
+			break
+		}
+	}
+
+	if compactedEvent == nil {
+		t.Fatal("ChatEventCompacted was not emitted")
+	}
+	if !strings.Contains(compactedEvent.Summary, "15.0k tokens") {
+		t.Errorf("summary = %q, want 15.0k tokens named", compactedEvent.Summary)
+	}
+
+	var detail struct {
+		TokensBefore    int64 `json:"tokensBefore"`
+		TokensAfter     int64 `json:"tokensAfter"`
+		TokensReclaimed int64 `json:"tokensReclaimed"`
+		ContextWindow   int64 `json:"contextWindow"`
+	}
+	if err := json.Unmarshal(compactedEvent.Detail, &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if detail.TokensBefore != 25000 || detail.TokensAfter != 10000 {
+		t.Errorf("detail tokens = %d -> %d, want 25000 -> 10000", detail.TokensBefore, detail.TokensAfter)
+	}
+	if detail.TokensReclaimed != 15000 {
+		t.Errorf("tokensReclaimed = %d, want 15000", detail.TokensReclaimed)
+	}
+	if detail.ContextWindow != 200000 {
+		t.Errorf("contextWindow = %d, want 200000", detail.ContextWindow)
+	}
+}
+
+func TestACPDriverClientCapabilitiesIncludesSessionCompaction(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	meta := agent.initParams.ClientCapabilities.Meta
+	session, ok := meta["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("ClientCapabilities.Meta[session] = %#v, want map", meta["session"])
+	}
+	if session["compaction"] == nil {
+		t.Fatalf("session[compaction] is missing from ClientCapabilities: %#v", session)
+	}
+}
+
+func TestACPDriverExposesCompactionWhenCommandAdvertised(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	if opened.Capabilities().Has(ports.ChatCapabilityCompaction) {
+		t.Fatal("compaction capability should not be present before command update")
+	}
+
+	// Push available commands update containing compact
+	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
+		Update: acpsdk.SessionUpdate{
+			AvailableCommandsUpdate: &acpsdk.SessionAvailableCommandsUpdate{
+				AvailableCommands: []acpsdk.AvailableCommand{
+					{Name: "compact", Description: "Compact history"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SessionUpdate available commands: %v", err)
+	}
+
+	// Await skills known
+	lister := opened.(ports.ChatSkillLister)
+	awaitSkillCount(t, lister, 1)
+
+	if !opened.Capabilities().Has(ports.ChatCapabilityCompaction) {
+		t.Fatal("compaction capability was not enabled after compact command was advertised")
 	}
 }

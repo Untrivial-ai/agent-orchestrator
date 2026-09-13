@@ -462,6 +462,9 @@ func (d *Driver) initialize(
 			// These two Claude bridge extensions enrich the transcript. They do
 			// not grant the agent access to AO's terminal or filesystem APIs.
 			Meta: map[string]any{
+				"session": map[string]any{
+					"compaction": map[string]any{},
+				},
 				"subagent-transcript": true,
 				"terminal_output":     true,
 				// claude-agent-acp publishes retryable API/transport failures only
