@@ -175,6 +175,9 @@ title = "gitleaks config"
     # Ignore false positives on the public company URL (rule matches brand name + nearby alnum).
     regexes = [
         '''(?i)linkedin\.com/company/agent-orchestrator''',
+        # The LinkedIn Client ID rule otherwise treats the 12-letter brand in
+        # this public URL as a credential when it appears on a LinkedIn row.
+        '''https://orchestrator\.inc/''',
         # Ordinary testimonial form identifiers and copy that overlap the legacy
         # LinkedIn credential rules' overly broad character-count patterns.
         '''(?i)linkedinprofileurl\(trimmedlinkedinurl''',
