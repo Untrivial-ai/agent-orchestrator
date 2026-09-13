@@ -242,30 +242,6 @@ if mode == "create":
         expected=201,
     )["session"]
     wait_for_running(org_id, session["id"], token)
-    workspace_file = request(
-        "PUT",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/workspace/file",
-        body={"path": ".ao-cloud-smoke-api", "content": "durable-worker-transport\n"},
-        token=token,
-    )
-    if workspace_file.get("content") != "durable-worker-transport\n":
-        raise RuntimeError(f"workspace write returned unexpected content: {workspace_file!r}")
-    read_back = request(
-        "GET",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/workspace/file?path=.ao-cloud-smoke-api",
-        token=token,
-    )
-    if read_back != workspace_file:
-        raise RuntimeError(
-            f"workspace read did not match the durable write: {read_back!r}"
-        )
-    listing = request(
-        "GET",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/workspace/files?limit=100",
-        token=token,
-    )
-    if ".ao-cloud-smoke-api" not in {item.get("path") for item in listing["items"]}:
-        raise RuntimeError(f"workspace listing omitted the written file: {listing!r}")
     request(
         "POST",
         f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/terminal-ticket",
@@ -393,6 +369,65 @@ assert_workspace_marker() {
 	fi
 }
 
+wait_for_git_workspace() {
+	local container_id="$1" attempts=30
+	while ((attempts > 0)); do
+		if docker exec "$container_id" git -C /workspace/repository rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	echo "Worker Git workspace did not become ready." >&2
+	return 1
+}
+
+exercise_workspace_diff_api() {
+	python3 - "$AO_CLOUD_PORT" "$state_file" <<'PY'
+import json
+import pathlib
+import sys
+import urllib.error
+import urllib.request
+
+port, state_path = sys.argv[1:]
+state = json.loads(pathlib.Path(state_path).read_text())
+base_url = f"http://127.0.0.1:{port}"
+prefix = f"/api/cloud/v1/orgs/{state['orgId']}/sessions/{state['sessionId']}"
+headers = {"Accept": "application/json", "Authorization": f"Bearer {state['token']}"}
+
+def request(method, path, body=None):
+    request_headers = dict(headers)
+    data = None
+    if body is not None:
+        request_headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    operation = urllib.request.Request(base_url + path, data=data, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(operation, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"{method} {path} returned {error.code}: {error.read().decode(errors='replace')}") from error
+
+workspace_file = request("PUT", prefix + "/workspace/file", {"path": ".ao-cloud-smoke-api", "content": "durable-worker-transport\n"})
+if workspace_file.get("content") != "durable-worker-transport\n":
+    raise RuntimeError(f"workspace write returned unexpected content: {workspace_file!r}")
+read_back = request("GET", prefix + "/workspace/file?path=.ao-cloud-smoke-api")
+if read_back != workspace_file:
+    raise RuntimeError(f"workspace read did not match the durable write: {read_back!r}")
+listing = request("GET", prefix + "/workspace/files?limit=100")
+if ".ao-cloud-smoke-api" not in {item.get("path") for item in listing["items"]}:
+    raise RuntimeError(f"workspace listing omitted the written file: {listing!r}")
+diff = request("GET", prefix + "/workspace/diff")
+summary = next((item for item in diff.get("files", []) if item.get("path") == ".ao-cloud-smoke-api"), None)
+if summary != {"path": ".ao-cloud-smoke-api", "status": "untracked", "additions": 1, "deletions": 0, "binary": False}:
+    raise RuntimeError(f"workspace diff summary returned unexpected file: {summary!r}")
+detail = request("GET", prefix + "/workspace/file/diff?path=.ao-cloud-smoke-api")
+if detail.get("status") != "untracked" or detail.get("content") != "durable-worker-transport\n" or "new file mode 100644" not in detail.get("diff", "") or detail.get("diffTruncated"):
+    raise RuntimeError(f"workspace diff-file returned unexpected detail: {detail!r}")
+PY
+}
+
 exercise_browser_proxy() {
 	local container_id="$1"
 	docker exec -d "$container_id" node -e '
@@ -507,6 +542,8 @@ exercise_api create
 session="$(session_id)"
 org="$(org_id)"
 first_worker="$(wait_for_worker "$session")"
+wait_for_git_workspace "$first_worker"
+exercise_workspace_diff_api
 docker exec "$first_worker" ao list >/dev/null
 # ao-worker boot must materialize the cloud using-ao skill where the standing
 # prompts point the agent.
