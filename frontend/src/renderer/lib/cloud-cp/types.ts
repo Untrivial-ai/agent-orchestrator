@@ -214,6 +214,37 @@ export interface CloudCpSessionListResponse {
 	page: CloudCpPageInfo;
 }
 
+// ---------------------------------------------------------------------------
+// Docker workspace review (`workspace_handlers.go`)
+// ---------------------------------------------------------------------------
+
+/** One changed file in a Docker-backed cloud workspace. */
+export interface CloudCpWorkspaceDiffFile {
+	path: string;
+	status: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
+	additions: number;
+	deletions: number;
+	binary: boolean;
+}
+
+/** Docker-only changed-file summary, compared with the session's HEAD. */
+export interface CloudCpWorkspaceDiff {
+	files: CloudCpWorkspaceDiffFile[];
+	diffBaseRef: string;
+	diffBaseSha?: string;
+	truncated: { combined: boolean; stats: boolean };
+}
+
+/** Docker-only selected-file review details. */
+export interface CloudCpWorkspaceDiffFileDetail extends CloudCpWorkspaceDiffFile {
+	size: number;
+	deleted: boolean;
+	content: string;
+	contentTruncated: boolean;
+	diff: string;
+	diffTruncated: boolean;
+}
+
 /** One pull request on a children listing (GET .../sessions/{id}/children). */
 export interface CloudCpSessionPullRequest {
 	url: string;
