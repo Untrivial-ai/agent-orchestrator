@@ -6529,6 +6529,77 @@ func TestRetireForReplacementCapturesAndReleasesWorkspace(t *testing.T) {
 	}
 }
 
+// fakeRetireChatLauncher is a minimal ChatLauncher that only records StopChat
+// calls; every other method is unused by RetireForReplacement and returns a
+// zero value.
+type fakeRetireChatLauncher struct {
+	stopped []domain.SessionID
+	stopErr error
+}
+
+func (f *fakeRetireChatLauncher) SupportsChat(domain.AgentHarness) bool { return true }
+func (f *fakeRetireChatLauncher) PreflightChat(context.Context, domain.AgentHarness) error {
+	return nil
+}
+func (f *fakeRetireChatLauncher) StartChat(context.Context, ChatStart) (ChatStarted, error) {
+	return ChatStarted{}, nil
+}
+func (f *fakeRetireChatLauncher) StartChatTurn(context.Context, domain.SessionID, string) (string, error) {
+	return "", nil
+}
+func (f *fakeRetireChatLauncher) RelayChatTurn(context.Context, domain.SessionID, string) (string, error) {
+	return "", nil
+}
+func (f *fakeRetireChatLauncher) RelayChatTurnWithID(context.Context, domain.SessionID, string, string) (string, error) {
+	return "", nil
+}
+func (f *fakeRetireChatLauncher) HasLiveChatController(domain.SessionID) bool { return false }
+func (f *fakeRetireChatLauncher) StopChat(_ context.Context, id domain.SessionID) error {
+	f.stopped = append(f.stopped, id)
+	return f.stopErr
+}
+
+// TestRetireForReplacementStopsChatSessionInsteadOfRuntimeDestroy reproduces
+// the bug fixed alongside this test: a chat-mode orchestrator has no runtime
+// handle (its controller owns an app-server child process directly, not
+// through the runtime port — see the identical branch in Kill). Before the
+// fix, RetireForReplacement only ever called runtime.Destroy, so for a chat
+// session it silently skipped stopping the process entirely: the real agent
+// process kept running with its cwd inside the worktree ForceDestroy was
+// about to remove, which on Windows fails with "process cannot access the
+// file" against a directory an orphaned process still has open.
+func TestRetireForReplacementStopsChatSessionInsteadOfRuntimeDestroy(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	chat := &fakeRetireChatLauncher{}
+	m.chat = chat
+	ws.stashRef = "refs/ao/preserved/mer-chat"
+	st.sessions["mer-chat"] = domain.SessionRecord{
+		ID:        "mer-chat",
+		ProjectID: "mer",
+		Kind:      domain.KindOrchestrator,
+		Mode:      domain.SessionModeChat,
+		Metadata:  domain.SessionMetadata{WorkspacePath: "/ws/mer-chat", Branch: "ao/mer-chat-orchestrator"},
+		Activity:  domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.RetireForReplacement(ctx, "mer-chat"); err != nil {
+		t.Fatalf("RetireForReplacement err = %v", err)
+	}
+
+	if len(chat.stopped) != 1 || chat.stopped[0] != "mer-chat" {
+		t.Fatalf("chat.StopChat calls = %v, want exactly one call for mer-chat", chat.stopped)
+	}
+	if rt.destroyed != 0 {
+		t.Fatalf("runtime.Destroy calls = %d, want 0 for a chat session (it has no runtime handle)", rt.destroyed)
+	}
+	if !st.sessions["mer-chat"].IsTerminated {
+		t.Fatal("retired chat orchestrator must be marked terminated")
+	}
+	if len(ws.calls) == 0 {
+		t.Fatal("ForceDestroy must still run for the chat session's worktree")
+	}
+}
+
 func TestRetireForReplacement_NativeTerminationFailurePreservesRuntimeAndWorkspace(t *testing.T) {
 	m, st, rt, ws := newLifecycleManager()
 	agent := &nativeTerminatingAgent{wantID: "native-7", err: errors.New("prime stop failed")}
