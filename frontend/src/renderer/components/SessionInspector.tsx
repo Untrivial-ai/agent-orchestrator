@@ -53,7 +53,7 @@ import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
 import { useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
-import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
+import { formatEstimatedCost, unpricedCostKey, type EstimatedCost, type UnpricedReason } from "../lib/format-cost";
 import { prBrowserUrl, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
@@ -433,7 +433,7 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 						<EstimatedCostInfo cost={usage.totals.estimatedCost} />
 					</div>
 					<p className="mt-0.5 truncate font-mono text-sm-md font-medium text-settings-label">
-						{estimatedCost ?? t("usage.unavailable")}
+						{estimatedCost ?? t(unpricedCostKey(usage.totals.unpricedReason))}
 					</p>
 				</div>
 			</div>
@@ -785,7 +785,7 @@ function UsageDisclosureRow({
 				>
 					{processedTokens === null ? "—" : formatTelemetryTokenValue(processedTokens)}
 				</span>
-				{showCost ? <UsageCostValue cost={totals.estimatedCost} /> : null}
+				{showCost ? <UsageCostValue cost={totals.estimatedCost} unpricedReason={totals.unpricedReason} /> : null}
 			</button>
 			{open ? (
 				<div
@@ -805,13 +805,13 @@ function UsageDisclosureRow({
 // already justified. Once the column is on screen the absence is a real answer
 // about that agent, so it says so in words — a dash beside a priced neighbour
 // reads as a rendering gap rather than "this one could not be priced".
-function UsageCostValue({ cost }: { cost: EstimatedCost | null }) {
+function UsageCostValue({ cost, unpricedReason }: { cost: EstimatedCost | null; unpricedReason?: UnpricedReason | null }) {
 	const { t } = useTranslation();
 	const value = formatEstimatedCost(cost);
 	const label = value ?? t("inspector.usage.metricUnavailable", { label: t("inspector.usage.cost") });
 	return (
 		<span aria-label={label} className="text-right font-mono text-2xs text-settings-label" title={label}>
-			{value ?? t("usage.unavailable")}
+			{value ?? t(unpricedCostKey(unpricedReason))}
 		</span>
 	);
 }

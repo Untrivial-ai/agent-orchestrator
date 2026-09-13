@@ -317,13 +317,19 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 		apply = func() error {
 			return i.pricing.WithSnapshot(ctx, func(snapshot *pricing.Snapshot) error {
 				for index := range parsed.Events {
-					// Live ingestion prices only what the transcript or the
-					// binding's route hint named outright. Resolving the model
-					// against the catalog would turn "one catalog lists this
-					// name" into a billed provider and a dollar amount in the
-					// same write, for a session whose route may simply not have
-					// been recorded yet. Deriving it is the legacy repairer's
+					// Live ingestion prices what the transcript or the binding's
+					// route hint named outright. Resolving the model against the
+					// catalog would otherwise turn "one catalog lists this name"
+					// into a billed provider and a dollar amount in the same
+					// write, for a session whose route may simply not have been
+					// recorded yet — so that derivation is the legacy repairer's
 					// job, once no hook is coming.
+					//
+					// A chat session is the one case where "once no hook is
+					// coming" is already true at ingestion: it has no terminal
+					// hook, so its hint is final rather than early, and deferring
+					// leaves it unpriced until the next daemon start.
+					inferChatAttribution(source, snapshot, &parsed.Events[index])
 					estimate, estimateErr := snapshot.Estimate(parsed.Events[index])
 					if estimateErr != nil {
 						parsed.Events[index].Costs.PricingVersion = snapshot.ProviderVersion(parsed.Events[index].BillingProviderID)
@@ -375,6 +381,41 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 	}
 	result.More = progressed && !chunk.atEOF && !chunk.readToEOF
 	return result, nil
+}
+
+// inferChatAttribution derives a billing provider from the served model name
+// for a chat session that named none, so its usage prices at write time.
+//
+// This is the same last-resort inference the legacy repairer performs, and it
+// is admissible here for the same reason: the served model name is a recorded
+// fact about who answered. The repairer waits because a TUI session's hook may
+// still arrive and name the route outright. A chat session has no terminal
+// hook, so nothing is coming and waiting only costs the session its estimate
+// until the next daemon start.
+//
+// A route the hook already reported as unnameable stays unattributed, matching
+// the repairer: guessing anthropic from a bare claude-* name would price a
+// proxy at Anthropic list rates with no observation coming to correct it.
+func inferChatAttribution(
+	source domain.UsageSourceContext,
+	snapshot *pricing.Snapshot,
+	event *domain.ModelUsageEvent,
+) {
+	if event.BillingProviderID != "" {
+		return
+	}
+	if domain.NormalizeSessionMode(source.SessionMode) != domain.SessionModeChat {
+		return
+	}
+	if strings.TrimSpace(source.ProviderHint) == pricing.UnidentifiedBillingRoute {
+		return
+	}
+	inferred := snapshot.ProviderForModel(event.ModelID)
+	if inferred == "" {
+		return
+	}
+	event.BillingProviderID = inferred
+	event.BillingProviderSource = domain.UsageBillingProviderInferred
 }
 
 // notifyLateRouteEvidence asks for a repair pass when a chunk landed

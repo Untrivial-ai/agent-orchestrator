@@ -44,7 +44,9 @@ SELECT
     CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.cached_input_cost_nanos END), 0) AS INTEGER) AS unpriced_known_cached_input_nanos,
     CAST(COUNT(mue.output_cost_nanos) AS INTEGER) AS known_output_count,
     CAST(COALESCE(SUM(mue.output_cost_nanos), 0) AS INTEGER) AS known_output_nanos,
-    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.output_cost_nanos END), 0) AS INTEGER) AS unpriced_known_output_nanos
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.output_cost_nanos END), 0) AS INTEGER) AS unpriced_known_output_nanos,
+    CAST(COUNT(CASE WHEN mue.billing_provider_id IS NULL THEN 1 END) AS INTEGER) AS unattributed_event_count,
+    CAST(COUNT(CASE WHEN ub.provider_hint = 'unidentified' THEN 1 END) AS INTEGER) AS unidentified_route_event_count
 FROM model_usage_events mue
 JOIN usage_bindings ub ON ub.id = mue.binding_id
 WHERE ub.session_id = ?
@@ -77,6 +79,8 @@ type AggregateUsageBySessionHarnessModelRow struct {
 	KnownOutputCount              int64
 	KnownOutputNanos              int64
 	UnpricedKnownOutputNanos      int64
+	UnattributedEventCount        int64
+	UnidentifiedRouteEventCount   int64
 }
 
 // Grouped by model alone. The billing provider is a pricing input, not a
@@ -117,6 +121,8 @@ func (q *Queries) AggregateUsageBySessionHarnessModel(ctx context.Context, sessi
 			&i.KnownOutputCount,
 			&i.KnownOutputNanos,
 			&i.UnpricedKnownOutputNanos,
+			&i.UnattributedEventCount,
+			&i.UnidentifiedRouteEventCount,
 		); err != nil {
 			return nil, err
 		}
@@ -407,9 +413,11 @@ SELECT
     ub.native_root_id,
     ub.initial_model_id,
     ub.provider_hint,
-    ub.state AS binding_state
+    ub.state AS binding_state,
+    s.session_mode
 FROM usage_sources us
 JOIN usage_bindings ub ON ub.id = us.binding_id
+JOIN sessions s ON s.id = ub.session_id
 WHERE us.id = ?
 `
 
@@ -436,6 +444,7 @@ type GetUsageSourceWithBindingAndSessionRow struct {
 	InitialModelID      string
 	ProviderHint        string
 	BindingState        domain.UsageBindingState
+	SessionMode         domain.SessionMode
 }
 
 func (q *Queries) GetUsageSourceWithBindingAndSession(ctx context.Context, id int64) (GetUsageSourceWithBindingAndSessionRow, error) {
@@ -464,6 +473,7 @@ func (q *Queries) GetUsageSourceWithBindingAndSession(ctx context.Context, id in
 		&i.InitialModelID,
 		&i.ProviderHint,
 		&i.BindingState,
+		&i.SessionMode,
 	)
 	return i, err
 }
@@ -695,7 +705,9 @@ SELECT
     CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.cached_input_cost_nanos END), 0) AS INTEGER) AS unpriced_known_cached_input_nanos,
     CAST(COUNT(mue.output_cost_nanos) AS INTEGER) AS known_output_count,
     CAST(COALESCE(SUM(mue.output_cost_nanos), 0) AS INTEGER) AS known_output_nanos,
-    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.output_cost_nanos END), 0) AS INTEGER) AS unpriced_known_output_nanos
+    CAST(COALESCE(SUM(CASE WHEN mue.estimated_cost_nanos IS NULL THEN mue.output_cost_nanos END), 0) AS INTEGER) AS unpriced_known_output_nanos,
+    CAST(COUNT(CASE WHEN mue.billing_provider_id IS NULL THEN 1 END) AS INTEGER) AS unattributed_event_count,
+    CAST(COUNT(CASE WHEN ub.provider_hint = 'unidentified' THEN 1 END) AS INTEGER) AS unidentified_route_event_count
 FROM model_usage_events mue
 JOIN usage_bindings ub ON ub.id = mue.binding_id
 JOIN sessions s ON s.id = ub.session_id
@@ -724,6 +736,8 @@ type ListCompactSessionUsageRow struct {
 	KnownOutputCount              int64
 	KnownOutputNanos              int64
 	UnpricedKnownOutputNanos      int64
+	UnattributedEventCount        int64
+	UnidentifiedRouteEventCount   int64
 }
 
 func (q *Queries) ListCompactSessionUsage(ctx context.Context, projectID interface{}) ([]ListCompactSessionUsageRow, error) {
@@ -754,6 +768,8 @@ func (q *Queries) ListCompactSessionUsage(ctx context.Context, projectID interfa
 			&i.KnownOutputCount,
 			&i.KnownOutputNanos,
 			&i.UnpricedKnownOutputNanos,
+			&i.UnattributedEventCount,
+			&i.UnidentifiedRouteEventCount,
 		); err != nil {
 			return nil, err
 		}
