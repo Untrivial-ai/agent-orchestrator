@@ -1218,13 +1218,15 @@ func (m *Manager) stopTransitionTargetConclusive(ctx context.Context, transition
 	return m.stopSourceControllerConclusive(current)
 }
 
-func (m *Manager) retainUnconfirmedTransitionTarget(transition domain.SessionInterfaceTransition, cause error) {
+func (m *Manager) retainUnconfirmedTransitionTarget(transition domain.SessionInterfaceTransition, cause error) error {
 	// Keep the durable input fence and startup-recovery record. Terminalizing the
 	// saga would let ordinary restore adopt a target that never passed admission.
 	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionTargetStarting,
 		"TARGET_STOP_UNCONFIRMED", "AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface. "+cause.Error()); err != nil {
 		m.logger.Error("interface transition: retain unconfirmed target shutdown", "transition", transition.ID, "error", err)
+		return fmt.Errorf("persist unconfirmed target for transition %s: %w", transition.ID, err)
 	}
+	return nil
 }
 
 func (m *Manager) moveInterfaceTransition(
@@ -1516,11 +1518,30 @@ func (m *Manager) hasActiveInterfaceTransition(ctx context.Context, id domain.Se
 func (m *Manager) recoverInterruptedInterfaceTransitions(
 	ctx context.Context,
 ) ([]domain.SessionInterfaceTransition, error) {
+	return m.recoverInterfaceTransitions(ctx, "")
+}
+
+// A nonempty transitionID is an exact startup-captured recovery obligation.
+// Deferred recovery must never sweep handoffs started after the API opened.
+func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID string) ([]domain.SessionInterfaceTransition, error) {
+	m.interfaceRecoveryMu.Lock()
+	defer m.interfaceRecoveryMu.Unlock()
 	store, ok := m.store.(interfaceTransitionStore)
 	if !ok {
 		return nil, nil
 	}
-	active, err := store.ListActiveSessionInterfaceTransitions(ctx)
+	var active []domain.SessionInterfaceTransition
+	var err error
+	if transitionID == "" {
+		active, err = store.ListActiveSessionInterfaceTransitions(ctx)
+	} else {
+		var transition domain.SessionInterfaceTransition
+		var found bool
+		transition, found, err = store.GetSessionInterfaceTransition(ctx, transitionID)
+		if found && transition.Active() {
+			active = append(active, transition)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1531,10 +1552,16 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 		m.agentOpMu.Lock()
 		operation := m.agentOperations[transition.SessionID]
 		if operation != "" && operation != agentOperationInterfaceRecovery {
+			if m.deferredInterfaceRecovery == nil {
+				m.deferredInterfaceRecovery = make(map[domain.SessionID]string)
+			}
+			m.deferredInterfaceRecovery[transition.SessionID] = transition.ID
 			m.agentOpMu.Unlock()
-			return nil, fmt.Errorf("recover transition %s: %w", transition.ID, errAgentOperationInProgress)
+			m.logger.Info("interface transition: recovery deferred behind exclusive operation", "sessionID", transition.SessionID, "operation", operation)
+			continue
 		}
 		m.agentOperations[transition.SessionID] = agentOperationInterfaceRecovery
+		delete(m.deferredInterfaceRecovery, transition.SessionID)
 		drained := m.inputDrained[transition.SessionID]
 		m.agentOpMu.Unlock()
 		if drained != nil {
@@ -1553,7 +1580,9 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 			}
 			if found && !rec.IsTerminated && domain.NormalizeSessionMode(rec.Mode) == transition.TargetMode {
 				if stopErr := m.stopTransitionTargetConclusive(ctx, *transition); stopErr != nil {
-					m.retainUnconfirmedTransitionTarget(*transition, stopErr)
+					if err := m.retainUnconfirmedTransitionTarget(*transition, stopErr); err != nil {
+						return nil, err
+					}
 					m.logger.Error("interface transition: session quarantined after unconfirmed target shutdown", "sessionID", transition.SessionID, "transition", transition.ID, "error", stopErr)
 					continue
 				}
@@ -1595,6 +1624,21 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 			return nil, err
 		}
 		if !moved {
+			// Deferred recovery runs after API admission. Cancellation may win
+			// while the source is still intact; that durable result has no target
+			// shutdown obligation and must not leave a permanent recovery fence.
+			current, found, readErr := store.GetSessionInterfaceTransition(ctx, transition.ID)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if found && current.Phase == domain.SessionInterfaceTransitionCancelled &&
+				(transition.Phase == domain.SessionInterfaceTransitionRequested ||
+					transition.Phase == domain.SessionInterfaceTransitionPreflighting ||
+					transition.Phase == domain.SessionInterfaceTransitionDraining) {
+				*transition = current
+				m.endAgentOperation(transition.SessionID, agentOperationInterfaceRecovery)
+				continue
+			}
 			return nil, fmt.Errorf("transition %s changed while recovering", transition.ID)
 		}
 		transition.Phase = domain.SessionInterfaceTransitionRecovery

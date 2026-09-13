@@ -425,6 +425,8 @@ type Manager struct {
 	startupBackgroundReconcileOnce  sync.Once
 	agentOpMu                       sync.Mutex
 	agentOperations                 map[domain.SessionID]agentOperationKind
+	interfaceRecoveryMu             sync.Mutex
+	deferredInterfaceRecovery       map[domain.SessionID]string
 	// switchDecisionInput opens a narrow human-only terminal lane while the
 	// source is blocked on permission during a mandatory switch.
 	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
@@ -2762,7 +2764,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 }
 
 // ReconcileStartupSafety closes interrupted operations or quarantines ambiguous
-// interface targets with a restored input fence before the API accepts input.
+// interface targets and agent switches with a restored input fence before the API accepts input.
 func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	if err := m.ReconcileCodexAccountSwitches(ctx); err != nil {
 		return fmt.Errorf("reconcile: Codex account-switch pass: %w", err)
@@ -2770,7 +2772,7 @@ func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	// A daemon restart destroys the in-memory input fence. Close any durable
 	// non-terminal switch before adopting runtimes so the API never implies an
 	// unconfirmed continuation was delivered.
-	if err := m.ReconcileAgentSwitches(ctx); err != nil {
+	if err := m.reconcileAgentSwitches(ctx, true); err != nil {
 		return fmt.Errorf("reconcile: agent-switch pass: %w", err)
 	}
 	m.startTransitionMessageDispatcher(ctx)

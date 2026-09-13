@@ -17,6 +17,137 @@ type shutdownGuardTransitionChat struct {
 	stopErr     error
 }
 
+type failedShutdownMarkerStore struct {
+	*transitionStore
+	err error
+}
+
+type cancelDuringRecoveryStore struct {
+	*transitionStore
+	cancel func() error
+}
+
+func (s *cancelDuringRecoveryStore) AdvanceSessionInterfaceTransition(ctx context.Context, id string, expected, next domain.SessionInterfaceTransitionPhase, nativeID, code, detail string, at time.Time) (bool, error) {
+	if next == domain.SessionInterfaceTransitionRecovery {
+		if err := s.cancel(); err != nil {
+			return false, err
+		}
+	}
+	return s.transitionStore.AdvanceSessionInterfaceTransition(ctx, id, expected, next, nativeID, code, detail, at)
+}
+
+func TestDeferredInterfaceRecoveryReleasesCancelledTransition(t *testing.T) {
+	ctx := context.Background()
+	m, st, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	_, _, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "cancel-race", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Phase: domain.SessionInterfaceTransitionPreflighting, NativeConversationID: "native-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.store = &cancelDuringRecoveryStore{transitionStore: st, cancel: func() error {
+		return m.CancelInterfaceTransition(ctx, "session-1")
+	}}
+	if _, err := m.recoverInterfaceTransitions(ctx, "cancel-race"); err != nil {
+		t.Fatalf("cancelled recovery failed: %v", err)
+	}
+	if m.SessionMutationInProgress("session-1") {
+		t.Fatal("durably cancelled recovery retained its input fence")
+	}
+}
+
+func (s *failedShutdownMarkerStore) AdvanceSessionInterfaceTransition(ctx context.Context, id string, expected, next domain.SessionInterfaceTransitionPhase, nativeID, code, detail string, at time.Time) (bool, error) {
+	if code == "TARGET_STOP_UNCONFIRMED" {
+		return false, s.err
+	}
+	return s.transitionStore.AdvanceSessionInterfaceTransition(ctx, id, expected, next, nativeID, code, detail, at)
+}
+
+func TestStartupReportsUnpersistedShutdownMarker(t *testing.T) {
+	m, st, _, chat, _ := newTransitionManager(t, domain.SessionModeChat)
+	m.chat = &shutdownGuardTransitionChat{transitionChat: chat, stopErr: errors.New("host remains alive")}
+	want := errors.New("marker write failed")
+	m.store = &failedShutdownMarkerStore{transitionStore: st, err: want}
+	_, _, err := st.CreateSessionInterfaceTransition(context.Background(), domain.SessionInterfaceTransition{
+		ID: "unmarked", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Phase: domain.SessionInterfaceTransitionTargetStarting, NativeConversationID: "native-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReconcileStartupSafety(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("startup swallowed unpersisted recovery marker: %v", err)
+	}
+	if release, ok := m.AcquireSessionInput("session-1"); ok {
+		release()
+		t.Fatal("persistence failure released target fence")
+	}
+}
+
+func TestStartupDefersInterfaceRecoveryBehindAccountOperation(t *testing.T) {
+	ctx := context.Background()
+	m, st, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
+	_, created, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "interrupted", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Phase: domain.SessionInterfaceTransitionTargetStarting, NativeConversationID: "native-1",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil || !created {
+		t.Fatalf("seed transition: %v %v", created, err)
+	}
+	if err := m.beginOrReclaimCodexAccountSwitchOperation(ctx, "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+		t.Fatalf("account recovery collision aborted startup: %v", err)
+	}
+	if release, ok := m.AcquireSessionInput("session-1"); ok {
+		release()
+		t.Fatal("deferred transition admitted input")
+	}
+	// This handoff started after startup. A deferred recovery must not sweep it.
+	other := st.sessions["session-1"]
+	other.ID = "live-session"
+	st.sessions[other.ID] = other
+	_, _, err = st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "live-handoff", SessionID: other.ID, SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeTUI,
+		Phase: domain.SessionInterfaceTransitionRequested, NativeConversationID: "native-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.endAgentOperation("session-1", agentOperationCodexAccountSwitch)
+	// Even immediately after releasing the account gate, the durable handoff
+	// must either be recovered or still protected from input/reaper/restore.
+	if !m.SessionMutationInProgress("session-1") {
+		if _, active, err := st.GetActiveSessionInterfaceTransition(ctx, "session-1"); err != nil || active {
+			t.Fatalf("account release exposed unrecovered handoff: %v %v", active, err)
+		}
+	}
+	m.agentSwitchWorkers.Wait()
+	if _, active, err := st.GetActiveSessionInterfaceTransition(ctx, "session-1"); err != nil || active {
+		t.Fatalf("deferred handoff never recovered: %v %v", active, err)
+	}
+	if current, found, err := st.GetSessionInterfaceTransition(ctx, "live-handoff"); err != nil || !found || current.Phase != domain.SessionInterfaceTransitionRequested {
+		t.Fatalf("deferred recovery changed a live unrelated handoff: %+v %v", current, err)
+	}
+}
+
+func TestDeferredInterfaceRecoveryRespectsWorkerShutdown(t *testing.T) {
+	m, _, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
+	m.deferredInterfaceRecovery = map[domain.SessionID]string{"session-1": "interrupted"}
+	m.agentOperations["session-1"] = agentOperationCodexAccountSwitch
+	if err := m.WaitAgentSwitchWorkers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m.endAgentOperation("session-1", agentOperationCodexAccountSwitch)
+	if !m.SessionMutationInProgress("session-1") {
+		t.Fatal("shutdown release removed the deferred input fence")
+	}
+	m.agentSwitchWorkers.Wait()
+}
+
 func TestStartupQuarantinesUnconfirmedTargetWithoutBlockingOtherSessions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

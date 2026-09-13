@@ -57,6 +57,7 @@ type switchTestStore struct {
 	requestHandoffAfterCommitErr  error
 	requestHandoffNoop            bool
 	failTransitionErr             error
+	mutationErr                   error
 	faultMutations                []ports.AgentSwitchMutation
 	operationalFaults             []ports.AgentSwitchOperationalFault
 	daemonFaults                  []ports.AgentSwitchDaemonFault
@@ -285,6 +286,9 @@ func (s *switchTestStore) ApplyAgentSwitchMutation(ctx context.Context, mutation
 	s.mu.Lock()
 	s.faultMutations = append(s.faultMutations, mutation)
 	s.mu.Unlock()
+	if s.mutationErr != nil {
+		return ports.AgentSwitchMutationResult{}, s.mutationErr
+	}
 	changed, err := s.UpdateAgentSwitch(ctx, mutation.Record, mutation.ExpectedState, mutation.ExpectedSourceGenerationID, mutation.ExpectedTargetGenerationID)
 	return ports.AgentSwitchMutationResult{CoreChanged: changed, Enrollment: domain.AgentSwitchEnrollmentEnrolled}, err
 }
@@ -3990,6 +3994,57 @@ func TestSwitchAgentRetainedActivationAndCleanupFailureRecoversByAdoptingOpaqueH
 	}
 	if manager.SessionMutationInProgress("proj-1") {
 		t.Fatal("conservative terminal recovery did not reopen the input gate")
+	}
+}
+
+func TestStartupQuarantinesPersistedAgentSwitchAmbiguity(t *testing.T) {
+	for _, state := range []domain.AgentSwitchState{domain.AgentSwitchStoppingSource, domain.AgentSwitchStartingTarget} {
+		for _, writeFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/write-fails=%v", state, writeFails), func(t *testing.T) {
+				runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+				manager, store, _ := newSwitchTestManager(t, runtime)
+				runtime.aliveErr = ports.ErrRuntimeProbeInconclusive
+				writeErr := errors.New("marker storage unavailable")
+				if writeFails {
+					store.mutationErr = writeErr
+				}
+				sw := domain.AgentSwitch{
+					ID: "ambiguous", SessionID: "proj-1", State: state,
+					FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+					SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
+					RequestedAt: time.Now(), UpdatedAt: time.Now(),
+				}
+				store.switches[sw.ID] = sw
+				healthy := store.sessions[sw.SessionID]
+				healthy.ID = "healthy"
+				store.sessions[healthy.ID] = healthy
+				err := manager.ReconcileStartupSafety(context.Background())
+				if writeFails {
+					if !errors.Is(err, writeErr) {
+						t.Fatalf("startup hid failed marker: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("persisted per-session quarantine aborted startup: %v", err)
+				}
+				if release, ok := manager.AcquireSessionInput(sw.SessionID); ok {
+					release()
+					t.Fatal("ambiguous switch admitted input")
+				}
+				if !writeFails {
+					if !store.switches[sw.ID].RequiresRecovery() {
+						t.Fatal("quarantine has no durable recovery marker")
+					}
+					if release, ok := manager.AcquireSessionInput(healthy.ID); !ok {
+						t.Fatal("unrelated session was fenced")
+					} else {
+						release()
+					}
+					if err := manager.ReconcileStartupSafety(context.Background()); err != nil {
+						t.Fatalf("persisted quarantine failed repeat recovery: %v", err)
+					}
+				}
+			})
+		}
 	}
 }
 
