@@ -107,6 +107,7 @@ func (m *codexAccountManager) logout(ctx context.Context, accountID string) erro
 		}
 		m.mu.Lock()
 		m.active = cleared
+		m.markDeviceReconciledLocked(false, m.now())
 		m.mu.Unlock()
 		m.setGlobalAuthentication(signedOutAuthentication(m.now(), "Codex is signed out."))
 	}
@@ -152,15 +153,6 @@ func (m *codexAccountManager) activeAccountID() string {
 	return m.active.AccountID
 }
 
-func (m *codexAccountManager) activateLocked(ctx context.Context, accountID string, expectedRevision int64) error {
-	record, ok := m.catalog.record(accountID)
-	if !ok || record.Snapshot.Status != domain.CodexAccountStatusValid {
-		return apierr.NotFound("CODEX_ACCOUNT_NOT_FOUND", "Codex account not found")
-	}
-	_, err := m.activateFromCredentialLocked(ctx, accountID, expectedRevision, filepath.Join(record.Home, codexCredentialFilename), nil)
-	return err
-}
-
 func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, accountID string, expectedRevision int64, sourceCredential string, expectedGlobal []byte) (domain.CodexActiveAccount, error) {
 	record, ok := m.catalog.record(accountID)
 	if !ok || record.Snapshot.Status != domain.CodexAccountStatusValid {
@@ -175,8 +167,11 @@ func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, 
 	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
 		return domain.CodexActiveAccount{}, ports.ErrCodexGlobalCredentialStoreUnsupported
 	}
-	if expectedGlobal != nil && (previousErr != nil || !bytes.Equal(previousCredential, expectedGlobal)) {
-		return domain.CodexActiveAccount{}, ports.ErrCodexGlobalAccountChanged
+	if expectedGlobal != nil {
+		expectsMissing := len(expectedGlobal) == 0
+		if (expectsMissing && !errors.Is(previousErr, os.ErrNotExist)) || (!expectsMissing && (previousErr != nil || !bytes.Equal(previousCredential, expectedGlobal))) {
+			return domain.CodexActiveAccount{}, ports.ErrCodexGlobalAccountChanged
+		}
 	}
 	restorePrevious := func() error {
 		current, currentErr := readOpaqueCredential(globalPath)
@@ -237,7 +232,11 @@ func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, 
 	}
 	m.mu.Lock()
 	m.active = active
+	m.deviceAccountID = accountID
+	m.deferredAccountID = ""
+	m.deviceCredentialPresent = true
 	m.unmanaged = nil
+	m.markDeviceReconciledLocked(true, now)
 	m.mu.Unlock()
 	if refreshed, readErr := readOpaqueCredential(globalPath); readErr == nil {
 		_ = writePrivateFileAtomic(filepath.Join(record.Home, codexCredentialFilename), refreshed)

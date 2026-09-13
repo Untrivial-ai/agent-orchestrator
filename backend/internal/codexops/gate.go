@@ -13,10 +13,11 @@ import (
 // Publishing intent before draining existing readers prevents a late launch
 // from registering after a switch has built its controller snapshot.
 type Gate struct {
-	mu        sync.Mutex
-	shared    int
-	exclusive bool
-	drained   chan struct{}
+	mu            sync.Mutex
+	shared        int
+	exclusive     bool
+	exclusiveDone chan struct{}
+	drained       chan struct{}
 }
 
 // NewGate creates an idle device-global operation gate.
@@ -37,11 +38,42 @@ func (g *Gate) AcquireShared(ctx context.Context) (func(), error) {
 		g.mu.Unlock()
 		return nil, ports.ErrCodexAccountSwitchInProgress
 	}
+	release := g.acquireSharedLocked()
+	g.mu.Unlock()
+	return release, nil
+}
+
+// AcquireSharedWait admits an operation after an active exclusive owner
+// releases the gate. Controller and reviewer launches use this path so a
+// short-lived device reconciliation delays them instead of looking like an
+// account switch failure.
+func (g *Gate) AcquireSharedWait(ctx context.Context) (func(), error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		g.mu.Lock()
+		if !g.exclusive {
+			release := g.acquireSharedLocked()
+			g.mu.Unlock()
+			return release, nil
+		}
+		done := g.exclusiveDone
+		g.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// acquireSharedLocked registers one shared owner. The caller holds g.mu.
+func (g *Gate) acquireSharedLocked() func() {
 	if g.shared == 0 {
 		g.drained = make(chan struct{})
 	}
 	g.shared++
-	g.mu.Unlock()
 
 	var once sync.Once
 	return func() {
@@ -53,7 +85,7 @@ func (g *Gate) AcquireShared(ctx context.Context) (func(), error) {
 			}
 			g.mu.Unlock()
 		})
-	}, nil
+	}
 }
 
 // AcquireExclusive closes shared admission before waiting for already-admitted
@@ -68,6 +100,7 @@ func (g *Gate) AcquireExclusive(ctx context.Context) (ports.CodexOperationLease,
 		return nil, ports.ErrCodexAccountSwitchInProgress
 	}
 	g.exclusive = true
+	g.exclusiveDone = make(chan struct{})
 	drained := g.drained
 	g.mu.Unlock()
 
@@ -77,6 +110,8 @@ func (g *Gate) AcquireExclusive(ctx context.Context) (ports.CodexOperationLease,
 	case <-ctx.Done():
 		g.mu.Lock()
 		g.exclusive = false
+		close(g.exclusiveDone)
+		g.exclusiveDone = nil
 		g.mu.Unlock()
 		return nil, ctx.Err()
 	}
@@ -101,6 +136,8 @@ func (l *exclusiveLease) Release() {
 	l.once.Do(func() {
 		l.gate.mu.Lock()
 		l.gate.exclusive = false
+		close(l.gate.exclusiveDone)
+		l.gate.exclusiveDone = nil
 		l.gate.mu.Unlock()
 	})
 }

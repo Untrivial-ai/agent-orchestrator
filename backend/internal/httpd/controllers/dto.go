@@ -1215,9 +1215,22 @@ type CodexAccountsResponse struct {
 	AccountRevision        int64                                `json:"accountRevision"`
 	Accounts               []CodexAccountResponse               `json:"accounts"`
 	Capabilities           CodexAccountCapabilitiesResponse     `json:"capabilities"`
+	DeviceReconciliation   CodexDeviceReconciliationResponse    `json:"deviceReconciliation"`
 	UnmanagedGlobalAccount *CodexUnmanagedGlobalAccountResponse `json:"unmanagedGlobalAccount,omitempty"`
 	ActiveLogin            *CodexActiveLoginResponse            `json:"activeLogin,omitempty"`
 	CurrentSwitch          *CodexAccountSwitchResponse          `json:"currentSwitch,omitempty"`
+}
+
+// CodexDeviceReconciliationResponse reports whether the durable active pointer
+// has been verified against Codex's canonical device credential.
+type CodexDeviceReconciliationResponse struct {
+	Status                string     `json:"status" enum:"not_checked,checking,verified,temporarily_unavailable,blocked"`
+	ActiveAccountVerified bool       `json:"activeAccountVerified"`
+	ReasonCode            string     `json:"reasonCode"`
+	Retryable             bool       `json:"retryable"`
+	AttemptedAt           *time.Time `json:"attemptedAt,omitempty"`
+	VerifiedAt            *time.Time `json:"verifiedAt,omitempty"`
+	NextRetryAt           *time.Time `json:"nextRetryAt,omitempty"`
 }
 
 // CodexAccountResponse contains UI account facts without provider or storage identity.
@@ -1313,17 +1326,20 @@ type CodexAccountCapabilitiesResponse struct {
 
 // CodexUnmanagedGlobalAccountResponse explains a device identity AO cannot manage.
 type CodexUnmanagedGlobalAccountResponse struct {
-	Label        string  `json:"label"`
-	AuthMethod   string  `json:"authMethod" enum:"chatgpt,api_key,other,unknown"`
-	AccountEmail *string `json:"accountEmail,omitempty"`
-	ReasonCode   string  `json:"reasonCode"`
-	Reason       string  `json:"reason"`
+	Label          string                      `json:"label"`
+	AuthMethod     string                      `json:"authMethod" enum:"chatgpt,api_key,other,unknown"`
+	AccountEmail   *string                     `json:"accountEmail,omitempty"`
+	Authentication CodexAuthenticationResponse `json:"authentication"`
+	ReasonCode     string                      `json:"reasonCode"`
+	Reason         string                      `json:"reason"`
 }
 
 // EnsureCodexAccountsRequest selects accounts for display reads.
 type EnsureCodexAccountsRequest struct {
-	AccountIDs   []string `json:"accountIds,omitempty"`
-	IncludeUsage bool     `json:"includeUsage,omitempty"`
+	AccountIDs                []string `json:"accountIds,omitempty"`
+	IncludeUsage              bool     `json:"includeUsage,omitempty"`
+	ForceAuthentication       bool     `json:"forceAuthentication,omitempty"`
+	ForceDeviceReconciliation bool     `json:"forceDeviceReconciliation,omitempty"`
 }
 
 // ConsumeCodexAccountResetCreditRequest identifies one idempotent provider
@@ -1387,29 +1403,17 @@ type CodexAccountSwitchPhase string
 
 // CodexAccountSwitchResponse contains only safe AO identifiers and progress.
 type CodexAccountSwitchResponse struct {
-	ID                     string                              `json:"id"`
-	SourceAccountID        string                              `json:"sourceAccountId"`
-	TargetAccountID        string                              `json:"targetAccountId"`
-	Phase                  CodexAccountSwitchPhase             `json:"phase" enum:"requested,stopping_sessions,sessions_stopped,checkpointing_source,activating_target,verifying_target,restarting_sessions,rollback_required,recovery_required,completed,failed"`
-	FailureCode            string                              `json:"failureCode,omitempty"`
-	Sessions               []CodexAccountSwitchSessionResponse `json:"sessions"`
-	CanRecover             bool                                `json:"canRecover"`
-	CredentialsCommittedAt *time.Time                          `json:"credentialsCommittedAt,omitempty"`
-	CreatedAt              time.Time                           `json:"createdAt"`
-	UpdatedAt              time.Time                           `json:"updatedAt"`
-	CompletedAt            *time.Time                          `json:"completedAt,omitempty"`
-}
-
-// CodexAccountSwitchSessionResponse is safe AO session progress for a switch.
-type CodexAccountSwitchSessionResponse struct {
-	SessionID     string     `json:"sessionId"`
-	InterfaceMode string     `json:"interfaceMode" enum:"tui,chat"`
-	WasRunning    bool       `json:"wasRunning"`
-	StopState     string     `json:"stopState"`
-	RestartState  string     `json:"restartState"`
-	ErrorCode     string     `json:"errorCode,omitempty"`
-	StoppedAt     *time.Time `json:"stoppedAt,omitempty"`
-	RestartedAt   *time.Time `json:"restartedAt,omitempty"`
+	ID                     string                  `json:"id"`
+	SourceKind             string                  `json:"sourceKind" enum:"managed,device,none"`
+	SourceAccountID        string                  `json:"sourceAccountId,omitempty"`
+	TargetAccountID        string                  `json:"targetAccountId"`
+	Phase                  CodexAccountSwitchPhase `json:"phase" enum:"requested,checkpointing_source,activating_target,verifying_target,rollback_required,recovery_required,completed,failed"`
+	FailureCode            string                  `json:"failureCode,omitempty"`
+	CanRecover             bool                    `json:"canRecover"`
+	CredentialsCommittedAt *time.Time              `json:"credentialsCommittedAt,omitempty"`
+	CreatedAt              time.Time               `json:"createdAt"`
+	UpdatedAt              time.Time               `json:"updatedAt"`
+	CompletedAt            *time.Time              `json:"completedAt,omitempty"`
 }
 
 // AgentReadinessSnapshot is one normalized harness readiness view.

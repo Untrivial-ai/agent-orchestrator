@@ -16,7 +16,7 @@ export function mergeCodexAccounts(
 		: [...incoming.accounts];
 	const normalized = accounts.map((account) => ({
 		...account,
-		active: account.id === incoming.activeAccountId,
+		active: Boolean(incoming.deviceReconciliation?.activeAccountVerified) && account.id === incoming.activeAccountId,
 	}));
 	normalized.sort((left, right) => {
 		if (left.active !== right.active) return left.active ? -1 : 1;
@@ -48,6 +48,51 @@ export function codexAccountSignedOut(account: Pick<CodexAccount, "authenticatio
 	return account.authentication.state === "unauthorized" || account.status === "signed_out";
 }
 
+export type CodexAuthenticationDisplay = {
+	key:
+		| "settings.codexAccounts.signedIn"
+		| "settings.codexAccounts.signedOut"
+		| "settings.codexAccounts.reason.authUnauthorized"
+		| "settings.codexAccounts.authenticationChecking"
+		| "settings.codexAccounts.authenticationCheckFailed"
+		| "settings.codexAccounts.authenticationCheckTimeout"
+		| "settings.codexAccounts.authenticationUpdateRequired"
+		| "settings.codexAccounts.authenticationCodexNotInstalled";
+	action: "retry" | "reauthenticate" | null;
+	checking: boolean;
+};
+
+export function codexAuthenticationDisplay(account: Pick<CodexAccount, "authentication" | "status">): CodexAuthenticationDisplay {
+	const authentication = account.authentication;
+	if (account.status === "signed_out") {
+		return { key: "settings.codexAccounts.signedOut", action: "reauthenticate", checking: false };
+	}
+	if (authentication.freshness === "checking") {
+		return { key: "settings.codexAccounts.authenticationChecking", action: null, checking: true };
+	}
+	if (authentication.state === "unauthorized") {
+		return { key: "settings.codexAccounts.reason.authUnauthorized", action: "reauthenticate", checking: false };
+	}
+	switch (authentication.reasonCode) {
+		case "auth_skipped_not_installed":
+			return { key: "settings.codexAccounts.authenticationCodexNotInstalled", action: null, checking: false };
+		case "auth_check_unsupported":
+			return { key: "settings.codexAccounts.authenticationUpdateRequired", action: null, checking: false };
+		case "auth_check_timeout":
+			return { key: "settings.codexAccounts.authenticationCheckTimeout", action: "retry", checking: false };
+		case "auth_check_failed":
+		case "auth_check_inconclusive":
+			return { key: "settings.codexAccounts.authenticationCheckFailed", action: "retry", checking: false };
+	}
+	if (codexAccountAuthorized(account)) {
+		return { key: "settings.codexAccounts.signedIn", action: null, checking: false };
+	}
+	if (authentication.reasonCode === "not_checked") {
+		return { key: "settings.codexAccounts.authenticationChecking", action: null, checking: true };
+	}
+	return { key: "settings.codexAccounts.authenticationCheckFailed", action: "retry", checking: false };
+}
+
 const reasonKeys = {
 	account_valid: "settings.codexAccounts.reason.accountValid",
 	account_signed_out: "settings.codexAccounts.reason.accountSignedOut",
@@ -70,6 +115,10 @@ const reasonKeys = {
 	capacity_not_checked: "settings.codexAccounts.reason.capacityNotChecked",
 	capacity_checking: "settings.codexAccounts.reason.capacityChecking",
 	capacity_check_failed: "settings.codexAccounts.reason.capacityCheckFailed",
+	capacity_client_start_failed: "settings.codexAccounts.reason.capacityClientStartFailed",
+	capacity_provider_rejected: "settings.codexAccounts.reason.capacityProviderRejected",
+	capacity_provider_unavailable: "settings.codexAccounts.reason.capacityProviderUnavailable",
+	capacity_check_stopped: "settings.codexAccounts.reason.capacityCheckStopped",
 	capacity_check_inconclusive: "settings.codexAccounts.reason.capacityCheckInconclusive",
 	capacity_check_timeout: "settings.codexAccounts.reason.capacityCheckTimeout",
 	capacity_skipped_auth_unknown: "settings.codexAccounts.reason.capacitySkippedAuthUnknown",
@@ -83,6 +132,7 @@ const reasonKeys = {
 	global_account_unverified: "settings.codexAccounts.reason.globalAccountUnverified",
 	global_account_identity_unverified: "settings.codexAccounts.reason.globalAccountIdentityUnverified",
 	global_account_changed: "settings.codexAccounts.reason.globalAccountChanged",
+	global_account_login_expired: "settings.codexAccounts.reason.globalAccountLoginExpired",
 	login_pending: "settings.codexAccounts.reason.loginPending",
 	login_completed: "settings.codexAccounts.reason.loginCompleted",
 	login_cancelled: "settings.codexAccounts.reason.loginCancelled",
@@ -90,18 +140,9 @@ const reasonKeys = {
 	login_unauthorized: "settings.codexAccounts.reason.loginUnauthorized",
 	login_unverified: "settings.codexAccounts.reason.loginUnverified",
 	login_expired: "settings.codexAccounts.reason.loginExpired",
-	running_session_not_resumable: "settings.codexAccounts.reason.runningSessionNotResumable",
 	switch_state_unavailable: "settings.codexAccounts.reason.switchStateUnavailable",
-	session_operation_in_progress: "settings.codexAccounts.reason.sessionOperationInProgress",
-	stop_unconfirmed: "settings.codexAccounts.reason.stopUnconfirmed",
 	activation_unconfirmed: "settings.codexAccounts.reason.activationUnconfirmed",
-	restart_unconfirmed: "settings.codexAccounts.reason.restartUnconfirmed",
 	rollback_unconfirmed: "settings.codexAccounts.reason.rollbackUnconfirmed",
-	session_missing: "settings.codexAccounts.reason.sessionMissing",
-	source_generation_changed: "settings.codexAccounts.reason.sourceGenerationChanged",
-	reviewer_stop_unconfirmed: "settings.codexAccounts.reason.reviewerStopUnconfirmed",
-	reviewer_restart_unconfirmed: "settings.codexAccounts.reason.reviewerRestartUnconfirmed",
-	reviewer_native_history_changed: "settings.codexAccounts.reason.reviewerNativeHistoryChanged",
 	daemon_restart_recovery: "settings.codexAccounts.reason.daemonRestartRecovery",
 } as const;
 
@@ -123,28 +164,27 @@ export type CodexSwitchDisplay = {
 };
 
 export function codexSwitchDisplay(switchState: CodexAccountSwitch): CodexSwitchDisplay {
-	const failureKey = switchState.failureCode ? codexAccountReasonKey(switchState.failureCode) : null;
-	const failureKnown = failureKey !== "settings.codexAccounts.reason.unknown";
 	const phase = switchState.phase;
 	const canRecover = switchState.canRecover && (phase === "rollback_required" || phase === "recovery_required");
 	const terminal = phase === "completed" || phase === "failed" || phase === "recovery_required" || (phase === "rollback_required" && canRecover);
 	const busy = !terminal;
-	const phaseKeys: Record<CodexAccountSwitch["phase"], CodexAccountMessageKey> = {
-		requested: "settings.codexAccounts.switch.requested",
-		stopping_sessions: "settings.codexAccounts.switch.stopping_sessions",
-		sessions_stopped: "settings.codexAccounts.switch.sessions_stopped",
-		checkpointing_source: "settings.codexAccounts.switch.checkpointing_source",
-		activating_target: "settings.codexAccounts.switch.activating_target",
-		verifying_target: "settings.codexAccounts.switch.verifying_target",
-		restarting_sessions: "settings.codexAccounts.switch.restarting_sessions",
-		rollback_required: "settings.codexAccounts.switch.rollback_required",
-		recovery_required: "settings.codexAccounts.switch.recovery_required",
-		completed: "settings.codexAccounts.switch.completed",
-		failed: "settings.codexAccounts.switch.failed",
-	};
+	let key: CodexAccountMessageKey;
+	if (busy) {
+		key = phase === "rollback_required"
+			? "settings.codexAccounts.switch.rollback_required"
+			: "settings.codexAccounts.switch.requested";
+	} else if (canRecover) {
+		key = "settings.codexAccounts.switch.recovery_required";
+	} else if (phase === "completed") {
+		key = "settings.codexAccounts.switch.completed";
+	} else if (phase === "failed") {
+		key = "settings.codexAccounts.switch.failed";
+	} else {
+		key = "settings.codexAccounts.switch.unknown";
+	}
 	return {
-		key: !busy && failureKnown && failureKey ? failureKey : phaseKeys[phase] ?? "settings.codexAccounts.switch.unknown",
-		tone: phase === "failed" ? "error" : failureKnown || phase === "rollback_required" || phase === "recovery_required" ? "warning" : "muted",
+		key,
+		tone: phase === "failed" ? "error" : phase === "rollback_required" || phase === "recovery_required" ? "warning" : "muted",
 		busy,
 		mutationBlocked: phase !== "completed" && phase !== "failed",
 		canRecover,

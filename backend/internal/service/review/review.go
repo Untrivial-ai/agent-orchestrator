@@ -436,7 +436,7 @@ func (s *Service) triggerWithSource(
 	var release func()
 	if usesCodex && s.codexOperationGate != nil {
 		var err error
-		release, err = s.codexOperationGate.AcquireShared(ctx)
+		release, err = s.codexOperationGate.AcquireSharedWait(ctx)
 		if err != nil {
 			return reviewcore.TriggerResult{}, err
 		}
@@ -501,46 +501,6 @@ func (s *Service) RestoreReviewer(ctx context.Context, workerID domain.SessionID
 	return err
 }
 
-// CodexReviewerRunning reports whether the worker has a live Codex reviewer.
-func (s *Service) CodexReviewerRunning(ctx context.Context, workerID domain.SessionID) (bool, error) {
-	return s.engine.CodexReviewerRunning(ctx, workerID)
-}
-
-// CodexReviewerBusy reports whether the worker's Codex reviewer is active.
-func (s *Service) CodexReviewerBusy(ctx context.Context, workerID domain.SessionID) (bool, error) {
-	return s.engine.CodexReviewerBusy(ctx, workerID)
-}
-
-// CodexReviewerNativeSession returns the reviewer's exact native history identity.
-func (s *Service) CodexReviewerNativeSession(ctx context.Context, workerID domain.SessionID) (string, bool, error) {
-	return s.engine.CodexReviewerNativeSession(ctx, workerID)
-}
-
-// SnapshotCodexReviewer captures the live reviewer identity for an account switch.
-func (s *Service) SnapshotCodexReviewer(ctx context.Context, workerID domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
-	return s.engine.SnapshotCodexReviewer(ctx, workerID)
-}
-
-// SuspendCodexReviewer stops the exact reviewer generation for account switching.
-func (s *Service) SuspendCodexReviewer(ctx context.Context, workerID domain.SessionID) (bool, error) {
-	return s.engine.SuspendCodexReviewer(ctx, workerID)
-}
-
-// SuspendCodexReviewerExact stops only the recorded reviewer identity.
-func (s *Service) SuspendCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedHandleID, expectedNativeSessionID string) (bool, error) {
-	return s.engine.SuspendCodexReviewerExact(ctx, workerID, expectedHandleID, expectedNativeSessionID)
-}
-
-// RestoreCodexReviewer resumes the recorded reviewer native history.
-func (s *Service) RestoreCodexReviewer(ctx context.Context, workerID domain.SessionID) error {
-	return s.engine.RestoreCodexReviewer(ctx, workerID)
-}
-
-// RestoreCodexReviewerExact resumes only the recorded reviewer native history.
-func (s *Service) RestoreCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedNativeSessionID string) error {
-	return s.engine.RestoreCodexReviewerExact(ctx, workerID, expectedNativeSessionID)
-}
-
 // SwitchReviewer atomically persists a worker's reviewer preference and returns
 // the authoritative post-switch review state.
 func (s *Service) SwitchReviewer(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.SessionReviews, error) {
@@ -567,7 +527,7 @@ func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID do
 	if s.codexOperationGate == nil || !s.codexReviewUsesCodex(ctx, workerID, harness) {
 		return func() {}, nil
 	}
-	return s.codexOperationGate.AcquireShared(ctx)
+	return s.codexOperationGate.AcquireSharedWait(ctx)
 }
 
 // ActivitySignal is reviewer-owned hook metadata.

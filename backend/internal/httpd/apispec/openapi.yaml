@@ -443,7 +443,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Conflict
-      summary: Retry incomplete restarts for one Codex account switch
+      summary: Retry recovery for one Codex account switch
       tags:
       - agents
   /api/v1/agents/codex/accounts:
@@ -655,6 +655,38 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
       summary: Consume one provider-reported Codex usage-limit reset credit
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/device/login-terminal:
+    post:
+      operationId: openCodexDeviceAccountLoginTerminal
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenCodexAccountLoginTerminalResponse'
+          description: Accepted
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Open an isolated native login that replaces the device Codex account
+        after verification
       tags:
       - agents
   /api/v1/agents/codex/accounts/ensure:
@@ -7883,22 +7915,21 @@ components:
         phase:
           enum:
           - requested
-          - stopping_sessions
-          - sessions_stopped
           - checkpointing_source
           - activating_target
           - verifying_target
-          - restarting_sessions
           - rollback_required
           - recovery_required
           - completed
           - failed
           type: string
-        sessions:
-          items:
-            $ref: '#/components/schemas/CodexAccountSwitchSessionResponse'
-          type: array
         sourceAccountId:
+          type: string
+        sourceKind:
+          enum:
+          - managed
+          - device
+          - none
           type: string
         targetAccountId:
           type: string
@@ -7907,47 +7938,12 @@ components:
           type: string
       required:
       - id
-      - sourceAccountId
+      - sourceKind
       - targetAccountId
       - phase
-      - sessions
       - canRecover
       - createdAt
       - updatedAt
-      type: object
-    CodexAccountSwitchSessionResponse:
-      properties:
-        errorCode:
-          type: string
-        interfaceMode:
-          enum:
-          - tui
-          - chat
-          type: string
-        restartState:
-          type: string
-        restartedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        sessionId:
-          type: string
-        stopState:
-          type: string
-        stoppedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        wasRunning:
-          type: boolean
-      required:
-      - sessionId
-      - interfaceMode
-      - wasRunning
-      - stopState
-      - restartState
       type: object
     CodexAccountUsageSummaryResponse:
       properties:
@@ -8002,12 +7998,15 @@ components:
           $ref: '#/components/schemas/CodexAccountCapabilitiesResponse'
         currentSwitch:
           $ref: '#/components/schemas/CodexAccountSwitchResponse'
+        deviceReconciliation:
+          $ref: '#/components/schemas/CodexDeviceReconciliationResponse'
         unmanagedGlobalAccount:
           $ref: '#/components/schemas/CodexUnmanagedGlobalAccountResponse'
       required:
       - accountRevision
       - accounts
       - capabilities
+      - deviceReconciliation
       type: object
     CodexActiveLoginResponse:
       properties:
@@ -8135,6 +8134,43 @@ components:
       required:
       - usedPercent
       type: object
+    CodexDeviceReconciliationResponse:
+      properties:
+        activeAccountVerified:
+          type: boolean
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        nextRetryAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        reasonCode:
+          type: string
+        retryable:
+          type: boolean
+        status:
+          enum:
+          - not_checked
+          - checking
+          - verified
+          - temporarily_unavailable
+          - blocked
+          type: string
+        verifiedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - status
+      - activeAccountVerified
+      - reasonCode
+      - retryable
+      type: object
     CodexResetCreditsSummaryResponse:
       properties:
         availableCount:
@@ -8162,6 +8198,8 @@ components:
           - other
           - unknown
           type: string
+        authentication:
+          $ref: '#/components/schemas/CodexAuthenticationResponse'
         label:
           type: string
         reason:
@@ -8171,6 +8209,7 @@ components:
       required:
       - label
       - authMethod
+      - authentication
       - reasonCode
       - reason
       type: object
@@ -9393,6 +9432,10 @@ components:
           items:
             type: string
           type: array
+        forceAuthentication:
+          type: boolean
+        forceDeviceReconciliation:
+          type: boolean
         includeUsage:
           type: boolean
       type: object

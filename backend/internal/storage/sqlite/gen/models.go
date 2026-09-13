@@ -171,26 +171,7 @@ type CodexAccountSwitch struct {
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 	CompletedAt             sql.NullTime
-}
-
-type CodexAccountSwitchSession struct {
-	SwitchID                string
-	SessionID               string
-	NativeSessionID         string
-	InterfaceMode           string
-	SourceHandleID          string
-	SourceGeneration        string
-	WasRunning              bool
-	StopState               string
-	RestartState            string
-	ReviewerWasRunning      bool
-	ReviewerSourceHandleID  string
-	ReviewerNativeSessionID string
-	ReviewerStopState       string
-	ReviewerRestartState    string
-	ErrorCode               string
-	StoppedAt               sql.NullTime
-	RestartedAt             sql.NullTime
+	SourceKind              string
 }
 
 type CodexActiveAccount struct {

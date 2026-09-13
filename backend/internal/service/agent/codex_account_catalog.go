@@ -417,6 +417,30 @@ func (c *codexAccountCatalog) deleteSignedOut(id string) error {
 	return nil
 }
 
+// discardCommitted removes a just-created account when a compound login commit
+// cannot finish. It is intentionally narrower than user-facing deletion: the
+// caller must still be inside the account mutation gate and supply an exact
+// catalog ID.
+func (c *codexAccountCatalog) discardCommitted(id string) error {
+	if !isCanonicalUUIDv4(id) {
+		return errors.New("invalid Codex account id")
+	}
+	accountDir := filepath.Join(c.root, id)
+	if !pathWithin(c.root, accountDir) || canonicalPath(filepath.Dir(accountDir)) != canonicalPath(c.root) {
+		return errors.New("codex account has an unsafe directory layout")
+	}
+	if err := os.RemoveAll(accountDir); err != nil {
+		return err
+	}
+	if err := syncDirectory(c.root); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	delete(c.records, id)
+	c.mu.Unlock()
+	return nil
+}
+
 func removePrivateCredential(path string) error {
 	return removeCodexFileIdentityBound(path)
 }

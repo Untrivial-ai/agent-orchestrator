@@ -13,14 +13,13 @@ import (
 type agentOperationKind string
 
 const (
-	agentOperationSwitch             agentOperationKind = "switch"
-	agentOperationExit               agentOperationKind = "exit"
-	agentOperationResume             agentOperationKind = "resume"
-	agentOperationKill               agentOperationKind = "kill"
-	agentOperationRestore            agentOperationKind = "restore"
-	agentOperationRetire             agentOperationKind = "retire"
-	agentOperationReconcile          agentOperationKind = "reconcile"
-	agentOperationCodexAccountSwitch agentOperationKind = "codex_account_switch"
+	agentOperationSwitch    agentOperationKind = "switch"
+	agentOperationExit      agentOperationKind = "exit"
+	agentOperationResume    agentOperationKind = "resume"
+	agentOperationKill      agentOperationKind = "kill"
+	agentOperationRestore   agentOperationKind = "restore"
+	agentOperationRetire    agentOperationKind = "retire"
+	agentOperationReconcile agentOperationKind = "reconcile"
 )
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")
@@ -85,8 +84,6 @@ func (m *Manager) agentSwitchDecisionInputAllowedLocked(id domain.SessionID) boo
 	case agentOperationSwitch:
 		_, allowed := m.switchDecisionInput[id]
 		return allowed
-	case agentOperationCodexAccountSwitch:
-		return false
 	default:
 		return false
 	}

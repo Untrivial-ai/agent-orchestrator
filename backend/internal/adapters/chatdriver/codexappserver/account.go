@@ -306,6 +306,9 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 	params := codexproto.GetAccountParams{RefreshToken: &refresh}
 	var response codexproto.GetAccountResponse
 	if err := c.conn.request(ctx, codexproto.MethodAccountRead, params, &response); err != nil {
+		if isRevokedOAuthTokenError(err) {
+			return ports.CodexAccountObservation{}, ports.ErrCodexOAuthTokenRevoked
+		}
 		return ports.CodexAccountObservation{}, err
 	}
 	if response.Account == nil {

@@ -7,6 +7,10 @@ import { Button } from "../ui/button";
 
 export function CodexAccountDetails({ account, resetCreditSupported, mutationDisabled, resetBusy, onUseReset }: { account: CodexAccount; resetCreditSupported: boolean; mutationDisabled: boolean; resetBusy: boolean; onUseReset: () => void }) {
 	const { t, i18n } = useTranslation();
+	if (account.status === "signed_out") return null;
+	if (account.authentication.state === "unauthorized") {
+		return <div className="ml-9 mt-4 space-y-5 pb-1 text-xs"><CapacityNotice reason={t(codexAccountReasonKey(account.authentication.reasonCode))} tone="warning" /></div>;
+	}
 	const plan = formatPlanLabel(account.capacity.plan, t);
 	const hasOverall = Boolean(account.capacity.overall?.primary || account.capacity.overall?.secondary);
 	const additionalBuckets = account.capacity.additionalBuckets.filter((bucket) => bucket.primary || bucket.secondary);
@@ -78,11 +82,11 @@ function CapacityNotice({ reason, tone, checking }: { reason: string; tone: "war
 
 function capacityNoticeFor(account: CodexAccount, t: TFunction, locale: string): { reason: string; tone: "warning" | "error" | "muted"; checking?: boolean } | null {
 	if (account.status === "broken") return { reason: t(codexAccountReasonKey(account.reasonCode)), tone: "error" };
-	if (account.authentication.state === "unauthorized") return { reason: t(codexAccountReasonKey(account.authentication.reasonCode)), tone: "warning" };
 	if (account.capacity.freshness === "checking") return { reason: t(codexAccountReasonKey(account.capacity.reasonCode)), tone: "muted", checking: true };
 	if (account.capacity.freshness === "stale") {
 		const checked = account.capacity.checkedAt ? formatObservedTime(account.capacity.checkedAt, locale) : null;
-		return { reason: checked ? t("settings.codexAccounts.capacityStaleChecked", { value: checked }) : t("settings.codexAccounts.capacityStale"), tone: "warning" };
+		const reason = t(codexAccountReasonKey(account.capacity.reasonCode));
+		return { reason: checked ? t("settings.codexAccounts.capacityStaleReasonChecked", { reason, value: checked }) : reason, tone: "warning" };
 	}
 	if (account.capacity.state === "unknown" || account.capacity.state === "unsupported") return { reason: t(codexAccountReasonKey(account.capacity.reasonCode)), tone: "muted" };
 	return null;

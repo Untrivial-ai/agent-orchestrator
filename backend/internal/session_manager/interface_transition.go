@@ -154,9 +154,6 @@ func (m *Manager) StartInterfaceTransition(
 	if !found {
 		return domain.SessionInterfaceTransition{}, ErrNotFound
 	}
-	if rec.Harness == domain.HarnessCodex && m.codexAccountSwitchIsActive() {
-		return domain.SessionInterfaceTransition{}, ErrCodexAccountSwitchInProgress
-	}
 	if rec.IsTerminated {
 		return domain.SessionInterfaceTransition{}, ErrTerminated
 	}

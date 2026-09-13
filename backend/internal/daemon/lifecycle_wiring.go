@@ -184,11 +184,6 @@ type sessionLifecycle interface {
 	// SessionMutationInProgress suppresses observation-driven termination while
 	// Session Manager deliberately replaces or relaunches a provider process.
 	SessionMutationInProgress(id domain.SessionID) bool
-	CodexAccountSwitchInProgress() bool
-	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
-	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
-	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
-	SetCodexAccountSwitchObserver(func())
 	// SetTerminalInputGate prevents mux input from racing a TUI-to-Chat handoff.
 	SetTerminalInputGate(gate sessionmanager.TerminalInputGate)
 	// SetReviewerTerminator late-binds worker lifecycle teardown to the review

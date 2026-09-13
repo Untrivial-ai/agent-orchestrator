@@ -3,14 +3,13 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,7 +213,7 @@ func newStack(t *testing.T) *stack {
 	return &stack{store: store, sm: sm, mgr: mgr, lcm: lcm, prm: prm, rt: rt, ws: ws, msg: msg}
 }
 
-func TestDelegateEndpointRetriesCodexBootstrapWithoutDaemonRestart(t *testing.T) {
+func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	store, err := sqlitetest.Open(filepath.Join(root, "db"))
@@ -230,13 +229,20 @@ func TestDelegateEndpointRetriesCodexBootstrapWithoutDaemonRestart(t *testing.T)
 	now.Store(100)
 	factory := &retryingCodexAccountFactory{}
 	gate := codexops.NewGate()
+	globalHome := filepath.Join(root, "global")
+	if err := os.MkdirAll(globalHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalHome, "auth.json"), []byte(`{"tokens":{"access_token":"test-only"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	agents := agentsvc.NewWithDeps(agentsvc.Deps{
 		Context:                ctx,
 		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
 		CodexAccountRoot:       filepath.Join(root, "accounts"),
 		CodexPendingRoot:       filepath.Join(root, "pending"),
 		CodexSwitchStagingRoot: filepath.Join(root, "staging"),
-		CodexGlobalHome:        filepath.Join(root, "global"),
+		CodexGlobalHome:        globalHome,
 		CodexAccounts:          factory,
 		CodexAccountState:      store,
 		CodexOperationGate:     gate,
@@ -277,37 +283,36 @@ func TestDelegateEndpointRetriesCodexBootstrapWithoutDaemonRestart(t *testing.T)
 	}
 
 	status, body := delegate()
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("first delegate = %d, want 503; body=%s", status, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("delegate = %d, want 202 while device reconciliation is unavailable; body=%s", status, body)
 	}
-	var failure struct {
-		Code      string         `json:"code"`
-		RequestID string         `json:"requestId"`
-		Details   map[string]any `json:"details"`
+	if runtime.created != 1 {
+		t.Fatalf("runtime Create calls = %d, want 1", runtime.created)
 	}
-	if err := json.Unmarshal(body, &failure); err != nil {
-		t.Fatal(err)
+	if factory.opens.Load() != 0 {
+		t.Fatalf("ordinary launch opened account-management client %d times", factory.opens.Load())
 	}
-	if failure.Code != "CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE" || failure.RequestID == "" || failure.Details["retryable"] != true || failure.Details["reasonCode"] != "account_client_unavailable" {
-		t.Fatalf("first delegate envelope = %#v; body=%s", failure, body)
-	}
-	if strings.Contains(string(body), "secret") || strings.Contains(string(body), "/private/path") {
-		t.Fatalf("first delegate leaked provider error: %s", body)
-	}
-	if runtime.created != 0 {
-		t.Fatalf("runtime Create calls after failed bootstrap = %d, want 0", runtime.created)
+
+	if err := agents.EnsureCodexDeviceAccountReconciled(ctx); err == nil {
+		t.Fatal("first explicit reconciliation unexpectedly succeeded")
 	}
 
 	now.Add(2)
-	status, body = delegate()
-	if status != http.StatusAccepted {
-		t.Fatalf("second delegate = %d, want 202; body=%s", status, body)
+	if err := agents.EnsureCodexDeviceAccountReconciled(ctx); err == nil {
+		t.Fatal("unmatched signed-out device credential was treated as a managed account")
 	}
 	if factory.opens.Load() != 2 {
 		t.Fatalf("account client opens = %d, want 2", factory.opens.Load())
 	}
+	accounts, err := agents.CachedCodexAccounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts.UnmanagedGlobalAccount == nil || accounts.ActiveAccountID != "" {
+		t.Fatalf("device-only recovery state = %#v", accounts)
+	}
 	if runtime.created != 1 {
-		t.Fatalf("runtime Create calls after retry = %d, want 1", runtime.created)
+		t.Fatalf("reconciliation restarted sessions: runtime Create calls=%d", runtime.created)
 	}
 }
 
