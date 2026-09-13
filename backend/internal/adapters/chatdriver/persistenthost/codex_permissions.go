@@ -81,7 +81,11 @@ func (h *host) observeCodexPermissions(frame []byte) {
 		return
 	}
 	if policy.ApprovalPolicy == "" || policy.SandboxType == "" {
-		delete(h.codexPermissions, id)
+		// thread/read returns history without policy fields. It does not change
+		// permissions; resume already invalidated its receipt before dispatch.
+		if message.Method == "thread/settings/updated" || message.Result.ApprovalPolicy != nil {
+			delete(h.codexPermissions, id)
+		}
 		return
 	}
 	if h.codexPermissions == nil {

@@ -16,7 +16,8 @@ func TestCodexPermissionProofTracksProviderState(t *testing.T) {
 		{"turn with granular approval", `{"method":"turn/start","params":{"threadId":"t","approvalPolicy":{"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true,"request_permissions":false,"skill_approval":true}},"sandboxPolicy":{"type":"readOnly"}}}`, "", false},
 		{"provider grants granular approval", "", `{"method":"thread/settings/updated","params":{"threadId":"t","threadSettings":{"approvalPolicy":{"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true,"request_permissions":false,"skill_approval":true}},"sandboxPolicy":{"type":"readOnly"}}}}`, false},
 		{"thread response grants granular approval", "", `{"id":2,"result":{"thread":{"id":"t"},"approvalPolicy":{"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true,"request_permissions":false,"skill_approval":true}},"sandbox":{"type":"readOnly"}}}`, false},
-		{"incomplete thread response", "", `{"id":2,"result":{"thread":{"id":"t"}}}`, false},
+		{"incomplete policy response", "", `{"id":2,"result":{"thread":{"id":"t"},"approvalPolicy":"never"}}`, false},
+		{"history response preserves policy", `{"method":"thread/read","params":{"threadId":"t","includeTurns":true}}`, `{"id":2,"result":{"thread":{"id":"t","turns":[]}}}`, true},
 		{"provider confirms turn", `{"method":"turn/start","params":{"threadId":"t"}}`, `{"method":"thread/settings/updated","params":{"threadId":"t","threadSettings":{"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}}}}`, true},
 		{"incomplete provider state", "", `{"method":"thread/settings/updated","params":{"threadId":"t","threadSettings":{"approvalPolicy":"never"}}}`, false},
 	} {
