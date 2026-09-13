@@ -16,11 +16,11 @@ ao spawn [flags]
 | `--claim-pr string` | Immediately claim an existing PR for the spawned session | - |
 | `--harness string` | Agent harness to use (see list below) | Project `worker.agent`; required if the project has none |
 | `--issue string` | Issue id to associate with the session | - |
-| `--permission string` | Session permission override: `read-only`, `default`, `accept-edits`, `auto`, `bypass-permissions` | Project/role default |
 | `--name string` | Display name shown in the sidebar (max 20 characters) | Required |
 | `--no-takeover` | Refuse if another active session owns the claimed PR (requires `--claim-pr`) | - |
 | `--project string` | Project id to spawn the session in | Required |
 | `--prompt string` | Initial prompt for the agent | - |
+| `--permission string` | Session permission override: `read-only`, `default`, `accept-edits`, `auto`, `bypass-permissions` | Project/role default |
 
 `--agent` is an alias for `--harness`.
 

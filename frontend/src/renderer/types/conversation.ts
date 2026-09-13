@@ -723,8 +723,6 @@ export interface McpServer {
 }
 
 export interface ConversationSnapshot {
-	/** Read-only at launch is a fixed session restriction. */
-	permissions?: ApprovalMode;
 	conversationId: string;
 	sessionId: string;
 	harness: string;
@@ -743,6 +741,8 @@ export interface ConversationSnapshot {
 	branchPoints?: ConversationBranchPoint[];
 	/** How the active historical branch acquired its provider context. */
 	branchMaterialization?: ConversationBranchMaterialization;
+	/** Read-only at launch is a fixed session restriction. */
+	permissions?: ApprovalMode;
 	/** What the next turn will be sent with. Daemon-owned, so it survives a
 	 *  restart and applies to turns AO dispatches on the user's behalf. */
 	settings: TurnSettings;

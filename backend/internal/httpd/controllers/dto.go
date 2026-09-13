@@ -2215,13 +2215,12 @@ type ConversationActivityResponse struct {
 
 // ConversationSnapshotResponse is the durable read model a client bootstraps from.
 type ConversationSnapshotResponse struct {
-	ConversationID             string                `json:"conversationId"`
-	ActiveBranchID             string                `json:"activeBranchId,omitempty"`
-	BranchedFromEarlierMessage bool                  `json:"branchedFromEarlierMessage"`
-	SessionID                  string                `json:"sessionId"`
-	Harness                    string                `json:"harness,omitempty"`
-	Permissions                domain.PermissionMode `json:"permissions,omitempty" enum:"read-only,default,accept-edits,auto,bypass-permissions"`
-	Mode                       string                `json:"mode" enum:"chat,tui"`
+	ConversationID             string `json:"conversationId"`
+	ActiveBranchID             string `json:"activeBranchId,omitempty"`
+	BranchedFromEarlierMessage bool   `json:"branchedFromEarlierMessage"`
+	SessionID                  string `json:"sessionId"`
+	Harness                    string `json:"harness,omitempty"`
+	Mode                       string `json:"mode" enum:"chat,tui"`
 	// Controller is reported separately from history so a client can tell "no
 	// messages yet" apart from "the agent is not running".
 	Controller     string `json:"controller" enum:"connecting,ready,busy,recovering,stopped"`
@@ -2239,6 +2238,9 @@ type ConversationSnapshotResponse struct {
 	// native history or was rebuilt from AO's bounded text transcript. Omitted for
 	// conversations that have no durable branch metadata yet.
 	BranchMaterialization *ConversationBranchMaterializationResponse `json:"branchMaterialization,omitempty"`
+
+	Permissions domain.PermissionMode `json:"permissions,omitempty" enum:"read-only,default,accept-edits,auto,bypass-permissions"`
+
 	// Settings are the provider choices for the next turn. Carried on the snapshot
 	// the client already polls so the composer can label itself without a second
 	// request, and so a choice made on another client shows up here.
