@@ -1782,7 +1782,7 @@ describe("agent browser runtime", () => {
 		const nav = await invoke("browser:ensure", "site-worker") as BrowserNavState;
 		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://example.com" });
 		const target = await invoke("browser:site:get", { viewId: nav.viewId }) as BrowserSiteSettings;
-		expect(target.permissions.camera).toBe("block");
+		expect(target.permissions.camera).toBe("ask");
 		const input = { ...target, permission: "camera", setting: "allow" };
 		await expect(invoke("browser:site:setPermission", { ...input, profileId: "another-profile" })).rejects.toThrow();
 		await expect(invoke("browser:site:setPermission", { ...input, viewId: "unowned" })).rejects.toThrow();
@@ -1790,7 +1790,7 @@ describe("agent browser runtime", () => {
 		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://other.example" });
 		await expect(invoke("browser:site:setPermission", input)).rejects.toThrow("page changed");
 		const other = await invoke("browser:site:get", { viewId: nav.viewId }) as BrowserSiteSettings;
-		expect(other.permissions.camera).toBe("block");
+		expect(other.permissions.camera).toBe("ask");
 	});
 
 	it("denies browser-partition permissions by default", async () => {

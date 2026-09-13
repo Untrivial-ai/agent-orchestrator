@@ -570,6 +570,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	if (!shellWebContents) throw new Error("Browser view host requires shell WebContents");
 	const viewIdsBySessionId = new Map<string, string>();
 	const rendererOwnersByViewId = new Map<string, Set<number>>();
+	const permissionSessions = new WeakSet<BrowserElectronSession>();
 	const tabsByWebContentsId = new Map<number, BrowserEntry>();
 	const pendingPermissionPrompts = new Map<string, {
 		viewId: string;
@@ -701,10 +702,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		applyBrowserViewBounds(view, OFFSCREEN_BOUNDS, false);
 		options.mainWindow.contentView.addChildView(view);
 		view.setBorderRadius?.(BROWSER_VIEW_BORDER_RADIUS);
-		if (view.webContents.session) installBrowserSitePermissions(
-			view.webContents.session, session.profileId ?? session.profilePartition,
-			options.browserSiteSettingsStore, promptBrowserPermission,
-		);
+		if (view.webContents.session && !permissionSessions.has(view.webContents.session)) {
+			installBrowserSitePermissions(view.webContents.session, session.profileId ?? session.profilePartition,
+				options.browserSiteSettingsStore, promptBrowserPermission);
+			permissionSessions.add(view.webContents.session);
+		}
 		options.browserDownloadManager?.attach(view.webContents.session);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();

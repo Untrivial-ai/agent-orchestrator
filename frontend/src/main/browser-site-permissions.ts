@@ -74,7 +74,7 @@ export function installBrowserSitePermissions(
 		if (!origin || !names.length || contents.isDestroyed() || browserSiteOrigin(contents.getURL()) !== origin) return callback(false);
 		const settings = store.get(scope, origin);
 		if (names.some((name) => settings[name] === "block")) return callback(false);
-		const undecidedNames = names.filter((name) => settings[name] === "ask");
+		const undecidedNames = names.filter((name) => !isAllowed(contents, origin, name));
 		if (!undecidedNames.length) return callback(true);
 		if (!prompt) return callback(false);
 		const key = `${contents.id}:${origin}:${undecidedNames.join(",")}`;

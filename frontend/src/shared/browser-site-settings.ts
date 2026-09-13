@@ -43,6 +43,5 @@ export function browserSiteOrigin(value: unknown): string | null {
 }
 
 export function defaultBrowserSitePermissions(): BrowserSitePermissions {
-	// Preserve the browser's existing default until the user changes a site setting.
-	return { camera: "block", microphone: "block", location: "block", notifications: "block" };
+	return { camera: "ask", microphone: "ask", location: "ask", notifications: "ask" };
 }

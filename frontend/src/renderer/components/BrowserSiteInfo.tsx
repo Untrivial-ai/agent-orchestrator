@@ -104,7 +104,6 @@ export function BrowserSiteInfo({ url, native, viewId, tabId }: { url: string; n
 			return;
 		}
 		let current = true;
-		setSettings(null);
 		setLoading(true);
 		setError(false);
 		setNeedsReload(false);
@@ -114,7 +113,7 @@ export function BrowserSiteInfo({ url, native, viewId, tabId }: { url: string; n
 			else setSettings(value);
 		}, () => current && setError(true)).finally(() => current && setLoading(false));
 		return () => { current = false; };
-	}, [native, origin, viewId, tabId]);
+	}, [native, origin, viewId, tabId, open]);
 
 	if (!origin) return null;
 	const address = new URL(origin);

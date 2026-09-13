@@ -388,6 +388,17 @@ describe("BrowserPanel", () => {
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 	});
 
+	it("refreshes permission decisions when site information opens", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const initial = await window.ao!.browser.getSiteSettings({ viewId: "42:sess-1" });
+		window.ao!.browser.getSiteSettings = vi.fn(async () => ({
+			...initial, permissions: { ...initial.permissions, microphone: "allow" as const },
+		}));
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("allow"));
+	});
+
 	it("prefetches site settings and keeps permission rows stable while they load", async () => {
 		hookState.navState.url = "https://example.com/page";
 		let resolveSettings!: (value: BrowserSiteSettings) => void;

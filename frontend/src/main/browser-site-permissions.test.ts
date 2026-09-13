@@ -113,7 +113,6 @@ it.each([
 	["notifications", "notifications", { requestingUrl: "https://example.com/page" }, {}],
 ] as const)("supports an allow-once request for %s", async (sitePermission, electronPermission, details, checkDetails) => {
 	const store = new BrowserSiteSettingsStore("unused-temporary-settings");
-	await store.set("temporary", "https://example.com", sitePermission, "ask");
 	const prompt = vi.fn(async () => "allow-once" as const);
 	const session = { setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn() };
 	installBrowserSitePermissions(session, "temporary", store, prompt);
@@ -126,6 +125,14 @@ it.each([
 	await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(true));
 	expect(prompt).toHaveBeenCalledWith(contents, "https://example.com", [sitePermission]);
 	expect(check(contents, electronPermission, "https://example.com", checkDetails)).toBe(true);
+	callback.mockClear();
+	request(contents, electronPermission, callback, details);
+	expect(callback).toHaveBeenCalledWith(true);
+	expect(prompt).toHaveBeenCalledOnce();
+	await store.set("temporary", "https://example.com", sitePermission, "block");
+	request(contents, electronPermission, callback, details);
+	expect(callback).toHaveBeenLastCalledWith(false);
+	expect(check(contents, electronPermission, "https://example.com", checkDetails)).toBe(false);
 });
 
 it("changes only undecided permissions in a combined media request", async () => {

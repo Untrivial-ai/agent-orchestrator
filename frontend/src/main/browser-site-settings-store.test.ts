@@ -17,15 +17,15 @@ it("persists settings per profile and origin, keeps temporary grants in memory, 
 			store.set("temporary", "https://example.com", "location", "allow"),
 		]);
 		expect(store.get(profile, "https://example.com")).toMatchObject({ camera: "allow", microphone: "ask" });
-		expect(store.get("another-profile", "https://example.com").camera).toBe("block");
-		expect(store.get(profile, "http://example.com").camera).toBe("block");
+		expect(store.get("another-profile", "https://example.com").camera).toBe("ask");
+		expect(store.get(profile, "http://example.com").camera).toBe("ask");
 		expect(await readFile(path.join(directory, "browser-site-settings.json"), "utf8")).not.toContain("temporary");
 		const restored = new BrowserSiteSettingsStore(directory);
 		await restored.initialize();
 		expect(restored.get(profile, "https://example.com").camera).toBe("allow");
-		expect(restored.get("temporary", "https://example.com").location).toBe("block");
+		expect(restored.get("temporary", "https://example.com").location).toBe("ask");
 		await restored.reset(profile, "https://example.com");
-		expect(restored.get(profile, "https://example.com").camera).toBe("block");
+		expect(restored.get(profile, "https://example.com").camera).toBe("ask");
 		expect(restored.get(profile, "https://other.example").camera).toBe("allow");
 	} finally {
 		// directory is created above with a fixed prefix under the system temp directory.
