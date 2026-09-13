@@ -397,6 +397,7 @@ type nativeHistoryCheckpoint struct {
 	assistantMismatch     ports.ChatHistoryMismatchDimension
 	hardMismatches        []ports.ChatHistoryMismatchDimension
 	aoHighWater           nativeHistoryHighWater
+	aoHighWaterPeers      []nativeHistoryHighWater
 	replayIndex           *nativeHistoryTurnIndex
 }
 
@@ -464,13 +465,27 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	// them and they must not gate this native-history import.
 	var providerBoundary *domain.ConversationTurn
 	var providerBoundarySequence int64
-	turnSequence := make(map[string]int64, len(turns))
+	turnEvidence := make(map[string]nativeHistoryHighWater, len(turns))
+	userSequence := make(map[string]int64, len(turns))
 	for _, message := range messages {
-		if message.Sequence > 0 && (turnSequence[message.TurnID] == 0 || message.Sequence < turnSequence[message.TurnID]) {
-			turnSequence[message.TurnID] = message.Sequence
+		kind := ports.ChatEventKind("")
+		switch message.Role {
+		case domain.MessageRoleUser:
+			kind = ports.ChatEventUserMessageCompleted
+		case domain.MessageRoleAssistant:
+			kind = ports.ChatEventMessageCompleted
+		}
+		if !message.Streaming && kind != "" && message.Sequence > turnEvidence[message.TurnID].sequence {
+			turnEvidence[message.TurnID] = nativeHistoryHighWater{
+				sequence: message.Sequence, providerItemID: message.ProviderItemID, kind: kind, text: message.Text,
+			}
+		}
+		if message.Role == domain.MessageRoleUser && message.Sequence > 0 &&
+			(userSequence[message.TurnID] == 0 || message.Sequence < userSequence[message.TurnID]) {
+			userSequence[message.TurnID] = message.Sequence
 		}
 		turn := turnsByID[message.TurnID]
-		if turn == nil || message.Role != domain.MessageRoleUser ||
+		if turn == nil || turn.RolledBackAt != nil || turn.HandledBySessionID != sessionID || message.Role != domain.MessageRoleUser ||
 			!nativeHistoryCoordinationMessage(message.Text) {
 			continue
 		}
@@ -480,18 +495,29 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		}
 	}
 	for _, activity := range activities {
-		if activity.Sequence > 0 && (turnSequence[activity.TurnID] == 0 || activity.Sequence < turnSequence[activity.TurnID]) {
-			turnSequence[activity.TurnID] = activity.Sequence
+		if activity.ProviderItemID == "" || activity.Sequence <= turnEvidence[activity.TurnID].sequence {
+			continue
 		}
+		switch activity.Kind {
+		case domain.ActivityKindCommand, domain.ActivityKindFileChange, domain.ActivityKindReasoning, domain.ActivityKindMCPTool:
+		default:
+			continue // AO control-plane rows are not provider replay evidence.
+		}
+		if activity.Status == domain.ActivityStatusCompleted || activity.Status == domain.ActivityStatusFailed {
+			turnEvidence[activity.TurnID] = nativeHistoryHighWater{
+				sequence: activity.Sequence, providerItemID: activity.ProviderItemID, activityKind: activity.Kind,
+				activityStatus: activity.Status, summary: activity.Summary, detail: append([]byte(nil), activity.Detail...),
+			}
+		}
+	}
+	evidence := func(turn *domain.ConversationTurn) nativeHistoryHighWater {
+		boundary := turnEvidence[turn.ID]
+		boundary.providerTurnID = turn.ProviderTurnID
+		return boundary
 	}
 	// Queue reordering updates RequestedAt, not the message sequence. Preserve
-	// that order; use the durable sequence only to disambiguate timestamp ties.
-	after := func(turn, boundary *domain.ConversationTurn) bool {
-		if turn.RequestedAt.Equal(boundary.RequestedAt) {
-			return turnSequence[turn.ID] > turnSequence[boundary.ID]
-		}
-		return turn.RequestedAt.After(boundary.RequestedAt)
-	}
+	// that order. Tied turns require all completed boundaries: item sequences
+	// alone cannot order an empty response after a reordered queued prompt.
 
 	var latest *domain.ConversationTurn
 	for i := range turns {
@@ -502,61 +528,36 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		// pre-failure transcript entry, leaving the failed turn (e.g. a synthetic
 		// auth-error message) on a dead branch that session/load never replays.
 		// Requiring one of those items would make every future switch time out.
-		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" ||
-			(providerBoundary != nil && turn.ID != providerBoundary.ID && !after(turn, providerBoundary)) {
+		if turn.HandledBySessionID != sessionID || turn.RolledBackAt != nil || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" {
 			continue
 		}
-		if latest == nil || after(turn, latest) {
+		if providerBoundary != nil && turn.ID != providerBoundary.ID {
+			sequence := userSequence[turn.ID]
+			if sequence == 0 {
+				sequence = turnEvidence[turn.ID].sequence
+			}
+			if (sequence > 0 && sequence < providerBoundarySequence) ||
+				(sequence == 0 && !turn.RequestedAt.After(providerBoundary.RequestedAt)) {
+				continue
+			}
+		}
+		if latest == nil || turn.RequestedAt.After(latest.RequestedAt) {
 			latest = turn
+			p.aoHighWaterPeers = nil
+		} else if turn.RequestedAt.Equal(latest.RequestedAt) {
+			if turnEvidence[turn.ID].sequence > turnEvidence[latest.ID].sequence {
+				p.aoHighWaterPeers = append(p.aoHighWaterPeers, evidence(latest))
+				latest = turn
+				continue
+			}
+			p.aoHighWaterPeers = append(p.aoHighWaterPeers, evidence(turn))
 		}
 	}
 	if latest == nil {
 		return
 	}
-	p.aoHighWater.providerTurnID = latest.ProviderTurnID
+	p.aoHighWater = evidence(latest)
 	p.replayIndex = indexNativeHistoryTurns(turns, messages, activities)
-	for _, message := range messages {
-		if message.TurnID != latest.ID || message.Streaming || message.Sequence <= p.aoHighWater.sequence {
-			continue
-		}
-		kind := ports.ChatEventKind("")
-		switch message.Role {
-		case domain.MessageRoleUser:
-			kind = ports.ChatEventUserMessageCompleted
-		case domain.MessageRoleAssistant:
-			kind = ports.ChatEventMessageCompleted
-		}
-		if kind == "" {
-			continue
-		}
-		p.aoHighWater = nativeHistoryHighWater{
-			sequence: message.Sequence, providerTurnID: latest.ProviderTurnID,
-			providerItemID: message.ProviderItemID, kind: kind, text: message.Text,
-		}
-	}
-	for _, activity := range activities {
-		if activity.TurnID != latest.ID || activity.ProviderItemID == "" ||
-			activity.Sequence <= p.aoHighWater.sequence {
-			continue
-		}
-		switch activity.Kind {
-		case domain.ActivityKindCommand, domain.ActivityKindFileChange,
-			domain.ActivityKindReasoning, domain.ActivityKindMCPTool:
-		default:
-			// Approval/input/system rows are AO control-plane facts, not items
-			// the provider promises to reproduce during native history load.
-			continue
-		}
-		switch activity.Status {
-		case domain.ActivityStatusCompleted, domain.ActivityStatusFailed:
-			p.aoHighWater = nativeHistoryHighWater{
-				sequence: activity.Sequence, providerTurnID: latest.ProviderTurnID,
-				providerItemID: activity.ProviderItemID, activityKind: activity.Kind,
-				activityStatus: activity.Status, summary: activity.Summary,
-				detail: append([]byte(nil), activity.Detail...),
-			}
-		}
-	}
 }
 
 func (p nativeHistoryCheckpoint) mismatches(
@@ -643,45 +644,50 @@ func (p nativeHistoryCheckpoint) mismatches(
 	if highWater.providerTurnID == "" {
 		return mismatches
 	}
-	mappedHighWaterTurns := make(map[string]bool)
 	index := p.replayIndex
 	if index == nil {
 		index = indexNativeHistoryTurns(existingTurns, existingMessages, existingActivities)
 	}
 	mappedTurns, _ := index.mapReplay(events)
-	for replayTurnID, candidate := range mappedTurns {
-		if candidate.providerTurnID == highWater.providerTurnID && completedTurns[replayTurnID] {
-			mappedHighWaterTurns[replayTurnID] = true
-		}
-	}
-	if highWater.providerItemID == "" && highWater.kind == "" {
-		if len(mappedHighWaterTurns) == 0 {
-			mismatches = append(mismatches, ports.ChatHistoryMismatchAOHighWater)
-		}
-		return mismatches
+	boundaries := make(map[string]nativeHistoryHighWater, len(p.aoHighWaterPeers)+1)
+	boundaries[highWater.providerTurnID] = highWater
+	for _, peer := range p.aoHighWaterPeers {
+		boundaries[peer.providerTurnID] = peer
 	}
 	for _, event := range events {
-		if !mappedHighWaterTurns[event.ProviderTurnID] {
+		candidate := mappedTurns[event.ProviderTurnID]
+		if candidate == nil || !completedTurns[event.ProviderTurnID] {
 			continue
 		}
-		if event.ProviderItemID == highWater.providerItemID {
-			return mismatches
+		boundary, required := boundaries[candidate.providerTurnID]
+		if !required {
+			continue
+		}
+		matched := boundary.providerItemID == "" && boundary.kind == "" && boundary.activityKind == ""
+		if boundary.providerItemID != "" && event.ProviderItemID == boundary.providerItemID {
+			matched = true
 		}
 		// ACP identifiers are opaque and can be reassigned by a conforming
 		// provider during load. Exact settled content is the fallback identity
 		// used by reconciliation for that same reason.
-		if highWater.kind != "" && event.Kind == highWater.kind &&
-			nativeHistoryTextMatches(highWater.text, event.Text) {
-			return mismatches
+		if boundary.kind != "" && event.Kind == boundary.kind &&
+			nativeHistoryTextMatches(boundary.text, event.Text) {
+			matched = true
 		}
-		if highWater.kind == "" &&
-			event.ActivityKind == highWater.activityKind &&
-			event.ActivityStatus == highWater.activityStatus &&
-			event.Summary == highWater.summary && bytes.Equal(event.Detail, highWater.detail) {
-			return mismatches
+		if boundary.activityKind != "" &&
+			event.ActivityKind == boundary.activityKind &&
+			event.ActivityStatus == boundary.activityStatus &&
+			event.Summary == boundary.summary && bytes.Equal(event.Detail, boundary.detail) {
+			matched = true
+		}
+		if matched {
+			delete(boundaries, candidate.providerTurnID)
 		}
 	}
-	return append(mismatches, ports.ChatHistoryMismatchAOHighWater)
+	if len(boundaries) > 0 {
+		return append(mismatches, ports.ChatHistoryMismatchAOHighWater)
+	}
+	return mismatches
 }
 
 func nativeHistoryCoordinationMessage(text string) bool {

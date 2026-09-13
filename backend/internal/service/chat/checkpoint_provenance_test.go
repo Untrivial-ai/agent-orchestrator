@@ -76,6 +76,127 @@ func TestCheckpointKeepsReorderedQueueExecutionOrder(t *testing.T) {
 	}
 }
 
+func TestCheckpointTiedQueueUsesSettledEvidence(t *testing.T) {
+	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	turns[1].RequestedAt = turns[0].RequestedAt
+	turns[1].ProviderTurnID = "native-turn-2"
+	messages[1].Sequence = 4 // A finishes after B, despite being enqueued first.
+	messages[2].Sequence = 2
+	messages = append(messages, domain.ConversationMessage{TurnID: turns[1].ID,
+		Sequence: 3, Role: domain.MessageRoleAssistant, Text: "B answer"})
+	checkpoint := nativeHistoryCheckpoint{}
+	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+	if checkpoint.aoHighWater.providerTurnID != "native-turn-1" {
+		t.Fatalf("tied queue anchored the turn that finished first: %+v", checkpoint.aoHighWater)
+	}
+}
+
+func TestCheckpointExcludesRolledBackHistory(t *testing.T) {
+	for _, coordination := range []bool{false, true} {
+		t.Run(fmt.Sprint(coordination), func(t *testing.T) {
+			turns, messages := poisonedRows(domain.TurnStateCompleted)
+			turns[1].ProviderTurnID = "discarded"
+			rolledBack := turns[1].RequestedAt.Add(time.Second)
+			turns[1].RolledBackAt = &rolledBack
+			if coordination {
+				messages[2].Text = "AO transferred the previous agent's context in hidden system instructions."
+			}
+			checkpoint := nativeHistoryCheckpoint{}
+			checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+			if got := checkpoint.mismatches(completedReplay(), turns, messages, nil); len(got) != 0 {
+				t.Fatalf("rolled-back history became an unreplayable gate: %v", got)
+			}
+		})
+	}
+}
+
+func TestCheckpointProviderBoundaryIgnoresOldThreadClock(t *testing.T) {
+	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	turns[0].RequestedAt = turns[1].RequestedAt.Add(time.Hour)
+	turns[1].ProviderTurnID = "coordination"
+	messages[2].Text = "AO transferred the previous agent's context in hidden system instructions."
+	checkpoint := nativeHistoryCheckpoint{}
+	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+	if checkpoint.aoHighWater.providerTurnID != "coordination" {
+		t.Fatalf("old provider's timestamp crossed the durable dispatch boundary: %+v", checkpoint.aoHighWater)
+	}
+}
+
+func TestCheckpointItemlessTiesRequireBothBoundaries(t *testing.T) {
+	for _, ids := range [][]string{{"A", "B"}, {"B", "A"}} {
+		turns := []domain.ConversationTurn{
+			{ID: ids[0], ProviderTurnID: ids[0], HandledBySessionID: testCheckpointSession, State: domain.TurnStateCompleted},
+			{ID: ids[1], ProviderTurnID: ids[1], HandledBySessionID: testCheckpointSession, State: domain.TurnStateCompleted},
+		}
+		checkpoint := nativeHistoryCheckpoint{}
+		checkpoint.captureAOHighWater(testCheckpointSession, turns, nil, nil)
+		events := []ports.ChatEvent{{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "A"}}
+		if len(checkpoint.mismatches(events, turns, nil, nil)) == 0 {
+			t.Fatalf("input order %v admitted an unproven itemless boundary", ids)
+		}
+		events = append(events, ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "B"})
+		if got := checkpoint.mismatches(events, turns, nil, nil); len(got) != 0 {
+			t.Fatalf("complete itemless replay rejected: %v", got)
+		}
+	}
+}
+
+func TestCheckpointProviderBoundaryExcludesOldTurnsWithoutUserMessages(t *testing.T) {
+	for _, itemless := range []bool{false, true} {
+		t.Run(fmt.Sprint(itemless), func(t *testing.T) {
+			turns, messages := poisonedRows(domain.TurnStateCompleted)
+			turns[0].RequestedAt = turns[1].RequestedAt
+			turns[1].ProviderTurnID = "coordination"
+			messages = messages[2:]
+			messages[0].Text = "AO transferred the previous agent's context in hidden system instructions."
+			var activities []domain.ConversationActivity
+			if !itemless {
+				activities = []domain.ConversationActivity{{TurnID: turns[0].ID, Sequence: 2,
+					Kind: domain.ActivityKindCommand, Status: domain.ActivityStatusCompleted, ProviderItemID: "old-command"}}
+			}
+			checkpoint := nativeHistoryCheckpoint{}
+			checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, activities)
+			events := []ports.ChatEvent{
+				{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "coordination", Text: messages[0].Text},
+				{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "coordination"},
+			}
+			if got := checkpoint.mismatches(events, turns, messages, activities); len(got) != 0 {
+				t.Fatalf("old provider became a mandatory tied peer: %v", got)
+			}
+		})
+	}
+}
+
+func TestCheckpointTiedTurnsRequireEachAnswer(t *testing.T) {
+	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	turns[1].RequestedAt = turns[0].RequestedAt
+	turns[1].ProviderTurnID = "native-turn-2"
+	messages[1].Sequence = 4
+	messages[2].Sequence = 2
+	messages = append(messages, domain.ConversationMessage{TurnID: turns[1].ID,
+		Sequence: 3, Role: domain.MessageRoleAssistant, Text: "B answer"})
+	activities := []domain.ConversationActivity{{TurnID: turns[1].ID, Sequence: 5,
+		Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, ProviderItemID: "ao-only"}}
+	checkpoint := nativeHistoryCheckpoint{}
+	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, activities)
+	events := append(completedReplay(), ports.ChatEvent{Kind: ports.ChatEventUserMessageCompleted,
+		ProviderTurnID: "native-turn-2", Text: "Say hi to"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "native-turn-2"})
+	if got := checkpoint.mismatches(events, turns, messages, activities); len(got) == 0 {
+		t.Fatal("a peer's completion marker substituted for its missing answer")
+	}
+	events = append(events, ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "native-turn-2", Text: "B answer"})
+	if got := checkpoint.mismatches(events, turns, messages, activities); len(got) != 0 {
+		t.Fatalf("complete tied replay rejected: %v", got)
+	}
+	// Keep A's completed marker, but drop its actual answer. Empty item IDs
+	// must not accidentally compare equal and admit the truncated history.
+	events = append(events[:1], events[2:]...)
+	if got := checkpoint.mismatches(events, turns, messages, activities); len(got) == 0 {
+		t.Fatal("AO-only activity displaced the missing native answer")
+	}
+}
+
 func TestNativeHistoryIndexDoesNotConsumeMatchesAcrossRefreshes(t *testing.T) {
 	turns, messages := poisonedRows(domain.TurnStateCompleted)
 	turns[1].ProviderTurnID = "native-turn-2"
