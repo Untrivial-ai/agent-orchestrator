@@ -255,6 +255,13 @@ func appendModelFlag(cmd *[]string, cfg ports.AgentConfig) {
 	}
 }
 
+// AppendSessionFlags adds the TUI-equivalent approval and model flags so Chat
+// launches the same Qwen process the terminal adapter would, plus ACP.
+func AppendSessionFlags(cmd *[]string, permissions ports.PermissionMode, model string) {
+	appendApprovalFlags(cmd, permissions)
+	appendModelFlag(cmd, ports.AgentConfig{Model: model})
+}
+
 type qwenSubmitCommand struct {
 	Type string `json:"type"`
 	Text string `json:"text"`

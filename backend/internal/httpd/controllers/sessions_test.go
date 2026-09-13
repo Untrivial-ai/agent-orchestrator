@@ -1389,6 +1389,20 @@ func TestSessionsAPI_SpawnsOMPChat(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnsQwenChat(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"projectId":"ao","harness":"qwen","mode":"chat","prompt":"fix"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn Qwen Chat = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.Harness != domain.HarnessQwen || svc.lastSpawn.RequestedMode != domain.SessionModeChat {
+		t.Fatalf("spawn config = %#v, want Qwen Chat", svc.lastSpawn)
+	}
+}
+
 func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -2873,6 +2887,20 @@ func TestSessionsAPI_DelegatesOMPChat(t *testing.T) {
 	}
 	if svc.delegationInput.RequestedAgent != domain.HarnessOMP || svc.delegationInput.RequestedMode != domain.SessionModeChat {
 		t.Fatalf("delegation input = %#v, want OMP Chat", svc.delegationInput)
+	}
+}
+
+func TestSessionsAPI_DelegatesQwenChat(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/orchestrators/delegate",
+		`{"projectId":"ao","brief":"Fix it","agent":"qwen","mode":"chat"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("delegate Qwen Chat = %d, want 202; body=%s", status, body)
+	}
+	if svc.delegationInput.RequestedAgent != domain.HarnessQwen || svc.delegationInput.RequestedMode != domain.SessionModeChat {
+		t.Fatalf("delegation input = %#v, want Qwen Chat", svc.delegationInput)
 	}
 }
 

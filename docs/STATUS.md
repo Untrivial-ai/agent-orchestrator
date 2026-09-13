@@ -64,11 +64,14 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, and OMP. OMP Chat uses
-  native `omp acp` and requires OMP 15.0.0 or newer. Pi's independently
-  installed pi-acp adapter does not enforce approval modes, so AO admits Pi Chat
-  only after the user explicitly chooses the per-session bypass-permissions
-  fallback. The binding reuses the existing Pi config environment and auth
+  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, and Qwen.
+  Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.15.0 or newer;
+  like Pi, Qwen Code's ACP mode ignores `--approval-mode` and never raises a
+  permission request, so AO admits Qwen Chat only under the explicit
+  bypass-permissions fallback. OMP Chat uses native `omp acp` and requires OMP
+  15.0.0 or newer. Pi's independently installed pi-acp adapter does not enforce
+  approval modes, so AO admits Pi Chat only after the user explicitly chooses the
+  per-session bypass-permissions fallback. The binding reuses the existing Pi config environment and auth
   probe and is never downloaded by AO. AO reuses each harness's existing
   binary/auth/environment resolution and does not bundle provider CLIs. Cursor
   is Chat-only until its ACP and TUI conversation ids are proven to share identity.
