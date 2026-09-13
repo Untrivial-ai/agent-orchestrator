@@ -46,6 +46,17 @@ func TestRenderedSurfaceTitleDoesNotHideBusyClaudeTurn(t *testing.T) {
 	}
 }
 
+func TestRenderedSurfaceTitleCancelsPartialEscape(t *testing.T) {
+	for _, prefix := range []string{"\x1b", "\x1b[2", "\x1b[31"} {
+		surface := newRenderedSurface(80, 12)
+		surface.Write([]byte("❯ " + prefix))
+		surface.Write([]byte("\x1b]0;✳ title\aactual draft"))
+		if got := surface.Tail(12); got != "❯ actual draft" {
+			t.Fatalf("prefix %q: got %q, want draft intact", prefix, got)
+		}
+	}
+}
+
 func TestRenderedSurfaceTracksTheVisibleAlternateScreen(t *testing.T) {
 	surface := newRenderedSurface(80, 12)
 	surface.Write([]byte("shell history\r\n"))

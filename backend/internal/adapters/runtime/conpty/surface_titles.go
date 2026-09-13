@@ -1,6 +1,6 @@
 package conpty
 
-// oscTitleFilter removes OSC 0/1/2 titles from passive capture, not PTY replay.
+// oscTitleFilter removes OSC 0/1/2 title payloads from passive capture, not PTY replay.
 // x/ansi mistakes UTF-8 continuation byte 0x9c (e.g. Claude's ✳) for ST and
 // paints the remaining title into cells: https://github.com/charmbracelet/x/issues/848.
 // Titles cannot affect cells; other OSC commands (palette, hyperlinks) still can.
@@ -22,6 +22,7 @@ func (f *oscTitleFilter) filter(p []byte) []byte {
 			switch {
 			case b == '\a' || b == 0x18 || b == 0x1a || b == 0x9c:
 				f.inTitle = false
+				out = append(out, b)
 			case b == 0x1b:
 				// ESC ends the title. Keep it to parse ST (ESC \), another
 				// title, or the next cursor/style command normally.
@@ -45,6 +46,10 @@ func (f *oscTitleFilter) filter(p []byte) []byte {
 			f.prefix = append(f.prefix, b)
 			continue
 		case len(f.prefix) == 3 && b == ';':
+			// Retain the envelope: its ESC cancels any preceding partial
+			// escape in the emulator, and the terminator restores ground.
+			out = append(out, f.prefix...)
+			out = append(out, b)
 			f.prefix = f.prefix[:0]
 			f.inTitle = true
 			continue
