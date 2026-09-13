@@ -137,7 +137,7 @@ import {
 	shouldHandleAppShortcutInBrowserContext,
 	type BrowserViewHost,
 } from "./main/browser-view-host";
-import { createBrowserProfileStore } from "./main/browser-profile-store";
+import { createBrowserProfileStore, withBrowserProfileOperationTimeout } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
 import { createBrowserDownloadManager } from "./main/browser-download-manager";
 import { BrowserProfileImportService } from "./main/browser-profile-import";
@@ -537,7 +537,9 @@ function browserProfileStateDir(): string {
 
 async function clearElectronBrowserProfileData(partition: string): Promise<void> {
 	const browserSession = session.fromPartition(partition);
-	await Promise.all([browserSession.clearStorageData(), browserSession.clearCache()]);
+	await withBrowserProfileOperationTimeout(() =>
+		Promise.all([browserSession.clearStorageData(), browserSession.clearCache()]),
+	);
 }
 
 async function disposeAllBrowserViewHosts(): Promise<void> {

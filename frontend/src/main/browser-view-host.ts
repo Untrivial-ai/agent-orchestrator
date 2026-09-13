@@ -33,7 +33,7 @@ import { attachAppShortcuts } from "./app-shortcuts";
 import type { AppShortcutId, KeybindingOverrides, ShortcutChord } from "../shared/shortcuts";
 import type { AgentBrowserRuntime } from "./agent-browser-runtime";
 import type { AgentBrowserTarget, AgentBrowserTargetProvider } from "./agent-browser-cdp-bridge";
-import type { BrowserProfileStore } from "./browser-profile-store";
+import { withBrowserProfileOperationTimeout, type BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import type { BrowserDownloadManager } from "./browser-download-manager";
 import type { BrowserDownloadActionInput } from "../shared/browser-downloads";
@@ -861,7 +861,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			for (;;) {
 				const boundProfileId = store.getSessionProfileId(sessionId);
 				if (!boundProfileId || !store.isProfileOperationInProgress(boundProfileId)) break;
-				await store.waitForProfileOperation(boundProfileId);
+				await withBrowserProfileOperationTimeout(() => store.waitForProfileOperation(boundProfileId));
 			}
 		}
 		if (isUnavailable?.()) {

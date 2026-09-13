@@ -13,7 +13,7 @@ import {
 	scaleBoundsForZoom,
 } from "./browser-view-host";
 import { browserProfilePartition, type BrowserProfile } from "../shared/browser-profiles";
-import type { BrowserProfileStore } from "./browser-profile-store";
+import { BROWSER_PROFILE_OPERATION_TIMEOUT_MS, type BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import {
 	FOCUS_TERMINAL_SHORTCUT_CHANNEL,
@@ -1459,6 +1459,24 @@ describe("browser profile partitions and replacement", () => {
 		release();
 		await ensuring;
 		expect(constructorOptions[0]!.webPreferences.partition).toBe(browserProfilePartition(profile.id));
+	});
+
+	it("times out browser commands waiting on a stuck profile data operation", async () => {
+		vi.useFakeTimers();
+		try {
+			const store = fakeBrowserProfileStore(profile, { "worker-1": profile.id });
+			store.isProfileOperationInProgress = vi.fn(() => true);
+			store.waitForProfileOperation = vi.fn(() => new Promise<void>(() => undefined));
+			const { host } = setupTabHost(store);
+			const command = host.execute("worker-1", "snapshot");
+			const expectation = expect(command).rejects.toMatchObject({
+				code: "BROWSER_PROFILE_OPERATION_TIMEOUT",
+			});
+			await vi.advanceTimersByTimeAsync(BROWSER_PROFILE_OPERATION_TIMEOUT_MS);
+			await expectation;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("refuses switching while renderer navigation is still in flight", async () => {
