@@ -171,7 +171,7 @@ export type WorkspaceSession = {
 // "<provider>:<native>" form. Adding a provider (Linear, Jira, ...) later is
 // just another prefix in this list — no caller of canonicalTrackerIssueId
 // needs to change.
-const TRACKER_PROVIDER_PREFIXES = ["github:"] as const;
+const TRACKER_PROVIDER_PREFIXES = ["github:", "gitlab:"] as const;
 
 /**
  * The provider-prefixed issue id if `issueId` came from tracker intake, or

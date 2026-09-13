@@ -1409,6 +1409,30 @@ describe("SessionsBoard", () => {
 		]);
 	});
 
+	it("opens the session's tracker issue in a new tab from the board card", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-issue",
+						title: "intake worker",
+						status: "idle",
+						issueId: "github:acme/demo#12",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		const issue = screen.getByRole("link", { name: "Intake issue: #12" });
+		expect(issue).toHaveAttribute("href", "https://github.com/acme/demo/issues/12");
+		expect(issue).toHaveAttribute("target", "_blank");
+		expect(issue).toHaveTextContent("#12");
+	});
+
 	it("uses the shared minimal scrollbar styling for every Kanban lane", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [

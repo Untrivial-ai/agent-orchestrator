@@ -26,6 +26,7 @@ import {
 } from "../lib/agent-switch-presentation";
 import type { WorkspaceSession } from "../types/workspace";
 import { canonicalTrackerIssueId } from "../types/workspace";
+import { trackerIssueLink } from "../lib/issue-url";
 import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
 import type { SessionUsageSummary } from "../hooks/useSessionUsageSummaries";
 import {
@@ -44,6 +45,7 @@ export function toBoardSessionPresentation(
 ): BoardSessionPresentation {
 	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
 	const switchVisual = switchPresentation ? agentSwitchStatusVisual(switchPresentation) : undefined;
+	const issueLink = trackerIssueLink(session.issueId);
 	return {
 		activity: session.activity,
 		branch: session.branch,
@@ -64,6 +66,8 @@ export function toBoardSessionPresentation(
 				: undefined,
 		title: session.title,
 		trackerIssueId: canonicalTrackerIssueId(session.issueId),
+		trackerIssueLabel: issueLink?.label,
+		trackerIssueUrl: issueLink?.url,
 		updatedAt: session.updatedAt,
 		lastUserMessageAt: session.lastUserMessageAt,
 	};
