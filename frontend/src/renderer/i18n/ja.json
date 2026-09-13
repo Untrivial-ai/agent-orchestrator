@@ -1201,6 +1201,7 @@
 	"shell.killingSession": "セッションを強制終了中",
 	"shell.newProject": "新しいプロジェクト",
 	"shell.newSession": "新しいセッション",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "新しいタスク",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "インスペクターパネルを開く",

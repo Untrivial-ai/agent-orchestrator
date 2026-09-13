@@ -1201,6 +1201,7 @@
 	"shell.killingSession": "Sitzung wird beendet",
 	"shell.newProject": "Neues Projekt",
 	"shell.newSession": "Neue Sitzung",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Neue Aufgabe",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Inspektor-Panel öffnen",

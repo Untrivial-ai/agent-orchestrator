@@ -1201,6 +1201,7 @@
 	"shell.killingSession": "세션 강제 종료 중",
 	"shell.newProject": "새 프로젝트",
 	"shell.newSession": "새 세션",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "새 작업",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "인스펙터 패널 열기",

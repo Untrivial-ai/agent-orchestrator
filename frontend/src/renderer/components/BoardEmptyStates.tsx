@@ -11,7 +11,6 @@ import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 // with no worker sessions yet (`ProjectBoardEmpty`).
 export function BoardWelcome() {
 	const { cloneProject, createProject, initializeProjectRepository } = useShell();
-	const { t } = useTranslation();
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<WelcomePanel>

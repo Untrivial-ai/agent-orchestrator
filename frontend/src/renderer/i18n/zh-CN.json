@@ -1185,6 +1185,7 @@
 	"shell.killingSession": "正在结束会话",
 	"shell.newProject": "新建项目",
 	"shell.newSession": "新建会话",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "新建任务",
 	"shell.nightly": "每日构建",
 	"shell.openInspector": "打开检查器面板",
