@@ -495,6 +495,11 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 // native agent session id carried alongside it. Metadata-only hooks leave the
 // existing activity and first-signal facts untouched.
 func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
+	// Subagent answers, including prompt suggestions, are not root-conversation
+	// facts. Their usage is collected independently from lifecycle metadata.
+	if s.Event == "subagent-stop" {
+		return nil
+	}
 	s.AgentSessionID = strings.TrimSpace(s.AgentSessionID)
 	s.LatestUserPrompt = strings.TrimSpace(s.LatestUserPrompt)
 	s.LatestAssistantUpdate = strings.TrimSpace(s.LatestAssistantUpdate)

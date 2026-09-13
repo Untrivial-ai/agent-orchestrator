@@ -98,3 +98,28 @@ func TestReorderedHooksWithinNativeIdentityPreserveNewestFacts(t *testing.T) {
 		t.Fatalf("reordered same-identity facts were lost or regressed: %+v", got)
 	}
 }
+
+func TestSubagentHookCannotReplaceNativeConversationFacts(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch"
+	rec.Metadata.AgentSessionID = "root"
+	rec.Metadata.NativeIdentityObservedAt = time.Unix(100, 0)
+	rec.Metadata.LatestUserPrompt = "continue"
+	rec.Metadata.LatestUserPromptAt = time.Unix(90, 0)
+	rec.Metadata.LatestAssistantUpdate = "root answer"
+	rec.Metadata.LatestAssistantUpdateAt = time.Unix(100, 0)
+	rec.Metadata.NativeTranscriptPath = "/root.jsonl"
+	store.sessions[rec.ID] = rec
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Event: "subagent-stop", LaunchID: "launch", AgentSessionID: "subagent",
+		Timestamp: time.Unix(200, 0), LatestUserPrompt: "suggest a prompt",
+		LatestAssistantUpdate: "continue", TranscriptPath: "/subagent.jsonl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := store.sessions[rec.ID]
+	if got.Metadata != rec.Metadata || got.Activity != rec.Activity {
+		t.Fatalf("subagent hook changed root conversation facts: got %+v, want %+v", got, rec)
+	}
+}

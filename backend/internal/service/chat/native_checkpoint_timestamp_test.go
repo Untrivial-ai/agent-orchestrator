@@ -17,7 +17,7 @@ import (
 )
 
 func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
-	for _, scenario := range []string{"old_hooks", "old_failed_hooks", "repeated_prompt", "repeated_answer", "repeated_failed_prompt", "repeated_latest", "repeated_latest_with_failed_turn", "repeated_latest_with_boundary", "repeated_latest_reassigned", "repeated_latest_complete", "repeated_latest_reassigned_complete", "repeated_latest_recovered", "repeated_latest_recovered_complete", "repeated_latest_only_recovered", "repeated_latest_only_recovered_complete"} {
+	for _, scenario := range []string{"old_hooks", "old_failed_hooks", "repeated_prompt", "repeated_answer", "repeated_failed_prompt", "repeated_latest", "repeated_latest_with_failed_turn", "repeated_latest_with_boundary", "repeated_latest_reassigned", "repeated_latest_complete", "repeated_latest_reassigned_complete", "repeated_latest_recovered", "repeated_latest_recovered_complete", "repeated_latest_only_recovered", "repeated_latest_only_recovered_complete", "repeated_latest_subagent_stop_complete"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			st := openStore(t)
@@ -87,6 +87,14 @@ func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if strings.Contains(scenario, "subagent_stop") {
+				if err := lcm.ApplyActivitySignal(ctx, testSession, ports.ActivitySignal{
+					Event: "subagent-stop", ControllerGeneration: "old-generation",
+					Timestamp: signal.Timestamp.Add(time.Second), LatestAssistantUpdate: "continue",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if strings.HasSuffix(scenario, "complete") {
 				events = append(events,
 					ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderEventID: "terminal-started", ProviderTurnID: "terminal"},
@@ -106,7 +114,7 @@ func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
 			_, err = svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, ProviderConversationID: "thread-1", RequireNativeHistory: true})
 			if oldHooks || strings.HasSuffix(scenario, "complete") {
 				if err != nil {
-					t.Fatalf("older hooks blocked complete replay: %v", err)
+					t.Fatalf("complete replay rejected: %v", err)
 				}
 			} else if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
 				t.Fatalf("stale replay admitted after %s: want ErrChatHistoryUnsettled, got %v", scenario, err)
