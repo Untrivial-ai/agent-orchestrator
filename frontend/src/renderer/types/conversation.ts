@@ -553,7 +553,7 @@ export interface ConversationActivity {
 export type ConversationItem = ConversationMessage | ConversationActivity;
 
 /** AO's permission vocabulary, applied per turn in chat mode. */
-export type ApprovalMode = "default" | "accept-edits" | "auto" | "bypass-permissions";
+export type ApprovalMode = "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
 
 /**
  * The provider choices for the next turn.
@@ -723,6 +723,8 @@ export interface McpServer {
 }
 
 export interface ConversationSnapshot {
+	/** Read-only at launch is a fixed session restriction. */
+	permissions?: ApprovalMode;
 	conversationId: string;
 	sessionId: string;
 	harness: string;

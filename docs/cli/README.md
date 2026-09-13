@@ -264,3 +264,33 @@ NULL configs retain their defaults. No Git discovery runs during migration, and
 no earlier migration is modified. Downgrading preserves config data; older
 versions do not support canonical claims and may drop this field when saving
 project settings.
+
+## Read-only Chat workers
+
+Create a worker with a preventive filesystem restriction:
+
+```bash
+ao spawn --project my-project --agent codex --mode chat --permission read-only --name reader --prompt 'Inspect the code and report your findings.'
+```
+
+The optional `permissions` field on `POST /api/v1/sessions` applies the same
+session-scoped override. Project and role defaults can also use `read-only`;
+existing defaults stay unchanged. `GET /api/v1/settings` advertises supported
+`chatPermissionModes` by harness before creation. Only Codex Chat currently
+supports preventive read-only access. Unsupported harnesses and terminal mode
+fail before creating a worker; AO never falls back to a broader permission mode.
+
+A worker launched read-only retains that restriction in its existing durable
+session permissions. Model changes, restart, history edits, and controller
+replacement cannot grant it write access. Broader sessions can select read-only
+for the next turn through conversation settings, then explicitly choose another
+mode for later turns. Desktop and mobile expose the option only when the live
+provider advertises `preventive_read_only`.
+
+Codex uses `approvalPolicy=never` and `sandbox=read-only` when opening or resuming
+the thread, and `sandboxPolicy={type:readOnly}` on each read-only turn. AO checks
+the provider's effective thread policy before publishing the controller. On a
+live reconnect, the persistent host supplies its retained provider-reported
+policy; missing or broader state fails closed without restarting an in-flight
+provider. This is Codex's native filesystem sandbox, not an authorization model
+for external MCP services or a replacement for those services' own permissions.

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -120,11 +121,12 @@ type ACPState struct {
 
 // Transport is one authenticated attachment to a persistent provider host.
 type Transport struct {
-	Stdin         io.WriteCloser
-	Stdout        io.Reader
-	Reconnected   bool
-	NextRequestID int64
-	ACPState      *ACPState
+	Stdin            io.WriteCloser
+	Stdout           io.Reader
+	Reconnected      bool
+	NextRequestID    int64
+	ACPState         *ACPState
+	CodexPermissions map[string]CodexPermissions
 }
 
 type hello struct {
@@ -134,10 +136,11 @@ type hello struct {
 }
 
 type helloResponse struct {
-	OK            bool      `json:"ok"`
-	Error         string    `json:"error,omitempty"`
-	NextRequestID int64     `json:"nextRequestId,omitempty"`
-	ACPState      *ACPState `json:"acpState,omitempty"`
+	OK               bool                        `json:"ok"`
+	Error            string                      `json:"error,omitempty"`
+	NextRequestID    int64                       `json:"nextRequestId,omitempty"`
+	ACPState         *ACPState                   `json:"acpState,omitempty"`
+	CodexPermissions map[string]CodexPermissions `json:"codexPermissions,omitempty"`
 }
 
 func hostDir(dataDir, sessionID string) (string, error) {
@@ -465,6 +468,7 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 	return &Transport{
 		Stdin: conn, Stdout: reader, Reconnected: reconnected,
 		NextRequestID: response.NextRequestID, ACPState: response.ACPState,
+		CodexPermissions: response.CodexPermissions,
 	}, nil
 }
 
@@ -662,6 +666,7 @@ type host struct {
 	pendingRequests  map[string]*pendingRequest
 	pendingOrder     []string
 	maxRequestID     int64
+	codexPermissions map[string]CodexPermissions
 	shutdown         chan struct{}
 	shutdownOnce     sync.Once
 }
@@ -720,7 +725,7 @@ func (h *host) handle(conn net.Conn) {
 	h.client = conn
 	h.clientGeneration++
 	generation := h.clientGeneration
-	response := helloResponse{OK: true, NextRequestID: h.maxRequestID}
+	response := helloResponse{OK: true, NextRequestID: h.maxRequestID, CodexPermissions: maps.Clone(h.codexPermissions)}
 	if h.acp != nil {
 		response.ACPState = h.acp.snapshot()
 	}
@@ -755,6 +760,9 @@ func (h *host) handle(conn net.Conn) {
 			providerFrame := frame
 			var clientFrame []byte
 			h.mu.Lock()
+			if h.acp == nil {
+				h.observeCodexRequest(frame)
+			}
 			if h.acp != nil {
 				var relayErr error
 				var relayed acpClientFrames
@@ -834,6 +842,9 @@ func (h *host) forwardProvider(stdout io.Reader) error {
 		frame, err := reader.ReadBytes('\n')
 		if len(frame) > 0 {
 			h.mu.Lock()
+			if h.acp == nil {
+				h.observeCodexPermissions(frame)
+			}
 			retainedByACP := false
 			if h.acp != nil {
 				var relayErr error

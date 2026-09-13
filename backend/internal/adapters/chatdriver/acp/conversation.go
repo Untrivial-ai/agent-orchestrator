@@ -392,6 +392,9 @@ func (c *conversation) DiscardDeferredTurn(providerTurnID string) {
 }
 
 func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.ChatTurnSettings) error {
+	if settings.Approval == ports.PermissionModeReadOnly {
+		return fmt.Errorf("%w: ACP does not enforce preventive read-only access", ports.ErrChatPermissionModeUnsupported)
+	}
 	c.mu.Lock()
 	sessionID := c.sessionID
 	modeFor := c.modeFor

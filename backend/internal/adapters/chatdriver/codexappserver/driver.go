@@ -56,8 +56,9 @@ type process struct {
 	// reconnected means the provider process and initialized protocol connection
 	// survived a prior daemon. The replacement must not initialize/resume it a
 	// second time.
-	reconnected   bool
-	nextRequestID int64
+	reconnected      bool
+	nextRequestID    int64
+	codexPermissions map[string]persistenthost.CodexPermissions
 	// stop releases the process. It must be safe to call more than once.
 	stop func() error
 	// terminate destroys a persistent host for explicit session shutdown.
@@ -96,21 +97,25 @@ var _ ports.ChatDriver = (*Driver)(nil)
 // Harness reports which agent this driver serves.
 func (d *Driver) Harness() domain.AgentHarness { return domain.HarnessCodex }
 
+// Capabilities declares support independently of installation/auth readiness.
+func (d *Driver) Capabilities() ports.ChatCapabilities { return capabilities() }
+
 // capabilities is what a Codex app-server of a supported version provides. Each
 // entry here was exercised against a live app-server rather than read off a doc.
 func capabilities() ports.ChatCapabilities {
 	return ports.ChatCapabilities{
-		ports.ChatCapabilityStreaming:   true,
-		ports.ChatCapabilityTools:       true,
-		ports.ChatCapabilityApprovals:   true,
-		ports.ChatCapabilityInterrupt:   true,
-		ports.ChatCapabilityResume:      true,
-		ports.ChatCapabilityHistory:     true,
-		ports.ChatCapabilityUsage:       true,
-		ports.ChatCapabilityDiffs:       true,
-		ports.ChatCapabilityPlans:       true,
-		ports.ChatCapabilityInteractive: true,
-		ports.ChatCapabilityModels:      true,
+		ports.ChatCapabilityPreventiveReadOnly: true,
+		ports.ChatCapabilityStreaming:          true,
+		ports.ChatCapabilityTools:              true,
+		ports.ChatCapabilityApprovals:          true,
+		ports.ChatCapabilityInterrupt:          true,
+		ports.ChatCapabilityResume:             true,
+		ports.ChatCapabilityHistory:            true,
+		ports.ChatCapabilityUsage:              true,
+		ports.ChatCapabilityDiffs:              true,
+		ports.ChatCapabilityPlans:              true,
+		ports.ChatCapabilityInteractive:        true,
+		ports.ChatCapabilityModels:             true,
 		// The account's quota position is both pushed (account/rateLimits/updated)
 		// and readable on demand (account/rateLimits/read), verified against a live
 		// account.
@@ -296,6 +301,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 
 	var resp struct {
+		threadPermissions
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
@@ -313,6 +319,10 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, errors.New("thread/start returned no thread id")
 	}
 
+	if err := conv.confirmPermissions(cfg.Permissions, resp.threadPermissions); err != nil {
+		_ = conv.Terminate()
+		return nil, err
+	}
 	conv.start(resp.Thread.ID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }
@@ -337,6 +347,14 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
+		if cfg.Permissions == ports.PermissionModeReadOnly {
+			confirmed := conv.proc.codexPermissions[cfg.ProviderConversationID]
+			if confirmed.ApprovalPolicy != "never" || confirmed.SandboxType != "readOnly" {
+				_ = conv.Close()
+				return nil, fmt.Errorf("%w: surviving Codex host has no confirmed read-only policy", ports.ErrChatRecoveryInconclusive)
+			}
+			conv.readOnly = true
+		}
 		conv.start(cfg.ProviderConversationID, cfg.Model, "")
 		return conv, nil
 	}
@@ -367,6 +385,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	resumeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	var resp struct {
+		threadPermissions
 		Model           string `json:"model"`
 		ReasoningEffort string `json:"reasoningEffort"`
 	}
@@ -378,6 +397,10 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, err)
 	}
 
+	if err := conv.confirmPermissions(cfg.Permissions, resp.threadPermissions); err != nil {
+		_ = conv.Terminate()
+		return nil, err
+	}
 	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }
@@ -455,11 +478,12 @@ func (d *Driver) connectSession(
 		return nil, false, fmt.Errorf("%w: persistent host: %w", ports.ErrChatDriverUnavailable, err)
 	}
 	proc := &process{
-		stdin:         transport.Stdin,
-		stdout:        transport.Stdout,
-		reconnected:   transport.Reconnected,
-		nextRequestID: transport.NextRequestID,
-		stop:          transport.Stdin.Close,
+		stdin:            transport.Stdin,
+		stdout:           transport.Stdout,
+		reconnected:      transport.Reconnected,
+		nextRequestID:    transport.NextRequestID,
+		codexPermissions: transport.CodexPermissions,
+		stop:             transport.Stdin.Close,
 		terminate: func() error {
 			_ = transport.Stdin.Close()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -506,6 +530,8 @@ func initializeConnection(ctx context.Context, connection *conn) error {
 // become stricter than the terminal path for the same setting.
 func approvalSettings(mode ports.PermissionMode) (policy, sandbox string) {
 	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeReadOnly:
+		return "never", "read-only"
 	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
 		// on-request lets the provider decide when to ask; workspace-write keeps
 		// edits inside the worktree.
@@ -610,4 +636,24 @@ func codexProcessEnv(ctx context.Context, bin string, env map[string]string) []s
 	}
 	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath, agentlaunch.PinnedDir(os.Executable, overlay["AO_DATA_DIR"]))
 	return envSlice(overlay)
+}
+
+// threadPermissions decodes only the provider's effective policy. Request
+// acceptance alone must not be advertised as preventive enforcement.
+type threadPermissions struct {
+	ApprovalPolicy string `json:"approvalPolicy"`
+	Sandbox        struct {
+		Type string `json:"type"`
+	} `json:"sandbox"`
+}
+
+func (c *conversation) confirmPermissions(requested ports.PermissionMode, effective threadPermissions) error {
+	if requested != ports.PermissionModeReadOnly {
+		return nil
+	}
+	if effective.ApprovalPolicy != "never" || effective.Sandbox.Type != "readOnly" {
+		return fmt.Errorf("%w: Codex did not confirm approvalPolicy=never and sandbox=read-only", ports.ErrChatPermissionModeUnsupported)
+	}
+	c.readOnly = true
+	return nil
 }

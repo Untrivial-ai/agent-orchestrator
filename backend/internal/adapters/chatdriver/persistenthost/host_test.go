@@ -60,6 +60,10 @@ func TestProviderHelper(t *testing.T) {
 		if json.Unmarshal(scanner.Bytes(), &frame) != nil {
 			continue
 		}
+		if frame.Method == "thread/start" {
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":%d,"result":{"thread":{"id":"readonly-thread"},"approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`+"\n", frame.ID)
+			continue
+		}
 		if frame.Method == "emit-later" {
 			time.Sleep(50 * time.Millisecond)
 			_, _ = fmt.Fprintln(os.Stdout, `{"method":"turn/completed","params":{"turn":{"id":"survived"}}}`)
@@ -376,6 +380,47 @@ func TestHostReconnectsSameProviderAndReplaysDetachedOutput(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("host did not exit after explicit shutdown")
 	}
+}
+
+func TestHostRetainsCodexPermissionReceiptAcrossAttachments(t *testing.T) {
+	cfg := Config{
+		SessionID: "readonly-host", DataDir: t.TempDir(), Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"},
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), cfg) }()
+	d := awaitDescriptor(t, cfg.DataDir, cfg.SessionID)
+	t.Cleanup(func() {
+		if err := Shutdown(context.Background(), cfg.DataDir, cfg.SessionID); err != nil {
+			t.Error(err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("host did not stop")
+		}
+	})
+	first := awaitAttach(t, d)
+	if len(first.CodexPermissions) != 0 {
+		t.Fatal("new host invented permission evidence")
+	}
+	pid := requestProviderPID(t, first, 1, "pid")
+	sendFrame(t, first, `{"id":2,"method":"thread/start","params":{"approvalPolicy":"never","sandbox":"read-only"}}`)
+	_ = readFrame(t, bufio.NewReader(first.Stdout))
+	_ = first.Stdin.Close()
+	second := awaitAttach(t, d)
+	policy := second.CodexPermissions["readonly-thread"]
+	if policy.ApprovalPolicy != "never" || policy.SandboxType != "readOnly" {
+		t.Fatalf("reattached policy=%+v", policy)
+	}
+	if got := requestProviderPID(t, second, 3, "pid"); got != pid {
+		t.Fatalf("provider restarted: %d -> %d", pid, got)
+	}
+	_ = second.Stdin.Close()
 }
 
 func TestConnectOrStartLaunchesDetachedHost(t *testing.T) {

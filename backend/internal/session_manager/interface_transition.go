@@ -678,6 +678,9 @@ func (m *Manager) preflightInterfaceTarget(
 			return err
 		}
 		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
+		if rec.Metadata.Permissions != "" {
+			permissions = rec.Metadata.Permissions
+		}
 		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -693,6 +696,12 @@ func (m *Manager) preflightInterfaceTarget(
 		return err
 	}
 	config := effectiveAgentConfig(rec.Kind, project.Config)
+	if rec.Metadata.Permissions != "" {
+		config.Permissions = rec.Metadata.Permissions
+	}
+	if config.Permissions == ports.PermissionModeReadOnly {
+		return fmt.Errorf("%w: read-only requires Chat", ports.ErrChatPermissionModeUnsupported)
+	}
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,

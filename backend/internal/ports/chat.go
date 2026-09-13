@@ -158,6 +158,9 @@ const (
 	// terminal identity/output metadata. It is read-only transcript richness, not
 	// permission for the provider to execute through AO's terminal runtime.
 	ChatCapabilityTerminalOutput ChatCapability = "terminal_output"
+	// ChatCapabilityPreventiveReadOnly requires a provider-enforced read-only
+	// filesystem with no approval escalation. Advisory plan modes do not qualify.
+	ChatCapabilityPreventiveReadOnly ChatCapability = "preventive_read_only"
 )
 
 // ChatCapabilities is the set a driver reports from Probe.
@@ -194,6 +197,9 @@ func MissingProductionCapabilities(caps ChatCapabilities) []ChatCapability {
 // not require an approval channel because the user has opted out of approvals.
 func MissingCapabilitiesForPermissions(caps ChatCapabilities, permissions PermissionMode) []ChatCapability {
 	missing := MissingProductionCapabilities(caps)
+	if permissions == PermissionModeReadOnly && !caps.Has(ChatCapabilityPreventiveReadOnly) {
+		missing = append(missing, ChatCapabilityPreventiveReadOnly)
+	}
 	if NormalizePermissionMode(permissions) != PermissionModeBypassPermissions {
 		return missing
 	}
@@ -897,6 +903,9 @@ type ChatEvent struct {
 type ChatDriver interface {
 	// Harness is the agent this driver serves.
 	Harness() domain.AgentHarness
+	// Capabilities declares support without launching or probing a provider.
+	// Probe and the live conversation may narrow this set.
+	Capabilities() ChatCapabilities
 	// Probe checks the local install without creating anything: is the binary
 	// present, is it authenticated, what can it do. It must be safe to call
 	// before any durable session or worktree exists, so an unsupported request
@@ -992,4 +1001,6 @@ type ChatDriverRegistry interface {
 	// SupportsChat reports whether a harness has a Chat driver registered at
 	// all, without probing the local install.
 	SupportsChat(harness domain.AgentHarness) bool
+	// SupportsPermissionMode is static discovery; readiness is checked at spawn.
+	SupportsPermissionMode(harness domain.AgentHarness, mode PermissionMode) bool
 }

@@ -18,6 +18,7 @@ type SettingsService interface {
 	SetDefaultSessionMode(ctx context.Context, mode domain.SessionMode) (settingssvc.Snapshot, error)
 	SetCloudOffering(ctx context.Context, enabled bool) (settingssvc.Snapshot, error)
 	ChatHarnesses(candidates []domain.AgentHarness) []domain.AgentHarness
+	ChatPermissionModes(candidates []domain.AgentHarness) map[string][]domain.PermissionMode
 	Offering() settingssvc.Offering
 }
 
@@ -111,6 +112,7 @@ func (c *SettingsController) response(snapshot settingssvc.Snapshot) SettingsRes
 	return SettingsResponse{
 		DefaultSessionMode:   string(snapshot.DefaultSessionMode),
 		ChatHarnesses:        names,
+		ChatPermissionModes:  c.Svc.ChatPermissionModes(domain.AllHarnesses),
 		Client:               offering.Client,
 		LocalEnabled:         offering.LocalEnabled,
 		CloudOffering:        snapshot.CloudOffering,

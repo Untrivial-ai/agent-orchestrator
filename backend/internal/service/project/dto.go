@@ -76,5 +76,5 @@ type RemoveResult struct {
 // SetPermissionsInput remembers a project-wide policy for future sessions.
 type SetPermissionsInput struct {
 	SourceHarness domain.AgentHarness   `json:"sourceHarness,omitempty"`
-	Permissions   domain.PermissionMode `json:"permissions" enum:"default,accept-edits,auto,bypass-permissions"`
+	Permissions   domain.PermissionMode `json:"permissions" enum:"read-only,default,accept-edits,auto,bypass-permissions"`
 }

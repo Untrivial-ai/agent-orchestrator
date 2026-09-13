@@ -341,7 +341,8 @@ type sequenceDriver struct {
 	conversations []ports.ChatConversation
 }
 
-func (d *sequenceDriver) Harness() domain.AgentHarness { return domain.HarnessCodex }
+func (d *sequenceDriver) Capabilities() ports.ChatCapabilities { return productionCaps() }
+func (d *sequenceDriver) Harness() domain.AgentHarness         { return domain.HarnessCodex }
 func (d *sequenceDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	return productionCaps(), nil
 }
@@ -362,6 +363,12 @@ func (d *sequenceDriver) Resume(context.Context, ports.ChatResumeConfig) (ports.
 	return d.next()
 }
 
+func (d fakeDriver) Capabilities() ports.ChatCapabilities {
+	if d.caps != nil {
+		return d.caps
+	}
+	return productionCaps()
+}
 func (d fakeDriver) Harness() domain.AgentHarness { return domain.HarnessCodex }
 func (d fakeDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	if d.probe != nil {
@@ -413,6 +420,10 @@ func conversationReconnectedLive(conversation ports.ChatConversation) bool {
 }
 
 type fakeRegistry struct{ driver ports.ChatDriver }
+
+func (r fakeRegistry) SupportsPermissionMode(_ domain.AgentHarness, mode ports.PermissionMode) bool {
+	return mode != ports.PermissionModeReadOnly || r.driver.Capabilities().Has(ports.ChatCapabilityPreventiveReadOnly)
+}
 
 func (r fakeRegistry) Driver(domain.AgentHarness) (ports.ChatDriver, error) { return r.driver, nil }
 func (r fakeRegistry) SupportsChat(domain.AgentHarness) bool                { return true }
