@@ -13,9 +13,6 @@ import { settingsQueryKey, type Settings } from "../hooks/useSettings";
 // palette) render everywhere, and subscribing them to the cloud session/org
 // queries just for this click handler would fire cloud requests on every
 // mount. The client is built lazily from the settings query cache instead.
-const ORCHESTRATOR_KICKOFF_PROMPT =
-	"You are the orchestrator for this project. Survey the repository, then wait for tasks and delegate work to worker sessions.";
-
 /** Spawns a cloud orchestrator session for the project and returns its id. */
 export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId: string): Promise<string> {
 	const settings = queryClient.getQueryData<Settings>(settingsQueryKey);
@@ -32,7 +29,7 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 		kind: "orchestrator",
 		harness: "claude-code",
 		displayName: "Orchestrator",
-		prompt: ORCHESTRATOR_KICKOFF_PROMPT,
+		prompt: "",
 	});
 	return session.id;
 }

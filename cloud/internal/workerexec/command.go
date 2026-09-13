@@ -17,13 +17,6 @@ import (
 
 var ErrUnsupportedPolicy = errors.New("coding-agent policy cannot be enforced safely")
 
-const orchestratorSystemPrompt = `You are an AO orchestrator running in an isolated Cloud worker. Delegate independent work through the control plane with:
-- ao spawn --name NAME --agent HARNESS --prompt TEXT
-- ao list
-- ao send SESSION_ID MESSAGE
-- ao kill SESSION_ID
-Workers run in separate sandboxes. Never try to contact a child sandbox directly; use only these ao commands.`
-
 type Command struct {
 	Path    string
 	Args    []string
@@ -75,48 +68,57 @@ func (b HarnessBuilder) BuildInteractive(
 		)
 	}
 	binary := b.binary(launch.Harness)
-	systemPrompt := ""
-	if launch.Kind == "orchestrator" {
-		systemPrompt = orchestratorSystemPrompt
+	systemPrompt := strings.TrimSpace(launch.SystemPrompt)
+	if systemPrompt == "" {
+		return Command{}, errors.New("cloud role system prompt is required")
+	}
+	systemPromptFile, err := b.writeSystemPromptFile(launch.SessionID, systemPrompt)
+	if err != nil {
+		return Command{}, err
 	}
 	var providerArgs []string
 	switch launch.Harness {
 	case "codex":
 		providerArgs = codexActivityHookArgs()
 	case "cursor":
-		providerArgs = []string{"--trust"}
+		pluginDir, err := b.writeCursorPromptPlugin(launch.SessionID, systemPrompt)
+		if err != nil {
+			return Command{}, err
+		}
+		providerArgs = []string{"--trust", "--plugin-dir", pluginDir}
 	}
 	harness := agentruntime.Harness(launch.Harness)
 	permission := agentruntime.PermissionPolicyForMode(
 		agentruntime.SessionMode(launch.Mode),
 	)
 	var argv []string
-	var err error
 	if identity := b.interactiveRestoreIdentity(launch); identity != "" {
 		var ok bool
 		argv, ok, err = agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
-			Harness:       harness,
-			Binary:        binary,
-			SessionID:     launch.SessionID,
-			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
-			WorkspacePath: workspace,
-			SystemPrompt:  systemPrompt,
-			ProviderArgs:  providerArgs,
-			Permission:    permission,
+			Harness:          harness,
+			Binary:           binary,
+			SessionID:        launch.SessionID,
+			Metadata:         map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
+			WorkspacePath:    workspace,
+			SystemPrompt:     systemPrompt,
+			SystemPromptFile: systemPromptFile,
+			ProviderArgs:     providerArgs,
+			Permission:       permission,
 		})
 		if err == nil && !ok {
 			err = errors.New("coding-agent conversation cannot be restored")
 		}
 	} else {
 		argv, err = agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
-			Harness:       harness,
-			Binary:        binary,
-			SessionID:     launch.SessionID,
-			WorkspacePath: workspace,
-			Prompt:        launch.Prompt,
-			SystemPrompt:  systemPrompt,
-			ProviderArgs:  providerArgs,
-			Permission:    permission,
+			Harness:          harness,
+			Binary:           binary,
+			SessionID:        launch.SessionID,
+			WorkspacePath:    workspace,
+			Prompt:           launch.Prompt,
+			SystemPrompt:     systemPrompt,
+			SystemPromptFile: systemPromptFile,
+			ProviderArgs:     providerArgs,
+			Permission:       permission,
 		})
 	}
 	if err != nil {
