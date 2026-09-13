@@ -33,6 +33,7 @@ export type TrayControllerOptions = {
 	focusWindow: () => void;
 	openSession: (target: TrayOpenSessionTarget) => void;
 	locale: AppLocale;
+	onUnavailable?: (error: unknown) => void;
 };
 
 export function createTrayController(options: TrayControllerOptions): TrayController | null {
@@ -42,7 +43,13 @@ export function createTrayController(options: TrayControllerOptions): TrayContro
 	if (icon.isEmpty()) return null;
 	icon.setTemplateImage(true);
 
-	const tray = new Tray(icon);
+	let tray: Tray;
+	try {
+		tray = new Tray(icon);
+	} catch (error) {
+		options.onUnavailable?.(error);
+		return null;
+	}
 	let sessions: TraySessionEntry[] = [];
 	let catalog = catalogFor(options.locale);
 
