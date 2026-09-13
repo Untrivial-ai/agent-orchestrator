@@ -29,6 +29,17 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 
+const AD_HOC_AGENTS_WORKSPACE_NAME = "Ad hoc agents";
+
+function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): WorkspaceSummary[] {
+	const standalone = workspaces.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
+	if (!standalone) return workspaces;
+	return [
+		...workspaces.filter((workspace) => workspace.id !== STANDALONE_WORKSPACE_ID),
+		standalone,
+	];
+}
+
 function toAgentSwitchSummary(
 	agentSwitch: components["schemas"]["AgentSwitch"],
 ): AgentSwitchSummary {
@@ -222,14 +233,14 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	});
 	const standalone: WorkspaceSummary = {
 		id: STANDALONE_WORKSPACE_ID,
-		name: "Standalone agents",
+		name: AD_HOC_AGENTS_WORKSPACE_NAME,
 		kind: STANDALONE_PROJECT_KIND,
 		path: "Not attached to a project",
 		sessions: sessions
 			.filter((session) => !session.projectId)
-			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, "Standalone agents")),
+			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, AD_HOC_AGENTS_WORKSPACE_NAME)),
 	};
-	return standalone.sessions.length > 0 ? [standalone, ...projects] : projects;
+	return standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired
@@ -365,7 +376,10 @@ export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
 		// cloud projects would keep rendering for a signed-out user.
 		if (!ready || orgId === undefined) return localData;
 		const sessions = cloudSessionData ?? [];
-		return [...localData, ...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId))];
+		return placeStandaloneWorkspaceLast([
+			...localData,
+			...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId)),
+		]);
 	}, [localData, cloudData, cloudSessionData, orgId, ready]);
 	return { ...local, data };
 }
@@ -399,7 +413,7 @@ export function useWorkspaceSession(sessionId: string) {
 			const project = session.projectId
 				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
 					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
-				: ({ id: STANDALONE_WORKSPACE_ID, name: "Standalone agents" } satisfies Pick<WorkspaceSummary, "id" | "name">);
+				: ({ id: STANDALONE_WORKSPACE_ID, name: AD_HOC_AGENTS_WORKSPACE_NAME } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});

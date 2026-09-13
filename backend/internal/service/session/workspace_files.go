@@ -1394,7 +1394,7 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 }
 
 func isStandaloneScratchWorkspace(rec domain.SessionRecord) bool {
-	return rec.IsStandalone() && rec.Kind == domain.KindWorker && strings.HasPrefix(string(rec.ID), "standalone-")
+	return rec.IsStandalone() && rec.Kind == domain.KindWorker
 }
 
 func scratchWorkspaceFile(root string, id domain.SessionID, rel string) (WorkspaceFileDetail, error) {
