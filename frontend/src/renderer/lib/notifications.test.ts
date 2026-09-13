@@ -1,9 +1,10 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeSseRetryDelayMs } from "./sse-backoff";
-import type { NotificationDTO, NotificationsCache } from "./notifications";
+import type { NotificationDTO, NotificationsCache, NotificationsPage } from "./notifications";
 
 const {
+	apiDeleteMock,
 	apiGetMock,
 	getApiBaseUrlMock,
 	onStatusMock,
@@ -12,6 +13,7 @@ const {
 	subscribeApiBaseUrlMock,
 	unsubscribeBaseUrlMock,
 } = vi.hoisted(() => ({
+	apiDeleteMock: vi.fn(),
 	apiGetMock: vi.fn(),
 	getApiBaseUrlMock: vi.fn(() => "http://127.0.0.1:3001"),
 	onStatusMock: vi.fn(),
@@ -22,7 +24,7 @@ const {
 }));
 
 vi.mock("./api-client", () => ({
-	apiClient: { GET: apiGetMock },
+	apiClient: { DELETE: apiDeleteMock, GET: apiGetMock },
 	apiErrorMessage: () => "Request failed",
 	getApiBaseUrl: getApiBaseUrlMock,
 	subscribeApiBaseUrl: subscribeApiBaseUrlMock,
@@ -36,7 +38,9 @@ vi.mock("./bridge", () => ({
 }));
 
 import {
+	applyNotificationsCleared,
 	applyResolvedNotification,
+	clearAllNotifications,
 	createNotificationsTransport,
 	fetchNotificationsPage,
 	getCachedNotifications,
@@ -105,6 +109,7 @@ function setWindowState({ focused, visible }: { focused: boolean; visible: boole
 }
 
 beforeEach(() => {
+	apiDeleteMock.mockReset();
 	apiGetMock.mockReset();
 	EventSourceStub.instances = [];
 	getApiBaseUrlMock.mockReset().mockReturnValue("http://127.0.0.1:3001");
@@ -122,6 +127,20 @@ afterEach(() => {
 });
 
 describe("notification cache helpers", () => {
+	it("calls the clear-all endpoint", async () => {
+		apiDeleteMock.mockResolvedValue({
+			data: { clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1, clearedCount: 2 },
+		});
+
+		await expect(clearAllNotifications()).resolves.toEqual({
+			clearId: "clear-1",
+			clearEpoch: "epoch-1",
+			clearSequence: 1,
+			clearedCount: 2,
+		});
+		expect(apiDeleteMock).toHaveBeenCalledWith("/api/v1/notifications");
+	});
+
 	it.each([
 		{ cursor: "previous", nextCursor: "older", status: "all" as const, unreadCount: 4 },
 		{ cursor: "", nextCursor: undefined, status: "unread" as const, unreadCount: 1 },
@@ -130,7 +149,8 @@ describe("notification cache helpers", () => {
 			data: { notifications: [notification()], nextCursor, unreadCount, unresolvedCount: 3 },
 		});
 
-		await expect(fetchNotificationsPage(status, cursor)).resolves.toEqual({
+		const controller = new AbortController();
+		await expect(fetchNotificationsPage(status, cursor, controller.signal)).resolves.toEqual({
 			notifications: [notification()],
 			nextCursor,
 			unreadCount,
@@ -138,6 +158,7 @@ describe("notification cache helpers", () => {
 		});
 
 		expect(apiGetMock).toHaveBeenCalledWith("/api/v1/notifications", {
+			signal: controller.signal,
 			params: {
 				query: {
 					cursor: cursor || undefined,
@@ -360,6 +381,46 @@ describe("notification cache helpers", () => {
 		expect(recent?.pages[0]?.unresolvedCount).toBe(0);
 	});
 
+	it("applies a resolution only once", () => {
+		const qc = queryClient();
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [notification(), notification({ id: "ntf_2" })], unreadCount: 2, unresolvedCount: 2 }],
+		});
+		const resolved = notification({ resolvedAt: "2026-06-16T11:00:00Z" });
+
+		applyResolvedNotification(qc, resolved);
+		applyResolvedNotification(qc, resolved);
+
+		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(1);
+	});
+
+	it("does not let an older clear generation erase a newer notification", () => {
+		const qc = queryClient();
+		expect(
+			applyNotificationsCleared(qc, { clearId: "clear-2", clearEpoch: "epoch-1", clearSequence: 2 }),
+		).toBe(true);
+		mergeUnreadNotification(qc, notification({ id: "after-clear" }));
+
+		expect(
+			applyNotificationsCleared(qc, { clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1 }),
+		).toBe(false);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "after-clear" }),
+		]);
+	});
+
+	it("accepts a clear from a new daemon epoch", () => {
+		const qc = queryClient();
+		applyNotificationsCleared(qc, { clearId: "clear-old", clearEpoch: "epoch-1", clearSequence: 9 });
+		mergeUnreadNotification(qc, notification({ id: "before-restart-clear" }));
+
+		expect(
+			applyNotificationsCleared(qc, { clearId: "clear-new", clearEpoch: "epoch-2", clearSequence: 1 }),
+		).toBe(true);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([]);
+	});
+
 	it("drops older pages after the panel closes while keeping the latest page", () => {
 		const qc = queryClient();
 		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
@@ -427,6 +488,81 @@ describe("createNotificationsTransport", () => {
 		]);
 		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(0);
 		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(0);
+	});
+
+	it("replays clear and create events then reconciles once after a reconnect snapshot", async () => {
+		const qc = queryClient();
+		mergeUnreadNotification(qc, notification({ id: "before-clear" }));
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		let finishRefresh: (() => void) | undefined;
+		const refresh = new Promise<void>((resolve) => {
+			finishRefresh = resolve;
+		});
+		invalidateSpy.mockReturnValue(refresh);
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+
+		source.onopen?.();
+		source.dispatch("notification_cleared", { clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1 });
+		source.dispatch("notification_created", notification({ id: "after-clear" }));
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "before-clear" }),
+		]);
+
+		finishRefresh?.();
+		await vi.waitFor(() =>
+			expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+				expect.objectContaining({ id: "after-clear" }),
+			]),
+		);
+		await vi.waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(4));
+	});
+
+	it("cancels an in-flight history fetch before applying a clear and later create", async () => {
+		const qc = queryClient();
+		let requestStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			requestStarted = resolve;
+		});
+		apiGetMock.mockImplementation(
+			(_path: string, options: { signal?: AbortSignal }) =>
+				new Promise((resolve) => {
+					requestStarted?.();
+					options.signal?.addEventListener("abort", () => {
+						resolve({
+							data: {
+								notifications: [notification({ id: "stale-fetch" })],
+								unreadCount: 1,
+								unresolvedCount: 1,
+							},
+						});
+					});
+				}),
+		);
+		const staleFetch = qc.fetchInfiniteQuery({
+			queryKey: unreadNotificationsQueryKey,
+			queryFn: ({ pageParam, signal }) => fetchNotificationsPage("unread", pageParam, signal),
+			initialPageParam: "",
+			getNextPageParam: (page: NotificationsPage) => page.nextCursor,
+		});
+		await started;
+
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+		source.dispatch("notification_cleared", {
+			clearId: "clear-1",
+			clearEpoch: "epoch-1",
+			clearSequence: 1,
+		});
+		source.dispatch("notification_created", notification({ id: "after-clear" }));
+
+		await staleFetch.catch(() => undefined);
+		await vi.waitFor(() => {
+			expect(apiGetMock.mock.calls[0]?.[1].signal.aborted).toBe(true);
+			expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+				expect.objectContaining({ id: "after-clear" }),
+			]);
+		});
 	});
 
 	it("suppresses the needs_input toast for the session the user is already watching", () => {

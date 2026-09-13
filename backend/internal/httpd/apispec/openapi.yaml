@@ -1603,6 +1603,30 @@ paths:
       tags:
       - mobile
   /api/v1/notifications:
+    delete:
+      operationId: clearNotifications
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearNotificationsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Clear all notifications
+      tags:
+      - notifications
     get:
       operationId: listNotifications
       parameters:
@@ -1779,7 +1803,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Stream created notifications
+      summary: Stream notification changes
       tags:
       - notifications
   /api/v1/orchestrators:
@@ -7642,6 +7666,30 @@ components:
       required:
       - sessionId
       - reason
+      type: object
+    ClearNotificationsResponse:
+      properties:
+        clearEpoch:
+          description: Daemon epoch for ordering notification clears across one daemon
+            lifetime.
+          type: string
+        clearId:
+          description: Identifier shared with the ordered notification_cleared stream
+            event.
+          type: string
+        clearSequence:
+          description: Monotonic notification-clear sequence within clearEpoch.
+          format: int64
+          type: integer
+        clearedCount:
+          description: Number of notifications deleted.
+          format: int64
+          type: integer
+      required:
+      - clearedCount
+      - clearId
+      - clearEpoch
+      - clearSequence
       type: object
     ClonePreparationResult:
       properties:

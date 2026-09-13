@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -19,12 +20,35 @@ type fakeStore struct {
 	unreadCount     int64
 	unresolvedCount int64
 
-	markRow      domain.NotificationRecord
-	markOK       bool
-	markAllCount int64
-	markedAll    bool
-	markedIDs    []string
-	err          error
+	markRow       domain.NotificationRecord
+	markOK        bool
+	markAllCount  int64
+	markedAll     bool
+	markedIDs     []string
+	clearAllCount int64
+	clearedAll    bool
+	clearSawLock  bool
+	clearLock     *recordingLocker
+	err           error
+}
+
+type recordingLocker struct{ held bool }
+
+func (l *recordingLocker) Lock()   { l.held = true }
+func (l *recordingLocker) Unlock() { l.held = false }
+
+type capturePublisher struct {
+	events  []domain.NotificationEvent
+	barrier *recordingLocker
+	t       *testing.T
+}
+
+func (p *capturePublisher) Publish(_ context.Context, event domain.NotificationEvent) error {
+	if p.barrier != nil && !p.barrier.held {
+		p.t.Fatal("notification event published outside clear barrier")
+	}
+	p.events = append(p.events, event)
+	return nil
 }
 
 func (f *fakeStore) CreateNotification(context.Context, domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
@@ -65,6 +89,12 @@ func (f *fakeStore) MarkAllNotificationsRead(context.Context) (int64, error) {
 func (f *fakeStore) MarkNotificationsRead(_ context.Context, ids []string) (int64, error) {
 	f.markedIDs = ids
 	return int64(len(ids)), f.err
+}
+
+func (f *fakeStore) ClearAllNotifications(context.Context) (int64, error) {
+	f.clearedAll = true
+	f.clearSawLock = f.clearLock == nil || f.clearLock.held
+	return f.clearAllCount, f.err
 }
 
 func TestListAddsTargetsAndReturnsNextCursor(t *testing.T) {
@@ -174,5 +204,39 @@ func TestListUnreadRequiresStore(t *testing.T) {
 	_, err := New(Deps{}).List(context.Background(), ListFilter{})
 	if err == nil {
 		t.Fatal("want missing store error")
+	}
+}
+
+func TestClearAllPublishesMatchingOrderedGenerationInsideBarrier(t *testing.T) {
+	barrier := &recordingLocker{}
+	st := &fakeStore{clearAllCount: 4, clearLock: barrier}
+	publisher := &capturePublisher{barrier: barrier, t: t}
+	clearID := 0
+	mgr := New(Deps{
+		Store: st, Publisher: publisher, Barrier: barrier, ClearEpoch: "epoch-1",
+		NewClearID: func() string {
+			clearID++
+			return fmt.Sprintf("clear-%d", clearID)
+		},
+	})
+
+	first, err := mgr.ClearAll(context.Background())
+	if err != nil {
+		t.Fatalf("ClearAll: %v", err)
+	}
+	second, err := mgr.ClearAll(context.Background())
+	if err != nil {
+		t.Fatalf("second ClearAll: %v", err)
+	}
+	if first.ClearedCount != 4 || first.ClearID != "clear-1" || first.ClearEpoch != "epoch-1" || first.ClearSequence != 1 ||
+		second.ClearID != "clear-2" || second.ClearEpoch != "epoch-1" || second.ClearSequence != 2 ||
+		!st.clearedAll || !st.clearSawLock {
+		t.Fatalf("first=%+v second=%+v cleared=%v locked=%v", first, second, st.clearedAll, st.clearSawLock)
+	}
+	if len(publisher.events) != 2 || publisher.events[0].Kind != domain.NotificationCleared ||
+		publisher.events[0].ClearID != first.ClearID || publisher.events[0].ClearEpoch != first.ClearEpoch ||
+		publisher.events[0].ClearSequence != first.ClearSequence || publisher.events[1].ClearID != second.ClearID ||
+		publisher.events[1].ClearEpoch != second.ClearEpoch || publisher.events[1].ClearSequence != second.ClearSequence {
+		t.Fatalf("events = %+v", publisher.events)
 	}
 }
