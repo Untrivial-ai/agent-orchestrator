@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -33,14 +34,27 @@ var (
 // New switches never write them, but startup recovery must settle an operation
 // created by an older desktop build without returning to the deleted workflow.
 const (
-	legacyCodexSwitchStoppingSessions  domain.CodexAccountSwitchPhase = "stopping_sessions"
-	legacyCodexSwitchSessionsStopped   domain.CodexAccountSwitchPhase = "sessions_stopped"
-	legacyCodexSwitchRestartingSession domain.CodexAccountSwitchPhase = "restarting_sessions"
+	legacyCodexSwitchStoppingSessions domain.CodexAccountSwitchPhase = "stopping_sessions"
+	legacyCodexSwitchSessionsStopped  domain.CodexAccountSwitchPhase = "sessions_stopped"
+	codexIdleRestartIncomplete                                       = "idle_session_restart_incomplete"
 )
 
-func codexAccountSwitchFingerprint(target string, revision int64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("v3\x00%s\x00%d", target, revision)))
-	return "v3:" + hex.EncodeToString(sum[:])
+func codexAccountSwitchFingerprint(target string, revision int64, restartIdleSessions bool) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v4\x00%s\x00%d\x00%t", target, revision, restartIdleSessions)))
+	return "v4:" + hex.EncodeToString(sum[:])
+}
+
+func codexAccountSwitchRequestMatches(existing domain.CodexAccountSwitch, target string, revision int64, restartIdleSessions bool) bool {
+	if existing.TargetAccountID != target || existing.ExpectedAccountRevision != revision {
+		return false
+	}
+	if strings.HasPrefix(existing.RequestFingerprint, "v2:") {
+		return existing.RestartIdleSessions == restartIdleSessions
+	}
+	if strings.HasPrefix(existing.RequestFingerprint, "v3:") {
+		return !restartIdleSessions
+	}
+	return existing.RequestFingerprint == codexAccountSwitchFingerprint(target, revision, restartIdleSessions)
 }
 
 func (m *Manager) codexAccountSwitchDependencies() (ports.CodexAccountCredentialManager, ports.CodexAccountSwitchStore, error) {
@@ -62,12 +76,13 @@ func (m *Manager) acquireCodexAccountSwitchGate(ctx context.Context) error {
 	}
 	m.codexAccountSwitchMu.Lock()
 	defer m.codexAccountSwitchMu.Unlock()
-	if m.codexAccountSwitchWorkerRunning || m.codexAccountSwitchLease != nil {
+	if m.codexAccountSwitchOperationOpen || m.codexAccountSwitchWorkerRunning || m.codexAccountSwitchLease != nil {
 		lease.Release()
 		return ErrCodexAccountSwitchInProgress
 	}
 	m.codexAccountSwitchLease = lease
 	m.codexAccountSwitchWorkerRunning = true
+	m.codexAccountSwitchOperationOpen = true
 	return nil
 }
 
@@ -83,6 +98,7 @@ func (m *Manager) claimCodexAccountSwitchRecoveryWorker(ctx context.Context) boo
 	}
 	if m.codexAccountSwitchLease != nil {
 		m.codexAccountSwitchWorkerRunning = true
+		m.codexAccountSwitchOperationOpen = true
 		m.codexAccountSwitchMu.Unlock()
 		return true
 	}
@@ -99,6 +115,7 @@ func (m *Manager) claimCodexAccountSwitchRecoveryWorker(ctx context.Context) boo
 	}
 	m.codexAccountSwitchLease = lease
 	m.codexAccountSwitchWorkerRunning = true
+	m.codexAccountSwitchOperationOpen = true
 	return true
 }
 
@@ -107,6 +124,7 @@ func (m *Manager) finishCodexAccountSwitchWorker(keepFence bool) {
 	m.codexAccountSwitchWorkerRunning = false
 	var release ports.CodexOperationLease
 	if !keepFence {
+		m.codexAccountSwitchOperationOpen = false
 		release = m.codexAccountSwitchLease
 		m.codexAccountSwitchLease = nil
 	}
@@ -119,17 +137,26 @@ func (m *Manager) finishCodexAccountSwitchWorker(keepFence bool) {
 	}
 }
 
+func (m *Manager) releaseCodexAccountSwitchLease() {
+	m.codexAccountSwitchMu.Lock()
+	lease := m.codexAccountSwitchLease
+	m.codexAccountSwitchLease = nil
+	m.codexAccountSwitchMu.Unlock()
+	if lease != nil {
+		lease.Release()
+	}
+}
+
 func (m *Manager) codexAccountSwitchWorkerActive() bool {
 	m.codexAccountSwitchMu.Lock()
 	defer m.codexAccountSwitchMu.Unlock()
 	return m.codexAccountSwitchWorkerRunning
 }
 
-func (m *Manager) finishCodexAccountSwitchMutation(credentials ports.CodexAccountCredentialManager, keepFence bool) {
-	m.finishCodexAccountSwitchWorker(keepFence)
-	if !keepFence {
-		credentials.EndCodexAccountMutation()
-	}
+func (m *Manager) codexAccountSwitchOperationActive() bool {
+	m.codexAccountSwitchMu.Lock()
+	defer m.codexAccountSwitchMu.Unlock()
+	return m.codexAccountSwitchOperationOpen
 }
 
 func (m *Manager) codexAccountSwitchIsActive() bool {
@@ -138,11 +165,13 @@ func (m *Manager) codexAccountSwitchIsActive() bool {
 
 // CodexAccountSwitchInProgress is the daemon-wide admission fence consumed by
 // controller owners outside Session Manager.
-func (m *Manager) CodexAccountSwitchInProgress() bool { return m.codexAccountSwitchIsActive() }
+func (m *Manager) CodexAccountSwitchInProgress() bool {
+	return m.codexAccountSwitchOperationActive()
+}
 
 // StartCodexAccountSwitch admits and starts one daemon-owned global account switch.
-// Existing controllers are deliberately outside this transaction: the operation
-// changes and verifies the device credential only.
+// Credential activation and verification always finish before an optional,
+// best-effort reconnect of controllers that are still durably idle.
 func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
 	cfg.TargetAccountID = strings.TrimSpace(cfg.TargetAccountID)
 	cfg.IdempotencyKey = strings.TrimSpace(cfg.IdempotencyKey)
@@ -153,11 +182,11 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	if err != nil {
 		return domain.CodexAccountSwitch{}, err
 	}
-	fingerprint := codexAccountSwitchFingerprint(cfg.TargetAccountID, cfg.ExpectedAccountRevision)
+	fingerprint := codexAccountSwitchFingerprint(cfg.TargetAccountID, cfg.ExpectedAccountRevision, cfg.RestartIdleSessions)
 	if existing, ok, readErr := store.GetCodexAccountSwitchByIdempotency(ctx, cfg.IdempotencyKey); readErr != nil {
 		return domain.CodexAccountSwitch{}, readErr
 	} else if ok {
-		if existing.RequestFingerprint != fingerprint {
+		if !codexAccountSwitchRequestMatches(existing, cfg.TargetAccountID, cfg.ExpectedAccountRevision, cfg.RestartIdleSessions) {
 			return existing, ErrCodexAccountSwitchIdempotencyConflict
 		}
 		return m.decorateCodexAccountSwitch(existing), nil
@@ -214,7 +243,7 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	now := m.clock()
 	sw := domain.CodexAccountSwitch{
 		ID: uuid.NewString(), SourceKind: source.Kind, SourceAccountID: source.AccountID,
-		TargetAccountID: cfg.TargetAccountID, Phase: domain.CodexAccountSwitchRequested,
+		TargetAccountID: cfg.TargetAccountID, RestartIdleSessions: cfg.RestartIdleSessions, Phase: domain.CodexAccountSwitchRequested,
 		IdempotencyKey: cfg.IdempotencyKey, RequestFingerprint: fingerprint,
 		ExpectedAccountRevision: cfg.ExpectedAccountRevision, CreatedAt: now, UpdatedAt: now,
 	}
@@ -232,20 +261,33 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	m.agentSwitchWorkers.Add(1)
 	go func() {
 		defer m.agentSwitchWorkers.Done()
-		m.runCodexAccountSwitch(m.backgroundContext, credentials, store, sw)
+		m.runCodexAccountSwitch(m.backgroundContext, credentials, store, sw, false)
 	}()
 	return sw, nil
 }
 
-func (m *Manager) runCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw domain.CodexAccountSwitch) {
+func (m *Manager) runCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw domain.CodexAccountSwitch, recovering bool) {
 	ctx = codexExclusiveOperationContext(ctx)
+	credentialFenceReleased := false
+	releaseCredentialFence := func() {
+		if credentialFenceReleased {
+			return
+		}
+		credentialFenceReleased = true
+		credentials.EndCodexAccountMutation()
+		m.releaseCodexAccountSwitchLease()
+	}
 	defer func() {
-		m.finishCodexAccountSwitchMutation(credentials, retainCodexAccountSwitchFence(sw.Phase))
+		keepFence := retainCodexAccountSwitchFence(sw.Phase)
+		if !keepFence {
+			releaseCredentialFence()
+		}
+		m.finishCodexAccountSwitchWorker(keepFence)
 	}()
-	m.dispatchCodexAccountSwitch(ctx, credentials, store, &sw)
+	m.dispatchCodexAccountSwitch(ctx, credentials, store, &sw, recovering, releaseCredentialFence)
 }
 
-func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw *domain.CodexAccountSwitch) {
+func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw *domain.CodexAccountSwitch, recovering bool, releaseCredentialFence func()) {
 	// Switches created before source_kind was introduced are managed-account
 	// switches. Keep that compatibility at the credential coordinator boundary.
 	if sw.SourceKind == "" {
@@ -288,7 +330,7 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 			if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchVerifyingAccount, "") != nil {
 				return
 			}
-		case domain.CodexAccountSwitchVerifyingAccount, legacyCodexSwitchRestartingSession:
+		case domain.CodexAccountSwitchVerifyingAccount:
 			if err := credentials.VerifyCurrentCodexAccount(ctx, sw.TargetAccountID); err != nil {
 				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "target_verification_unconfirmed")
 				return
@@ -297,7 +339,38 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 				committedAt := m.clock()
 				sw.CredentialsCommittedAt = &committedAt
 			}
-			m.completeCodexAccountSwitch(ctx, credentials, store, sw)
+			if !sw.RestartIdleSessions {
+				m.completeCodexAccountSwitch(ctx, credentials, store, sw, "")
+				return
+			}
+			if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRestartingSessions, "") != nil {
+				return
+			}
+			releaseCredentialFence()
+			failureCode := ""
+			if m.restartIdleCodexSessions(m.backgroundContext) {
+				failureCode = codexIdleRestartIncomplete
+			}
+			m.completeCodexAccountSwitch(ctx, credentials, store, sw, failureCode)
+			return
+		case domain.CodexAccountSwitchRestartingSessions:
+			// A daemon restart can occur after one controller stopped but before it
+			// resumed. Without per-session restart state, replaying the batch could
+			// restart already-completed sessions twice. Verify the committed target
+			// and settle with the generic manual-resume warning instead.
+			if err := credentials.VerifyCurrentCodexAccount(ctx, sw.TargetAccountID); err != nil {
+				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "target_verification_unconfirmed")
+				return
+			}
+			releaseCredentialFence()
+			failureCode := codexIdleRestartIncomplete
+			if !recovering {
+				failureCode = ""
+				if m.restartIdleCodexSessions(m.backgroundContext) {
+					failureCode = codexIdleRestartIncomplete
+				}
+			}
+			m.completeCodexAccountSwitch(ctx, credentials, store, sw, failureCode)
 			return
 		case domain.CodexAccountSwitchRollbackRequired:
 			if err := credentials.RestoreCodexAccountCredential(
@@ -328,7 +401,19 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 					committedAt := m.clock()
 					sw.CredentialsCommittedAt = &committedAt
 				}
-				m.completeCodexAccountSwitch(ctx, credentials, store, sw)
+				if sw.RestartIdleSessions {
+					if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRestartingSessions, "") != nil {
+						return
+					}
+					releaseCredentialFence()
+					failureCode := ""
+					if m.restartIdleCodexSessions(m.backgroundContext) {
+						failureCode = codexIdleRestartIncomplete
+					}
+					m.completeCodexAccountSwitch(ctx, credentials, store, sw, failureCode)
+					return
+				}
+				m.completeCodexAccountSwitch(ctx, credentials, store, sw, "")
 				return
 			}
 			if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRollbackRequired, sw.FailureCode) != nil {
@@ -343,11 +428,123 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 	}
 }
 
-func (m *Manager) completeCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw *domain.CodexAccountSwitch) {
+func (m *Manager) completeCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw *domain.CodexAccountSwitch, failureCode string) {
 	completed := m.clock()
 	sw.CompletedAt = &completed
-	if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchCompleted, "") == nil {
+	if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchCompleted, failureCode) == nil {
 		_ = credentials.CleanupCodexAccountSwitch(ctx, sw.ID)
+	}
+}
+
+// restartIdleCodexSessions discovers candidates only after the target account
+// is verified. Each candidate owns its normal per-session operation fence for
+// the entire stop/resume cycle; no account-switch session snapshot is stored.
+// The return value reports whether the user should receive the generic manual
+// resume warning.
+func (m *Manager) restartIdleCodexSessions(ctx context.Context) bool {
+	records, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		m.logger.Error("codex account switch: list idle sessions failed", "error", err)
+		return true
+	}
+	candidates := make([]domain.SessionID, 0, len(records))
+	for _, rec := range records {
+		if idleCodexRestartCandidate(rec) {
+			candidates = append(candidates, rec.ID)
+		}
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+
+	results := make(chan bool, len(candidates))
+	var workers sync.WaitGroup
+	workers.Add(len(candidates))
+	for _, id := range candidates {
+		go func() {
+			defer workers.Done()
+			results <- m.restartIdleCodexSession(ctx, id)
+		}()
+	}
+	workers.Wait()
+	close(results)
+	for failed := range results {
+		if failed {
+			return true
+		}
+	}
+	return false
+}
+
+func idleCodexRestartCandidate(rec domain.SessionRecord) bool {
+	if rec.IsTerminated || rec.Harness != domain.HarnessCodex || rec.Activity.State != domain.ActivityIdle {
+		return false
+	}
+	mode := domain.NormalizeSessionMode(rec.Mode)
+	return mode == domain.SessionModeTUI || mode == domain.SessionModeChat
+}
+
+// restartIdleCodexSession returns true only for a real restart failure. A
+// candidate that became busy or entered another operation is deliberately
+// skipped and left untouched.
+func (m *Manager) restartIdleCodexSession(ctx context.Context, id domain.SessionID) bool {
+	if err := m.beginAgentOperation(ctx, id, agentOperationAccountReconnect); err != nil {
+		if !errors.Is(err, errAgentOperationInProgress) {
+			m.logger.Error("codex account switch: reserve idle session failed", "sessionID", id, "error", err)
+			return true
+		}
+		return false
+	}
+	defer m.endAgentOperation(id, agentOperationAccountReconnect)
+
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		m.logger.Error("codex account switch: refresh idle session failed", "sessionID", id, "error", err)
+		return true
+	}
+	if !ok || !idleCodexRestartCandidate(rec) {
+		return false
+	}
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI {
+		// The runtime's Restart primitive replaces the command in-place (tmux uses
+		// respawn-pane -k), which is the stop-and-resume boundary for TUI without
+		// discarding terminal history or changing its handle.
+		if _, err := m.resumeAgentRecordWithPolicy(ctx, "restart idle session after Codex account switch", rec, false, true); err != nil {
+			m.recordExitedIdleTUIIfStopped(ctx, rec)
+			m.logger.Error("codex account switch: resume idle TUI session failed", "sessionID", id, "error", err)
+			return true
+		}
+		return false
+	}
+	if err := m.stopAgentController(ctx, rec); err != nil {
+		m.logger.Error("codex account switch: stop idle session failed", "sessionID", id, "error", err)
+		return true
+	}
+	if err := m.recordAgentExited(ctx, rec); err != nil {
+		m.logger.Error("codex account switch: record idle session exit failed", "sessionID", id, "error", err)
+		return true
+	}
+	if _, err := m.resumeAgentRecordWithPolicy(ctx, "restart idle session after Codex account switch", rec, false, true); err != nil {
+		m.logger.Error("codex account switch: resume idle session failed", "sessionID", id, "error", err)
+		return true
+	}
+	return false
+}
+
+// recordExitedIdleTUIIfStopped makes a failed in-place restart manually
+// resumable only when the runtime can prove the pane no longer has a child.
+// An unavailable or inconclusive probe leaves the durable row untouched.
+func (m *Manager) recordExitedIdleTUIIfStopped(ctx context.Context, rec domain.SessionRecord) {
+	inspector, ok := m.runtime.(ports.RuntimeChildInspector)
+	if !ok {
+		return
+	}
+	alive, err := inspector.IsChildAlive(ctx, ports.RuntimeHandle{ID: rec.Metadata.RuntimeHandleID})
+	if err != nil || alive {
+		return
+	}
+	if err := m.recordAgentExited(ctx, rec); err != nil {
+		m.logger.Error("codex account switch: record stopped idle TUI session failed", "sessionID", rec.ID, "error", err)
 	}
 }
 
@@ -414,6 +611,11 @@ func (m *Manager) getCodexAccountSwitch(ctx context.Context, id string) (domain.
 	return m.decorateCodexAccountSwitch(sw), nil
 }
 
+// GetCodexAccountSwitch returns active or terminal state for one durable switch.
+func (m *Manager) GetCodexAccountSwitch(ctx context.Context, id string) (domain.CodexAccountSwitch, error) {
+	return m.getCodexAccountSwitch(ctx, id)
+}
+
 // GetActiveCodexAccountSwitch returns the sole nonterminal switch when present.
 func (m *Manager) GetActiveCodexAccountSwitch(ctx context.Context) (domain.CodexAccountSwitch, bool, error) {
 	_, store, err := m.codexAccountSwitchDependencies()
@@ -452,11 +654,7 @@ func (m *Manager) RecoverCodexAccountSwitch(ctx context.Context, id string) (dom
 }
 
 func (m *Manager) recoverCodexAccountSwitch(ctx context.Context, credentials ports.CodexAccountCredentialManager, store ports.CodexAccountSwitchStore, sw domain.CodexAccountSwitch) {
-	ctx = codexExclusiveOperationContext(ctx)
-	defer func() {
-		m.finishCodexAccountSwitchMutation(credentials, retainCodexAccountSwitchFence(sw.Phase))
-	}()
-	m.dispatchCodexAccountSwitch(ctx, credentials, store, &sw)
+	m.runCodexAccountSwitch(ctx, credentials, store, sw, true)
 }
 
 // ReconcileCodexAccountSwitches restores the daemon-wide credential mutation
@@ -483,7 +681,7 @@ func (m *Manager) ReconcileCodexAccountSwitches(ctx context.Context) error {
 	m.agentSwitchWorkers.Add(1)
 	go func() {
 		defer m.agentSwitchWorkers.Done()
-		m.runCodexAccountSwitch(m.backgroundContext, credentials, store, sw)
+		m.runCodexAccountSwitch(m.backgroundContext, credentials, store, sw, true)
 	}()
 	return nil
 }

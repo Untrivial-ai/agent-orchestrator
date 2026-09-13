@@ -158,6 +158,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/codex/account-switches/{switchId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one Codex account switch */
+        get: operations["getCodexAccountSwitch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/codex/account-switches/{switchId}/recover": {
         parameters: {
             query?: never;
@@ -167,7 +184,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Retry incomplete restarts for one Codex account switch */
+        /** Retry incomplete credential recovery for one Codex account switch */
         post: operations["recoverCodexAccountSwitch"];
         delete?: never;
         options?: never;
@@ -2770,7 +2787,8 @@ export interface components {
             failureCode?: string;
             id: string;
             /** @enum {string} */
-            phase: "requested" | "checkpointing_source" | "activating_target" | "verifying_target" | "rollback_required" | "recovery_required" | "completed" | "failed";
+            phase: "requested" | "checkpointing_source" | "activating_target" | "verifying_target" | "restarting_sessions" | "rollback_required" | "recovery_required" | "completed" | "failed";
+            restartIdleSessions?: boolean;
             sourceAccountId?: string;
             /** @enum {string} */
             sourceKind: "managed" | "device" | "none";
@@ -4220,6 +4238,7 @@ export interface components {
             /** Format: int64 */
             expectedAccountRevision: number;
             idempotencyKey: string;
+            restartIdleSessions?: boolean;
             targetAccountId: string;
         };
         StartPreviewServerRequest: {
@@ -5027,6 +5046,47 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getCodexAccountSwitch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable Codex account switch identifier. */
+                switchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexAccountSwitchResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

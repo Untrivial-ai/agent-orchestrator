@@ -41,7 +41,7 @@ func TestBuild_CodexSwitchContractIsRedactedAndOnlyMountedRoutesAreDocumented(t 
 	phase := doc.Components.Schemas["CodexAccountSwitchResponse"].Properties["phase"]
 	want := []string{
 		"requested", "checkpointing_source", "activating_target", "verifying_target",
-		"rollback_required", "recovery_required", "completed", "failed",
+		"restarting_sessions", "rollback_required", "recovery_required", "completed", "failed",
 	}
 	if !slices.Equal(phase.Enum, want) {
 		t.Fatalf("CodexAccountSwitchResponse.phase enum = %v, want %v", phase.Enum, want)
@@ -54,11 +54,16 @@ func TestBuild_CodexSwitchContractIsRedactedAndOnlyMountedRoutesAreDocumented(t 
 			t.Fatalf("obsolete %q remains in StartCodexAccountSwitchRequest", obsolete)
 		}
 	}
+	for _, schema := range []string{"CodexAccountSwitchResponse", "StartCodexAccountSwitchRequest"} {
+		if _, ok := doc.Components.Schemas[schema].Properties["restartIdleSessions"]; !ok {
+			t.Fatalf("restartIdleSessions missing from %s", schema)
+		}
+	}
 	if _, ok := doc.Components.Schemas["CodexAccountSwitchSessionResponse"]; ok {
 		t.Fatal("obsolete CodexAccountSwitchSessionResponse schema remains")
 	}
-	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}"]; ok {
-		t.Fatal("stale switch GET path remains in generated contract")
+	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}"]; !ok {
+		t.Fatal("switch GET path missing from generated contract")
 	}
 	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}/cancel"]; ok {
 		t.Fatal("stale switch cancel path remains in generated contract")

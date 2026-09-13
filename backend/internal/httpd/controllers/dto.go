@@ -1391,6 +1391,7 @@ type StartCodexAccountSwitchRequest struct {
 	TargetAccountID         string `json:"targetAccountId" minLength:"1"`
 	ExpectedAccountRevision int64  `json:"expectedAccountRevision" minimum:"0"`
 	IdempotencyKey          string `json:"idempotencyKey" minLength:"1"`
+	RestartIdleSessions     bool   `json:"restartIdleSessions,omitempty"`
 }
 
 // CodexAccountSwitchIDParam describes the durable switch path parameter.
@@ -1407,7 +1408,8 @@ type CodexAccountSwitchResponse struct {
 	SourceKind             string                  `json:"sourceKind" enum:"managed,device,none"`
 	SourceAccountID        string                  `json:"sourceAccountId,omitempty"`
 	TargetAccountID        string                  `json:"targetAccountId"`
-	Phase                  CodexAccountSwitchPhase `json:"phase" enum:"requested,checkpointing_source,activating_target,verifying_target,rollback_required,recovery_required,completed,failed"`
+	RestartIdleSessions    bool                    `json:"restartIdleSessions,omitempty"`
+	Phase                  CodexAccountSwitchPhase `json:"phase" enum:"requested,checkpointing_source,activating_target,verifying_target,restarting_sessions,rollback_required,recovery_required,completed,failed"`
 	FailureCode            string                  `json:"failureCode,omitempty"`
 	CanRecover             bool                    `json:"canRecover"`
 	CredentialsCommittedAt *time.Time              `json:"credentialsCommittedAt,omitempty"`

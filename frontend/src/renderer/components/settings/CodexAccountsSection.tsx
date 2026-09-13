@@ -4,10 +4,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useCodexAccountActions } from "../../hooks/useCodexAccountActions";
 import { codexAccountReasonKey, codexAuthenticationDisplay, codexSwitchDisplay } from "../../hooks/codex-accounts-state";
-import { useCodexAccountsQuery, useEnsureCodexAccounts, type CodexAccount, type CodexAccountSwitch, type CodexActiveLogin } from "../../hooks/useCodexAccountsQuery";
+import { getCodexAccountSwitch, useCodexAccountsQuery, useEnsureCodexAccounts, type CodexAccount, type CodexAccountSwitch, type CodexActiveLogin } from "../../hooks/useCodexAccountsQuery";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Button } from "../ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
+import { Switch } from "../ui/switch";
 import { AgentProviderGroup } from "./AgentProviderGroup";
 import { formatAuthMethod, formatPercentage, formatPlanName } from "./CodexAccountDetails";
 import { CodexAccountLoginTerminalPanel } from "./CodexAccountLoginTerminalPanel";
@@ -15,7 +16,7 @@ import { CodexAccountRow } from "./CodexAccountRow";
 import { SettingsSection } from "./SettingsSection";
 
 export type PendingCodexAccountAction =
-	| { kind: "switch"; account: CodexAccount; idempotencyKey: string; submitting: boolean }
+	| { kind: "switch"; account: CodexAccount; idempotencyKey: string; restartIdleSessions: boolean; submitting: boolean }
 	| { kind: "reset"; account: CodexAccount; idempotencyKey: string; submitting: boolean }
 	| { kind: "logout"; account: CodexAccount; submitting: boolean }
 	| { kind: "delete"; account: CodexAccount; submitting: boolean }
@@ -32,7 +33,7 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const [pendingAction, setPendingAction] = useState<PendingCodexAccountAction>(null);
 	const [announcement, setAnnouncement] = useState("");
 	const [showDeviceRefresh, setShowDeviceRefresh] = useState(false);
-	const [switchOutcome, setSwitchOutcome] = useState<{ switchId: string; result: "completed" | "restored" | "failed"; label?: string } | null>(null);
+	const [switchOutcome, setSwitchOutcome] = useState<{ switchId: string; result: "completed" | "completed_with_restart_warning" | "restored" | "failed"; label?: string } | null>(null);
 	const previousSwitch = useRef<CodexAccountSwitch | null>(null);
 	const data = accountsQuery.data;
 	const deviceReconciliation = data?.deviceReconciliation;
@@ -83,17 +84,24 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 		const observed = previousSwitch.current;
 		if (!data || !observed) return;
 		previousSwitch.current = null;
-		const result = data.activeAccountId === observed.targetAccountId
-			? "completed"
-			: data.activeAccountId === observed.sourceAccountId || (observed.sourceKind !== "managed" && !data.activeAccountId)
-				? "restored"
-				: "failed";
-		const label = result === "completed"
-			? data.accounts.find((account) => account.id === observed.targetAccountId)?.label
-			: result === "restored"
-				? data.accounts.find((account) => account.id === observed.sourceAccountId)?.label
-				: undefined;
-		setSwitchOutcome({ switchId: observed.id, result, label });
+		let cancelled = false;
+		const settleOutcome = (terminal: CodexAccountSwitch | null) => {
+			if (cancelled) return;
+			const switched = data.activeAccountId === observed.targetAccountId;
+			const result = switched
+				? terminal?.failureCode === "idle_session_restart_incomplete" ? "completed_with_restart_warning" : "completed"
+				: data.activeAccountId === observed.sourceAccountId || (observed.sourceKind !== "managed" && !data.activeAccountId)
+					? "restored"
+					: "failed";
+			const label = result === "completed" || result === "completed_with_restart_warning"
+				? data.accounts.find((account) => account.id === observed.targetAccountId)?.label
+				: result === "restored"
+					? data.accounts.find((account) => account.id === observed.sourceAccountId)?.label
+					: undefined;
+			setSwitchOutcome({ switchId: observed.id, result, label });
+		};
+		void getCodexAccountSwitch(observed.id).then(settleOutcome).catch(() => settleOutcome(null));
+		return () => { cancelled = true; };
 	}, [currentSwitch, data?.activeAccountId, data?.accounts]);
 
 	const beginLogin = useCallback(async (accountId?: string) => {
@@ -125,7 +133,7 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	}, [actions, expandedAccount]);
 
 	const openPending = (kind: Exclude<PendingCodexAccountAction, null>["kind"], account: CodexAccount) => {
-		if (kind === "switch") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
+		if (kind === "switch") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), restartIdleSessions: false, submitting: false });
 		else if (kind === "reset") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
 		else setPendingAction({ kind, account, submitting: false });
 	};
@@ -136,7 +144,7 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 		setPendingAction({ ...pending, submitting: true });
 		try {
 			switch (pending.kind) {
-				case "switch": await actions.switchAccount(pending.account, data.accountRevision, pending.idempotencyKey); break;
+				case "switch": await actions.switchAccount(pending.account, data.accountRevision, pending.idempotencyKey, pending.restartIdleSessions); break;
 				case "reset": await actions.resetAccount(pending.account, pending.idempotencyKey); setAnnouncement(t("settings.codexAccounts.resetSuccess", { label: pending.account.label })); break;
 				case "logout": await actions.logoutAccount(pending.account); setAnnouncement(t("settings.codexAccounts.logoutSuccess", { label: pending.account.label })); break;
 				case "delete": await actions.deleteAccount(pending.account); if (expandedAccount === pending.account.id) setExpandedAccount(null); setAnnouncement(t("settings.codexAccounts.deleteSuccess", { label: pending.account.label })); break;
@@ -152,7 +160,16 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 		switch (pendingAction.kind) {
 			case "switch": return {
 				title: t("settings.codexAccounts.switchTitle", { label: pendingAction.account.label }),
-				description: t("settings.codexAccounts.switchDescription"),
+				description: <div className="space-y-4">
+					<p>{t("settings.codexAccounts.switchDescription")}</p>
+					<div className="rounded-lg border border-border bg-background/40 p-3">
+						<div className="flex items-center justify-between gap-4">
+							<label htmlFor="restart-idle-codex-sessions" className="font-medium text-foreground">{t("settings.codexAccounts.restartIdleSessions")}</label>
+							<Switch id="restart-idle-codex-sessions" checked={pendingAction.restartIdleSessions} disabled={pendingAction.submitting} onCheckedChange={(checked) => setPendingAction((current) => current?.kind === "switch" ? { ...current, restartIdleSessions: checked } : current)} />
+						</div>
+						<p className="mt-2 text-caption leading-4 text-settings-muted">{t("settings.codexAccounts.restartIdleSessionsDescription")}</p>
+					</div>
+				</div>,
 				confirmLabel: t("settings.codexAccounts.switchConfirm"),
 				destructive: false,
 			};
@@ -186,7 +203,7 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 			{deviceAccount ? <div className="border-b border-border px-4 py-3" data-testid="codex-device-account"><div className="flex items-start gap-3"><UserRound className="mt-0.5 size-6 shrink-0 text-muted-foreground" aria-hidden="true" /><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><p className="truncate text-sm font-medium">{deviceAccount.accountEmail ?? deviceAccount.label}</p><span className="rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-[10px] font-medium text-success">{t("settings.codexAccounts.inUse")}</span></div><p className="mt-1 text-xs text-muted-foreground" role="status" aria-live="polite">{deviceRefreshing && !showDeviceRefresh ? t("settings.codexAccounts.reconciliationChecking") : t(codexAccountReasonKey(deviceAccount.reasonCode))}</p><div className="mt-3 flex items-center gap-2"><Button type="button" size="sm" variant="outline" disabled={mutationDisabled} onClick={() => void beginDeviceLogin()}>{t("settings.codexAccounts.signInAgain")}</Button>{deviceReconciliation?.retryable ? <Button type="button" size="sm" variant="outline" disabled={actions.deviceRefreshPending} onClick={() => void actions.retryDeviceRefresh().catch(() => undefined)}>{actions.deviceRefreshPending ? <LoaderCircle className="animate-spin" aria-label={t("settings.codexAccounts.reconciliationChecking")} /> : null}{t("settings.codexAccounts.tryAgain")}</Button> : null}</div></div></div></div> : null}
 			{data && !deviceAccount && !activeAccount && deviceVerified ? <p className="border-b border-border px-4 py-3 text-xs text-muted-foreground" role="status">{data.accounts.length > 0 ? t("settings.codexAccounts.chooseAccount") : t("settings.codexAccounts.signInToUse")}</p> : null}
 			{announcement ? <p className="sr-only" role="status" aria-live="polite">{announcement}</p> : null}
-			{switchOutcome ? <p key={switchOutcome.switchId} className={`border-b border-border px-4 py-3 text-xs ${switchOutcome.result === "completed" ? "text-muted-foreground" : "text-error"}`} role="status" aria-live="polite">{t(`settings.codexAccounts.switch.${switchOutcome.result}`, { label: switchOutcome.label })}</p> : null}
+			{switchOutcome ? <p key={switchOutcome.switchId} className={`border-b border-border px-4 py-3 text-xs ${switchOutcome.result === "completed" ? "text-muted-foreground" : switchOutcome.result === "completed_with_restart_warning" ? "text-warning" : "text-error"}`} role="status" aria-live="polite">{t(`settings.codexAccounts.switch.${switchOutcome.result}`, { label: switchOutcome.label })}</p> : null}
 			{activeLogin && !activeLogin.accountId ? <div className="border-b border-border px-4 py-3" data-testid="codex-account-pending-row"><CodexAccountLoginTerminalPanel activeLogin={activeLogin} pending={actions.loginOperationPending} onCheckAgain={() => void verifyLogin(activeLogin)} onClose={() => void actions.closeLogin(activeLogin)} onRetry={() => void actions.retryLogin(activeLogin)} /></div> : null}
 			{accountsQuery.isLoading ? <p className="px-4 py-3 text-xs text-muted-foreground">{t("settings.codexAccounts.loading")}</p> : null}{accountsError ? <p className="px-4 py-3 text-xs text-error" role="alert">{accountsError}</p> : null}
 			<div className="divide-y divide-border">{data?.accounts.map((account) => <CodexAccountRow key={account.id} account={account} expanded={expandedAccount === account.id} resetCreditSupported={data.capabilities.resetCreditConsume.state === "supported"} mutationDisabled={mutationDisabled} deviceMutationDisabled={mutationDisabled || (!deviceVerified && account.id === data.activeAccountId)} canUse={!activeAccount && !deviceAccount && deviceVerified} resetBusy={pendingAction?.kind === "reset" && pendingAction.account.id === account.id && pendingAction.submitting} authenticationRetryBusy={actions.authenticationRetryAccountId === account.id} logoutBusy={pendingAction?.kind === "logout" && pendingAction.account.id === account.id && pendingAction.submitting} deleteBusy={pendingAction?.kind === "delete" && pendingAction.account.id === account.id && pendingAction.submitting} activeLogin={activeLogin?.accountId === account.id ? activeLogin : null} loginPending={actions.loginOperationPending} onToggle={() => toggleAccount(account)} onUseAccount={() => openPending("switch", account)} onUseReset={() => openPending("reset", account)} onRetryAuthentication={() => void actions.retryAuthentication(account.id).catch(() => undefined)} onSignIn={() => void beginLogin(account.id)} onLogout={() => openPending("logout", account)} onDelete={() => openPending("delete", account)} onCheckLogin={() => activeLogin && void verifyLogin(activeLogin)} onCloseLogin={() => activeLogin && void actions.closeLogin(activeLogin)} onRetryLogin={() => activeLogin && void actions.retryLogin(activeLogin)} />)}</div>

@@ -362,6 +362,45 @@ it("keeps a visible live success outcome when an observed switch disappears on i
 	expect(outcome).toBeVisible();
 });
 
+it("shows only a generic warning when an idle-session restart is incomplete", async () => {
+	const switchId = "33333333-3333-4333-8333-333333333333";
+	const switchingResponse = {
+		...accountResponse,
+		currentSwitch: {
+			id: switchId,
+			phase: "restarting_sessions",
+			failureCode: undefined,
+			canRecover: false,
+			sourceAccountId: activeAccount.id,
+			sourceKind: "managed",
+			targetAccountId: inactiveAccount.id,
+			restartIdleSessions: true,
+			createdAt: "2026-08-31T10:00:00Z",
+			updatedAt: "2026-08-31T10:01:00Z",
+		},
+	};
+	getMock.mockImplementation((path: string) => path === "/api/v1/agents/codex/account-switches/{switchId}"
+		? Promise.resolve({ data: { ...switchingResponse.currentSwitch, phase: "completed", failureCode: "idle_session_restart_incomplete" } })
+		: Promise.resolve({ data: switchingResponse }));
+	postMock.mockResolvedValue({ data: switchingResponse });
+	const { queryClient } = renderSection();
+	await screen.findByLabelText("Restarting idle sessions…");
+	expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
+
+	act(() => queryClient.setQueryData(["codex-accounts"], {
+		...accountResponse,
+		accountRevision: 4,
+		activeAccountId: inactiveAccount.id,
+		accounts: [{ ...inactiveAccount, active: true }, { ...activeAccount, active: false }],
+	}));
+
+	const outcome = await screen.findByRole("status");
+	expect(outcome).toHaveTextContent("Switched to other@example.com. Some idle sessions need manual resume.");
+	expect(outcome).not.toHaveTextContent(/\d+\s+(?:of|idle|sessions)/i);
+	expect(outcome).not.toHaveTextContent("idle-1");
+	expect(getMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches/{switchId}", { params: { path: { switchId } } });
+});
+
 it("reports when a failed switch safely restores the previous account", async () => {
 	const switchingResponse = {
 		...accountResponse,
@@ -853,10 +892,14 @@ it("starts a global switch with the displayed account revision", async () => {
 	const dialog = await screen.findByRole("dialog");
 	expect(dialog).toHaveTextContent("Switch to other@example.com?");
 	expect(dialog).toHaveTextContent("New sessions will use this account.");
+	expect(dialog).toHaveTextContent("Restart idle sessions");
+	expect(dialog).toHaveTextContent("Idle sessions will reconnect with this account. Working sessions will continue uninterrupted.");
+	expect(within(dialog).getByRole("switch", { name: "Restart idle sessions" })).not.toBeChecked();
 	expect(dialog).not.toHaveTextContent("external terminals, IDEs, and ChatGPT");
+	fireEvent.click(within(dialog).getByRole("switch", { name: "Restart idle sessions" }));
 	fireEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
-		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1" },
+		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1", restartIdleSessions: true },
 	}));
 	vi.unstubAllGlobals();
 });
@@ -881,7 +924,7 @@ it("locks the switch confirmation while the request is submitted", async () => {
 	const dialog = await openSwitchDialog();
 	await userEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
-		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "restart-idempotency" },
+		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "restart-idempotency", restartIdleSessions: false },
 	}));
 	expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
 	expect(within(dialog).getByRole("button", { name: "Switch account" })).toBeDisabled();

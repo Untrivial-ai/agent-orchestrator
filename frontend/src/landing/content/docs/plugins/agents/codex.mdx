@@ -25,6 +25,6 @@ Open **Settings → Agents → Codex** to view the device’s current Codex acco
 
 AO keeps inactive credentials in private account slots, but ordinary AO Codex launches use the normal device Codex home. Exactly one account is active device-wide. Switching updates and verifies that device-global credential atomically; new Codex launches briefly wait for activation and then use the selected account.
 
-Running AO Codex sessions and reviewers are left untouched during account switching. Existing turns continue best-effort, while new controller launches use the selected account. Resume or restart an existing session manually when you want to relaunch its controller under the active account.
+By default, running AO Codex sessions and reviewers are left untouched during account switching. You can optionally restart sessions that are idle after the new account is verified; idle TUI and Chat controllers reconnect concurrently in their existing worktrees, while working sessions continue uninterrupted. Any session that cannot reconnect remains available for manual resume, and the verified account stays active.
 
 Other Codex clients on the device—such as Terminal, IDE, and ChatGPT integrations—are not controlled by AO. AO never parses or exposes `auth.json` and does not scrape billing information. You can sign an account out; an inactive signed-out account can then be deleted. Per-task selection, assisted switching, automatic account selection, rename, reorder, and in-place replacement are not part of this release.

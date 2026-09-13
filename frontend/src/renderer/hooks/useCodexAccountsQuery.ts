@@ -88,8 +88,14 @@ export async function cancelCodexAccountLogin(operationId: string): Promise<Code
 	return data as CodexAccountLoginOperation;
 }
 
-export async function startCodexAccountSwitch(targetAccountId: string, expectedAccountRevision: number, idempotencyKey: string): Promise<CodexAccountSwitch> {
-	const { data, error } = await apiClient.POST("/api/v1/agents/codex/account-switches", { body: { targetAccountId, expectedAccountRevision, idempotencyKey } });
+export async function startCodexAccountSwitch(targetAccountId: string, expectedAccountRevision: number, idempotencyKey: string, restartIdleSessions = false): Promise<CodexAccountSwitch> {
+	const { data, error } = await apiClient.POST("/api/v1/agents/codex/account-switches", { body: { targetAccountId, expectedAccountRevision, idempotencyKey, restartIdleSessions } });
+	if (error) throw new Error(apiErrorMessage(error));
+	return data as CodexAccountSwitch;
+}
+
+export async function getCodexAccountSwitch(switchId: string): Promise<CodexAccountSwitch> {
+	const { data, error } = await apiClient.GET("/api/v1/agents/codex/account-switches/{switchId}", { params: { path: { switchId } } });
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountSwitch;
 }
