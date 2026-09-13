@@ -3,6 +3,8 @@ import { expect, test } from "vitest";
 import worker from "./domain-redirect-worker.mjs";
 
 test.each([
+  "ao-agents.com",
+  "www.ao-agents.com",
   "aoagents.dev",
   "www.aoagents.dev",
   "useao.dev",
@@ -25,7 +27,13 @@ test.each([
   },
 );
 
-test.each(["orchestrator.inc", "api.aoagents.dev", "aoagents.dev.evil.test"])(
+test.each([
+  "orchestrator.inc",
+  "api.ao-agents.com",
+  "api.aoagents.dev",
+  "ao-agents.com.evil.test",
+  "aoagents.dev.evil.test",
+])(
   "%s is not redirected",
   (host) => {
     expect(worker.fetch(new Request(`https://${host}/`)).status).toBe(404);

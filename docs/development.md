@@ -15,7 +15,7 @@ Additional runtime dependencies for the daemon:
 
 - **git** (for worktree creation and agent integration)
 - **A running agent CLI** (Claude Code, Codex, Aider, etc.) - see
-  [the installation guide](https://ao-agents.com/docs/installation)
+  [the installation guide](https://orchestrator.inc/docs/installation)
 
 ## Project Layout
 

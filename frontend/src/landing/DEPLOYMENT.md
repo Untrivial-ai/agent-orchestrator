@@ -17,9 +17,11 @@ variable. An Actions-based Pages deployment does not use a `CNAME` file.
   (`185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`).
 - `www.orchestrator.inc`: a redirect Worker custom domain that sends traffic to
   `https://orchestrator.inc`.
-- Cloudflare `useao.dev` and `aoagents.dev`: keep apex DNS proxied;
+- Cloudflare `useao.dev`, `aoagents.dev`, and `ao-agents.com`: keep apex DNS
+  proxied;
   `www.aoagents.dev` is a Worker custom domain with Cloudflare-managed DNS and
-  TLS. Redirect only the explicitly configured landing hostnames to
+  TLS. The `www.ao-agents.com` alias is also a Worker custom domain. Redirect
+  only the explicitly configured landing hostnames to
   `https://orchestrator.inc`, preserving the path and query
   string. Use a permanent **308** redirect to preserve the method/body for old
   form submissions as well as ordinary page navigation.
@@ -81,6 +83,8 @@ curl -I 'https://useao.dev/docs/installation/?utm_source=migration-check'
 curl -I 'https://www.useao.dev/docs/installation/?utm_source=migration-check'
 curl -I 'https://aoagents.dev/docs/installation/?utm_source=migration-check'
 curl -I 'https://www.aoagents.dev/docs/installation/?utm_source=migration-check'
+curl -I 'https://ao-agents.com/docs/installation/?utm_source=migration-check'
+curl -I 'https://www.ao-agents.com/docs/installation/?utm_source=migration-check'
 curl -I 'http://www.orchestrator.inc/docs/installation/?utm_source=migration-check'
 curl -IL 'https://www.orchestrator.inc/docs/installation/?utm_source=migration-check'
 curl -I https://orchestrator.inc/hackathons/syndicate/pass/
@@ -97,7 +101,7 @@ real form data as a deployment check.
 
 ## Rollback
 
-1. Remove the `useao.dev/*` redirect Worker route, then restore the GitHub Pages
+1. Remove the legacy-domain redirect Worker routes, then restore the GitHub Pages
    custom domain to `useao.dev` and verify the apex returns 200. Keep its
    original proxied apex records and all more-specific API/pass routes.
 2. Remove the `www.orchestrator.inc` Worker custom domain only after the restored

@@ -1,5 +1,7 @@
 // Route only the landing aliases here; other AO services have separate origins.
 const aliases = new Set([
+  "ao-agents.com",
+  "www.ao-agents.com",
   "aoagents.dev",
   "www.aoagents.dev",
   "useao.dev",
