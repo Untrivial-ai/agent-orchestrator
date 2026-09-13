@@ -527,8 +527,8 @@ func TestRuntimeObservation_CrashFinalizesUsageBeforeTermination(t *testing.T) {
 	if finalizer.launchID != "launch-1" {
 		t.Fatalf("finalizer launch id=%q, want launch-1", finalizer.launchID)
 	}
-	if !finalizer.sessionRevision.Equal(rec.UpdatedAt) {
-		t.Fatalf("finalizer session revision=%s, want %s", finalizer.sessionRevision, rec.UpdatedAt)
+	if finalizer.sessionRevision != rec.Revision {
+		t.Fatalf("finalizer session revision=%d, want %d", finalizer.sessionRevision, rec.Revision)
 	}
 	if !st.sessions[rec.ID].IsTerminated {
 		t.Fatal("crashed session was not terminated")
@@ -627,7 +627,7 @@ func TestRuntimeObservation_DoesNotTerminateNewRuntimeGenerationAfterFinalizatio
 	rec.Metadata.RuntimeLaunchID = "launch-old"
 	st.sessions[rec.ID] = rec
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, _ time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, _ int64) error {
 		return m.MarkSpawned(ctx, id, domain.SessionMetadata{RuntimeLaunchID: "launch-new"})
 	}
 	m.SetUsageFinalizer(finalizer)
@@ -665,7 +665,7 @@ func TestRuntimeObservation_DoesNotTerminateAfterActivityDuringFinalization(t *t
 	}
 	st.sessions[rec.ID] = rec
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, _ time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, _ int64) error {
 		return m.ApplyActivitySignal(ctx, id, ports.ActivitySignal{
 			Valid:     true,
 			State:     domain.ActivityIdle,
@@ -700,9 +700,9 @@ func TestRuntimeObservation_RetriesAfterRevisionChangesDuringFinalization(t *tes
 	}
 	st.sessions[rec.ID] = rec
 	finalized := 0
-	var revisions []time.Time
+	var revisions []int64
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, launchID string, sessionRevision time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, launchID string, sessionRevision int64) error {
 		revisions = append(revisions, sessionRevision)
 		if finalizer.calls == 1 {
 			if err := m.ApplyActivitySignal(ctx, id, ports.ActivitySignal{
@@ -718,7 +718,7 @@ func TestRuntimeObservation_RetriesAfterRevisionChangesDuringFinalization(t *tes
 		current := st.sessions[id]
 		if !current.IsTerminated &&
 			current.Metadata.RuntimeLaunchID == launchID &&
-			current.UpdatedAt.Equal(sessionRevision) {
+			current.Revision == sessionRevision {
 			finalized++
 		}
 		return nil
@@ -745,8 +745,8 @@ func TestRuntimeObservation_RetriesAfterRevisionChangesDuringFinalization(t *tes
 	if finalizer.calls != 2 || finalized != 1 || !got.IsTerminated {
 		t.Fatalf("second pass finalizer calls=%d finalized=%d session=%+v", finalizer.calls, finalized, got)
 	}
-	if len(revisions) != 2 || !revisions[0].Equal(rec.UpdatedAt) || !revisions[1].Equal(now) {
-		t.Fatalf("finalizer revisions=%v, want [%s %s]", revisions, rec.UpdatedAt, now)
+	if len(revisions) != 2 || revisions[0] != rec.Revision || revisions[1] != rec.Revision+1 {
+		t.Fatalf("finalizer revisions=%v, want [%d %d]", revisions, rec.Revision, rec.Revision+1)
 	}
 }
 
@@ -1032,12 +1032,13 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 	rec.FirstSignalAt = updatedAt
 	rec.UpdatedAt = updatedAt
 	st.sessions[rec.ID] = rec
+	staleRevision := rec.Revision - 1
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityIdle,
-		Event:             "terminal-idle",
-		ExpectedUpdatedAt: updatedAt.Add(-time.Second),
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Event:            "terminal-idle",
+		ExpectedRevision: &staleRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1046,10 +1047,10 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 	}
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityIdle,
-		Event:             "terminal-idle",
-		ExpectedUpdatedAt: updatedAt,
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Event:            "terminal-idle",
+		ExpectedRevision: &rec.Revision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1057,12 +1058,12 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 		t.Fatalf("current reconciliation left activity %q", got)
 	}
 
-	idleUpdatedAt := st.sessions[rec.ID].UpdatedAt
+	idleRevision := st.sessions[rec.ID].Revision
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityActive,
-		Event:             "terminal-active",
-		ExpectedUpdatedAt: idleUpdatedAt,
+		Valid:            true,
+		State:            domain.ActivityActive,
+		Event:            "terminal-active",
+		ExpectedRevision: &idleRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1074,7 +1075,7 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 func TestActivity_RepeatedUserPromptFencesTerminalReconciliation(t *testing.T) {
 	m, st, _ := newManager()
 	before := time.Unix(100, 0).UTC()
-	after := time.Unix(200, 0).UTC()
+	after := before // Session writes need not move the wall-clock timestamp.
 	m.clock = func() time.Time { return after }
 	rec := working("mer-1")
 	rec.FirstSignalAt = before
@@ -1093,10 +1094,10 @@ func TestActivity_RepeatedUserPromptFencesTerminalReconciliation(t *testing.T) {
 	}
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityIdle,
-		Event:             "terminal-idle",
-		ExpectedUpdatedAt: before,
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Event:            "terminal-idle",
+		ExpectedRevision: &rec.Revision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2179,16 +2180,16 @@ type fakeUsageFinalizer struct {
 	calls           int
 	sawTerminated   bool
 	launchID        string
-	sessionRevision time.Time
+	sessionRevision int64
 	err             error
-	onFinalize      func(domain.SessionID, string, time.Time) error
+	onFinalize      func(domain.SessionID, string, int64) error
 }
 
 func (f *fakeUsageFinalizer) FinalizeSession(
 	_ context.Context,
 	id domain.SessionID,
 	launchID string,
-	sessionRevision time.Time,
+	sessionRevision int64,
 ) error {
 	f.calls++
 	f.sawTerminated = f.store.sessions[id].IsTerminated
@@ -2256,8 +2257,8 @@ func TestMarkTerminatedFinalizesUsageBeforeLifecycleTransition(t *testing.T) {
 	if finalizer.calls != 1 || finalizer.sawTerminated {
 		t.Fatalf("finalizer calls=%d sawTerminated=%v, want 1/false", finalizer.calls, finalizer.sawTerminated)
 	}
-	if !finalizer.sessionRevision.Equal(rec.UpdatedAt) {
-		t.Fatalf("finalizer session revision=%s, want %s", finalizer.sessionRevision, rec.UpdatedAt)
+	if finalizer.sessionRevision != rec.Revision {
+		t.Fatalf("finalizer session revision=%d, want %d", finalizer.sessionRevision, rec.Revision)
 	}
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("finalizer failure prevented session termination")
@@ -2276,7 +2277,7 @@ func TestMarkTerminatedDoesNotTerminateNewRuntimeGeneration(t *testing.T) {
 	rec.Metadata.RuntimeLaunchID = "launch-old"
 	st.sessions[rec.ID] = rec
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, _ time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, _ int64) error {
 		return m.MarkSpawned(ctx, id, domain.SessionMetadata{RuntimeLaunchID: "launch-new"})
 	}
 	m.SetUsageFinalizer(finalizer)
@@ -2299,13 +2300,13 @@ func TestMarkTerminatedRetriesFinalizationAfterSameLaunchRevisionChange(t *testi
 	rec.Metadata.RuntimeLaunchID = "launch-1"
 	rec.UpdatedAt = time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
 	st.sessions[rec.ID] = rec
-	var revisions []time.Time
+	var revisions []int64
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, revision time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, revision int64) error {
 		revisions = append(revisions, revision)
 		if len(revisions) == 1 {
 			current := st.sessions[id]
-			current.UpdatedAt = current.UpdatedAt.Add(time.Second)
+			current.Revision++
 			st.sessions[id] = current
 		}
 		return nil
@@ -2315,7 +2316,7 @@ func TestMarkTerminatedRetriesFinalizationAfterSameLaunchRevisionChange(t *testi
 	if err := m.MarkTerminated(ctx, rec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if len(revisions) != 2 || !revisions[0].Equal(rec.UpdatedAt) || !revisions[1].Equal(rec.UpdatedAt.Add(time.Second)) {
+	if len(revisions) != 2 || revisions[0] != rec.Revision || revisions[1] != rec.Revision+1 {
 		t.Fatalf("finalization revisions = %v", revisions)
 	}
 	if !st.sessions[rec.ID].IsTerminated {

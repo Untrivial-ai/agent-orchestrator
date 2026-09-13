@@ -39,14 +39,16 @@ type RuntimeFacts struct {
 // (old CLIs, adapters with no tool identity) keeps plain last-writer-wins
 // state semantics.
 type ActivitySignal struct {
-	Valid             bool
-	State             domain.ActivityState
-	Timestamp         time.Time
-	ExpectedUpdatedAt time.Time
-	Event             string
-	ToolName          string
-	ToolUseID         string
-	AgentSessionID    string
+	Valid     bool
+	State     domain.ActivityState
+	Timestamp time.Time
+	// ExpectedRevision fences a daemon observer's pre-probe snapshot. nil is an
+	// unversioned hook, while a pointer to zero is a valid initial revision.
+	ExpectedRevision *int64
+	Event            string
+	ToolName         string
+	ToolUseID        string
+	AgentSessionID   string
 	// LatestUserPrompt and LatestAssistantUpdate are provider hook facts used
 	// to build a deterministic handoff. Lifecycle accepts them only from their
 	// main-turn event boundaries (UserPromptSubmit and Stop) under the current

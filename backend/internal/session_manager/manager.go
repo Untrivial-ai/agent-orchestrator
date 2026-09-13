@@ -2679,9 +2679,9 @@ func (m *Manager) preserveFailedReconcileRelaunch(ctx context.Context, before do
 		}
 
 		signal := ports.ActivitySignal{
-			Valid:             true,
-			State:             domain.ActivityExited,
-			ExpectedUpdatedAt: current.UpdatedAt,
+			Valid:            true,
+			State:            domain.ActivityExited,
+			ExpectedRevision: &current.Revision,
 		}
 		if domain.NormalizeSessionMode(current.Mode) == domain.SessionModeChat {
 			signal.ControllerGeneration = current.Metadata.ControllerGeneration

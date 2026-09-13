@@ -95,8 +95,8 @@ func TestPollReconcilesStaleCodexAtComposer(t *testing.T) {
 	if sink.id != session.ID || signal.State != domain.ActivityIdle || signal.Event != "terminal-idle" {
 		t.Fatalf("unexpected reconciliation: id=%q signal=%+v", sink.id, signal)
 	}
-	if !signal.ExpectedUpdatedAt.Equal(session.UpdatedAt) || signal.LaunchID != "launch-1" {
-		t.Fatalf("reconciliation fence = %+v, want updatedAt=%v launch=launch-1", signal, session.UpdatedAt)
+	if signal.ExpectedRevision == nil || *signal.ExpectedRevision != session.Revision || signal.LaunchID != "launch-1" {
+		t.Fatalf("reconciliation fence = %+v, want revision=%d launch=launch-1", signal, session.Revision)
 	}
 }
 
@@ -270,8 +270,8 @@ func TestPollReconcilesStaleClaudeCodeAfterAbortedTurn(t *testing.T) {
 	if sink.id != session.ID || signal.State != domain.ActivityIdle || signal.Event != "terminal-idle" {
 		t.Fatalf("unexpected reconciliation: id=%q signal=%+v", sink.id, signal)
 	}
-	if !signal.ExpectedUpdatedAt.Equal(session.UpdatedAt) || signal.LaunchID != "launch-1" {
-		t.Fatalf("reconciliation fence = %+v, want updatedAt=%v launch=launch-1", signal, session.UpdatedAt)
+	if signal.ExpectedRevision == nil || *signal.ExpectedRevision != session.Revision || signal.LaunchID != "launch-1" {
+		t.Fatalf("reconciliation fence = %+v, want revision=%d launch=launch-1", signal, session.Revision)
 	}
 }
 

@@ -257,7 +257,7 @@ func (l *fakeLCM) ApplyActivitySignal(_ context.Context, id domain.SessionID, si
 	if rec.IsTerminated || !signal.Valid {
 		return nil
 	}
-	if !signal.ExpectedUpdatedAt.IsZero() && !rec.UpdatedAt.Equal(signal.ExpectedUpdatedAt) {
+	if signal.ExpectedRevision != nil && rec.Revision != *signal.ExpectedRevision {
 		return nil
 	}
 	if signal.LaunchID != "" && signal.LaunchID != rec.Metadata.RuntimeLaunchID {
@@ -7991,7 +7991,7 @@ func TestPreserveFailedReconcileRelaunchRetriesContendedCAS(t *testing.T) {
 			return
 		}
 		current := st.sessions[id]
-		current.UpdatedAt = signal.ExpectedUpdatedAt.Add(time.Nanosecond)
+		current.Revision = *signal.ExpectedRevision + 1
 		st.sessions[id] = current
 	}
 	m := New(Deps{Store: st, Lifecycle: lcm})
@@ -8022,7 +8022,7 @@ func TestPreserveFailedReconcileRelaunchBoundsPersistentCASContention(t *testing
 	lcm := &contendedActivityLCM{fakeLCM: &fakeLCM{store: st}}
 	lcm.before = func(_ int, id domain.SessionID, signal ports.ActivitySignal) {
 		current := st.sessions[id]
-		current.UpdatedAt = signal.ExpectedUpdatedAt.Add(time.Nanosecond)
+		current.Revision = *signal.ExpectedRevision + 1
 		st.sessions[id] = current
 	}
 	m := New(Deps{Store: st, Lifecycle: lcm})

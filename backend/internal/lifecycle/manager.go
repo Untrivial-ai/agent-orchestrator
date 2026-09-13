@@ -141,7 +141,7 @@ type sessionUsageFinalizer interface {
 		ctx context.Context,
 		id domain.SessionID,
 		expectedRuntimeLaunchID string,
-		expectedSessionRevision time.Time,
+		expectedSessionRevision int64,
 	) error
 }
 
@@ -442,7 +442,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 	var (
 		finalizer           sessionUsageFinalizer
 		terminationLaunch   string
-		terminationRevision time.Time
+		terminationRevision int64
 		shouldTerminate     bool
 	)
 	if err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
@@ -467,7 +467,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		}
 		finalizer = m.usageFinalizer
 		terminationLaunch = currentLaunch
-		terminationRevision = cur.UpdatedAt
+		terminationRevision = cur.Revision
 		shouldTerminate = true
 		return cur, false
 	}); err != nil || !shouldTerminate {
@@ -478,7 +478,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 
 	terminated := false
 	err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
-		if cur.IsTerminated || !cur.UpdatedAt.Equal(terminationRevision) ||
+		if cur.IsTerminated || cur.Revision != terminationRevision ||
 			cur.Metadata.RuntimeLaunchID != terminationLaunch || !matchesLaunch(cur) ||
 			!runtimeClearlyDead(f, cur.Activity, now, m.window) || m.sessionMutationInProgress(id) {
 			return cur, false
@@ -653,8 +653,7 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
-	if !s.ExpectedUpdatedAt.IsZero() &&
-		!rec.UpdatedAt.Equal(s.ExpectedUpdatedAt) {
+	if s.ExpectedRevision != nil && rec.Revision != *s.ExpectedRevision {
 		m.mu.Unlock()
 		return nil
 	}
@@ -1683,7 +1682,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		}
 
 		launchID := rec.Metadata.RuntimeLaunchID
-		sessionRevision := rec.UpdatedAt
+		sessionRevision := rec.Revision
 		m.mu.Lock()
 		finalizer := m.usageFinalizer
 		m.mu.Unlock()
@@ -1704,7 +1703,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 			case cur.Metadata.RuntimeLaunchID != launchID:
 				outcome = terminationLaunchChanged
 				return cur, false
-			case !cur.UpdatedAt.Equal(sessionRevision):
+			case cur.Revision != sessionRevision:
 				return cur, false
 			default:
 				cur.IsTerminated = true
@@ -1724,7 +1723,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		case terminationLaunchChanged:
 			return fmt.Errorf("lifecycle: runtime launch changed while terminating session %q", id)
 		default:
-			// A same-launch activity transition changed UpdatedAt after usage was
+			// A same-launch session write changed revision after usage was
 			// finalized. Retry from a fresh snapshot so termination and usage
 			// finalization commit against the same durable revision.
 			continue
@@ -1774,7 +1773,7 @@ func finalizeSessionUsage(
 	ctx context.Context,
 	id domain.SessionID,
 	expectedRuntimeLaunchID string,
-	expectedSessionRevision time.Time,
+	expectedSessionRevision int64,
 	finalizer sessionUsageFinalizer,
 ) {
 	if finalizer == nil {

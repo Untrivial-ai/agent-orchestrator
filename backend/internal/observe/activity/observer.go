@@ -148,12 +148,12 @@ func (o *Observer) reconcile(ctx context.Context, session domain.SessionRecord, 
 		event = "terminal-waiting-input"
 	}
 	err = o.sink.ApplyActivitySignal(ctx, session.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             state,
-		Timestamp:         now,
-		ExpectedUpdatedAt: session.UpdatedAt,
-		Event:             event,
-		LaunchID:          session.Metadata.RuntimeLaunchID,
+		Valid:            true,
+		State:            state,
+		Timestamp:        now,
+		ExpectedRevision: &session.Revision,
+		Event:            event,
+		LaunchID:         session.Metadata.RuntimeLaunchID,
 	})
 	if err != nil {
 		o.logger.Error("activity observer: reconciliation failed", "session", session.ID, "err", err)

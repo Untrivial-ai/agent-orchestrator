@@ -96,7 +96,7 @@ type collectorStore interface {
 	UpsertUsageBinding(context.Context, domain.UsageBindingRecord) (domain.UsageBindingRecord, error)
 	GetUsageBinding(context.Context, domain.SessionID, domain.AgentHarness, string) (domain.UsageBindingRecord, bool, error)
 	ListUsageBindingsForSession(context.Context, domain.SessionID) ([]domain.UsageBindingRecord, error)
-	FinalizeUsageBindingsForSessionLaunch(context.Context, domain.SessionID, string, time.Time, time.Time) ([]domain.UsageBindingRecord, error)
+	FinalizeUsageBindingsForSessionLaunch(context.Context, domain.SessionID, string, int64, time.Time) ([]domain.UsageBindingRecord, error)
 	ListUsageDiscoveryBindings(context.Context, int64) ([]domain.UsageBindingRecord, error)
 	ListUsageBindingsForCodexParent(context.Context, string) ([]domain.UsageBindingRecord, error)
 	ListLatestRetiredCodexReplacementClaimsByPath(context.Context, string) ([]domain.UsageSourceRecord, error)
@@ -173,7 +173,7 @@ func (c *Collector) FinalizeSession(
 	ctx context.Context,
 	sessionID domain.SessionID,
 	expectedRuntimeLaunchID string,
-	expectedSessionRevision time.Time,
+	expectedSessionRevision int64,
 ) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
