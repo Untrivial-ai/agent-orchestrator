@@ -283,6 +283,14 @@ function previewRevealKey(previewUrl?: string, previewRevision?: number): string
 	return `url:${target}`;
 }
 
+// Agent browser commands that exist to *show* the user a page, as opposed to
+// inspecting or driving one that is already open. These are the only agent
+// actions allowed to reveal the Browser panel; every other verb (snapshot,
+// click, fill, act, errors, …) stays badge-only. The strings are the action
+// names the CLI sends — see `ao browser open` / `ao browser tab new` in
+// backend/internal/cli/browser.go.
+const BROWSER_REVEALING_AGENT_ACTIONS = new Set(["open", "tab-new"]);
+
 function browserIsVisible(sessionId: string, browserPoppedOut: boolean): boolean {
 	if (browserPoppedOut) return true;
 	const current = useUiStore.getState().inspectorSessions[sessionId];
@@ -542,6 +550,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const setBrowserUnseen = useUiStore((state) => state.setBrowserUnseen);
 	const { daemonStatus } = useShell();
 	const previewBaselineRef = useRef<{ sessionId: string; key: string } | null>(null);
+	// commandId of the last explicit agent browser-open that already revealed the
+	// panel, so its "finished" push doesn't reveal a second time.
+	const revealedBrowserCommandRef = useRef<string | null>(null);
 	const sessionSplitRef = useRef<HTMLDivElement | null>(null);
 	const terminalLiveResizeTimerRef = useRef<number | null>(null);
 	const workspaceResizeTimerRef = useRef<number | null>(null);
@@ -1719,6 +1730,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		terminated,
 	]);
 
+	// Opens the inspector on Browser for this session. Deliberately does not
+	// touch OS window focus, the routed session, or the project — "reveal" means
+	// the panel is on screen for whoever is already here, nothing more.
+	const revealBrowserPanel = useCallback(() => {
+		setInspectorViewForSession(sessionId, "browser");
+		setInspectorOpenForSession(sessionId, true);
+	}, [sessionId, setInspectorOpenForSession, setInspectorViewForSession]);
+
 	useEffect(() => {
 		if (!hasInspector) return;
 		const previewKey = previewRevealKey(previewUrl, previewRevision);
@@ -1735,21 +1754,50 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			setBrowserUnseen(sessionId, false);
 			return;
 		}
-		// A new preview target used to force-switch the inspector to the Browser
-		// tab and pop it open, even if the user was looking at something else
-		// entirely (Reviews, a different session's Files tab, mid-typing in
-		// chat). Match the agent-activity effect below: badge it as unseen and
-		// let the user open Browser themselves when they're ready, instead of
-		// grabbing focus out from under them.
-		setBrowserUnseen(sessionId, true);
+		// `ao preview` is an explicit "show the user this page" request, so it
+		// reveals Browser rather than only badging it — the whole point of the
+		// command is that the target becomes visible. This only ever affects the
+		// session the user is looking at: SessionView is mounted for the routed
+		// session alone, so a background worker previewing its own session still
+		// can't pull the user's navigation to itself. Passive agent browser
+		// activity keeps the badge-only treatment in the effect below.
+		revealBrowserPanel();
 	}, [
 		browserPoppedOut,
 		hasInspector,
 		previewRevision,
 		previewUrl,
+		revealBrowserPanel,
 		sessionId,
 		setBrowserContentRevealed,
 		setBrowserUnseen,
+	]);
+
+	// `ao browser open` / `ao browser tab new` are the agent-side equivalents of
+	// `ao preview`: an explicit request to put a page in front of the user. Those
+	// reveal Browser; every other agent verb falls through to the badge-only
+	// effect below. Deduped on commandId so the command's "finished" push — or an
+	// unrelated rerender — can't re-open a panel the user closed mid-command.
+	useEffect(() => {
+		if (!hasInspector || terminated) return;
+		const activity = browserView.agentBrowserActivity;
+		if (!activity || !BROWSER_REVEALING_AGENT_ACTIONS.has(activity.action)) return;
+		const commandKey = activity.commandId ?? `${activity.action}:${activity.viewId}`;
+		if (revealedBrowserCommandRef.current === commandKey) return;
+		revealedBrowserCommandRef.current = commandKey;
+		if (browserIsVisible(sessionId, browserPoppedOut)) {
+			setBrowserUnseen(sessionId, false);
+			return;
+		}
+		revealBrowserPanel();
+	}, [
+		browserPoppedOut,
+		browserView.agentBrowserActivity,
+		hasInspector,
+		revealBrowserPanel,
+		sessionId,
+		setBrowserUnseen,
+		terminated,
 	]);
 
 	// Agent browser commands are genuine browser activity even when they do not

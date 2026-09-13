@@ -501,7 +501,17 @@ vi.mock("./SessionFileWorkspace", () => ({
 const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
 	browserViewOptions: { current: undefined as { active: boolean; sessionId: string; terminated: boolean } | undefined },
-	browserViewState: { url: "", agentBrowserActive: false },
+	browserViewState: {
+		url: "",
+		agentBrowserActive: false,
+		agentBrowserActivity: null as {
+			viewId: string;
+			active: boolean;
+			action: string;
+			phase?: "started" | "finished";
+			commandId?: string;
+		} | null,
+	},
 }));
 vi.mock("../hooks/useBrowserView", () => ({
 	useBrowserView: (options: { active: boolean; sessionId: string; terminated: boolean }) => {
@@ -526,6 +536,7 @@ vi.mock("../hooks/useBrowserView", () => ({
 			activeTabId: "t1",
 			tabNotice: "",
 			agentBrowserActive: browserViewState.agentBrowserActive,
+			agentBrowserActivity: browserViewState.agentBrowserActivity,
 			selectTab: vi.fn(),
 			closeTab: vi.fn(),
 			annotationMode: false,
@@ -720,6 +731,7 @@ describe("SessionView", () => {
 		browserViewOptions.current = undefined;
 		browserViewState.url = "";
 		browserViewState.agentBrowserActive = false;
+		browserViewState.agentBrowserActivity = null;
 		shellTerminalsState.data = [];
 		navigateMock.mockReset();
 		openShellTerminalMock.mockReset();
@@ -3028,23 +3040,26 @@ describe("SessionView", () => {
 		expect(document.querySelector(".files-popout-overlay")).not.toHaveClass("files-popout-overlay--mac-windowed");
 	});
 
-	it("badges Browser as unseen for a new live `ao preview` target instead of auto-opening it", () => {
+	// `ao preview` is an explicit "show the user this page" request, so it reveals
+	// Browser for the session on screen. PR #4146 made every preview badge-only to
+	// stop background work grabbing the foreground; that protection now comes from
+	// SessionView only being mounted for the routed session, not from refusing to
+	// reveal at all.
+	it("reveals Browser for a new live `ao preview` target on the session being viewed", () => {
 		const worker = workerSession("sess-1");
 		const { rerender } = render(<SessionView sessionId="sess-1" />);
-		const viewBefore = inspectorButton().getAttribute("data-view");
-		const openBefore = inspectorOpen("sess-1");
 
 		worker.previewUrl = "http://localhost:5173/";
 		worker.previewRevision = 1;
 		rerender(<SessionView sessionId="sess-1" />);
 
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
-		expect(inspectorOpen("sess-1")).toBe(openBefore);
-		expect(inspectorButton()).toHaveAttribute("data-view", viewBefore);
-		expect(browserUnseen("sess-1")).toBe(true);
+		expect(inspectorOpen("sess-1")).toBe(true);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+		expect(browserUnseen("sess-1")).toBe(false);
 	});
 
-	it("badges Browser as unseen without opening a collapsed inspector when a new live preview arrives", () => {
+	it("opens a collapsed inspector on Browser when a new live preview arrives", () => {
 		const worker = workerSession("sess-1");
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", false));
 		const { rerender } = render(<SessionView sessionId="sess-1" />);
@@ -3053,12 +3068,14 @@ describe("SessionView", () => {
 		worker.previewRevision = 1;
 		rerender(<SessionView sessionId="sess-1" />);
 
-		expect(inspectorOpen("sess-1")).toBe(false);
-		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
-		expect(browserUnseen("sess-1")).toBe(true);
+		expect(inspectorOpen("sess-1")).toBe(true);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+		expect(browserUnseen("sess-1")).toBe(false);
 	});
 
-	it("keeps Summary on session entry and badges Browser as unseen for later preview work", () => {
+	// Entering a session that already has a preview target is not a fresh `ao
+	// preview` — only a target that changes while the user is here is.
+	it("keeps Summary on session entry and reveals Browser only for later preview work", () => {
 		const secondWorker = workerSession("sess-2");
 		secondWorker.previewUrl = "http://localhost:5173/";
 		secondWorker.previewRevision = 1;
@@ -3075,8 +3092,100 @@ describe("SessionView", () => {
 
 		secondWorker.previewRevision = 2;
 		rerender(<SessionView sessionId="sess-2" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+		expect(browserUnseen("sess-2")).toBe(false);
+	});
+
+	// `ao browser open` is the agent-side twin of `ao preview`: an explicit request
+	// to put a page in front of the user, so it reveals rather than badges.
+	it.each([["open"], ["tab-new"]])("reveals Browser for an explicit agent `%s` command", (action) => {
+		const { rerender } = render(<SessionView sessionId="sess-1" />);
 		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
-		expect(browserUnseen("sess-2")).toBe(true);
+
+		browserViewState.agentBrowserActive = true;
+		browserViewState.agentBrowserActivity = {
+			viewId: "browser:sess-1",
+			active: true,
+			action,
+			phase: "started",
+			commandId: "cmd-1",
+		};
+		rerender(<SessionView sessionId="sess-1" />);
+
+		expect(inspectorOpen("sess-1")).toBe(true);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+		expect(browserUnseen("sess-1")).toBe(false);
+	});
+
+	// Passive inspection/interaction is background activity, not a request to be
+	// looked at — it must keep the badge-only treatment.
+	it.each([["snapshot"], ["click"], ["fill"], ["errors"]])(
+		"only badges Browser for a passive agent `%s` command",
+		(action) => {
+			const { rerender } = render(<SessionView sessionId="sess-1" />);
+
+			browserViewState.agentBrowserActive = true;
+			browserViewState.agentBrowserActivity = {
+				viewId: "browser:sess-1",
+				active: true,
+				action,
+				phase: "started",
+				commandId: "cmd-1",
+			};
+			rerender(<SessionView sessionId="sess-1" />);
+
+			expect(inspectorButton()).toHaveAttribute("data-view", "summary");
+			expect(browserUnseen("sess-1")).toBe(true);
+		},
+	);
+
+	// The same command pushes activity twice (started/finished). Revealing on the
+	// second push would reopen a panel the user deliberately closed mid-command.
+	it("does not re-reveal Browser when the same agent open command finishes", () => {
+		const { rerender } = render(<SessionView sessionId="sess-1" />);
+
+		browserViewState.agentBrowserActive = true;
+		browserViewState.agentBrowserActivity = {
+			viewId: "browser:sess-1",
+			active: true,
+			action: "open",
+			phase: "started",
+			commandId: "cmd-1",
+		};
+		rerender(<SessionView sessionId="sess-1" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "summary"));
+
+		browserViewState.agentBrowserActive = false;
+		browserViewState.agentBrowserActivity = {
+			viewId: "browser:sess-1",
+			active: false,
+			action: "open",
+			phase: "finished",
+			commandId: "cmd-1",
+		};
+		rerender(<SessionView sessionId="sess-1" />);
+
+		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
+	});
+
+	it("does not reveal Browser for an agent open command on a terminated session", () => {
+		const worker = workerSession("sess-1");
+		worker.isTerminated = true;
+		const { rerender } = render(<SessionView sessionId="sess-1" />);
+
+		browserViewState.agentBrowserActive = true;
+		browserViewState.agentBrowserActivity = {
+			viewId: "browser:sess-1",
+			active: true,
+			action: "open",
+			phase: "started",
+			commandId: "cmd-1",
+		};
+		rerender(<SessionView sessionId="sess-1" />);
+
+		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
 	});
 
 	// Regression: the session-entry effect that defaults a brand-new session to
@@ -3207,14 +3316,16 @@ describe("SessionView", () => {
 		worker.previewUrl = "http://localhost:5173/";
 		worker.previewRevision = 1;
 		rerender(<SessionView sessionId="sess-1" />);
-		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
-		expect(browserUnseen("sess-1")).toBe(true);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+		expect(browserUnseen("sess-1")).toBe(false);
 
 		act(() => {
 			useUiStore.getState().setInspectorView("sess-1", "summary");
 			useUiStore.getState().setInspectorOpen("sess-1", false);
 		});
 
+		// Clearing the target is a revision bump with no URL: it must neither
+		// reveal nor badge, however a preview arriving is treated.
 		worker.previewUrl = undefined;
 		worker.previewRevision = 2;
 		rerender(<SessionView sessionId="sess-1" />);
@@ -3227,9 +3338,9 @@ describe("SessionView", () => {
 		worker.previewRevision = 3;
 		rerender(<SessionView sessionId="sess-1" />);
 
-		expect(inspectorOpen("sess-1")).toBe(false);
-		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
-		expect(browserUnseen("sess-1")).toBe(true);
+		expect(inspectorOpen("sess-1")).toBe(true);
+		expect(inspectorButton()).toHaveAttribute("data-view", "browser");
+		expect(browserUnseen("sess-1")).toBe(false);
 	});
 
 	// Regression: a terminated session's `previewUrl` is a stale DB fact —
