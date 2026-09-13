@@ -406,7 +406,8 @@ export interface SystemEventDetail {
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;
-	/** provider.failure: provider-neutral classification from an agent protocol extension. */
+	/** provider.failure: the adapter correlated this status with the terminal turn outcome. */
+	superseded?: boolean;
 	category?: string;
 	severity?: "warning" | "error" | (string & {});
 	revision?: number;

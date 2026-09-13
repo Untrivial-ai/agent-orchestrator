@@ -3117,14 +3117,22 @@ const TurnGroup = memo(function TurnGroup({
 	queued: boolean;
 	newHumanMessageIds: ReadonlySet<string>;
 }) {
+	const terminalFailureSupersedesProviderStatus =
+		group.outcome?.state === "failed" && Boolean(group.outcome.error);
 	const runs = useMemo(
 		() =>
 			runsOf(
-				group.liveProviderFailure
-					? group.items.filter((item) => item.id !== group.liveProviderFailure?.id)
-					: group.items,
+				group.items.filter((item) => {
+					if (item.id === group.liveProviderFailure?.id) return false;
+					return !(
+						terminalFailureSupersedesProviderStatus &&
+						item.kind === "activity" &&
+						item.detail?.event === "provider.failure" &&
+						item.detail.superseded === true
+					);
+				}),
 			),
-		[group.items, group.liveProviderFailure],
+		[group.items, group.liveProviderFailure, terminalFailureSupersedesProviderStatus],
 	);
 	const copyableMessageId = group.outcome
 		? [...group.items]

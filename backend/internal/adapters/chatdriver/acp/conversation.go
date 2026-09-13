@@ -560,21 +560,21 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	var state domain.TurnState
+	var turnErr error
 	if err != nil {
 		if interruptedLocally || errors.Is(err, context.Canceled) {
 			state = domain.TurnStateInterrupted
 		} else {
 			state = domain.TurnStateFailed
-			if isACPAuthRequired(err) {
-				c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{
-					ReauthRequired: true, ReauthReason: "Provider authentication expired",
-				}})
-				err = normalizeACPError("ACP session/prompt", err)
-			}
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderTurnID: turnID, Err: err})
+			turnErr = normalizeACPError("ACP session/prompt", err)
 		}
 	} else {
 		state = turnState(resp.StopReason)
+		if failure := promptResponseFailure(resp.Meta); failure != nil &&
+			state != domain.TurnStateInterrupted && !interruptedLocally {
+			state = domain.TurnStateFailed
+			turnErr = failure
+		}
 		if resp.Usage != nil {
 			cached := 0
 			if resp.Usage.CachedReadTokens != nil {
@@ -590,12 +590,15 @@ func (c *conversation) finishPrompt(
 			}})
 		}
 	}
+	if turnErr != nil {
+		c.completeProviderFailure(turnID, true, c.emit)
+	}
 	c.mu.Lock()
 	c.terminalEventID = eventID
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state,
+		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
 	})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 

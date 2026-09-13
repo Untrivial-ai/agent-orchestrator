@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -805,6 +806,35 @@ const (
 	ChatControllerStopped    ChatControllerState = "stopped"
 )
 
+type chatProviderFailure struct {
+	message string
+	cause   error
+}
+
+// NewChatProviderFailure preserves provider prose as opaque display text. An
+// adapter may attach an existing sentinel (e.g. ErrChatAuthRequired) when native
+// metadata proves it; callers never infer recovery from the message.
+func NewChatProviderFailure(title, detail string, cause error) error {
+	title = strings.TrimSpace(title)
+	detail = strings.TrimSpace(detail)
+	if title == "" {
+		title, detail = detail, ""
+	}
+	if title == "" {
+		title = "Provider error"
+	}
+	if detail == title {
+		detail = ""
+	}
+	if detail != "" {
+		title += "\n\n" + detail
+	}
+	return &chatProviderFailure{message: title, cause: cause}
+}
+
+func (f *chatProviderFailure) Error() string { return f.message }
+func (f *chatProviderFailure) Unwrap() error { return f.cause }
+
 // ChatEvent is one normalized observation from the provider.
 //
 // Deltas are the high-frequency case, so they carry only what changed. A
@@ -888,8 +918,8 @@ type ChatEvent struct {
 	// rather than replacing its whole list.
 	MCPServers []ChatMCPServer
 
-	// Err carries a structured failure. Its presence does not imply the
-	// conversation is over; check ControllerState for that.
+	// Err carries display text and optional typed causes. Its presence does not
+	// imply the conversation is over; check Kind and ControllerState.
 	Err error
 }
 

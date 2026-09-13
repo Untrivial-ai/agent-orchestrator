@@ -153,8 +153,8 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			ProviderConversationID: p.ThreadID,
 			TurnState:              turnStateFrom(string(p.Turn.Status)),
 		}
-		if p.Turn.Error != nil && p.Turn.Error.Message != "" {
-			ev.Err = fmt.Errorf("%s", p.Turn.Error.Message)
+		if p.Turn.Error != nil {
+			ev.Err = codexProviderFailure(*p.Turn.Error)
 		}
 		return []ports.ChatEvent{ev}
 
@@ -646,6 +646,24 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		}}
 
 	case codexproto.MethodError:
+		var p codexproto.ErrorNotification
+		if err := json.Unmarshal(n.Params, &p); err == nil &&
+			(strings.TrimSpace(p.Error.Message) != "" || p.Error.AdditionalDetails != nil) {
+			if p.WillRetry && p.TurnID != "" {
+				return []ports.ChatEvent{{
+					Kind: ports.ChatEventActivityStarted, ProviderConversationID: p.ThreadID,
+					ProviderTurnID: p.TurnID, ProviderItemID: "codex-retry:" + p.ThreadID + ":" + p.TurnID,
+					ActivityKind: domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusRunning,
+					Summary: codexProviderFailure(p.Error).Error(), Detail: json.RawMessage(`{"event":"provider.failure"}`),
+				}}
+			}
+			return []ports.ChatEvent{{
+				Kind:                   ports.ChatEventError,
+				ProviderTurnID:         p.TurnID,
+				ProviderConversationID: p.ThreadID,
+				Err:                    codexProviderFailure(p.Error),
+			}}
+		}
 		return []ports.ChatEvent{{
 			Kind: ports.ChatEventError,
 			Err:  fmt.Errorf("provider error: %s", truncateForLog(n.Params)),
@@ -670,6 +688,20 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		//     from a transcript delta would be a feature nobody asked for.
 		return nil
 	}
+}
+
+// codexErrorInfo is metadata, not display copy. Only an explicit unauthorized
+// reason invokes the existing authentication path; other errors remain readable.
+func codexProviderFailure(turnErr codexproto.TurnError) error {
+	detail := ""
+	if turnErr.AdditionalDetails != nil {
+		detail = *turnErr.AdditionalDetails
+	}
+	var cause error
+	if turnErr.CodexErrorInfo != nil && string(*turnErr.CodexErrorInfo) == `"unauthorized"` {
+		cause = ports.ErrChatAuthRequired
+	}
+	return ports.NewChatProviderFailure(turnErr.Message, detail, cause)
 }
 
 // turnIDFallback reads a top-level turnId, which some builds send instead of

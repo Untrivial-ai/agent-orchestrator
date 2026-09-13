@@ -48,9 +48,7 @@ export const ReauthBanner = memo(function ReauthBanner({
 					Sign in again to keep going
 				</strong>
 				<p className="text-[11px] leading-relaxed text-foreground">
-					{account.reauthReason ??
-						"The provider rejected this session's credentials."}{" "}
-					Nothing will run until it is fixed, and the worktree is untouched.
+					The provider needs you to sign in again before continuing.
 				</p>
 				<p className="text-[11px] leading-relaxed text-muted-foreground">
 					{command ? (
@@ -59,12 +57,11 @@ export const ReauthBanner = memo(function ReauthBanner({
 							<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
 								{command}
 							</code>{" "}
-							in a terminal, then send your message again. AO holds no credentials of its own.
+							in a terminal, then send your message again.
 						</>
 					) : (
 						<>
-							Sign in with the agent&rsquo;s own CLI, then send your message again. AO holds no
-							credentials of its own.
+							Sign in with the agent&rsquo;s own CLI, then send your message again.
 						</>
 					)}
 				</p>

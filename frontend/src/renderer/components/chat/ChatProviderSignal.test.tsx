@@ -337,22 +337,20 @@ describe("provider error", () => {
 		expect(screen.queryByText(/provider error:/i)).not.toBeInTheDocument();
 	});
 
-	it("reads already-normalized summary and detail without a JSON dump", () => {
+	it("reads normalized opaque text without a JSON dump", () => {
 		render(
 			<ActivityRow
 				activity={activity({
 					activityKind: "error",
 					status: "failed",
-					summary: "Reconnecting... [1/5]",
+					summary: "Reconnecting... [1/5]\n\nYou have no credits remaining. Add credits at https://platform.openai.com/settings/organization/billing",
 					detail: {
-						message: "Reconnecting... [1/5]",
-						error:
-							"stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing",
+						error: "Reconnecting... [1/5]\n\nYou have no credits remaining. Add credits at https://platform.openai.com/settings/organization/billing",
 					},
 				})}
 			/>,
 		);
-		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
+		expect(screen.getByText(/Reconnecting\.\.\. \[1\/5\]/)).toBeInTheDocument();
 		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
 		expect(
 			screen.getByRole("link", {

@@ -2280,6 +2280,74 @@ func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 
 /* ---- tests ------------------------------------------------------------- */
 
+func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
+	h := newHarness(t)
+	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "hello", ClientMessageID: "failure-prompt", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := "Provider rejected this request\n\nOriginal details with https://example.com/help"
+	completion := ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+		ProviderEventID: "host:1", TurnState: domain.TurnStateCompleted,
+		Err: ports.NewChatProviderFailure(
+			"Provider rejected this request",
+			"Original details with https://example.com/help",
+			ports.ErrChatAuthRequired,
+		),
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
+		completion,
+		// A daemon restart can replay the terminal event with the same identity.
+		completion,
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed &&
+			s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil
+	})
+	if snapshot.Turns[0].ErrorMessage != message {
+		t.Fatalf("turn error = %q", snapshot.Turns[0].ErrorMessage)
+	}
+	if snapshot.Conversation.Account.ReauthReason != message {
+		t.Fatalf("reauth reason = %q", snapshot.Conversation.Account.ReauthReason)
+	}
+	for _, activity := range snapshot.Activities {
+		if activity.Kind == domain.ActivityKindError || strings.Contains(activity.ProviderItemID, "ao-reauth-") {
+			t.Fatalf("terminal failure was duplicated as an activity: %#v", activity)
+		}
+	}
+}
+
+func TestStandaloneProviderFailurePreservesOpaqueText(t *testing.T) {
+	h := newHarness(t)
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventError, ProviderEventID: "provider-error-1",
+		Err: ports.NewChatProviderFailure(
+			"Connection interrupted",
+			"Inspect https://example.com/status",
+			nil,
+		),
+	})
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Activities) == 1 && s.Activities[0].Kind == domain.ActivityKindError
+	})
+	activity := snapshot.Activities[0]
+	if activity.Summary != "Connection interrupted\n\nInspect https://example.com/status" {
+		t.Fatalf("summary = %q", activity.Summary)
+	}
+	var detail map[string]string
+	if err := json.Unmarshal(activity.Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["error"] != activity.Summary {
+		t.Fatalf("detail = %#v", detail)
+	}
+}
+
 // The whole point: a message goes out, provider events come back, and the durable
 // timeline reflects them in sequence order.
 func TestProjectsAFullTurnIntoDurableRows(t *testing.T) {

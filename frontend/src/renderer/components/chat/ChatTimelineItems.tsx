@@ -272,12 +272,14 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 function TwoRowTimelineMarker({
 	message,
 	detail,
+	fullDetail = false,
 	tone = "text-muted-foreground/70",
 	detailTone = "text-muted-foreground/70",
 	action,
 }: {
 	message: string;
 	detail?: string;
+	fullDetail?: boolean;
 	tone?: string;
 	detailTone?: string;
 	action?: ReactNode;
@@ -287,8 +289,11 @@ function TwoRowTimelineMarker({
 			<div className={cn("flex min-w-0 items-baseline gap-2 text-[11px]", tone)}>
 				<span className="shrink-0">{message}</span>
 				{detail ? (
-					<span className={cn("min-w-0 truncate", detailTone)} title={detail}>
-						{detail}
+					<span
+						className={cn("min-w-0", fullDetail ? "wrap-anywhere whitespace-pre-wrap" : "truncate", detailTone)}
+						title={detail}
+					>
+						{fullDetail ? linkifiedProviderErrorText(detail) : detail}
 					</span>
 				) : null}
 				{action}
@@ -345,6 +350,7 @@ export function TurnOutcome({
 		<TwoRowTimelineMarker
 			message={copy.label}
 			detail={error}
+			fullDetail={state === "failed"}
 			tone={copy.tone}
 			detailTone={state === "failed" ? "text-destructive" : undefined}
 			action={
@@ -1897,14 +1903,12 @@ function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
 	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
 		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
-			<span className="wrap-anywhere min-w-0">
-				<span>{headline}</span>
+			<span className="wrap-anywhere min-w-0 whitespace-pre-wrap">
+				<span>{linkifiedProviderErrorText(headline)}</span>
 				{detail ? (
 					<>
 						{" — "}
-						<span className="text-muted-foreground/80">
-							{linkifiedProviderErrorText(detail)}
-						</span>
+						<span className="text-muted-foreground/80">{linkifiedProviderErrorText(detail)}</span>
 					</>
 				) : null}
 				{standaloneActionUrl ? (
