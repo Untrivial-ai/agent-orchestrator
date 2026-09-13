@@ -412,6 +412,46 @@ describe("SessionChatSurface link routing", () => {
 		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: workspaceQueryKey }));
 	});
 
+	it("automatically opens the first link in a newly completed agent response once", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const openInBrowser = vi.fn().mockResolvedValue(undefined);
+		const view = render(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} />
+			</Wrapper>,
+		);
+
+		conversationState.snapshot = {
+			items: [{
+				kind: "message",
+				id: "assistant-1",
+				sequence: 1,
+				revision: 1,
+				role: "assistant",
+				origin: "provider",
+				text: "Done — see https://example.com/result.",
+				streaming: false,
+				createdAt: "2026-08-08T00:00:01Z",
+			}],
+		};
+		view.rerender(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} />
+			</Wrapper>,
+		);
+
+		await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith("https://example.com/result"));
+		expect(openInBrowser).toHaveBeenCalledTimes(1);
+		view.rerender(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} />
+			</Wrapper>,
+		);
+		expect(openInBrowser).toHaveBeenCalledTimes(1);
+	});
+
 	it("opens each plain Chat link in a new AO Browser tab", async () => {
 		const user = userEvent.setup();
 		const openInNewTab = vi.fn().mockResolvedValue(undefined);

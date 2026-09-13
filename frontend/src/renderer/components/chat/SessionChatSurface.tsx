@@ -8,7 +8,7 @@
  */
 
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
-import { memo, useEffect, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	findActiveAgentSwitch,
@@ -31,6 +31,7 @@ import {
 import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
+import { isWebLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
 	deriveAgentSwitchPresentation,
@@ -50,6 +51,13 @@ export interface ConversationWorkState {
 	controllerBusy: boolean;
 	hasRunningTurn: boolean;
 	queuedTurnCount: number;
+}
+
+const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
+
+function firstWebLink(text: string): string | undefined {
+	const match = text.match(HTTP_LINK_PATTERN)?.[0].replace(/[.,!?;:]+$/, "");
+	return match && isWebLink(match) ? match : undefined;
 }
 
 export const SessionChatSurface = memo(function SessionChatSurface({
@@ -302,6 +310,24 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
 	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser);
+	const autoOpenedMessageIds = useRef(new Set<string>());
+	const conversationBaselineReady = useRef(false);
+	useEffect(() => {
+		if (!snapshot) return;
+		// Do not surprise users by opening links from history when a session is first
+		// mounted. Only messages observed after this baseline represent new agent work.
+		if (!conversationBaselineReady.current) {
+			conversationBaselineReady.current = true;
+			return;
+		}
+		for (const item of snapshot.items) {
+			if (item.kind !== "message" || item.role !== "assistant" || item.streaming) continue;
+			if (autoOpenedMessageIds.current.has(item.id)) continue;
+			autoOpenedMessageIds.current.add(item.id);
+			const url = firstWebLink(item.text);
+			if (url) openLinkInBrowser(url);
+		}
+	}, [openLinkInBrowser, snapshot]);
 	const observedSuccessfulSwitch = Boolean(
 		agentSwitch &&
 			observedSettledSwitchId === agentSwitch.id &&
