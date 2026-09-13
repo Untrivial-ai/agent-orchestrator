@@ -65,6 +65,22 @@ type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
 }
 
+// AgentAuthCheckerWithEnv refines AgentAuthChecker for adapters whose
+// credentials can come from a project-scoped environment rather than only the
+// daemon's own.
+//
+// A caller that gates an agent command on auth must ask about the environment
+// that command will actually run in. AuthStatus alone answers for the daemon's
+// environment, so a project-supplied credential is invisible to it and the
+// agent looks signed out when it is not. Adapters that read credentials from
+// the environment should implement this; callers that apply an env overlay
+// should prefer it and must not treat a plain AuthStatus answer as authoritative
+// about an environment it never saw.
+type AgentAuthCheckerWithEnv interface {
+	AgentAuthChecker
+	AuthStatusInEnv(ctx context.Context, env map[string]string) (AgentAuthStatus, error)
+}
+
 // AgentBinaryResolver is the optional capability adapters expose when their
 // binary can be checked without constructing a real session launch command.
 type AgentBinaryResolver interface {

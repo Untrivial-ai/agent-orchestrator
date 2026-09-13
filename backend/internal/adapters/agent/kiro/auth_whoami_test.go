@@ -23,13 +23,16 @@ arn:aws:codewhisperer:us-east-1:111122223333:profile/ABCDEF
 `
 )
 
-func withRunner(t *testing.T, out string, err error) {
+func withRunner(t *testing.T, out string, err error) *map[string]string {
 	t.Helper()
-	original := authprobe.CmdRunner
-	authprobe.CmdRunner = func(context.Context, string, ...string) ([]byte, error) {
+	seen := new(map[string]string)
+	original := authprobe.CmdRunnerEnv
+	authprobe.CmdRunnerEnv = func(_ context.Context, env map[string]string, _ string, _ ...string) ([]byte, error) {
+		*seen = env
 		return []byte(out), err
 	}
-	t.Cleanup(func() { authprobe.CmdRunner = original })
+	t.Cleanup(func() { authprobe.CmdRunnerEnv = original })
+	return seen
 }
 
 func TestKiroWhoamiAuthStatus(t *testing.T) {
@@ -48,8 +51,8 @@ func TestKiroWhoamiAuthStatus(t *testing.T) {
 		{"empty identity fields stay unknown", `{"email":"  "}`, ports.AgentAuthStatusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			withRunner(t, tc.out, nil)
-			got, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli")
+			_ = withRunner(t, tc.out, nil)
+			got, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -63,8 +66,8 @@ func TestKiroWhoamiAuthStatus(t *testing.T) {
 // A signed-out answer is worth trusting even when the CLI exits non-zero,
 // because that is the state AO must not run `chat --list-models` in.
 func TestKiroWhoamiClassifiesSignedOutDespiteExitCode(t *testing.T) {
-	withRunner(t, signedOutWhoami, context.DeadlineExceeded)
-	got, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli")
+	_ = withRunner(t, signedOutWhoami, context.DeadlineExceeded)
+	got, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,11 +77,37 @@ func TestKiroWhoamiClassifiesSignedOutDespiteExitCode(t *testing.T) {
 }
 
 func TestKiroWhoamiWithoutBinaryIsUnknown(t *testing.T) {
-	got, err := kiroWhoamiAuthStatus(context.Background(), "")
+	got, err := kiroWhoamiAuthStatus(context.Background(), "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != ports.AgentAuthStatusUnknown {
 		t.Fatalf("status = %q, want unknown", got)
+	}
+}
+
+// The probe must run under the same environment the gated command would use,
+// or it reports on credentials that command would never have seen.
+// https://github.com/Untrivial-ai/agent-orchestrator/pull/5321#discussion_r3999115728
+func TestKiroWhoamiRunsUnderTheGivenEnvironment(t *testing.T) {
+	seen := withRunner(t, signedOutWhoami, nil)
+	env := map[string]string{"AWS_PROFILE": "work"}
+	if _, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli", env); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if (*seen)["AWS_PROFILE"] != "work" {
+		t.Fatalf("probe ran with env %#v, want the caller's overlay", *seen)
+	}
+}
+
+// A project-scoped KIRO_API_KEY authenticates the agent even though the
+// daemon's own environment has none, so the probe must not shell out at all.
+func TestKiroAPIKeyFromProjectEnvIsAuthorized(t *testing.T) {
+	t.Setenv("KIRO_API_KEY", "")
+	if got := kiroAPIKey(map[string]string{"KIRO_API_KEY": "project-key"}); got != "project-key" {
+		t.Fatalf("kiroAPIKey = %q, want the project overlay value", got)
+	}
+	if got := kiroAPIKey(nil); got != "" {
+		t.Fatalf("kiroAPIKey = %q, want empty when neither source sets it", got)
 	}
 }

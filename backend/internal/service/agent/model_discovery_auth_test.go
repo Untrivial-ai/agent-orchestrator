@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+
 	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -35,6 +37,32 @@ func authGateService(status ports.AgentAuthStatus, authErr error) (*Service, *co
 	}
 	agents := []agentregistry.HarnessAgent{readinessHarness("kiro", "Kiro", stub)}
 	return newService(agents, nil, nil, discoverer), discoverer
+}
+
+// envAwareAgent models an adapter that can take its credential from the
+// project-scoped environment, as Kiro does with KIRO_API_KEY.
+type envAwareAgent struct {
+	*readinessTestAgent
+	sawEnv map[string]string
+}
+
+func (a *envAwareAgent) AuthStatusInEnv(ctx context.Context, env map[string]string) (ports.AgentAuthStatus, error) {
+	a.sawEnv = env
+	if strings.TrimSpace(env["KIRO_API_KEY"]) != "" {
+		return ports.AgentAuthStatusAuthorized, nil
+	}
+	return a.AuthStatus(ctx)
+}
+
+// staticProjects serves one project whose config carries the env overlay that
+// discovery — and therefore the auth gate — must run under.
+type staticProjects struct {
+	id  string
+	env map[string]string
+}
+
+func (p staticProjects) GetProject(context.Context, string) (domain.ProjectRecord, bool, error) {
+	return domain.ProjectRecord{ID: p.id, Path: "/tmp/project", Config: domain.ProjectConfig{Env: p.env}}, true, nil
 }
 
 // Discovery executes the agent's own CLI, and Kiro's discovery command is its
@@ -98,5 +126,83 @@ func TestUnknownAuthStatusStillRunsDiscovery(t *testing.T) {
 				t.Fatalf("discovery ran %d times, want 1", got)
 			}
 		})
+	}
+}
+
+// Discovery deliberately runs with the project-scoped environment, so the gate
+// must ask about that same environment. Asking about the daemon's own instead
+// reports a project-authenticated Kiro as signed out and suppresses a discovery
+// run that would have worked.
+// https://github.com/Untrivial-ai/agent-orchestrator/pull/5321#discussion_r3999115728
+func TestProjectScopedCredentialIsHonoredBeforeBlocking(t *testing.T) {
+	discoverer := &countingDiscoverer{}
+	stub := &envAwareAgent{readinessTestAgent: &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
+		// The daemon's own environment has no key, so this is what a
+		// non-env-aware question would have answered.
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusUnauthorized, nil
+		},
+	}}
+	agents := []agentregistry.HarnessAgent{readinessHarness("kiro", "Kiro", stub)}
+	projects := staticProjects{id: "p1", env: map[string]string{"KIRO_API_KEY": "project-scoped-key"}}
+	svc := newService(agents, nil, projects, discoverer)
+
+	catalog, err := svc.Models(context.Background(), "kiro", "p1", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := discoverer.runs.Load(); got != 1 {
+		t.Fatalf("discovery ran %d times with a project-scoped credential, want 1", got)
+	}
+	if len(catalog.Models) != 1 {
+		t.Fatalf("models = %d, want the discovered catalog", len(catalog.Models))
+	}
+	if stub.sawEnv["KIRO_API_KEY"] != "project-scoped-key" {
+		t.Fatalf("auth check saw env %#v, want the project overlay discovery runs under", stub.sawEnv)
+	}
+}
+
+// Still block when the project environment carries no credential either: the
+// overlay must not become a blanket excuse to skip the gate.
+func TestProjectEnvWithoutCredentialStillBlocks(t *testing.T) {
+	discoverer := &countingDiscoverer{}
+	stub := &envAwareAgent{readinessTestAgent: &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusUnauthorized, nil
+		},
+	}}
+	agents := []agentregistry.HarnessAgent{readinessHarness("kiro", "Kiro", stub)}
+	projects := staticProjects{id: "p1", env: map[string]string{"UNRELATED": "1"}}
+	svc := newService(agents, nil, projects, discoverer)
+
+	if _, err := svc.Models(context.Background(), "kiro", "p1", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := discoverer.runs.Load(); got != 0 {
+		t.Fatalf("discovery ran %d times for a signed-out agent, want 0", got)
+	}
+}
+
+// An adapter that can only answer for the daemon's environment must not block a
+// run whose environment it never saw.
+func TestEnvUnawareAdapterDoesNotBlockUnderAnOverlay(t *testing.T) {
+	discoverer := &countingDiscoverer{}
+	stub := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusUnauthorized, nil
+		},
+	}
+	agents := []agentregistry.HarnessAgent{readinessHarness("kiro", "Kiro", stub)}
+	projects := staticProjects{id: "p1", env: map[string]string{"SOMETHING": "1"}}
+	svc := newService(agents, nil, projects, discoverer)
+
+	if _, err := svc.Models(context.Background(), "kiro", "p1", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := discoverer.runs.Load(); got != 1 {
+		t.Fatalf("discovery ran %d times, want 1 — a stale-environment answer must not block", got)
 	}
 }

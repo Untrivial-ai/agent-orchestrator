@@ -470,17 +470,49 @@ func (s *Service) discoverModels(
 	agentID string,
 	request ports.AgentModelDiscoveryRequest,
 ) (ports.AgentModelCatalog, error) {
-	checker, ok := item.Agent.(ports.AgentAuthChecker)
+	status, ok := s.discoveryAuthStatus(ctx, item, request)
 	if !ok {
 		return s.discoverer.Discover(ctx, request)
 	}
-	status, err := checker.AuthStatus(ctx)
-	if err == nil && status == ports.AgentAuthStatusUnauthorized {
+	if status == ports.AgentAuthStatusUnauthorized {
 		return ports.AgentModelCatalog{}, fmt.Errorf(
 			"%s is signed out, so AO did not run its model-discovery command: %w. Sign in to the agent, then refresh",
 			agentID, errAgentNotSignedIn)
 	}
 	return s.discoverer.Discover(ctx, request)
+}
+
+// discoveryAuthStatus reads the adapter's auth status for the environment the
+// discovery command would actually run in. The bool reports whether the answer
+// is usable at all.
+//
+// Discovery runs with a project-scoped environment overlay, and an adapter can
+// take credentials from it — Kiro reads KIRO_API_KEY that way. Asking an
+// adapter that only answers for the daemon's own environment would then report
+// a project-authenticated agent as signed out and suppress a discovery run that
+// would have succeeded. When an overlay is in play and the adapter cannot
+// account for it, this reports no usable answer rather than a wrong one.
+func (s *Service) discoveryAuthStatus(
+	ctx context.Context,
+	item agentregistry.HarnessAgent,
+	request ports.AgentModelDiscoveryRequest,
+) (ports.AgentAuthStatus, bool) {
+	if envChecker, ok := item.Agent.(ports.AgentAuthCheckerWithEnv); ok {
+		status, err := envChecker.AuthStatusInEnv(ctx, request.Env)
+		return status, err == nil
+	}
+	checker, ok := item.Agent.(ports.AgentAuthChecker)
+	if !ok {
+		return "", false
+	}
+	if len(request.Env) > 0 {
+		// The overlay could carry the very credential that authenticates this
+		// agent, and this adapter cannot be asked about it. Never block on an
+		// answer that describes a different environment.
+		return "", false
+	}
+	status, err := checker.AuthStatus(ctx)
+	return status, err == nil
 }
 
 func (s *Service) agent(agentID string) (agentregistry.HarnessAgent, bool) {

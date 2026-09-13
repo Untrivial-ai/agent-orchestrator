@@ -12,33 +12,56 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-var _ ports.AgentAuthChecker = (*Plugin)(nil)
+var (
+	_ ports.AgentAuthChecker        = (*Plugin)(nil)
+	_ ports.AgentAuthCheckerWithEnv = (*Plugin)(nil)
+)
 
 // kiroAuthProbeTimeout bounds `whoami` so a broken install cannot stall the
 // callers that gate real work on this answer.
 const kiroAuthProbeTimeout = 3 * time.Second
 
-// AuthStatus returns the plugin's local authentication status.
+// AuthStatus returns the plugin's local authentication status in the daemon's
+// own environment.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	return p.AuthStatusInEnv(ctx, nil)
+}
+
+// AuthStatusInEnv answers for the environment a command would run in, with env
+// layered over the daemon's own. Kiro reads KIRO_API_KEY from the environment
+// and `whoami` resolves credentials from it too, so a project-scoped
+// environment can authenticate a session the daemon's own environment cannot
+// see. Answering without it would report a signed-in agent as signed out.
+func (p *Plugin) AuthStatusInEnv(ctx context.Context, env map[string]string) (ports.AgentAuthStatus, error) {
 	binary, err := p.kiroBinary(ctx)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if strings.TrimSpace(os.Getenv("KIRO_API_KEY")) != "" {
+	if kiroAPIKey(env) != "" {
 		return ports.AgentAuthStatusAuthorized, nil
 	}
-	return kiroWhoamiAuthStatus(ctx, binary)
+	return kiroWhoamiAuthStatus(ctx, binary, env)
 }
 
-func kiroWhoamiAuthStatus(ctx context.Context, binary string) (ports.AgentAuthStatus, error) {
+// kiroAPIKey prefers the overlay, then the daemon's environment, matching how
+// the merged environment a real command receives would resolve it.
+func kiroAPIKey(env map[string]string) string {
+	if value, ok := env["KIRO_API_KEY"]; ok {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(os.Getenv("KIRO_API_KEY"))
+}
+
+func kiroWhoamiAuthStatus(ctx context.Context, binary string, env map[string]string) (ports.AgentAuthStatus, error) {
 	if binary == "" {
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	// Kiro documents `whoami` as its authentication-status command. Keep the
-	// probe bounded so catalog refresh cannot hang on a broken CLI install.
+	// probe bounded so catalog refresh cannot hang on a broken CLI install, and
+	// run it under the same environment the gated command would use.
 	probeCtx, cancel := context.WithTimeout(ctx, kiroAuthProbeTimeout)
 	defer cancel()
-	out, runErr := authprobe.CmdRunner(probeCtx, binary, "whoami", "--format", "json")
+	out, runErr := authprobe.CmdRunnerEnv(probeCtx, env, binary, "whoami", "--format", "json")
 	if ctx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, ctx.Err()
 	}
