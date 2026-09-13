@@ -358,7 +358,8 @@ func newSessionClaimPRCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "claim-pr [<session-id>] <pr-ref>",
 		Short: "Attach an existing PR to a session",
-		Long:  "Attach an existing PR to a session. When session-id is omitted, the current session is read from AO_SESSION_ID.",
+		Long: "Attach an existing PR to a session. When session-id is omitted, the current session is read from AO_SESSION_ID.\n\n" +
+			"Claiming updates PR ownership metadata only; it does not check out the PR branch. Verify the workspace branch and HEAD before editing.",
 		Example: `  # From inside an AO worker session
   ao session claim-pr 88
 
@@ -462,21 +463,19 @@ func (c *commandContext) fetchProjectDetails(ctx context.Context, id string) (pr
 func writeClaimPRResult(cmd *cobra.Command, res claimPRResponse) error {
 	out := cmd.OutOrStdout()
 	if len(res.PRs) == 0 {
-		_, err := fmt.Fprintf(out, "session %s claimed PR\n", res.SessionID)
-		return err
+		if _, err := fmt.Fprintf(out, "session %s claimed PR\n", res.SessionID); err != nil {
+			return err
+		}
+	} else {
+		pr := res.PRs[0]
+		if _, err := fmt.Fprintf(out, "session %s claimed PR #%d\n", res.SessionID, pr.Number); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "  pr:       %s\n", pr.URL); err != nil {
+			return err
+		}
 	}
-	pr := res.PRs[0]
-	if _, err := fmt.Fprintf(out, "session %s claimed PR #%d\n", res.SessionID, pr.Number); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(out, "  pr:       %s\n", pr.URL); err != nil {
-		return err
-	}
-	checkout := "already on PR branch"
-	if res.BranchChanged {
-		checkout = "switched to PR branch"
-	}
-	if _, err := fmt.Fprintf(out, "  checkout: %s\n", checkout); err != nil {
+	if err := writeClaimPRCheckout(out, res.BranchChanged); err != nil {
 		return err
 	}
 	for _, owner := range res.TakenOverFrom {
