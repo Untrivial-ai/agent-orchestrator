@@ -14,5 +14,13 @@ pattern = "www.aoagents.dev"
 custom_domain = true
 
 [[routes]]
+pattern = "useao.dev/*"
+zone_name = "useao.dev"
+
+[[routes]]
 pattern = "www.useao.dev/*"
 zone_name = "useao.dev"
+
+[[routes]]
+pattern = "www.orchestrator.inc"
+custom_domain = true

@@ -1,5 +1,11 @@
 // Route only the landing aliases here; other AO services have separate origins.
-const aliases = new Set(["aoagents.dev", "www.aoagents.dev", "www.useao.dev"]);
+const aliases = new Set([
+  "aoagents.dev",
+  "www.aoagents.dev",
+  "useao.dev",
+  "www.useao.dev",
+  "www.orchestrator.inc",
+]);
 
 export default {
   fetch(request) {
@@ -8,7 +14,7 @@ export default {
       return new Response("Not found", { status: 404 });
     }
     url.protocol = "https:";
-    url.host = "useao.dev";
+    url.host = "orchestrator.inc";
     url.port = "";
     return Response.redirect(url.href, 308);
   },
