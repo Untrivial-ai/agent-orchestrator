@@ -5,6 +5,9 @@ import {
 	interfaceTransitionNextPoll,
 	interfaceTransitionPollInterval,
 	interfaceTransitionSessionGone,
+	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 	nativeSessionReadinessAttempts,
 	speculativeFailureAttempts,
 } from "./interfaceTransition";
@@ -13,6 +16,16 @@ const daemonReason =
 	"session: native conversation id is not confirmed for the current terminal launch for claude-code";
 
 describe("mobile interface transition polling", () => {
+	it("keeps an unconfirmed target fenced without polling indefinitely", () => {
+		const transition = { phase: "target_starting", errorCode: "TARGET_STOP_UNCONFIRMED" };
+		expect(mobileInterfaceTransitionIsActive(transition)).toBe(true);
+		expect(mobileInterfaceTransitionIsCancellable(transition)).toBe(false);
+		expect(interfaceTransitionNextPoll({ status: { transition } })).toBeUndefined();
+		expect(interfaceTransitionNextPoll({ status: { transition }, consecutiveFailures: 1 })).toBeUndefined();
+		expect(mobileInterfaceTransitionRecoveryMessage(transition)).toContain("Restart AO on your computer");
+		expect(mobileInterfaceTransitionRecoveryMessage({ ...transition, errorDetail: "Specific shutdown failure" })).toBe("Specific shutdown failure");
+		expect(mobileInterfaceTransitionRecoveryMessage({ ...transition, phase: "completed" })).toBeUndefined();
+	});
 	it("polls quickly while a transition is active", () => {
 		expect(interfaceTransitionPollInterval({ transition: { phase: "draining" } })).toBe(300);
 	});

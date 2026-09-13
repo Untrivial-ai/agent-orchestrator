@@ -26,6 +26,7 @@ import { useApp } from "../store";
 import {
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 	useInterfaceTransition,
 } from "../session/useInterfaceTransition";
 import { screenKeyboardAvoidance } from "../session/keyboardInset";
@@ -264,7 +265,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			setRecheckingTransition(false);
 		}
 	}, [interfaceSwitch]);
-	const interfaceTransitionPhaseText = `Switching to Terminal UI · ${interfacePhaseLabel(interfaceSwitch.transition?.phase)}`;
+	const interfaceRecoveryMessage = mobileInterfaceTransitionRecoveryMessage(interfaceSwitch.transition);
+	const interfaceTransitionPhaseText = interfaceRecoveryMessage || `Switching to Terminal UI · ${interfacePhaseLabel(interfaceSwitch.transition?.phase)}`;
 	const interfaceTransitionBanner = {
 		text: interfaceSwitch.fetchFailed
 			? `${interfaceTransitionPhaseText}. Could not check on it${interfaceSwitch.error ? `: ${interfaceSwitch.error}` : ""}`
@@ -275,7 +277,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		// which is also how the terminal card lays the two out.
 		action: mobileInterfaceTransitionIsCancellable(interfaceSwitch.transition) ? (interfaceSwitch.cancelling ? "Cancelling…" : "Cancel") : undefined,
 		onPress: interfaceSwitch.cancelling ? undefined : () => void interfaceSwitch.cancel().catch(() => {}),
-		secondary: interfaceSwitch.fetchFailed ? (recheckingTransition ? "Retrying…" : "Retry") : undefined,
+		secondary: interfaceSwitch.fetchFailed || interfaceRecoveryMessage ? (recheckingTransition ? "Retrying…" : "Retry") : undefined,
 		onSecondary: recheckingTransition ? undefined : () => void retryInterfaceCheck(),
 	};
 

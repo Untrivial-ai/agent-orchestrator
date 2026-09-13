@@ -21,6 +21,7 @@ export {
 	interfaceSwitchAlert,
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 } from "./interfaceTransition";
 export type { InterfaceSwitchRecheck } from "./interfaceTransition";
 

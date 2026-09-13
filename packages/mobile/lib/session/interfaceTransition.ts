@@ -1,7 +1,7 @@
 import { classifyConnectionFailure } from "../connectionError";
 import type { SessionInterfaceTransitionStatus } from "../chat/api";
 
-type InterfaceTransition = { phase: string };
+type InterfaceTransition = { phase: string; errorCode?: string; errorDetail?: string };
 
 type InterfaceTransitionStatus = Pick<SessionInterfaceTransitionStatus, "reasonCode" | "reason"> & {
 	transition?: InterfaceTransition;
@@ -44,6 +44,11 @@ export function mobileInterfaceTransitionIsActive(transition?: InterfaceTransiti
 	return Boolean(transition && activePhases.has(transition.phase));
 }
 
+export function mobileInterfaceTransitionRecoveryMessage(transition?: InterfaceTransition): string | undefined {
+	if (!mobileInterfaceTransitionIsActive(transition) || transition?.errorCode !== "TARGET_STOP_UNCONFIRMED") return undefined;
+	return transition.errorDetail || "AO could not confirm the target controller stopped. Restart AO on your computer to retry recovery. This session remains blocked; other sessions can still be used.";
+}
+
 export function mobileInterfaceTransitionIsCancellable(transition?: InterfaceTransition): boolean {
 	return Boolean(
 		transition && ["requested", "preflighting", "draining"].includes(transition.phase),
@@ -61,6 +66,7 @@ export function interfaceTransitionPollInterval(
 	status?: InterfaceTransitionStatus,
 	readinessAttempts = 0,
 ): number | undefined {
+	if (mobileInterfaceTransitionRecoveryMessage(status?.transition)) return undefined;
 	if (mobileInterfaceTransitionIsActive(status?.transition)) return 300;
 	if (nativeSessionReadinessPending(status) && readinessAttempts < nativeSessionReadinessAttempts) {
 		return nativeSessionReadinessPoll;
@@ -131,6 +137,7 @@ export function interfaceTransitionNextPoll(args: {
 	consecutiveFailures?: number;
 	failureStatus?: number;
 }): number | undefined {
+	if (mobileInterfaceTransitionRecoveryMessage(args.status?.transition)) return undefined;
 	const failures = args.consecutiveFailures ?? 0;
 	if (failures > 0) {
 		if (interfaceTransitionSessionGone(args.failureStatus)) return undefined;
