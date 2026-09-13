@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "Übersprungene Elemente",
+	"settings.browserImport.signInAgain": "Einige Websites bitten dich möglicherweise, dich erneut anzumelden.",
 	"activity.active": "In Arbeit",
 	"activity.blocked": "Entscheidung ausstehend",
 	"activity.exited": "Beendet",

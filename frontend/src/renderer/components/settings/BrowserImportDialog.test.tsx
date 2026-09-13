@@ -5,6 +5,7 @@ import type { AoBridge } from "../../../preload";
 import { aoBridge } from "../../lib/bridge";
 import { BrowserImportDialog } from "./BrowserImportDialog";
 import { appI18n } from "../../i18n";
+import type { BrowserImportWarning } from "../../../shared/browser-profile-import";
 
 const source = {
 	id: "a".repeat(32),
@@ -150,6 +151,41 @@ describe("BrowserImportDialog", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
 		expect(await screen.findByRole("status")).toHaveTextContent("Nothing was imported");
 		expect(screen.queryByText("Import complete")).not.toBeInTheDocument();
+	});
+
+	it.each([
+		{ imported: 12, failure: false, title: "Import complete" },
+		{ imported: 12, failure: true, title: "Import completed with warnings" },
+		{ imported: 0, failure: false, title: "Nothing was imported" },
+	])("keeps expected skips informational while reporting $title", async ({ imported, failure, title }) => {
+		const warnings: BrowserImportWarning[] = [
+			{ code: "expired-cookies-skipped", count: 2 },
+			{ code: "isolated-cookies-skipped", count: 3 },
+			...(failure ? [{ code: "cookie-write-failed" as const, count: 1 }] : []),
+		];
+		aoBridge.browserProfiles = {
+			...originalBridge,
+			discoverImportSources: vi.fn(async () => ({ sources: [source] })),
+			import: vi.fn(async () => ({ sourceName: source.name, entries: [{
+				sourceProfileNames: ["Default"],
+				destinationProfile: { id: "11111111-1111-4111-8111-111111111111", name: "Imported Chrome", createdAt: "2026-01-01", updatedAt: "2026-01-01" },
+				importedCookies: imported, importedHistoryEntries: 0, skippedCookies: failure ? 6 : 5, warnings,
+			}] })),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		await screen.findByText("Google Chrome");
+		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
+		expect(await screen.findByRole("status")).toHaveTextContent(title);
+		const summary = screen.getByText(/^Skipped items/);
+		const details = summary.closest("details")!;
+		expect(details).not.toHaveAttribute("open");
+		expect(details).toHaveTextContent("2 expired cookies were skipped.");
+		expect(details).toHaveTextContent("3 cookies tied to isolated browser contexts");
+		if (failure) expect(screen.getByText("AO could not write 1 cookies to the new profile.").closest("details")).toBeNull();
+		await userEvent.click(summary);
+		expect(details).toHaveAttribute("open");
+		expect(details).toHaveTextContent("Some sites may ask you to sign in again.");
 	});
 
 	it("preserves an import failure across translation updates", async () => {

@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "Éléments ignorés",
+	"settings.browserImport.signInAgain": "Certains sites peuvent vous demander de vous reconnecter.",
 	"activity.active": "En cours",
 	"activity.blocked": "En attente de décision",
 	"activity.exited": "Terminé",

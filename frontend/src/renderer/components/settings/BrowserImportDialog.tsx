@@ -489,7 +489,10 @@ function OptionsStep({
 function ResultStep({ result }: { result: BrowserImportResult }) {
 	const { t } = useTranslation();
 	const empty = result.entries.every((entry) => entry.importedCookies + entry.importedHistoryEntries === 0);
-	const partial = result.entries.some((entry) => entry.skippedCookies > 0 || entry.warnings.length > 0);
+	const partial = result.entries.some((entry) =>
+		entry.warnings.some((warning) => !isExpectedSkip(warning))
+		|| entry.skippedCookies > entry.warnings.reduce((count, warning) => count + (isExpectedSkip(warning) ? warning.count ?? 0 : 0), 0),
+	);
 	const warning = empty || partial;
 	return (
 		<div className="space-y-4">
@@ -501,13 +504,23 @@ function ResultStep({ result }: { result: BrowserImportResult }) {
 				<div className="rounded-lg border border-border p-3" key={entry.destinationProfile.id}>
 					<p className="text-sm font-semibold">{entry.destinationProfile.name}</p>
 					<p className="mt-1 text-xs text-muted-foreground">{t("settings.browserImport.resultCounts", { cookies: entry.importedCookies, history: entry.importedHistoryEntries })}</p>
-					{entry.skippedCookies > 0 ? <p className="mt-1 text-xs text-warning">{t("settings.browserImport.skippedCookies", { count: entry.skippedCookies })}</p> : null}
-					{entry.warnings.map((warning) => <p className="mt-1 text-xs text-warning" key={warning.code}>{warningText(warning)}</p>)}
+					{entry.warnings.filter((warning) => !isExpectedSkip(warning)).map((warning) => <p className="mt-1 text-xs text-warning" key={warning.code}>{warningText(warning)}</p>)}
+					{entry.skippedCookies > 0 ? (
+						<details className="mt-2 text-xs text-muted-foreground">
+							<summary className="cursor-pointer">{t("settings.browserImport.skippedItems")} · {t("settings.browserImport.skippedCookies", { count: entry.skippedCookies })}</summary>
+							{entry.warnings.filter(isExpectedSkip).map((warning) => <p className="mt-1" key={warning.code}>{warningText(warning)}</p>)}
+							<p className="mt-1">{t("settings.browserImport.signInAgain")}</p>
+						</details>
+					) : null}
 				</div>
 			))}
 			{!empty ? <p className="text-xs text-muted-foreground">{t("settings.browserImport.useProfile")}</p> : null}
 		</div>
 	);
+}
+
+function isExpectedSkip(warning: BrowserImportWarning): boolean {
+	return warning.code === "expired-cookies-skipped" || warning.code === "isolated-cookies-skipped";
 }
 
 function warningText(warning: BrowserImportWarning): string {

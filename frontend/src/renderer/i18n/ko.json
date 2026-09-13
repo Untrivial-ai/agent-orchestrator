@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "건너뛴 항목",
+	"settings.browserImport.signInAgain": "일부 사이트에서는 다시 로그인해야 할 수 있습니다.",
 	"activity.active": "작업 중",
 	"activity.blocked": "결정 대기",
 	"activity.exited": "종료됨",

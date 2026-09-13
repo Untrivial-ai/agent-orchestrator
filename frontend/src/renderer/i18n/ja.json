@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "スキップされた項目",
+	"settings.browserImport.signInAgain": "一部のサイトでは、再度ログインが必要になる場合があります。",
 	"activity.active": "作業中",
 	"activity.blocked": "判断待ち",
 	"activity.exited": "終了済み",

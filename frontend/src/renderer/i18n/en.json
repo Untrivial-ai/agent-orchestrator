@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "Skipped items",
+	"settings.browserImport.signInAgain": "Some sites may ask you to sign in again.",
 	"activity.active": "Working",
 	"activity.blocked": "Awaiting Decision",
 	"activity.exited": "Exited",

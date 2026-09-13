@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "Elementos omitidos",
+	"settings.browserImport.signInAgain": "Es posible que algunos sitios te pidan que vuelvas a iniciar sesión.",
 	"activity.active": "Trabajando",
 	"activity.blocked": "Esperando decisión",
 	"activity.exited": "Finalizado",

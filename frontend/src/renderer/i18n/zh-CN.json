@@ -1,4 +1,6 @@
 {
+	"settings.browserImport.skippedItems": "已跳过的项目",
+	"settings.browserImport.signInAgain": "某些网站可能需要您重新登录。",
 	"activity.active": "工作中",
 	"activity.blocked": "等待决策",
 	"activity.exited": "已退出",
