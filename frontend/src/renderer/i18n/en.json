@@ -1318,6 +1318,7 @@
 	"shell.killingSession": "Killing session",
 	"shell.newProject": "New project",
 	"shell.newSession": "New session",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "New task",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Open inspector panel",

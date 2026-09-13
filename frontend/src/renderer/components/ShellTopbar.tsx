@@ -12,6 +12,7 @@ import {
 	CLOUD_PROJECT_KIND,
 	isOrchestratorSession,
 	sessionIsActive,
+	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
 	type WorkspaceSession,
 } from "../types/workspace";
@@ -123,7 +124,14 @@ export function ShellTopbar({
 	const project = workspaceScope?.project;
 	const projectLabel = project?.name ?? session?.workspaceName ?? (projectId ? "" : t("shell.board"));
 	const orchestrator = workspaceScope?.orchestrator;
-	const projectActions = useProjectOrchestratorAction({ projectId, project, orchestrator, source: "topbar", sessionId: currentSessionId });
+	const supportsProjectActions = project?.kind !== STANDALONE_PROJECT_KIND && projectId !== STANDALONE_WORKSPACE_ID;
+	const projectActions = useProjectOrchestratorAction({
+		projectId: supportsProjectActions ? projectId : undefined,
+		project: supportsProjectActions ? project : undefined,
+		orchestrator: supportsProjectActions ? orchestrator : undefined,
+		source: "topbar",
+		sessionId: currentSessionId,
+	});
 	const { isSpawning, isProjectRestarting, isProvisioning, openNewTask, openOrchestrator } = projectActions;
 	const { showProjectEmpty } = useBoardPresentation({
 		projectId,
@@ -287,7 +295,7 @@ export function ShellTopbar({
 								) : null}
 							</div>
 						) : null}
-						{!isOrchestrator ? (
+						{!isOrchestrator && supportsProjectActions ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<span className="inline-flex" style={noDragStyle}>

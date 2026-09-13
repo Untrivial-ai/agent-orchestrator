@@ -1421,33 +1421,49 @@ const ProjectItemContent = memo(function ProjectItemContent({
 													: t("shell.spawnOrchestratorLower")}
 									</TooltipContent>
 								</Tooltip>}
-								<DropdownMenu>
+								{workspace.kind === STANDALONE_PROJECT_KIND ? (
 									<Tooltip>
 										<TooltipTrigger asChild>
-											<DropdownMenuTrigger asChild>
-												<button
-													aria-label={t("shell.projectActions", {
-														name: workspace.name,
-													})}
-													className={HOVER_ACTION_CLASS}
-													type="button"
-												>
-													<MoreVertical aria-hidden="true" />
-												</button>
-											</DropdownMenuTrigger>
+											<button
+												aria-label={t("shell.openNewAgent", { defaultValue: "Open a new agent" })}
+												className={HOVER_ACTION_CLASS}
+												onClick={() => requestNewTask(workspace.id)}
+												type="button"
+											>
+												<Plus aria-hidden="true" />
+											</button>
 										</TooltipTrigger>
 										<TooltipContent>
-											{t("shell.projectActions", {
-												name: workspace.name,
-											})}
+											{t("shell.openNewAgent")}
 										</TooltipContent>
 									</Tooltip>
-									<DropdownMenuContent side="right" align="start" className="min-w-44">
-										<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
-											<Plus aria-hidden="true" />
-											{t("shell.newSession")}
-										</DropdownMenuItem>
-										{workspace.kind !== STANDALONE_PROJECT_KIND && <>
+								) : (
+									<DropdownMenu>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<DropdownMenuTrigger asChild>
+													<button
+														aria-label={t("shell.projectActions", {
+															name: workspace.name,
+														})}
+														className={HOVER_ACTION_CLASS}
+														type="button"
+													>
+														<MoreVertical aria-hidden="true" />
+													</button>
+												</DropdownMenuTrigger>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("shell.projectActions", {
+													name: workspace.name,
+												})}
+											</TooltipContent>
+										</Tooltip>
+										<DropdownMenuContent side="right" align="start" className="min-w-44">
+											<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+												<Plus aria-hidden="true" />
+												{t("shell.newSession")}
+											</DropdownMenuItem>
 											<DropdownMenuSeparator />
 											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 												<Settings aria-hidden="true" />
@@ -1462,9 +1478,9 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											<Trash2 aria-hidden="true" />
 											{t("shell.removeProjectTitle")}
 											</DropdownMenuItem>
-										</>}
-									</DropdownMenuContent>
-								</DropdownMenu>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								)}
 							</div>
 						</div>
 						{/* end outer relative */}

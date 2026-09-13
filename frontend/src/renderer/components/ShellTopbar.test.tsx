@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
 import {
 	CLOUD_PROJECT_KIND,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 	type SessionActivityState,
 	type WorkspaceSession,
 	type WorkspaceSummary,
@@ -442,6 +444,24 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 		expect(navigateMock).not.toHaveBeenCalled();
 		expect(spawnMock).not.toHaveBeenCalled();
+	});
+
+	it("hides project-only orchestrator actions for ad hoc sessions", () => {
+		renderTopbarSessions(
+			[
+				sessionWith({
+					workspaceId: STANDALONE_WORKSPACE_ID,
+					workspaceName: "Ad hoc agents",
+					branch: undefined,
+				}),
+			],
+			"sess-1",
+			false,
+			undefined,
+			STANDALONE_PROJECT_KIND,
+		);
+
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
 	});
 
 	it("switches from a worker to its orchestrator as soon as termination is confirmed", async () => {
