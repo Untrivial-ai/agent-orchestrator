@@ -14,7 +14,10 @@ import (
 )
 
 // countingDiscoverer records whether AO actually executed an agent's CLI.
-type countingDiscoverer struct{ runs atomic.Int32 }
+type countingDiscoverer struct {
+	runs        atomic.Int32
+	runsCommand bool
+}
 
 func (d *countingDiscoverer) Discover(context.Context, ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	d.runs.Add(1)
@@ -29,8 +32,12 @@ func (d *countingDiscoverer) Manual(agentID string) ports.AgentModelCatalog {
 	return ports.AgentModelCatalog{AgentID: agentID, Source: "manual"}
 }
 
+// runsCommand mirrors whether this agent's discovery executes the agent. The
+// gate only applies when it does.
+func (d *countingDiscoverer) RunsAgentCommand(string) bool { return d.runsCommand }
+
 func authGateService(status ports.AgentAuthStatus, authErr error) (*Service, *countingDiscoverer) {
-	discoverer := &countingDiscoverer{}
+	discoverer := &countingDiscoverer{runsCommand: true}
 	stub := &readinessTestAgent{
 		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
 		auth:    func(context.Context) (ports.AgentAuthStatus, error) { return status, authErr },
@@ -135,7 +142,7 @@ func TestUnknownAuthStatusStillRunsDiscovery(t *testing.T) {
 // run that would have worked.
 // https://github.com/Untrivial-ai/agent-orchestrator/pull/5321#discussion_r3999115728
 func TestProjectScopedCredentialIsHonoredBeforeBlocking(t *testing.T) {
-	discoverer := &countingDiscoverer{}
+	discoverer := &countingDiscoverer{runsCommand: true}
 	stub := &envAwareAgent{readinessTestAgent: &readinessTestAgent{
 		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
 		// The daemon's own environment has no key, so this is what a
@@ -166,7 +173,7 @@ func TestProjectScopedCredentialIsHonoredBeforeBlocking(t *testing.T) {
 // Still block when the project environment carries no credential either: the
 // overlay must not become a blanket excuse to skip the gate.
 func TestProjectEnvWithoutCredentialStillBlocks(t *testing.T) {
-	discoverer := &countingDiscoverer{}
+	discoverer := &countingDiscoverer{runsCommand: true}
 	stub := &envAwareAgent{readinessTestAgent: &readinessTestAgent{
 		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
 		auth: func(context.Context) (ports.AgentAuthStatus, error) {
@@ -188,7 +195,7 @@ func TestProjectEnvWithoutCredentialStillBlocks(t *testing.T) {
 // An adapter that can only answer for the daemon's environment must not block a
 // run whose environment it never saw.
 func TestEnvUnawareAdapterDoesNotBlockUnderAnOverlay(t *testing.T) {
-	discoverer := &countingDiscoverer{}
+	discoverer := &countingDiscoverer{runsCommand: true}
 	stub := &readinessTestAgent{
 		resolve: func(context.Context) (string, error) { return "kiro-cli", nil },
 		auth: func(context.Context) (ports.AgentAuthStatus, error) {
@@ -204,5 +211,35 @@ func TestEnvUnawareAdapterDoesNotBlockUnderAnOverlay(t *testing.T) {
 	}
 	if got := discoverer.runs.Load(); got != 1 {
 		t.Fatalf("discovery ran %d times, want 1 — a stale-environment answer must not block", got)
+	}
+}
+
+// Claude Code's catalog is static — Discover returns a fixed list and never
+// spawns anything, so it cannot start a sign-in. Gating it on auth would strip
+// the model picker from every signed-out Claude Code user to prevent a risk
+// that does not exist for them.
+func TestStaticCatalogIsNotGatedOnAuth(t *testing.T) {
+	discoverer := &countingDiscoverer{runsCommand: false}
+	stub := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "claude", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusUnauthorized, nil
+		},
+	}
+	agents := []agentregistry.HarnessAgent{readinessHarness("claude-code", "Claude Code", stub)}
+	svc := newService(agents, nil, nil, discoverer)
+
+	catalog, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := discoverer.runs.Load(); got != 1 {
+		t.Fatalf("discovery ran %d times for a static catalog, want 1 even when signed out", got)
+	}
+	if len(catalog.Models) != 1 {
+		t.Fatalf("models = %d, want the static catalog a signed-out user still gets", len(catalog.Models))
+	}
+	if catalog.Warning != "" {
+		t.Fatalf("warning = %q, want none: nothing was withheld", catalog.Warning)
 	}
 }

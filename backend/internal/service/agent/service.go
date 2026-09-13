@@ -470,6 +470,12 @@ func (s *Service) discoverModels(
 	agentID string,
 	request ports.AgentModelDiscoveryRequest,
 ) (ports.AgentModelCatalog, error) {
+	// Only decline runs that would actually execute the agent. A static or
+	// config-derived catalog cannot start a sign-in, so gating it would strip a
+	// model list from a signed-out user for no benefit.
+	if !s.discoverer.RunsAgentCommand(agentID) {
+		return s.discoverer.Discover(ctx, request)
+	}
 	status, ok := s.discoveryAuthStatus(ctx, item, request)
 	if !ok {
 		return s.discoverer.Discover(ctx, request)
