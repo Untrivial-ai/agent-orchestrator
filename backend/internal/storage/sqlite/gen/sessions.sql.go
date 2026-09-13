@@ -681,6 +681,17 @@ func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) (i
 	return result.RowsAffected()
 }
 
+const sessionIDExists = `-- name: SessionIDExists :one
+SELECT COUNT(*) > 0 FROM sessions WHERE id = ?
+`
+
+func (q *Queries) SessionIDExists(ctx context.Context, id domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, sessionIDExists, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sessionIsSeed = `-- name: SessionIsSeed :one
 SELECT EXISTS(
     SELECT 1 FROM sessions

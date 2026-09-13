@@ -578,6 +578,54 @@ func TestSessionCreateAssignsStandaloneIDsWithoutProject(t *testing.T) {
 	}
 }
 
+func TestSessionCreateAvoidsStandaloneProjectCollisionAfterProjectSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "standalone")
+
+	projectSession, err := s.CreateSession(ctx, sampleRecord("standalone"))
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	standaloneSession, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatalf("create standalone session: %v", err)
+	}
+	if projectSession.ID != "standalone-1" {
+		t.Fatalf("project session id = %q, want standalone-1", projectSession.ID)
+	}
+	if standaloneSession.ID != "standalone-2" {
+		t.Fatalf("standalone session id = %q, want standalone-2", standaloneSession.ID)
+	}
+	if standaloneSession.ProjectID != "" || !standaloneSession.IsStandalone() {
+		t.Fatalf("standalone project = %q", standaloneSession.ProjectID)
+	}
+}
+
+func TestSessionCreateAvoidsStandaloneProjectCollisionAfterStandaloneSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "standalone")
+
+	standaloneSession, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatalf("create standalone session: %v", err)
+	}
+	projectSession, err := s.CreateSession(ctx, sampleRecord("standalone"))
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	if standaloneSession.ID != "standalone-1" {
+		t.Fatalf("standalone session id = %q, want standalone-1", standaloneSession.ID)
+	}
+	if projectSession.ID != "standalone-2" {
+		t.Fatalf("project session id = %q, want standalone-2", projectSession.ID)
+	}
+	if projectSession.ProjectID != "standalone" || projectSession.IsStandalone() {
+		t.Fatalf("project session project = %q", projectSession.ProjectID)
+	}
+}
+
 // TestDeleteSessionOnlyRemovesSeedRows covers Bug 4's storage-layer guarantee:
 // DeleteSession removes a session row only when the row is still in seed state
 // (no workspace, no runtime handle, no agent session id, no prompt, not

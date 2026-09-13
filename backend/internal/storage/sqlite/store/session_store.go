@@ -33,7 +33,17 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	if err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
 	}
-	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
+	for {
+		rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
+		exists, err := s.qw.SessionIDExists(ctx, rec.ID)
+		if err != nil {
+			return domain.SessionRecord{}, fmt.Errorf("check session id %s: %w", rec.ID, err)
+		}
+		if !exists {
+			break
+		}
+		num++
+	}
 	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("insert session %s: %w", rec.ID, err)
 	}
