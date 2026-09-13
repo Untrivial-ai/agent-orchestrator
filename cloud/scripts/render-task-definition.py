@@ -28,6 +28,9 @@ def main() -> None:
     parser.add_argument("--region", required=True)
     parser.add_argument("--runtime-database-user", default="")
     parser.add_argument("--worker-image", default="")
+    parser.add_argument(
+        "--sandbox-provider", choices=("nodeops", "coder"), default="nodeops"
+    )
     parser.add_argument("--set-environment", action="append", default=[])
     parser.add_argument("--set-secret", action="append", default=[])
     args = parser.parse_args()
@@ -43,6 +46,7 @@ def main() -> None:
         region=args.region,
         runtime_database_user=args.runtime_database_user,
         worker_image=args.worker_image,
+        sandbox_provider=args.sandbox_provider,
         environment_overrides=assignments(args.set_environment),
         secret_overrides=assignments(args.set_secret),
     )

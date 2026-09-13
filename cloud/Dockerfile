@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/ao ./cmd/ao-cloud-agent
 
-FROM node:22-bookworm-slim AS worker
+FROM node:22-trixie-slim AS worker
 ARG TARGETARCH
 ARG CLAUDE_CODE_VERSION=2.1.228
 ARG CODEX_VERSION=0.147.0

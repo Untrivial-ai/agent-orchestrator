@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,25 +23,31 @@ var githubSlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,99}$`)
 const workOSAPIBaseURL = "https://api.workos.com"
 
 type Config struct {
-	Environment             string
-	HTTPAddress             string
-	DatabaseURL             string
-	MigrationDatabaseURL    string
-	MigrateOnStartup        bool
-	MigrationTimeout        time.Duration
-	WorkOSIssuer            string
-	WorkOSClientID          string
-	WorkOSAPIKey            string
-	WorkOSJWKSURL           string
-	LocalAuthEnabled        bool
-	LocalSessionTTL         time.Duration
-	SandboxProvider         string
-	AllowAnonymousCheckout  bool
-	ProviderSecretKey       []byte
-	Release                 string
-	RepositoryBrokerURL     string
-	RepositoryBrokerToken   string
-	EnvironmentControlToken string
+	Environment          string
+	HTTPAddress          string
+	DatabaseURL          string
+	MigrationDatabaseURL string
+	MigrateOnStartup     bool
+	MigrationTimeout     time.Duration
+	WorkOSIssuer         string
+	WorkOSClientID       string
+	WorkOSAPIKey         string
+	WorkOSJWKSURL        string
+	LocalAuthEnabled     bool
+	LocalSessionTTL      time.Duration
+	SandboxProvider      string
+	// AvailableSandboxProviders lists every provider this control plane offers.
+	// It always contains SandboxProvider (the default) and is derived from
+	// AO_CLOUD_SANDBOX_PROVIDERS, so a single CP can serve more than one
+	// provider and a client can pick per session. Single-provider deployments
+	// leave it as just the default and are unchanged.
+	AvailableSandboxProviders []string
+	AllowAnonymousCheckout    bool
+	ProviderSecretKey         []byte
+	Release                   string
+	RepositoryBrokerURL       string
+	RepositoryBrokerToken     string
+	EnvironmentControlToken   string
 
 	// PublicURL is the origin a sandbox worker dials back to. A worker opens
 	// no inbound port, so this is the only way it can reach the control plane.
@@ -93,6 +101,15 @@ type Config struct {
 	DockerNamespace      string
 	DockerWorkerTokenTTL time.Duration
 
+	CoderURL            string
+	CoderAPIToken       string
+	CoderOwner          string
+	CoderTemplateID     string
+	CoderAgentName      string
+	CoderParameters     map[string]string
+	CoderDurableRoot    string
+	CoderWorkerTokenTTL time.Duration
+
 	GitHub GitHubConfig
 }
 
@@ -141,6 +158,12 @@ func Load() (Config, error) {
 	if raw := strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &rootFSByHarnessEnv); err != nil {
 			return Config{}, fmt.Errorf("invalid AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS: %w", err)
+		}
+	}
+	coderParametersEnv := map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_PARAMETERS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &coderParametersEnv); err != nil {
+			return Config{}, fmt.Errorf("invalid AO_CLOUD_CODER_PARAMETERS_JSON: %w", err)
 		}
 	}
 
@@ -205,6 +228,19 @@ func Load() (Config, error) {
 		DockerNamespace:   envOrDefault("AO_CLOUD_DOCKER_NAMESPACE", "ao-cloud-local"),
 		DockerWorkerTokenTTL: durationEnv(
 			"AO_CLOUD_DOCKER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
+		),
+
+		CoderURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_URL")), "/"),
+		CoderAPIToken:   strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_TOKEN")),
+		CoderOwner:      strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_OWNER")),
+		CoderTemplateID: strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_TEMPLATE_ID")),
+		CoderAgentName:  strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_AGENT_NAME")),
+		CoderParameters: coderParametersEnv,
+		CoderDurableRoot: strings.TrimSpace(
+			os.Getenv("AO_CLOUD_CODER_DURABLE_ROOT"),
+		),
+		CoderWorkerTokenTTL: durationEnv(
+			"AO_CLOUD_CODER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
 		),
 
 		GitHub: GitHubConfig{
@@ -302,46 +338,97 @@ func Load() (Config, error) {
 		return Config{}, errors.New("AO_CLOUD_LOCAL_SESSION_TTL must be positive")
 	}
 	switch cfg.SandboxProvider {
-	case "ecs", "daytona", "docker", "nodeops":
+	case "ecs", "daytona", "docker", "nodeops", "coder":
 	default:
-		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be ecs, daytona, docker, or nodeops")
+		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder, daytona, docker, ecs, or nodeops")
 	}
-	if cfg.Hosted() && cfg.SandboxProvider != "nodeops" {
-		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be nodeops in staging and production")
+	if cfg.Hosted() && cfg.SandboxProvider != "nodeops" && cfg.SandboxProvider != "coder" {
+		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder or nodeops in staging and production")
 	}
-	if cfg.SandboxProvider == "docker" {
-		if err := (sandbox.DockerConfig{
-			Host:           cfg.DockerHost,
-			WorkerImage:    cfg.DockerWorkerImage,
-			Network:        cfg.DockerNetwork,
-			Namespace:      cfg.DockerNamespace,
-			WorkerTokenTTL: cfg.DockerWorkerTokenTTL,
-		}).Validate(); err != nil {
-			return Config{}, err
+	available, err := resolveAvailableProviders(cfg.SandboxProvider, cfg.Hosted())
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AvailableSandboxProviders = available
+	// Validate every provider this control plane offers, not just the default,
+	// so a CP configured with both providers fails fast when either is
+	// misconfigured rather than at the first session that selects it. Hosted
+	// environments (staging/production) keep that fail-fast behavior: a
+	// misconfigured hosted provider must never come up quietly. Local/dev
+	// environments instead drop an unconfigured provider (e.g. Coder or
+	// NodeOps credentials left blank because only Docker is set up locally)
+	// and fall back to the remaining providers, so a developer without
+	// Coder/NodeOps access can still boot the control plane against Docker.
+	validated := make([]string, 0, len(cfg.AvailableSandboxProviders))
+	for _, provider := range cfg.AvailableSandboxProviders {
+		var err error
+		switch provider {
+		case "docker":
+			err = (sandbox.DockerConfig{
+				Host:           cfg.DockerHost,
+				WorkerImage:    cfg.DockerWorkerImage,
+				Network:        cfg.DockerNetwork,
+				Namespace:      cfg.DockerNamespace,
+				WorkerTokenTTL: cfg.DockerWorkerTokenTTL,
+			}).Validate()
+		case "nodeops":
+			err = (sandbox.NodeOpsConfig{
+				BaseURL:          cfg.NodeOpsBaseURL,
+				APIKey:           cfg.NodeOpsAPIKey,
+				DefaultShape:     cfg.NodeOpsDefaultShape,
+				DefaultRootFS:    cfg.NodeOpsDefaultRootFS,
+				RootFSByHarness:  cfg.NodeOpsRootFSByHarness,
+				Ingress:          cfg.NodeOpsIngress,
+				SSHKeyPath:       cfg.NodeOpsSSHKeyPath,
+				WorkerTokenTTL:   cfg.NodeOpsWorkerTokenTTL,
+				AutoPauseSeconds: cfg.NodeOpsAutoPauseSeconds,
+			}).Validate()
+		case "coder":
+			err = (sandbox.CoderConfig{
+				BaseURL:        cfg.CoderURL,
+				Owner:          cfg.CoderOwner,
+				TemplateID:     cfg.CoderTemplateID,
+				AgentName:      cfg.CoderAgentName,
+				Parameters:     cfg.CoderParameters,
+				DurableRoot:    cfg.CoderDurableRoot,
+				WorkerTokenTTL: cfg.CoderWorkerTokenTTL,
+			}).Validate()
+			if err == nil && cfg.CoderAPIToken == "" {
+				err = errors.New("AO_CLOUD_CODER_TOKEN is required")
+			}
+			if err == nil {
+				coderURL, _ := url.Parse(cfg.CoderURL)
+				if cfg.Hosted() && coderURL.Scheme != "https" {
+					err = errors.New("AO_CLOUD_CODER_URL must use HTTPS in hosted environments")
+				}
+			}
+		}
+		if err != nil {
+			if cfg.Hosted() {
+				return Config{}, err
+			}
+			log.Printf("ao-cloud: sandbox provider %q is unconfigured locally (%v); continuing without it", provider, err)
+			continue
+		}
+		validated = append(validated, provider)
+	}
+	cfg.AvailableSandboxProviders = validated
+	if len(cfg.AvailableSandboxProviders) == 0 {
+		return Config{}, errors.New("no configured sandbox provider is available")
+	}
+	if !slices.Contains(cfg.AvailableSandboxProviders, cfg.SandboxProvider) {
+		if slices.Contains(cfg.AvailableSandboxProviders, "docker") {
+			cfg.SandboxProvider = "docker"
+		} else {
+			cfg.SandboxProvider = cfg.AvailableSandboxProviders[0]
 		}
 	}
-	if cfg.SandboxProvider == "nodeops" || cfg.Hosted() {
-		if err := (sandbox.NodeOpsConfig{
-			BaseURL:          cfg.NodeOpsBaseURL,
-			APIKey:           cfg.NodeOpsAPIKey,
-			DefaultShape:     cfg.NodeOpsDefaultShape,
-			DefaultRootFS:    cfg.NodeOpsDefaultRootFS,
-			RootFSByHarness:  cfg.NodeOpsRootFSByHarness,
-			Ingress:          cfg.NodeOpsIngress,
-			SSHKeyPath:       cfg.NodeOpsSSHKeyPath,
-			WorkerTokenTTL:   cfg.NodeOpsWorkerTokenTTL,
-			AutoPauseSeconds: cfg.NodeOpsAutoPauseSeconds,
-		}).Validate(); err != nil {
-			return Config{}, err
-		}
-	}
-	if cfg.SandboxProvider == "nodeops" || cfg.SandboxProvider == "docker" {
+	if providersRequireWorkerHome(cfg.AvailableSandboxProviders) {
 		// A worker can only dial home if it is told where home is, and can only
 		// be trusted if its token is signed by a key strong enough to matter.
 		if cfg.PublicURL == "" {
-			return Config{}, fmt.Errorf(
-				"AO_CLOUD_PUBLIC_URL is required when AO_CLOUD_SANDBOX_PROVIDER=%s",
-				cfg.SandboxProvider,
+			return Config{}, errors.New(
+				"AO_CLOUD_PUBLIC_URL is required when a nodeops, docker, or coder provider is available",
 			)
 		}
 		// A worker reads this origin out of its environment and dials it with
@@ -362,12 +449,12 @@ func Load() (Config, error) {
 			)
 		}
 	}
-	if cfg.SandboxProvider == "nodeops" {
+	if cfg.SandboxProvider == "nodeops" || cfg.SandboxProvider == "coder" {
 		if cfg.WorkerBinaryPath == "" {
-			return Config{}, errors.New("AO_CLOUD_WORKER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=nodeops")
+			return Config{}, fmt.Errorf("AO_CLOUD_WORKER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=%s", cfg.SandboxProvider)
 		}
 		if cfg.WorkerHelperBinaryPath == "" {
-			return Config{}, errors.New("AO_CLOUD_WORKER_HELPER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=nodeops")
+			return Config{}, fmt.Errorf("AO_CLOUD_WORKER_HELPER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=%s", cfg.SandboxProvider)
 		}
 	}
 	if cfg.ReconcileInterval <= 0 {
@@ -484,6 +571,9 @@ func (c Config) WorkerTokenTTL() time.Duration {
 	if c.SandboxProvider == sandbox.ProviderDocker {
 		return c.DockerWorkerTokenTTL
 	}
+	if c.SandboxProvider == sandbox.ProviderCoder {
+		return c.CoderWorkerTokenTTL
+	}
 	return c.NodeOpsWorkerTokenTTL
 }
 
@@ -527,6 +617,52 @@ func defaultSandboxProvider(hosted bool) string {
 		return sandbox.ProviderNodeOps
 	}
 	return sandbox.DefaultProvider
+}
+
+// resolveAvailableProviders returns the set of providers a control plane offers.
+// It reads AO_CLOUD_SANDBOX_PROVIDERS (a comma-separated list) and always
+// includes defaultProvider, so an unset value yields exactly the single default
+// and existing single-provider deployments are unchanged. Order is preserved
+// (default first) and duplicates are dropped. Every entry must be a known
+// provider, and in hosted environments only nodeops and coder are permitted,
+// mirroring the AO_CLOUD_SANDBOX_PROVIDER rules.
+func resolveAvailableProviders(defaultProvider string, hosted bool) ([]string, error) {
+	list := []string{defaultProvider}
+	seen := map[string]bool{defaultProvider: true}
+	for _, part := range strings.Split(os.Getenv("AO_CLOUD_SANDBOX_PROVIDERS"), ",") {
+		provider := strings.ToLower(strings.TrimSpace(part))
+		if provider == "" || seen[provider] {
+			continue
+		}
+		seen[provider] = true
+		list = append(list, provider)
+	}
+	for _, provider := range list {
+		switch provider {
+		case "ecs", "daytona", "docker", "nodeops", "coder":
+		default:
+			return nil, fmt.Errorf("AO_CLOUD_SANDBOX_PROVIDERS contains unknown provider %q", provider)
+		}
+		if hosted && provider != "nodeops" && provider != "coder" {
+			return nil, fmt.Errorf(
+				"AO_CLOUD_SANDBOX_PROVIDERS may only contain coder or nodeops in staging and production, got %q",
+				provider,
+			)
+		}
+	}
+	return list, nil
+}
+
+// providersRequireWorkerHome reports whether any available provider launches a
+// worker that must dial back to AO_CLOUD_PUBLIC_URL.
+func providersRequireWorkerHome(providers []string) bool {
+	for _, provider := range providers {
+		switch provider {
+		case "nodeops", "docker", "coder":
+			return true
+		}
+	}
+	return false
 }
 
 func intEnvOrDefault(key string, fallback int) int {

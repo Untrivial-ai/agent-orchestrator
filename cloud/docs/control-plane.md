@@ -55,6 +55,23 @@ The shared Cloud client tracks the highest consumed sequence and reconnects
 retryable stream failures with a fresh access token. Duplicate sequences are
 suppressed. Cancellation and non-retryable client errors stop the stream.
 
+## Sandbox resume and lifecycle projection
+
+Provider-native idle stops are normal lifecycle observations. When a provider
+positively identifies an idle/autostop transition, reconciliation atomically
+accepts it as `desiredState=paused` and `observedState=stopped`; it does not
+immediately restart the workspace. `POST
+.../sessions/{sessionId}/resume`, a new user message, and a user-requested
+workspace operation record per-session resume intent. Project/session listing
+and terminal-ticket retries are read/transport operations and never resume a
+sandbox.
+
+Session list and detail responses expose `sandboxProvider`, `desiredState`, and
+`observedState` alongside `runtimeConnected`, `runtimeState`, and
+`runtimeError`. The desktop derives paused/resume progress from those durable
+intent and observation fields; clients must not infer a resume from a
+successful ticket mint or a retained terminal connection.
+
 ## Worker workspace and terminal transport
 
 Workspace file operations and workspace-terminal traffic never touch a
@@ -77,8 +94,11 @@ terminal frames, terminal output history, operation duration, and concurrent
 requests are also bounded.
 
 Terminal tickets are random, hashed at rest, short-lived, single-use, and bound
-to a session epoch. The WebSocket itself is a stateless bridge: input becomes a
-durable worker request and output is replayed from PostgreSQL by sequence.
+to a session epoch. Minting or reconnecting with a ticket is not lifecycle
+activity. Actual terminal input renews the short interaction lease; merely
+retaining a hidden WebSocket does not. The WebSocket itself is a stateless
+bridge: input becomes a durable worker request and output is replayed from
+PostgreSQL by sequence.
 Workspace shells are supported. Attaching to the coding agent's native TUI is
 deliberately not implemented, so `kind=agent` is rejected instead of being
 silently mapped to a different process. Because arbitrary shell input cannot

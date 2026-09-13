@@ -88,7 +88,12 @@ type ExitListener = () => void;
 type OpenedListener = () => void;
 type ErrorListener = (message: string) => void;
 
-export type MuxConnectionState = "open" | "closed";
+// "waiting" is a cloud-only state: the control plane answered the terminal
+// ticket mint with 409 WORKER_UNAVAILABLE because the sandbox worker has not
+// checked in yet (normal during a cold start). It reconnects like "closed" but
+// must NOT count against the connect-failure circuit breaker, because nothing
+// actually failed to connect. The local daemon mux never emits it.
+export type MuxConnectionState = "open" | "closed" | "waiting";
 type ConnectionListener = (state: MuxConnectionState) => void;
 
 export type TerminalMux = {

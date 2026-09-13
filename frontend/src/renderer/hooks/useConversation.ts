@@ -98,6 +98,7 @@ export function conversationConfigOptionsQueryKey(sessionId: string) {
 }
 
 const conversationDispatchTrackingQueryKey = ["conversation-dispatch-tracking"] as const;
+const conversationLocalEchosQueryKey = ["conversation-local-echos"] as const;
 type ConversationDispatchOperation = "edit" | "retry" | "send";
 interface ConversationDispatchDescriptor {
 	operation: ConversationDispatchOperation;
@@ -108,6 +109,72 @@ type ConversationDispatchTracking =
 	| (ConversationDispatchDescriptor & { state: "pending" })
 	| (ConversationDispatchDescriptor & { state: "accepted"; turnId: string });
 type ConversationDispatchTrackingBySession = Record<string, ConversationDispatchTracking>;
+
+/**
+ * Renderer-only acknowledgement of a human send. It is deliberately separate
+ * from the durable snapshot: CDC identifies a conversation, not one exact new
+ * item, so treating it as a partial server update would make ordering unsafe.
+ */
+export type ConversationLocalEcho = {
+	clientMessageId: string;
+	text: string;
+	createdAt: string;
+	/** Filled after the daemon accepts the send, then used for exact reconciliation. */
+	turnId?: string;
+};
+type ConversationLocalEchosBySession = Record<string, ConversationLocalEcho[]>;
+
+function addConversationLocalEcho(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	echo: ConversationLocalEcho,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => ({
+		...current,
+		[targetSessionId]: [...(current[targetSessionId] ?? []), echo],
+	}));
+}
+
+function acceptConversationLocalEcho(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	clientMessageId: string,
+	turnId: string,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
+		const echoes = current[targetSessionId];
+		if (!echoes) return current;
+		let changed = false;
+		const nextEchoes = echoes.map((echo) => {
+			if (echo.clientMessageId !== clientMessageId || echo.turnId === turnId) return echo;
+			changed = true;
+			return { ...echo, turnId };
+		});
+		return changed ? { ...current, [targetSessionId]: nextEchoes } : current;
+	});
+}
+
+function releaseConversationLocalEcho(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	clientMessageId?: string,
+	turnId?: string,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
+		const echoes = current[targetSessionId];
+		if (!echoes) return current;
+		const nextEchoes = echoes.filter(
+			(echo) =>
+				(clientMessageId === undefined || echo.clientMessageId !== clientMessageId) &&
+				(turnId === undefined || echo.turnId !== turnId),
+		);
+		if (nextEchoes.length === echoes.length) return current;
+		const next = { ...current };
+		if (nextEchoes.length === 0) delete next[targetSessionId];
+		else next[targetSessionId] = nextEchoes;
+		return next;
+	});
+}
 
 function claimConversationDispatch(
 	queryClient: QueryClient,
@@ -312,6 +379,14 @@ export function useConversationCommands(sessionId: string | undefined) {
 		gcTime: Number.POSITIVE_INFINITY,
 		staleTime: Number.POSITIVE_INFINITY,
 	}).data;
+	const localEchosBySession = useQuery({
+		queryKey: conversationLocalEchosQueryKey,
+		queryFn: async (): Promise<ConversationLocalEchosBySession> => ({}),
+		initialData: {} as ConversationLocalEchosBySession,
+		enabled: false,
+		gcTime: Number.POSITIVE_INFINITY,
+		staleTime: Number.POSITIVE_INFINITY,
+	}).data;
 	const trackedDispatch = sessionId ? trackedDispatches[sessionId] : undefined;
 	const invalidateSession = useCallback(
 		async (targetSessionId: string) => {
@@ -336,6 +411,11 @@ export function useConversationCommands(sessionId: string | undefined) {
 
 	const send = useMutation({
 		onMutate: (variables: ConversationSendMutationInput) => {
+			addConversationLocalEcho(queryClient, variables.targetSessionId, {
+				clientMessageId: variables.clientMessageId,
+				text: variables.input.text,
+				createdAt: new Date().toISOString(),
+			});
 			queryClient.setQueryData<ConversationDispatchTrackingBySession>(
 				conversationDispatchTrackingQueryKey,
 				(current = {}) => {
@@ -372,6 +452,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 		onSuccess: (data, variables) => {
 			const acceptedTurnId = data?.turnId;
 			if (acceptedTurnId) {
+				acceptConversationLocalEcho(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+					acceptedTurnId,
+				);
 				if (data.state === "queued") {
 					// A queued row is already durable and did not start a new provider turn,
 					// so keeping the accepted-turn safety marker would block the next queue
@@ -401,6 +487,11 @@ export function useConversationCommands(sessionId: string | undefined) {
 					variables.targetSessionId,
 					variables.clientMessageId,
 				);
+				releaseConversationLocalEcho(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+				);
 			}
 			// Delivery is already authoritative at this point. Refresh in the
 			// background so a slow conversation refetch cannot keep send.isPending
@@ -410,6 +501,11 @@ export function useConversationCommands(sessionId: string | undefined) {
 		},
 		onError: (_error, variables) => {
 			releaseConversationDispatch(
+				queryClient,
+				variables.targetSessionId,
+				variables.clientMessageId,
+			);
+			releaseConversationLocalEcho(
 				queryClient,
 				variables.targetSessionId,
 				variables.clientMessageId,
@@ -802,6 +898,13 @@ export function useConversationCommands(sessionId: string | undefined) {
 		},
 		[queryClient, sessionId],
 	);
+	const acknowledgeLocalEcho = useCallback(
+		(turnId: string) => {
+			if (!sessionId) return;
+			releaseConversationLocalEcho(queryClient, sessionId, undefined, turnId);
+		},
+		[queryClient, sessionId],
+	);
 	const sendTargetsCurrentSession = send.variables?.targetSessionId === sessionId;
 	const interruptTargetsCurrentSession = interrupt.variables?.targetSessionId === sessionId;
 	const retryTargetsCurrentSession = retryTurn.variables?.targetSessionId === sessionId;
@@ -826,6 +929,8 @@ export function useConversationCommands(sessionId: string | undefined) {
 		pendingAcceptedTurnId:
 			trackedDispatch?.state === "accepted" ? trackedDispatch.turnId : undefined,
 		acknowledgeAcceptedTurn,
+		localEchos: sessionId ? localEchosBySession[sessionId] ?? [] : [],
+		acknowledgeLocalEcho,
 		resolve: (requestId: string, decisionId: string) => resolve.mutate({ requestId, decisionId }),
 		resolveInput: (
 			requestId: string,

@@ -31,10 +31,23 @@ export interface CloudCpOrganization {
 	role: string;
 }
 
+/** Sandbox providers a control plane offers (`/me` sandboxProviders). */
+export interface CloudCpSandboxProviders {
+	/** Every provider a session may select on this control plane. */
+	available: string[];
+	/** The provider used when a session does not specify one. */
+	default: string;
+}
+
 /** GET /me */
 export interface CloudCpMeResponse {
 	user: CloudCpUser;
 	organizations: CloudCpOrganization[];
+	/**
+	 * Present when the control plane reports its providers. A single-provider
+	 * deployment lists exactly one available provider (the default).
+	 */
+	sandboxProviders?: CloudCpSandboxProviders;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +174,12 @@ export interface CloudCpCreateSessionRequest {
 	mode?: CloudCpSessionMode;
 	deniedCommands?: string[];
 	sandboxProviderConnectionId?: string;
+	/**
+	 * Sandbox provider for this session. Optional: omitted uses the control
+	 * plane default. When set it must be one of `sandboxProviders.available`
+	 * from `/me`.
+	 */
+	provider?: string;
 }
 
 export interface CloudCpSession {
@@ -176,6 +195,9 @@ export interface CloudCpSession {
 	activityState: string;
 	status: string;
 	runtimeConnected: boolean;
+	sandboxProvider?: string;
+	desiredState?: string;
+	observedState?: string;
 	runtimeState?: string;
 	runtimeError?: string;
 	isTerminated: boolean;
@@ -192,6 +214,31 @@ export interface CloudCpSessionListResponse {
 	page: CloudCpPageInfo;
 }
 
+/** One pull request on a children listing (GET .../sessions/{id}/children). */
+export interface CloudCpSessionPullRequest {
+	url: string;
+	number: number;
+	state: "draft" | "open" | "merged" | "closed";
+	ci: string;
+	review: string;
+	mergeability: string;
+	/** Always false today: the control plane does not track unresolved comments yet. */
+	reviewComments: boolean;
+	sourceBranch?: string;
+	targetBranch?: string;
+	updatedAt: string;
+}
+
+/** A child session as listed under its orchestrator, with its pull requests. */
+export interface CloudCpSessionChild extends CloudCpSession {
+	prs: CloudCpSessionPullRequest[];
+}
+
+export interface CloudCpSessionChildrenResponse {
+	items: CloudCpSessionChild[];
+	page: CloudCpPageInfo;
+}
+
 export interface CloudCpListSessionsQuery extends CloudCpListQuery {
 	/** Restrict the listing to one project. */
 	projectId?: string;
@@ -205,9 +252,14 @@ export interface CloudCpSessionDeletedResponse {
 	};
 }
 
-/** POST /orgs/{orgId}/sessions/wake responds 202 with the number of sandboxes queued to resume. */
-export interface CloudCpWakeSessionsResponse {
-	woken: number;
+/** POST /orgs/{orgId}/sessions/{sessionId}/resume accepts user resume intent. */
+export interface CloudCpResumeSessionResponse {
+	session: {
+		id: string;
+		sandboxProvider: string;
+		desiredState: string;
+		observedState: string;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +338,12 @@ export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor";
 export interface CloudCpPutAgentConnectionRequest {
 	credentialType: string;
 	/** Raw credential secret; validated then stored encrypted, never echoed back. */
+	secret: string;
+}
+
+/** PUT /orgs/{orgId}/provider-connections/github-pat */
+export interface CloudCpPutGitHubPATRequest {
+	/** Raw GitHub personal access token; stored encrypted and never echoed. */
 	secret: string;
 }
 

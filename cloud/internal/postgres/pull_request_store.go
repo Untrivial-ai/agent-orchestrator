@@ -254,6 +254,47 @@ func (s *Store) PRFactsBySession(
 	return facts, nil
 }
 
+// PullRequestsBySessions returns full pull request rows grouped by session ID.
+// Unlike PRFactsBySession (which feeds status derivation via the shared
+// contract facts), this carries number, url, and timestamps for wire responses
+// that render the PRs themselves.
+func (s *Store) PullRequestsBySessions(
+	ctx context.Context,
+	orgID string,
+	sessionIDs []string,
+) (map[string][]domain.PullRequest, error) {
+	records := make(map[string][]domain.PullRequest)
+	if len(sessionIDs) == 0 {
+		return records, nil
+	}
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(
+			ctx,
+			`SELECT `+pullRequestColumns+`
+			FROM ao_pull_requests
+			WHERE org_id = $1 AND session_id = ANY($2)
+			ORDER BY updated_at DESC`,
+			orgID, sessionIDs,
+		)
+		if err != nil {
+			return fmt.Errorf("list pull requests by session: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			record, err := scanPullRequest(rows)
+			if err != nil {
+				return fmt.Errorf("scan pull request: %w", err)
+			}
+			records[record.SessionID] = append(records[record.SessionID], record)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 // OpenPullRequestRefs lists open pull requests across organizations.
 func (s *Store) OpenPullRequestRefs(ctx context.Context) ([]domain.PullRequestRef, error) {
 	var refs []domain.PullRequestRef

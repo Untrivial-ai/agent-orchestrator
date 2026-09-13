@@ -113,6 +113,8 @@ export type WorkspaceSession = {
 	displayStatus?: string;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
+	/** Whether the cloud worker has a current control-plane connection. */
+	runtimeConnected?: boolean;
 	chatProviderPreserved?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
@@ -157,7 +159,12 @@ export type WorkspaceSession = {
 	 * org the session is scoped to so its terminal can be opened against the CP;
 	 * absent for local sessions, which route through the local daemon.
 	 */
-	cloud?: { orgId: string };
+	cloud?: {
+		orgId: string;
+		sandboxProvider?: string;
+		desiredState?: string;
+		observedState?: string;
+	};
 };
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in

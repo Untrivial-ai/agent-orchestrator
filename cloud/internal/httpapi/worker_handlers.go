@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,10 +20,64 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+type workerGitHubPATStore interface {
+	WorkerGitHubPAT(context.Context, string, string, string, int64) (domain.WorkerGitHubPAT, error)
+}
+
+// workerGitHubPATGrant resolves the configured PAT only for the authenticated
+// worker's own session. A missing PAT is deliberately indistinguishable from
+// no configured fallback so the GitHub App broker remains the normal path.
+func (s *Server) workerGitHubPATGrant(ctx context.Context, claims worker.Claims) (worker.CheckoutGrantResponse, bool) {
+	store, ok := s.store.(workerGitHubPATStore)
+	if !ok || s.secretCipher == nil {
+		return worker.CheckoutGrantResponse{}, false
+	}
+	credential, err := store.WorkerGitHubPAT(ctx, claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch)
+	if err != nil {
+		if !errors.Is(err, postgres.ErrNotFound) && !errors.Is(err, postgres.ErrForbidden) {
+			s.logger.Warn("resolve worker GitHub personal access token", "error", err)
+		}
+		return worker.CheckoutGrantResponse{}, false
+	}
+	parsed, err := url.Parse(credential.CloneURL)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "github.com") || parsed.User != nil {
+		s.logger.Warn("reject worker GitHub personal access token for non-GitHub repository", "session_id", claims.SessionID)
+		return worker.CheckoutGrantResponse{}, false
+	}
+	secret, err := s.secretCipher.Decrypt(credential.EncryptedSecret, credential.Nonce, providerSecretAssociatedData("user:"+credential.OwnerUserID, githubPATProvider))
+	if err != nil {
+		s.logger.Error("decrypt worker GitHub personal access token", "error", err)
+		return worker.CheckoutGrantResponse{}, false
+	}
+	if len(secret) == 0 {
+		return worker.CheckoutGrantResponse{}, false
+	}
+	defer clear(secret)
+	return worker.CheckoutGrantResponse{
+		CloneURL: credential.CloneURL,
+		Token:    string(secret),
+		// A PAT has no provider expiry. This is only a response freshness bound;
+		// the worker asks again whenever Git needs credentials.
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, true
+}
+
+// patWriteGrant returns the session's decrypted PAT grant when a PAT write path
+// is wired and the session has a valid PAT, so GitHub write handlers can prefer
+// it over the possibly write-incapable checkout broker. Returns false to fall
+// back to the broker.
+func (s *Server) patWriteGrant(ctx context.Context, claims worker.Claims) (worker.CheckoutGrantResponse, bool) {
+	if s.patWrites == nil {
+		return worker.CheckoutGrantResponse{}, false
+	}
+	return s.workerGitHubPATGrant(ctx, claims)
+}
+
 // Worker events are namespaced so a compromised sandbox cannot forge a
 // control-plane or billing event onto its own session stream.
 var workerEventTypes = map[string]struct{}{
 	"agent.activity":       {},
+	"agent.ready":          {},
 	"worker.ready":         {},
 	"chat.assistant_delta": {},
 }
@@ -86,12 +143,7 @@ func (s *Server) workerBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scopes := ticket.Scopes
-	if launch.Kind != "orchestrator" {
-		scopes = slices.DeleteFunc(slices.Clone(scopes), func(scope string) bool {
-			return scope == "worker:orchestrate"
-		})
-	}
+	scopes := issuedWorkerScopes(ticket.Scopes, launch)
 	token, err := s.workerTokens.Issue(worker.Claims{
 		OrgID:     ticket.OrgID,
 		SessionID: ticket.SessionID,
@@ -118,21 +170,107 @@ func (s *Server) workerBootstrap(w http.ResponseWriter, r *http.Request) {
 		Epoch:       ticket.WorkerEpoch,
 		ExpiresIn:   int(s.workerTokenTTL().Seconds()),
 		SessionID:   ticket.SessionID,
-		Launch: worker.LaunchContext{
-			SessionID:      launch.SessionID,
-			ProjectID:      launch.ProjectID,
-			Kind:           launch.Kind,
-			Harness:        launch.Harness,
-			DisplayName:    launch.DisplayName,
-			Branch:         launch.Branch,
-			Prompt:         launch.Prompt,
-			AgentSessionID: launch.AgentSessionID,
-			Mode:           launch.Mode,
-			DeniedCommands: launch.DeniedCommands,
-			RepositoryURL:  launch.RepositoryURL,
-			DefaultBranch:  launch.DefaultBranch,
-		},
+		Launch:      launchContextFrom(launch),
 	})
+}
+
+// serveWorkerBinary returns a worker or helper binary addressed by its sha256.
+// A worker whose baked copy is stale fetches the exact build the control plane
+// runs and heals itself, so the reconciler never uploads multi-megabyte binaries
+// on provision. The bytes are not secret — they ship in every sandbox image — so
+// the route is content-addressed rather than authenticated.
+func (s *Server) serveWorkerBinary(w http.ResponseWriter, r *http.Request) {
+	requested := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "sha256")))
+	binary, ok := s.workerBinariesBySHA[requested]
+	if !ok {
+		writeError(w, r, http.StatusNotFound, "not_found", "No worker binary matches that hash.")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(binary)))
+	// Content-addressed bytes are immutable: a hash always maps to the same
+	// binary, so any cache may keep it indefinitely.
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(binary)
+}
+
+// workerReconnect returns the durable launch context to a worker that
+// re-presented a persisted token, so a restart never redeems a fresh bootstrap
+// ticket for a sandbox it is already registered on.
+func (s *Server) workerReconnect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	claims := workerFrom(r)
+	if !worker.HasScope(claims, "worker:connect") {
+		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:connect scope is required.")
+		return
+	}
+	launch, err := s.store.WorkerLaunchSpec(r.Context(), claims.OrgID, claims.SessionID)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, worker.BootstrapResponse{
+		WorkerID:  claims.WorkerID,
+		Epoch:     claims.Epoch,
+		ExpiresIn: int(s.workerTokenTTL().Seconds()),
+		SessionID: claims.SessionID,
+		Launch:    launchContextFrom(launch),
+	})
+}
+
+// launchContextFrom projects a stored launch spec onto the wire type shared by
+// bootstrap and reconnect.
+func launchContextFrom(launch domain.WorkerLaunch) worker.LaunchContext {
+	return worker.LaunchContext{
+		SessionID:       launch.SessionID,
+		ProjectID:       launch.ProjectID,
+		Kind:            launch.Kind,
+		Harness:         launch.Harness,
+		DisplayName:     launch.DisplayName,
+		Branch:          launch.Branch,
+		Prompt:          launch.Prompt,
+		AgentSessionID:  launch.AgentSessionID,
+		ParentSessionID: launch.ParentSessionID,
+		Mode:            launch.Mode,
+		DeniedCommands:  launch.DeniedCommands,
+		RepositoryURL:   launch.RepositoryURL,
+		DefaultBranch:   launch.DefaultBranch,
+	}
+}
+
+// indexWorkerBinaries maps each non-empty binary to its sha256 hex so the control
+// plane can serve the exact build a stale worker needs.
+func indexWorkerBinaries(binaries ...[]byte) map[string][]byte {
+	index := make(map[string][]byte, len(binaries))
+	for _, binary := range binaries {
+		if len(binary) == 0 {
+			continue
+		}
+		sum := sha256.Sum256(binary)
+		index[hex.EncodeToString(sum[:])] = binary
+	}
+	return index
+}
+
+// issuedWorkerScopes narrows the bootstrap ticket's full scope set to what the
+// session's durable row entitles it to: worker:orchestrate only for
+// orchestrator sessions, worker:report only for sessions an orchestrator
+// spawned. Heartbeat renewal re-issues the presented claims, so a strip here
+// is permanent for the worker's lifetime.
+func issuedWorkerScopes(ticketScopes []string, launch domain.WorkerLaunch) []string {
+	scopes := slices.Clone(ticketScopes)
+	if launch.Kind != "orchestrator" {
+		scopes = slices.DeleteFunc(scopes, func(scope string) bool {
+			return scope == "worker:orchestrate"
+		})
+	}
+	if launch.ParentSessionID == "" {
+		scopes = slices.DeleteFunc(scopes, func(scope string) bool {
+			return scope == "worker:report"
+		})
+	}
+	return scopes
 }
 
 type workerContextKey struct{}
@@ -229,6 +367,10 @@ func (s *Server) workerCheckoutGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
+	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+		writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt})
+		return
+	}
 	if s.checkoutBroker == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Repository checkout is not available.")
 		return
@@ -258,6 +400,10 @@ func (s *Server) workerPushGrant(w http.ResponseWriter, r *http.Request) {
 	claims := workerFrom(r)
 	if !worker.HasScope(claims, "worker:git") {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
+		return
+	}
+	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+		writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt})
 		return
 	}
 	if s.checkoutBroker == nil {
@@ -292,6 +438,10 @@ func (s *Server) workerGitHubToken(w http.ResponseWriter, r *http.Request) {
 	claims := workerFrom(r)
 	if !worker.HasScope(claims, "worker:git") {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
+		return
+	}
+	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+		writeJSON(w, http.StatusOK, worker.GitHubTokenResponse{Token: grant.Token, ExpiresAt: grant.ExpiresAt})
 		return
 	}
 	if s.checkoutBroker == nil {
@@ -344,12 +494,27 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusBadRequest, "INVALID_HEAD_BRANCH", "The pushed branch name is required.")
 		return
 	}
-	pr, err := s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, domain.RaisePullRequest{
+	raiseInput := domain.RaisePullRequest{
 		Title:      input.Title,
 		Body:       input.Body,
 		HeadBranch: input.HeadBranch,
 		BaseBranch: input.BaseBranch,
-	})
+	}
+	// Prefer the user's PAT when one is configured: it can write back to GitHub
+	// even where the checkout broker is read-only (e.g. staging reaches GitHub
+	// through the remote capability broker, whose write methods are stubbed).
+	// This mirrors the PAT-first read/push grant path.
+	var (
+		pr  domain.PullRequest
+		err error
+	)
+	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+		pr, err = s.patWrites.RaisePullRequest(
+			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
+		)
+	} else {
+		pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
 		return
@@ -398,7 +563,19 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusBadRequest, "INVALID_PULL_REQUEST", "A pull request number or URL is required.")
 		return
 	}
-	pr, err := s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	// PAT-first, mirroring workerRaisePullRequest: a configured PAT can claim
+	// (fetch + record) a PR even where the checkout broker is read-only.
+	var (
+		pr  domain.PullRequest
+		err error
+	)
+	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+		pr, err = s.patWrites.ClaimPullRequest(
+			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, input.Reference,
+		)
+	} else {
+		pr, err = s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
 		return
@@ -546,7 +723,7 @@ func (s *Server) workerEvent(w http.ResponseWriter, r *http.Request) {
 		s.appendSessionProjectionEvent(
 			r.Context(), claims.OrgID, claims.SessionID, input.Type, activity,
 		)
-	case "worker.ready":
+	case "worker.ready", "agent.ready":
 		var ready worker.ReadyEvent
 		if err := json.Unmarshal(input.Payload, &ready); err != nil ||
 			ready.WorkerID != claims.WorkerID ||

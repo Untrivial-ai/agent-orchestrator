@@ -288,6 +288,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/children": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** @description Lists the sessions this orchestrator spawned, newest first, with each child's pull requests. Terminated children are included; a session that spawned nothing returns an empty page. */
+        get: operations["listSessionChildren"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests": {
         parameters: {
             query?: never;
@@ -730,7 +750,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Creates a trusted child by default and passes its required prompt directly to the coding-agent launch command. */
+        /** @description Lists this orchestrator's direct child sessions with their pull requests. Terminated children are hidden unless includeTerminated. */
         get: operations["listWorkerChildren"];
         put?: never;
         post: operations["createWorkerChild"];
@@ -771,6 +791,23 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["sendWorkerChildMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/parent/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Delivers a child worker's message into the conversation of the orchestrator that spawned it. Requires the worker:report scope, which is issued only to sessions with an orchestrator parent. */
+        post: operations["reportToParent"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1512,6 +1549,26 @@ export interface components {
         };
         SessionPage: {
             items: components["schemas"]["Session"][];
+            page: components["schemas"]["PageInfo"];
+        };
+        SessionPullRequestFacts: {
+            url: string;
+            number: number;
+            state: components["schemas"]["PullRequestState"];
+            ci: components["schemas"]["CIState"];
+            review: components["schemas"]["ReviewDecision"];
+            mergeability: components["schemas"]["MergeabilityState"];
+            reviewComments: boolean;
+            sourceBranch?: string;
+            targetBranch?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SessionWithPullRequests: components["schemas"]["Session"] & {
+            prs: components["schemas"]["SessionPullRequestFacts"][];
+        };
+        SessionChildrenPage: {
+            items: components["schemas"]["SessionWithPullRequests"][];
             page: components["schemas"]["PageInfo"];
         };
         /** @enum {string} */
@@ -2503,6 +2560,33 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    listSessionChildren: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of the orchestrator's child sessions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionChildrenPage"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listSessionPullRequests: {
         parameters: {
             query?: never;
@@ -3185,6 +3269,7 @@ export interface operations {
             query?: {
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
+                includeTerminated?: boolean;
             };
             header?: never;
             path?: never;
@@ -3198,7 +3283,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionPage"];
+                    "application/json": components["schemas"]["SessionChildrenPage"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -3290,6 +3375,42 @@ export interface operations {
         };
         responses: {
             /** @description The message was durably appended to the direct child. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        event: components["schemas"]["UserMessageEvent"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    reportToParent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageInput"];
+            };
+        };
+        responses: {
+            /** @description The message was durably appended to the parent orchestrator. */
             202: {
                 headers: {
                     [name: string]: unknown;

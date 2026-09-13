@@ -10,6 +10,7 @@ import type { TerminalTarget } from "../types/terminal";
 import type { WorkspaceSession } from "../types/workspace";
 import { useUiStore } from "../stores/ui-store";
 import {
+	cloudTerminalKind,
 	TerminalCacheProvider,
 	TerminalPane,
 	providerScrollsByKeyboard,
@@ -27,6 +28,8 @@ const {
 	replaySettled,
 	hasAttached,
 	terminalSessionOptions,
+	cloudMuxOptions,
+	cloudTicketMock,
 	xtermMounts,
 	xtermUnmounts,
 	xtermFocusRequests,
@@ -41,13 +44,38 @@ const {
 		terminalState: { value: "idle" },
 		replaySettled: { value: true },
 		hasAttached: { value: false },
-		terminalSessionOptions: [] as Array<{ coverInitialReplay?: boolean; shellTerminalHandleId?: string }>,
+		terminalSessionOptions: [] as Array<{
+			coverInitialReplay?: boolean;
+			createMux?: () => unknown;
+			waitForInitialOutput?: boolean;
+			shellTerminalHandleId?: string;
+		}>,
+		cloudMuxOptions: [] as Array<{
+			kind: "agent" | "workspace";
+			mintTicket: (kind: "agent" | "workspace") => Promise<string>;
+		}>,
+		cloudTicketMock: vi.fn(async () => ({ ticket: "ticket" })),
 		xtermMounts: { value: 0 },
 		xtermUnmounts: { value: 0 },
 		xtermFocusRequests: { value: 0 },
 	}),
 );
 let terminalLinkHandler: ((uri: string) => void) | undefined;
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({
+		baseUrl: "https://cloud.example.test",
+		client: { createTerminalTicket: cloudTicketMock },
+		ready: true,
+	}),
+}));
+
+vi.mock("../lib/cloud-terminal-mux", () => ({
+	createCloudTerminalMux: (options: { kind: "agent" | "workspace"; mintTicket: () => Promise<string> }) => {
+		cloudMuxOptions.push(options);
+		return {};
+	},
+}));
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
@@ -101,7 +129,7 @@ vi.mock("./XtermTerminal", () => ({
 vi.mock("../hooks/useTerminalSession", () => ({
 	useTerminalSession: (
 		_session: WorkspaceSession | undefined,
-		options: { coverInitialReplay?: boolean; shellTerminalHandleId?: string },
+		options: { coverInitialReplay?: boolean; createMux?: () => unknown; waitForInitialOutput?: boolean; shellTerminalHandleId?: string },
 	) => {
 		terminalSessionOptions.push(options);
 		return {
@@ -144,6 +172,8 @@ beforeEach(() => {
 	hasAttached.value = false;
 	terminalLinkHandler = undefined;
 	terminalSessionOptions.length = 0;
+	cloudMuxOptions.length = 0;
+	cloudTicketMock.mockClear();
 	attachMock.mockClear();
 	prepareForActivationMock.mockReset();
 	prepareForActivationMock.mockResolvedValue(undefined);
@@ -153,6 +183,67 @@ beforeEach(() => {
 	xtermUnmounts.value = 0;
 	xtermFocusRequests.value = 0;
 	useUiStore.setState({ inspectorSessions: {} });
+});
+
+describe("cloud terminal routing", () => {
+	it("uses an agent stream for the session terminal and a workspace stream for shell tabs", () => {
+		expect(cloudTerminalKind({ kind: "worker" })).toBe("agent");
+		expect(
+			cloudTerminalKind({
+				kind: "shell",
+				handleId: "cloud-shell-1",
+				generation: "2026-09-01T00:00:00Z",
+				sessionId: "cloud-session",
+				title: "Terminal 1",
+			}),
+		).toBe("workspace");
+	});
+
+	it("mints a workspace ticket for a cloud shell tab", async () => {
+		const cloudSession = {
+			...worker,
+			cloud: { orgId: "cloud-org" },
+			terminalHandleId: "cloud-session",
+		} satisfies WorkspaceSession;
+		const shell = {
+			cloud: { orgId: "cloud-org" },
+			createdAt: "2026-09-01T00:00:00Z",
+			handleId: "cloud-shell-1",
+			projectId: "proj-1",
+			sessionId: cloudSession.id,
+			title: "Terminal 1",
+			workingDir: "/workspace/repository",
+		} satisfies ShellTerminal;
+		const target = {
+			kind: "shell",
+			handleId: shell.handleId,
+			generation: shell.createdAt,
+			sessionId: cloudSession.id,
+			title: shell.title,
+		} satisfies TerminalTarget;
+		const view = renderCachedPane({
+			session: cloudSession,
+			sessions: [cloudSession],
+			shellTerminals: [shell],
+			terminalTarget: target,
+		});
+		try {
+			const createMux = [...terminalSessionOptions].reverse().find(
+				(options) => options.shellTerminalHandleId === shell.handleId,
+			)?.createMux;
+			expect(createMux).toBeTypeOf("function");
+			const before = cloudMuxOptions.length;
+			createMux?.();
+			expect(cloudMuxOptions).toHaveLength(before + 1);
+			expect(cloudMuxOptions.at(-1)?.kind).toBe("workspace");
+			await cloudMuxOptions.at(-1)?.mintTicket("workspace");
+			expect(cloudTicketMock).toHaveBeenCalledWith("cloud-org", cloudSession.id, {
+				kind: "workspace",
+			});
+		} finally {
+			view.restore();
+		}
+	});
 });
 
 function renderPane(
@@ -425,6 +516,17 @@ describe("TerminalPane replay cover", () => {
 		}
 	});
 
+	it("keeps Cloud startup on Connecting until the agent terminal draws", () => {
+		replaySettled.value = false;
+		const view = renderPane({ ...worker, terminalHandleId: "term-1", cloud: { orgId: "org-1" } });
+		try {
+			expect(screen.getByTestId("terminal-replay-cover")).toHaveTextContent("Connecting…");
+			expect(terminalSessionOptions.at(-1)?.waitForInitialOutput).toBe(true);
+		} finally {
+			view.restore();
+		}
+	});
+
 	it("uncovers once the replay has settled", () => {
 		replaySettled.value = true;
 		const view = renderPane({ ...worker, terminalHandleId: "term-1" });
@@ -556,6 +658,27 @@ describe("TerminalCacheProvider", () => {
 			view.show(sessions[0]);
 			await waitFor(() => expect(activeXterm()).toBe(oldest));
 			expect(xtermMounts.value).toBe(7);
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("skips layout for a retained terminal while it is parked", async () => {
+		const view = renderCachedPane({ session: sessionA, sessions: [sessionA, sessionB] });
+		try {
+			await waitFor(() => activeXterm());
+			view.show(sessionB);
+			await waitFor(() => expect(activeXterm()).not.toBeNull());
+
+			const parked = document.querySelector<HTMLElement>(
+				`[data-terminal-cache-key^="session:${sessionA.id}:worker|"]`,
+			);
+			expect(parked).toHaveAttribute("data-terminal-activation-phase", "parked");
+			expect(parked?.style.contentVisibility).toBe("hidden");
+
+			view.show(sessionA);
+			await waitFor(() => expect(activeXterm()).toBeInTheDocument());
+			expect(parked?.style.contentVisibility).toBe("");
 		} finally {
 			view.restore();
 		}

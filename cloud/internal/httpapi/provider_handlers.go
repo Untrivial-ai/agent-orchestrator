@@ -14,6 +14,8 @@ import (
 
 const defaultAgentConnectionLabel = "default"
 
+const githubPATProvider = "github"
+
 type providerConnectionStore interface {
 	ListProviderConnections(
 		context.Context,
@@ -73,6 +75,10 @@ type credentialValidator interface {
 type putAgentConnectionRequest struct {
 	CredentialType string `json:"credentialType"`
 	Secret         string `json:"secret"`
+}
+
+type putGitHubPATRequest struct {
+	Secret string `json:"secret"`
 }
 
 type providerConnectionResponse struct {
@@ -219,6 +225,64 @@ func (s *Server) deleteAgentConnection(w http.ResponseWriter, r *http.Request) {
 		agent,
 		defaultAgentConnectionLabel,
 	); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// putGitHubPAT stores the caller's GitHub personal access token for private
+// repository checkout. It intentionally does not call GitHub: the token is
+// validated by git against the selected repository, and never echoed or logged.
+func (s *Server) putGitHubPAT(w http.ResponseWriter, r *http.Request) {
+	if s.secretCipher == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "provider_connections_unavailable", "GitHub credential storage is not configured.")
+		return
+	}
+	var request putGitHubPATRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
+		return
+	}
+	secret := []byte(strings.TrimSpace(request.Secret))
+	defer clear(secret)
+	request.Secret = ""
+	if len(secret) < 8 || len(secret) > 64<<10 {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "The GitHub personal access token is invalid.")
+		return
+	}
+	principal := principalFrom(r)
+	encrypted, nonce, err := s.secretCipher.Encrypt(secret, providerSecretAssociatedData("user:"+principal.UserID, githubPATProvider))
+	if err != nil {
+		s.logger.Error("encrypt GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "The GitHub token could not be stored.")
+		return
+	}
+	store, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	config, err := json.Marshal(map[string]string{"credentialType": "personal_access_token"})
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "The GitHub token could not be stored.")
+		return
+	}
+	connection, err := store.UpsertUserProviderConnection(r.Context(), principal, githubPATProvider, defaultAgentConnectionLabel, encrypted, nonce, config)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providerConnection": toUserProviderConnectionResponse(connection)})
+}
+
+func (s *Server) deleteGitHubPAT(w http.ResponseWriter, r *http.Request) {
+	store, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	if err := store.DeleteUserProviderConnection(r.Context(), principalFrom(r), githubPATProvider, defaultAgentConnectionLabel); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}

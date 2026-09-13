@@ -32,6 +32,12 @@ ao review submit [worker-session-id] [flags]
 | `--session string` | Worker session id (or pass it as the positional argument) | - |
 | `--verdict string` | Review verdict: `approved` or `changes_requested` | Required |
 
+If the local daemon is restarting when a result is submitted, AO retains the
+parsed result in memory and retries the same idempotent request for up to 30
+seconds. Validation errors return immediately. If the daemon remains unavailable,
+the command reports failure and can be repeated safely; daemon idempotency
+handles the case where an earlier connection dropped after committing the result.
+
 ## Examples
 
 ```bash
