@@ -58,6 +58,46 @@ func poisonedRows(state domain.TurnState) ([]domain.ConversationTurn, []domain.C
 
 const testCheckpointSession = domain.SessionID("checkpoint-session")
 
+func TestCheckpointCompletedCoordinationStillAnchorsNewProvider(t *testing.T) {
+	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	turns[1].ProviderTurnID = "coordination"
+	messages[2].Text = "AO transferred the previous agent's context in hidden system instructions. Continue the task."
+	checkpoint := nativeHistoryCheckpoint{}
+	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+	if checkpoint.aoHighWater.providerTurnID != "coordination" {
+		t.Fatalf("coordination erased durable replay boundary: %+v", checkpoint.aoHighWater)
+	}
+	if len(checkpoint.mismatches(nil, turns, messages, nil)) == 0 {
+		t.Fatal("empty replay admitted after a completed coordination turn")
+	}
+	events := []ports.ChatEvent{
+		{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "coordination", Text: messages[2].Text},
+		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "coordination", TurnState: domain.TurnStateCompleted},
+	}
+	if got := checkpoint.mismatches(events, turns, messages, nil); len(got) != 0 {
+		t.Fatalf("current provider replay incorrectly requires previous provider's history: %v", got)
+	}
+}
+
+func TestCheckpointRepeatedPairDoesNotAdmitOlderPrefix(t *testing.T) {
+	checkpoint := nativeHistoryCheckpoint{
+		latestUserPrompt: "continue", latestAssistantUpdate: "Done", completedUserPrompt: true,
+		userMismatch: ports.ChatHistoryMismatchTrustedUserText, assistantMismatch: ports.ChatHistoryMismatchTrustedAssistantText,
+	}
+	// The real latest turn C repeats A. The supplied prefix ends at B, before C.
+	events := []ports.ChatEvent{
+		{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "A", Text: "continue"},
+		{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "A", Text: "Done"},
+		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "A", TurnState: domain.TurnStateCompleted},
+		{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "B", Text: "other"},
+		{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "B", Text: "answer"},
+		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "B", TurnState: domain.TurnStateCompleted},
+	}
+	if got := checkpoint.mismatches(events, nil, nil, nil); len(got) == 0 {
+		t.Fatal("older occurrence A admitted replay A+B without checkpoint C")
+	}
+}
+
 // A prompt AO recorded on a cancelled or interrupted turn is not something the
 // provider promises to replay, so gating the native-history import on it can
 // never be satisfied: the settle loop burns its full budget and the interface

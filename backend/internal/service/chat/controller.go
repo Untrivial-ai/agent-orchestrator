@@ -483,7 +483,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		// auth-error message) on a dead branch that session/load never replays.
 		// Requiring one of those items would make every future switch time out.
 		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" ||
-			(!providerBoundary.IsZero() && !turn.RequestedAt.After(providerBoundary)) {
+			(!providerBoundary.IsZero() && turn.RequestedAt.Before(providerBoundary)) {
 			continue
 		}
 		if latest == nil || turn.RequestedAt.After(latest.RequestedAt) {
@@ -582,12 +582,11 @@ func (p nativeHistoryCheckpoint) mismatches(
 	// A trusted checkpoint describes one main-thread turn. Selecting the latest
 	// user and assistant independently can splice an older repeated answer onto a
 	// newer incomplete turn and incorrectly admit a truncated provider replay.
-	// A completed checkpoint may precede work whose hooks were lost. Without
-	// paired text, require the exact native turn ID: repeated prompts cannot
-	// establish which occurrence completed. Pending prompts stay latest-only.
+	// Only an exact native turn ID can match an earlier occurrence. Repeated
+	// prompt/answer pairs are not identities. Unidentified text stays latest-only.
 	latestText := turnText[latestCompletedTurnID]
 	checkpointMatched := p.latestUserPrompt == "" && p.latestAssistantUpdate == "" && p.providerTurnID == ""
-	if (p.latestUserPrompt != "" && p.latestAssistantUpdate != "") || (p.completedUserPrompt && p.providerTurnID != "") {
+	if p.completedUserPrompt && p.providerTurnID != "" {
 		for turnID := range completedTurns {
 			if coordinationTurns[turnID] || (p.providerTurnID != "" && p.providerTurnID != turnID) {
 				continue
@@ -600,7 +599,7 @@ func (p nativeHistoryCheckpoint) mismatches(
 			}
 		}
 	} else {
-		// Without paired text or a scoped completion, retain the latest-turn gate.
+		// Without an identified completion, retain the latest-turn gate.
 		checkpointMatched =
 			(p.latestUserPrompt == "" || nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text)) &&
 				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text)) &&

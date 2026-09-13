@@ -1591,14 +1591,16 @@ func TestInterfaceHandoffRejectsSettledReplayBeforeLatestSessionCheckpoint(t *te
 
 func TestInterfaceHandoffCheckpointHistoryPolicy(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		state          domain.ConversationCheckpointState
-		policy         domain.SessionInterfaceTransitionHistoryPolicy
-		wantTrustedErr bool
+		name          string
+		state         domain.ConversationCheckpointState
+		policy        domain.SessionInterfaceTransitionHistoryPolicy
+		wantMismatch  bool
+		wantUntrusted bool
 	}{
-		{"explicit provider history ignores legacy text", domain.ConversationCheckpointLegacy, domain.SessionInterfaceTransitionHistoryProvider, false},
-		{"strict replay excludes coordination text", domain.ConversationCheckpointCoordination, domain.SessionInterfaceTransitionHistoryStrict, false},
-		{"provider history cannot waive trusted text", domain.ConversationCheckpointComplete, domain.SessionInterfaceTransitionHistoryProvider, true},
+		{"explicit provider history ignores legacy text", domain.ConversationCheckpointLegacy, domain.SessionInterfaceTransitionHistoryProvider, false, false},
+		{"strict coordination retains preceding human text", domain.ConversationCheckpointCoordination, domain.SessionInterfaceTransitionHistoryStrict, true, true},
+		{"coordination text without trust requires consent to bypass", domain.ConversationCheckpointCoordination, domain.SessionInterfaceTransitionHistoryProvider, false, false},
+		{"provider history cannot waive trusted text", domain.ConversationCheckpointComplete, domain.SessionInterfaceTransitionHistoryProvider, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := openStore(t)
@@ -1629,7 +1631,7 @@ func TestInterfaceHandoffCheckpointHistoryPolicy(t *testing.T) {
 				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
 				HistoryPolicy: tc.policy,
 			})
-			if !tc.wantTrustedErr {
+			if !tc.wantMismatch {
 				if err != nil || ctrl == nil {
 					t.Fatalf("Start = %v, %v; want a live controller", ctrl, err)
 				}
@@ -1638,8 +1640,11 @@ func TestInterfaceHandoffCheckpointHistoryPolicy(t *testing.T) {
 			if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
 				t.Fatalf("Start error = %v, want trusted checkpoint mismatch", err)
 			}
-			if ports.ChatHistoryMismatchOnlyUntrustedText(err) {
-				t.Fatalf("trusted mismatch was marked recoverable: %v", err)
+			if ports.ChatHistoryMismatchOnlyUntrustedText(err) != tc.wantUntrusted {
+				t.Fatalf("wrong checkpoint trust classification: %v", err)
+			}
+			if tc.wantUntrusted {
+				return
 			}
 			dimensions := ports.ChatHistoryMismatchDimensions(err)
 			if !slices.Contains(dimensions, ports.ChatHistoryMismatchTrustedUserText) ||
@@ -1660,7 +1665,8 @@ func TestInterfaceHandoffTrustedCheckpointMayPrecedeLaterCompletedTurn(t *testin
 		unsettled    bool
 		wantMismatch bool
 	}{
-		{name: "completed pair", state: domain.ConversationCheckpointComplete, assistant: "trusted checkpoint assistant"},
+		{name: "unidentified completed pair stays latest", state: domain.ConversationCheckpointComplete, assistant: "trusted checkpoint assistant", wantMismatch: true},
+		{name: "identified completed pair", state: domain.ConversationCheckpointComplete, assistant: "trusted checkpoint assistant", turnID: "checkpoint-turn"},
 		{name: "completed Codex prompt", state: domain.ConversationCheckpointComplete, turnID: "checkpoint-turn"},
 		{name: "completed empty prompt identified", state: domain.ConversationCheckpointComplete, turnID: "checkpoint-turn", emptyPrompt: true},
 		{name: "missing completed empty prompt", state: domain.ConversationCheckpointComplete, turnID: "missing-current-turn", emptyPrompt: true, wantMismatch: true},

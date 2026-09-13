@@ -702,7 +702,7 @@ retryProjection:
 		if s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination {
 			// Preserve the last real human facts and their timestamp, but durably
 			// mark this owner turn as coordination so a promptless Stop cannot
-			// promote its response. Chat replay excludes this state entirely.
+			// promote its response. Chat still checks the preceding human text.
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID

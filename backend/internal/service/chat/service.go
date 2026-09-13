@@ -315,10 +315,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 				ports.ChatHistoryMismatchUnsettledBoundary)
 		}
 		switch {
-		case checkpointState == domain.ConversationCheckpointCoordination:
-			// AO-authored handoff/continuation turns are present in provider
-			// history but are never human replay evidence. The durable state is
-			// what carries this decision across a promptless Stop and restart.
 		case trustedProvenance && !trusted:
 			// A trusted checkpoint belongs to one exact provider-native thread.
 			// Explicit provider-history consent can waive ambiguous legacy text,
@@ -335,8 +331,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 				replayCheckpoint.assistantMismatch = ports.ChatHistoryMismatchTrustedAssistantText
 			}
 		case cfg.HistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider:
-			// Zero/legacy/malformed provenance remains a strict gate by default,
-			// but only these dimensions can be waived by explicit recovery.
+			// Coordination does not erase preceding human text. Its old state
+			// format did not preserve that text's trust; like legacy provenance,
+			// bypassing it requires explicit provider-history consent.
 			replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
 			replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
 			replayCheckpoint.userMismatch = ports.ChatHistoryMismatchUntrustedUserText
