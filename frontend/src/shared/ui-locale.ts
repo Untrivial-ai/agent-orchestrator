@@ -20,6 +20,12 @@ export interface UiSettings {
 	soundNotificationsEnabled: boolean;
 	/** Windows shell used for new standalone terminal panes. */
 	terminalShell: TerminalShellPreference;
+	/**
+	 * Absolute path of a user-supplied audio file played instead of the OS beep
+	 * for sound notifications. The file is a local copy under the ~/.ao state dir;
+	 * `null` keeps the system default sound.
+	 */
+	notificationSoundPath: string | null;
 }
 
 export const DEFAULT_TERMINAL_SHELL: TerminalShellPreference = { kind: "auto" };
@@ -28,6 +34,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
 	locale: DEFAULT_LOCALE,
 	soundNotificationsEnabled: true,
 	terminalShell: DEFAULT_TERMINAL_SHELL,
+	notificationSoundPath: null,
 };
 
 /** Normalize an unknown value to a supported UI locale. */
@@ -62,5 +69,9 @@ export function coerceUiSettings(raw: unknown): UiSettings {
 		locale: coerceLocale(record.locale),
 		soundNotificationsEnabled,
 		terminalShell: coerceTerminalShell(record.terminalShell),
+		notificationSoundPath:
+			typeof record.notificationSoundPath === "string" && record.notificationSoundPath.trim()
+				? record.notificationSoundPath
+				: null,
 	};
 }

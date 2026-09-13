@@ -112,6 +112,15 @@ import {
 	type ShellRunner,
 } from "./shared/shell-env";
 import { DEFAULT_TERMINAL_SHELL, type TerminalShellPreference } from "./shared/ui-locale";
+import {
+	NOTIFICATION_SOUND_EXTENSIONS,
+	NotificationSoundImportError,
+	clearNotificationSound,
+	importNotificationSound,
+	readNotificationSound,
+	type NotificationSoundPayload,
+} from "./main/notification-sound";
+import type { NotificationSoundChooseResult } from "./shared/notification-sound";
 import { bundledTmuxBinaryPath, stableBundledTmuxBinaryPath } from "./shared/bundled-tmux";
 import {
 	handleCloudDeepLink,
@@ -321,6 +330,35 @@ let pendingBounce: { id: number; critical: boolean } | null = null;
 // Live mirror of the persisted `soundNotificationsEnabled` UI setting, kept in sync by the
 // uiSettings:set handler so a toggle flip takes effect without an app restart.
 let soundNotificationsEnabled = DEFAULT_UI_SETTINGS.soundNotificationsEnabled;
+// Live mirror of the persisted `notificationSoundPath` UI setting. `null` means
+// the OS beep; otherwise the imported file under ~/.ao/notification-sound.
+let notificationSoundPath: string | null = DEFAULT_UI_SETTINGS.notificationSoundPath;
+// The custom sound's bytes, read once per path so a burst of notifications does
+// not hit the disk for each one. Reset whenever the path changes.
+let notificationSoundCache: { path: string; payload: NotificationSoundPayload | null } | null = null;
+
+async function loadNotificationSound(): Promise<NotificationSoundPayload | null> {
+	const soundPath = notificationSoundPath;
+	if (!soundPath) return null;
+	if (notificationSoundCache?.path === soundPath) return notificationSoundCache.payload;
+	const payload = await readNotificationSound(soundPath);
+	notificationSoundCache = { path: soundPath, payload };
+	return payload;
+}
+
+// Plays the configured notification sound: the custom file via the renderer
+// (main has no audio output), or the system beep when none is set or the file
+// can no longer be read. Missing/corrupt custom files degrade to the beep rather
+// than silently losing the notification's sound.
+async function playNotificationSound(): Promise<void> {
+	const payload = await loadNotificationSound();
+	const shell_ = getShellWebContents();
+	if (payload && shell_ && !shell_.isDestroyed()) {
+		shell_.send("notifications:playSound", payload);
+		return;
+	}
+	shell.beep();
+}
 
 const isDev = !app.isPackaged;
 
@@ -2287,6 +2325,7 @@ ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 	const result = !runFile ? coerceUiSettings(settings) : await writeUiSettings(path.dirname(runFile), settings);
 	trayController?.setLocale(result.locale);
 	soundNotificationsEnabled = result.soundNotificationsEnabled;
+	notificationSoundPath = result.notificationSoundPath;
 	terminalShellPreference = result.terminalShell;
 	shellEnvPromise = null;
 	cachedShellEnv = null;
@@ -2340,10 +2379,15 @@ ipcMain.handle(
 		// OS toast: a native banner the user can click to jump straight back to the
 		// session. Fires for every backend notification type (see shouldToast), so a
 		// new type in notification.go never silently loses its toast.
+		const playsCustomSound =
+			shouldSignalAttention(notification.type) && soundNotificationsEnabled && notificationSoundPath !== null;
 		if (shouldToast(notification, ElectronNotification.isSupported())) {
 			const toast = new ElectronNotification({
 				title: notification.title,
 				body: notification.body,
+				// A custom sound replaces the OS toast chime (the whole point of
+				// choosing one) instead of layering on top of it.
+				silent: playsCustomSound,
 				// AO logo as the notification icon on Windows/Linux. Omitted on macOS,
 				// where a custom icon renders only as a redundant right-side content image —
 				// macOS uses the app-bundle icon (the AO logo in a packaged build) as the
@@ -2392,10 +2436,52 @@ ipcMain.handle(
 			}
 		}
 		if (shouldSignalAttention(notification.type) && soundNotificationsEnabled) {
-			shell.beep();
+			void playNotificationSound();
 		}
 	},
 );
+
+ipcMain.handle("notificationSound:choose", async (): Promise<NotificationSoundChooseResult> => {
+	const runFile = runFilePath();
+	if (!runFile) return { settings: null, error: "unreadable" };
+	// Unparented on purpose, same as chooseDirectory: parenting the Windows
+	// common dialog repaints the main window with a visible white flash.
+	const picked = await dialog.showOpenDialog({
+		properties: ["openFile"],
+		title: "Choose a notification sound",
+		filters: [{ name: "Audio", extensions: [...NOTIFICATION_SOUND_EXTENSIONS] }],
+	});
+	const sourcePath = picked.canceled ? undefined : picked.filePaths[0];
+	if (!sourcePath) return { settings: null, error: null };
+	const stateDir = path.dirname(runFile);
+	let soundPath: string;
+	try {
+		soundPath = await importNotificationSound(stateDir, sourcePath);
+	} catch (error) {
+		const code = error instanceof NotificationSoundImportError ? error.code : "unreadable";
+		return { settings: null, error: code };
+	}
+	const settings = await writeUiSettings(stateDir, { notificationSoundPath: soundPath });
+	notificationSoundPath = settings.notificationSoundPath;
+	notificationSoundCache = null;
+	return { settings, error: null };
+});
+ipcMain.handle("notificationSound:clear", async (): Promise<UiSettings> => {
+	const runFile = runFilePath();
+	if (!runFile) return { ...DEFAULT_UI_SETTINGS };
+	const stateDir = path.dirname(runFile);
+	const settings = await writeUiSettings(stateDir, { notificationSoundPath: null });
+	await clearNotificationSound(stateDir);
+	notificationSoundPath = null;
+	notificationSoundCache = null;
+	return settings;
+});
+// Plays whatever would play for a real notification, ignoring window focus and
+// the enabled toggle, so the settings "Test" button is an honest preview.
+ipcMain.handle("notificationSound:preview", async () => {
+	notificationSoundCache = null;
+	await playNotificationSound();
+});
 
 // Dev-only: force attention signal regardless of window focus (for testing)
 if (!app.isPackaged) {
@@ -2413,7 +2499,7 @@ if (!app.isPackaged) {
 			}, 2000);
 		}
 		if (soundNotificationsEnabled) {
-			shell.beep();
+			void playNotificationSound();
 		}
 	});
 }
@@ -2717,6 +2803,7 @@ app.whenReady().then(async () => {
 		? await readUiSettings(path.dirname(keybindingRunFile))
 		: { ...DEFAULT_UI_SETTINGS };
 	soundNotificationsEnabled = initialUiSettings.soundNotificationsEnabled;
+	notificationSoundPath = initialUiSettings.notificationSoundPath;
 	terminalShellPreference = initialUiSettings.terminalShell;
 	if (isTrayEnabled(process.platform, app.isPackaged, app.getVersion())) {
 		trayController = createTrayController({

@@ -37,6 +37,7 @@ describe("shared UI locale schema", () => {
 			locale: "en",
 			soundNotificationsEnabled: true,
 			terminalShell: { kind: "auto" },
+			notificationSoundPath: null,
 		});
 		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: false })).toEqual({
 			...DEFAULT_UI_SETTINGS,

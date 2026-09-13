@@ -59,10 +59,24 @@ describe("ui-settings", () => {
 		await writeUiSettings(dir, { locale: "ja", soundNotificationsEnabled: false });
 		await writeUiSettings(dir, { terminalShell: { kind: "git-bash" } });
 		expect(await readUiSettings(dir)).toEqual({
+			...DEFAULT_UI_SETTINGS,
 			locale: "ja",
 			soundNotificationsEnabled: false,
 			terminalShell: { kind: "git-bash" },
 		});
+	});
+
+	it("persists the custom notification sound path and coerces blanks back to null", async () => {
+		await writeUiSettings(dir, { notificationSoundPath: "/home/me/.ao/notification-sound/ding.wav" });
+		expect(await readUiSettings(dir)).toEqual({
+			...DEFAULT_UI_SETTINGS,
+			notificationSoundPath: "/home/me/.ao/notification-sound/ding.wav",
+		});
+		await writeUiSettings(dir, { notificationSoundPath: null });
+		expect(await readUiSettings(dir)).toEqual(DEFAULT_UI_SETTINGS);
+
+		expect(coerceUiSettings({ notificationSoundPath: "   " }).notificationSoundPath).toBeNull();
+		expect(coerceUiSettings({ notificationSoundPath: 42 }).notificationSoundPath).toBeNull();
 	});
 
 	it("atomic write leaves no temp file behind", async () => {
