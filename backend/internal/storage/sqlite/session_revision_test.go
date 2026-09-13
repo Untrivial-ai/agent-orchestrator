@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,9 @@ func TestSessionRevisionCoversEveryWrite(t *testing.T) {
 				t.Fatalf("rollback changed revision: %d, want %d", got, before+1)
 			}
 		})
+	}
+	exec(`DROP TRIGGER sessions_revision_update`)
+	if err := reconcileSchema(db); err == nil || !strings.Contains(err.Error(), "sessions_revision_update") {
+		t.Fatalf("missing revision trigger silently admitted at startup: %v", err)
 	}
 }
