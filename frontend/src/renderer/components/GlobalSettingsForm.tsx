@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { GlobalSettingsSection as GlobalSettingsPage } from "../stores/ui-store";
 import { GeneralSettingsSection } from "./settings/GeneralSettingsSection";
 import { CloudCredentialsSection } from "./settings/CloudCredentialsSection";
+import { CloudProviderSection } from "./settings/CloudProviderSection";
 import { ConnectMobileContent } from "./settings/ConnectMobileContent";
 import { KeyboardShortcutsContent } from "./settings/KeyboardShortcutsContent";
 import { MobileDevicesSection } from "./settings/MobileDevicesSection";
@@ -40,6 +41,8 @@ export function GlobalSettingsForm({
 			data-testid="settings-page"
 		>
 			{(all || section === "general") && <GeneralSettingsSection titleHidden={titleHidden} />}
+
+			{(all || section === "cloud") && <CloudProviderSection titleHidden={titleHidden} />}
 
 			{(all || section === "cloud") && <CloudCredentialsSection titleHidden={titleHidden} />}
 

@@ -95,19 +95,32 @@ func newSandboxReconciler(
 	store *postgres.Store,
 	logger *slog.Logger,
 ) (*reconcile.Reconciler, error) {
-	if cfg.SandboxProvider != sandbox.ProviderNodeOps &&
-		cfg.SandboxProvider != sandbox.ProviderDocker &&
-		cfg.SandboxProvider != sandbox.ProviderCoder {
-		return nil, nil
-	}
+	// Build every provider this control plane offers, not just the default, so a
+	// single CP can serve more than one provider and a client can pick per
+	// session. AvailableSandboxProviders always contains the default, and is
+	// exactly that default for a single-provider deployment.
 	var (
 		nodeOpsProvider    sandbox.Provider
 		dockerProvider     sandbox.Provider
 		coderProvider      sandbox.Provider
 		workerBinary       []byte
 		workerHelperBinary []byte
+		buildsProvider     bool
+		needsWorkerBinary  bool
 	)
-	if cfg.SandboxProvider == sandbox.ProviderNodeOps || cfg.SandboxProvider == sandbox.ProviderCoder {
+	for _, provider := range cfg.AvailableSandboxProviders {
+		switch provider {
+		case sandbox.ProviderNodeOps, sandbox.ProviderDocker, sandbox.ProviderCoder:
+			buildsProvider = true
+		}
+		if provider == sandbox.ProviderNodeOps || provider == sandbox.ProviderCoder {
+			needsWorkerBinary = true
+		}
+	}
+	if !buildsProvider {
+		return nil, nil
+	}
+	if needsWorkerBinary {
 		// The worker binary is read once, at startup. Reading it per provision
 		// would let a mid-flight deploy hand two sandboxes different builds.
 		var err error
@@ -126,44 +139,46 @@ func newSandboxReconciler(
 			return nil, fmt.Errorf("worker helper binary %s is empty", cfg.WorkerHelperBinaryPath)
 		}
 	}
-	switch cfg.SandboxProvider {
-	case sandbox.ProviderNodeOps:
-		sshPubKeys, err := readSSHPubKeys(cfg.NodeOpsSSHKeyPath)
-		if err != nil {
-			return nil, err
+	for _, provider := range cfg.AvailableSandboxProviders {
+		switch provider {
+		case sandbox.ProviderNodeOps:
+			sshPubKeys, err := readSSHPubKeys(cfg.NodeOpsSSHKeyPath)
+			if err != nil {
+				return nil, err
+			}
+			nodeOpsProvider = createos.New(createos.Config{
+				BaseURL:      cfg.NodeOpsBaseURL,
+				APIKey:       cfg.NodeOpsAPIKey,
+				DefaultShape: cfg.NodeOpsDefaultShape,
+				DefaultRoot:  cfg.NodeOpsDefaultRootFS,
+				Region:       cfg.NodeOpsRegion,
+				SSHPubKeys:   sshPubKeys,
+			})
+		case sandbox.ProviderDocker:
+			provider, err := dockerprovider.New(dockerprovider.Config{
+				Host:        cfg.DockerHost,
+				WorkerImage: cfg.DockerWorkerImage,
+				Network:     cfg.DockerNetwork,
+				Namespace:   cfg.DockerNamespace,
+			})
+			if err != nil {
+				return nil, err
+			}
+			dockerProvider = provider
+		case sandbox.ProviderCoder:
+			provider, err := coderprovider.New(coderprovider.Config{
+				BaseURL:    cfg.CoderURL,
+				Token:      cfg.CoderAPIToken,
+				Owner:      cfg.CoderOwner,
+				TemplateID: cfg.CoderTemplateID,
+				AgentName:  cfg.CoderAgentName,
+				Parameters: cfg.CoderParameters,
+			})
+			if err != nil {
+				return nil, err
+			}
+			coderProvider = provider
 		}
-		nodeOpsProvider = createos.New(createos.Config{
-			BaseURL:      cfg.NodeOpsBaseURL,
-			APIKey:       cfg.NodeOpsAPIKey,
-			DefaultShape: cfg.NodeOpsDefaultShape,
-			DefaultRoot:  cfg.NodeOpsDefaultRootFS,
-			Region:       cfg.NodeOpsRegion,
-			SSHPubKeys:   sshPubKeys,
-		})
-	case sandbox.ProviderDocker:
-		provider, err := dockerprovider.New(dockerprovider.Config{
-			Host:        cfg.DockerHost,
-			WorkerImage: cfg.DockerWorkerImage,
-			Network:     cfg.DockerNetwork,
-			Namespace:   cfg.DockerNamespace,
-		})
-		if err != nil {
-			return nil, err
-		}
-		dockerProvider = provider
-	case sandbox.ProviderCoder:
-		provider, err := coderprovider.New(coderprovider.Config{
-			BaseURL:    cfg.CoderURL,
-			Token:      cfg.CoderAPIToken,
-			Owner:      cfg.CoderOwner,
-			TemplateID: cfg.CoderTemplateID,
-			AgentName:  cfg.CoderAgentName,
-			Parameters: cfg.CoderParameters,
-		})
-		if err != nil {
-			return nil, err
-		}
-		coderProvider = provider
 	}
 	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider), reconcile.Options{
 		PublicURL:              cfg.PublicURL,
@@ -325,24 +340,25 @@ func run(logger *slog.Logger) error {
 	}
 
 	apiOptions := httpapi.Options{
-		Store:                   store,
-		WorkOS:                  workosVerifier,
-		LocalAuthEnabled:        cfg.LocalAuthEnabled,
-		LocalSessionTTL:         cfg.LocalSessionTTL,
-		SandboxProvider:         cfg.SandboxProvider,
-		Provisioning:            provisioningDefaults(cfg),
-		WorkerTokens:            workerTokens,
-		WorkerTokenTTL:          cfg.WorkerTokenTTL(),
-		MaxSandboxes:            cfg.MaxSandboxesPerOrg,
-		Environment:             cfg.Environment,
-		Release:                 cfg.Release,
-		Logger:                  logger,
-		GitHub:                  githubService,
-		CheckoutBroker:          checkoutBroker,
-		BrokerAuthToken:         cfg.RepositoryBrokerToken,
-		EnvironmentControlToken: cfg.EnvironmentControlToken,
-		SecretCipher:            providerCipher,
-		WebhookMaxBody:          cfg.GitHub.WebhookMaxBody,
+		Store:                     store,
+		WorkOS:                    workosVerifier,
+		LocalAuthEnabled:          cfg.LocalAuthEnabled,
+		LocalSessionTTL:           cfg.LocalSessionTTL,
+		SandboxProvider:           cfg.SandboxProvider,
+		AvailableSandboxProviders: cfg.AvailableSandboxProviders,
+		Provisioning:              provisioningDefaults(cfg),
+		WorkerTokens:              workerTokens,
+		WorkerTokenTTL:            cfg.WorkerTokenTTL(),
+		MaxSandboxes:              cfg.MaxSandboxesPerOrg,
+		Environment:               cfg.Environment,
+		Release:                   cfg.Release,
+		Logger:                    logger,
+		GitHub:                    githubService,
+		CheckoutBroker:            checkoutBroker,
+		BrokerAuthToken:           cfg.RepositoryBrokerToken,
+		EnvironmentControlToken:   cfg.EnvironmentControlToken,
+		SecretCipher:              providerCipher,
+		WebhookMaxBody:            cfg.GitHub.WebhookMaxBody,
 	}
 	if cfg.Environment == "development" &&
 		os.Getenv("AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION") == "true" {

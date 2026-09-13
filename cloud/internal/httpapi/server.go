@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,8 +130,12 @@ type Server struct {
 	localSessionTTL  time.Duration
 	localAuthLimiter *fixedWindowLimiter
 	sandboxProvider  string
-	provisioning     sandbox.ProvisioningDefaults
-	workerTokens     WorkerTokens
+	// availableSandboxProviders is every provider a client may select for a
+	// session, always including sandboxProvider (the default). It gates the
+	// per-session provider override and is reported to clients via /me.
+	availableSandboxProviders []string
+	provisioning              sandbox.ProvisioningDefaults
+	workerTokens              WorkerTokens
 	// workerTokenLifetime is zero when the deployment does not override the
 	// protocol default; workerTokenTTL() resolves that.
 	workerTokenLifetime     time.Duration
@@ -153,26 +158,27 @@ type Server struct {
 }
 
 type Options struct {
-	Store                   Store
-	WorkOS                  auth.WorkOSVerifier
-	LocalAuthEnabled        bool
-	LocalSessionTTL         time.Duration
-	SandboxProvider         string
-	Provisioning            sandbox.ProvisioningDefaults
-	WorkerTokens            WorkerTokens
-	WorkerTokenTTL          time.Duration
-	WorkerRequestTimeout    time.Duration
-	MaxSandboxes            int
-	Environment             string
-	Release                 string
-	Logger                  *slog.Logger
-	GitHub                  *githubapp.Service
-	CheckoutBroker          CheckoutBroker
-	BrokerAuthToken         string
-	EnvironmentControlToken string
-	SecretCipher            *secrets.Cipher
-	CredentialValidator     credentialValidator
-	WebhookMaxBody          int64
+	Store                     Store
+	WorkOS                    auth.WorkOSVerifier
+	LocalAuthEnabled          bool
+	LocalSessionTTL           time.Duration
+	SandboxProvider           string
+	AvailableSandboxProviders []string
+	Provisioning              sandbox.ProvisioningDefaults
+	WorkerTokens              WorkerTokens
+	WorkerTokenTTL            time.Duration
+	WorkerRequestTimeout      time.Duration
+	MaxSandboxes              int
+	Environment               string
+	Release                   string
+	Logger                    *slog.Logger
+	GitHub                    *githubapp.Service
+	CheckoutBroker            CheckoutBroker
+	BrokerAuthToken           string
+	EnvironmentControlToken   string
+	SecretCipher              *secrets.Cipher
+	CredentialValidator       credentialValidator
+	WebhookMaxBody            int64
 }
 
 func New(options Options) *Server {
@@ -183,6 +189,16 @@ func New(options Options) *Server {
 	sandboxProvider := options.SandboxProvider
 	if sandboxProvider == "" {
 		sandboxProvider = sandbox.DefaultProvider
+	}
+	// A client may only select a provider the deployment offers. Default to the
+	// single configured provider, and ensure the default is always present so a
+	// session with no explicit provider is always valid.
+	availableSandboxProviders := append([]string(nil), options.AvailableSandboxProviders...)
+	if len(availableSandboxProviders) == 0 {
+		availableSandboxProviders = []string{sandboxProvider}
+	}
+	if !slices.Contains(availableSandboxProviders, sandboxProvider) {
+		availableSandboxProviders = append([]string{sandboxProvider}, availableSandboxProviders...)
 	}
 	environment := options.Environment
 	if environment == "" {
@@ -207,28 +223,29 @@ func New(options Options) *Server {
 		maxSandboxes = DefaultMaxSandboxesPerOrg
 	}
 	server := &Server{
-		store:                   options.Store,
-		workos:                  options.WorkOS,
-		localAuthEnabled:        options.LocalAuthEnabled,
-		localSessionTTL:         options.LocalSessionTTL,
-		localAuthLimiter:        newFixedWindowLimiter(10, time.Minute, 4096),
-		sandboxProvider:         sandboxProvider,
-		provisioning:            options.Provisioning,
-		workerTokens:            options.WorkerTokens,
-		workerTokenLifetime:     options.WorkerTokenTTL,
-		workerRequestTimeout:    workerRequestTimeout,
-		maxSandboxes:            maxSandboxes,
-		environment:             environment,
-		release:                 release,
-		drain:                   make(chan struct{}),
-		logger:                  logger,
-		github:                  options.GitHub,
-		checkoutBroker:          options.CheckoutBroker,
-		brokerAuthToken:         options.BrokerAuthToken,
-		environmentControlToken: options.EnvironmentControlToken,
-		secretCipher:            options.SecretCipher,
-		credentialValidator:     options.CredentialValidator,
-		webhookMaxBody:          webhookMaxBody,
+		store:                     options.Store,
+		workos:                    options.WorkOS,
+		localAuthEnabled:          options.LocalAuthEnabled,
+		localSessionTTL:           options.LocalSessionTTL,
+		localAuthLimiter:          newFixedWindowLimiter(10, time.Minute, 4096),
+		sandboxProvider:           sandboxProvider,
+		availableSandboxProviders: availableSandboxProviders,
+		provisioning:              options.Provisioning,
+		workerTokens:              options.WorkerTokens,
+		workerTokenLifetime:       options.WorkerTokenTTL,
+		workerRequestTimeout:      workerRequestTimeout,
+		maxSandboxes:              maxSandboxes,
+		environment:               environment,
+		release:                   release,
+		drain:                     make(chan struct{}),
+		logger:                    logger,
+		github:                    options.GitHub,
+		checkoutBroker:            options.CheckoutBroker,
+		brokerAuthToken:           options.BrokerAuthToken,
+		environmentControlToken:   options.EnvironmentControlToken,
+		secretCipher:              options.SecretCipher,
+		credentialValidator:       options.CredentialValidator,
+		webhookMaxBody:            webhookMaxBody,
 	}
 	if server.credentialValidator == nil {
 		server.credentialValidator = newAgentCredentialValidator(nil)

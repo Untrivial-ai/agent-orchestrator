@@ -98,6 +98,51 @@ func TestCoderSessionPlanPersistsDurableRoot(t *testing.T) {
 	}
 }
 
+func TestSessionPlanForProviderOverridesDefault(t *testing.T) {
+	t.Parallel()
+	const templateID = "2a2e262c-b31c-4202-946d-a19ad45d1fd2"
+	// A control plane configured with more than one provider carries every
+	// provider's config; the default here is Docker.
+	defaults := ProvisioningDefaults{
+		Provider: ProviderDocker,
+		Docker: DockerConfig{
+			Host:           "unix:///var/run/docker.sock",
+			WorkerImage:    "ao-cloud-worker:local",
+			Network:        "ao-cloud-local",
+			Namespace:      "ao-cloud-local",
+			WorkerTokenTTL: time.Minute,
+		},
+		Coder: CoderConfig{
+			BaseURL: "https://coder.example.com", Owner: "owner", TemplateID: templateID,
+			AgentName: "dev", DurableRoot: "/persistent/ao", WorkerTokenTTL: time.Minute,
+		},
+	}
+	// An explicit override selects Coder even though the default is Docker.
+	coderPlan, err := defaults.SessionPlanForProvider("codex", ProviderCoder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coderPlan.Provider != ProviderCoder {
+		t.Fatalf("override provider = %q, want %q", coderPlan.Provider, ProviderCoder)
+	}
+	// An empty override falls back to the deployment default.
+	defaultPlan, err := defaults.SessionPlanForProvider("codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultPlan.Provider != ProviderDocker {
+		t.Fatalf("fallback provider = %q, want %q", defaultPlan.Provider, ProviderDocker)
+	}
+	// SessionPlan stays equivalent to an empty override (the default).
+	plainPlan, err := defaults.SessionPlan("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainPlan.Provider != ProviderDocker {
+		t.Fatalf("SessionPlan provider = %q, want %q", plainPlan.Provider, ProviderDocker)
+	}
+}
+
 func TestDecodeCoderSessionProfileRejectsIncompleteContract(t *testing.T) {
 	t.Parallel()
 	profiles := []json.RawMessage{

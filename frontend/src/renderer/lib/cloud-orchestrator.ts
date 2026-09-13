@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { createRendererCloudCpClient } from "../hooks/useCloudCp";
 import { settingsQueryKey, type Settings } from "../hooks/useSettings";
+import { readSelectedSandboxProvider } from "../stores/sandbox-provider-store";
 
 // A cloud project has no locally-configured orchestrator agent (that config
 // lives in the local daemon's project settings), so the launchers must not
@@ -27,12 +28,17 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 	const me = await client.me();
 	const orgId = me.organizations[0]?.id;
 	if (orgId === undefined) throw new Error("No cloud organization is available.");
+	// The user's client-side provider preference (when the control plane offers
+	// more than one); omitted lets the control plane use its default. Read
+	// directly from localStorage since this launcher is deliberately hook-free.
+	const provider = readSelectedSandboxProvider();
 	const { session } = await client.createSession(orgId, {
 		projectId,
 		kind: "orchestrator",
 		harness: "claude-code",
 		displayName: "Orchestrator",
 		prompt: ORCHESTRATOR_KICKOFF_PROMPT,
+		...(provider ? { provider } : {}),
 	});
 	return session.id;
 }

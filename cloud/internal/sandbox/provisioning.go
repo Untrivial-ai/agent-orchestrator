@@ -273,7 +273,19 @@ type Plan struct {
 // (see NodeOpsConfig.RootFSByHarness); the plan is stored on the sandbox row,
 // so the choice sticks for the session's whole life, including recreates.
 func (d ProvisioningDefaults) SessionPlan(harness string) (Plan, error) {
-	provider := normalizeProvider(d.Provider)
+	return d.SessionPlanForProvider(harness, d.Provider)
+}
+
+// SessionPlanForProvider is SessionPlan with an explicit provider override, used
+// when a client selects a provider for a session on a control plane configured
+// with more than one. An empty override falls back to the deployment default.
+// The caller is responsible for confirming the provider is one the control
+// plane offers before calling; this method only builds the plan.
+func (d ProvisioningDefaults) SessionPlanForProvider(harness, providerOverride string) (Plan, error) {
+	provider := normalizeProvider(providerOverride)
+	if provider == "" {
+		provider = normalizeProvider(d.Provider)
+	}
 	if provider == "" {
 		provider = DefaultProvider
 	}

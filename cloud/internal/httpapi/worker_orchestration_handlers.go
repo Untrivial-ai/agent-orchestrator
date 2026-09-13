@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -8,6 +9,14 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/go-chi/chi/v5"
 )
+
+// orchestratorProviderStore reads the sandbox provider a parent orchestrator
+// runs on, so a child it spawns inherits it rather than the control plane
+// default. It mirrors the workerCredentialAvailabilityStore narrow-interface
+// pattern so the concrete store carries the method without widening Store.
+type orchestratorProviderStore interface {
+	OrchestratorSandboxProvider(context.Context, string, string) (string, error)
+}
 
 type createWorkerChildRequest struct {
 	Harness                     string   `json:"harness"`
@@ -129,7 +138,28 @@ func (s *Server) createWorkerChild(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
-	plan, err := s.provisioning.SessionPlan(request.Harness)
+	providerStore, ok := s.store.(orchestratorProviderStore)
+	if !ok {
+		writeError(
+			w, r, http.StatusNotImplemented, "not_implemented",
+			"Sandbox provider inheritance is unavailable.",
+		)
+		return
+	}
+	parentProvider, err := providerStore.OrchestratorSandboxProvider(
+		r.Context(), claims.OrgID, claims.SessionID,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	// A child always runs on its orchestrator's provider, never the control
+	// plane default: a NodeOps orchestrator spawns NodeOps workers and a Coder
+	// orchestrator spawns Coder workers, even on a control plane that offers
+	// both. The provider is read from the parent's immutable sandbox row, so it
+	// is unaffected by the client-side provider toggle (which only stamps the
+	// provider for top-level sessions the app creates).
+	plan, err := s.provisioning.SessionPlanForProvider(request.Harness, parentProvider)
 	if err != nil {
 		s.logger.Error("resolve child sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Sandbox provisioning is misconfigured.")

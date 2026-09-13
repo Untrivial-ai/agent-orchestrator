@@ -31,10 +31,23 @@ export interface CloudCpOrganization {
 	role: string;
 }
 
+/** Sandbox providers a control plane offers (`/me` sandboxProviders). */
+export interface CloudCpSandboxProviders {
+	/** Every provider a session may select on this control plane. */
+	available: string[];
+	/** The provider used when a session does not specify one. */
+	default: string;
+}
+
 /** GET /me */
 export interface CloudCpMeResponse {
 	user: CloudCpUser;
 	organizations: CloudCpOrganization[];
+	/**
+	 * Present when the control plane reports its providers. A single-provider
+	 * deployment lists exactly one available provider (the default).
+	 */
+	sandboxProviders?: CloudCpSandboxProviders;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +174,12 @@ export interface CloudCpCreateSessionRequest {
 	mode?: CloudCpSessionMode;
 	deniedCommands?: string[];
 	sandboxProviderConnectionId?: string;
+	/**
+	 * Sandbox provider for this session. Optional: omitted uses the control
+	 * plane default. When set it must be one of `sandboxProviders.available`
+	 * from `/me`.
+	 */
+	provider?: string;
 }
 
 export interface CloudCpSession {

@@ -52,6 +52,32 @@ func (s *Store) ListOrchestratorChildren(
 	return sessions, hasMore, nil
 }
 
+// OrchestratorSandboxProvider returns the sandbox provider a live orchestrator
+// session runs on, so a child it spawns inherits the same provider instead of
+// the control plane default. A NodeOps orchestrator therefore spawns NodeOps
+// workers and a Coder orchestrator spawns Coder workers, even on a control
+// plane that offers both. It returns ErrForbidden when the session is not an
+// active orchestrator in the organization. Every session has exactly one
+// sandbox row (ao_sandboxes.session_id is the primary key) whose provider is
+// immutable for the session's life.
+func (s *Store) OrchestratorSandboxProvider(
+	ctx context.Context,
+	orgID, orchestratorSessionID string,
+) (string, error) {
+	var provider string
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if _, err := requireActiveOrchestrator(ctx, tx, orgID, orchestratorSessionID); err != nil {
+			return err
+		}
+		return tx.QueryRow(
+			ctx,
+			`SELECT provider FROM ao_sandboxes WHERE org_id = $1 AND session_id = $2`,
+			orgID, orchestratorSessionID,
+		).Scan(&provider)
+	})
+	return provider, err
+}
+
 func (s *Store) CreateOrchestratorChild(
 	ctx context.Context,
 	orgID, orchestratorSessionID, idempotencyKey string,

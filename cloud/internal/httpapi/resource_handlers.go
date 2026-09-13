@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,10 @@ type createSessionRequest struct {
 	Mode                        string   `json:"mode,omitempty"`
 	DeniedCommands              []string `json:"deniedCommands,omitempty"`
 	SandboxProviderConnectionID string   `json:"sandboxProviderConnectionId,omitempty"`
+	// Provider selects which configured sandbox provider runs this session. It
+	// is optional: an empty value uses the control plane default. When set it
+	// must be one of the providers the deployment offers (see /me).
+	Provider string `json:"provider,omitempty"`
 }
 
 type sessionResponse struct {
@@ -244,8 +249,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Mode = strings.TrimSpace(request.Mode)
 	request.SandboxProviderConnectionID = strings.TrimSpace(request.SandboxProviderConnectionID)
+	request.Provider = strings.ToLower(strings.TrimSpace(request.Provider))
 	if request.Mode == "" {
 		request.Mode = "trusted"
+	}
+	if request.Provider != "" && !slices.Contains(s.availableSandboxProviders, request.Provider) {
+		writeError(
+			w, r, http.StatusUnprocessableEntity, "provider_unavailable",
+			"The selected sandbox provider is not available on this control plane.",
+		)
+		return
 	}
 	if !validSessionInput(request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Session project, kind, harness, name, or prompt is invalid.")
@@ -290,7 +303,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.
-	plan, err := s.provisioning.SessionPlan(request.Harness)
+	plan, err := s.provisioning.SessionPlanForProvider(request.Harness, request.Provider)
 	if err != nil {
 		s.logger.Error("resolve sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(
