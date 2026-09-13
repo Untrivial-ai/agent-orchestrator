@@ -1642,6 +1642,33 @@ describe("Sidebar", () => {
 		expect(dialog).toHaveTextContent("repository folder");
 	});
 
+	it("warns when removing a project would hide open pull requests", async () => {
+		const user = userEvent.setup();
+		const workspaceWithPullRequests = {
+			...workspace,
+			sessions: [
+				{ ...session, prs: [sidebarPR()] },
+				{
+					...session,
+					id: "proj-1-2",
+					prs: [
+						sidebarPR(),
+						sidebarPR({ number: 8, state: "draft", url: "https://github.com/acme/project-one/pull/8" }),
+						sidebarPR({ number: 9, state: "merged", url: "https://github.com/acme/project-one/pull/9" }),
+					],
+				},
+			],
+		};
+		renderSidebar({ workspaces: [workspaceWithPullRequests] });
+
+		await user.click(screen.getByLabelText("Project actions for Project One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+
+		expect(await screen.findByRole("dialog", { name: "Remove project" })).toHaveTextContent(
+			"2 open pull requests belong to this project. Removing it will hide those pull requests from AO, but will not close them.",
+		);
+	});
+
 	it("renames a session inline by double-clicking its name", async () => {
 		const user = userEvent.setup();
 		const workspaceWithSession = { ...workspace, sessions: [session] };

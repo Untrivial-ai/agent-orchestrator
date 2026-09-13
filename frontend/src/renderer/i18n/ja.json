@@ -1222,6 +1222,8 @@
 	"shell.remove": "削除",
 	"shell.removeProjectBody": "稼働中のセッションを停止し、サイドバーから削除しますが、リポジトリフォルダーと保存済み履歴はディスクに残ります。",
 	"shell.removeProjectLead": "{{name}} を AO から削除します",
+	"shell.removeProjectOpenPrWarning_one": "このプロジェクトには未完了のプルリクエストが {{count}} 件あります。プロジェクトを削除すると AO では表示されなくなりますが、プルリクエストは閉じられません。",
+	"shell.removeProjectOpenPrWarning_other": "このプロジェクトには未完了のプルリクエストが {{count}} 件あります。プロジェクトを削除すると AO では表示されなくなりますが、プルリクエストは閉じられません。",
 	"shell.removeProjectTitle": "プロジェクトを削除",
 	"shell.removingNamed": "{{name}} を削除中…",
 	"shell.renameSession": "{{title}} の名前を変更",
