@@ -31,6 +31,36 @@ let capturedForMenu: HTMLElement | null = null;
 let pending: { borrower: Element; target: HTMLElement } | null = null;
 
 /**
+ * Published once a menu's teardown has genuinely finished: Presence let go of
+ * the content and the FocusScope restore Radix defers by a tick has been
+ * dispatched and either allowed or prevented. That is the last moment a closing
+ * menu can still move the caret or emit outside-interactions, so anything that
+ * opened a surface from it can stop covering for it here.
+ */
+export type MenuTeardownDetail = {
+	/** The menu content node — detached from the document by the time this fires. */
+	menu: HTMLElement;
+	/** Where Radix would have restored focus, or null when there was nowhere to go. */
+	trigger: HTMLElement | null;
+};
+
+type MenuTeardownListener = (detail: MenuTeardownDetail) => void;
+const teardownListeners = new Set<MenuTeardownListener>();
+
+export function onMenuTeardownComplete(listener: MenuTeardownListener): () => void {
+	teardownListeners.add(listener);
+	return () => {
+		teardownListeners.delete(listener);
+	};
+}
+
+function publishMenuTeardownComplete(menu: HTMLElement) {
+	const detail: MenuTeardownDetail = { menu, trigger: menuReturnTarget };
+	// Copy before iterating so a listener can unsubscribe re-entrantly.
+	for (const listener of [...teardownListeners]) listener(detail);
+}
+
+/**
  * Remember, while the menu is open, where focus should end up once it is done
  * with it. A dropdown returns to its trigger, which is only discoverable by its
  * `aria-controls` link while the menu is open; a context menu has no such
@@ -130,10 +160,12 @@ function handleFocusRelease(event: FocusEvent) {
 	);
 }
 
-/** Runs the caller's own handler first, then the hand-off guard. */
+/** Runs the caller's own handler first, then the hand-off guard, then reports the teardown. */
 export function composeMenuCloseAutoFocus(handler?: (event: Event) => void) {
 	return (event: Event) => {
 		handler?.(event);
 		keepFocusOnOpenedSurface(event);
+		const menu = event.currentTarget ?? event.target;
+		if (menu instanceof HTMLElement) publishMenuTeardownComplete(menu);
 	};
 }
