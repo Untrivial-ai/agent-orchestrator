@@ -84,13 +84,15 @@ func (r *Runtime) SetupPlan(ctx context.Context, platform domain.DevicePlatform)
 		if _, err := r.lookPath("xcodebuild"); err != nil {
 			xcodeInstalled = false
 		}
-		if !xcodeInstalled || !xcodeDeveloperDir(ctx) {
-			plan.State, plan.ActionURL, plan.Message = domain.DeviceSetupAwaitingAction, xcodeURL, "Install the full Xcode app, then return here to continue"
+		if !xcodeInstalled || xcodeDeveloperDir(ctx) == "" {
+			plan.State, plan.ActionURL, plan.Message = domain.DeviceSetupAwaitingAction, xcodeURL, "Waiting for the full Xcode app to finish installing. AO will continue automatically when it is ready."
 			return plan, nil
 		}
-		firstLaunchComplete := exec.CommandContext(ctx, "xcodebuild", "-checkFirstLaunchStatus").Run() == nil
+		firstLaunch := exec.CommandContext(ctx, "xcodebuild", "-checkFirstLaunchStatus")
+		firstLaunch.Env = xcodeEnvironment(ctx)
+		firstLaunchComplete := firstLaunch.Run() == nil
 		if !firstLaunchComplete {
-			plan.State, plan.ActionURL, plan.Message = domain.DeviceSetupAwaitingAction, xcodeURL, "Open Xcode and complete its license and first-launch setup, then retry"
+			plan.State, plan.ActionURL, plan.Message = domain.DeviceSetupAwaitingAction, xcodeURL, "Open Xcode and complete its license and first-launch setup. AO will continue automatically when it is ready."
 			return plan, nil
 		}
 		plan.Ready = iosSimulatorReady(ctx)
@@ -263,7 +265,7 @@ func (r *Runtime) androidInstallEnv(javaHome string) []string {
 
 func (r *Runtime) installIOS(ctx context.Context, report func(ports.DeviceSetupProgress)) error {
 	report(ports.DeviceSetupProgress{State: domain.DeviceSetupDownloading, Stage: "ios-runtime", Message: "Downloading the iOS Simulator runtime with Xcode", Progress: 5})
-	if err := runStreaming(ctx, "xcodebuild", []string{"-downloadPlatform", "iOS"}, "", deviceHostEnv(), func(line string) {
+	if err := runStreaming(ctx, "xcodebuild", []string{"-downloadPlatform", "iOS"}, "", xcodeEnvironment(ctx), func(line string) {
 		if value, ok := parsePercent(line); ok {
 			report(ports.DeviceSetupProgress{State: domain.DeviceSetupDownloading, Stage: "ios-runtime", Message: "Downloading the iOS Simulator runtime with Xcode", Progress: 5 + value*80/100})
 		}
@@ -276,7 +278,7 @@ func (r *Runtime) installIOS(ctx context.Context, report func(ports.DeviceSetupP
 		if deviceType == "" {
 			return setupError("IOS_DEVICE_TYPE_MISSING", "Xcode did not report an available iPhone Simulator device type", xcodeURL)
 		}
-		if err := runStreaming(ctx, "xcrun", []string{"simctl", "create", "AO iPhone", deviceType}, "", deviceHostEnv(), nil); err != nil {
+		if err := runStreaming(ctx, "xcrun", []string{"simctl", "create", "AO iPhone", deviceType}, "", xcodeEnvironment(ctx), nil); err != nil {
 			return setupError("IOS_DEVICE_CREATE_FAILED", "Xcode could not create the AO iPhone Simulator", xcodeURL)
 		}
 	}
@@ -287,14 +289,32 @@ func (r *Runtime) installIOS(ctx context.Context, report func(ports.DeviceSetupP
 	return nil
 }
 
-func xcodeDeveloperDir(ctx context.Context) bool {
+func xcodeDeveloperDir(ctx context.Context) string {
 	out, err := exec.CommandContext(ctx, "xcode-select", "-p").Output()
-	return err == nil && strings.Contains(string(out), ".app/Contents/Developer")
+	if selected := strings.TrimSpace(string(out)); err == nil && strings.Contains(selected, ".app/Contents/Developer") {
+		return selected
+	}
+	for _, candidate := range []string{"/Applications/Xcode.app/Contents/Developer", "/Applications/Xcode-beta.app/Contents/Developer"} {
+		if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func xcodeEnvironment(ctx context.Context) []string {
+	env := deviceHostEnv()
+	if developerDir := xcodeDeveloperDir(ctx); developerDir != "" {
+		env = mergeEnvironment(env, []string{"DEVELOPER_DIR=" + developerDir})
+	}
+	return env
 }
 
 func iosSimulatorReady(ctx context.Context) bool { return iosHasRuntime(ctx) && iosHasDevice(ctx) }
 func iosHasRuntime(ctx context.Context) bool {
-	out, err := exec.CommandContext(ctx, "xcrun", "simctl", "list", "runtimes", "--json").Output()
+	command := exec.CommandContext(ctx, "xcrun", "simctl", "list", "runtimes", "--json")
+	command.Env = xcodeEnvironment(ctx)
+	out, err := command.Output()
 	if err != nil {
 		return false
 	}
@@ -315,7 +335,9 @@ func iosHasRuntime(ctx context.Context) bool {
 	return false
 }
 func iosHasDevice(ctx context.Context) bool {
-	out, err := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devices", "available", "--json").Output()
+	command := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devices", "available", "--json")
+	command.Env = xcodeEnvironment(ctx)
+	out, err := command.Output()
 	if err != nil {
 		return false
 	}
@@ -332,7 +354,9 @@ func iosHasDevice(ctx context.Context) bool {
 	}()
 }
 func firstIPhoneDeviceType(ctx context.Context) string {
-	out, err := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devicetypes", "--json").Output()
+	command := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devicetypes", "--json")
+	command.Env = xcodeEnvironment(ctx)
+	out, err := command.Output()
 	if err != nil {
 		return ""
 	}

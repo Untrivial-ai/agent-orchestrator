@@ -194,6 +194,11 @@ func (s *Service) platformSetupStatus(ctx context.Context, platform domain.Devic
 		status.State, status.Progress = domain.DeviceSetupSucceeded, 100
 		return status, nil
 	}
+	if memoryOK && current.State == domain.DeviceSetupAwaitingAction && plan.State != domain.DeviceSetupAwaitingAction {
+		status := setupFromPlan(platform, plan)
+		status.LicenseAccepted = current.LicenseAccepted
+		return status, nil
+	}
 	if memoryOK && current.State != domain.DeviceSetupSucceeded {
 		current.RequiredBytes, current.AvailableBytes, current.LicenseURL = plan.RequiredBytes, plan.AvailableBytes, plan.LicenseURL
 		if plan.State == domain.DeviceSetupAwaitingAction {

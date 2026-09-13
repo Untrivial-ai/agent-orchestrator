@@ -33,6 +33,29 @@ describe("DevicePanel", () => {
 		await waitFor(() => expect(setup).toHaveBeenCalledWith({ sessionId: "s1", platform: "android", action: "start", licenseAccepted: true }));
 	});
 
+	it("shows Xcode handoff activity and continues automatically after installation", async () => {
+		vi.mocked(aoBridge.device.setupStatus)
+			.mockResolvedValueOnce({
+				sessionId: "s1",
+				setups: [{ platform: "ios", state: "awaiting_action", message: "Waiting for the full Xcode app to finish installing.", progress: 0, licenseAccepted: true, cancelable: false, retryable: true }],
+			})
+			.mockResolvedValue({
+				sessionId: "s1",
+				setups: [{ platform: "ios", state: "idle", progress: 0, licenseAccepted: true, cancelable: false, retryable: false }],
+			});
+		const setup = vi.spyOn(aoBridge.device, "setup").mockResolvedValue({
+			sessionId: "s1",
+			setup: { platform: "ios", state: "queued", progress: 0, licenseAccepted: true, cancelable: true, retryable: false },
+		});
+
+		render(<DevicePanel sessionId="s1" />);
+
+		expect(await screen.findByText("Waiting for the full Xcode app to finish installing.")).toBeInTheDocument();
+		expect(screen.getByRole("progressbar", { name: "iOS setup progress" })).not.toHaveAttribute("aria-valuenow");
+		expect(screen.getByRole("button", { name: "Retry setup" })).toBeEnabled();
+		await waitFor(() => expect(setup).toHaveBeenCalledWith({ sessionId: "s1", platform: "ios", action: "retry", licenseAccepted: true }), { timeout: 2_500 });
+	});
+
 	afterEach(() => vi.restoreAllMocks());
 
 	it("shows independent setup state and opens a selected device", async () => {

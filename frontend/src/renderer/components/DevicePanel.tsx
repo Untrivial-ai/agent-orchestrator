@@ -28,6 +28,7 @@ export function DevicePanel({ sessionId }: { sessionId: string }) {
 	const [error, setError] = useState<string>();
 	const [busy, setBusy] = useState(true);
 	const captureInFlight = useRef(false);
+	const setupResumeInFlight = useRef(new Set<LocalDevicePlatform>());
 
 	const load = useCallback(async () => {
 		setBusy(true);
@@ -89,12 +90,22 @@ export function DevicePanel({ sessionId }: { sessionId: string }) {
 
 	useEffect(() => void load(), [load]);
 	useEffect(() => {
-		if (!setups.some((setup) => setup.cancelable)) return;
+		if (!setups.some((setup) => setup.cancelable || setup.state === "awaiting_action" || (setup.state === "idle" && setup.licenseAccepted))) return;
 		const timer = window.setInterval(() => {
-			void aoBridge.device.setupStatus(sessionId).then((result) => {
-				const next = Array.isArray(result.setups) ? result.setups : [];
+			void aoBridge.device.setupStatus(sessionId).then(async (result) => {
+				let next = Array.isArray(result.setups) ? result.setups : [];
+				const resumable = next.find((setup) => setup.state === "idle" && setup.licenseAccepted && !setupResumeInFlight.current.has(setup.platform));
+				if (resumable) {
+					setupResumeInFlight.current.add(resumable.platform);
+					try {
+						const resumed = await aoBridge.device.setup({ sessionId, platform: resumable.platform, action: "retry", licenseAccepted: true });
+						next = [...next.filter((item) => item.platform !== resumable.platform), resumed.setup];
+					} finally {
+						setupResumeInFlight.current.delete(resumable.platform);
+					}
+				}
 				setSetups(next);
-				if (!next.some((setup) => setup.cancelable)) void load();
+				if (!next.some((setup) => setup.cancelable || setup.state === "awaiting_action")) void load();
 			}).catch((cause) => setError(errorMessage(cause)));
 		}, 1_000);
 		return () => window.clearInterval(timer);
@@ -128,7 +139,8 @@ export function DevicePanel({ sessionId }: { sessionId: string }) {
 	const manageSetup = async (platform: LocalDevicePlatform, action: "start" | "retry" | "cancel") => {
 		setError(undefined);
 		try {
-			const result = await aoBridge.device.setup({ sessionId, platform, action, licenseAccepted: licenses[platform] });
+			const accepted = licenses[platform] || setups.find((item) => item.platform === platform)?.licenseAccepted === true;
+			const result = await aoBridge.device.setup({ sessionId, platform, action, licenseAccepted: accepted });
 			setSetups((current) => [...current.filter((item) => item.platform !== platform), result.setup]);
 			if (result.setup.actionUrl) await aoBridge.app.openExternal(result.setup.actionUrl);
 			if (result.setup.cancelable) window.setTimeout(() => void load(), 300);
@@ -215,16 +227,18 @@ function DeviceError({ message }: { message: string }) {
 function SetupCard({ capability, licenseAccepted, onLicense, onSetup, setup }: { capability?: LocalDeviceCapability; licenseAccepted: boolean; onLicense: (value: boolean) => void; onSetup: (action: "start" | "retry" | "cancel") => void; setup: LocalDeviceSetup }) {
 	const { t } = useTranslation();
 	const active = setup.cancelable;
+	const waiting = setup.state === "awaiting_action";
+	const accepted = licenseAccepted || setup.licenseAccepted;
 	const failed = setup.state === "failed" || setup.state === "canceled" || setup.state === "interrupted";
 	const platformName = setup.platform === "ios" ? "iOS" : "Android";
 	return (
 		<div className="rounded-md border border-border p-3 text-xs">
-			<div className="flex items-center justify-between gap-2"><strong>{t("device.setup", { platform: platformName })}</strong><span className="text-[11px] text-settings-muted">{setup.progress}%</span></div>
+			<div className="flex items-center justify-between gap-2"><strong>{t("device.setup", { platform: platformName })}</strong><span className="text-[11px] text-settings-muted">{waiting ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : `${setup.progress}%`}</span></div>
 			<p className="mt-1 text-settings-muted">{setup.error || setup.message || capability?.message}</p>
 			{setup.requiredBytes ? <p className="mt-1 text-[11px] text-settings-muted">{t("device.downloadSize", { size: formatBytes(setup.requiredBytes) })}</p> : null}
-			{active || setup.progress > 0 ? <div aria-label={t("device.setupProgress", { platform: platformName })} aria-valuemax={100} aria-valuemin={0} aria-valuenow={setup.progress} className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar"><div className="h-full bg-primary transition-[width]" style={{ width: `${setup.progress}%` }} /></div> : null}
-			{!active ? <label className="mt-2 flex items-start gap-2"><input checked={licenseAccepted} className="mt-0.5" onChange={(event) => onLicense(event.target.checked)} type="checkbox" /><span>{t("device.acceptLicense")} {setup.licenseUrl ? <button className="text-primary hover:underline" onClick={(event) => { event.preventDefault(); void aoBridge.app.openExternal(setup.licenseUrl!); }} type="button">{t("device.viewTerms")} <ExternalLink className="inline size-3" /></button> : null}</span></label> : null}
-			<Button className="mt-2 w-full" disabled={!active && !licenseAccepted} onClick={() => onSetup(active ? "cancel" : failed || setup.state === "awaiting_action" ? "retry" : "start")} size="sm" variant={active ? "outline" : "primary"}>
+			{active || waiting || setup.progress > 0 ? <div aria-label={t("device.setupProgress", { platform: platformName })} aria-valuemax={waiting ? undefined : 100} aria-valuemin={waiting ? undefined : 0} aria-valuenow={waiting ? undefined : setup.progress} className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar"><div className={cn("h-full bg-primary transition-[width]", waiting && "w-full animate-pulse")} style={waiting ? undefined : { width: `${setup.progress}%` }} /></div> : null}
+			{!active ? <label className="mt-2 flex items-start gap-2"><input checked={accepted} className="mt-0.5" onChange={(event) => onLicense(event.target.checked)} type="checkbox" /><span>{t("device.acceptLicense")} {setup.licenseUrl ? <button className="text-primary hover:underline" onClick={(event) => { event.preventDefault(); void aoBridge.app.openExternal(setup.licenseUrl!); }} type="button">{t("device.viewTerms")} <ExternalLink className="inline size-3" /></button> : null}</span></label> : null}
+			<Button className="mt-2 w-full" disabled={!active && !accepted} onClick={() => onSetup(active ? "cancel" : failed || setup.state === "awaiting_action" ? "retry" : "start")} size="sm" variant={active ? "outline" : "primary"}>
 				{active ? t("device.cancelSetup") : failed || setup.state === "awaiting_action" ? t("device.retrySetup") : t("device.setup", { platform: platformName })}
 			</Button>
 		</div>

@@ -95,3 +95,24 @@ func TestManagedSetupRequiresLicensePersistsProgressAndCancels(t *testing.T) {
 		t.Fatalf("canceled = %#v", statuses[1])
 	}
 }
+
+func TestSetupStatusDetectsCompletedXcodeHandoff(t *testing.T) {
+	runtime := &fakeManagedRuntime{fakeDeviceRuntime: &fakeDeviceRuntime{}, plan: ports.DeviceSetupPlan{
+		State: domain.DeviceSetupIdle, RequiredBytes: 100, AvailableBytes: 200,
+	}}
+	store := &memorySetupStore{jobs: map[string]ports.DeviceSetupJobRecord{
+		string(domain.DevicePlatformIOS): {
+			Platform: string(domain.DevicePlatformIOS), State: string(domain.DeviceSetupAwaitingAction),
+			LicenseAccepted: true, ActionURL: "https://developer.apple.com/xcode/",
+		},
+	}}
+	service := NewWithDeps(fakeSessionReader{}, runtime, fakeAuthority{}, "", Deps{SetupRuntime: runtime, SetupStore: store})
+
+	status, err := service.platformSetupStatus(context.Background(), domain.DevicePlatformIOS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != domain.DeviceSetupIdle || !status.LicenseAccepted || status.ActionURL != "" {
+		t.Fatalf("handoff status = %#v", status)
+	}
+}
