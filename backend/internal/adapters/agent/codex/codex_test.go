@@ -512,9 +512,11 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 		notExpected string
 	}{
 		{
-			name:       "default",
-			permission: ports.PermissionModeDefault,
-			want:       []string{"--dangerously-bypass-approvals-and-sandbox"},
+			// Default defers to the user's native Codex config; it must never
+			// fall through to the bypass flag.
+			name:        "default",
+			permission:  ports.PermissionModeDefault,
+			notExpected: "--dangerously-bypass-approvals-and-sandbox",
 		},
 		{
 			name:        "accept-edits",
@@ -534,9 +536,14 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 			want:       []string{"--dangerously-bypass-approvals-and-sandbox"},
 		},
 		{
-			name:       "empty",
-			permission: "",
-			want:       []string{"--dangerously-bypass-approvals-and-sandbox"},
+			name:        "empty",
+			permission:  "",
+			notExpected: "--dangerously-bypass-approvals-and-sandbox",
+		},
+		{
+			name:        "unknown",
+			permission:  ports.PermissionMode("nonsense"),
+			notExpected: "--dangerously-bypass-approvals-and-sandbox",
 		},
 	}
 

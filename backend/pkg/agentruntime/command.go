@@ -191,8 +191,14 @@ func CodexPermissionArgs(policy PermissionPolicy) []string {
 		return []string{"--ask-for-approval", "on-request"}
 	case PermissionAuto:
 		return []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}
-	default:
+	case PermissionBypassPermissions:
 		return []string{"--dangerously-bypass-approvals-and-sandbox"}
+	default:
+		// Default (and anything unrecognized, which normalizes onto it) passes no
+		// approval flag at all, deferring to the user's native Codex config the
+		// same way the Claude and Cursor mappings do. Bypassing the sandbox is
+		// what the user asked for only when they picked Bypass Permissions.
+		return nil
 	}
 }
 

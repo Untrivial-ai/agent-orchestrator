@@ -281,13 +281,10 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, errors.New("persistent chat host already owns a provider conversation for a fresh session")
 	}
 
-	policy, sandbox := approvalSettings(cfg.Permissions)
 	params := map[string]any{
-		"cwd":               cfg.WorkspacePath,
-		"approvalPolicy":    policy,
-		"approvalsReviewer": approvalReviewer(cfg.Permissions),
-		"sandbox":           sandbox,
+		"cwd": cfg.WorkspacePath,
 	}
+	applyApprovalSettings(params, cfg.Permissions)
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}
@@ -313,7 +310,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, errors.New("thread/start returned no thread id")
 	}
 
-	conv.start(resp.Thread.ID, resp.Model, resp.ReasoningEffort)
+	conv.start(resp.Thread.ID, resp.Model, resp.ReasoningEffort, launchPosture(cfg.Permissions, postureDeferred))
 	return conv, nil
 }
 
@@ -337,17 +334,15 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
-		conv.start(cfg.ProviderConversationID, cfg.Model, "")
+		// A rejoined thread kept a posture set before this daemon existed, and
+		// nothing was sent to change it, so AO cannot claim to know it.
+		conv.start(cfg.ProviderConversationID, cfg.Model, "", postureUnknown)
 		return conv, nil
 	}
 
-	policy, sandbox := approvalSettings(cfg.Permissions)
 	params := map[string]any{
-		"threadId":          cfg.ProviderConversationID,
-		"cwd":               cfg.WorkspacePath,
-		"approvalPolicy":    policy,
-		"approvalsReviewer": approvalReviewer(cfg.Permissions),
-		"sandbox":           sandbox,
+		"threadId": cfg.ProviderConversationID,
+		"cwd":      cfg.WorkspacePath,
 	}
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
@@ -358,6 +353,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	if cfg.Effort != "" {
 		params["config"] = map[string]any{"model_reasoning_effort": cfg.Effort}
 	}
+	applyApprovalSettings(params, cfg.Permissions)
 	// Developer instructions are launch context, not durable conversation
 	// history. Reapply AO's current standing role when app-server reconstructs a
 	// native thread, just as the TUI adapter does with its resume command.
@@ -378,7 +374,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, err)
 	}
 
-	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort)
+	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort, launchPosture(cfg.Permissions, postureUnknown))
 	return conv, nil
 }
 
@@ -500,18 +496,40 @@ func initializeConnection(ctx context.Context, connection *conn) error {
 // approvalSettings maps AO's existing per-session permission mode onto Codex's
 // approval policy and sandbox.
 //
-// The default matches what AO already passes a Codex TUI session
-// (--dangerously-bypass-approvals-and-sandbox): AO sessions run in isolated
-// worktrees and are expected to work without prompting. Chat does not quietly
-// become stricter than the terminal path for the same setting.
+// Default returns empty strings, meaning "send no override": approvalPolicy and
+// sandbox are optional on thread/start and thread/resume, so omitting them lets
+// the user's native Codex config decide. Only an explicit Bypass Permissions
+// choice disables approvals and the sandbox, matching the TUI mapping.
 func approvalSettings(mode ports.PermissionMode) (policy, sandbox string) {
 	switch ports.NormalizePermissionMode(mode) {
 	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
 		// on-request lets the provider decide when to ask; workspace-write keeps
 		// edits inside the worktree.
 		return "on-request", "workspace-write"
-	default:
+	case ports.PermissionModeBypassPermissions:
 		return "never", "danger-full-access"
+	default:
+		return "", ""
+	}
+}
+
+// launchPosture reports what applyApprovalSettings just did to a thread, so the
+// turn path knows whether omitting keys would inherit a bypassed sandbox.
+//
+// deferred is what a mode that sends no keys leaves behind, and it differs by
+// caller: on a thread AO is opening, nothing was sent because the native config
+// should decide; on one AO is resuming, nothing was sent and the thread kept a
+// posture from before this process that AO never observed. Start passes
+// postureDeferred, Resume passes postureUnknown.
+func launchPosture(mode ports.PermissionMode, deferred threadPosture) threadPosture {
+	policy, sandbox := approvalSettings(mode)
+	switch {
+	case policy == "" || sandbox == "":
+		return deferred
+	case sandbox == "danger-full-access":
+		return postureBypassed
+	default:
+		return postureNotBypassed
 	}
 }
 
@@ -523,6 +541,20 @@ func approvalReviewer(mode ports.PermissionMode) string {
 		return "auto_review"
 	}
 	return "user"
+}
+
+// applyApprovalSettings writes the thread-level approval keys onto params, or
+// leaves them out entirely when the mode defers to the provider's own config.
+// approvalsReviewer travels with the pair: Default means "override nothing", so
+// a deferring mode must not pin the reviewer either.
+func applyApprovalSettings(params map[string]any, mode ports.PermissionMode) {
+	policy, sandbox := approvalSettings(mode)
+	if policy == "" || sandbox == "" {
+		return
+	}
+	params["approvalPolicy"] = policy
+	params["approvalsReviewer"] = approvalReviewer(mode)
+	params["sandbox"] = sandbox
 }
 
 // spawnAppServer is the real launcher.

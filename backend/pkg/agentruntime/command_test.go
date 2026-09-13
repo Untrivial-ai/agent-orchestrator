@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -234,4 +235,70 @@ func TestClaudeNativeSessionIDValidation(t *testing.T) {
 
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// Codex Default must not fall through to the bypass flag: only an explicit
+// Bypass Permissions choice may disable approvals and the sandbox. The old
+// mapping used a catch-all default branch, so Default -- and the Read Only
+// session mode, which maps onto Default -- silently launched Codex with
+// --dangerously-bypass-approvals-and-sandbox.
+func TestCodexPermissionArgsOnlyBypassesWhenAsked(t *testing.T) {
+	bypass := "--dangerously-bypass-approvals-and-sandbox"
+	for _, tc := range []struct {
+		name   string
+		policy PermissionPolicy
+		want   []string
+	}{
+		{"default", PermissionDefault, nil},
+		{"unknown", PermissionPolicy("nonsense"), nil},
+		{"empty", PermissionPolicy(""), nil},
+		{"accept-edits", PermissionAcceptEdits, []string{"--ask-for-approval", "on-request"}},
+		{"auto", PermissionAuto, []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}},
+		{"bypass", PermissionBypassPermissions, []string{bypass}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CodexPermissionArgs(tc.policy)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("CodexPermissionArgs(%q) = %#v, want %#v", tc.policy, got, tc.want)
+			}
+		})
+	}
+
+	if reflect.DeepEqual(CodexPermissionArgs(PermissionDefault), CodexPermissionArgs(PermissionBypassPermissions)) {
+		t.Error("Default and Bypass Permissions produce the same flags; Default must not imply bypass")
+	}
+}
+
+// Both TUI launch surfaces -- fresh launch and resume -- carry the same rule.
+func TestCodexLaunchAndRestoreOnlyBypassWhenAsked(t *testing.T) {
+	bypass := "--dangerously-bypass-approvals-and-sandbox"
+	for _, tc := range []struct {
+		name       string
+		policy     PermissionPolicy
+		wantBypass bool
+	}{
+		{"default", PermissionDefault, false},
+		{"unknown", PermissionPolicy("nonsense"), false},
+		{"accept-edits", PermissionAcceptEdits, false},
+		{"auto", PermissionAuto, false},
+		{"bypass", PermissionBypassPermissions, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launch := buildCodexLaunch(LaunchConfig{Binary: "codex", Permission: tc.policy})
+			if got := slices.Contains(launch, bypass); got != tc.wantBypass {
+				t.Errorf("launch bypass = %v, want %v: %#v", got, tc.wantBypass, launch)
+			}
+			restore := buildCodexRestore(RestoreConfig{Binary: "codex", Permission: tc.policy}, "thread-1")
+			if got := slices.Contains(restore, bypass); got != tc.wantBypass {
+				t.Errorf("restore bypass = %v, want %v: %#v", got, tc.wantBypass, restore)
+			}
+		})
+	}
+
+	// The regression the issue reported: a Read Only session maps onto Default,
+	// which used to launch Codex with the sandbox bypassed.
+	readOnly := buildCodexLaunch(LaunchConfig{Binary: "codex", Permission: PermissionPolicyForMode(SessionModeReadOnly)})
+	if slices.Contains(readOnly, bypass) {
+		t.Errorf("read-only launch bypasses approvals and the sandbox: %#v", readOnly)
+	}
 }
