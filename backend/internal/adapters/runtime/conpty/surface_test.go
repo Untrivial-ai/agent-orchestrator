@@ -4,7 +4,47 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/terminalui"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestRenderedSurfaceDoesNotTurnUnicodeTitleIntoDraft(t *testing.T) {
+	for _, draft := range []string{"", "keep my unsent draft", "first line\r\n  second line", "\r\n  second line"} {
+		t.Run(draft, func(t *testing.T) {
+			surface := newRenderedSurface(80, 12)
+			border := strings.Repeat("─", 20)
+			surface.Write([]byte(border + "\r\n❯ " + draft + "\r\n" + border + "\r\nfooter\x1b[2;3H"))
+			// Claude emits this title update after completing a Terminal reply.
+			surface.Write([]byte("\x1b]0;✳ session title\a"))
+			visible := surface.Tail(12)
+			want := terminalui.ComposerEmpty
+			if draft != "" {
+				want = terminalui.ComposerDraft
+			}
+			if got := terminalui.LastBorderedPromptComposerState(visible, "❯"); got != want {
+				t.Fatalf("composer = %v, want %v; title became visible: %q", got, want, visible)
+			}
+			if strings.Contains(visible, "session title") {
+				t.Fatalf("OSC title leaked into current viewport: %q", visible)
+			}
+		})
+	}
+}
+
+func TestRenderedSurfaceTitleDoesNotHideBusyClaudeTurn(t *testing.T) {
+	surface := newRenderedSurface(80, 12)
+	border := strings.Repeat("─", 20)
+	surface.Write([]byte("✶ Generating… (esc to interrupt · 2s)\r\n" + border + "\r\n❯\r\n" + border + "\x1b[3;3H"))
+	for _, b := range []byte("\x1b]0;✳ session title\x1b\\") {
+		surface.Write([]byte{b})
+	}
+	got := (&claudecode.Plugin{}).InspectTerminalSurface(surface.Tail(12))
+	if got.Work != ports.TerminalSurfaceWorkActive || got.Composer != ports.TerminalComposerEmpty {
+		t.Fatalf("title changed active turn observation: %+v", got)
+	}
+}
 
 func TestRenderedSurfaceTracksTheVisibleAlternateScreen(t *testing.T) {
 	surface := newRenderedSurface(80, 12)
