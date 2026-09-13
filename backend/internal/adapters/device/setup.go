@@ -80,11 +80,16 @@ func (r *Runtime) SetupPlan(ctx context.Context, platform domain.DevicePlatform)
 	case domain.DevicePlatformIOS:
 		plan := ports.DeviceSetupPlan{State: domain.DeviceSetupIdle, RequiredBytes: iosRequired, AvailableBytes: available,
 			LicenseURL: appleLicenseURL, Message: "Latest iOS Simulator runtime managed by the installed Xcode"}
-		if _, err := r.lookPath("xcodebuild"); err != nil || !xcodeDeveloperDir(ctx) {
+		xcodeInstalled := true
+		if _, err := r.lookPath("xcodebuild"); err != nil {
+			xcodeInstalled = false
+		}
+		if !xcodeInstalled || !xcodeDeveloperDir(ctx) {
 			plan.State, plan.ActionURL, plan.Message = domain.DeviceSetupAwaitingAction, xcodeURL, "Install the full Xcode app, then return here to continue"
 			return plan, nil
 		}
-		if err := exec.CommandContext(ctx, "xcodebuild", "-checkFirstLaunchStatus").Run(); err != nil {
+		firstLaunchComplete := exec.CommandContext(ctx, "xcodebuild", "-checkFirstLaunchStatus").Run() == nil
+		if !firstLaunchComplete {
 			plan.State, plan.ActionURL, plan.Message = domain.DeviceSetupAwaitingAction, xcodeURL, "Open Xcode and complete its license and first-launch setup, then retry"
 			return plan, nil
 		}
@@ -142,7 +147,7 @@ func (r *Runtime) installAndroid(ctx context.Context, report func(ports.DeviceSe
 	if err := os.MkdirAll(staging, 0o700); err != nil {
 		return fmt.Errorf("create Android staging directory: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 
 	toolsArchive := filepath.Join(downloads, filepath.Base(archive.URL)+".part")
 	report(ports.DeviceSetupProgress{State: domain.DeviceSetupDownloading, Stage: "android-tools", Message: "Downloading verified Android command-line tools", Progress: 2, TotalBytes: archive.Size})
@@ -206,12 +211,12 @@ func (r *Runtime) ensureManagedJDK(ctx context.Context, downloads, staging strin
 		arch = "x64"
 	}
 	metadataURL := "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=" + arch + "&image_type=jdk&os=mac&vendor=eclipse"
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, http.NoBody)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", setupError("DOWNLOAD_FAILED", "AO could not reach the Java runtime vendor", "")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", "", setupError("DOWNLOAD_FAILED", "The Java runtime vendor returned an unexpected response", "")
 	}
@@ -376,7 +381,7 @@ func downloadResumable(ctx context.Context, url, expectedHash, target string, on
 			return nil
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -387,7 +392,7 @@ func downloadResumable(ctx context.Context, url, expectedHash, target string, on
 	if err != nil {
 		return setupError("DOWNLOAD_FAILED", "Download failed. Check the network and retry to resume.", "")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	flags := os.O_CREATE | os.O_WRONLY
 	if offset > 0 && resp.StatusCode == http.StatusPartialContent {
 		flags |= os.O_APPEND
@@ -442,7 +447,7 @@ func sha256File(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, file); err != nil {
 		return "", err
@@ -532,7 +537,7 @@ func unzipSafe(path, destination string) error {
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	for _, item := range reader.File {
 		target, err := safeJoin(destination, item.Name)
 		if err != nil {
@@ -556,14 +561,20 @@ func unzipSafe(path, destination string) error {
 		}
 		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, item.Mode().Perm())
 		if err != nil {
-			in.Close()
+			_ = in.Close()
 			return err
 		}
 		_, copyErr := io.Copy(out, io.LimitReader(in, 2<<30))
-		in.Close()
-		out.Close()
+		inCloseErr := in.Close()
+		outCloseErr := out.Close()
 		if copyErr != nil {
 			return copyErr
+		}
+		if inCloseErr != nil {
+			return inCloseErr
+		}
+		if outCloseErr != nil {
+			return outCloseErr
 		}
 	}
 	return nil
@@ -573,12 +584,12 @@ func untarGzipSafe(path, destination string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	gz, err := gzip.NewReader(file)
 	if err != nil {
 		return err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	reader := tar.NewReader(gz)
 	for {
 		header, err := reader.Next()
@@ -594,23 +605,34 @@ func untarGzipSafe(path, destination string) error {
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode).Perm()); err != nil {
+			if err := os.MkdirAll(target, 0o700); err != nil {
 				return err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode).Perm())
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 			if err != nil {
 				return err
 			}
 			_, copyErr := io.Copy(out, io.LimitReader(reader, 2<<30))
-			out.Close()
+			closeErr := out.Close()
 			if copyErr != nil {
 				return copyErr
 			}
+			if closeErr != nil {
+				return closeErr
+			}
+			if header.Mode&0o111 != 0 {
+				//nolint:gosec // Verified JDK executables need an owner execute bit.
+				if err := os.Chmod(target, 0o700); err != nil {
+					return err
+				}
+			}
 		case tar.TypeSymlink:
+			// The resolved link is constrained to destination immediately below.
+			// #nosec G305 -- safeJoin-equivalent Rel validation rejects traversal.
 			linkTarget := filepath.Clean(filepath.Join(filepath.Dir(target), header.Linkname))
 			relRoot, err := filepath.Rel(destination, linkTarget)
 			if err != nil || relRoot == ".." || strings.HasPrefix(relRoot, ".."+string(filepath.Separator)) {

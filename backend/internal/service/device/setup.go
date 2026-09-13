@@ -93,7 +93,9 @@ func (s *Service) startSetup(ctx context.Context, platform domain.DevicePlatform
 	status := setupFromPlan(platform, plan)
 	status.State, status.Stage, status.Progress, status.Message = domain.DeviceSetupQueued, "queued", 0, "Setup queued"
 	status.LicenseAccepted, status.Cancelable = true, true
-	jobCtx, cancel := context.WithCancel(context.Background())
+	// Setup deliberately outlives the initiating HTTP request while retaining
+	// its values for logging and tracing.
+	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.mu.Lock()
 	if s.setupCancels[platform] != nil {
 		s.mu.Unlock()
@@ -112,6 +114,7 @@ func (s *Service) startSetup(ctx context.Context, platform domain.DevicePlatform
 		return domain.DeviceSetup{}, apierr.Internal("DEVICE_SETUP_PERSIST_FAILED", "AO could not persist the setup job")
 	}
 	s.setupWG.Add(1)
+	//nolint:gosec // Managed setup jobs deliberately continue after the initiating request ends.
 	go s.runSetup(jobCtx, platform, started, status)
 	return status, nil
 }

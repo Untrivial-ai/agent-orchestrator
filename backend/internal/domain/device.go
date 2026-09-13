@@ -50,6 +50,7 @@ type DeviceAttachment struct {
 // DeviceSetupState is the durable lifecycle of one managed platform setup.
 type DeviceSetupState string
 
+// Device setup lifecycle states persisted by the daemon.
 const (
 	DeviceSetupIdle           DeviceSetupState = "idle"
 	DeviceSetupAwaitingAction DeviceSetupState = "awaiting_action"

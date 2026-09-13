@@ -316,7 +316,6 @@ func newDeviceSetupCommand(ctx *commandContext, jsonOutput *bool) *cobra.Command
 		return nil
 	}})
 	for _, action := range []string{"start", "retry", "cancel"} {
-		action := action
 		var accepted bool
 		command := &cobra.Command{Use: action + " <ios|android>", Short: action + " managed platform setup", Args: exactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			if args[0] != "ios" && args[0] != "android" {
