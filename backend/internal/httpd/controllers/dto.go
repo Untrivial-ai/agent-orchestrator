@@ -697,6 +697,26 @@ type DeviceListResponse struct {
 	Errors    []domain.DevicePlatformCapability `json:"errors,omitempty"`
 }
 
+// DeviceSetupResponse reports durable managed setup state for both platforms.
+type DeviceSetupResponse struct {
+	SessionID domain.SessionID     `json:"sessionId"`
+	Setups    []domain.DeviceSetup `json:"setups"`
+}
+
+// DeviceSetupCommandRequest starts, retries, or cancels a fixed platform setup.
+type DeviceSetupCommandRequest struct {
+	SessionID       domain.SessionID      `json:"sessionId"`
+	Platform        domain.DevicePlatform `json:"platform" enum:"ios,android"`
+	Action          string                `json:"action" enum:"start,retry,cancel"`
+	LicenseAccepted bool                  `json:"licenseAccepted,omitempty"`
+}
+
+// DeviceSetupCommandResponse returns the affected setup.
+type DeviceSetupCommandResponse struct {
+	SessionID domain.SessionID   `json:"sessionId"`
+	Setup     domain.DeviceSetup `json:"setup"`
+}
+
 // DeviceCommandRequest contains only the initial typed device action surface.
 // It intentionally cannot carry argv, paths, URLs, environment, or helper routes.
 type DeviceCommandRequest struct {

@@ -46,3 +46,41 @@ type DeviceAttachment struct {
 	Platform  DevicePlatform `json:"platform"`
 	Name      string         `json:"name"`
 }
+
+// DeviceSetupState is the durable lifecycle of one managed platform setup.
+type DeviceSetupState string
+
+const (
+	DeviceSetupIdle           DeviceSetupState = "idle"
+	DeviceSetupAwaitingAction DeviceSetupState = "awaiting_action"
+	DeviceSetupQueued         DeviceSetupState = "queued"
+	DeviceSetupDownloading    DeviceSetupState = "downloading"
+	DeviceSetupInstalling     DeviceSetupState = "installing"
+	DeviceSetupCreating       DeviceSetupState = "creating"
+	DeviceSetupVerifying      DeviceSetupState = "verifying"
+	DeviceSetupSucceeded      DeviceSetupState = "succeeded"
+	DeviceSetupFailed         DeviceSetupState = "failed"
+	DeviceSetupCanceled       DeviceSetupState = "canceled"
+	DeviceSetupInterrupted    DeviceSetupState = "interrupted"
+)
+
+// DeviceSetup reports the latest durable managed-setup state for one platform.
+type DeviceSetup struct {
+	Platform         DevicePlatform   `json:"platform"`
+	State            DeviceSetupState `json:"state"`
+	Stage            string           `json:"stage,omitempty"`
+	Message          string           `json:"message,omitempty"`
+	Progress         int              `json:"progress" minimum:"0" maximum:"100"`
+	DownloadedBytes  int64            `json:"downloadedBytes,omitempty" minimum:"0"`
+	TotalBytes       int64            `json:"totalBytes,omitempty" minimum:"0"`
+	RequiredBytes    int64            `json:"requiredBytes,omitempty" minimum:"0"`
+	AvailableBytes   int64            `json:"availableBytes,omitempty" minimum:"0"`
+	LicenseURL       string           `json:"licenseUrl,omitempty"`
+	LicenseAccepted  bool             `json:"licenseAccepted"`
+	ActionURL        string           `json:"actionUrl,omitempty"`
+	ErrorCode        string           `json:"errorCode,omitempty"`
+	Error            string           `json:"error,omitempty"`
+	Cancelable       bool             `json:"cancelable"`
+	Retryable        bool             `json:"retryable"`
+	InstalledVersion string           `json:"installedVersion,omitempty"`
+}

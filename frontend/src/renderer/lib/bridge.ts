@@ -81,6 +81,8 @@ export const aoBridge: AoBridge =
 			command: async () => {
 				throw new Error("The desktop app is required for local devices.");
 			},
+			setupStatus: async (sessionId: string) => ({ sessionId, setups: [] }),
+			setup: async () => { throw new Error("The desktop app is required for managed device setup."); },
 		},
 		editorHandoff: {
 			getState: async () => ({

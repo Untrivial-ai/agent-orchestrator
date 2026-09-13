@@ -15,10 +15,21 @@ import (
 )
 
 type fakeLocalDeviceService struct {
-	session     domain.SessionID
-	credentials devicesvc.Credentials
-	command     devicesvc.Command
-	emptyList   bool
+	session      domain.SessionID
+	credentials  devicesvc.Credentials
+	command      devicesvc.Command
+	setupCommand devicesvc.SetupCommand
+	emptyList    bool
+}
+
+func (f *fakeLocalDeviceService) SetupStatus(_ context.Context, session domain.SessionID, credentials devicesvc.Credentials) ([]domain.DeviceSetup, error) {
+	f.session, f.credentials = session, credentials
+	return []domain.DeviceSetup{{Platform: domain.DevicePlatformIOS, State: domain.DeviceSetupIdle}}, nil
+}
+
+func (f *fakeLocalDeviceService) ExecuteSetup(_ context.Context, session domain.SessionID, credentials devicesvc.Credentials, command devicesvc.SetupCommand) (domain.DeviceSetup, error) {
+	f.session, f.credentials, f.setupCommand = session, credentials, command
+	return domain.DeviceSetup{Platform: command.Platform, State: domain.DeviceSetupQueued}, nil
 }
 
 func (f *fakeLocalDeviceService) Status(_ context.Context, session domain.SessionID, credentials devicesvc.Credentials) (devicesvc.Status, error) {
@@ -71,6 +82,19 @@ func TestLocalDevicesControllerRejectsMalformedJSON(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/devices/commands", strings.NewReader("{")))
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_JSON") {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLocalDevicesControllerStartsManagedSetupWithExplicitLicense(t *testing.T) {
+	service := &fakeLocalDeviceService{}
+	router := chi.NewRouter()
+	(&LocalDevicesController{Svc: service}).Register(router)
+	request := httptest.NewRequest(http.MethodPost, "/devices/setup", strings.NewReader(`{"sessionId":"s1","platform":"android","action":"start","licenseAccepted":true}`))
+	request.Header.Set(deviceCapabilityHeader, "agent-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || service.setupCommand.Platform != domain.DevicePlatformAndroid || !service.setupCommand.LicenseAccepted {
+		t.Fatalf("status = %d, command = %#v, body = %s", response.Code, service.setupCommand, response.Body.String())
 	}
 }
 

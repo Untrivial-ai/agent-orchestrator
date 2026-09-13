@@ -158,6 +158,8 @@ if (typeof window !== "undefined") {
 			status: async (sessionId: string) => ({ sessionId, capabilities: [] }),
 			list: async (sessionId: string) => ({ sessionId, devices: [] }),
 			command: async ({ sessionId, action }) => ({ sessionId, action }),
+			setupStatus: async (sessionId: string) => ({ sessionId, setups: [] }),
+			setup: async ({ sessionId, platform }) => ({ sessionId, setup: { platform, state: "queued", progress: 0, licenseAccepted: true, cancelable: true, retryable: false } }),
 		},
 		editorHandoff: {
 			getState: async () => ({

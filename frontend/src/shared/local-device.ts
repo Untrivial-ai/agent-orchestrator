@@ -59,3 +59,29 @@ export type LocalDeviceCommandResult = {
 	attachment?: LocalDeviceAttachment;
 	result?: Record<string, unknown>;
 };
+
+export type LocalDeviceSetupState = "idle" | "awaiting_action" | "queued" | "downloading" | "installing" | "creating" | "verifying" | "succeeded" | "failed" | "canceled" | "interrupted";
+
+export type LocalDeviceSetup = {
+	platform: LocalDevicePlatform;
+	state: LocalDeviceSetupState;
+	stage?: string;
+	message?: string;
+	progress: number;
+	downloadedBytes?: number;
+	totalBytes?: number;
+	requiredBytes?: number;
+	availableBytes?: number;
+	licenseUrl?: string;
+	licenseAccepted: boolean;
+	actionUrl?: string;
+	errorCode?: string;
+	error?: string;
+	cancelable: boolean;
+	retryable: boolean;
+	installedVersion?: string;
+};
+
+export type LocalDeviceSetupStatus = { sessionId: string; setups: LocalDeviceSetup[] };
+export type LocalDeviceSetupCommand = { sessionId: string; platform: LocalDevicePlatform; action: "start" | "retry" | "cancel"; licenseAccepted?: boolean };
+export type LocalDeviceSetupResult = { sessionId: string; setup: LocalDeviceSetup };

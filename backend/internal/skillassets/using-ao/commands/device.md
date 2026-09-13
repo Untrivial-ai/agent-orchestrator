@@ -2,9 +2,11 @@
 
 Inspect and control the current AO session's local iOS Simulator or Android
 Emulator. The desktop app must be open, the host must be macOS,
-and the relevant vendor toolchain must already be installed. AO ships the
-agent-control runtime; it does not download Xcode, Android Studio, SDK images,
-or accept licenses on the user's behalf.
+AO can install a pinned Android command-line toolchain, system image, and
+AO-owned AVD under `~/.ao`. For iOS, the user installs and licenses Xcode;
+after that handoff AO can download the Simulator runtime and create a device.
+AO never silently accepts vendor terms: setup requires explicit confirmation
+in the Devices panel or `--accept-license` on the CLI.
 
 `AO_SESSION_ID` and the launch-scoped `AO_DEVICE_CAPABILITY` select and
 authorize the current worker automatically. Run these commands only inside an
@@ -24,6 +26,9 @@ inspecting or interacting:
 
 ```bash
 ao device status
+ao device setup status
+# With the user's explicit approval of the linked vendor terms:
+ao device setup start android --accept-license
 ao device list
 ao device open <device-id>
 ao device ui-tree --interactive
@@ -43,6 +48,10 @@ requires explicit `--yes` confirmation.
 
 ```text
 ao device status [--json]
+ao device setup status [--json]
+ao device setup start <ios|android> --accept-license [--json]
+ao device setup retry <ios|android> --accept-license [--json]
+ao device setup cancel <ios|android> [--json]
 ao device list [--json]
 ao device open <device-id> [--json]
 ao device screenshot [path] [--base64] [--json]
@@ -66,5 +75,6 @@ actionable controls. `fill` replaces a referenced field's value; `type`
 inserts text into the currently focused field.
 
 Platform setup errors are independent: missing Xcode must not disable Android,
-and a missing Android SDK must not disable iOS. Follow only the official setup
-link shown in the Devices tab, then rerun `ao device status` and `list`.
+and an Android download failure must not disable iOS. Setup jobs are durable;
+after an AO restart, `retry` resumes retained partial downloads. Never pass
+`--accept-license` unless the user has knowingly accepted the linked terms.

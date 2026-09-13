@@ -1967,6 +1967,16 @@ ipcMain.handle("device:command", (event, command: unknown) => {
 	if (!command || typeof command !== "object" || Array.isArray(command)) throw new Error("A device command is required.");
 	return requestLocalDevice("/api/v1/devices/commands", { method: "POST", body: JSON.stringify(command) });
 });
+ipcMain.handle("device:setup-status", (event, sessionId: unknown) => {
+	if (event.sender !== getShellWebContents()) throw new Error("Untrusted device setup request.");
+	if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("A session id is required.");
+	return requestLocalDevice(`/api/v1/devices/setup?sessionId=${encodeURIComponent(sessionId.trim())}`);
+});
+ipcMain.handle("device:setup", (event, command: unknown) => {
+	if (event.sender !== getShellWebContents()) throw new Error("Untrusted device setup request.");
+	if (!command || typeof command !== "object" || Array.isArray(command)) throw new Error("A device setup command is required.");
+	return requestLocalDevice("/api/v1/devices/setup", { method: "POST", body: JSON.stringify(command) });
+});
 ipcMain.handle("editorHandoff:getState", (event, sessionId: string) => {
 	if (event.sender !== getShellWebContents()) throw new Error("Untrusted editor handoff request.");
 	return editorHandoff.getState(typeof sessionId === "string" ? sessionId : "");

@@ -567,7 +567,14 @@ func Run() error {
 	// HostID is assigned below, once the identity file has been read.
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
-	deviceService := devicesvc.New(sessionSvc, deviceadapter.New(cfg.DataDir), browserAuthority, browserRuntimeToken)
+	deviceRuntime := deviceadapter.New(cfg.DataDir)
+	deviceService := devicesvc.NewWithDeps(sessionSvc, deviceRuntime, browserAuthority, browserRuntimeToken, devicesvc.Deps{SetupRuntime: deviceRuntime, SetupStore: store})
+	if err := deviceService.Recover(ctx); err != nil {
+		stop()
+		lcStack.Stop()
+		_ = cdcPipe.Stop()
+		return fmt.Errorf("recover device setup jobs: %w", err)
+	}
 	wiredSessMgr.SetDeviceLifecycle(deviceService)
 
 	// Standalone shell terminals: user-opened shells with no agent session
@@ -893,6 +900,11 @@ func Run() error {
 		log.Error("harness installer shutdown", "err", err)
 	}
 	installStopCancel()
+	deviceStopCtx, deviceStopCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	if err := deviceService.Close(deviceStopCtx); err != nil {
+		log.Error("device installer shutdown", "err", err)
+	}
+	deviceStopCancel()
 	if startupReconcileDone != nil {
 		<-startupReconcileDone
 	}

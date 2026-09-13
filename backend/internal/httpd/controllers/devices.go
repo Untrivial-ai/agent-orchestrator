@@ -23,6 +23,8 @@ type LocalDeviceService interface {
 	Status(context.Context, domain.SessionID, devicesvc.Credentials) (devicesvc.Status, error)
 	List(context.Context, domain.SessionID, devicesvc.Credentials) (devicesvc.Inventory, error)
 	Execute(context.Context, domain.SessionID, devicesvc.Credentials, devicesvc.Command) (devicesvc.Result, error)
+	SetupStatus(context.Context, domain.SessionID, devicesvc.Credentials) ([]domain.DeviceSetup, error)
+	ExecuteSetup(context.Context, domain.SessionID, devicesvc.Credentials, devicesvc.SetupCommand) (domain.DeviceSetup, error)
 }
 
 // LocalDevicesController exposes session-scoped iOS Simulator and Android Emulator operations.
@@ -33,6 +35,44 @@ func (c *LocalDevicesController) Register(r chi.Router) {
 	r.Get("/devices/status", c.status)
 	r.Get("/devices", c.list)
 	r.Post("/devices/commands", c.execute)
+	r.Get("/devices/setup", c.setupStatus)
+	r.Post("/devices/setup", c.executeSetup)
+}
+
+func (c *LocalDevicesController) setupStatus(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, http.MethodGet, "/api/v1/devices/setup")
+		return
+	}
+	sessionID := domain.SessionID(strings.TrimSpace(r.URL.Query().Get("sessionId")))
+	setups, err := c.Svc.SetupStatus(r.Context(), sessionID, deviceCredentials(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	if setups == nil {
+		setups = []domain.DeviceSetup{}
+	}
+	envelope.WriteJSON(w, http.StatusOK, DeviceSetupResponse{SessionID: sessionID, Setups: setups})
+}
+
+func (c *LocalDevicesController) executeSetup(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, http.MethodPost, "/api/v1/devices/setup")
+		return
+	}
+	var in DeviceSetupCommandRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	setup, err := c.Svc.ExecuteSetup(r.Context(), in.SessionID, deviceCredentials(r), devicesvc.SetupCommand{Platform: in.Platform, Action: in.Action, LicenseAccepted: in.LicenseAccepted})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, DeviceSetupCommandResponse{SessionID: in.SessionID, Setup: setup})
 }
 
 func (c *LocalDevicesController) status(w http.ResponseWriter, r *http.Request) {

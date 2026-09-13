@@ -237,6 +237,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersDeviceListResponse":                       "DeviceListResponse",
 	"ControllersDeviceCommandRequest":                     "DeviceCommandRequest",
 	"ControllersDeviceCommandResponse":                    "DeviceCommandResponse",
+	"ControllersDeviceSetupResponse":                      "DeviceSetupResponse",
+	"ControllersDeviceSetupCommandRequest":                "DeviceSetupCommandRequest",
+	"ControllersDeviceSetupCommandResponse":               "DeviceSetupCommandResponse",
 	"ControllersSetSessionMergePolicyRequest":             "SetSessionMergePolicyRequest",
 	"ControllersSetSessionMergePolicyResponse":            "SetSessionMergePolicyResponse",
 	"ControllersSetSessionAutoInjectReviewRequest":        "SetSessionAutoInjectReviewRequest",
@@ -729,6 +732,18 @@ func deviceOperations() []operation {
 			pathParams: []any{controllers.DeviceCredentialsHeaders{}},
 			reqBody:    controllers.DeviceCommandRequest{},
 			resps:      append([]respUnit{{http.StatusOK, controllers.DeviceCommandResponse{}}}, commonErrors...),
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/devices/setup", id: "getDeviceSetup", tag: "devices",
+			summary:    "Get durable managed virtual-device setup progress",
+			pathParams: []any{controllers.DeviceStatusQuery{}, controllers.DeviceCredentialsHeaders{}},
+			resps:      append([]respUnit{{http.StatusOK, controllers.DeviceSetupResponse{}}}, commonErrors...),
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/devices/setup", id: "executeDeviceSetup", tag: "devices",
+			summary:    "Start, retry, or cancel a managed virtual-device setup",
+			pathParams: []any{controllers.DeviceCredentialsHeaders{}}, reqBody: controllers.DeviceSetupCommandRequest{},
+			resps: append([]respUnit{{http.StatusOK, controllers.DeviceSetupCommandResponse{}}}, commonErrors...),
 		},
 	}
 }

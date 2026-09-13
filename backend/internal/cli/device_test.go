@@ -15,6 +15,7 @@ type deviceRequestCapture struct {
 	path       string
 	capability string
 	body       deviceCommandRequestDTO
+	setupBody  deviceSetupRequestDTO
 }
 
 func deviceCLIServer(t *testing.T, capture *deviceRequestCapture) *httptest.Server {
@@ -31,6 +32,17 @@ func deviceCLIServer(t *testing.T, capture *deviceRequestCapture) *httptest.Serv
 			_, _ = io.WriteString(w, `{"sessionId":"ao-1","capabilities":[{"platform":"ios","available":true}]}`)
 			return
 		}
+		if r.URL.Path == "/api/v1/devices/setup" {
+			if r.Method == http.MethodGet {
+				_, _ = io.WriteString(w, `{"sessionId":"ao-1","setups":[{"platform":"android","state":"idle","progress":0}]}`)
+				return
+			}
+			if err := json.NewDecoder(r.Body).Decode(&capture.setupBody); err != nil {
+				t.Fatalf("decode setup command: %v", err)
+			}
+			_, _ = io.WriteString(w, `{"sessionId":"ao-1","setup":{"platform":"android","state":"queued","progress":0}}`)
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&capture.body); err != nil {
 			t.Fatalf("decode command: %v", err)
 		}
@@ -40,6 +52,27 @@ func deviceCLIServer(t *testing.T, capture *deviceRequestCapture) *httptest.Serv
 		}
 		_, _ = io.WriteString(w, `{"sessionId":"ao-1","action":"`+capture.body.Action+`","result":`+result+`}`)
 	}))
+}
+
+func TestDeviceCLIManagedSetupRequiresExplicitLicense(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-1")
+	t.Setenv("AO_DEVICE_CAPABILITY", "device-token")
+	cfg := setConfigEnv(t)
+	capture := &deviceRequestCapture{}
+	server := deviceCLIServer(t, capture)
+	t.Cleanup(server.Close)
+	writeRunFileFor(t, cfg, server)
+	deps := Deps{ProcessAlive: func(int) bool { return true }}
+	if _, _, err := executeCLI(t, deps, "device", "setup", "start", "android"); err == nil || !strings.Contains(err.Error(), "--accept-license") {
+		t.Fatalf("license error = %v", err)
+	}
+	output, stderr, err := executeCLI(t, deps, "device", "setup", "start", "android", "--accept-license")
+	if err != nil || !strings.Contains(output, "android setup: queued") {
+		t.Fatalf("setup err=%v stderr=%s stdout=%s", err, stderr, output)
+	}
+	if capture.setupBody.SessionID != "ao-1" || capture.setupBody.Platform != "android" || !capture.setupBody.LicenseAccepted {
+		t.Fatalf("setup request = %#v", capture.setupBody)
+	}
 }
 
 func TestDeviceCLIUsesSessionCapabilityAndTypedActions(t *testing.T) {

@@ -2,8 +2,12 @@ package device
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +86,58 @@ func TestDeviceHostEnvExcludesSecrets(t *testing.T) {
 	}
 	if strings.Contains(joined, "must-not-leak") || strings.Contains(joined, "OPENAI_API_KEY") || strings.Contains(joined, "AO_DEVICE_CAPABILITY") {
 		t.Fatalf("secret environment leaked: %s", joined)
+	}
+}
+
+func TestMergeEnvironmentUsesManagedOverridesWithoutDuplicates(t *testing.T) {
+	merged := mergeEnvironment([]string{"PATH=/host", "HOME=/home"}, []string{"PATH=/managed", "ANDROID_HOME=/sdk"})
+	joined := strings.Join(merged, "\n")
+	if strings.Count(joined, "PATH=") != 1 || !strings.Contains(joined, "PATH=/managed") || !strings.Contains(joined, "ANDROID_HOME=/sdk") {
+		t.Fatalf("merged environment = %q", joined)
+	}
+}
+
+func TestDownloadResumableUsesRangeAndVerifiesChecksum(t *testing.T) {
+	payload := []byte("complete verified vendor archive")
+	sum := sha256.Sum256(payload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "bytes=8-" {
+			t.Errorf("Range = %q", r.Header.Get("Range"))
+		}
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[8:])
+	}))
+	defer server.Close()
+	target := filepath.Join(t.TempDir(), "archive.part")
+	if err := os.WriteFile(target, payload[:8], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := downloadResumable(context.Background(), server.URL, fmt.Sprintf("%x", sum), target, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("archive = %q, %v", got, err)
+	}
+}
+
+func TestManagedAndroidCapabilityUsesAOOwnedSDKAndAVD(t *testing.T) {
+	runtime := testRuntime(t)
+	runtime.dataDir = t.TempDir()
+	for _, path := range []string{filepath.Join(runtime.androidSDKDir(), "platform-tools", "adb"), filepath.Join(runtime.androidSDKDir(), "emulator", "emulator"), filepath.Join(runtime.androidAVDDir(), androidAVDName+".avd", "config.ini")} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if capability := runtime.androidCapability(); !capability.Available {
+		t.Fatalf("capability = %#v", capability)
+	}
+	plan, err := runtime.SetupPlan(context.Background(), domain.DevicePlatformAndroid)
+	if err != nil || !plan.Ready || plan.InstalledVersion != androidToolsVersion {
+		t.Fatalf("plan = %#v, %v", plan, err)
 	}
 }
 

@@ -1294,6 +1294,145 @@ paths:
       summary: Execute an allowlisted action on a session-scoped local virtual device
       tags:
       - devices
+  /api/v1/devices/setup:
+    get:
+      operationId: getDeviceSetup
+      parameters:
+      - description: AO session identifier.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session identifier.
+          type: string
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSetupResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Get durable managed virtual-device setup progress
+      tags:
+      - devices
+    post:
+      operationId: executeDeviceSetup
+      parameters:
+      - description: Opaque capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Device-Capability
+        schema:
+          description: Opaque capability injected into the owning AO worker.
+          type: string
+      - description: Private Electron-main capability; never available to renderer
+          JavaScript.
+        in: header
+        name: X-AO-Desktop-Device-Capability
+        schema:
+          description: Private Electron-main capability; never available to renderer
+            JavaScript.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceSetupCommandRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSetupCommandResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Start, retry, or cancel a managed virtual-device setup
+      tags:
+      - devices
   /api/v1/devices/status:
     get:
       operationId: getDeviceStatus
@@ -9608,6 +9747,50 @@ components:
       - sessionId
       - devices
       type: object
+    DeviceSetupCommandRequest:
+      properties:
+        action:
+          enum:
+          - start
+          - retry
+          - cancel
+          type: string
+        licenseAccepted:
+          type: boolean
+        platform:
+          enum:
+          - ios
+          - android
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - platform
+      - action
+      type: object
+    DeviceSetupCommandResponse:
+      properties:
+        sessionId:
+          type: string
+        setup:
+          $ref: '#/components/schemas/DomainDeviceSetup'
+      required:
+      - sessionId
+      - setup
+      type: object
+    DeviceSetupResponse:
+      properties:
+        sessionId:
+          type: string
+        setups:
+          items:
+            $ref: '#/components/schemas/DomainDeviceSetup'
+          type: array
+      required:
+      - sessionId
+      - setups
+      type: object
     DeviceStatusResponse:
       properties:
         attachment:
@@ -9684,6 +9867,60 @@ components:
       required:
       - platform
       - available
+      type: object
+    DomainDeviceSetup:
+      properties:
+        actionUrl:
+          type: string
+        availableBytes:
+          format: int64
+          minimum: 0
+          type: integer
+        cancelable:
+          type: boolean
+        downloadedBytes:
+          format: int64
+          minimum: 0
+          type: integer
+        error:
+          type: string
+        errorCode:
+          type: string
+        installedVersion:
+          type: string
+        licenseAccepted:
+          type: boolean
+        licenseUrl:
+          type: string
+        message:
+          type: string
+        platform:
+          type: string
+        progress:
+          maximum: 100
+          minimum: 0
+          type: integer
+        requiredBytes:
+          format: int64
+          minimum: 0
+          type: integer
+        retryable:
+          type: boolean
+        stage:
+          type: string
+        state:
+          type: string
+        totalBytes:
+          format: int64
+          minimum: 0
+          type: integer
+      required:
+      - platform
+      - state
+      - progress
+      - licenseAccepted
+      - cancelable
+      - retryable
       type: object
     DomainReviewerConfig:
       properties:

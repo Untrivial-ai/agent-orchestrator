@@ -78,6 +78,31 @@ type deviceCommandResponseDTO struct {
 	Result     map[string]any       `json:"result,omitempty"`
 }
 
+type deviceSetupDTO struct {
+	Platform   string `json:"platform"`
+	State      string `json:"state"`
+	Stage      string `json:"stage,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Progress   int    `json:"progress"`
+	Error      string `json:"error,omitempty"`
+	Cancelable bool   `json:"cancelable"`
+	Retryable  bool   `json:"retryable"`
+}
+type deviceSetupStatusDTO struct {
+	SessionID string           `json:"sessionId"`
+	Setups    []deviceSetupDTO `json:"setups"`
+}
+type deviceSetupRequestDTO struct {
+	SessionID       string `json:"sessionId"`
+	Platform        string `json:"platform"`
+	Action          string `json:"action"`
+	LicenseAccepted bool   `json:"licenseAccepted,omitempty"`
+}
+type deviceSetupResponseDTO struct {
+	SessionID string         `json:"sessionId"`
+	Setup     deviceSetupDTO `json:"setup"`
+}
+
 func newDeviceCommand(ctx *commandContext) *cobra.Command {
 	var jsonOutput bool
 	root := &cobra.Command{
@@ -269,7 +294,53 @@ func newDeviceCommand(ctx *commandContext) *cobra.Command {
 	}}
 	shutdown.Flags().BoolVar(&yes, "yes", false, "confirm powering off a device used by other tools")
 	root.AddCommand(shutdown)
+	root.AddCommand(newDeviceSetupCommand(ctx, &jsonOutput))
 	return root
+}
+
+func newDeviceSetupCommand(ctx *commandContext, jsonOutput *bool) *cobra.Command {
+	setup := &cobra.Command{Use: "setup", Short: "Install and prepare AO-managed virtual-device tools", Args: noArgs}
+	setup.AddCommand(&cobra.Command{Use: "status", Short: "Show managed setup progress", Args: noArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		status, err := ctx.deviceSetupStatus(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return writeJSON(cmd.OutOrStdout(), status)
+		}
+		for _, item := range status.Setups {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: %s (%d%%) %s\n", item.Platform, item.State, item.Progress, item.Message); err != nil {
+				return err
+			}
+		}
+		return nil
+	}})
+	for _, action := range []string{"start", "retry", "cancel"} {
+		action := action
+		var accepted bool
+		command := &cobra.Command{Use: action + " <ios|android>", Short: action + " managed platform setup", Args: exactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+			if args[0] != "ios" && args[0] != "android" {
+				return usageError{errors.New("platform must be ios or android")}
+			}
+			if action != "cancel" && !accepted {
+				return usageError{errors.New("setup requires --accept-license")}
+			}
+			response, err := ctx.deviceSetupAction(cmd.Context(), deviceSetupRequestDTO{Platform: args[0], Action: action, LicenseAccepted: accepted})
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				return writeJSON(cmd.OutOrStdout(), response)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s setup: %s (%d%%)\n", response.Setup.Platform, response.Setup.State, response.Setup.Progress)
+			return err
+		}}
+		if action != "cancel" {
+			command.Flags().BoolVar(&accepted, "accept-license", false, "confirm acceptance of the platform vendor license terms")
+		}
+		setup.AddCommand(command)
+	}
+	return setup
 }
 
 func currentDeviceIdentity() (string, string, error) {
@@ -312,6 +383,27 @@ func (c *commandContext) deviceAction(ctx context.Context, request deviceCommand
 	request.SessionID = sessionID
 	var out deviceCommandResponseDTO
 	err = c.doJSONPathWithHeaders(ctx, http.MethodPost, "/api/v1/devices/commands", request, &out, map[string]string{deviceCapabilityHeader: capability})
+	return out, err
+}
+
+func (c *commandContext) deviceSetupStatus(ctx context.Context) (deviceSetupStatusDTO, error) {
+	sessionID, capability, err := currentDeviceIdentity()
+	if err != nil {
+		return deviceSetupStatusDTO{}, err
+	}
+	var out deviceSetupStatusDTO
+	err = c.doJSONPathWithHeaders(ctx, http.MethodGet, "/api/v1/devices/setup?sessionId="+url.QueryEscape(sessionID), nil, &out, map[string]string{deviceCapabilityHeader: capability})
+	return out, err
+}
+
+func (c *commandContext) deviceSetupAction(ctx context.Context, request deviceSetupRequestDTO) (deviceSetupResponseDTO, error) {
+	sessionID, capability, err := currentDeviceIdentity()
+	if err != nil {
+		return deviceSetupResponseDTO{}, err
+	}
+	request.SessionID = sessionID
+	var out deviceSetupResponseDTO
+	err = c.doJSONPathWithHeaders(ctx, http.MethodPost, "/api/v1/devices/setup", request, &out, map[string]string{deviceCapabilityHeader: capability})
 	return out, err
 }
 

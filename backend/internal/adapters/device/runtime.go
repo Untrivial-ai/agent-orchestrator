@@ -34,6 +34,7 @@ type CommandRunner func(context.Context, string, []string, []byte, []string) ([]
 type Runtime struct {
 	runtimeDir string
 	nodePath   string
+	dataDir    string
 	stateDir   string
 	run        CommandRunner
 	lookPath   func(string) (string, error)
@@ -52,6 +53,7 @@ func New(dataDir string) *Runtime {
 	return &Runtime{
 		runtimeDir: runtimeDir,
 		nodePath:   node,
+		dataDir:    dataDir,
 		stateDir:   filepath.Join(dataDir, "devices", "agent-device"),
 		run:        runCommand,
 		lookPath:   exec.LookPath,
@@ -78,6 +80,10 @@ func (r *Runtime) iosCapability() domain.DevicePlatformCapability {
 }
 
 func (r *Runtime) androidCapability() domain.DevicePlatformCapability {
+	if regularFile(filepath.Join(r.androidSDKDir(), "platform-tools", "adb")) &&
+		regularFile(filepath.Join(r.androidSDKDir(), "emulator", "emulator")) {
+		return domain.DevicePlatformCapability{Platform: domain.DevicePlatformAndroid, Available: true}
+	}
 	if _, err := r.lookPath("adb"); err == nil {
 		return domain.DevicePlatformCapability{Platform: domain.DevicePlatformAndroid, Available: true}
 	}
@@ -143,7 +149,7 @@ func (r *Runtime) Execute(ctx context.Context, request ports.DeviceRuntimeReques
 		"AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS=300000",
 		"AGENT_DEVICE_NO_UPDATE_NOTIFIER=1",
 	}
-	stdout, stderr, runErr := r.run(requestCtx, r.nodePath, []string{filepath.Join(r.runtimeDir, "ao-device-runner.mjs")}, input, env)
+	stdout, stderr, runErr := r.run(requestCtx, r.nodePath, []string{filepath.Join(r.runtimeDir, "ao-device-runner.mjs")}, input, append(r.managedAndroidEnv(), env...))
 	if len(stdout) > maxOutput || len(stderr) > maxOutput {
 		return nil, &ports.DeviceRuntimeError{Code: "DEVICE_RUNTIME_UNAVAILABLE", Message: "Device helper output exceeded AO's limit"}
 	}
@@ -169,6 +175,23 @@ func (r *Runtime) Execute(ctx context.Context, request ports.DeviceRuntimeReques
 		return nil, &ports.DeviceRuntimeError{Code: "DEVICE_RUNTIME_UNAVAILABLE", Message: "The device helper exited unexpectedly"}
 	}
 	return envelope.Result, nil
+}
+
+func (r *Runtime) androidRoot() string   { return filepath.Join(r.dataDir, "devices", "android") }
+func (r *Runtime) androidSDKDir() string { return filepath.Join(r.androidRoot(), "sdk") }
+func (r *Runtime) androidAVDDir() string { return filepath.Join(r.androidRoot(), "avd") }
+
+func (r *Runtime) managedAndroidEnv() []string {
+	sdk := r.androidSDKDir()
+	if !regularFile(filepath.Join(sdk, "platform-tools", "adb")) {
+		return nil
+	}
+	path := strings.Join([]string{
+		filepath.Join(sdk, "platform-tools"), filepath.Join(sdk, "emulator"), os.Getenv("PATH"),
+	}, string(os.PathListSeparator))
+	return []string{
+		"ANDROID_HOME=" + sdk, "ANDROID_SDK_ROOT=" + sdk, "ANDROID_AVD_HOME=" + r.androidAVDDir(), "PATH=" + path,
+	}
 }
 
 func normalizeError(code, _ string) error {
@@ -203,7 +226,7 @@ func regularFile(path string) bool {
 func runCommand(ctx context.Context, command string, args []string, stdin []byte, env []string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Env = append(deviceHostEnv(), env...)
+	cmd.Env = mergeEnvironment(deviceHostEnv(), env)
 	stdout, stderr := newBoundedBuffer(maxOutput), newBoundedBuffer(maxOutput)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -227,6 +250,26 @@ func deviceHostEnv() []string {
 		if _, keep := allowed[name]; ok && keep {
 			result = append(result, entry)
 		}
+	}
+	return result
+}
+
+func mergeEnvironment(base, overrides []string) []string {
+	values := make(map[string]string, len(base)+len(overrides))
+	order := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range append(append([]string{}, base...), overrides...) {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, exists := values[name]; !exists {
+			order = append(order, name)
+		}
+		values[name] = entry
+	}
+	result := make([]string, 0, len(order))
+	for _, name := range order {
+		result = append(result, values[name])
 	}
 	return result
 }

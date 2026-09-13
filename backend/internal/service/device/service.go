@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -76,14 +77,58 @@ type Service struct {
 	bySession    map[domain.SessionID]domain.DeviceAttachment
 	owners       map[string]domain.SessionID
 	operations   map[domain.SessionID]*sync.Mutex
+	setupRuntime ports.DeviceSetupRuntime
+	setupStore   ports.DeviceSetupJobStore
+	setupJobs    map[domain.DevicePlatform]domain.DeviceSetup
+	setupCancels map[domain.DevicePlatform]context.CancelFunc
+	setupWG      sync.WaitGroup
+}
+
+// Deps supplies the durable managed-setup boundaries.
+type Deps struct {
+	SetupRuntime ports.DeviceSetupRuntime
+	SetupStore   ports.DeviceSetupJobStore
 }
 
 // New creates the device service.
 func New(sessions sessionReader, runtime ports.DeviceRuntime, authority capabilityAuthority, desktopToken string) *Service {
+	setupRuntime, _ := runtime.(ports.DeviceSetupRuntime)
+	return NewWithDeps(sessions, runtime, authority, desktopToken, Deps{SetupRuntime: setupRuntime})
+}
+
+// NewWithDeps creates the device service with durable managed setup support.
+func NewWithDeps(sessions sessionReader, runtime ports.DeviceRuntime, authority capabilityAuthority, desktopToken string, deps Deps) *Service {
 	return &Service{
 		sessions: sessions, runtime: runtime, authority: authority, desktopToken: desktopToken,
 		bySession: make(map[domain.SessionID]domain.DeviceAttachment), owners: make(map[string]domain.SessionID),
-		operations: make(map[domain.SessionID]*sync.Mutex),
+		operations:   make(map[domain.SessionID]*sync.Mutex),
+		setupRuntime: deps.SetupRuntime, setupStore: deps.SetupStore, setupJobs: make(map[domain.DevicePlatform]domain.DeviceSetup),
+		setupCancels: make(map[domain.DevicePlatform]context.CancelFunc),
+	}
+}
+
+// Recover marks installer work abandoned by a daemon restart as resumable.
+func (s *Service) Recover(ctx context.Context) error {
+	if s.setupStore == nil {
+		return nil
+	}
+	return s.setupStore.InterruptActiveDeviceSetupJobs(ctx, time.Now())
+}
+
+// Close cancels all daemon-owned installer subprocesses and downloads.
+func (s *Service) Close(ctx context.Context) error {
+	s.mu.Lock()
+	for _, cancel := range s.setupCancels {
+		cancel()
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.setupWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

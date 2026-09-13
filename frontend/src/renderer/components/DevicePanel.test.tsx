@@ -17,6 +17,20 @@ describe("DevicePanel", () => {
 			sessionId: "s1",
 			devices: [{ id: "ios-1", name: "iPhone 17", platform: "ios", kind: "simulator", booted: false, busy: false }],
 		});
+		vi.spyOn(aoBridge.device, "setupStatus").mockResolvedValue({
+			sessionId: "s1",
+			setups: [{ platform: "android", state: "idle", message: "Install Android Studio", progress: 0, requiredBytes: 12 * 2 ** 30, licenseUrl: "https://developer.android.com/studio/terms", licenseAccepted: false, cancelable: false, retryable: false }],
+		});
+	});
+
+	it("requires license confirmation before starting managed setup", async () => {
+		const setup = vi.spyOn(aoBridge.device, "setup").mockResolvedValue({ sessionId: "s1", setup: { platform: "android", state: "queued", progress: 0, licenseAccepted: true, cancelable: true, retryable: false } });
+		render(<DevicePanel sessionId="s1" />);
+		const button = await screen.findByRole("button", { name: "Set up Android" });
+		expect(button).toBeDisabled();
+		fireEvent.click(screen.getByRole("checkbox"));
+		fireEvent.click(button);
+		await waitFor(() => expect(setup).toHaveBeenCalledWith({ sessionId: "s1", platform: "android", action: "start", licenseAccepted: true }));
 	});
 
 	afterEach(() => vi.restoreAllMocks());
