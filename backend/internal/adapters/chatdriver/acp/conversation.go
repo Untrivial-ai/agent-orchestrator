@@ -282,6 +282,7 @@ func (c *conversation) start(
 	}
 	if c.skillsKnown {
 		c.capabilities[ports.ChatCapabilitySkills] = true
+		c.capabilities[ports.ChatCapabilityCompaction] = hasCompactSkill(c.skills)
 	}
 	c.modeFor = modeFor
 	c.optionsFor = optionsFor
@@ -349,6 +350,10 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 	c.mu.Lock()
 	if durableBusy {
 		c.activeTurn = providerTurnID
+		if c.liveState.ActiveCompaction {
+			c.compactingTurnID = providerTurnID
+			c.compactionBefore = c.contextTokens
+		}
 		c.messages = make(map[string]string)
 		c.thoughts = make(map[string]string)
 		c.nestedMessages = make(map[string]nestedMessageState)
@@ -582,13 +587,6 @@ func (c *conversation) finishPrompt(
 			}
 			c.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderTurnID: turnID, Err: err})
 		}
-		if isCompaction {
-			c.mu.Lock()
-			c.compactingTurnID = ""
-			c.compactionBefore = 0
-			c.compactionSummary = ""
-			c.mu.Unlock()
-		}
 	} else {
 		state = turnState(resp.StopReason)
 		if resp.Usage != nil {
@@ -605,8 +603,16 @@ func (c *conversation) finishPrompt(
 				TotalsKnown: true,
 			}})
 		}
-		if isCompaction {
+	}
+	if isCompaction {
+		if state == domain.TurnStateCompleted {
 			c.settleCompaction(turnID)
+		} else {
+			c.mu.Lock()
+			c.compactingTurnID = ""
+			c.compactionBefore = 0
+			c.compactionSummary = ""
+			c.mu.Unlock()
 		}
 	}
 	c.mu.Lock()
@@ -640,6 +646,10 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 		c.mu.Unlock()
 		return ports.ChatCompactionResult{}, errConversationClosed
 	}
+	if !c.capabilities.Has(ports.ChatCapabilityCompaction) {
+		c.mu.Unlock()
+		return ports.ChatCompactionResult{}, errors.New("chat driver cannot compact history")
+	}
 	if c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != "" {
 		c.mu.Unlock()
 		return ports.ChatCompactionResult{}, errors.New("ACP conversation already has a turn in flight")
@@ -667,14 +677,14 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	c.providerFailure = nil
 	c.mu.Unlock()
 
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
+
 	go c.runCompactionTurn(turnCtx, sessionID, id)
 	return ports.ChatCompactionResult{TokensBefore: before}, nil
 }
 
 func (c *conversation) runCompactionTurn(ctx context.Context, sessionID, turnID string) {
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turnID})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
-
 	messageID := uuid.NewString()
 	prompt := []acpsdk.ContentBlock{
 		acpsdk.TextBlock("/compact"),

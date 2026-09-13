@@ -3367,9 +3367,15 @@ func TestACPConversationImplementsCompactor(t *testing.T) {
 		t.Fatal("conversation does not implement ChatCompactor")
 	}
 
+	// Refuses when capability is not advertised
+	if _, err := compactor.Compact(context.Background()); err == nil || !strings.Contains(err.Error(), "cannot compact history") {
+		t.Fatalf("Compact without capability = %v, want cannot compact history", err)
+	}
+
 	// Refuses when another turn is already active
 	c := conv.(*conversation)
 	c.mu.Lock()
+	c.capabilities[ports.ChatCapabilityCompaction] = true
 	c.activeTurn = "active-turn"
 	c.mu.Unlock()
 
@@ -3500,7 +3506,7 @@ func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
 	}
 }
 
-func TestACPDriverClientCapabilitiesIncludesSessionCompaction(t *testing.T) {
+func TestACPDriverClientCapabilitiesOmitsPrematureSessionCompaction(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
 		Harness:      domain.HarnessClaudeCode,
@@ -3517,12 +3523,8 @@ func TestACPDriverClientCapabilitiesIncludesSessionCompaction(t *testing.T) {
 	defer opened.Close()
 
 	meta := agent.initParams.ClientCapabilities.Meta
-	session, ok := meta["session"].(map[string]any)
-	if !ok {
-		t.Fatalf("ClientCapabilities.Meta[session] = %#v, want map", meta["session"])
-	}
-	if session["compaction"] == nil {
-		t.Fatalf("session[compaction] is missing from ClientCapabilities: %#v", session)
+	if meta != nil && meta["session"] != nil {
+		t.Fatalf("ClientCapabilities.Meta should not advertise session.compaction before structured notifications are handled: %#v", meta["session"])
 	}
 }
 
@@ -3566,5 +3568,195 @@ func TestACPDriverExposesCompactionWhenCommandAdvertised(t *testing.T) {
 
 	if !opened.Capabilities().Has(ports.ChatCapabilityCompaction) {
 		t.Fatal("compaction capability was not enabled after compact command was advertised")
+	}
+
+	// Push later commands update omitting compact: capability must be cleared
+	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
+		Update: acpsdk.SessionUpdate{
+			AvailableCommandsUpdate: &acpsdk.SessionAvailableCommandsUpdate{
+				AvailableCommands: []acpsdk.AvailableCommand{
+					{Name: "help", Description: "Help"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SessionUpdate available commands without compact: %v", err)
+	}
+
+	for start := time.Now(); opened.Capabilities().Has(ports.ChatCapabilityCompaction); {
+		if time.Since(start) > 2*time.Second {
+			t.Fatal("compaction capability was not cleared after compact command was removed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestACPEarlyCommandDuringSessionNewPreservedInStart(t *testing.T) {
+	agent := &fakeAgent{
+		newSessionUpdates: []acpsdk.SessionUpdate{
+			{
+				AvailableCommandsUpdate: &acpsdk.SessionAvailableCommandsUpdate{
+					AvailableCommands: []acpsdk.AvailableCommand{
+						{Name: "compact", Description: "Compact history"},
+					},
+				},
+			},
+		},
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	if !opened.Capabilities().Has(ports.ChatCapabilityCompaction) {
+		t.Fatal("compaction capability received during session/new was lost in start()")
+	}
+}
+
+func TestACPCompactionEmitsBusyBeforeCompactReturns(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	_ = nextEvent(t, opened.Events()) // controller.ready
+
+	agent.mu.Lock()
+	blockPrompt := make(chan struct{})
+	agent.customPrompt = func(ctx context.Context, params acpsdk.PromptRequest) (acpsdk.PromptResponse, error) {
+		<-blockPrompt
+		return acpsdk.PromptResponse{StopReason: acpsdk.StopReasonEndTurn}, nil
+	}
+	agent.mu.Unlock()
+
+	compactor := opened.(ports.ChatCompactor)
+	_, err = compactor.Compact(context.Background())
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	// Immediately after Compact returns, turn-started and controller-busy must already be queued
+	ev1 := nextEvent(t, opened.Events())
+	if ev1.Kind != ports.ChatEventTurnStarted {
+		t.Fatalf("first event = %v, want ChatEventTurnStarted", ev1.Kind)
+	}
+	ev2 := nextEvent(t, opened.Events())
+	if ev2.Kind != ports.ChatEventControllerState || ev2.ControllerState != ports.ChatControllerBusy {
+		t.Fatalf("second event = %v (%v), want ChatEventControllerState (busy)", ev2.Kind, ev2.ControllerState)
+	}
+
+	close(blockPrompt)
+}
+
+func TestACPCompactionCancelledDoesNotSettle(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	_ = nextEvent(t, opened.Events()) // controller.ready
+
+	agent.mu.Lock()
+	agent.customPrompt = func(ctx context.Context, params acpsdk.PromptRequest) (acpsdk.PromptResponse, error) {
+		return acpsdk.PromptResponse{StopReason: acpsdk.StopReasonCancelled}, nil
+	}
+	agent.mu.Unlock()
+
+	compactor := opened.(ports.ChatCompactor)
+	if _, err := compactor.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	for {
+		ev := nextEvent(t, opened.Events())
+		if ev.Kind == ports.ChatEventCompacted {
+			t.Fatal("ChatEventCompacted emitted on cancelled prompt")
+		}
+		if ev.Kind == ports.ChatEventTurnCompleted {
+			if ev.TurnState != domain.TurnStateInterrupted {
+				t.Fatalf("turn state = %v, want TurnStateInterrupted", ev.TurnState)
+			}
+			break
+		}
+	}
+
+	c := opened.(*conversation)
+	c.mu.Lock()
+	compactingID := c.compactingTurnID
+	c.mu.Unlock()
+	if compactingID != "" {
+		t.Fatalf("compactingTurnID = %q, want cleared after cancel", compactingID)
+	}
+}
+
+func TestACPCompactionRestoredOnLiveReconnect(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+
+	c := opened.(*conversation)
+	c.proc.reconnected = true
+	gate := newGatedReader(strings.NewReader(""), false)
+	c.proc.gate = gate
+	c.liveState = &persistenthost.ACPState{
+		ActivePrompt:     true,
+		ActiveCompaction: true,
+	}
+
+	if err := c.ActivateLiveReconnect(context.Background(), "durable-compaction-turn"); err != nil {
+		t.Fatalf("ActivateLiveReconnect: %v", err)
+	}
+
+	c.mu.Lock()
+	active := c.activeTurn
+	compacting := c.compactingTurnID
+	c.mu.Unlock()
+
+	if active != "durable-compaction-turn" {
+		t.Errorf("activeTurn = %q, want durable-compaction-turn", active)
+	}
+	if compacting != "durable-compaction-turn" {
+		t.Errorf("compactingTurnID = %q, want durable-compaction-turn", compacting)
 	}
 }

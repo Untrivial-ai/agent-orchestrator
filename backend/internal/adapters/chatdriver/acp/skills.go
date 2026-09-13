@@ -51,13 +51,20 @@ func (c *conversation) replaceAvailableCommands(commands []acpsdk.AvailableComma
 	c.skillsKnown = true
 	if c.capabilities != nil {
 		c.capabilities[ports.ChatCapabilitySkills] = true
-		if hasCompact {
-			c.capabilities[ports.ChatCapabilityCompaction] = true
-		}
+		c.capabilities[ports.ChatCapabilityCompaction] = hasCompact
 	}
 	c.mu.Unlock()
 }
 
 func cloneSkills(skills []ports.ChatSkill) []ports.ChatSkill {
 	return append([]ports.ChatSkill(nil), skills...)
+}
+
+func hasCompactSkill(skills []ports.ChatSkill) bool {
+	for _, skill := range skills {
+		if skill.Name == "compact" {
+			return true
+		}
+	}
+	return false
 }
