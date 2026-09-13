@@ -55,7 +55,7 @@ func (s *Store) UpdateBrowserCapabilityVerifier(
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.UpdateBrowserCapabilityVerifier(ctx, gen.UpdateBrowserCapabilityVerifierParams{
 		BrowserCapabilityVerifier:      verifier,
-		UpdatedAt:                      updatedAt,
+		UpdatedAt:                      utcTime(updatedAt),
 		ID:                             id,
 		ExpectedHarness:                expected.Harness,
 		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
@@ -88,7 +88,7 @@ func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.
 		LatestUserPromptAt:           timeToNullTime(rec.Metadata.LatestUserPromptAt),
 		LatestAssistantUpdate:        rec.Metadata.LatestAssistantUpdate,
 		NativeTranscriptPath:         rec.Metadata.NativeTranscriptPath,
-		UpdatedAt:                    rec.UpdatedAt,
+		UpdatedAt:                    utcTime(rec.UpdatedAt),
 		ID:                           rec.ID,
 		ExpectedHarness:              rec.Harness,
 		ExpectedSessionMode:          domain.NormalizeSessionMode(rec.Mode),
@@ -130,7 +130,7 @@ func (s *Store) ClaimChatControllerGeneration(
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
 		ControllerGeneration: generation,
-		UpdatedAt:            updatedAt,
+		UpdatedAt:            utcTime(updatedAt),
 		ID:                   id,
 	})
 	if err != nil {
@@ -152,7 +152,7 @@ func (s *Store) RenameSession(ctx context.Context, id domain.SessionID, displayN
 	rows, err := s.qw.RenameSession(ctx, gen.RenameSessionParams{
 		ID:          id,
 		DisplayName: displayName,
-		UpdatedAt:   updatedAt,
+		UpdatedAt:   utcTime(updatedAt),
 	})
 	if err != nil {
 		return false, fmt.Errorf("rename session %s: %w", id, err)
@@ -168,7 +168,7 @@ func (s *Store) SetSessionPinned(ctx context.Context, id domain.SessionID, isPin
 		ID:        id,
 		IsPinned:  isPinned,
 		PinnedAt:  timePtrToNullTime(pinnedAt),
-		UpdatedAt: updatedAt,
+		UpdatedAt: utcTime(updatedAt),
 	})
 	if err != nil {
 		return false, fmt.Errorf("set session pinned %s: %w", id, err)
@@ -186,7 +186,7 @@ func (s *Store) SetSessionPreviewURL(ctx context.Context, id domain.SessionID, p
 	rows, err := s.qw.SetSessionPreviewURL(ctx, gen.SetSessionPreviewURLParams{
 		ID:         id,
 		PreviewURL: previewURL,
-		UpdatedAt:  updatedAt,
+		UpdatedAt:  utcTime(updatedAt),
 	})
 	if err != nil {
 		return false, fmt.Errorf("set preview url for session %s: %w", id, err)
@@ -202,7 +202,7 @@ func (s *Store) SetSessionTerminateOnPRMerge(ctx context.Context, id domain.Sess
 	rows, err := s.qw.SetSessionTerminateOnPRMerge(ctx, gen.SetSessionTerminateOnPRMergeParams{
 		ID:                 id,
 		TerminateOnPRMerge: terminate,
-		UpdatedAt:          updatedAt,
+		UpdatedAt:          utcTime(updatedAt),
 	})
 	if err != nil {
 		return false, fmt.Errorf("set terminate-on-pr-merge for session %s: %w", id, err)
@@ -217,7 +217,7 @@ func (s *Store) SetSessionAutoInjectReview(ctx context.Context, id domain.Sessio
 	rows, err := s.qw.SetSessionAutoInjectReview(ctx, gen.SetSessionAutoInjectReviewParams{
 		ID:               id,
 		AutoInjectReview: autoInject,
-		UpdatedAt:        updatedAt,
+		UpdatedAt:        utcTime(updatedAt),
 	})
 	if err != nil {
 		return false, fmt.Errorf("set auto-inject review for session %s: %w", id, err)
@@ -236,7 +236,7 @@ func (s *Store) SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID,
 		rows, err := q.SetSessionAutoInjectCI(ctx, gen.SetSessionAutoInjectCIParams{
 			ID:           id,
 			AutoInjectCI: autoInject,
-			UpdatedAt:    updatedAt,
+			UpdatedAt:    utcTime(updatedAt),
 		})
 		if err != nil {
 			return err
@@ -276,7 +276,7 @@ func (s *Store) SetSessionReviewerConfig(
 	rows, err := s.qw.SetSessionReviewerConfig(ctx, gen.SetSessionReviewerConfigParams{
 		ReviewerHarness:     harness,
 		ReviewerAgentConfig: encoded,
-		UpdatedAt:           updatedAt,
+		UpdatedAt:           utcTime(updatedAt),
 		ID:                  id,
 	})
 	if err != nil {
@@ -291,7 +291,7 @@ func (s *Store) SetSessionAutoReview(ctx context.Context, id domain.SessionID, e
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.SetSessionAutoReview(ctx, gen.SetSessionAutoReviewParams{
 		AutoReviewEnabled: enabled,
-		UpdatedAt:         updatedAt,
+		UpdatedAt:         utcTime(updatedAt),
 		ID:                id,
 	})
 	if err != nil {
@@ -532,8 +532,8 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
 		SessionPermissions:        string(rec.Metadata.Permissions),
-		CreatedAt:                 rec.CreatedAt,
-		UpdatedAt:                 rec.UpdatedAt,
+		CreatedAt:                 utcTime(rec.CreatedAt),
+		UpdatedAt:                 utcTime(rec.UpdatedAt),
 	}
 }
 
@@ -580,7 +580,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
-		UpdatedAt:                 rec.UpdatedAt,
+		UpdatedAt:                 utcTime(rec.UpdatedAt),
 	}
 }
 
@@ -627,7 +627,7 @@ func timeToNullTime(t time.Time) sql.NullTime {
 	if t.IsZero() {
 		return sql.NullTime{}
 	}
-	return sql.NullTime{Time: t, Valid: true}
+	return utcNullTime(sql.NullTime{Time: t, Valid: true})
 }
 
 func nullTimeToTimePtr(t sql.NullTime) *time.Time {
@@ -641,7 +641,7 @@ func timePtrToNullTime(t *time.Time) sql.NullTime {
 	if t == nil {
 		return sql.NullTime{}
 	}
-	return sql.NullTime{Time: *t, Valid: true}
+	return utcNullTime(sql.NullTime{Time: *t, Valid: true})
 }
 
 func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {

@@ -64,7 +64,7 @@ func (s *Store) writeWorkspaceProject(ctx context.Context, label string, r domai
 				RelativePath:  repo.RelativePath,
 				RepoOriginURL: repo.RepoOriginURL,
 				DefaultBranch: repo.DefaultBranch,
-				RegisteredAt:  repo.RegisteredAt,
+				RegisteredAt:  utcTime(repo.RegisteredAt),
 				GitStatus:     string(repo.GitStatus.WithDefault()),
 			}); err != nil {
 				return err
@@ -102,7 +102,7 @@ func upsertProject(ctx context.Context, q *gen.Queries, r domain.ProjectRecord, 
 		Path:          r.Path,
 		RepoOriginURL: r.RepoOriginURL,
 		DisplayName:   r.DisplayName,
-		RegisteredAt:  r.RegisteredAt,
+		RegisteredAt:  utcTime(r.RegisteredAt),
 		ArchivedAt:    nullTime(r.ArchivedAt),
 		Config:        config,
 		Kind:          string(kind),
@@ -155,7 +155,7 @@ func importProject(ctx context.Context, q *gen.Queries, r domain.ProjectRecord, 
 		Path:          r.Path,
 		RepoOriginURL: r.RepoOriginURL,
 		DisplayName:   r.DisplayName,
-		RegisteredAt:  r.RegisteredAt,
+		RegisteredAt:  utcTime(r.RegisteredAt),
 		ArchivedAt:    nullTime(r.ArchivedAt),
 		Config:        config,
 		Kind:          string(kind),
@@ -295,7 +295,7 @@ func nullTime(t time.Time) sql.NullTime {
 	if t.IsZero() {
 		return sql.NullTime{}
 	}
-	return sql.NullTime{Time: t, Valid: true}
+	return utcNullTime(sql.NullTime{Time: t, Valid: true})
 }
 
 // SetProjectPermissions serializes a focused read-modify-write with other writes.

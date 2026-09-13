@@ -52,7 +52,7 @@ func (s *Store) SetDefaultSessionMode(ctx context.Context, mode domain.SessionMo
 	defer s.writeMu.Unlock()
 	if err := s.qw.SetDefaultSessionMode(ctx, gen.SetDefaultSessionModeParams{
 		DefaultSessionMode: mode,
-		UpdatedAt:          now,
+		UpdatedAt:          utcTime(now),
 	}); err != nil {
 		return fmt.Errorf("set default session mode: %w", err)
 	}
@@ -65,7 +65,7 @@ func (s *Store) SetCloudOffering(ctx context.Context, enabled bool, now time.Tim
 	defer s.writeMu.Unlock()
 	if err := s.qw.SetCloudOffering(ctx, gen.SetCloudOfferingParams{
 		CloudOffering: enabled,
-		UpdatedAt:     now,
+		UpdatedAt:     utcTime(now),
 	}); err != nil {
 		return fmt.Errorf("set cloud offering: %w", err)
 	}
