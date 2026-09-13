@@ -1249,8 +1249,17 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		return ports.WorkspaceInfo{}, nil, err
 	}
 	childRepos := make([]ports.WorkspaceProjectRepoConfig, 0, len(repos))
+	assets := make([]ports.WorkspaceProjectAssetConfig, 0)
 	for _, repo := range repos {
 		if repo.GitStatus == domain.GitStatusNeedsInit {
+			repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
+			if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
+				continue
+			}
+			assets = append(assets, ports.WorkspaceProjectAssetConfig{
+				RelativePath: repo.RelativePath,
+				SourcePath:   repoPath,
+			})
 			continue
 		}
 		repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
@@ -1275,6 +1284,7 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		BaseBranch:    project.Config.WorktreeBaseBranch(),
 		BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		Repos:         childRepos,
+		Assets:        assets,
 	})
 	if err != nil {
 		return ports.WorkspaceInfo{}, nil, err
@@ -1740,7 +1750,7 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	}
 	freed := false
 	if workspaceProject {
-		cleaned, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
+		reclaim, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
 		if err != nil {
 			if workspacePreserved(err) {
 				if err := m.lcm.MarkTerminated(ctx, id); err != nil {
@@ -1751,8 +1761,8 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 			}
 			return false, fmt.Errorf("kill %s: workspace: %w", id, err)
 		}
-		freed = cleaned
-		if cleaned {
+		freed = reclaim != ""
+		if freed {
 			m.cleanupAgentWorkspace(ctx, rec, ws.Path)
 		}
 	} else if ws.Path != "" {
@@ -2575,12 +2585,13 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 	// Legacy Scratch sessions were intentionally one-shot. Standalone sessions
 	// also use the plain-directory workspace adapter, but unlike Scratch they
 	// are durable and must be relaunched after the daemon restarts.
-	if projectKind == domain.ProjectKindScratch && rec.ProjectID != "" && !isChat {
+	legacyScratch := projectKind == domain.ProjectKindScratch && rec.ProjectID != ""
+	if legacyScratch && !isChat {
 		return m.lcm.MarkTerminated(ctx, rec.ID)
 	}
 	var ws ports.WorkspaceInfo
 	var restoreErr error
-	if projectKind == domain.ProjectKindScratch {
+	if legacyScratch {
 		ws = workspaceInfo(rec)
 	} else {
 		ws, restoreErr = m.restoreSessionWorkspace(ctx, project, rec)
@@ -3217,17 +3228,25 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 	return nil
 }
 
-func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.WorkspaceRepoInfo) (bool, error) {
-	cleaned := false
+func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.WorkspaceRepoInfo) (ports.WorkspaceReclaim, error) {
+	touched := false
+	aggregate := ports.WorkspaceReclaimAlreadyAbsent
 	var firstErr error
 	for i := len(rows) - 1; i >= 0; i-- {
 		if rows[i].Path == "" {
 			continue
 		}
 		info := workspaceInfoFromRepoInfo(rows[i])
-		if err := m.workspace.Destroy(ctx, info); err != nil {
+		reclaim := ports.WorkspaceReclaimRemoved
+		var err error
+		if reclaimer, ok := m.workspace.(ports.WorkspaceReclaimer); ok {
+			reclaim, err = reclaimer.DestroyReclaim(ctx, info)
+		} else {
+			err = m.workspace.Destroy(ctx, info)
+		}
+		if err != nil {
 			if errors.Is(err, ports.ErrWorkspaceDirty) {
-				return cleaned, err
+				return aggregate, err
 			}
 			if stateErr := m.upsertWorkspaceProjectRowState(ctx, rows[i], "retry_remove"); stateErr != nil && firstErr == nil {
 				firstErr = stateErr
@@ -3240,9 +3259,15 @@ func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.
 		if err := m.upsertWorkspaceProjectRowState(ctx, rows[i], "unavailable"); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		cleaned = true
+		touched = true
+		if reclaim != ports.WorkspaceReclaimAlreadyAbsent {
+			aggregate = ports.WorkspaceReclaimRemoved
+		}
 	}
-	return cleaned, firstErr
+	if !touched && firstErr == nil {
+		return "", nil
+	}
+	return aggregate, firstErr
 }
 
 func (m *Manager) upsertWorkspaceProjectRowState(ctx context.Context, row ports.WorkspaceRepoInfo, state string) error {
@@ -3716,14 +3741,15 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 		m.logger.Warn("cleanup: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
 		return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
 	} else if ok {
-		if _, err := m.destroyWorkspaceProjectRows(ctx, rows); err != nil {
+		reclaim, err := m.destroyWorkspaceProjectRows(ctx, rows)
+		if err != nil {
 			if !workspacePreserved(err) {
 				m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
 			}
 			return ports.WorkspaceReclaimRemoved, cleanupSkipReason(err)
 		}
 		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-		return ports.WorkspaceReclaimRemoved, ""
+		return reclaim, ""
 	}
 	reclaim := ports.WorkspaceReclaimRemoved
 	var err error
@@ -4816,6 +4842,7 @@ func launchBinary(argv []string) (string, bool) {
 	return "", false
 }
 
+// PinnedHookDir resolves the directory that should be prepended for AO hook callbacks.
 func PinnedHookDir(executable func() (string, error), dataDir string) string {
 	return agentlaunch.PinnedDir(executable, dataDir)
 }

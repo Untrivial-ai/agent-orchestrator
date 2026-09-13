@@ -69,7 +69,7 @@ func (s *Service) ListWorkspaceTree(ctx context.Context, id domain.SessionID, ra
 		return WorkspaceTree{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
-	if rec.IsStandalone() {
+	if isStandaloneScratchWorkspace(rec) {
 		projectKind = domain.ProjectKindScratch
 	}
 	if projectOK {
