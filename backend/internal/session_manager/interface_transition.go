@@ -81,8 +81,10 @@ type InterfaceTransitionStatus struct {
 }
 
 // InterfaceTransitionStatus reports static adapter support plus the latest
-// durable attempt. Read-only: target binary/auth checks happen on POST so a
-// status render never launches a provider process.
+// durable attempt. It runs the same native-conversation readiness check as
+// StartInterfaceTransition so the two never disagree: that check may stat the
+// provider transcript and read the current terminal screen, but never launches
+// a provider process. Target binary/auth checks still happen only on POST.
 func (m *Manager) InterfaceTransitionStatus(
 	ctx context.Context,
 	id domain.SessionID,
@@ -102,7 +104,7 @@ func (m *Manager) InterfaceTransitionStatus(
 	} else if target == domain.SessionModeChat && (m.chat == nil || !m.chat.SupportsChat(rec.Harness)) {
 		status.ReasonCode = "CHAT_UNSUPPORTED"
 		status.Reason = fmt.Sprintf("%s does not support Chat UI.", rec.Harness)
-	} else if _, _, err := m.nativeConversationID(ctx, rec); err != nil {
+	} else if _, err := m.handoffNativeConversationID(ctx, rec); err != nil {
 		if errors.Is(err, ErrInterfaceHandoffUnsupported) {
 			status.ReasonCode = "INTERFACE_HANDOFF_UNSUPPORTED"
 		} else if errors.Is(err, ErrNativeConversationMissing) {
@@ -165,11 +167,7 @@ func (m *Manager) StartInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("%w: session %s is already in %s mode",
 			ErrInterfaceAlreadySelected, id, source)
 	}
-	nativeID, handoff, err := m.nativeConversationID(ctx, rec)
-	if err != nil {
-		return domain.SessionInterfaceTransition{}, err
-	}
-	nativeID, err = m.persistedNativeConversationID(ctx, rec, nativeID, handoff)
+	nativeID, err := m.handoffNativeConversationID(ctx, rec)
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, err
 	}
@@ -488,6 +486,21 @@ func (m *Manager) runInterfaceTransition(
 			"sessionID", rec.ID, "transitionID", transition.ID, "error", err)
 		return
 	}
+}
+
+// handoffNativeConversationID is the readiness check shared by status and
+// start. A reserved native id alone is not enough for a handoff: Claude Code
+// only writes its transcript after the first prompt, so the id must also have
+// durable provider history behind it (or positive fresh-start proof).
+func (m *Manager) handoffNativeConversationID(
+	ctx context.Context,
+	rec domain.SessionRecord,
+) (string, error) {
+	id, handoff, err := m.nativeConversationID(ctx, rec)
+	if err != nil {
+		return "", err
+	}
+	return m.persistedNativeConversationID(ctx, rec, id, handoff)
 }
 
 // nativeConversationID resolves the adapter's native conversation id for the
