@@ -27,9 +27,13 @@
 		"publish": "npm run build:daemon && npm run build:tmux && npm run browser-runtime:prepare && npm run build:acp-runtime && electron-forge publish",
 		"typecheck": "tsc --noEmit",
 		"typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
+		"typecheck:chatui": "tsc --noEmit -p tsconfig.chatui.json",
 		"test": "vitest run --config vite.renderer.config.ts",
 		"test:e2e": "playwright test",
 		"test:e2e:renderer": "playwright test --grep \"@T0|@P0\"",
+		"test:e2e:chatui": "node ./scripts/run-chatui-regressions.mjs",
+		"test:e2e:chatui:capture": "node ./scripts/run-chatui-regressions.mjs --capture",
+		"test:chatui-runner": "vitest run --config vitest.chatui.config.ts",
 		"api:ts": "openapi-typescript ../backend/internal/httpd/apispec/openapi.yaml -o src/api/schema.ts"
 	},
 	"devDependencies": {

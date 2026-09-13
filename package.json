@@ -12,6 +12,8 @@
 		"cloud:staging": "bash cloud/scripts/cloud-staging.sh",
 		"product-ui:check": "npm --prefix packages/product-ui run typecheck && npm --prefix packages/product-ui test && npm --prefix packages/product-ui run build",
 		"shared:check": "npm run cloud:check && npm run product-ui:check",
+		"qa:chatui": "node frontend/scripts/run-chatui-regressions.mjs",
+		"qa:chatui:capture": "node frontend/scripts/run-chatui-regressions.mjs --capture",
 		"sqlc": "cd backend && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate",
 		"api:spec": "cd backend && go generate ./internal/httpd/apispec/...",
 		"api:ts": "openapi-typescript backend/internal/httpd/apispec/openapi.yaml -o frontend/src/api/schema.ts",
