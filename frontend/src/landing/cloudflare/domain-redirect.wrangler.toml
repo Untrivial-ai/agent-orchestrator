@@ -6,6 +6,14 @@ compatibility_date = "2026-09-08"
 workers_dev = false
 
 [[routes]]
+pattern = "ao-agents.com/*"
+zone_name = "ao-agents.com"
+
+[[routes]]
+pattern = "www.ao-agents.com"
+custom_domain = true
+
+[[routes]]
 pattern = "aoagents.dev/*"
 zone_name = "aoagents.dev"
 
@@ -14,5 +22,13 @@ pattern = "www.aoagents.dev"
 custom_domain = true
 
 [[routes]]
-pattern = "www.useao.dev/*"
+pattern = "useao.dev/*"
 zone_name = "useao.dev"
+
+[[routes]]
+pattern = "www.useao.dev"
+custom_domain = true
+
+[[routes]]
+pattern = "www.orchestrator.inc"
+custom_domain = true
