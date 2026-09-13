@@ -56,7 +56,7 @@ import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
 import { prBrowserUrl, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
+import { findProjectOrchestrator, openPRs, sortedPRs } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
@@ -1427,7 +1427,7 @@ function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 
 	if (session.status === "ci_failed") add("ci_failed");
 	if (session.status === "changes_requested") add("changes_requested");
-	for (const pr of session.prs) {
+	for (const pr of openPRs(session)) {
 		if (pr.ci === "failing") add("ci_failed");
 		if (pr.review === "changes_requested") add("changes_requested");
 		if (pr.mergeability === "conflicting") add("conflict");

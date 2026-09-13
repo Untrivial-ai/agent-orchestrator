@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -4593,8 +4594,51 @@ func TestListPRSummariesSuppressesActiveDetailsForClosedOrMergedPRs(t *testing.T
 	if pr.State != domain.PRStateMerged {
 		t.Fatalf("state = %q", pr.State)
 	}
-	if len(pr.CI.FailingChecks) != 0 || len(pr.Review.UnresolvedBy) != 0 || len(pr.Mergeability.Reasons) != 0 {
+	if len(pr.CI.FailingChecks) != 0 || len(pr.Review.UnresolvedBy) != 0 || pr.Mergeability.State != domain.MergeUnknown || len(pr.Mergeability.Reasons) != 0 {
 		t.Fatalf("active details should be suppressed for merged PR: ci=%+v review=%+v merge=%+v", pr.CI, pr.Review, pr.Mergeability)
+	}
+}
+
+func TestSummarizeMergeabilitySuppressesLiveStateForTerminalPRs(t *testing.T) {
+	tests := []struct {
+		name        string
+		pr          domain.PullRequest
+		wantState   domain.Mergeability
+		wantReasons []string
+	}{
+		{
+			name:        "open conflicting",
+			pr:          domain.PullRequest{Mergeability: domain.MergeConflicting},
+			wantState:   domain.MergeConflicting,
+			wantReasons: []string{"conflicts"},
+		},
+		{
+			name:      "open mergeable",
+			pr:        domain.PullRequest{Mergeability: domain.MergeMergeable},
+			wantState: domain.MergeMergeable,
+		},
+		{
+			name:      "closed conflicting",
+			pr:        domain.PullRequest{Closed: true, Mergeability: domain.MergeConflicting},
+			wantState: domain.MergeUnknown,
+		},
+		{
+			name:      "merged conflicting",
+			pr:        domain.PullRequest{Merged: true, Mergeability: domain.MergeConflicting},
+			wantState: domain.MergeUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summarizeMergeability(tt.pr, nil)
+			if got.State != tt.wantState {
+				t.Fatalf("state = %q, want %q", got.State, tt.wantState)
+			}
+			if !slices.Equal(got.Reasons, tt.wantReasons) {
+				t.Fatalf("reasons = %v, want %v", got.Reasons, tt.wantReasons)
+			}
+		})
 	}
 }
 
