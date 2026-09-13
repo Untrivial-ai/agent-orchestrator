@@ -249,7 +249,7 @@ func TestGetAgentHooksInstallsClineHooks(t *testing.T) {
 	}
 
 	for _, spec := range clineManagedHooks {
-		scriptPath := filepath.Join(hooksDir, spec.Event)
+		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
 		data, err := os.ReadFile(scriptPath)
 		if err != nil {
 			t.Fatalf("read %s: %v", spec.Event, err)
@@ -344,7 +344,7 @@ func TestUninstallHooksRemovesClineHooks(t *testing.T) {
 	}
 
 	for _, spec := range clineManagedHooks {
-		if hookutil.FileExists(filepath.Join(hooksDir, spec.Event)) {
+		if hookutil.FileExists(filepath.Join(hooksDir, clineHookScriptName(spec.Event))) {
 			t.Fatalf("%s still present after uninstall", spec.Event)
 		}
 	}
@@ -496,6 +496,89 @@ func TestContextCancellationIsHonored(t *testing.T) {
 	}
 	if _, err := ResolveClineBinary(ctx); err == nil {
 		t.Fatal("ResolveClineBinary: expected context error")
+	}
+}
+
+func TestClineHookScriptNameIsPlatformAware(t *testing.T) {
+	for _, spec := range clineManagedHooks {
+		got := clineHookScriptName(spec.Event)
+		if runtime.GOOS == "windows" {
+			if got != spec.Event+".ps1" {
+				t.Fatalf("windows name = %q, want %q", got, spec.Event+".ps1")
+			}
+			continue
+		}
+		if got != spec.Event {
+			t.Fatalf("unix name = %q, want extensionless %q", got, spec.Event)
+		}
+	}
+}
+
+func TestRenderBashClineHookScript(t *testing.T) {
+	got := renderBashClineHookScript("session-start")
+	want := "#!/usr/bin/env bash\n" +
+		clineHookMarker + "\n" +
+		clineHookCommandPrefix + "session-start || true\n" +
+		`echo '{"cancel": false}'` + "\n"
+	if got != want {
+		t.Fatalf("bash hook script\nwant: %q\n got: %q", want, got)
+	}
+}
+
+func TestRenderPowerShellClineHookScript(t *testing.T) {
+	got := renderPowerShellClineHookScript("session-start")
+	if !strings.HasPrefix(got, clineHookMarker+"\n") {
+		t.Fatalf("ps1 hook script must start with marker comment:\n%s", got)
+	}
+	if strings.Contains(got, "#!/usr/bin/env bash") {
+		t.Fatalf("ps1 hook script must not carry a bash shebang:\n%s", got)
+	}
+	if !strings.Contains(got, "$input | "+clineHookCommandPrefix+"session-start") {
+		t.Fatalf("ps1 hook script must forward stdin to the dispatcher:\n%s", got)
+	}
+	if !strings.Contains(got, `Write-Output '{"cancel": false}'`) {
+		t.Fatalf("ps1 hook script must emit the continuation result:\n%s", got)
+	}
+}
+
+func TestRenderClineHookScriptFollowsPlatform(t *testing.T) {
+	got := renderClineHookScript("stop")
+	if runtime.GOOS == "windows" {
+		want := renderPowerShellClineHookScript("stop")
+		if got != want {
+			t.Fatalf("windows render diverged from ps1 renderer")
+		}
+		return
+	}
+	want := renderBashClineHookScript("stop")
+	if got != want {
+		t.Fatalf("unix render diverged from bash renderer")
+	}
+}
+
+func TestGetAgentHooksWritesPlatformScriptNames(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "cline"}
+	workspace := t.TempDir()
+	hooksDir := filepath.Join(workspace, clineHooksDirName, clineHooksSubDir)
+
+	cfg := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "sess-1", WorkspacePath: workspace}
+	if err := plugin.GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, spec := range clineManagedHooks {
+		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
+		if !hookutil.FileExists(scriptPath) {
+			t.Fatalf("expected AO hook script at %s", scriptPath)
+		}
+		// The other platform's naming must never be written alongside.
+		other := spec.Event
+		if runtime.GOOS == "windows" {
+			other = spec.Event + ".ps1"
+		}
+		if clineHookScriptName(spec.Event) != other && hookutil.FileExists(filepath.Join(hooksDir, other)) {
+			t.Fatalf("unexpected cross-platform script %s for %s", other, spec.Event)
+		}
 	}
 }
 

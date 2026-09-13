@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
@@ -14,15 +15,24 @@ import (
 
 // Cline's hook system is git-style: each lifecycle hook is an executable script
 // placed in the workspace-local `.clinerules/hooks/` directory, named exactly
-// after the hook event (no extension), reading a JSON payload on stdin and
-// writing a JSON result on stdout (see docs.cline.bot hooks reference).
+// after the hook event, reading a JSON payload on stdin and writing a JSON
+// result on stdout (see docs.cline.bot hooks reference).
+//
+// The script naming is platform-dependent. On Unix, Cline discovers and runs an
+// extensionless script named after the event (`TaskStart`) via its shebang. On
+// Windows, Cline only discovers `<Event>.ps1` and runs it via
+// `powershell -File` (its VS Code hook discovery intentionally ignores
+// extensionless files on Windows, and the SDK maps `.ps1` to PowerShell), so AO
+// writes `<Event>.ps1` there. Writing the Unix form on Windows leaves the hooks
+// undiscovered: no activity callbacks fire and no native session id is ever
+// captured (see issue #4976).
 //
 // AO installs one wrapper script per managed event. Each script forwards the
 // hook payload to `ao hooks cline <subcommand>` and emits the no-op
-// continuation result Cline expects. Scripts carry a marker line so install is
-// idempotent and uninstall recognizes AO-owned scripts without an embedded
-// template to diff against; user-authored hooks (lacking the marker) are never
-// touched.
+// continuation result Cline expects. Scripts carry a marker line (a comment in
+// both bash and PowerShell) so install is idempotent and uninstall recognizes
+// AO-owned scripts without an embedded template to diff against; user-authored
+// hooks (lacking the marker) are never touched.
 const (
 	clineHooksDirName = ".clinerules"
 	clineHooksSubDir  = "hooks"
@@ -33,6 +43,7 @@ const (
 
 	// clineHookMarker tags AO-generated hook scripts so install/uninstall can
 	// distinguish them from user-authored Cline hooks in the same directory.
+	// It is a comment line in both bash and PowerShell.
 	clineHookMarker = "# ao-managed-cline-hook"
 )
 
@@ -83,7 +94,7 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	// workspace teardown preserves it.
 	written := make([]string, 0, len(clineManagedHooks))
 	for _, spec := range clineManagedHooks {
-		scriptPath := filepath.Join(hooksDir, spec.Event)
+		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
 		// Never clobber a user-authored hook with the same event name.
 		if hookutil.FileExists(scriptPath) && !isManagedClineHook(scriptPath) {
 			continue
@@ -117,7 +128,7 @@ func (p *Plugin) UninstallHooks(ctx context.Context, workspacePath string) error
 	}
 
 	for _, spec := range clineManagedHooks {
-		scriptPath := filepath.Join(hooksDir, spec.Event)
+		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
 		if !hookutil.FileExists(scriptPath) || !isManagedClineHook(scriptPath) {
 			continue
 		}
@@ -144,7 +155,7 @@ func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (b
 	}
 
 	for _, spec := range clineManagedHooks {
-		scriptPath := filepath.Join(hooksDir, spec.Event)
+		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
 		if hookutil.FileExists(scriptPath) && isManagedClineHook(scriptPath) {
 			return true, nil
 		}
@@ -156,11 +167,29 @@ func clineHooksDir(workspacePath string) string {
 	return filepath.Join(workspacePath, clineHooksDirName, clineHooksSubDir)
 }
 
+// clineHookScriptName returns the script filename Cline discovers for a hook
+// event on the current platform: extensionless on Unix, `<Event>.ps1` on
+// Windows (see the package comment for why).
+func clineHookScriptName(event string) string {
+	if runtime.GOOS == "windows" {
+		return event + ".ps1"
+	}
+	return event
+}
+
 // renderClineHookScript builds an executable wrapper that forwards the Cline
 // hook payload (JSON on stdin) to the AO CLI hook dispatcher and prints the
 // no-op continuation result Cline expects ({"cancel": false}). The marker line
-// identifies it as AO-owned.
+// identifies it as AO-owned. The script dialect follows the platform: bash on
+// Unix, PowerShell on Windows.
 func renderClineHookScript(subcommand string) string {
+	if runtime.GOOS == "windows" {
+		return renderPowerShellClineHookScript(subcommand)
+	}
+	return renderBashClineHookScript(subcommand)
+}
+
+func renderBashClineHookScript(subcommand string) string {
 	var b strings.Builder
 	b.WriteString("#!/usr/bin/env bash\n")
 	b.WriteString(clineHookMarker + "\n")
@@ -169,6 +198,17 @@ func renderClineHookScript(subcommand string) string {
 	b.WriteString(clineHookCommandPrefix + subcommand + " || true\n")
 	// Cline requires a JSON result on stdout; never block the agent.
 	b.WriteString(`echo '{"cancel": false}'` + "\n")
+	return b.String()
+}
+
+func renderPowerShellClineHookScript(subcommand string) string {
+	var b strings.Builder
+	b.WriteString(clineHookMarker + "\n")
+	// Forward stdin to the AO dispatcher; swallow any error so a missing/old
+	// `ao` binary can never block Cline's own execution.
+	b.WriteString("try { $input | " + clineHookCommandPrefix + subcommand + " 2>$null } catch {}\n")
+	// Cline requires a JSON result on stdout; never block the agent.
+	b.WriteString(`Write-Output '{"cancel": false}'` + "\n")
 	return b.String()
 }
 
