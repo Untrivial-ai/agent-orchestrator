@@ -86,6 +86,22 @@ jobs:
       - name: Test Windows mobile tunnel subprocesses
         run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
 
+  windows-goose:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Test Goose adapter
+        run: go test ./internal/process ./internal/adapters/agent/goose
+
   lint:
     runs-on: ubuntu-latest
     steps:

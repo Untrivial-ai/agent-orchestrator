@@ -19,3 +19,10 @@ func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd 
 	configureHidden(cmd)
 	return cmd
 }
+
+// CommandContextForPath is CommandContext for an already-resolved executable
+// path. Windows command shims are routed through cmd.exe so .cmd and .bat
+// files can be probed with the same argv semantics as native executables.
+func CommandContextForPath(ctx context.Context, path string, args ...string) *exec.Cmd {
+	return commandContextForPath(ctx, path, args...)
+}
