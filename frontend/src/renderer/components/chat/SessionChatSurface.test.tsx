@@ -424,6 +424,7 @@ describe("SessionChatSurface link routing", () => {
 		);
 
 		conversationState.snapshot = {
+			capabilities: [],
 			items: [{
 				kind: "message",
 				id: "assistant-1",
