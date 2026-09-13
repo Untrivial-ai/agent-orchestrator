@@ -24,6 +24,7 @@ import type {
   WorkspaceSession,
   WorkspaceSummary,
 } from "../types/workspace";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 const { getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
   () => ({
@@ -1147,6 +1148,45 @@ describe("SessionInspector completion controls", () => {
       to: "/projects/$projectId/sessions/$sessionId",
       params: { projectId: "ws-1", sessionId: "orch-1" },
     });
+  });
+
+  it("shows only direct termination controls for ad hoc sessions", async () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          workspaceId: STANDALONE_WORKSPACE_ID,
+          workspaceName: "Ad hoc agents",
+          status: "idle",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Session controls")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Automatically fix CI failures" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Automatically fix review comments" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", {
+        name: "Terminate session when pull requests merge",
+      }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Terminate session" }),
+    );
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Yes, terminate session",
+      }),
+    );
+
+    expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", {
+      params: { path: { sessionId: "sess-1" } },
+    });
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
   });
 
   it("keeps the confirmation dismissed after a termination failure", async () => {

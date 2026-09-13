@@ -10,7 +10,12 @@ import { getProjectLastOpenedAt } from "../lib/project-history";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { useShell } from "../lib/shell-context";
 import { useUiStore } from "../stores/ui-store";
-import { STANDALONE_PROJECT_KIND, STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { BoardWelcome } from "./BoardEmptyStates";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
@@ -50,6 +55,25 @@ function sortProjectsByActivity(projects: WorkspaceSummary[]): WorkspaceSummary[
 	return projects
 		.slice()
 		.sort((left, right) => latestProjectTimestamp(right).localeCompare(latestProjectTimestamp(left)));
+}
+
+function standaloneSessionTimestamp(session: WorkspaceSession): number {
+	for (const value of [session.lastUserMessageAt, session.updatedAt, session.createdAt]) {
+		const parsed = value ? Date.parse(value) : Number.NaN;
+		if (!Number.isNaN(parsed)) return parsed;
+	}
+	return 0;
+}
+
+function mostRecentStandaloneSession(sessions: WorkspaceSession[]): WorkspaceSession | undefined {
+	const candidates = sessions.filter((session) => session.isTerminated !== true && session.status !== "terminated");
+	return (candidates.length > 0 ? candidates : sessions).reduce<WorkspaceSession | undefined>((latest, session) => {
+		if (!latest) return session;
+		const sessionTime = standaloneSessionTimestamp(session);
+		const latestTime = standaloneSessionTimestamp(latest);
+		if (sessionTime !== latestTime) return sessionTime > latestTime ? session : latest;
+		return session.id > latest.id ? session : latest;
+	}, undefined);
 }
 
 function ProjectRow({ project, onClick, emptyTimeLabel, justNowLabel }: { project: WorkspaceSummary; onClick: () => void; emptyTimeLabel: string; justNowLabel: string }) {
@@ -218,7 +242,7 @@ export function HomePage() {
 								project={project}
 								onClick={() => {
 									if (project.kind === STANDALONE_PROJECT_KIND) {
-										const session = project.sessions[0];
+										const session = mostRecentStandaloneSession(project.sessions);
 										session
 											? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
 											: requestNewTask(STANDALONE_WORKSPACE_ID);
