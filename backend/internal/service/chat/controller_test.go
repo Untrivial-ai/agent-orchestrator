@@ -3695,6 +3695,37 @@ func TestServiceStopTerminatesPersistentConversation(t *testing.T) {
 	}
 }
 
+func TestServiceStopAllRetainsControllerUntilItsEventStreamActuallyEnds(t *testing.T) {
+	base := newFakeConversation()
+	h := newHarnessWithConversation(t, &stuckConversation{
+		fakeConversation: base,
+		closeErr:         errors.New("provider close failed"),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	h.svc.StopAll(ctx)
+	if _, err := h.svc.Controller(testSession); err != nil {
+		t.Fatalf("controller was forgotten while its stream was still live: %v", err)
+	}
+	if !h.svc.HasLiveChatController(testSession) {
+		t.Fatal("live-controller guard cleared before the provider stream ended")
+	}
+
+	base.closeOnce.Do(func() { close(base.events) })
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := h.svc.Controller(testSession); errors.Is(err, chatsvc.ErrNoController) {
+			if h.svc.HasLiveChatController(testSession) {
+				t.Fatal("live-controller guard remained set after registry release")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("controller registry did not release the stopped stream")
+}
+
 func TestServiceStopAllOnlyDetachesPersistentConversation(t *testing.T) {
 	provider := &terminatingConversation{fakeConversation: newFakeConversation()}
 	h := newHarnessWithConversation(t, provider)
