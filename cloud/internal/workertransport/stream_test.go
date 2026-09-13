@@ -125,21 +125,21 @@ func TestSendOutputPrefersStreamAndFallsBackWhenBroken(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	stream := &terminalStream{conn: conn, ctx: ctx}
-	if !stream.sendOutput([]byte("hello")) {
+	if !stream.sendOutput(1, []byte("hello")) {
 		t.Fatal("healthy stream refused output")
 	}
 	frame := <-received
-	if frame.Type != "output" || string(frame.Data) != "hello" {
+	if frame.Type != "output" || frame.ID != 1 || string(frame.Data) != "hello" {
 		t.Fatalf("server got %+v", frame)
 	}
 	// Once the socket is gone (in production the read loop notices first and
 	// unsets the terminal's stream pointer), sends must fail so the copy loop
 	// falls back to the HTTP publish path — and stay failed thereafter.
 	_ = conn.CloseNow()
-	if stream.sendOutput([]byte("again")) {
+	if stream.sendOutput(2, []byte("again")) {
 		t.Fatal("closed stream accepted output")
 	}
-	if stream.sendOutput([]byte("still")) {
+	if stream.sendOutput(3, []byte("still")) {
 		t.Fatal("retired stream accepted output")
 	}
 }
