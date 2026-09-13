@@ -3,8 +3,14 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
-import { CreateProjectAgentSheet, defaultAuthorizedAgent, RequiredAgentField } from "./CreateProjectAgentSheet";
+import {
+	CreateProjectAgentSheet,
+	defaultAuthorizedAgent,
+	defaultAuthorizedAgentForRole,
+	RequiredAgentField,
+} from "./CreateProjectAgentSheet";
 import { TooltipProvider } from "./ui/tooltip";
 
 function renderSheet(
@@ -17,6 +23,9 @@ function renderSheet(
 		queryClient.setQueryData(agentReadinessQueryKey, {
 			agents: [agentReadiness("claude-code"), agentReadiness("codex")],
 		});
+	}
+	if (queryClient.getQueryData(workspaceQueryKey) === undefined) {
+		queryClient.setQueryData(workspaceQueryKey, []);
 	}
 	render(
 		<QueryClientProvider client={queryClient}>
@@ -76,6 +85,56 @@ describe("CreateProjectAgentSheet", () => {
 		).toBe("devin");
 	});
 
+	it("chooses worker and orchestrator defaults from their own session history", () => {
+		const agents = [
+			agentReadiness("claude-code", "Claude Code"),
+			agentReadiness("codex", "Codex"),
+		];
+		const sessions = [
+			{ kind: "worker" as const, provider: "codex", createdAt: "2026-08-01T10:00:00Z" },
+			{ kind: "worker" as const, provider: "codex", createdAt: "2026-08-02T10:00:00Z" },
+			{ kind: "worker" as const, provider: "claude-code", createdAt: "2026-08-03T10:00:00Z" },
+			{ kind: "orchestrator" as const, provider: "claude-code", createdAt: "2026-08-04T10:00:00Z" },
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "orchestrator")).toBe("claude-code");
+	});
+
+	it("breaks equal role usage counts by the most recent matching session", () => {
+		const agents = [
+			agentReadiness("claude-code", "Claude Code"),
+			agentReadiness("codex", "Codex"),
+		];
+		const sessions = [
+			{ kind: "worker" as const, provider: "claude-code", createdAt: "2026-08-01T10:00:00Z" },
+			{ kind: "worker" as const, provider: "codex", createdAt: "2026-08-02T10:00:00Z" },
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+	});
+
+	it("ignores unavailable historical winners and falls back to Claude Code with no eligible history", () => {
+		const agents = [
+			agentReadiness("claude-code", "Claude Code"),
+			agentReadiness("codex", "Codex"),
+		];
+		const unavailableWinner = Array.from({ length: 4 }, (_, index) => ({
+			kind: "worker" as const,
+			provider: "goose",
+			createdAt: `2026-08-0${index + 1}T10:00:00Z`,
+		}));
+
+		expect(defaultAuthorizedAgentForRole(agents, unavailableWinner, "worker")).toBe("claude-code");
+		expect(
+			defaultAuthorizedAgentForRole(
+				[agentReadiness("codex", "Codex")],
+				[],
+				"worker",
+			),
+		).toBe("codex");
+	});
+
 	it("uses the compact trigger size for agent fields", () => {
 		render(
 			<RequiredAgentField
@@ -114,6 +173,55 @@ describe("CreateProjectAgentSheet", () => {
 			orchestratorAgent: "claude-code",
 			trackerIntake: undefined,
 		});
+	});
+
+	it("submits independent defaults from cached worker and orchestrator history", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(workspaceQueryKey, [
+			{
+				sessions: [
+					{ kind: "worker", provider: "codex", createdAt: "2026-08-01T10:00:00Z" },
+					{ kind: "worker", provider: "codex", createdAt: "2026-08-02T10:00:00Z" },
+					{ kind: "orchestrator", provider: "claude-code", createdAt: "2026-08-03T10:00:00Z" },
+				],
+			},
+		]);
+		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
+
+		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+		expect(onSubmit).toHaveBeenCalledWith({
+			workerAgent: "codex",
+			orchestratorAgent: "claude-code",
+			trackerIntake: undefined,
+		});
+	});
+
+	it("does not replace a manually selected role when history refreshes", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(workspaceQueryKey, [
+			{
+				sessions: [
+					{ kind: "worker", provider: "claude-code", createdAt: "2026-08-01T10:00:00Z" },
+				],
+			},
+		]);
+		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
+		await chooseOption(screen.getByLabelText("Worker agent"), "codex");
+
+		queryClient.setQueryData(workspaceQueryKey, [
+			{
+				sessions: [
+					{ kind: "worker", provider: "claude-code", createdAt: "2026-08-02T10:00:00Z" },
+					{ kind: "worker", provider: "claude-code", createdAt: "2026-08-03T10:00:00Z" },
+				],
+			},
+		]);
+		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+		expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ workerAgent: "codex" }));
 	});
 
 	it("does not show a manual agent catalog refresh action", () => {

@@ -3,12 +3,14 @@ import {
 	ProjectSetupFormView,
 	ProjectSetupHeaderView,
 } from "@aoagents/product-ui";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronLeft, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { components } from "../../api/schema";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
+import { workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
 import { AGENT_OPTIONS } from "../lib/agent-options";
 import {
 	agentLabelCompare,
@@ -127,6 +129,10 @@ export function CreateProjectAgentSheet({
 		displayedOnBack.current = onBack;
 	}
 	const agentsQuery = useAgentReadinessQuery(contentOpen);
+	const workspacesQuery = useQuery({
+		...workspaceQueryOptions,
+		enabled: open,
+	});
 	useEnsureAgentReadiness({ enabled: contentOpen });
 	const agents = agentsQuery.data;
 	const agentOptions = useMemo(() => agents?.agents ?? [], [agents]);
@@ -183,10 +189,14 @@ export function CreateProjectAgentSheet({
 
 	useEffect(() => {
 		if (!open) return;
-		const defaultAgent = defaultAuthorizedAgent(authorizedAgents);
-		if (!workerAgentTouched) setWorkerAgent(defaultAgent);
-		if (!orchestratorAgentTouched) setOrchestratorAgent(defaultAgent);
-	}, [authorizedAgents, open, orchestratorAgentTouched, workerAgentTouched]);
+		const sessionHistory = (workspacesQuery.data ?? []).flatMap((workspace) => workspace.sessions);
+		if (!workerAgentTouched) {
+			setWorkerAgent(defaultAuthorizedAgentForRole(authorizedAgents, sessionHistory, "worker"));
+		}
+		if (!orchestratorAgentTouched) {
+			setOrchestratorAgent(defaultAuthorizedAgentForRole(authorizedAgents, sessionHistory, "orchestrator"));
+		}
+	}, [authorizedAgents, open, orchestratorAgentTouched, workerAgentTouched, workspacesQuery.data]);
 
 	return (
 		<Dialog.Root
@@ -568,4 +578,45 @@ export function defaultAuthorizedAgent(authorizedAgents: AgentInfo[]): string {
 					(DEFAULT_AGENT_PRIORITY_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
 				agentLabelCompare(a, b),
 		)[0]?.id ?? "";
+}
+
+type RoleUsageSession = {
+	createdAt?: string;
+	kind?: "worker" | "orchestrator";
+	provider: string;
+};
+
+// Role defaults are derived only from sessions whose harness is currently
+// eligible. Historical use of an unavailable harness must not suppress the
+// normal catalog-priority fallback.
+export function defaultAuthorizedAgentForRole(
+	authorizedAgents: AgentInfo[],
+	sessions: RoleUsageSession[],
+	role: "worker" | "orchestrator",
+): string {
+	const stats = new Map<string, { count: number; latest: number }>();
+	const eligible = new Set(authorizedAgents.map((agent) => agent.id));
+
+	for (const session of sessions) {
+		if (session.kind !== role || !eligible.has(session.provider)) continue;
+		const current = stats.get(session.provider) ?? { count: 0, latest: Number.NEGATIVE_INFINITY };
+		const createdAt = Date.parse(session.createdAt ?? "");
+		stats.set(session.provider, {
+			count: current.count + 1,
+			latest: Number.isNaN(createdAt) ? current.latest : Math.max(current.latest, createdAt),
+		});
+	}
+
+	return [...authorizedAgents]
+		.sort((a, b) => {
+			const aStats = stats.get(a.id) ?? { count: 0, latest: Number.NEGATIVE_INFINITY };
+			const bStats = stats.get(b.id) ?? { count: 0, latest: Number.NEGATIVE_INFINITY };
+			return (
+				bStats.count - aStats.count ||
+				bStats.latest - aStats.latest ||
+				(DEFAULT_AGENT_PRIORITY_RANK.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+					(DEFAULT_AGENT_PRIORITY_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
+				agentLabelCompare(a, b)
+			);
+		})[0]?.id ?? "";
 }
