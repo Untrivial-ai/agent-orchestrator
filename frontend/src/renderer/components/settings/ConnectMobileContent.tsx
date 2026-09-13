@@ -12,6 +12,17 @@ import { PairingQr } from "./PairingQr";
 import { scramblePairingCodes } from "./qrScramble";
 import { InstallCloudflared } from "./InstallCloudflared";
 import { Button } from "../ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+	settingsDialogContentClass,
+	settingsDialogFooterClass,
+	settingsDialogHeaderClass,
+} from "../ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "../../lib/utils";
 
@@ -219,6 +230,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 	const queryClient = useQueryClient();
 	const [copied, setCopied] = useState(false);
 	const [optimisticEnabled, setOptimisticEnabled] = useState<boolean | null>(null);
+	const [trustConfirmationOpen, setTrustConfirmationOpen] = useState(false);
 	const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const lastQrValueRef = useRef<string | null>(null);
 	// Pinned to "lan" while the connection picker below is commented out.
@@ -392,6 +404,12 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 
 	const startBridge = () => {
 		if (busy || enabled) return;
+		setTrustConfirmationOpen(true);
+	};
+
+	const confirmStartBridge = () => {
+		if (busy || enabled) return;
+		setTrustConfirmationOpen(false);
 		clearActionErrors();
 		setOptimisticEnabled(true);
 		enable.mutate(undefined, {
@@ -447,6 +465,14 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 	return (
 		<div className="flex flex-col gap-4">
 			<p className="text-xs leading-4 text-settings-muted">{t("mobile.description")}</p>
+			{status.warning ? (
+				<p
+					className="rounded-md border border-warning/35 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning"
+					role="alert"
+				>
+					{status.warning}
+				</p>
+			) : null}
 
 			<div className="flex flex-col gap-6 sm:flex-row sm:items-start">
 				{/* Left: the walkthrough. */}
@@ -661,6 +687,23 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 					)}
 					</div>
 			</div>
+
+			<Dialog open={trustConfirmationOpen} onOpenChange={setTrustConfirmationOpen}>
+				<DialogContent className={settingsDialogContentClass} showCloseButton={false}>
+					<DialogHeader className={settingsDialogHeaderClass}>
+						<DialogTitle className="settings-dialog-title">{t("mobile.unencryptedConfirmTitle")}</DialogTitle>
+						<DialogDescription>{status.warning}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter className={settingsDialogFooterClass}>
+						<Button type="button" variant="footer" onClick={() => setTrustConfirmationOpen(false)}>
+							{t("confirm.cancel")}
+						</Button>
+						<Button type="button" variant="footer-primary" onClick={confirmStartBridge}>
+							{t("mobile.trustNetworkAndGenerate")}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

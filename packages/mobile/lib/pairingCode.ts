@@ -142,3 +142,13 @@ export function parsePairingCode(input: string): PairingOffer | null {
 		token: typeof o.token === "string" ? o.token : "",
 	};
 }
+
+/**
+ * Whether accepting this offer can expose the bearer token in plaintext.
+ *
+ * A mixed offer still needs confirmation: endpoint racing may legitimately
+ * choose its faster LAN address even when a TLS tunnel is also advertised.
+ */
+export function pairingNeedsUnencryptedConfirmation(offer: PairingOffer): boolean {
+	return offer.endpoints.some((endpoint) => !endpoint.secure);
+}
