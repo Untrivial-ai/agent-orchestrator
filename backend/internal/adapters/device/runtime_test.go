@@ -18,6 +18,8 @@ import (
 )
 
 func TestCapabilitiesGateHostRuntimeAndToolchainsIndependently(t *testing.T) {
+	t.Setenv("ANDROID_HOME", "")
+	t.Setenv("ANDROID_SDK_ROOT", "")
 	runtime := testRuntime(t)
 	runtime.goos = "linux"
 	capabilities := runtime.Capabilities(context.Background())
