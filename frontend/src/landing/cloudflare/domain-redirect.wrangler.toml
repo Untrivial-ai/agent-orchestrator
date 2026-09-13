@@ -26,8 +26,8 @@ pattern = "useao.dev/*"
 zone_name = "useao.dev"
 
 [[routes]]
-pattern = "www.useao.dev/*"
-zone_name = "useao.dev"
+pattern = "www.useao.dev"
+custom_domain = true
 
 [[routes]]
 pattern = "www.orchestrator.inc"

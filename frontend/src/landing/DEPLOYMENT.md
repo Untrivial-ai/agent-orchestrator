@@ -18,9 +18,8 @@ variable. An Actions-based Pages deployment does not use a `CNAME` file.
 - `www.orchestrator.inc`: a redirect Worker custom domain that sends traffic to
   `https://orchestrator.inc`.
 - Cloudflare `useao.dev`, `aoagents.dev`, and `ao-agents.com`: keep apex DNS
-  proxied;
-  `www.aoagents.dev` is a Worker custom domain with Cloudflare-managed DNS and
-  TLS. The `www.ao-agents.com` alias is also a Worker custom domain. Redirect
+  proxied. The `www.useao.dev`, `www.aoagents.dev`, and `www.ao-agents.com`
+  aliases are Worker custom domains with Cloudflare-managed DNS and TLS. Redirect
   only the explicitly configured landing hostnames to
   `https://orchestrator.inc`, preserving the path and query
   string. Use a permanent **308** redirect to preserve the method/body for old
@@ -38,10 +37,10 @@ the encoded path and query string. Deploy it separately from the static site:
 wrangler deploy --config cloudflare/domain-redirect.wrangler.toml
 ```
 
-The `useao.dev` and `www.useao.dev` records must be proxied for their Worker
-routes to execute. DNS-only records bypass the Worker and send requests directly
-to their configured origin. A successful `curl --resolve` check against
-Cloudflare only verifies the staged edge configuration, not public readiness.
+The `useao.dev` apex records must be proxied for their Worker route to execute.
+The `www.useao.dev` custom domain is managed by Cloudflare. A successful
+`curl --resolve` check against Cloudflare only verifies the staged edge
+configuration, not public readiness.
 After enabling the proxy, verify public DNS and HTTP/HTTPS redirects without
 `--resolve`.
 
