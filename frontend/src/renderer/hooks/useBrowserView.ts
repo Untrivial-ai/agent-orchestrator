@@ -640,7 +640,7 @@ export function useBrowserView({
 			// Read from the ref, not the tabsState closure, so this callback's
 			// identity stays stable across tab updates instead of churning on
 			// every nav/title-update/loading-state push (it cascades into
-			// handleCloseTab in BrowserTabsRail.tsx otherwise).
+			// handleCloseTab in BrowserPanel.tsx otherwise).
 			const closing = tabsStateRef.current.tabs.find((tab) => tab.id === tabId);
 			try {
 				const state = await window.ao!.browser.closeTab({ viewId, tabId });

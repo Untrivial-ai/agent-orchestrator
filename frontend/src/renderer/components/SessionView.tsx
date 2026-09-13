@@ -1441,7 +1441,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const previewUrl = session?.previewUrl?.trim() || undefined;
 	const previewRevision = session?.previewRevision;
 	const browserSlotVisible = Boolean(
-		session && hasInspector && (browserPoppedOut || (isInspectorOpen && inspectorView === "browser")),
+		session &&
+			hasInspector &&
+			(browserPoppedOut || (inspectorPanelVisible && inspectorView === "browser")),
 	);
 	const terminated = session ? !sessionIsActive(session) : false;
 	const browserView = useBrowserView({

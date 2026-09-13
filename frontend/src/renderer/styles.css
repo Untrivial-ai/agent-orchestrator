@@ -2980,7 +2980,7 @@ html.sidebar-reordering * {
 	align-items: center;
 	gap: 13px;
 	padding: 0 16px 0 14px;
-	border-bottom: 1px solid var(--border);
+	border-bottom: 1px solid var(--color-border-strong);
 	background: var(--bg);
 	z-index: 10;
 }
@@ -3418,9 +3418,9 @@ html.sidebar-reordering * {
 	padding: 18px 18px 40px;
 }
 
-/* Browser tab: the panel fills the rail edge-to-edge, so drop the body padding
-   and the panel's own border/radius so it sits flush against the resize handle. */
-.session-inspector__body.session-inspector__body--browser {
+/* Browser tab: the browser chrome is part of the inspector frame, not a
+   floating card inset inside it. */
+.session-inspector__body--browser {
 	padding: 0;
 	overflow: hidden;
 }
@@ -4161,19 +4161,9 @@ html.sidebar-reordering * {
 	flex-direction: column;
 	overflow: hidden;
 	border: 1px solid var(--border);
-	border-radius: 8px;
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--color-bg-secondary) 92%, transparent), transparent 118px),
-		linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent 42%),
-		var(--bg);
-	box-shadow:
-		0 0 0 1px color-mix(in srgb, var(--color-border) 42%, transparent),
-		0 20px 48px color-mix(in srgb, black 18%, transparent),
-		0 8px 18px color-mix(in srgb, black 10%, transparent);
-	transition:
-		border-color var(--duration-normal) ease,
-		box-shadow var(--duration-normal) ease,
-		background var(--duration-normal) ease;
+	border-radius: 0;
+	background: var(--bg);
+	transition: border-color var(--duration-normal) ease;
 }
 
 /* Maximized browser overlay: a fixed layer over the app workspace (portaled to
@@ -4287,7 +4277,9 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 }
 
 .browser-popout-overlay .browser-panel__toolbar,
-.browser-popout-overlay .browser-panel__toolbar * {
+.browser-popout-overlay .browser-panel__toolbar *,
+.browser-panel__address-bar,
+.browser-panel__address-bar * {
 	-webkit-app-region: no-drag;
 }
 
@@ -4308,30 +4300,49 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	box-shadow: none;
 }
 
-.browser-panel__toolbar {
+.browser-panel__topbar-host,
+.browser-panel__address-bar {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+}
+
+.browser-panel__address-bar {
+	height: var(--size-inspector-tabs);
+	justify-content: center;
+}
+
+.browser-panel__topbar-host > .browser-panel__address-bar {
+	flex: 1 1 0;
+}
+
+.browser-panel > .browser-panel__address-bar {
+	width: 100%;
+	flex: 0 0 var(--size-inspector-tabs);
+	padding: 0 4px;
+}
+
+.browser-panel__tab-row {
 	container-name: browser-toolbar;
 	container-type: inline-size;
 	display: flex;
+	height: 36px;
 	align-items: center;
 	gap: 2px;
 	flex-shrink: 0;
 	min-width: 0;
-	/* Matches the 28px (--size-control-md) buttons + 3px top/bottom exactly, so
-	   this is the actual driver of the bar's height — a bigger min-height here
-	   would silently swallow any padding reduction above it (buttons would just
-	   stay centered in the leftover space instead of the bar getting shorter). */
-	min-height: 34px;
-	/* No right padding: the new-tab button's own column is flush against this
-	   edge so it lines up with the docked rail directly below it. */
-	padding: 3px 0 3px 4px;
-	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 2%), var(--surface)),
-		var(--surface);
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
-		0 1px 0 color-mix(in srgb, black 22%, transparent);
-	backdrop-filter: blur(10px);
+	padding: 4px;
+	background: var(--bg);
+}
+
+.browser-panel__toolbar,
+.browser-panel__tab-bar {
+	display: contents;
+}
+
+.browser-panel__toolbar > .browser-panel__navigation-control,
+.browser-panel__toolbar > .browser-panel__navigation-btn {
+	order: -1;
 }
 
 /* Keep the URL field useful in the narrow inspector. The selected profile name
@@ -4353,42 +4364,58 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	}
 }
 
-.browser-panel__toolbar > :not(.browser-panel__url-wrap):not(button) {
-	transition:
-		opacity 140ms ease,
-		visibility 0s linear;
-}
-
-.browser-panel__toolbar--url-takeover > :not(.browser-panel__url-wrap):not(.browser-panel__navigation-btn):not(.browser-panel__navigation-control) {
-	visibility: hidden;
-	opacity: 0;
-	pointer-events: none;
-	transition-delay: 0s, 140ms;
-}
-
 .browser-panel {
 	container-name: browser-panel;
 	container-type: inline-size;
 }
 
-.browser-panel__tab-bar {
-	display: none;
-	height: 38px;
+.browser-panel__tab-actions {
+	margin-left: auto;
+	padding-left: 4px;
+}
+
+.browser-panel__tab-actions button,
+.browser-panel__toolbar button,
+.browser-panel__address-bar button,
+.browser-panel__tab-new,
+.browser-panel__tab-close {
+	color: var(--fg-muted);
+	transform-origin: center;
+	transition:
+		transform var(--duration-fast) ease-out,
+		filter var(--duration-fast) ease-out,
+		background-color var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		border-color var(--duration-fast) ease;
+}
+
+.browser-panel__tab-actions button:not(:disabled):hover,
+.browser-panel__toolbar button:not(:disabled):hover,
+.browser-panel__address-bar button:not(:disabled):hover {
+	color: var(--fg);
+}
+
+.browser-panel__tab-actions button:not(:disabled):active,
+.browser-panel__toolbar button:not(:disabled):active,
+.browser-panel__address-bar button:not(:disabled):active {
+	transform: scale(0.98);
+	transform-origin: center;
+}
+
+.browser-panel__tab-region {
+	position: relative;
+	display: flex;
 	min-width: 0;
-	align-items: end;
-	padding: 6px 8px 0;
-	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
-	background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+	flex: 1 1 0;
+	overflow: hidden;
 }
 
 .browser-panel__tab-strip {
 	display: flex;
-	width: fit-content;
-	max-width: calc(100% - 34px);
 	min-width: 0;
-	align-items: end;
+	align-items: center;
 	gap: 2px;
-	flex: 0 1 auto;
+	flex: 1 1 auto;
 	overflow-x: auto;
 	overflow-y: hidden;
 	scrollbar-width: none;
@@ -4398,18 +4425,31 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	display: none;
 }
 
+.browser-panel__tab-fade {
+	pointer-events: none;
+	position: absolute;
+	inset-block: 0;
+	right: 0;
+	z-index: 2;
+	width: 24px;
+	background: linear-gradient(90deg, transparent 0%, var(--bg) 82%);
+}
+
+.browser-panel__tab-fade--left {
+	left: 0;
+	right: auto;
+	background: linear-gradient(270deg, transparent 0%, var(--bg) 82%);
+}
+
 .browser-panel__tab {
 	position: relative;
 	display: flex;
-	width: 220px;
-	min-width: 52px;
-	max-width: 220px;
-	height: 32px;
-	align-items: center;
-	flex: 1 1 220px;
-	border: 1px solid transparent;
-	border-bottom: 0;
-	border-radius: 7px 7px 0 0;
+	width: 200px;
+	min-width: 150px;
+	max-width: 200px;
+	height: 28px;
+	flex: 0 1 200px;
+	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	background: transparent;
 }
@@ -4425,46 +4465,20 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	max-width: none;
 	flex: none;
 	color: var(--fg);
-	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
 	background: var(--surface);
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
-		0 6px 16px color-mix(in srgb, black 22%, transparent);
+	box-shadow: var(--shadow-popover);
 	cursor: grabbing;
 	pointer-events: none;
 }
 
-.browser-panel__tab:not(:last-child)::after {
-	position: absolute;
-	top: 8px;
-	right: -2px;
-	width: 1px;
-	height: 16px;
-	background: color-mix(in srgb, var(--color-border) 68%, transparent);
-	content: "";
-	opacity: 0.82;
-	transition: opacity 120ms ease-out;
-}
-
-.browser-panel__tab--active::after,
-.browser-panel__tab:has(+ .browser-panel__tab--active)::after,
-.browser-panel__tab:hover::after,
-.browser-panel__tab:has(+ .browser-panel__tab:hover)::after,
-.browser-panel__tab--drag-placeholder::after,
-.browser-panel__tab:has(+ .browser-panel__tab--drag-placeholder)::after {
-	opacity: 0;
-}
-
 .browser-panel__tab:hover {
 	color: var(--fg);
-	background: color-mix(in srgb, var(--surface-hover) 72%, transparent);
+	background: var(--interactive-hover);
 }
 
 .browser-panel__tab--active {
 	color: var(--fg);
-	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
-	background: var(--surface);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+	background: var(--interactive-active);
 }
 
 .browser-panel__tab-select {
@@ -4489,8 +4503,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-icon {
-	width: 14px;
-	height: 14px;
+	width: 16px;
+	height: 16px;
 	flex: none;
 	color: var(--fg-passive);
 }
@@ -4504,6 +4518,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-close {
+	position: relative;
+	top: 1px;
 	display: grid;
 	width: 26px;
 	height: 26px;
@@ -4514,11 +4530,20 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	border-radius: 5px;
 	color: var(--fg-muted);
 	background: transparent;
+	transition:
+		background var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		transform var(--duration-fast) ease;
 }
 
 .browser-panel__tab-close:not(:disabled):hover {
 	color: var(--fg);
 	background: var(--surface-hover);
+}
+
+.browser-panel__tab-close:not(:disabled):active {
+	transform: scale(0.98);
+	transform-origin: center;
 }
 
 .browser-panel__tab-close:disabled {
@@ -4535,15 +4560,20 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-new {
 	display: grid;
-	width: 30px;
-	height: 30px;
+	width: var(--size-control-md);
+	height: var(--size-control-md);
 	place-items: center;
 	flex: none;
-	margin: 0 0 1px 4px;
+	margin-left: 0;
 	border: 0;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	background: transparent;
+	transform-origin: center;
+	transition:
+		background var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		transform var(--duration-fast) ease;
 }
 
 .browser-panel__tab-new--dragging {
@@ -4553,7 +4583,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-new:not(:disabled):hover {
 	color: var(--fg);
-	background: var(--surface-hover);
+	background: var(--interactive-hover);
 }
 
 .browser-panel__tab-new:focus-visible {
@@ -4561,50 +4591,19 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	outline-offset: -2px;
 }
 
-@container browser-panel (min-width: 640px) {
-	.browser-panel__tab-bar {
-		display: flex;
-	}
-
-	.browser-panel__toolbar-new-tab,
-	.browser-panel__toolbar-tabs-trigger,
-	.browser-tabs-rail {
-		display: none;
-	}
+.browser-panel__tab-new:active {
+	transform: scale(0.98);
+	transform-origin: center;
 }
 
-.browser-panel__url,
 .browser-panel__url-wrap {
 	display: flex;
 	align-items: center;
 	position: relative;
 	min-width: 0;
 	flex: 1;
-}
-
-.browser-panel__url-wrap {
-	height: 29px;
-}
-
-.browser-panel__toolbar button {
-	border-radius: 7px;
-	transition:
-		background var(--duration-fast) ease,
-		color var(--duration-fast) ease,
-		transform var(--duration-fast) ease,
-		box-shadow var(--duration-fast) ease,
-		opacity 140ms ease,
-		visibility 0s linear;
-}
-
-.browser-panel__toolbar button:not(:disabled):hover {
-	transform: translateY(-1px);
-	box-shadow: 0 5px 12px color-mix(in srgb, black 12%, transparent);
-}
-
-.browser-panel__toolbar button:not(:disabled):active {
-	transform: translateY(0);
-	box-shadow: none;
+	max-width: 240px;
+	height: var(--size-control-md);
 }
 
 .browser-panel__annotate-btn[aria-pressed="true"] {
@@ -4613,39 +4612,26 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__url-input {
-	position: absolute;
-	top: 0;
-	right: 0;
-	left: 0;
-	z-index: 0;
-	width: auto;
-	height: 29px;
-	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
-	border-radius: 7px;
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, white 2%), var(--bg));
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
-		0 1px 8px color-mix(in srgb, black 9%, transparent);
-	font-family: var(--font-mono);
+	width: 100%;
+	box-sizing: border-box;
+	height: var(--size-control-md);
+	border-color: var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--bg);
+	font-family: var(--font-family-base);
 	font-size: 12px;
+	text-align: center;
 	transition:
-		left 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
-		right 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
-		box-shadow var(--duration-fast) ease,
-		background-color var(--duration-fast) ease;
+		border-color var(--duration-fast) ease,
+		box-shadow var(--duration-fast) ease;
 }
 
-.browser-panel__toolbar--url-takeover .browser-panel__url-input {
-	left: var(--browser-url-expand-left, 0);
-	right: var(--browser-url-expand-right, 0);
-	z-index: 2;
-}
-
-.browser-panel__url-input:focus {
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
-		0 1px 8px color-mix(in srgb, black 9%, transparent);
+.browser-panel__url-input:focus,
+.browser-panel__url-input:focus-visible {
+	text-align: left;
+	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
+	box-shadow: none;
+	outline: none;
 }
 
 .browser-panel__url-external {
@@ -4655,7 +4641,10 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	z-index: 3;
 	width: 23px;
 	height: 23px;
+	border-radius: var(--radius-sm);
 	color: var(--fg-muted);
+	background: var(--surface);
+	box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
 	opacity: 0;
 	pointer-events: none;
 }
@@ -4674,18 +4663,16 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: var(--bg);
 }
 
+.browser-panel__body {
+	padding: 4px;
+	background: var(--bg);
+}
+
 .browser-panel__viewport {
 	position: relative;
 	flex: 1;
 	min-height: 0;
-	margin: 8px;
 	overflow: hidden;
-	border: 0;
-	border-radius: 8px;
-	box-shadow:
-		inset 0 0 0 1px color-mix(in srgb, var(--color-border) 28%, transparent),
-		inset 0 1px 0 color-mix(in srgb, white 3%, transparent),
-		0 12px 26px color-mix(in srgb, black 14%, transparent);
 }
 
 /* Opaque only when there's no live native page expected to show through
@@ -4694,9 +4681,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
    native WebContentsView (or, briefly, the raised transparent shell during
    an overlay) is what's actually visible here, not this div's own paint. */
 .browser-panel__viewport[data-placeholder="true"] {
-	background:
-		radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent 34%),
-		var(--bg);
+	background: var(--bg);
 }
 
 .browser-popout-overlay .browser-panel__viewport {
@@ -4857,12 +4842,16 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	.browser-panel,
 	.browser-panel__toolbar button,
 	.browser-panel__toolbar > :not(.browser-panel__url-wrap),
-	.browser-panel__url-input {
+	.browser-panel__url-input,
+	.browser-panel__tab-new,
+	.browser-panel__tab-close {
 		transition: none;
 	}
 
 	.browser-panel__toolbar button:not(:disabled):hover,
-	.browser-panel__toolbar button:not(:disabled):active {
+	.browser-panel__toolbar button:not(:disabled):active,
+	.browser-panel__tab-new:active,
+	.browser-panel__tab-close:not(:disabled):active {
 		transform: none;
 	}
 }

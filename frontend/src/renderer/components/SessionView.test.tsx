@@ -2508,6 +2508,18 @@ describe("SessionView", () => {
 		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("aria-hidden", "false");
 	});
 
+	it("keeps the live browser active throughout the inspector close transition", () => {
+		render(<SessionView sessionId="sess-1" />);
+		act(() => useUiStore.getState().setInspectorView("sess-1", "browser"));
+		expect(browserViewOptions.current).toMatchObject({ active: true });
+
+		fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true });
+
+		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("data-state", "collapsed");
+		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("aria-hidden", "false");
+		expect(browserViewOptions.current).toMatchObject({ active: true });
+	});
+
 	it("keeps StrictMode mount from collapsing, then collapses on the first user toggle", () => {
 		render(
 			<StrictMode>
