@@ -4,7 +4,11 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MuxConnectionState, TerminalMux } from "../lib/terminal-mux";
 import type { WorkspaceSession } from "../types/workspace";
-import { useTerminalSession, type AttachableTerminal } from "./useTerminalSession";
+import {
+	REPLAY_WRITE_DEADLINE_MS,
+	useTerminalSession,
+	type AttachableTerminal,
+} from "./useTerminalSession";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
 const session: WorkspaceSession = {
@@ -89,6 +93,7 @@ function createFakeMux(): FakeMux {
 type FakeTerminal = AttachableTerminal & {
 	activeBufferType: "normal" | "alternate";
 	autoCompleteWrites: boolean;
+	throwOnWrite: boolean;
 	lines: string[];
 	pendingWriteCallbacks: Array<() => void>;
 	latestOutputRequests: number;
@@ -111,11 +116,16 @@ function createFakeTerminal(): FakeTerminal {
 		activeBufferType: "normal",
 		bufferType: () => terminal.activeBufferType,
 		autoCompleteWrites: true,
+		throwOnWrite: false,
 		lines: [],
 		pendingWriteCallbacks: [],
 		latestOutputRequests: 0,
 		// Mirrors xterm: the callback fires once the chunk has been parsed.
 		write: (bytes, done) => {
+			// A renderer addon throwing out of write is the shape the guarded
+			// writer has to absorb: the chunk is lost either way, but the write
+			// accounting must not be.
+			if (terminal.throwOnWrite) throw new Error("write failed");
 			terminal.lines.push(new TextDecoder().decode(bytes));
 			if (done) {
 				if (terminal.autoCompleteWrites) done();
@@ -403,6 +413,45 @@ describe("useTerminalSession", () => {
 			act(() => terminal.completeWrites());
 			expect(view.result.current.replaySettled).toBe(true);
 			expect(terminal.latestOutputRequests).toBe(1);
+		});
+
+		// A write callback that never arrives used to strand the pane forever:
+		// pendingReplayWrites stayed positive, so every later PTY frame queued
+		// behind it instead of reaching xterm and the cover was never lifted.
+		// The session stayed healthy on the backend while its pane showed
+		// nothing — the black-pane report.
+		it("recovers when a write callback never arrives", () => {
+			const { view, terminal, muxes } = setup();
+			terminal.autoCompleteWrites = false;
+			act(() => muxes[0].emitOpened("handle-1"));
+			act(() => muxes[0].emitData("handle-1", "replay"));
+			act(() => void vi.advanceTimersByTime(60 + 750));
+			expect(view.result.current.replaySettled).toBe(false);
+
+			act(() => void vi.advanceTimersByTime(REPLAY_WRITE_DEADLINE_MS));
+			expect(view.result.current.replaySettled).toBe(true);
+
+			// The pane is live again: bytes arriving after the deadline reach
+			// xterm rather than accumulating in the post-replay queue.
+			act(() => muxes[0].emitData("handle-1", "after deadline"));
+			expect(terminal.lines).toContain("after deadline");
+		});
+
+		it("recovers when a write throws synchronously", () => {
+			const { view, terminal, muxes } = setup();
+			terminal.throwOnWrite = true;
+			act(() => muxes[0].emitOpened("handle-1"));
+			act(() => muxes[0].emitData("handle-1", "replay"));
+			act(() => void vi.advanceTimersByTime(60 + 750));
+
+			// A throw loses the chunk, but the accounting must still settle so the
+			// cover comes off and the attachment keeps working.
+			act(() => void vi.advanceTimersByTime(REPLAY_WRITE_DEADLINE_MS));
+			expect(view.result.current.replaySettled).toBe(true);
+
+			terminal.throwOnWrite = false;
+			act(() => muxes[0].emitData("handle-1", "after throw"));
+			expect(terminal.lines).toContain("after throw");
 		});
 
 		it("streams reviewer-style attachments without the replay gate", () => {
