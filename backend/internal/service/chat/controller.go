@@ -397,6 +397,7 @@ type nativeHistoryCheckpoint struct {
 	assistantMismatch     ports.ChatHistoryMismatchDimension
 	hardMismatches        []ports.ChatHistoryMismatchDimension
 	aoHighWater           nativeHistoryHighWater
+	replayIndex           *nativeHistoryTurnIndex
 }
 
 // dropUnsettledHookFacts retires legacy checkpoint text that AO recorded on a
@@ -461,16 +462,34 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	// turn. Completed turns before it belong to the previous provider: their
 	// opaque ids remain useful timeline facts, but the new provider cannot replay
 	// them and they must not gate this native-history import.
-	var providerBoundary time.Time
+	var providerBoundary *domain.ConversationTurn
+	var providerBoundarySequence int64
+	turnSequence := make(map[string]int64, len(turns))
 	for _, message := range messages {
+		if message.Sequence > 0 && (turnSequence[message.TurnID] == 0 || message.Sequence < turnSequence[message.TurnID]) {
+			turnSequence[message.TurnID] = message.Sequence
+		}
 		turn := turnsByID[message.TurnID]
 		if turn == nil || message.Role != domain.MessageRoleUser ||
 			!nativeHistoryCoordinationMessage(message.Text) {
 			continue
 		}
-		if turn.RequestedAt.After(providerBoundary) {
-			providerBoundary = turn.RequestedAt
+		if providerBoundary == nil || message.Sequence > providerBoundarySequence {
+			providerBoundary = turn
+			providerBoundarySequence = message.Sequence
 		}
+	}
+	for _, activity := range activities {
+		if activity.Sequence > 0 && (turnSequence[activity.TurnID] == 0 || activity.Sequence < turnSequence[activity.TurnID]) {
+			turnSequence[activity.TurnID] = activity.Sequence
+		}
+	}
+	// Timeline sequences order turns even when timestamps are equal or skewed.
+	after := func(turn, boundary *domain.ConversationTurn) bool {
+		if a, b := turnSequence[turn.ID], turnSequence[boundary.ID]; a > 0 && b > 0 {
+			return a > b
+		}
+		return turn.RequestedAt.After(boundary.RequestedAt)
 	}
 
 	var latest *domain.ConversationTurn
@@ -483,10 +502,10 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		// auth-error message) on a dead branch that session/load never replays.
 		// Requiring one of those items would make every future switch time out.
 		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" ||
-			(!providerBoundary.IsZero() && turn.RequestedAt.Before(providerBoundary)) {
+			(providerBoundary != nil && turn.ID != providerBoundary.ID && !after(turn, providerBoundary)) {
 			continue
 		}
-		if latest == nil || turn.RequestedAt.After(latest.RequestedAt) {
+		if latest == nil || after(turn, latest) {
 			latest = turn
 		}
 	}
@@ -494,6 +513,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		return
 	}
 	p.aoHighWater.providerTurnID = latest.ProviderTurnID
+	p.replayIndex = indexNativeHistoryTurns(turns, messages, activities)
 	for _, message := range messages {
 		if message.TurnID != latest.ID || message.Streaming || message.Sequence <= p.aoHighWater.sequence {
 			continue
@@ -623,9 +643,11 @@ func (p nativeHistoryCheckpoint) mismatches(
 		return mismatches
 	}
 	mappedHighWaterTurns := make(map[string]bool)
-	mappedTurns, _ := mapNativeHistoryTurns(
-		events, existingTurns, existingMessages, existingActivities,
-	)
+	index := p.replayIndex
+	if index == nil {
+		index = indexNativeHistoryTurns(existingTurns, existingMessages, existingActivities)
+	}
+	mappedTurns, _ := index.mapReplay(events)
 	for replayTurnID, candidate := range mappedTurns {
 		if candidate.providerTurnID == highWater.providerTurnID && completedTurns[replayTurnID] {
 			mappedHighWaterTurns[replayTurnID] = true
@@ -784,7 +806,6 @@ type nativeHistoryTurn struct {
 	text           string
 	messages       map[string]int
 	activities     map[string]int
-	used           bool
 }
 
 func nativeHistoryMessageFingerprint(role domain.MessageRole, text string) string {
@@ -819,9 +840,24 @@ func mapNativeHistoryTurns(
 	existingMessages []domain.ConversationMessage,
 	existingActivities []domain.ConversationActivity,
 ) (map[string]*nativeHistoryTurn, map[string]*nativeHistoryTurn) {
-	mapped := make(map[string]*nativeHistoryTurn)
-	if len(events) == 0 || len(existingTurns) == 0 {
-		return mapped, nil
+	return indexNativeHistoryTurns(existingTurns, existingMessages, existingActivities).mapReplay(events)
+}
+
+// The durable snapshot is invariant during history settling. Keep its index
+// separate from per-replay matching so refreshes do not rebuild it.
+type nativeHistoryTurnIndex struct {
+	byProviderTurnID map[string]*nativeHistoryTurn
+	providerItems    map[string]*nativeHistoryTurn
+	ordered          []*nativeHistoryTurn
+}
+
+func indexNativeHistoryTurns(
+	existingTurns []domain.ConversationTurn,
+	existingMessages []domain.ConversationMessage,
+	existingActivities []domain.ConversationActivity,
+) *nativeHistoryTurnIndex {
+	if len(existingTurns) == 0 {
+		return nil
 	}
 
 	byAOTurnID := make(map[string]*nativeHistoryTurn, len(existingTurns))
@@ -842,7 +878,7 @@ func mapNativeHistoryTurns(
 		ordered = append(ordered, candidate)
 	}
 	if len(ordered) == 0 {
-		return mapped, nil
+		return nil
 	}
 
 	// A provider item is useful only when it identifies exactly one durable turn.
@@ -883,6 +919,16 @@ func mapNativeHistoryTurns(
 		)]++
 		rememberProviderItem(activity.ProviderItemID, candidate)
 	}
+	return &nativeHistoryTurnIndex{byProviderTurnID: byProviderTurnID, providerItems: providerItems, ordered: ordered}
+}
+
+func (index *nativeHistoryTurnIndex) mapReplay(events []ports.ChatEvent) (map[string]*nativeHistoryTurn, map[string]*nativeHistoryTurn) {
+	mapped := make(map[string]*nativeHistoryTurn)
+	if index == nil || len(events) == 0 {
+		return mapped, nil
+	}
+	byProviderTurnID, providerItems, ordered := index.byProviderTurnID, index.providerItems, index.ordered
+	used := make(map[*nativeHistoryTurn]bool, len(ordered))
 
 	bind := func(replayTurnID string, candidate *nativeHistoryTurn) {
 		if replayTurnID == "" || candidate == nil {
@@ -895,7 +941,7 @@ func mapNativeHistoryTurns(
 			return
 		}
 		mapped[replayTurnID] = candidate
-		candidate.used = true
+		used[candidate] = true
 	}
 	providerItemCandidate := func(event ports.ChatEvent) *nativeHistoryTurn {
 		var match *nativeHistoryTurn
@@ -937,7 +983,7 @@ func mapNativeHistoryTurns(
 		clientIdentities = append(clientIdentities, event.ProviderItemAliases...)
 		if event.ClientMessageID != "" || len(event.ProviderItemAliases) > 0 {
 			for _, candidate := range ordered {
-				if candidate.used || candidate.clientMessage == "" {
+				if used[candidate] || candidate.clientMessage == "" {
 					continue
 				}
 				for _, identity := range clientIdentities {
@@ -953,7 +999,7 @@ func mapNativeHistoryTurns(
 		}
 		if match == nil && event.ProviderItemID != "" {
 			for _, candidate := range ordered {
-				if !candidate.used && candidate.providerItem == event.ProviderItemID {
+				if !used[candidate] && candidate.providerItem == event.ProviderItemID {
 					match = candidate
 					break
 				}
@@ -961,7 +1007,7 @@ func mapNativeHistoryTurns(
 		}
 		if match == nil && event.Text != "" {
 			for _, candidate := range ordered {
-				if !candidate.used && candidate.text == event.Text {
+				if !used[candidate] && candidate.text == event.Text {
 					match = candidate
 					break
 				}

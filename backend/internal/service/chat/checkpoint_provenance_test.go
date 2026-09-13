@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -58,8 +59,55 @@ func poisonedRows(state domain.TurnState) ([]domain.ConversationTurn, []domain.C
 
 const testCheckpointSession = domain.SessionID("checkpoint-session")
 
+func TestNativeHistoryIndexDoesNotConsumeMatchesAcrossRefreshes(t *testing.T) {
+	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	turns[1].ProviderTurnID = "native-turn-2"
+	messages[2].Text = "Say hi"
+	index := indexNativeHistoryTurns(turns, messages, nil)
+	events := []ports.ChatEvent{{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "replayed-1", Text: "Say hi"}}
+	for i := range 3 {
+		mapped, _ := index.mapReplay(events)
+		if mapped["replayed-1"] == nil || mapped["replayed-1"].providerTurnID != "native-turn-1" {
+			t.Fatalf("refresh %d consumed an earlier match", i)
+		}
+		if i == 0 {
+			events = append(events, ports.ChatEvent{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: "replayed-2", Text: "Say hi"})
+		} else if mapped["replayed-2"] == nil || mapped["replayed-2"].providerTurnID != "native-turn-2" {
+			t.Fatal("refresh merged repeated prompts")
+		}
+	}
+}
+
+func BenchmarkCheckpointSettleWindow(b *testing.B) {
+	var turns []domain.ConversationTurn
+	var messages []domain.ConversationMessage
+	var events []ports.ChatEvent
+	for i := range 1000 {
+		id := fmt.Sprintf("turn-%d", i)
+		turns = append(turns, domain.ConversationTurn{ID: id, ProviderTurnID: id,
+			HandledBySessionID: testCheckpointSession, State: domain.TurnStateCompleted, RequestedAt: time.Unix(int64(i), 0)})
+		messages = append(messages, domain.ConversationMessage{TurnID: id, ProviderItemID: id + "-user",
+			Sequence: int64(i + 1), Role: domain.MessageRoleUser, Text: "prompt " + id})
+		if i < 999 {
+			events = append(events,
+				ports.ChatEvent{Kind: ports.ChatEventUserMessageCompleted, ProviderTurnID: id, ProviderItemID: id + "-user", Text: "prompt " + id},
+				ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: id, TurnState: domain.TurnStateCompleted})
+		}
+	}
+	checkpoint := nativeHistoryCheckpoint{}
+	checkpoint.captureAOHighWater(testCheckpointSession, turns, messages, nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if got := checkpoint.mismatches(events, turns, messages, nil); len(got) != 1 {
+			b.Fatalf("missing latest turn unexpectedly admitted: %v", got)
+		}
+	}
+}
+
 func TestCheckpointCompletedCoordinationStillAnchorsNewProvider(t *testing.T) {
 	turns, messages := poisonedRows(domain.TurnStateCompleted)
+	turns[0].RequestedAt = turns[1].RequestedAt // Wall-clock timestamps need not be unique.
 	turns[1].ProviderTurnID = "coordination"
 	messages[2].Text = "AO transferred the previous agent's context in hidden system instructions. Continue the task."
 	checkpoint := nativeHistoryCheckpoint{}
