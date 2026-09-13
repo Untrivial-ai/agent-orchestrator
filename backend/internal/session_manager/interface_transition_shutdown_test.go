@@ -17,6 +17,63 @@ type shutdownGuardTransitionChat struct {
 	stopErr     error
 }
 
+func TestStartupQuarantinesUnconfirmedTargetWithoutBlockingOtherSessions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m, st, _, chat, _ := newTransitionManager(t, domain.SessionModeChat)
+	guard := &shutdownGuardTransitionChat{transitionChat: chat, stopErr: errors.New("host remains alive")}
+	m.chat = guard
+	_, created, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "interrupted", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+		Phase: domain.SessionInterfaceTransitionTargetStarting, NativeConversationID: "native-1",
+		ErrorCode: "TARGET_STOP_UNCONFIRMED", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil || !created {
+		t.Fatalf("seed transition: created=%v err=%v", created, err)
+	}
+	healthy := st.sessions["session-1"]
+	healthy.ID = "healthy"
+	st.sessions[healthy.ID] = healthy
+	_, created, err = st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "healthy-interrupted", SessionID: healthy.ID, SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeTUI,
+		Phase: domain.SessionInterfaceTransitionPreflighting, NativeConversationID: "native-1",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil || !created {
+		t.Fatalf("seed healthy transition: created=%v err=%v", created, err)
+	}
+	if err := m.ReconcileStartupSafety(ctx); err != nil {
+		t.Fatalf("one uncertain session prevented daemon startup: %v", err)
+	}
+	if _, active, err := st.GetActiveSessionInterfaceTransition(ctx, healthy.ID); err != nil || active {
+		t.Fatalf("unrelated transition was not recovered: active=%v err=%v", active, err)
+	}
+	if release, ok := m.AcquireSessionInput("session-1"); ok {
+		release()
+		t.Fatal("quarantined target accepted input")
+	}
+	if !m.SessionMutationInProgress("session-1") {
+		t.Fatal("quarantined target is open to the reaper")
+	}
+	acquired, err := m.beginAgentOperations(ctx, []domain.SessionID{"session-1", "healthy"}, agentOperationReconcile)
+	if err != nil || len(acquired) != 1 || acquired[0] != healthy.ID {
+		t.Fatalf("background restore admission = %v, %v; want only healthy", acquired, err)
+	}
+	m.endAgentOperation(healthy.ID, agentOperationReconcile)
+	if release, ok := m.AcquireSessionInput(healthy.ID); !ok {
+		t.Fatal("unrelated session cannot accept input")
+	} else {
+		release()
+	}
+	guard.stopErr = nil
+	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+		t.Fatalf("conclusive recovery: %v", err)
+	}
+	if m.SessionMutationInProgress("session-1") || st.sessions["session-1"].Mode != domain.SessionModeTUI {
+		t.Fatal("conclusive shutdown did not release quarantine and restore source ownership")
+	}
+}
+
 func (c *shutdownGuardTransitionChat) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
 	if len(c.startErrors) > 0 {
 		c.startErr = c.startErrors[0]
@@ -90,8 +147,8 @@ func TestInterfaceTransitionRetainsFenceWhenTargetShutdownIsUnconfirmed(t *testi
 				t.Fatalf("unconfirmed target retried or source restarted: %s", got)
 			}
 
-			if _, err := m.recoverInterruptedInterfaceTransitions(context.Background()); err == nil {
-				t.Fatal("startup restored TUI while target shutdown still failed")
+			if _, err := m.recoverInterruptedInterfaceTransitions(context.Background()); err != nil {
+				t.Fatalf("startup could not quarantine unconfirmed target: %v", err)
 			}
 			if st.sessions["session-1"].Mode != domain.SessionModeChat {
 				t.Fatal("startup changed ownership before target shutdown")
@@ -180,8 +237,8 @@ func TestInterfaceTransitionChatToTUIRetainsShutdownFenceAcrossRestart(t *testin
 		t.Fatalf("source restarted despite unconfirmed target shutdown: %s", got)
 	}
 
-	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err == nil {
-		t.Fatal("startup released the Chat-to-TUI fence without confirming target shutdown")
+	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+		t.Fatalf("startup could not quarantine unconfirmed TUI target: %v", err)
 	}
 	current, found, err := st.GetActiveSessionInterfaceTransition(ctx, "session-1")
 	if err != nil || !found || current.ErrorCode != "TARGET_STOP_UNCONFIRMED" {

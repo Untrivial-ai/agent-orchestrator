@@ -21,6 +21,7 @@ const (
 	agentOperationRetire             agentOperationKind = "retire"
 	agentOperationReconcile          agentOperationKind = "reconcile"
 	agentOperationCodexAccountSwitch agentOperationKind = "codex_account_switch"
+	agentOperationInterfaceRecovery  agentOperationKind = "interface_recovery"
 )
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")

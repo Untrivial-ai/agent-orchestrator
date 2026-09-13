@@ -1526,6 +1526,24 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 	}
 	for i := range active {
 		transition := &active[i]
+		// Rebuild this session's input/reaper fence before serving or restoring
+		// anything. An ambiguous target quarantines only its own session.
+		m.agentOpMu.Lock()
+		operation := m.agentOperations[transition.SessionID]
+		if operation != "" && operation != agentOperationInterfaceRecovery {
+			m.agentOpMu.Unlock()
+			return nil, fmt.Errorf("recover transition %s: %w", transition.ID, errAgentOperationInProgress)
+		}
+		m.agentOperations[transition.SessionID] = agentOperationInterfaceRecovery
+		drained := m.inputDrained[transition.SessionID]
+		m.agentOpMu.Unlock()
+		if drained != nil {
+			select {
+			case <-drained:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		detail := "The daemon restarted during the interface switch; AO recovered the session from its last committed mode."
 		if (transition.SourceMode == domain.SessionModeTUI && transition.TargetMode == domain.SessionModeChat) ||
 			transition.ErrorCode == "TARGET_STOP_UNCONFIRMED" {
@@ -1536,7 +1554,8 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 			if found && !rec.IsTerminated && domain.NormalizeSessionMode(rec.Mode) == transition.TargetMode {
 				if stopErr := m.stopTransitionTargetConclusive(ctx, *transition); stopErr != nil {
 					m.retainUnconfirmedTransitionTarget(*transition, stopErr)
-					return nil, fmt.Errorf("recover transition %s target shutdown: %w", transition.ID, stopErr)
+					m.logger.Error("interface transition: session quarantined after unconfirmed target shutdown", "sessionID", transition.SessionID, "transition", transition.ID, "error", stopErr)
+					continue
 				}
 				if m.lcm == nil {
 					return nil, fmt.Errorf("recover transition %s: lifecycle manager is unavailable", transition.ID)
@@ -1583,6 +1602,7 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 		transition.ErrorDetail = detail
 		transition.UpdatedAt = m.clock()
 		transition.CompletedAt = transition.UpdatedAt
+		m.endAgentOperation(transition.SessionID, agentOperationInterfaceRecovery)
 	}
 	return active, nil
 }
