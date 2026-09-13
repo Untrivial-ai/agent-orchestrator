@@ -1,6 +1,7 @@
 package device
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -120,6 +122,74 @@ func TestDownloadResumableUsesRangeAndVerifiesChecksum(t *testing.T) {
 	got, err := os.ReadFile(target)
 	if err != nil || string(got) != string(payload) {
 		t.Fatalf("archive = %q, %v", got, err)
+	}
+}
+
+func TestProgressScannerHandlesCarriageReturns(t *testing.T) {
+	scanner := bufio.NewScanner(strings.NewReader("Preparing\r[=== 2.5%] Downloading\r\n[====== 12%] Installing\n"))
+	scanner.Split(scanProgressLines)
+	var tokens []string
+	for scanner.Scan() {
+		tokens = append(tokens, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Preparing", "[=== 2.5%] Downloading", "[====== 12%] Installing"}
+	if strings.Join(tokens, "|") != strings.Join(want, "|") {
+		t.Fatalf("tokens = %#v, want %#v", tokens, want)
+	}
+}
+
+func TestParsePercentAcceptsDecimalProgress(t *testing.T) {
+	for _, test := range []struct {
+		line string
+		want int
+	}{
+		{line: "[=== 2.5%] Downloading", want: 2},
+		{line: "Downloading iOS 26.5 Simulator (47%)", want: 47},
+	} {
+		got, ok := parsePercent(test.line)
+		if !ok || got != test.want {
+			t.Fatalf("parsePercent(%q) = %d, %v; want %d, true", test.line, got, ok, test.want)
+		}
+	}
+}
+
+func TestCompletedIOSRuntimeArtifactRequiresMarker(t *testing.T) {
+	root := t.TempDir()
+	artifact := filepath.Join(root, "iossimulator_26.5.exportedBundle")
+	if err := os.MkdirAll(artifact, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := completedIOSRuntimeArtifact(root); got != "" {
+		t.Fatalf("unmarked artifact = %q, want empty", got)
+	}
+	if err := markIOSRuntimeArtifact(root, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if got := completedIOSRuntimeArtifact(root); got != artifact {
+		t.Fatalf("completed artifact = %q, want %q", got, artifact)
+	}
+}
+
+func TestIOSDownloadUsesExportedArchitectureSpecificRuntime(t *testing.T) {
+	want := "-downloadPlatform iOS -exportPath /tmp/ios -architectureVariant arm64"
+	if got := strings.Join(iosDownloadArgs("/tmp/ios", "arm64"), " "); got != want {
+		t.Fatalf("iOS download args = %q, want %q", got, want)
+	}
+}
+
+func TestRunStreamingStopsSilentCommand(t *testing.T) {
+	if os.Getenv("AO_DEVICE_SILENT_HELPER") == "1" {
+		time.Sleep(time.Minute)
+		return
+	}
+	env := append(os.Environ(), "AO_DEVICE_SILENT_HELPER=1")
+	err := runStreaming(t.Context(), os.Args[0], []string{"-test.run=TestRunStreamingStopsSilentCommand"}, "", env, 100*time.Millisecond, nil)
+	var setupErr *ports.DeviceSetupRuntimeError
+	if !errors.As(err, &setupErr) || setupErr.Code != "DOWNLOAD_STALLED" {
+		t.Fatalf("silent command error = %#v, want DOWNLOAD_STALLED", err)
 	}
 }
 

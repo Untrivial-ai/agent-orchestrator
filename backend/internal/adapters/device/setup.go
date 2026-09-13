@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -20,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -34,6 +37,7 @@ const (
 	androidLicenseURL   = "https://developer.android.com/studio/terms"
 	appleLicenseURL     = "https://www.apple.com/legal/sla/docs/xcode.pdf"
 	xcodeURL            = "https://developer.apple.com/xcode/"
+	setupStallTimeout   = 5 * time.Minute
 )
 
 type androidArchive struct {
@@ -180,11 +184,19 @@ func (r *Runtime) installAndroid(ctx context.Context, report func(ports.DeviceSe
 	image := "system-images;android-" + androidAPILevel + ";default;" + archive.Arch
 	packages := []string{"platform-tools", "emulator", "platforms;android-" + androidAPILevel, image}
 	report(ports.DeviceSetupProgress{State: domain.DeviceSetupInstalling, Stage: "android-packages", Message: "Installing Android emulator, platform tools, and system image", Progress: 28})
-	if err := runStreaming(ctx, sdkmanager, append([]string{"--sdk_root=" + r.androidSDKDir()}, packages...), strings.Repeat("y\n", 100), env, func(line string) {
+	packageProgress := 28
+	if err := runStreaming(ctx, sdkmanager, append([]string{"--sdk_root=" + r.androidSDKDir()}, packages...), strings.Repeat("y\n", 100), env, setupStallTimeout, func(line string) {
 		if value, ok := parsePercent(line); ok {
-			report(ports.DeviceSetupProgress{State: domain.DeviceSetupInstalling, Stage: "android-packages", Message: "Installing Android packages", Progress: 28 + value*55/100})
+			progress := 28 + value*55/100
+			if progress > packageProgress {
+				packageProgress = progress
+				report(ports.DeviceSetupProgress{State: domain.DeviceSetupInstalling, Stage: "android-packages", Message: "Installing Android packages", Progress: progress})
+			}
 		}
 	}); err != nil {
+		if isSetupErrorCode(err, "DOWNLOAD_STALLED") {
+			return err
+		}
 		return setupError("ANDROID_PACKAGE_INSTALL_FAILED", "Android packages could not be installed. Retry to resume the setup.", "")
 	}
 
@@ -193,7 +205,7 @@ func (r *Runtime) installAndroid(ctx context.Context, report func(ports.DeviceSe
 		return err
 	}
 	avdmanager := filepath.Join(target, "bin", "avdmanager")
-	if err := runStreaming(ctx, avdmanager, []string{"create", "avd", "--force", "--name", androidAVDName, "--package", image, "--device", "pixel_8"}, "no\n", env, nil); err != nil {
+	if err := runStreaming(ctx, avdmanager, []string{"create", "avd", "--force", "--name", androidAVDName, "--package", image, "--device", "pixel_8"}, "no\n", env, 0, nil); err != nil {
 		return setupError("ANDROID_AVD_CREATE_FAILED", "AO could not create the Android virtual device", "")
 	}
 	report(ports.DeviceSetupProgress{State: domain.DeviceSetupVerifying, Stage: "verify", Message: "Verifying Android device tools", Progress: 96, InstalledVersion: androidToolsVersion + " / " + javaVersion})
@@ -264,13 +276,49 @@ func (r *Runtime) androidInstallEnv(javaHome string) []string {
 }
 
 func (r *Runtime) installIOS(ctx context.Context, report func(ports.DeviceSetupProgress)) error {
+	exportDir := filepath.Join(r.dataDir, "devices", "ios", "downloads")
+	if err := os.MkdirAll(exportDir, 0o700); err != nil {
+		return fmt.Errorf("create iOS runtime download directory: %w", err)
+	}
+	artifact := completedIOSRuntimeArtifact(exportDir)
 	report(ports.DeviceSetupProgress{State: domain.DeviceSetupDownloading, Stage: "ios-runtime", Message: "Downloading the iOS Simulator runtime with Xcode", Progress: 5})
-	if err := runStreaming(ctx, "xcodebuild", []string{"-downloadPlatform", "iOS"}, "", xcodeEnvironment(ctx), func(line string) {
+	if artifact == "" {
+		args := iosDownloadArgs(exportDir, runtime.GOARCH)
+		downloadProgress := 5
+		if err := runStreaming(ctx, "xcodebuild", args, "", xcodeEnvironment(ctx), setupStallTimeout, func(line string) {
+			if value, ok := parsePercent(line); ok {
+				progress := 5 + value*78/100
+				if progress > downloadProgress {
+					downloadProgress = progress
+					report(ports.DeviceSetupProgress{State: domain.DeviceSetupDownloading, Stage: "ios-runtime", Message: "Downloading the iOS Simulator runtime with Xcode", Progress: progress})
+				}
+			}
+		}); err != nil {
+			if isSetupErrorCode(err, "DOWNLOAD_STALLED") {
+				return err
+			}
+			return setupError("IOS_RUNTIME_DOWNLOAD_FAILED", "Xcode could not download the iOS Simulator runtime. Check Xcode and retry.", xcodeURL)
+		}
+		artifact = newestIOSRuntimeArtifact(exportDir)
+		if artifact != "" {
+			if err := markIOSRuntimeArtifact(exportDir, artifact); err != nil {
+				return fmt.Errorf("record downloaded iOS runtime: %w", err)
+			}
+		}
+	}
+	if artifact == "" {
+		return setupError("IOS_RUNTIME_EXPORT_MISSING", "Xcode finished downloading but did not export a Simulator runtime. Retry the setup.", xcodeURL)
+	}
+	report(ports.DeviceSetupProgress{State: domain.DeviceSetupInstalling, Stage: "ios-runtime-import", Message: "Installing the verified iOS Simulator runtime", Progress: 84})
+	if err := runStreaming(ctx, "xcodebuild", []string{"-importPlatform", artifact}, "", xcodeEnvironment(ctx), 10*time.Minute, func(line string) {
 		if value, ok := parsePercent(line); ok {
-			report(ports.DeviceSetupProgress{State: domain.DeviceSetupDownloading, Stage: "ios-runtime", Message: "Downloading the iOS Simulator runtime with Xcode", Progress: 5 + value*80/100})
+			report(ports.DeviceSetupProgress{State: domain.DeviceSetupInstalling, Stage: "ios-runtime-import", Message: "Installing the verified iOS Simulator runtime", Progress: 84 + value*5/100})
 		}
 	}); err != nil {
-		return setupError("IOS_RUNTIME_DOWNLOAD_FAILED", "Xcode could not download the iOS Simulator runtime. Check Xcode and retry.", xcodeURL)
+		if isSetupErrorCode(err, "DOWNLOAD_STALLED") {
+			return setupError("IOS_RUNTIME_IMPORT_STALLED", "Xcode stopped making progress while installing the iOS Simulator runtime. Retry the setup.", xcodeURL)
+		}
+		return setupError("IOS_RUNTIME_IMPORT_FAILED", "Xcode could not install the downloaded iOS Simulator runtime. Retry the setup.", xcodeURL)
 	}
 	report(ports.DeviceSetupProgress{State: domain.DeviceSetupCreating, Stage: "ios-device", Message: "Creating an AO iPhone Simulator", Progress: 90})
 	if !iosHasDevice(ctx) {
@@ -278,7 +326,7 @@ func (r *Runtime) installIOS(ctx context.Context, report func(ports.DeviceSetupP
 		if deviceType == "" {
 			return setupError("IOS_DEVICE_TYPE_MISSING", "Xcode did not report an available iPhone Simulator device type", xcodeURL)
 		}
-		if err := runStreaming(ctx, "xcrun", []string{"simctl", "create", "AO iPhone", deviceType}, "", xcodeEnvironment(ctx), nil); err != nil {
+		if err := runStreaming(ctx, "xcrun", []string{"simctl", "create", "AO iPhone", deviceType}, "", xcodeEnvironment(ctx), 0, nil); err != nil {
 			return setupError("IOS_DEVICE_CREATE_FAILED", "Xcode could not create the AO iPhone Simulator", xcodeURL)
 		}
 	}
@@ -287,6 +335,14 @@ func (r *Runtime) installIOS(ctx context.Context, report func(ports.DeviceSetupP
 		return setupError("IOS_VERIFY_FAILED", "The iOS Simulator runtime or device could not be verified", xcodeURL)
 	}
 	return nil
+}
+
+func iosDownloadArgs(exportDir, goarch string) []string {
+	variant := "universal"
+	if goarch == "arm64" {
+		variant = "arm64"
+	}
+	return []string{"-downloadPlatform", "iOS", "-exportPath", exportDir, "-architectureVariant", variant}
 }
 
 func xcodeDeveloperDir(ctx context.Context) string {
@@ -479,8 +535,10 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func runStreaming(ctx context.Context, command string, args []string, stdin string, env []string, onLine func(string)) error {
-	cmd := exec.CommandContext(ctx, command, args...)
+func runStreaming(ctx context.Context, command string, args []string, stdin string, env []string, stallTimeout time.Duration, onLine func(string)) error {
+	commandCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, command, args...) //nolint:gosec // Command and arguments are fixed by the managed installer.
 	cmd.Env, cmd.Stdin = env, strings.NewReader(stdin)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -493,31 +551,152 @@ func runStreaming(ctx context.Context, command string, args []string, stdin stri
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+	var stalled atomic.Bool
+	watchDone := make(chan struct{})
+	if stallTimeout > 0 {
+		go func() {
+			interval := min(stallTimeout/4, 30*time.Second)
+			if interval <= 0 {
+				interval = time.Second
+			}
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-watchDone:
+					return
+				case <-ticker.C:
+					if time.Since(time.Unix(0, lastActivity.Load())) >= stallTimeout {
+						stalled.Store(true)
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
 	var wg sync.WaitGroup
+	scanErrors := make(chan error, 2)
 	consume := func(reader io.Reader) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
+		scanner.Split(scanProgressLines)
 		scanner.Buffer(make([]byte, 4096), 1<<20)
 		for scanner.Scan() {
+			lastActivity.Store(time.Now().UnixNano())
 			if onLine != nil {
 				onLine(scanner.Text())
 			}
 		}
+		scanErrors <- scanner.Err()
 	}
 	wg.Add(2)
 	go consume(stdout)
 	go consume(stderr)
 	wg.Wait()
-	return cmd.Wait()
+	close(watchDone)
+	waitErr := cmd.Wait()
+	for range 2 {
+		if scanErr := <-scanErrors; scanErr != nil {
+			return fmt.Errorf("read command progress: %w", scanErr)
+		}
+	}
+	if stalled.Load() {
+		return setupError("DOWNLOAD_STALLED", "The vendor download stopped making progress. Check the network and retry to resume.", "")
+	}
+	return waitErr
+}
+
+func scanProgressLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		advance = i + 1
+		for advance < len(data) && (data[advance] == '\r' || data[advance] == '\n') {
+			advance++
+		}
+		return advance, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func parsePercent(line string) (int, bool) {
-	for _, field := range strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '[' || r == ']' || r == '%' || r == '=' }) {
-		if n, err := strconv.Atoi(strings.TrimSpace(field)); err == nil && n >= 0 && n <= 100 && strings.Contains(line, field+"%") {
-			return n, true
+	for percent := strings.IndexByte(line, '%'); percent >= 0; {
+		start := percent
+		for start > 0 && ((line[start-1] >= '0' && line[start-1] <= '9') || line[start-1] == '.') {
+			start--
 		}
+		if value, err := strconv.ParseFloat(line[start:percent], 64); err == nil && value >= 0 && value <= 100 {
+			return int(value), true
+		}
+		next := strings.IndexByte(line[percent+1:], '%')
+		if next < 0 {
+			break
+		}
+		percent += next + 1
 	}
 	return 0, false
+}
+
+func newestIOSRuntimeArtifact(root string) string {
+	var newest string
+	var newestTime time.Time
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		name := strings.ToLower(entry.Name())
+		if !strings.HasSuffix(name, ".dmg") && !strings.HasSuffix(name, ".exportedbundle") {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr == nil && (newest == "" || info.ModTime().After(newestTime)) {
+			newest, newestTime = path, info.ModTime()
+		}
+		if entry.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return newest
+}
+
+func completedIOSRuntimeArtifact(root string) string {
+	raw, err := os.ReadFile(filepath.Join(root, ".complete"))
+	if err != nil {
+		return ""
+	}
+	artifact, err := safeJoin(root, strings.TrimSpace(string(raw)))
+	if err != nil {
+		return ""
+	}
+	name := strings.ToLower(filepath.Base(artifact))
+	if !strings.HasSuffix(name, ".dmg") && !strings.HasSuffix(name, ".exportedbundle") {
+		return ""
+	}
+	if _, err := os.Stat(artifact); err != nil {
+		return ""
+	}
+	return artifact
+}
+
+func markIOSRuntimeArtifact(root, artifact string) error {
+	relative, err := filepath.Rel(root, artifact)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("iOS runtime artifact escapes download directory")
+	}
+	return os.WriteFile(filepath.Join(root, ".complete"), []byte(relative), 0o600)
+}
+
+func isSetupErrorCode(err error, code string) bool {
+	var setupErr *ports.DeviceSetupRuntimeError
+	return errors.As(err, &setupErr) && setupErr.Code == code
 }
 func percentRange(done, total int64, from, to int) int {
 	if total <= 0 {
