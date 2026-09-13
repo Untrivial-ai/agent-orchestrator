@@ -47,7 +47,7 @@ func (r *Reader) ReadAgentSwitchFailureAuthority(ctx context.Context) (ports.Age
 	decoder := json.NewDecoder(io.LimitReader(file, 4097))
 	decoder.DisallowUnknownFields()
 	var keys map[string]json.RawMessage
-	if err := decoder.Decode(&keys); err != nil || len(keys) != 4 || keys["schema_version"] == nil || keys["events_enabled"] == nil || keys["consent_generation"] == nil || keys["updated_at"] == nil {
+	if err := decoder.Decode(&keys); err != nil || (len(keys) != 4 && len(keys) != 5) || keys["schema_version"] == nil || keys["events_enabled"] == nil || keys["consent_generation"] == nil || keys["updated_at"] == nil {
 		return ports.AgentSwitchFailureAuthoritySnapshot{}, errors.New("telemetry policy authority is malformed")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -60,19 +60,32 @@ func (r *Reader) ReadAgentSwitchFailureAuthority(ctx context.Context) (ports.Age
 	decoder = json.NewDecoder(io.LimitReader(bytes.NewReader(raw), 4097))
 	decoder.DisallowUnknownFields()
 	var record diskRecord
-	if err := decoder.Decode(&record); err != nil || record.SchemaVersion != 1 || uuid.Validate(record.ConsentGeneration) != nil || !validTimestamp(record.UpdatedAt) {
+	if err := decoder.Decode(&record); err != nil || !record.versionShapeValid() || uuid.Validate(record.ConsentGeneration) != nil || !validTimestamp(record.UpdatedAt) {
 		return ports.AgentSwitchFailureAuthoritySnapshot{}, errors.New("telemetry policy authority fields are invalid")
 	}
 	return ports.AgentSwitchFailureAuthoritySnapshot{
 		Present: true, EventsEnabled: record.EventsEnabled, ConsentGeneration: record.ConsentGeneration,
+		ConsentProductionEnabled: record.ConsentProductionEnabled != nil && *record.ConsentProductionEnabled,
 	}, nil
 }
 
 type diskRecord struct {
-	SchemaVersion     int    `json:"schema_version"`
-	EventsEnabled     bool   `json:"events_enabled"`
-	ConsentGeneration string `json:"consent_generation"`
-	UpdatedAt         string `json:"updated_at"`
+	SchemaVersion            int    `json:"schema_version"`
+	EventsEnabled            bool   `json:"events_enabled"`
+	ConsentGeneration        string `json:"consent_generation"`
+	ConsentProductionEnabled *bool  `json:"consent_production_enabled"`
+	UpdatedAt                string `json:"updated_at"`
+}
+
+func (r diskRecord) versionShapeValid() bool {
+	switch r.SchemaVersion {
+	case 1:
+		return r.ConsentProductionEnabled == nil
+	case 2:
+		return r.ConsentProductionEnabled != nil
+	default:
+		return false
+	}
 }
 
 func validTimestamp(value string) bool {

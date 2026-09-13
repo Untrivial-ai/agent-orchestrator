@@ -71,6 +71,7 @@ export function buildDeveloperResourcesSection(
 		`- [Agent instructions](${baseUrl}/agents.md): when and how AI agents should use Agent Orchestrator`,
 		`- [Blog llms.txt](${baseUrl}/blog/llms.txt): scoped index of blog posts`,
 		`- [GitHub](${COMPANY.GITHUB_URL}): source code and releases`,
+		`- [Documentation map](${COMPANY.GITHUB_URL}/blob/main/docs/documentation-map.md): which repository artifacts are machine-readable contracts (OpenAPI spec, AGENTS.md, skills) versus human prose, and how CI keeps them in sync`,
 	];
 }
 

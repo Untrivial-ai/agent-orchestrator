@@ -475,32 +475,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	}, [activeProjectId, projects]);
 
 	const spawn = useCallback(
-		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) =>
-			trackFeature("spawn", async () => {
-				const c = cfgRef.current;
-				const proj = projectId ?? targetProject();
-				if (!c || !proj) throw new Error("Pick a project first");
-				const session = await delegateTask(c, {
-					projectId: proj,
-					brief: prompt ?? "",
-					agent: harness,
-					model,
-					mode: mode ?? "chat",
-				});
-				await fetchAll();
-				return session;
-			}),
+		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) => {
+			const resolvedMode = mode ?? "chat";
+			return trackFeature(
+				"spawn",
+				async () => {
+					const c = cfgRef.current;
+					const proj = projectId ?? targetProject();
+					if (!c || !proj) throw new Error("Pick a project first");
+					const session = await delegateTask(c, {
+						projectId: proj,
+						brief: prompt ?? "",
+						agent: harness,
+						model,
+						mode: resolvedMode,
+					});
+					await fetchAll();
+					return session;
+				},
+				{ mode: resolvedMode },
+			);
+		},
 		[targetProject, fetchAll],
 	);
 
 	const launchConductor = useCallback(
 		async (projectId: string, clean = false, mode: SessionMode = "chat") =>
-			trackFeature("conductor", async () => {
-				const c = cfgRef.current!;
-				const link = await apiLaunchOrchestrator(c, projectId, clean, mode);
-				await fetchAll();
-				return link;
-			}),
+			trackFeature(
+				"conductor",
+				async () => {
+					const c = cfgRef.current!;
+					const link = await apiLaunchOrchestrator(c, projectId, clean, mode);
+					await fetchAll();
+					return link;
+				},
+				{ mode },
+			),
 		[fetchAll],
 	);
 

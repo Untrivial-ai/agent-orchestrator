@@ -480,8 +480,9 @@ func bindConnToContext(ctx context.Context, conn net.Conn) func(error) error {
 	}
 }
 
-// Shutdown terminates current session ownership after explicit destruction or
-// orphan reap. Missing/dead hosts are harmless; unknown live owners fail closed.
+// Shutdown terminates current session ownership and waits for it to end.
+// Missing/dead hosts are harmless; unknown live owners fail closed.
+// The protocol acknowledgement only confirms that shutdown was requested.
 func Shutdown(ctx context.Context, dataDir, sessionID string) error {
 	d, err := readDescriptor(dataDir, sessionID)
 	if errors.Is(err, os.ErrNotExist) {
@@ -517,7 +518,31 @@ func Shutdown(ctx context.Context, dataDir, sessionID string) error {
 	if !response.OK {
 		return errors.New(response.Error)
 	}
-	return nil
+	waitCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		current, readErr := readDescriptor(dataDir, sessionID)
+		if readErr == nil && current.Token != d.Token {
+			return nil // A new owner could only publish after the old lock released.
+		}
+		if errors.Is(readErr, os.ErrNotExist) {
+			path, _ := lockPath(dataDir, sessionID)
+			if _, lockErr := os.Stat(path); errors.Is(lockErr, os.ErrNotExist) {
+				return nil
+			} else if lockErr != nil {
+				return lockErr
+			}
+		} else if readErr != nil {
+			return readErr
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("wait for chat host shutdown: %w", waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // Run owns the provider until it exits or an authenticated shutdown arrives.

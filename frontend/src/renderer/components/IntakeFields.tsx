@@ -34,10 +34,13 @@ export function intakeNeedsRule(form: IntakeForm): boolean {
 // buildIntake produces the payload field, scrubbing empties so a disabled or
 // blank intake serializes to `undefined` (omit) rather than an empty object the
 // daemon would persist.
-export function buildIntake(form: IntakeForm): TrackerIntakeConfig | undefined {
+export function buildIntake(
+	form: IntakeForm,
+	existing?: TrackerIntakeConfig,
+): TrackerIntakeConfig | undefined {
 	const next: TrackerIntakeConfig = {
+		...existing,
 		enabled: form.enabled || undefined,
-		provider: undefined,
 		repo: form.repo.trim() || undefined,
 		assignee: form.assignee.trim() || undefined,
 	};

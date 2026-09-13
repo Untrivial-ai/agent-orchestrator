@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
+	AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED,
 	parseTelemetryPolicyDiskRecord,
 	telemetryPolicySnapshot,
 	type TelemetryPolicyDiskRecord,
@@ -51,6 +52,7 @@ export function resolveDesktopDataDir(
 export class TelemetryPolicyAuthority {
 	readonly durabilitySupported: boolean;
 	private readonly policyPath: string;
+	private record: TelemetryPolicyDiskRecord;
 	private current: TelemetryPolicySnapshot;
 	private loaded = false;
 	private writable = false;
@@ -59,13 +61,15 @@ export class TelemetryPolicyAuthority {
 		dataDir: string;
 		packagedDefault: boolean;
 		platform?: NodeJS.Platform;
+		productionEnabled?: boolean;
 		fs?: TelemetryPolicyFileSystem;
 		now?: () => Date;
 		newGeneration?: () => string;
 	}) {
 		this.policyPath = path.join(options.dataDir, TELEMETRY_POLICY_FILE);
 		this.durabilitySupported = (options.platform ?? process.platform) !== "win32";
-		this.current = telemetryPolicySnapshot(this.newRecord(false), false);
+		this.record = this.newRecord(false);
+		this.current = this.snapshotOf(this.record, false);
 	}
 
 	snapshot(): TelemetryPolicySnapshot { return { ...this.current }; }
@@ -82,7 +86,8 @@ export class TelemetryPolicyAuthority {
 		} catch (error) {
 			if (!isNotFound(error)) throw error;
 			const record = this.newRecord(this.options.packagedDefault);
-			this.current = telemetryPolicySnapshot(record, false);
+			this.record = record;
+			this.current = this.snapshotOf(record, false);
 			this.writable = true;
 			await this.replace(record);
 			return this.snapshot();
@@ -93,7 +98,8 @@ export class TelemetryPolicyAuthority {
 		const parsed = parseTelemetryPolicyDiskRecord(raw);
 		if (!parsed.ok) return this.snapshot();
 		this.writable = true;
-		this.current = telemetryPolicySnapshot(parsed.record, true);
+		this.record = parsed.record;
+		this.current = this.snapshotOf(parsed.record, true);
 		return this.snapshot();
 	}
 
@@ -105,7 +111,8 @@ export class TelemetryPolicyAuthority {
 		}
 		if (!this.writable) throw new Error("telemetry policy authority is unsafe and cannot be replaced");
 		const record = this.newRecord(eventsEnabled);
-		this.current = telemetryPolicySnapshot(record, false);
+		this.record = record;
+		this.current = this.snapshotOf(record, false);
 		await this.replace(record);
 		return this.snapshot();
 	}
@@ -117,22 +124,26 @@ export class TelemetryPolicyAuthority {
 			throw new Error("telemetry policy durable replacement is unsupported on Windows");
 		}
 		if (!this.writable) throw new Error("telemetry policy authority is unsafe and cannot be replaced");
-		await this.replace({
-			schema_version: 1,
-			events_enabled: this.current.eventsEnabled,
-			consent_generation: this.current.consentGeneration,
-			updated_at: this.current.updatedAt,
-		});
+		await this.replace(this.record);
 		return this.snapshot();
 	}
 
 	private newRecord(eventsEnabled: boolean): TelemetryPolicyDiskRecord {
 		return {
-			schema_version: 1,
+			schema_version: 2,
 			events_enabled: eventsEnabled,
 			consent_generation: (this.options.newGeneration ?? randomUUID)(),
+			consent_production_enabled: this.productionEnabled(),
 			updated_at: (this.options.now?.() ?? new Date()).toISOString(),
 		};
+	}
+
+	private productionEnabled(): boolean {
+		return this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED;
+	}
+
+	private snapshotOf(record: TelemetryPolicyDiskRecord, acknowledged: boolean): TelemetryPolicySnapshot {
+		return telemetryPolicySnapshot(record, acknowledged, this.productionEnabled());
 	}
 
 	private async replace(record: TelemetryPolicyDiskRecord): Promise<void> {
@@ -147,7 +158,7 @@ export class TelemetryPolicyAuthority {
 			handle = undefined;
 			await fs.rename(temporary, this.policyPath);
 			await fs.syncDirectory(this.options.dataDir);
-			this.current = telemetryPolicySnapshot(record, true);
+			this.current = this.snapshotOf(record, true);
 		} finally {
 			if (handle) await handle.close().catch(() => undefined);
 			await fs.remove(temporary).catch(() => undefined);

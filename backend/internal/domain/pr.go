@@ -91,7 +91,10 @@ type PullRequest struct {
 	ObservedAt       time.Time
 	CIObservedAt     time.Time
 	ReviewObservedAt time.Time
-	AutoInjectCI     bool
+	// ReviewPartial records that the latest review-thread observation hit the
+	// provider's thread-window cap, so stored thread rows are a partial view.
+	ReviewPartial bool
+	AutoInjectCI  bool
 }
 
 // PullRequestCheck is one normalized CI check run for a pull request.

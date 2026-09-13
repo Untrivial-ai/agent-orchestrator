@@ -92,8 +92,9 @@ When AO has captured an OMP native session id in session metadata, restore uses:
 omp --resume <native-session-id>
 ```
 
-If no native session id is available, AO falls back to a fresh interactive
-launch.
+AO first verifies a session file for that id exists under the OMP sessions
+dir. If the file is missing or no native session id is available, AO falls
+back to a fresh interactive launch.
 
 ## Auth
 
