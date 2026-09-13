@@ -1,10 +1,8 @@
 import type { ReactNode } from "react";
-import { Bot } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useShell } from "../lib/shell-context";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
-import { TopbarButton } from "./TopbarButton";
 import { WelcomePanel } from "./WelcomePanel";
 import { useUiStore } from "../stores/ui-store";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
@@ -31,15 +29,6 @@ export function BoardWelcome() {
 						onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 					/>
 					<GitHubOnboardingNotice />
-					<div className="flex w-full items-center gap-3 px-1">
-						<div className="h-px flex-1 bg-border" />
-						<span className="text-caption text-muted-foreground">{t("common.or")}</span>
-						<div className="h-px flex-1 bg-border" />
-					</div>
-					<TopbarButton onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)} variant="accent">
-						<Bot className="size-icon-md" aria-hidden="true" />
-						{t("home.newStandaloneAgent")}
-					</TopbarButton>
 				</div>
 			</div>
 		</WelcomePanel>
