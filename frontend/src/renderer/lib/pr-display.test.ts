@@ -374,6 +374,21 @@ describe("prCardPresentation", () => {
 			links: [],
 		});
 	});
+
+	it("names GitLab when a merge request is blocked", () => {
+		const url = "https://gitlab.com/acme/repo/-/merge_requests/7";
+		const presentation = prCardPresentation(
+			summary({
+				url,
+				htmlUrl: url,
+				provider: "gitlab",
+				mergeability: { state: "blocked", reasons: ["blocked_by_provider"], prUrl: url },
+			}),
+		);
+
+		expect(presentation.primary.detail).toBe("GitLab currently reports this pull request can't be merged.");
+		expect(presentation.readiness?.detail).toBe("GitLab currently reports this pull request can't be merged.");
+	});
 });
 
 describe("prBrowserUrl", () => {

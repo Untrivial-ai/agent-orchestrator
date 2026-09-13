@@ -675,7 +675,7 @@
 	"pr.merge.conflictsWithBase": "Conflitos com a branch base",
 	"pr.merge.mergeable": "Mesclável",
 	"pr.merge.openConflicts": "Abrir conflitos de merge",
-	"pr.merge.providerBlocked": "O GitHub informa que este pull request não pode ser mesclado no momento.",
+	"pr.merge.providerBlocked": "O {{provider}} informa que este pull request não pode ser mesclado no momento.",
 	"pr.merge.unstable": "Instável",
 	"pr.noPRYet": "ainda sem PR",
 	"pr.noun.check_one": "verificação",

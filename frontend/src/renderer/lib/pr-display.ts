@@ -293,8 +293,12 @@ function mergeReadinessDetail(pr: SessionPRSummary): string {
 	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
 	if (!reviewAllowsMerge(pr.review.decision)) return appI18n.t("pr.merge.reasonReview");
 	if (pr.review.hasUnresolvedHumanComments) return appI18n.t("pr.merge.reasonComments");
-	if (pr.mergeability.state !== "mergeable") return appI18n.t("pr.merge.providerBlocked");
+	if (pr.mergeability.state !== "mergeable") return providerBlockedDetail(pr);
 	return appI18n.t("pr.merge.reasonReady");
+}
+
+function providerBlockedDetail(pr: SessionPRSummary): string {
+	return appI18n.t("pr.merge.providerBlocked", { provider: pr.provider === "gitlab" ? "GitLab" : "GitHub" });
 }
 
 export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
@@ -410,7 +414,7 @@ function mergeSummary(pr: SessionPRSummary): string | undefined {
 		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.conflictsWithBase") : undefined;
 	}
 	if (pr.mergeability.state === "blocked" || pr.mergeability.state === "unstable") {
-		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.providerBlocked") : undefined;
+		return mergeLinks(pr).length === 0 ? providerBlockedDetail(pr) : undefined;
 	}
 	return formatDiffSummary(pr);
 }

@@ -675,7 +675,7 @@
 	"pr.merge.conflictsWithBase": "Conflictos con la rama base",
 	"pr.merge.mergeable": "Fusionable",
 	"pr.merge.openConflicts": "Abrir conflictos de fusión",
-	"pr.merge.providerBlocked": "GitHub indica que este pull request no se puede fusionar en este momento.",
+	"pr.merge.providerBlocked": "{{provider}} indica que este pull request no se puede fusionar en este momento.",
 	"pr.merge.unstable": "Inestable",
 	"pr.noPRYet": "aún sin PR",
 	"pr.noun.check_one": "comprobación",

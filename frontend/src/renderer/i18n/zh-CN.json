@@ -655,7 +655,7 @@
 	"pr.merge.conflictsWithBase": "与目标分支存在冲突",
 	"pr.merge.mergeable": "可合并",
 	"pr.merge.openConflicts": "打开合并冲突",
-	"pr.merge.providerBlocked": "GitHub 当前报告此拉取请求无法合并。",
+	"pr.merge.providerBlocked": "{{provider}} 当前报告此拉取请求无法合并。",
 	"pr.merge.unstable": "不稳定",
 	"pr.noPRYet": "尚无 PR",
 	"pr.noun.check_one": "项检查",

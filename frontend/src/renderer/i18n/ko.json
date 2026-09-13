@@ -673,7 +673,7 @@
 	"pr.merge.conflictsWithBase": "베이스 브랜치와 충돌합니다",
 	"pr.merge.mergeable": "병합 가능",
 	"pr.merge.openConflicts": "병합 충돌 열기",
-	"pr.merge.providerBlocked": "현재 GitHub에서 이 풀 리퀘스트를 병합할 수 없다고 보고합니다.",
+	"pr.merge.providerBlocked": "현재 {{provider}}에서 이 풀 리퀘스트를 병합할 수 없다고 보고합니다.",
 	"pr.merge.unstable": "불안정",
 	"pr.noPRYet": "아직 PR 없음",
 	"pr.noun.check_one": "검사",

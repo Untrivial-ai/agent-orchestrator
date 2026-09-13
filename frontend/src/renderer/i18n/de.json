@@ -673,7 +673,7 @@
 	"pr.merge.conflictsWithBase": "Konflikte mit dem Basis-Branch",
 	"pr.merge.mergeable": "Mergebar",
 	"pr.merge.openConflicts": "Merge-Konflikte öffnen",
-	"pr.merge.providerBlocked": "GitHub meldet derzeit, dass dieser Pull Request nicht gemergt werden kann.",
+	"pr.merge.providerBlocked": "{{provider}} meldet derzeit, dass dieser Pull Request nicht gemergt werden kann.",
 	"pr.merge.unstable": "Instabil",
 	"pr.noPRYet": "noch kein PR",
 	"pr.noun.check_one": "Check",
