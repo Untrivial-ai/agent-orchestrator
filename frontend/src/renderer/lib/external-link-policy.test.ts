@@ -1,7 +1,7 @@
 import { fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "./bridge";
-import { handleModifierLinkClick, openLinkInSystemBrowser, requiresSystemBrowser } from "./external-link-policy";
+import { handleModifierLinkClick, isWorkspaceHtmlLink, openLinkInSystemBrowser, requiresSystemBrowser } from "./external-link-policy";
 
 describe("external link policy", () => {
 	beforeEach(() => {
@@ -76,4 +76,11 @@ describe("external link policy", () => {
 		"keeps unrelated URLs in the AO Browser",
 		(url) => expect(requiresSystemBrowser(url)).toBe(false),
 	);
+
+	it("recognizes only existing safe workspace HTML links", () => {
+		expect(isWorkspaceHtmlLink("./test-ui.html", ["test-ui.html"])).toBe(true);
+		expect(isWorkspaceHtmlLink("README.md", ["README.md"])).toBe(false);
+		expect(isWorkspaceHtmlLink("../test-ui.html", ["../test-ui.html"])).toBe(false);
+		expect(isWorkspaceHtmlLink("missing.html", ["test-ui.html"])).toBe(false);
+	});
 });

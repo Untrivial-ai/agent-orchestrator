@@ -31,7 +31,7 @@ import {
 import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
-import { isWebLink } from "../../lib/external-link-policy";
+import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
 	deriveAgentSwitchPresentation,
@@ -55,9 +55,20 @@ export interface ConversationWorkState {
 
 const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
 
-function firstWebLink(text: string): string | undefined {
-	const match = text.match(HTTP_LINK_PATTERN)?.[0].replace(/[.,!?;:]+$/, "");
-	return match && isWebLink(match) ? match : undefined;
+function cleanExtractedLink(value: string): string {
+	return value.replace(/[.,!?;:\\]+$/, "");
+}
+
+function firstBrowserLink(text: string, workspacePaths: string[]): string | undefined {
+	const candidates: Array<{ index: number; value: string }> = [];
+	const webMatch = HTTP_LINK_PATTERN.exec(text);
+	if (webMatch) candidates.push({ index: webMatch.index, value: cleanExtractedLink(webMatch[0]) });
+	const markdownLink = /\[[^\]]+\]\(([^)\s]+)\)/.exec(text);
+	if (markdownLink?.[1]) candidates.push({ index: markdownLink.index, value: cleanExtractedLink(markdownLink[1]) });
+	for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
+		if (isWebLink(candidate.value) || isWorkspaceHtmlLink(candidate.value, workspacePaths)) return candidate.value;
+	}
+	return undefined;
 }
 
 export const SessionChatSurface = memo(function SessionChatSurface({
@@ -309,7 +320,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	);
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
-	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser);
+	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser, paths);
 	const autoOpenedMessageIds = useRef(new Set<string>());
 	const conversationBaselineReady = useRef(false);
 	useEffect(() => {
@@ -324,7 +335,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 			if (item.kind !== "message" || item.role !== "assistant" || item.streaming) continue;
 			if (autoOpenedMessageIds.current.has(item.id)) continue;
 			autoOpenedMessageIds.current.add(item.id);
-			const url = firstWebLink(item.text);
+			const url = firstBrowserLink(item.text, paths);
 			if (url) openLinkInBrowser(url);
 		}
 	}, [openLinkInBrowser, snapshot]);

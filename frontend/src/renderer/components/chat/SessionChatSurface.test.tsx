@@ -38,6 +38,7 @@ const {
 	getMock,
 	invalidateCatalogsMock,
 	postMock,
+	workspacePathsState,
 	conversationState,
 	conversationCommandState,
 	agentSwitchState,
@@ -47,6 +48,7 @@ const {
 	getMock: vi.fn(),
 	invalidateCatalogsMock: vi.fn(),
 	postMock: vi.fn(),
+	workspacePathsState: { paths: [] as string[] },
 	agentSwitchState: { data: [] as AgentSwitchSummary[] },
 	conversationCommandState: {
 		busy: false,
@@ -98,7 +100,7 @@ vi.mock("../../hooks/useConversation", () => ({
 	useConversationModels: vi.fn(() => ({ models: [] })),
 	useConversationSkills: vi.fn(() => ({ skills: [] })),
 	useStageAttachments: () => undefined,
-	useWorkspaceFilePaths: () => ({ paths: [], truncated: false }),
+	useWorkspaceFilePaths: () => ({ paths: workspacePathsState.paths, truncated: false }),
 }));
 
 vi.mock("../../hooks/useAgentSwitchVisibility", () => ({
@@ -451,6 +453,21 @@ describe("SessionChatSurface link routing", () => {
 			</Wrapper>,
 		);
 		expect(openInBrowser).toHaveBeenCalledTimes(1);
+	});
+
+	it("automatically previews a newly completed workspace HTML link", async () => {
+		workspacePathsState.paths = ["test-ui.html"];
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={session} /></Wrapper>);
+		conversationState.snapshot = {
+			capabilities: [],
+			items: [{ kind: "message", id: "assistant-html", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Done: [test-ui.html](test-ui.html)", streaming: false, createdAt: "2026-08-08T00:00:01Z" }],
+		};
+		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={session} /></Wrapper>);
+		await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/preview",
+			expect.objectContaining({ body: { url: "test-ui.html" } }),
+		));
 	});
 
 	it("opens each plain Chat link in a new AO Browser tab", async () => {
