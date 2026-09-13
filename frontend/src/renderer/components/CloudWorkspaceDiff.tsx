@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { Maximize2, Minimize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useCloudCp } from "../hooks/useCloudCp";
-import type { CloudCpWorkspaceDiffFile } from "../lib/cloud-cp";
+import type { CloudCpWorkspaceDiffFile, CloudCpWorkspaceDiffFileDetail } from "../lib/cloud-cp";
 import { cn } from "../lib/utils";
 import type { WorkspaceSession } from "../types/workspace";
 import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
@@ -139,7 +139,7 @@ export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaxim
 	);
 }
 
-function CloudDiffDetail({ detailQuery }: { detailQuery: ReturnType<typeof useQuery> }) {
+function CloudDiffDetail({ detailQuery }: { detailQuery: UseQueryResult<CloudCpWorkspaceDiffFileDetail, Error> }) {
 	if (detailQuery.isPending) return <PanelMessage>Loading diff…</PanelMessage>;
 	if (detailQuery.isError) return <PanelMessage action={<RetryButton onClick={() => void detailQuery.refetch()} />}>{detailQuery.error.message}</PanelMessage>;
 	if (!detailQuery.data) return <PanelMessage>Select a changed file to review its patch.</PanelMessage>;
