@@ -31,6 +31,7 @@ type taskPromptConfig struct {
 
 type systemPromptConfig struct {
 	Role                  sessionPromptRole
+	Standalone            bool
 	Project               promptProject
 	OrchestratorSessionID string
 	ProjectRules          string
@@ -76,6 +77,10 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 			sections = append(sections, "## Project-Specific Orchestrator Rules\n"+rules)
 		}
 	case sessionPromptRoleWorker:
+		if cfg.Standalone {
+			sections = append(sections, standaloneWorkerSystemPrompt(), workerContainerLabelPrompt())
+			break
+		}
 		orchestratorID := strings.TrimSpace(cfg.OrchestratorSessionID)
 		sections = append(sections, workerSystemPrompt(cfg.Project, orchestratorID != ""))
 		if orchestratorID != "" {
@@ -106,6 +111,14 @@ func publishingScopePrompt() string {
 - For freeform work, publish only when the user requests it or explicitly configured project rules require it. Available credentials, a configured remote, auto/bypass tool permissions, or an associated PR/MR alone do not authorize publishing.
 - Explicit user restrictions such as local-only, review-only, or do-not-publish take precedence over workflow defaults, including issue-task prompts and CI/review follow-up instructions. Complete the permitted local work and report the result without publishing.
 - Preserve the user's publishing scope and restrictions when spawning or redirecting workers. Do not add publishing to a freeform implementation task unless the user or explicitly configured project rules authorize it.`
+}
+
+func standaloneWorkerSystemPrompt() string {
+	return `## AO Standalone Agent
+
+You are a standalone Agent Orchestrator worker. This session is not attached to a project, repository, branch, issue tracker, orchestrator, PR/MR workflow, CI integration, or review automation.
+
+Work only from the user's requests and the files in this AO-managed workspace. Do not invent project context or create repository, branch, issue, PR/MR, CI, or review requirements. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
 }
 
 // systemPromptGuard is appended to every agent system prompt. The role,

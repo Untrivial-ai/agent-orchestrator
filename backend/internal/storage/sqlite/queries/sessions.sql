@@ -1,6 +1,12 @@
 -- name: NextSessionNum :one
 SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?;
 
+-- name: NextStandaloneSessionNum :one
+SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id IS NULL;
+
+-- name: SessionIDExists :one
+SELECT COUNT(*) > 0 FROM sessions WHERE id = ?;
+
 -- name: InsertSession :exec
 INSERT INTO sessions (
     id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
@@ -122,7 +128,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
-FROM sessions WHERE project_id = ? ORDER BY num;
+FROM sessions WHERE project_id IS ? ORDER BY num;
 
 -- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,

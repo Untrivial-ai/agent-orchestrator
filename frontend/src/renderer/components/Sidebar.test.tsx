@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -20,7 +20,12 @@ import {
 	SIDEBAR_DEFAULT_WIDTH,
 	SIDEBAR_MIN_WIDTH,
 } from "./Sidebar";
-import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { useUiStore } from "../stores/ui-store";
@@ -373,7 +378,13 @@ beforeEach(() => {
 	cloudSessionState.status = "unauthenticated";
 	cloudSessionState.signIn.mockReset();
 	cloudSessionState.signOut.mockReset().mockResolvedValue(undefined);
-	useUiStore.setState({ isCommandPaletteOpen: false, settingsModal: null });
+	useUiStore.setState({
+		isCommandPaletteOpen: false,
+		newTaskRequest: null,
+		settingsModal: null,
+		provisioningProjectIds: new Set(),
+		restartingProjectIds: new Set(),
+	});
 	getMock.mockReset();
 	getMock.mockResolvedValue({
 		data: {
@@ -428,22 +439,6 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 });
-
-// jsdom does not implement DataTransfer and drops clientY from synthetic drag
-// events, so build the event and pin the properties the handlers read.
-function fireDrag(
-	type: "dragStart" | "dragOver" | "drop",
-	element: Element,
-	props: { clientY?: number },
-) {
-	const dataTransfer = { setData: () => {}, getData: () => "", setDragImage: () => {}, dropEffect: "", effectAllowed: "" };
-	const event = createEvent[type](element);
-	Object.defineProperty(event, "dataTransfer", { value: dataTransfer, configurable: true });
-	if (props.clientY !== undefined) {
-		Object.defineProperty(event, "clientY", { value: props.clientY, configurable: true });
-	}
-	fireEvent(element, event);
-}
 
 describe("Sidebar", () => {
 	it("shows the cloud sign-in entry point while signed out", () => {
@@ -644,6 +639,42 @@ describe("Sidebar", () => {
 		expect(request?.nonce ?? 0).toBeGreaterThan(before);
 	});
 
+	it("opens a new ad hoc agent directly from the ad hoc row action", async () => {
+		const user = userEvent.setup();
+		renderSidebar({
+			workspaces: [
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Ad hoc agents",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [],
+				},
+			],
+		});
+		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
+
+		expect(screen.queryByLabelText("Project actions for Ad hoc agents")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Open a new agent" }));
+
+		const request = useUiStore.getState().newTaskRequest;
+		expect(request?.projectId).toBe(STANDALONE_WORKSPACE_ID);
+		expect(request?.nonce ?? 0).toBeGreaterThan(before);
+	});
+
+	it("offers ad hoc agent creation from the project add flow before the ad hoc row exists", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
+
+		await user.click(screen.getByLabelText("New project"));
+		await user.click(await screen.findByRole("button", { name: "New standalone agent" }));
+
+		const request = useUiStore.getState().newTaskRequest;
+		expect(request?.projectId).toBe(STANDALONE_WORKSPACE_ID);
+		expect(request?.nonce ?? 0).toBeGreaterThan(before);
+	});
+
 	it("opens the create-project flow when the no-project shortcut signal arrives", async () => {
 		renderSidebar();
 
@@ -652,15 +683,6 @@ describe("Sidebar", () => {
 		});
 
 		expect(await screen.findByRole("dialog", { name: "Add a project" })).toBeInTheDocument();
-	});
-
-	it("opens the all sessions board from the AO logo", async () => {
-		const user = userEvent.setup();
-		renderSidebar();
-
-		await user.click(screen.getByRole("button", { name: "Open all sessions" }));
-
-		expect(navigateMock).toHaveBeenCalledWith({ to: "/sessions" });
 	});
 
 	it("keeps the create-project shortcut available when there are no projects", async () => {
@@ -753,7 +775,7 @@ describe("Sidebar", () => {
 		expect(row).toContainElement(screen.getByLabelText("Pin session"));
 	});
 
-	it("does not apply a tap scale effect to session rows", () => {
+	it("applies a tap scale effect to session rows", () => {
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
 
 		const openSession = screen.getByLabelText("Open fix login");
@@ -761,7 +783,7 @@ describe("Sidebar", () => {
 		if (!row) throw new Error("Session row not found");
 
 		fireEvent.pointerDown(openSession);
-		expect(row).not.toHaveClass("scale-[0.97]");
+		expect(row).toHaveClass("scale-[0.97]");
 	});
 
 	it("toggles project sessions from the folder icon without selecting the project first", async () => {
@@ -1648,23 +1670,28 @@ describe("Sidebar", () => {
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
 		await user.dblClick(screen.getByRole("button", { name: "Open fix login" }));
-		expect(navigateMock).toHaveBeenCalledTimes(1);
+		expect(navigateMock).not.toHaveBeenCalled();
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
 		await user.type(input, "polish login{Enter}");
 
 		await waitFor(() => expect(renameSessionMock).toHaveBeenCalledWith("proj-1-1", "polish login"));
-		expect(navigateMock).toHaveBeenCalledTimes(1);
+		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
 	it("still opens a session after an unpaired single click", async () => {
+		vi.useFakeTimers();
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
 
 		fireEvent.click(screen.getByRole("button", { name: "Open fix login" }), { detail: 1 });
+		await act(async () => {
+			vi.advanceTimersByTime(500);
+		});
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "proj-1-1" },
 		});
+		vi.useRealTimers();
 	});
 
 	it("starts the same inline rename from the session context menu", async () => {
@@ -1764,7 +1791,7 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).not.toHaveClass("opacity-0");
 	});
 
-	it("does not apply a tap scale effect to project rows", () => {
+	it("applies a tap scale effect to project rows", () => {
 		renderSidebar();
 
 		const projectRow = screen.getByText("Project One").closest('button, [role="button"]');
@@ -1773,7 +1800,7 @@ describe("Sidebar", () => {
 		if (!projectRow || !dragRow) throw new Error("Project drag row not found");
 
 		fireEvent.pointerDown(projectRow);
-		expect(dragRow.firstElementChild).not.toHaveClass("scale-[0.98]");
+		expect(dragRow.firstElementChild).toHaveClass("scale-[0.98]");
 	});
 
 	it("optically aligns the project folder and label with its action icons", () => {
@@ -2130,7 +2157,7 @@ describe("Sidebar", () => {
 		// Both footer variants (expanded row and collapsed rail icon) are mounted.
 		const buttons = await screen.findAllByLabelText("Download update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
-		expect(screen.getByText("Download update")).toBeInTheDocument();
+		expect(screen.getByText("Update available")).toBeInTheDocument();
 		const availableRow = screen.getByTestId("sidebar-update-available");
 		expect(within(availableRow).getByText("v9.9.9")).toBeVisible();
 		expect(availableRow.querySelector(".rounded-full")).toBeNull();
@@ -2162,7 +2189,7 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
-		expect(screen.getByText("42% downloaded")).toBeInTheDocument();
+		expect(screen.getByText("Downloading… 42%")).toBeInTheDocument();
 		const downloadingRow = screen.getByTestId("sidebar-update-downloading");
 		expect(downloadingRow).not.toHaveClass("border");
 		expect(downloadingRow.querySelector("svg circle")).toBeNull();
@@ -2177,9 +2204,9 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
-		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
-		expect(screen.queryByText("Update check failed")).not.toBeInTheDocument();
-		expect(screen.queryByTestId("sidebar-update-failed")).not.toBeInTheDocument();
+		expect(screen.queryAllByLabelText("Retry update check")).toHaveLength(2);
+		expect(screen.getByText("Update check failed")).toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-update-failed")).toBeInTheDocument();
 	});
 
 	it("keeps explicit update errors out of the sidebar", async () => {
@@ -2220,13 +2247,13 @@ describe("Sidebar", () => {
 		// A build ready to install is more actionable than "checks are failing".
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveClass("bg-muted", "rounded-lg", "w-full");
+		expect(readyRow).toHaveClass("border-primary/35", "bg-primary/12", "rounded-lg", "w-full");
 		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
-		expect(within(readyRow).getByText("Install Update")).toBeVisible();
-		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
-		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();
+		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
+		expect(within(readyRow).getByText("v9.9.9 ready")).toBeVisible();
+		expect(within(readyRow).queryByText(/Nightly/)).not.toBeInTheDocument();
 		expect(readyRow.querySelector(".rounded-full")).toBeNull();
-		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+		expect(screen.queryAllByLabelText("Retry update check")).toHaveLength(0);
 		// Stays above Connect mobile / Settings — not overlaid on them.
 		const connectMobile = screen.getByRole("button", { name: "Connect mobile" });
 		expect(readyRow.compareDocumentPosition(connectMobile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -2258,11 +2285,9 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
-		expect(within(readyRow).getByText("Install Update")).toBeVisible();
-		expect(within(readyRow).getByText("0.12.11")).toBeVisible();
-		expect(within(readyRow).queryByText(/Nightly|Sep/)).not.toBeInTheDocument();
-		expect(screen.getAllByLabelText("Restart to install update v0.12.11")).not.toHaveLength(0);
-		expect(screen.queryByLabelText(/nightly/i)).not.toBeInTheDocument();
+		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
+		expect(within(readyRow).getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
+		expect(screen.getAllByLabelText("Restart to install update v0.12.11-nightly.202609021713")).not.toHaveLength(0);
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {
@@ -2287,12 +2312,11 @@ describe("Sidebar", () => {
 		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
 		for (const button of buttons) {
-			expect(button).toHaveClass("bg-muted");
+			expect(button).toHaveClass("bg-working/12");
 			expect(button).not.toHaveClass("text-success");
 		}
-		expect(screen.getByTestId("sidebar-update-ready")).toHaveTextContent("Install Update");
-		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("9.9.9")).toBeVisible();
-		expect(screen.queryByText("v9.9.9 ready")).not.toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-update-ready")).toHaveTextContent("Restart to update");
+		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("v9.9.9 ready")).toBeVisible();
 	});
 
 	it("keeps install label and version number on one line without nightly copy", async () => {
@@ -2304,9 +2328,10 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
-		expect(readyRow.textContent?.replace(/\s+/g, " ").trim()).toMatch(/^Install Update 0\.12\.11$/);
-		expect(within(readyRow).queryByText(/Nightly|ready/)).not.toBeInTheDocument();
-		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11");
+		expect(readyRow).toHaveTextContent("Restart to update");
+		expect(readyRow).toHaveTextContent("Nightly 0.12.11 · Sep 2");
+		expect(within(readyRow).queryByText(/ready/)).not.toBeInTheDocument();
+		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11-nightly.202609021713");
 	});
 
 	it("commits a project drop", () => {
@@ -2317,14 +2342,65 @@ describe("Sidebar", () => {
 			],
 		});
 
-		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
-		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
-		fireDrag("dragStart", bravoRow, {});
-		// jsdom rows measure as zero-height, so clientY 0 lands in the top half — drop before Alpha.
-		fireDrag("dragOver", alphaTarget, { clientY: 0 });
-		fireDrag("drop", alphaTarget, {});
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
+			dragOvers.get("sidebar-projects")?.({
+				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
+				activatorEvent: null,
+				delta: { x: 0, y: 0 },
+				over: { id: "alpha", rect: { height: 20, top: 0 } },
+			});
+			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
+		});
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
+	});
+
+	it("keeps the ad hoc group out of project drag and drop ordering", () => {
+		renderSidebar({
+			workspaces: [
+				{ ...workspace, id: "alpha", name: "Alpha" },
+				{ ...workspace, id: "bravo", name: "Bravo" },
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Ad hoc agents",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [],
+				},
+			],
+		});
+		const labels = () => Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent);
+
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } });
+			dragOvers.get("sidebar-projects")?.({
+				active: { id: "alpha", rect: { current: { initial: null, translated: null } } },
+				activatorEvent: null,
+				delta: { x: 0, y: 0 },
+				over: { id: STANDALONE_WORKSPACE_ID, rect: { height: 20, top: 40 } },
+			});
+			dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: { id: STANDALONE_WORKSPACE_ID } });
+		});
+		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID } });
+			dragEnds.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID }, over: { id: "alpha" } });
+		});
+		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+
+		act(() => {
+			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
+			dragOvers.get("sidebar-projects")?.({
+				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
+				activatorEvent: null,
+				delta: { x: 0, y: 0 },
+				over: { id: "alpha", rect: { height: 20, top: 0 } },
+			});
+			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
+		});
+		expect(labels()).toEqual(["Bravo", "Alpha", "Ad hoc agents"]);
 	});
 
 	it("commits a session drop within its project", () => {
@@ -2356,15 +2432,18 @@ describe("Sidebar", () => {
 				],
 			});
 
-			const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
-			const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
-			fireDrag("dragStart", bravoRow, {});
-			fireDrag("dragOver", alphaTarget, { clientY: 0 });
+			act(() => {
+				dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
+				dragOvers.get("sidebar-projects")?.({
+					active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
+					activatorEvent: null,
+					delta: { x: 0, y: 0 },
+					over: { id: "alpha", rect: { height: 20, top: 0 } },
+				});
+			});
 
-			const indicator = document.querySelector("[data-project-drop-line]");
-			expect(indicator).not.toBeNull();
-			expect(indicator).toHaveClass("bg-foreground");
-			expect(indicator).not.toHaveClass("bg-white");
+			const indicator = document.querySelector('[data-project-drop-target][data-project-id="alpha"]');
+			expect(indicator).toHaveAttribute("data-drop-indicator", "before");
 		} finally {
 			document.documentElement.classList.remove("dark");
 		}

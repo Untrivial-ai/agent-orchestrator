@@ -225,6 +225,9 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 		return WorkspaceFiles{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if isStandaloneScratchWorkspace(rec) {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}
@@ -419,6 +422,9 @@ func (s *Service) resolveWorkspaceFileTarget(ctx context.Context, id domain.Sess
 		return workspaceFileTarget{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if isStandaloneScratchWorkspace(rec) {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}
@@ -1385,6 +1391,10 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, truncated, nil
+}
+
+func isStandaloneScratchWorkspace(rec domain.SessionRecord) bool {
+	return rec.IsStandalone() && rec.Kind == domain.KindWorker
 }
 
 func scratchWorkspaceFile(root string, id domain.SessionID, rel string) (WorkspaceFileDetail, error) {

@@ -53,7 +53,13 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 	await page.addInitScript(
 		({ version, daemonState, daemonPort, updateStatus, updateSettings }) => {
 			const unsubscribe = () => () => undefined;
+			const updateListeners = new Set<(status: UpdateStatus) => void>();
 			let currentUpdateSettings = updateSettings;
+			let currentUpdateStatus = updateStatus;
+			const emitUpdateStatus = (next: UpdateStatus) => {
+				currentUpdateStatus = next;
+				for (const listener of updateListeners) listener(next);
+			};
 			const status: DaemonStatus =
 				daemonState === "ready" ? { state: "ready", port: daemonPort } : { state: daemonState };
 			const navState = (viewId: string) => ({
@@ -255,12 +261,17 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setRecording: async () => undefined,
 				},
 				updates: {
-					getStatus: async () => updateStatus,
+					getStatus: async () => currentUpdateStatus,
 					check: async () => undefined,
 					returnHome: async () => undefined,
 					download: async () => undefined,
 					install: async () => undefined,
-					onStatus: unsubscribe,
+					onStatus: (listener: (status: UpdateStatus) => void) => {
+						updateListeners.add(listener);
+						return () => {
+							updateListeners.delete(listener);
+						};
+					},
 					onTelemetry: unsubscribe,
 				},
 				// UpdatesSection calls featureBuilds.getActive() immediately on mount; an
@@ -289,6 +300,9 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onStreamEvent: unsubscribe,
 				},
 			} satisfies AoBridge;
+			(window as unknown as { __aoFakeUpdates: { setStatus: (status: UpdateStatus) => void } }).__aoFakeUpdates = {
+				setStatus: emitUpdateStatus,
+			};
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
 		{ version, daemonState, daemonPort, updateStatus, updateSettings },
@@ -357,9 +371,14 @@ export type FakeAgentController = {
 	notify: (n: { id: string; type: string; title: string; body?: string; sessionId?: string }) => void;
 };
 
+export type FakeUpdateController = {
+	setStatus: (status: UpdateStatus) => void;
+};
+
 declare global {
 	interface Window {
 		__aoFakeAgent?: FakeAgentController;
+		__aoFakeUpdates?: FakeUpdateController;
 	}
 }
 

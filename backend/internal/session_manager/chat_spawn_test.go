@@ -270,6 +270,76 @@ func TestReconcileLive_ChatRelaunchesInExistingWorktree(t *testing.T) {
 	}
 }
 
+func TestReconcileLive_StandaloneChatRelaunchesInExistingWorkspace(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, rt := newChatManager(launcher)
+	ws := m.workspace.(*fakeWorkspace)
+	lcm := m.lcm.(*fakeLCM)
+	rec := domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:          "/ws/standalone-1",
+			ProviderConversationID: "thread-existing",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if len(launcher.started) != 1 || launcher.started[0].ProviderConversationID != "thread-existing" {
+		t.Fatalf("chat starts = %+v, want one native resume", launcher.started)
+	}
+	if rt.created != 0 {
+		t.Fatalf("terminal runtime Create calls = %d, want 0 for Chat", rt.created)
+	}
+	if lcm.terminated[rec.ID] != 0 || st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("standalone session was terminated during boot recovery: calls=%d row=%+v", lcm.terminated[rec.ID], st.sessions[rec.ID])
+	}
+	if len(ws.restoreConfigs) != 1 {
+		t.Fatalf("Restore configs = %+v, want one standalone restore", ws.restoreConfigs)
+	}
+	got := ws.restoreConfigs[0]
+	if got.ProjectID != "" || got.Branch != "" || got.Path != rec.Metadata.WorkspacePath {
+		t.Fatalf("standalone restore config = %+v, want projectless branchless existing workspace", got)
+	}
+}
+
+func TestReconcileLive_StandaloneChatFailureRemainsRecoverable(t *testing.T) {
+	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
+	m, st, rt := newChatManager(launcher)
+	ws := m.workspace.(*fakeWorkspace)
+	lcm := m.lcm.(*fakeLCM)
+	rec := domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:          "/ws/standalone-1",
+			ProviderConversationID: "thread-existing",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.reconcileLive(context.Background(), rec)
+	if !errors.Is(err, ports.ErrChatDriverIncompatible) {
+		t.Fatalf("reconcileLive error = %v, want ErrChatDriverIncompatible", err)
+	}
+	got := st.sessions[rec.ID]
+	if got.IsTerminated || got.Activity.State != domain.ActivityExited {
+		t.Fatalf("failed standalone recovery = %+v, want live/exited", got)
+	}
+	if got.Metadata.ProviderConversationID != rec.Metadata.ProviderConversationID || got.Metadata.WorkspacePath != rec.Metadata.WorkspacePath {
+		t.Fatalf("failed standalone recovery lost durable identity: %+v", got.Metadata)
+	}
+	if rt.created != 0 || rt.destroyed != 0 || ws.stashCalls != 0 || lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("failed standalone recovery tore down state: runtime=(%d,%d) stash=%d terminated=%d",
+			rt.created, rt.destroyed, ws.stashCalls, lcm.terminated[rec.ID])
+	}
+}
+
 func TestReconcileLive_ChatCompatibilityFailureLeavesNativeResumeRecoverable(t *testing.T) {
 	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
 	m, st, rt := newChatManager(launcher)

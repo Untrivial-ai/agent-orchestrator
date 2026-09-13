@@ -39,6 +39,7 @@
 	"common.breadcrumb": "경로",
 	"common.close": "닫기",
 	"common.no": "아니요",
+	"common.or": "또는",
 	"common.sidebar": "사이드바",
 	"common.sidebarDescription": "모바일 사이드바를 표시합니다.",
 	"common.yes": "예",
@@ -54,6 +55,7 @@
 	"home.jumpBack": "이어서 시작하기",
 	"home.recentProjects": "최근 프로젝트",
 	"home.currentProjects": "현재 프로젝트",
+	"home.newStandaloneAgent": "새 독립형 에이전트",
 	"home.starUs": "별표하기",
 	"browser.agentAction": "에이전트가 {{verb}}",
 	"browser.agentUsing": "에이전트가 브라우저 사용 중",
@@ -337,6 +339,7 @@
 	"createProject.workspace": "워크스페이스",
 	"createProject.workspaceAgents": "워크스페이스 에이전트",
 	"createProject.workspaceDesc": "하나의 상위 폴더 아래에 있는 여러 Git 저장소.",
+	"createProject.standaloneDesc": "프로젝트, 저장소 또는 워크스페이스 없이 에이전트를 시작합니다.",
 	"createProject.workspaceRoot": "워크스페이스 루트",
 	"createProject.workspaceNeedsGitRepo": "이 폴더에는 하위 Git 저장소가 없습니다. 하위 저장소를 추가하거나 다른 워크스페이스 폴더를 선택하세요.",
 	"createProject.workspaceRootIsProject": "저장소 모음이 아닌 단일 저장소입니다. 대신 프로젝트로 가져오세요.",
@@ -581,6 +584,7 @@
 	"newTask.configUnavailable": "프로젝트 구성을 사용할 수 없습니다.",
 	"newTask.createAsTui": "터미널 UI로 만들기",
 	"newTask.description": "이 프로젝트에서 워커를 직접 시작합니다.",
+	"newTask.standaloneDescription": "프로젝트나 저장소에 연결하지 않고 워커를 시작합니다.",
 	"newTask.image": "이미지 {{number}}",
 	"newTask.noSession": "작업 생성에서 세션이 반환되지 않았습니다",
 	"newTask.optional": "선택 사항",
@@ -1200,6 +1204,7 @@
 	"shell.killingSession": "세션 강제 종료 중",
 	"shell.newProject": "새 프로젝트",
 	"shell.newSession": "새 세션",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "새 작업",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "인스펙터 패널 열기",
@@ -1980,5 +1985,6 @@
 	"chat.draftDiscard.nativeMessage": "이 채팅 초안은 아직 안전하게 저장되지 않았습니다.",
 	"chat.draftDiscard.stay": "머무르기",
 	"chat.draftDiscard.leaveAnyway": "그래도 나가기",
-	"chat.edit.abandonRecovery": "편집 복구 포기"
+	"chat.edit.abandonRecovery": "편집 복구 포기",
+	"settings.harness.summary": "{{installed}} of {{total}} installed"
 }

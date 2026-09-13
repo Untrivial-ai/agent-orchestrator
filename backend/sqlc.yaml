@@ -21,6 +21,7 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
+              pointer: true
           - column: "change_log.session_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -64,6 +65,7 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
+              pointer: true
           - column: "notifications.type"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -96,6 +98,7 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
+              pointer: true
           - column: "sessions.issue_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -273,6 +276,7 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
+              pointer: true
           - column: "conversations.scope"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

@@ -130,7 +130,7 @@ var (
 
 // Validate checks the required fields and enum values for a stored notification.
 func (r NotificationRecord) Validate() error {
-	if r.SessionID == "" || r.ProjectID == "" || r.Title == "" || r.CreatedAt.IsZero() {
+	if r.SessionID == "" || r.Title == "" || r.CreatedAt.IsZero() {
 		return ErrInvalidNotificationRecord
 	}
 	if !r.Type.Valid() {

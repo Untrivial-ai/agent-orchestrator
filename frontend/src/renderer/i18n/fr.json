@@ -39,6 +39,7 @@
 	"common.breadcrumb": "Fil d'Ariane",
 	"common.close": "Fermer",
 	"common.no": "Non",
+	"common.or": "ou",
 	"common.sidebar": "Barre latérale",
 	"common.sidebarDescription": "Affiche la barre latérale mobile.",
 	"common.yes": "Oui",
@@ -54,6 +55,7 @@
 	"home.jumpBack": "Reprendre là où vous en étiez",
 	"home.recentProjects": "Projets récents",
 	"home.currentProjects": "Projets actuels",
+	"home.newStandaloneAgent": "Nouvel agent autonome",
 	"home.starUs": "Ajouter une étoile",
 	"browser.agentAction": "Agent {{verb}}",
 	"browser.agentUsing": "Agent utilisant le navigateur",
@@ -339,6 +341,7 @@
 	"createProject.workspace": "Espace de travail",
 	"createProject.workspaceAgents": "Agents de l'espace de travail",
 	"createProject.workspaceDesc": "Plusieurs dépôts Git sous un même dossier parent.",
+	"createProject.standaloneDesc": "Démarrez un agent sans projet, dépôt ni espace de travail.",
 	"createProject.workspaceRoot": "Racine de l'espace de travail",
 	"createProject.workspaceNeedsGitRepo": "Aucun dépôt Git enfant n’existe dans ce dossier. Ajoutez un dépôt enfant ou choisissez un autre dossier d’espace de travail.",
 	"createProject.workspaceRootIsProject": "Il s’agit d’un seul dépôt, pas d’une collection de dépôts. Importez-le plutôt comme projet.",
@@ -583,6 +586,7 @@
 	"newTask.configUnavailable": "La configuration du projet n'est pas disponible.",
 	"newTask.createAsTui": "Créer en mode terminal",
 	"newTask.description": "Démarrez un worker directement depuis ce projet.",
+	"newTask.standaloneDescription": "Démarrez un worker sans le rattacher à un projet ou dépôt.",
 	"newTask.image": "Image {{number}}",
 	"newTask.noSession": "La création de la tâche n'a renvoyé aucune session",
 	"newTask.optional": "facultatif",
@@ -1221,6 +1225,7 @@
 	"shell.killingSession": "Arrêt de la session",
 	"shell.newProject": "Nouveau projet",
 	"shell.newSession": "Nouvelle session",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Nouvelle tâche",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Ouvrir le panneau inspecteur",
@@ -2008,5 +2013,6 @@
 	"chat.draftDiscard.nativeMessage": "Ce brouillon de conversation n’est pas encore enregistré de façon sûre.",
 	"chat.draftDiscard.stay": "Rester",
 	"chat.draftDiscard.leaveAnyway": "Quitter quand même",
-	"chat.edit.abandonRecovery": "Abandonner la récupération de la modification"
+	"chat.edit.abandonRecovery": "Abandonner la récupération de la modification",
+	"settings.harness.summary": "{{installed}} of {{total}} installed"
 }

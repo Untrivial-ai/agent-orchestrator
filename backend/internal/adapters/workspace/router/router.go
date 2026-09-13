@@ -185,6 +185,14 @@ func (w *Workspace) adapterForProject(ctx context.Context, projectID domain.Proj
 	if w == nil {
 		return nil, errors.New("workspace router: nil router")
 	}
+	// Projectless sessions use AO-managed plain directories. They deliberately
+	// have no Git worktree, branch, tracker, or project row behind them.
+	if projectID == "" {
+		if w.scratch == nil {
+			return nil, errors.New("workspace router: standalone workspace is not configured")
+		}
+		return w.scratch, nil
+	}
 	if w.projects != nil && projectID != "" {
 		project, ok, err := w.projects.GetProject(ctx, string(projectID))
 		if err != nil {

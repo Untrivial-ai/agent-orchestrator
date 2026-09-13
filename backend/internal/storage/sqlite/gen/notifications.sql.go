@@ -50,7 +50,7 @@ RETURNING id, session_id, project_id, pr_url, type, title, body, status, created
 type CreateNotificationParams struct {
 	ID        string
 	SessionID domain.SessionID
-	ProjectID domain.ProjectID
+	ProjectID *domain.ProjectID
 	PRURL     string
 	Type      domain.NotificationType
 	Title     string

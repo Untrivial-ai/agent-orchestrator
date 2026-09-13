@@ -1,7 +1,7 @@
 import type { ProjectSource } from "@aoagents/product-ui";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Folder, Folders, FolderOpen, GitFork, Smartphone, Star } from "lucide-react";
+import { AlertTriangle, Bot, Folder, Folders, FolderOpen, GitFork, Smartphone, Star } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useSystemRequirementsGate } from "../hooks/useSystemRequirementsGate";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
@@ -10,7 +10,12 @@ import { getProjectLastOpenedAt } from "../lib/project-history";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { useShell } from "../lib/shell-context";
 import { useUiStore } from "../stores/ui-store";
-import type { WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { BoardWelcome } from "./BoardEmptyStates";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
@@ -50,6 +55,25 @@ function sortProjectsByActivity(projects: WorkspaceSummary[]): WorkspaceSummary[
 	return projects
 		.slice()
 		.sort((left, right) => latestProjectTimestamp(right).localeCompare(latestProjectTimestamp(left)));
+}
+
+function standaloneSessionTimestamp(session: WorkspaceSession): number {
+	for (const value of [session.lastUserMessageAt, session.updatedAt, session.createdAt]) {
+		const parsed = value ? Date.parse(value) : Number.NaN;
+		if (!Number.isNaN(parsed)) return parsed;
+	}
+	return 0;
+}
+
+function mostRecentStandaloneSession(sessions: WorkspaceSession[]): WorkspaceSession | undefined {
+	const candidates = sessions.filter((session) => session.isTerminated !== true && session.status !== "terminated");
+	return (candidates.length > 0 ? candidates : sessions).reduce<WorkspaceSession | undefined>((latest, session) => {
+		if (!latest) return session;
+		const sessionTime = standaloneSessionTimestamp(session);
+		const latestTime = standaloneSessionTimestamp(latest);
+		if (sessionTime !== latestTime) return sessionTime > latestTime ? session : latest;
+		return session.id > latest.id ? session : latest;
+	}, undefined);
 }
 
 function ProjectRow({ project, onClick, emptyTimeLabel, justNowLabel }: { project: WorkspaceSummary; onClick: () => void; emptyTimeLabel: string; justNowLabel: string }) {
@@ -115,6 +139,7 @@ export function HomePage() {
 	const navigate = useNavigate();
 	const { t } = useTranslation();
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const { cloneProject, createProject, daemonStatus, initializeProjectRepository, workspaceStartupState } =
 		useShell();
 	const { blocked: requirementsBlocked } = useSystemRequirementsGate();
@@ -160,6 +185,14 @@ export function HomePage() {
 		<div className="flex min-h-full items-center justify-center px-6 py-16">
 			<div className="w-full max-w-[640px] -translate-y-3">
 				<div className="space-y-6">
+					<TopbarButton
+						className="w-full justify-center"
+						onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
+						variant="accent"
+					>
+						<Bot className="size-4" aria-hidden="true" />
+						{t("home.newStandaloneAgent")}
+					</TopbarButton>
 					<div className="flex items-center justify-between gap-4 px-3">
 						<h1 className="text-[17px] font-medium tracking-[-0.01em] text-foreground/80">{t("home.jumpBack")}</h1>
 						<TopbarButton
@@ -207,7 +240,16 @@ export function HomePage() {
 							<ProjectRow
 								key={project.id}
 								project={project}
-								onClick={() => openProject(project.id)}
+								onClick={() => {
+									if (project.kind === STANDALONE_PROJECT_KIND) {
+										const session = mostRecentStandaloneSession(project.sessions);
+										session
+											? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
+											: requestNewTask(STANDALONE_WORKSPACE_ID);
+										return;
+									}
+									openProject(project.id);
+								}}
 								emptyTimeLabel={t("home.never")}
 								justNowLabel={t("time.justNow")}
 							/>
@@ -223,6 +265,7 @@ export function HomePage() {
 					mode="choose"
 					onCloneProject={cloneProject}
 					onCreateProject={createProject}
+					onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 					onInitializeProject={initializeProjectRepository}
 					onOpenExistingProject={openExistingProject}
 					sourceSignal={sourceSignal}

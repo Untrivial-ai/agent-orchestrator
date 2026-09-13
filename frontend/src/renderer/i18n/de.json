@@ -39,6 +39,7 @@
 	"common.breadcrumb": "Navigationspfad",
 	"common.close": "Schließen",
 	"common.no": "Nein",
+	"common.or": "oder",
 	"common.sidebar": "Seitenleiste",
 	"common.sidebarDescription": "Zeigt die mobile Seitenleiste an.",
 	"common.yes": "Ja",
@@ -54,6 +55,7 @@
 	"home.jumpBack": "Direkt weitermachen",
 	"home.recentProjects": "Zuletzt verwendete Projekte",
 	"home.currentProjects": "Aktuelle Projekte",
+	"home.newStandaloneAgent": "Neuer eigenständiger Agent",
 	"home.starUs": "Mit Stern markieren",
 	"browser.agentAction": "Agent {{verb}}",
 	"browser.agentUsing": "Agent nutzt den Browser",
@@ -337,6 +339,7 @@
 	"createProject.workspace": "Workspace",
 	"createProject.workspaceAgents": "Workspace-Agenten",
 	"createProject.workspaceDesc": "Mehrere Git-Repos unter einem übergeordneten Ordner.",
+	"createProject.standaloneDesc": "Starte einen Agenten ohne Projekt, Repository oder Arbeitsbereich.",
 	"createProject.workspaceRoot": "Workspace-Root",
 	"createProject.workspaceNeedsGitRepo": "In diesem Ordner gibt es keine untergeordneten Git-Repositorys. Fügen Sie ein untergeordnetes Repository hinzu oder wählen Sie einen anderen Workspace-Ordner.",
 	"createProject.workspaceRootIsProject": "Dies ist ein einzelnes Repository, keine Sammlung von Repositories. Importieren Sie es stattdessen als Projekt.",
@@ -581,6 +584,7 @@
 	"newTask.configUnavailable": "Projektkonfiguration ist nicht verfügbar.",
 	"newTask.createAsTui": "Als Terminal-UI erstellen",
 	"newTask.description": "Starten Sie einen Worker direkt aus diesem Projekt.",
+	"newTask.standaloneDescription": "Starten Sie einen Worker, ohne ihn einem Projekt oder Repository zuzuordnen.",
 	"newTask.image": "Bild {{number}}",
 	"newTask.noSession": "Aufgabenerstellung hat keine Sitzung zurückgegeben",
 	"newTask.optional": "optional",
@@ -1200,6 +1204,7 @@
 	"shell.killingSession": "Sitzung wird beendet",
 	"shell.newProject": "Neues Projekt",
 	"shell.newSession": "Neue Sitzung",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Neue Aufgabe",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Inspektor-Panel öffnen",
@@ -1980,5 +1985,6 @@
 	"chat.draftDiscard.nativeMessage": "Dieser Chatentwurf ist noch nicht sicher gespeichert.",
 	"chat.draftDiscard.stay": "Bleiben",
 	"chat.draftDiscard.leaveAnyway": "Trotzdem verlassen",
-	"chat.edit.abandonRecovery": "Bearbeitungswiederherstellung aufgeben"
+	"chat.edit.abandonRecovery": "Bearbeitungswiederherstellung aufgeben",
+	"settings.harness.summary": "{{installed}} of {{total}} installed"
 }

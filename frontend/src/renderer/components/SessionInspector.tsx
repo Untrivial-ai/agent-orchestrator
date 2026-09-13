@@ -58,7 +58,7 @@ import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
 import { prBrowserUrl, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
+import { findProjectOrchestrator, sortedPRs, STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
@@ -1097,6 +1097,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	});
 	const policyError = policy.error instanceof Error ? policy.error.message : null;
 	const canTerminateNow = session.status === "merged";
+	const isStandaloneSession = session.workspaceId === STANDALONE_WORKSPACE_ID;
 
 	const confirmTermination = () => {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
@@ -1110,42 +1111,54 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 			});
 			return;
 		}
+		if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
+			void navigate({ to: "/" });
+			return;
+		}
 		void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 	};
 
 	if (session.isTerminated === true) return null;
+
+	const terminateAction = (
+		<div className="flex items-center justify-between gap-3 py-1">
+			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<SessionTerminationPopover
+							onConfirm={confirmTermination}
+							onOpenChange={setConfirmOpen}
+							open={confirmOpen}
+							session={session}
+							trigger={
+								<button
+									aria-label={t("inspector.terminate")}
+									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									onClick={() => clearTerminateSessionState(queryClient, session.id)}
+									type="button"
+								>
+									<Trash2 className="size-icon-sm" aria-hidden="true" />
+								</button>
+							}
+						/>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
+			</Tooltip>
+		</div>
+	);
+
+	if (isStandaloneSession) {
+		return <Section title={t("inspector.sessionControls")}>{terminateAction}</Section>;
+	}
 
 	return (
 		<Section title={t("inspector.sessionControls")}>
 			<AutoInjectCIPolicyControl session={session} />
 			<AutoInjectReviewPolicyControl session={session} />
 			{session.kind === "orchestrator" ? null : canTerminateNow ? (
-				<div className="flex items-center justify-between gap-3 py-1">
-					<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<span className="inline-flex">
-								<SessionTerminationPopover
-									onConfirm={confirmTermination}
-									onOpenChange={setConfirmOpen}
-									open={confirmOpen}
-									session={session}
-									trigger={
-										<button
-											aria-label={t("inspector.terminate")}
-											className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-											onClick={() => clearTerminateSessionState(queryClient, session.id)}
-											type="button"
-										>
-											<Trash2 className="size-icon-sm" aria-hidden="true" />
-										</button>
-									}
-								/>
-							</span>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
-					</Tooltip>
-				</div>
+				terminateAction
 			) : (
 				<>
 					<InspectorPolicyRow

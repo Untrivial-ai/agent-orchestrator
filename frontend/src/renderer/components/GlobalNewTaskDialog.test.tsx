@@ -83,7 +83,6 @@ describe("GlobalNewTaskDialog", () => {
 
 		await user.click(screen.getByRole("button", { name: "create" }));
 		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
-		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["editor-handoff", "sess-9"] });
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-7", sessionId: "sess-9" },

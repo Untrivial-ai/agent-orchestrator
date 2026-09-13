@@ -62,11 +62,11 @@ for (const destinationMode of ["picker", "typed"] as const) {
 
 		const selectDestination = async () => {
 			if (destinationMode === "typed") {
-				await page.getByRole("textbox", { name: "Destination folder" }).fill("/repos");
+				await page.getByRole("textbox", { name: "Clone into" }).fill("/repos");
 			} else {
 				await page.getByRole("button", { name: "Choose where to clone the repository", exact: true }).click();
 			}
-			await expect(page.getByRole("textbox", { name: "Destination folder" })).toHaveValue("/repos");
+			await expect(page.getByRole("textbox", { name: "Clone into" })).toHaveValue("/repos");
 		};
 
 		const openClone = async () => {

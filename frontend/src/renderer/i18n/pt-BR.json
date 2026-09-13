@@ -39,6 +39,7 @@
 	"common.breadcrumb": "Trilha de navegação",
 	"common.close": "Fechar",
 	"common.no": "Não",
+	"common.or": "ou",
 	"common.sidebar": "Barra lateral",
 	"common.sidebarDescription": "Exibe a barra lateral no mobile.",
 	"common.yes": "Sim",
@@ -54,6 +55,7 @@
 	"home.jumpBack": "Volte de onde parou",
 	"home.recentProjects": "Projetos recentes",
 	"home.currentProjects": "Projetos atuais",
+	"home.newStandaloneAgent": "Novo agente independente",
 	"home.starUs": "Dar uma estrela",
 	"browser.agentAction": "Agente {{verb}}",
 	"browser.agentUsing": "Agente usando o navegador",
@@ -339,6 +341,7 @@
 	"createProject.workspace": "Workspace",
 	"createProject.workspaceAgents": "Agentes do workspace",
 	"createProject.workspaceDesc": "Vários repositórios Git em uma pasta pai.",
+	"createProject.standaloneDesc": "Inicie um agente sem projeto, repositório ou espaço de trabalho.",
 	"createProject.workspaceRoot": "Raiz do workspace",
 	"createProject.workspaceNeedsGitRepo": "Nenhum repositório Git filho existe nesta pasta. Adicione um repositório filho ou escolha outra pasta de workspace.",
 	"createProject.workspaceRootIsProject": "Este é um único repositório, não uma coleção de repositórios. Importe-o como projeto.",
@@ -583,6 +586,7 @@
 	"newTask.configUnavailable": "A configuração do projeto está indisponível.",
 	"newTask.createAsTui": "Criar como interface de terminal",
 	"newTask.description": "Inicie um worker diretamente neste projeto.",
+	"newTask.standaloneDescription": "Inicie um worker sem vinculá-lo a um projeto ou repositório.",
 	"newTask.image": "Imagem {{number}}",
 	"newTask.noSession": "A criação da tarefa não retornou uma sessão",
 	"newTask.optional": "opcional",
@@ -1221,6 +1225,7 @@
 	"shell.killingSession": "Encerrando sessão",
 	"shell.newProject": "Novo projeto",
 	"shell.newSession": "Nova sessão",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Nova tarefa",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Abrir painel do inspetor",
@@ -2008,5 +2013,6 @@
 	"chat.draftDiscard.nativeMessage": "Este rascunho de chat ainda não foi salvo com segurança.",
 	"chat.draftDiscard.stay": "Ficar",
 	"chat.draftDiscard.leaveAnyway": "Sair mesmo assim",
-	"chat.edit.abandonRecovery": "Abandonar recuperação da edição"
+	"chat.edit.abandonRecovery": "Abandonar recuperação da edição",
+	"settings.harness.summary": "{{installed}} of {{total}} installed"
 }

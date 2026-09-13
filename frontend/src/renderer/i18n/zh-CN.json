@@ -39,6 +39,7 @@
 	"common.breadcrumb": "面包屑导航",
 	"common.close": "关闭",
 	"common.no": "否",
+	"common.or": "或",
 	"common.sidebar": "侧边栏",
 	"common.sidebarDescription": "显示移动端侧边栏。",
 	"common.yes": "是",
@@ -54,6 +55,7 @@
 	"home.jumpBack": "继续进行",
 	"home.recentProjects": "最近的项目",
 	"home.currentProjects": "当前项目",
+	"home.newStandaloneAgent": "新建独立代理",
 	"home.starUs": "点个星标",
 	"browser.agentAction": "代理正在{{verb}}",
 	"browser.agentUsing": "代理正在使用浏览器",
@@ -337,6 +339,7 @@
 	"createProject.workspace": "工作区",
 	"createProject.workspaceAgents": "工作区代理",
 	"createProject.workspaceDesc": "位于同一父文件夹下的多个 Git 仓库。",
+	"createProject.standaloneDesc": "无需项目、仓库或工作区即可启动代理。",
 	"createProject.workspaceRoot": "工作区根目录",
 	"createProject.workspaceNeedsGitRepo": "此文件夹中没有子 Git 仓库。请添加一个子仓库，或选择其他工作区文件夹。",
 	"createProject.workspaceRootIsProject": "这是单个仓库，而不是仓库集合。请改为将其作为项目导入。",
@@ -581,6 +584,7 @@
 	"newTask.configUnavailable": "项目配置不可用。",
 	"newTask.createAsTui": "以终端界面创建",
 	"newTask.description": "直接从此项目启动一个 worker。",
+	"newTask.standaloneDescription": "启动一个不关联项目或代码仓库的工作代理。",
 	"newTask.image": "图片 {{number}}",
 	"newTask.noSession": "创建任务未返回会话",
 	"newTask.optional": "可选",
@@ -1184,6 +1188,7 @@
 	"shell.killingSession": "正在结束会话",
 	"shell.newProject": "新建项目",
 	"shell.newSession": "新建会话",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "新建任务",
 	"shell.nightly": "每日构建",
 	"shell.openInspector": "打开检查器面板",
@@ -1962,5 +1967,6 @@
 	"chat.draftDiscard.nativeMessage": "此聊天草稿尚未安全保存。",
 	"chat.draftDiscard.stay": "留下",
 	"chat.draftDiscard.leaveAnyway": "仍然离开",
-	"chat.edit.abandonRecovery": "放弃编辑恢复"
+	"chat.edit.abandonRecovery": "放弃编辑恢复",
+	"settings.harness.summary": "{{installed}} of {{total}} installed"
 }

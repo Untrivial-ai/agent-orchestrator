@@ -39,6 +39,7 @@
 	"common.breadcrumb": "Ruta de navegación",
 	"common.close": "Cerrar",
 	"common.no": "No",
+	"common.or": "o",
 	"common.sidebar": "Barra lateral",
 	"common.sidebarDescription": "Muestra la barra lateral en móvil.",
 	"common.yes": "Sí",
@@ -54,6 +55,7 @@
 	"home.jumpBack": "Vuelve a entrar",
 	"home.recentProjects": "Proyectos recientes",
 	"home.currentProjects": "Proyectos actuales",
+	"home.newStandaloneAgent": "Nuevo agente independiente",
 	"home.starUs": "Danos una estrella",
 	"browser.agentAction": "Agente {{verb}}",
 	"browser.agentUsing": "Agente usando el navegador",
@@ -339,6 +341,7 @@
 	"createProject.workspace": "Espacio de trabajo",
 	"createProject.workspaceAgents": "Agentes del espacio de trabajo",
 	"createProject.workspaceDesc": "Varios repos Git bajo una carpeta principal.",
+	"createProject.standaloneDesc": "Inicia un agente sin proyecto, repositorio ni espacio de trabajo.",
 	"createProject.workspaceRoot": "Raíz del espacio de trabajo",
 	"createProject.workspaceNeedsGitRepo": "No hay repositorios Git secundarios en esta carpeta. Agrega un repositorio secundario o elige otra carpeta de espacio de trabajo.",
 	"createProject.workspaceRootIsProject": "Este es un único repositorio, no una colección de repositorios. Impórtalo como proyecto.",
@@ -583,6 +586,7 @@
 	"newTask.configUnavailable": "La configuración del proyecto no está disponible.",
 	"newTask.createAsTui": "Crear como interfaz de terminal",
 	"newTask.description": "Inicia un worker directamente desde este proyecto.",
+	"newTask.standaloneDescription": "Inicia un worker sin vincularlo a un proyecto o repositorio.",
 	"newTask.image": "Imagen {{number}}",
 	"newTask.noSession": "La creación de la tarea no devolvió ninguna sesión",
 	"newTask.optional": "opcional",
@@ -1221,6 +1225,7 @@
 	"shell.killingSession": "Deteniendo sesión",
 	"shell.newProject": "Nuevo proyecto",
 	"shell.newSession": "Nueva sesión",
+	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Nueva tarea",
 	"shell.nightly": "nightly",
 	"shell.openInspector": "Abrir panel del inspector",
@@ -2008,5 +2013,6 @@
 	"chat.draftDiscard.nativeMessage": "Este borrador de chat aún no está guardado de forma segura.",
 	"chat.draftDiscard.stay": "Quedarse",
 	"chat.draftDiscard.leaveAnyway": "Salir de todos modos",
-	"chat.edit.abandonRecovery": "Abandonar recuperación de edición"
+	"chat.edit.abandonRecovery": "Abandonar recuperación de edición",
+	"settings.harness.summary": "{{installed}} of {{total}} installed"
 }
