@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1027,7 +1028,8 @@ func TestSpawnPermissionFlagWiring(t *testing.T) {
 
 func TestSpawnInvalidPermissionIsUsageError(t *testing.T) {
 	_, _, err := executeCLI(t, Deps{}, "spawn", "--name", "reader", "--permission", "plan")
-	if _, ok := err.(usageError); !ok {
+	var usage usageError
+	if !errors.As(err, &usage) {
 		t.Fatalf("invalid permission error=%T %v", err, err)
 	}
 }
