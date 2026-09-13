@@ -189,7 +189,24 @@ function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
 }
 
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
-	if (event.metaKey || event.shiftKey) return null;
+	if (event.shiftKey) return null;
+
+	// macOS Command+Left/Right → readline beginning/end of line. Do not treat
+	// the Windows key (metaKey on Win/Linux) as Command, and do not rewrite
+	// Windows Home/End: those must fall through to xterm's native sequences
+	// because Ctrl+A is SelectAll in default PSReadLine (#3093).
+	if (event.metaKey && !event.ctrlKey && !event.altKey && isMacPlatform()) {
+		switch (event.key) {
+			case "ArrowLeft":
+				return "\x01";
+			case "ArrowRight":
+				return "\x05";
+			default:
+				return null;
+		}
+	}
+
+	if (event.metaKey) return null;
 
 	if (event.altKey && !event.ctrlKey) {
 		switch (event.key) {
@@ -253,6 +270,11 @@ type XtermInternal = Terminal & {
 		_selectionService?: {
 			enable: () => void;
 			shouldForceSelection: (event: MouseEvent) => boolean;
+			// xterm installs this listener on document while a drag selection is
+			// active. It is private, but xterm exposes no public hook for changing
+			// the document-wide drag behavior.
+			_mouseMoveListener?: EventListener;
+			_dragScrollAmount?: number;
 		};
 	};
 };
@@ -313,6 +335,34 @@ function forceSelectionMode(term: Terminal): void {
 function configureScrollbarReservation(term: Terminal): void {
 	const viewport = (term as XtermInternal)._core?.viewport;
 	if (viewport) viewport.scrollBarWidth = isMacPlatform() ? MAC_TERMINAL_SCROLLBAR_WIDTH : 0;
+}
+
+// xterm deliberately keeps drag selection listening on document. When a drag
+// leaves the terminal horizontally, its coordinate conversion clamps the pointer
+// to the last terminal column. In split layouts that turns a drag into the
+// neighboring inspector into a selection of a full-width TUI sidebar (OpenCode
+// is the visible example). Keep vertical overflow intact for xterm's standard
+// drag-to-scroll behavior, but do not extend a selection into a sibling pane.
+function confineDragSelectionToTerminalWidth(term: Terminal): void {
+	const internal = term as XtermInternal;
+	const selectionService = internal._core?._selectionService;
+	const element = internal._core?.element;
+	const originalMouseMoveListener = selectionService?._mouseMoveListener;
+	if (!selectionService || !element || !originalMouseMoveListener) return;
+
+	selectionService._mouseMoveListener = (event: Event) => {
+		if (!(event instanceof MouseEvent)) return;
+		const { left, right } = element.getBoundingClientRect();
+		if (event.clientX < left || event.clientX > right) {
+			// xterm's document-level drag timer continues using its last vertical
+			// overflow value. Clear that value when the pointer enters a sibling
+			// pane, otherwise a previous below-the-terminal drag keeps scrolling and
+			// extends the frozen selection.
+			selectionService._dragScrollAmount = 0;
+			return;
+		}
+		originalMouseMoveListener(event);
+	};
 }
 
 export function XtermTerminal(props: XtermTerminalProps) {
@@ -567,6 +617,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		loadRenderer(term);
 		term.options.macOptionClickForcesSelection = true;
 		forceSelectionMode(term);
+		confineDragSelectionToTerminalWidth(term);
 
 		// xterm 5's native viewport scrollbar follows macOS's system auto-hide
 		// preference even when its WebKit pseudo-elements are styled. Keep the
@@ -950,6 +1001,26 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// hidden behind the cover. A normally parked terminal still ignores them.
 		const scheduleVisibleFit = () => scheduleStableFit(fitAllowsHidden);
 		fitRef.current = scheduleVisibleFit;
+		// ResizeObserver delivers after layout and before paint. Calling fit() from
+		// that callback reads xterm geometry and can allocate its renderer while
+		// Chromium is still resolving the inspector/terminal split, turning one
+		// rail frame into a nested layout cycle. A controlled rail only needs xterm
+		// to follow on the next frame; the final quiet-window fit remains exact.
+		// Coalescing also handles multiple observer deliveries in one frame.
+		let liveFitFrame: number | null = null;
+		const scheduleLiveFit = () => {
+			if (liveFitFrame !== null) return;
+			liveFitFrame = requestAnimationFrame(() => {
+				liveFitFrame = null;
+				if (host.closest('[data-terminal-live-resize="true"]')) {
+					fitTerminal();
+					return;
+				}
+				// The marker may have cleared while this frame was queued. Keep the
+				// ordinary final-fit path rather than skipping the terminal's last size.
+				scheduleVisibleFit();
+			});
+		};
 
 		const raf = requestAnimationFrame(fitTerminal);
 		// 50/250ms catch the common settle; 600/1200ms are a session-bounded
@@ -965,7 +1036,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		}
 		const observer = new ResizeObserver(() => {
 			if (host.closest('[data-terminal-live-resize="true"]')) {
-				fitTerminal();
+				scheduleLiveFit();
 				return;
 			}
 			scheduleVisibleFit();
@@ -1292,6 +1363,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;
 			cancelAnimationFrame(raf);
+			if (liveFitFrame !== null) cancelAnimationFrame(liveFitFrame);
 			for (const timer of settleTimers) window.clearTimeout(timer);
 			if (fitQuietTimer !== null) clearTimeout(fitQuietTimer);
 			if (fitCapTimer !== null) clearTimeout(fitCapTimer);
@@ -1331,28 +1403,26 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			notifyCursorSchemeRef.current = () => {};
 			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			const disposeTerminal = () => {
+			// xterm's Viewport queues an untracked zero-delay scroll-area sync during
+			// open(). React StrictMode immediately runs this cleanup once after mount;
+			// disposing the renderer before that queued sync runs makes xterm read the
+			// now-missing renderer dimensions. Queue disposal behind xterm's task so
+			// the terminal remains internally valid until its own initialization work
+			// has drained. All AO listeners and attachment state are already detached.
+			window.setTimeout(() => {
 				try {
 					term.dispose();
 				} catch {
 					// Some renderer addons can throw during dispose in certain GPU
 					// environments; the terminal is being torn down regardless.
 				}
-			};
-			if (import.meta.env.DEV) {
-				// xterm's Viewport constructor queues an untracked zero-delay
-				// syncScrollArea(). React StrictMode immediately runs this cleanup after
-				// its development probe mount; queue disposal behind that callback so it
-				// cannot read the already-cleared renderer dimensions.
-				window.setTimeout(disposeTerminal, 0);
-			} else {
-				disposeTerminal();
-			}
+			}, 0);
 		};
 	}, []);
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
+		let initialFocusTimer: number | null = null;
 		let retryFrame: number | null = null;
 		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
 		let cancelled = false;
@@ -1371,10 +1441,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			focusTerminal();
 		};
 
-		focusIfAllowed();
+		// A terminal tab/session click has already made the retained xterm visible.
+		// Calling `focus()` in this same discrete React effect can synchronously
+		// trigger browser focus/layout work while the click is still being handled.
+		// Defer only an already-permitted focus to a later task. A blocked focus
+		// keeps the existing rAF retry path so a closing dialog is handled promptly.
+		const initialHost = hostRef.current;
+		if (initialHost && canAutoFocusTerminal(initialHost)) {
+			initialFocusTimer = window.setTimeout(() => {
+				initialFocusTimer = null;
+				focusIfAllowed();
+			}, 0);
+		} else {
+			focusIfAllowed();
+		}
 
 		return () => {
 			cancelled = true;
+			if (initialFocusTimer !== null) window.clearTimeout(initialFocusTimer);
 			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
 		};
 	}, [focusTerminal, props.focusRequested, props.isVisible]);

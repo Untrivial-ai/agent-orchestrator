@@ -12,8 +12,10 @@ import {
 	Folders,
 	GitBranch,
 	GitFork,
+	Globe,
 	Link2,
 	LoaderCircle,
+	Lock,
 	X,
 	XCircle,
 } from "lucide-react";
@@ -1553,6 +1555,17 @@ function ProjectImportDialog({
 	const needsRemote = importNeedsRemoteSetup(requiredActions);
 	const githubOwner = githubRepository?.owner.trim() ?? "";
 	const githubName = githubRepository?.name.trim() ?? "";
+	const isPrivate = githubRepository?.private ?? true;
+	const visibilityLabel = isPrivate
+		? t("createProject.privateRepository", { defaultValue: "Private repository" })
+		: t("createProject.publicRepository", { defaultValue: "Public repository" });
+	const visibilityHelper = isPrivate
+		? t("createProject.privateRepositoryHelper", {
+				defaultValue: "Only you and people you invite can see this repo",
+		  })
+		: t("createProject.publicRepositoryHelper", {
+				defaultValue: "Anyone on the internet can see this repo",
+		  });
 	const [githubOwners, setGitHubOwners] = useState<GitHubOwner[]>([]);
 	const [customGitHubOwner, setCustomGitHubOwner] = useState(false);
 	const selectedGitHubOwner = githubOwners.find((owner) => owner.login === githubOwner);
@@ -1652,7 +1665,7 @@ function ProjectImportDialog({
 						</div>
 						{mustImportAsWorkspace ? (
 							<p className="text-[14px] leading-6 text-[var(--color-text-import-muted)]">
-								{t("createProject.projectMustBeWorkspace", { defaultValue: "This folder contains projects and needs to be imported as a workspace." })}
+								{t("createProject.projectMustBeWorkspace", { defaultValue: "This folder contains child Git repositories. Import it as a workspace instead." })}
 							</p>
 						) : null}
 						{validation.warning ? (
@@ -1790,16 +1803,35 @@ function ProjectImportDialog({
 													</AnimatePresence>
 												</div>
 											</div>
-											<div className="flex items-center justify-between py-0.5">
-												<Label htmlFor="githubRepoPrivate" className="text-[12px] font-medium text-[var(--color-text-import-title)]">
-													{t("createProject.privateRepository")}
+											<div className="flex items-center justify-between gap-3 py-1">
+												<Label htmlFor="githubRepoPrivate" className="flex cursor-pointer items-center gap-2.5 min-w-0">
+													{isPrivate ? (
+														<Lock className="size-4 shrink-0 text-[var(--color-text-import-muted)]" aria-hidden="true" />
+													) : (
+														<Globe className="size-4 shrink-0 text-[var(--color-text-import-muted)]" aria-hidden="true" />
+													)}
+													<div className="min-w-0 space-y-0.5">
+														<span className="block text-[12px] font-medium leading-4 text-[var(--color-text-import-title)]">
+															{visibilityLabel}
+														</span>
+														<span id="githubRepoVisibilityHelp" className="block text-[11px] leading-4 text-[var(--color-text-import-muted)]">
+															{visibilityHelper}
+														</span>
+													</div>
 												</Label>
 												<Switch
 													id="githubRepoPrivate"
-													aria-label={t("createProject.privateRepository")}
-													checked={githubRepository?.private ?? true}
+													aria-label={visibilityLabel}
+													aria-describedby="githubRepoVisibilityHelp"
+													checked={isPrivate}
 													disabled={disabled}
-													onCheckedChange={(privateRepository) => onChangeGitHubRepository({ owner: githubRepository?.owner ?? "", name: githubRepository?.name ?? "", private: privateRepository })}
+													onCheckedChange={(privateRepository) =>
+														onChangeGitHubRepository({
+															owner: githubRepository?.owner ?? "",
+															name: githubRepository?.name ?? "",
+															private: privateRepository,
+														})
+													}
 												/>
 											</div>
 									</div>

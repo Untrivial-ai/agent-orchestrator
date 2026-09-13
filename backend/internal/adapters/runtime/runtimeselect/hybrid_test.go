@@ -16,6 +16,8 @@ type fakeBackend struct {
 	createErr    error
 	calls        []string
 	handles      []ports.RuntimeHandle
+	childAlive   bool
+	childErr     error
 }
 
 func (f *fakeBackend) record(call string, handle ports.RuntimeHandle) {
@@ -52,6 +54,32 @@ func (f *fakeBackend) GetStyledOutput(_ context.Context, handle ports.RuntimeHan
 func (f *fakeBackend) IsAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
 	f.record("alive", handle)
 	return true, nil
+}
+
+func (f *fakeBackend) IsChildAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
+	f.record("child", handle)
+	return f.childAlive, f.childErr
+}
+
+func TestHybridRuntimeRoutesChildLiveness(t *testing.T) {
+	for _, prefix := range []string{"", directHandlePrefix} {
+		for _, probeErr := range []error{nil, ports.ErrRuntimeProbeInconclusive} {
+			legacy, direct := &restartableFakeBackend{}, &fakeBackend{}
+			backend := &legacy.fakeBackend
+			if prefix != "" {
+				backend = direct
+			}
+			backend.childErr = probeErr
+			runtime := newHybridRuntime(legacy, direct, nil, "Linux")
+			alive, err := runtime.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: prefix + "shell"})
+			if alive || !errors.Is(err, probeErr) {
+				t.Fatalf("child status for %q = %v, %v; want false, %v", prefix, alive, err, probeErr)
+			}
+			if !reflect.DeepEqual(backend.calls, []string{"child"}) || backend.handles[0].ID != "shell" {
+				t.Fatalf("child route for %q = %v, %v", prefix, backend.calls, backend.handles)
+			}
+		}
+	}
 }
 
 func (f *fakeBackend) ProbeFencedRuntime(_ context.Context, _ ports.FencedRuntimeRef) ports.FencedProbeResult {

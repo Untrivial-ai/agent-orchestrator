@@ -8309,6 +8309,50 @@ func TestReconcileLive_ScratchDeadRuntimeTerminatesWithoutWorkspaceTeardown(t *t
 	}
 }
 
+func TestReconcileLive_ScratchChatReattachesPersistentController(t *testing.T) {
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{
+		ID: "scratch", Kind: domain.ProjectKindScratch, Config: testRoleAgents(),
+	}
+	launcher := &recordingLauncher{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    fakeAgents{},
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		Chat:      launcher,
+		DataDir:   "/ao-test-data",
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "scratch-chat", ProjectID: "scratch", Kind: domain.KindWorker,
+		Harness: domain.HarnessCursor, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/scratch-chat", ProviderConversationID: "cursor-thread",
+			ControllerGeneration: "generation-old",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(ctx, rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("MarkTerminated = %d, want 0", lcm.terminated[rec.ID])
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("StartChat calls = %d, want 1", len(launcher.started))
+	}
+	started := launcher.started[0]
+	if started.ProviderConversationID != "cursor-thread" || started.WorkspacePath != "/ws/scratch-chat" {
+		t.Fatalf("StartChat = %#v, want durable Cursor conversation and scratch workspace", started)
+	}
+}
+
 // TestReconcile_AdoptAcrossDaemonRestart is the end-to-end durability proof for
 // #2335: it drives the full boot-time Reconcile pass over the exact mix of
 // session states a daemon restart/upgrade leaves behind and asserts agent

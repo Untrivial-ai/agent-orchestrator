@@ -10,13 +10,16 @@ import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
 	fit: vi.fn(),
+	lifecycle: [] as string[],
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
+	queueViewportSyncOnOpen: false,
 	searchAddon: null as null | {
 		clearDecorations: ReturnType<typeof vi.fn>;
 		findNext: ReturnType<typeof vi.fn>;
 		findPrevious: ReturnType<typeof vi.fn>;
 		resultListeners: Set<(results: { resultCount: number; resultIndex: number }) => void>;
 	},
+	mouseMoveListener: vi.fn(),
 	lastTerminal: null as null | {
 		write(data: Uint8Array, done?: () => void): void;
 		keyHandler?: (event: KeyboardEvent) => boolean;
@@ -42,11 +45,16 @@ const state = vi.hoisted(() => ({
 		selectionListeners: Set<() => void>;
 		scrollListeners: Set<() => void>;
 		_core: {
-			element: { classList: { add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> } };
+			element: {
+				classList: { add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> };
+				getBoundingClientRect: () => DOMRect;
+			};
 			viewport: { scrollBarWidth: number };
 			_selectionService: {
 				enable: ReturnType<typeof vi.fn>;
 				shouldForceSelection: (event: MouseEvent) => boolean;
+				_mouseMoveListener?: EventListener;
+				_dragScrollAmount?: number;
 			};
 		};
 	},
@@ -93,11 +101,16 @@ vi.mock("@xterm/xterm", () => ({
 		scrollListeners = new Set<() => void>();
 		writeBuffer = "";
 		_core = {
-			element: { classList: { add: vi.fn(), remove: vi.fn() } },
+			element: {
+				classList: { add: vi.fn(), remove: vi.fn() },
+				getBoundingClientRect: () => ({ left: 0, right: 800 }) as DOMRect,
+			},
 			viewport: { scrollBarWidth: 15 },
 			_selectionService: {
 				enable: vi.fn(),
 				shouldForceSelection: () => false,
+				_mouseMoveListener: state.mouseMoveListener,
+				_dragScrollAmount: 0,
 			},
 		};
 
@@ -109,6 +122,9 @@ vi.mock("@xterm/xterm", () => ({
 		loadAddon() {}
 		open(host: HTMLElement) {
 			host.appendChild(document.createElement("textarea"));
+			if (state.queueViewportSyncOnOpen) {
+				window.setTimeout(() => state.lifecycle.push("viewport-sync"), 0);
+			}
 		}
 		write(data: Uint8Array, done?: () => void) {
 			this.writeBuffer += new TextDecoder().decode(data);
@@ -119,7 +135,9 @@ vi.mock("@xterm/xterm", () => ({
 			done?.();
 		}
 		writeln() {}
-		dispose = vi.fn();
+		dispose = vi.fn(() => {
+			state.lifecycle.push("dispose");
+		});
 		onData(listener: (data: string) => void) {
 			this.dataListeners.add(listener);
 			return { dispose: () => this.dataListeners.delete(listener) };
@@ -221,9 +239,12 @@ function setNavigatorPlatform(platform: string) {
 describe("XtermTerminal", () => {
 	beforeEach(() => {
 		state.fit.mockReset();
+		state.lifecycle.length = 0;
 		state.lastTerminal = null;
 		state.linkHandler = null;
+		state.queueViewportSyncOnOpen = false;
 		state.searchAddon = null;
+		state.mouseMoveListener.mockClear();
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("");
@@ -231,9 +252,14 @@ describe("XtermTerminal", () => {
 		window.ao!.terminal.onFontSizeShortcut = () => () => undefined;
 	});
 
-	it("fits on each observed frame while an ancestor requests live terminal resizing", () => {
+	it("coalesces live terminal resize observer deliveries into the next frame", () => {
 		const callbacks: ResizeObserverCallback[] = [];
+		const frames: FrameRequestCallback[] = [];
 		const originalResizeObserver = window.ResizeObserver;
+		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			frames.push(callback);
+			return frames.length;
+		});
 		class CapturingResizeObserver implements ResizeObserver {
 			constructor(callback: ResizeObserverCallback) {
 				callbacks.push(callback);
@@ -254,11 +280,17 @@ describe("XtermTerminal", () => {
 				</div>,
 			);
 			state.fit.mockClear();
+			frames.length = 0;
 
 			act(() => callbacks.at(-1)?.([], {} as ResizeObserver));
+			act(() => callbacks.at(-1)?.([], {} as ResizeObserver));
 
+			expect(state.fit).not.toHaveBeenCalled();
+			expect(frames).toHaveLength(1);
+			act(() => frames.shift()?.(performance.now()));
 			expect(state.fit).toHaveBeenCalledTimes(1);
 		} finally {
+			requestAnimationFrameSpy.mockRestore();
 			Object.defineProperty(window, "ResizeObserver", {
 				configurable: true,
 				writable: true,
@@ -291,19 +323,23 @@ describe("XtermTerminal", () => {
 		}
 	});
 
-	it("defers disposal behind xterm's pending viewport callback", () => {
+	it.each([true, false])("lets xterm drain viewport initialization before disposal (DEV=%s)", (development) => {
+		vi.stubEnv("DEV", development);
 		vi.useFakeTimers();
+		state.queueViewportSyncOnOpen = true;
 		try {
-			const { unmount } = render(<XtermTerminal theme="dark" />);
+			const view = render(<XtermTerminal theme="dark" />);
 			const terminal = state.lastTerminal!;
+			view.unmount();
 
-			unmount();
 			expect(terminal.dispose).not.toHaveBeenCalled();
-
+			expect(state.lifecycle).toEqual([]);
 			act(() => vi.runOnlyPendingTimers());
+			expect(state.lifecycle).toEqual(["viewport-sync", "dispose"]);
 			expect(terminal.dispose).toHaveBeenCalledOnce();
 		} finally {
 			vi.useRealTimers();
+			vi.unstubAllEnvs();
 		}
 	});
 
@@ -320,6 +356,22 @@ describe("XtermTerminal", () => {
 		rerender(<XtermTerminal focusRequested theme="dark" />);
 
 		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+	});
+
+	it("defers an already-permitted focus outside the discrete render update", () => {
+		vi.useFakeTimers();
+		try {
+			const { rerender } = render(<XtermTerminal theme="dark" />);
+			state.lastTerminal!.focus.mockClear();
+
+			rerender(<XtermTerminal focusRequested theme="dark" />);
+			expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+
+			act(() => vi.runOnlyPendingTimers());
+			expect(state.lastTerminal!.focus).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not steal focus from an open dialog or another control", () => {
@@ -684,6 +736,24 @@ describe("XtermTerminal", () => {
 	it("searches incrementally, reports matches, and navigates in both directions", async () => {
 		setNavigatorPlatform("MacIntel");
 		render(<XtermTerminal theme="dark" />);
+		const frames = new Map<number, FrameRequestCallback>();
+		let nextFrame = 0;
+		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			const id = ++nextFrame;
+			frames.set(id, callback);
+			return id;
+		});
+		const cancelAnimationFrameSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+			frames.delete(id);
+		});
+		const flushSearchFrame = () => {
+			const frame = frames.entries().next().value as [number, FrameRequestCallback] | undefined;
+			expect(frame).toBeDefined();
+			if (!frame) return;
+			frames.delete(frame[0]);
+			act(() => frame[1](performance.now()));
+		};
+		try {
 		const shortcut = {
 			altKey: false,
 			ctrlKey: false,
@@ -699,20 +769,18 @@ describe("XtermTerminal", () => {
 		state.searchAddon!.findNext.mockClear();
 
 		fireEvent.change(input, { target: { value: "needle" } });
-		await waitFor(() =>
-			expect(state.searchAddon!.findNext).toHaveBeenLastCalledWith(
-				"needle",
-				expect.objectContaining({ incremental: true, caseSensitive: false, regex: false }),
-			),
+		flushSearchFrame();
+		expect(state.searchAddon!.findNext).toHaveBeenLastCalledWith(
+			"needle",
+			expect.objectContaining({ incremental: true, caseSensitive: false, regex: false }),
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Match case" }));
 		fireEvent.click(screen.getByRole("button", { name: "Use regular expression" }));
-		await waitFor(() =>
-			expect(state.searchAddon!.findNext).toHaveBeenLastCalledWith(
-				"needle",
-				expect.objectContaining({ incremental: true, caseSensitive: true, regex: true }),
-			),
+		flushSearchFrame();
+		expect(state.searchAddon!.findNext).toHaveBeenLastCalledWith(
+			"needle",
+			expect.objectContaining({ incremental: true, caseSensitive: true, regex: true }),
 		);
 
 		act(() =>
@@ -744,6 +812,58 @@ describe("XtermTerminal", () => {
 		state.searchAddon!.findPrevious.mockClear();
 		fireEvent.keyDown(input, { key: "g", metaKey: true, shiftKey: true });
 		expect(state.searchAddon!.findPrevious).toHaveBeenCalledWith("needle", expect.anything());
+		} finally {
+			requestAnimationFrameSpy.mockRestore();
+			cancelAnimationFrameSpy.mockRestore();
+		}
+	});
+
+	it("coalesces rapid terminal-search input into the latest per-frame xterm scan", async () => {
+		setNavigatorPlatform("MacIntel");
+		render(<XtermTerminal theme="dark" />);
+		const frames = new Map<number, FrameRequestCallback>();
+		let nextFrame = 0;
+		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			const id = ++nextFrame;
+			frames.set(id, callback);
+			return id;
+		});
+		const cancelAnimationFrameSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+			frames.delete(id);
+		});
+		try {
+		act(() =>
+			state.lastTerminal!.keyHandler!({
+				altKey: false,
+				ctrlKey: false,
+				key: "f",
+				metaKey: true,
+				preventDefault: vi.fn(),
+				shiftKey: false,
+				stopPropagation: vi.fn(),
+				type: "keydown",
+			} as unknown as KeyboardEvent),
+		);
+		const input = await screen.findByRole("searchbox", { name: "Search terminal" });
+		state.searchAddon!.findNext.mockClear();
+
+		fireEvent.change(input, { target: { value: "n" } });
+		fireEvent.change(input, { target: { value: "ne" } });
+		fireEvent.change(input, { target: { value: "needle" } });
+
+		expect(frames.size).toBe(1);
+		const frame = frames.entries().next().value as [number, FrameRequestCallback];
+		frames.delete(frame[0]);
+		act(() => frame[1](performance.now()));
+		expect(state.searchAddon!.findNext).toHaveBeenCalledTimes(1);
+		expect(state.searchAddon!.findNext).toHaveBeenCalledWith(
+			"needle",
+			expect.objectContaining({ incremental: true }),
+		);
+		} finally {
+			requestAnimationFrameSpy.mockRestore();
+			cancelAnimationFrameSpy.mockRestore();
+		}
 	});
 
 	it("marks an invalid regular expression without calling xterm search", async () => {
@@ -1245,6 +1365,119 @@ describe("XtermTerminal", () => {
 		expect(event.preventDefault).toHaveBeenCalled();
 		expect(event.stopPropagation).toHaveBeenCalled();
 		expect(onInput).toHaveBeenCalledWith(expected, "shortcut");
+	});
+
+	it.each([
+		["Cmd+Left", { key: "ArrowLeft", metaKey: true }, "\x01"],
+		["Cmd+Right", { key: "ArrowRight", metaKey: true }, "\x05"],
+	])("normalizes macOS %s into beginning/end-of-line input", (_name, init, expected) => {
+		setNavigatorPlatform("MacIntel");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const event = {
+			type: "keydown",
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+			...init,
+		} as unknown as KeyboardEvent;
+		const allowed = state.lastTerminal!.keyHandler!(event);
+
+		expect(allowed).toBe(false);
+		expect(event.preventDefault).toHaveBeenCalled();
+		expect(event.stopPropagation).toHaveBeenCalled();
+		expect(onInput).toHaveBeenCalledWith(expected, "shortcut");
+	});
+
+	it("does not re-fire macOS Cmd+Left on the following keyup", () => {
+		setNavigatorPlatform("MacIntel");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const keyDown = {
+			type: "keydown",
+			key: "ArrowLeft",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(keyDown)).toBe(false);
+		expect(onInput).toHaveBeenCalledTimes(1);
+
+		const keyUp = { ...keyDown, type: "keyup" } as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(keyUp)).toBe(true);
+		expect(onInput).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves Windows Home and End to xterm instead of rewriting them to Ctrl+A/E", () => {
+		setNavigatorPlatform("Win32");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		for (const key of ["Home", "End"]) {
+			const event = {
+				type: "keydown",
+				key,
+				metaKey: false,
+				ctrlKey: false,
+				shiftKey: false,
+				altKey: false,
+				preventDefault: vi.fn(),
+				stopPropagation: vi.fn(),
+			} as unknown as KeyboardEvent;
+			expect(state.lastTerminal!.keyHandler!(event)).toBe(true);
+			expect(event.preventDefault).not.toHaveBeenCalled();
+			expect(onInput).not.toHaveBeenCalled();
+		}
+	});
+
+	it("keeps Windows Ctrl+Left and Ctrl+Right as word movement", () => {
+		setNavigatorPlatform("Win32");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const left = {
+			type: "keydown",
+			key: "ArrowLeft",
+			ctrlKey: true,
+			metaKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(left)).toBe(false);
+		expect(onInput).toHaveBeenCalledWith("\x1b[1;5D", "shortcut");
+
+		const right = { ...left, key: "ArrowRight", preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(right)).toBe(false);
+		expect(onInput).toHaveBeenCalledWith("\x1b[1;5C", "shortcut");
+	});
+
+	it("does not treat the Windows key plus arrows as macOS line-boundary shortcuts", () => {
+		setNavigatorPlatform("Win32");
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const event = {
+			type: "keydown",
+			key: "ArrowLeft",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(event)).toBe(true);
+		expect(event.preventDefault).not.toHaveBeenCalled();
+		expect(onInput).not.toHaveBeenCalled();
 	});
 
 	it("does not re-fire a shortcut on the keyup that follows its keydown", () => {
@@ -1920,5 +2153,21 @@ describe("XtermTerminal", () => {
 		window.removeEventListener("drop", bubbled);
 		expect(bubbled).toHaveBeenCalledTimes(1);
 		expect(saveDroppedFile).not.toHaveBeenCalled();
+	});
+
+	it("does not extend a drag selection into a neighboring pane or keep auto-scrolling", () => {
+		render(<XtermTerminal theme="dark" />);
+		const selectionService = state.lastTerminal!._core._selectionService;
+		const listener = selectionService._mouseMoveListener!;
+
+		// Simulate xterm's timer having been armed by a previous drag below the
+		// terminal before the pointer crosses horizontally into the sidebar.
+		selectionService._dragScrollAmount = 1;
+		listener(new MouseEvent("mousemove", { clientX: 801 }));
+		expect(state.mouseMoveListener).not.toHaveBeenCalled();
+		expect(selectionService._dragScrollAmount).toBe(0);
+
+		listener(new MouseEvent("mousemove", { clientX: 800 }));
+		expect(state.mouseMoveListener).toHaveBeenCalledTimes(1);
 	});
 });

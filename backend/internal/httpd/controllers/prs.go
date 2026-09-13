@@ -60,6 +60,10 @@ func (c *PRsController) resolveComments(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	prID := chi.URLParam(r, "id")
+	if !prIDPattern.MatchString(prID) {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR", "Invalid PR number", nil)
+		return
+	}
 
 	// Body is optional: omitting it resolves all unresolved threads.
 	var in ResolveCommentsRequest

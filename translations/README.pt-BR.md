@@ -10,7 +10,7 @@
 [![Versão no GitHub](https://img.shields.io/github/v/release/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest)
 [![Downloads no GitHub](https://img.shields.io/github/downloads/Untrivial-ai/agent-orchestrator/total?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases)
 [![Licença: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](../LICENSE)
-[![X](https://img.shields.io/badge/@aoagents-555?style=flat&logo=x&logoColor=white)](https://x.com/aoagents)
+[![X](https://img.shields.io/badge/@ao__build-555?style=flat&logo=x&logoColor=white)](https://x.com/ao_build)
 [![Discord](https://img.shields.io/badge/Discord-555?style=flat&logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
 
 Dê a cada tarefa de programação seu próprio agente, workspace e ciclo de feedback.<br />
@@ -239,7 +239,7 @@ Comece pelo [guia de desenvolvimento](../docs/development.md) para ver pré-requ
 
 ## Comunidade
 
-Participe do [Discord](https://discord.com/invite/UZv7JjxbwG) para receber ajuda e conversar com outros colaboradores, siga [@aoagents](https://x.com/aoagents) para acompanhar as novidades ou inicie uma conversa nas [Issues do GitHub](https://github.com/Untrivial-ai/agent-orchestrator/issues).
+Participe do [Discord](https://discord.com/invite/UZv7JjxbwG) para receber ajuda e conversar com outros colaboradores, siga [@ao_build](https://x.com/ao_build) para acompanhar as novidades ou inicie uma conversa nas [Issues do GitHub](https://github.com/Untrivial-ai/agent-orchestrator/issues).
 
 ## Telemetria anônima
 

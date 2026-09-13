@@ -10,7 +10,7 @@
 [![GitHub 版本](https://img.shields.io/github/v/release/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest)
 [![GitHub 下载量](https://img.shields.io/github/downloads/Untrivial-ai/agent-orchestrator/total?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases)
 [![许可证：Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](../LICENSE)
-[![X](https://img.shields.io/badge/@aoagents-555?style=flat&logo=x&logoColor=white)](https://x.com/aoagents)
+[![X](https://img.shields.io/badge/@ao__build-555?style=flat&logo=x&logoColor=white)](https://x.com/ao_build)
 [![Discord](https://img.shields.io/badge/Discord-555?style=flat&logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
 
 让每个编程任务都有自己的智能体、工作区和反馈闭环。<br />
@@ -239,7 +239,7 @@ cd agent-orchestrator
 
 ## 社区
 
-加入 [Discord](https://discord.com/invite/UZv7JjxbwG) 获取帮助并参与贡献者讨论，关注 [@aoagents](https://x.com/aoagents) 了解最新动态，或在 [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) 中发起讨论。
+加入 [Discord](https://discord.com/invite/UZv7JjxbwG) 获取帮助并参与贡献者讨论，关注 [@ao_build](https://x.com/ao_build) 了解最新动态，或在 [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) 中发起讨论。
 
 ## 匿名遥测
 

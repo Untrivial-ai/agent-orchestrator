@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { FocusScope } from "@radix-ui/react-focus-scope";
 import { Command as CommandPrimitive } from "cmdk";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Search } from "lucide-react";
@@ -27,6 +28,7 @@ function CommandDialog({
 	className,
 	commandProps,
 	contentProps,
+	modal,
 	...props
 }: React.ComponentProps<typeof Dialog.Root> & {
 	title?: string;
@@ -36,34 +38,52 @@ function CommandDialog({
 	contentProps?: React.ComponentProps<typeof Dialog.Content>;
 }) {
 	const { className: commandClassName, ...restCommandProps } = commandProps ?? {};
+	const nonModal = modal === false;
+	const content = (
+		<Dialog.Content
+			data-slot="command-dialog-content"
+			aria-label={title}
+			aria-modal={nonModal || undefined}
+			{...contentProps}
+			className={cn(
+				"fixed left-1/2 top-command-palette z-overlay w-command-palette -translate-x-1/2 overflow-hidden rounded-[var(--radius-command-palette)] border border-[var(--color-border-command-palette)] bg-[var(--color-bg-command-palette)] text-[var(--color-text-command-item)] shadow-[var(--shadow-command-palette)] outline-none data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none",
+				className,
+			)}
+		>
+			<Dialog.Title className="sr-only">{title}</Dialog.Title>
+			<Dialog.Description className="sr-only">{description}</Dialog.Description>
+			<Command
+				className={cn(
+					"**:[[cmdk-group-heading]]:px-[var(--size-command-pad-x)] **:[[cmdk-group-heading]]:pt-2.5 **:[[cmdk-group-heading]]:pb-1 **:[[cmdk-group-heading]]:text-[11px] **:[[cmdk-group-heading]]:font-normal **:[[cmdk-group-heading]]:tracking-wide **:[[cmdk-group-heading]]:text-[var(--color-text-command-muted)] **:[[cmdk-group]]:px-0",
+					commandClassName,
+				)}
+				{...restCommandProps}
+			>
+				{children}
+			</Command>
+		</Dialog.Content>
+	);
 	return (
-		<Dialog.Root data-slot="command-dialog" {...props}>
+		<Dialog.Root data-slot="command-dialog" modal={modal} {...props}>
 			<Dialog.Portal>
-				<Dialog.Overlay
-					data-slot="command-dialog-overlay"
-					className="dialog-overlay data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out motion-reduce:animate-none"
-				/>
-				<Dialog.Content
-					data-slot="command-dialog-content"
-					aria-label={title}
-					{...contentProps}
-					className={cn(
-						"fixed left-1/2 top-command-palette z-overlay w-command-palette -translate-x-1/2 overflow-hidden rounded-[var(--radius-command-palette)] border border-[var(--color-border-command-palette)] bg-[var(--color-bg-command-palette)] text-[var(--color-text-command-item)] shadow-[var(--shadow-command-palette)] outline-none data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none",
-						className,
-					)}
-				>
-					<Dialog.Title className="sr-only">{title}</Dialog.Title>
-					<Dialog.Description className="sr-only">{description}</Dialog.Description>
-					<Command
-						className={cn(
-							"**:[[cmdk-group-heading]]:px-[var(--size-command-pad-x)] **:[[cmdk-group-heading]]:pt-2.5 **:[[cmdk-group-heading]]:pb-1 **:[[cmdk-group-heading]]:text-[11px] **:[[cmdk-group-heading]]:font-normal **:[[cmdk-group-heading]]:tracking-wide **:[[cmdk-group-heading]]:text-[var(--color-text-command-muted)] **:[[cmdk-group]]:px-0",
-							commandClassName,
-						)}
-						{...restCommandProps}
-					>
-						{children}
-					</Command>
-				</Dialog.Content>
+				{nonModal ? (
+					<>
+						<div
+							data-slot="command-dialog-overlay"
+							className="dialog-overlay data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out motion-reduce:animate-none"
+							onWheel={(event) => event.preventDefault()}
+						/>
+						<FocusScope loop trapped>{content}</FocusScope>
+					</>
+				) : (
+					<>
+						<Dialog.Overlay
+							data-slot="command-dialog-overlay"
+							className="dialog-overlay data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out motion-reduce:animate-none"
+						/>
+						{content}
+					</>
+				)}
 			</Dialog.Portal>
 		</Dialog.Root>
 	);

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,6 +20,7 @@ const createProjectFlowMock = vi.hoisted(() => ({
 		existingProjectPaths?: readonly string[];
 		onOpenExistingProject?: (path: string) => void | Promise<void>;
 	},
+	lastOpenSignal: 0,
 }));
 
 const ctx = vi.hoisted(() => {
@@ -182,12 +183,16 @@ vi.mock("./TaskComposer", () => ({
 
 vi.mock("./CreateProjectFlow", () => ({
 	CreateProjectFlow: (props: {
-		children: (state: { choosePath: () => void }) => ReactNode;
+		openSignal?: number;
 		existingProjectPaths?: readonly string[];
 		onOpenExistingProject?: (path: string) => void | Promise<void>;
 	}) => {
 		createProjectFlowMock.props = props;
-		return props.children({ choosePath: choosePathMock });
+		if (props.openSignal && props.openSignal !== createProjectFlowMock.lastOpenSignal) {
+			createProjectFlowMock.lastOpenSignal = props.openSignal;
+			choosePathMock();
+		}
+		return null;
 	},
 }));
 
@@ -248,6 +253,7 @@ beforeEach(() => {
 	restoreMock.mockReset();
 	workspaceSubscriptionMock.mockReset();
 	createProjectFlowMock.props = null;
+	createProjectFlowMock.lastOpenSignal = 0;
 	restoreMock.mockResolvedValue({ status: "success" });
 	act(() => {
 		useUiStore.setState({
@@ -265,6 +271,18 @@ afterEach(() => {
 });
 
 describe("CommandPalette gating", () => {
+	it("does not mount the project-import flow until New project is selected", async () => {
+		renderPalette();
+		expect(createProjectFlowMock.props).toBeNull();
+
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+		expect(createProjectFlowMock.props).toBeNull();
+
+		fireEvent.click(screen.getByText("New project"));
+		await waitFor(() => expect(createProjectFlowMock.props).not.toBeNull());
+	});
+
 	it("subscribes to workspace updates only while open", () => {
 		renderPalette();
 		expect(workspaceSubscriptionMock).toHaveBeenLastCalledWith({ subscribed: false });
@@ -631,6 +649,9 @@ describe("CommandPalette actions", () => {
 	it("opens an already registered project selected by the import flow", async () => {
 		renderPalette();
 		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.click(screen.getByText("New project"));
+		await waitFor(() => expect(createProjectFlowMock.props).not.toBeNull());
 
 		expect(createProjectFlowMock.props?.existingProjectPaths).toEqual(["/repos/app", "/repos/lib"]);
 		await act(async () => createProjectFlowMock.props?.onOpenExistingProject?.("/repos/lib"));
@@ -703,7 +724,7 @@ describe("CommandPalette PR and review actions", () => {
 	it("triggers a review for the PR's session and closes", async () => {
 		mockReviews([reviewState("needs_review")]);
 		await openPaletteWithQuery("review");
-		fireEvent.click(await screen.findByText("Review latest commit #7"));
+		fireEvent.click(await screen.findByText("Re-review PR #7"));
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: "w-merge" } },
@@ -750,6 +771,11 @@ describe("CommandPalette PR and review actions", () => {
 		// review action must not render until we actually know it's safe.
 		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
 		expect(screen.queryByText(/run review|re-run review|reviewing/i)).toBeNull();
+		await waitFor(() =>
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews", {
+				params: { path: { sessionId: "w-merge" } },
+			}),
+		);
 		await act(async () => {
 			resolveReviews({ data: { reviewerHandleId: "", reviews: [reviewState("running")] } });
 		});
@@ -798,6 +824,11 @@ describe("CommandPalette PR and review actions", () => {
 		// Run review action while the background refetch is still settling.
 		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
 		expect(screen.queryByText(/run review|re-run review/i)).toBeNull();
+		await waitFor(() =>
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews", {
+				params: { path: { sessionId: "w-merge" } },
+			}),
+		);
 
 		await act(async () => {
 			resolveReviews({ data: { reviewerHandleId: "", reviews: [reviewState("running")] } });

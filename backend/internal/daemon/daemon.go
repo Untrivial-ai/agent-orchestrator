@@ -23,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
 	chatdriveracp "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	chatdriverregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/systemexec"
@@ -378,6 +379,9 @@ func Run() error {
 	chatSvc := chatsvc.New(chatsvc.Options{
 		Store:    store,
 		Sessions: store,
+		StopProviderHost: func(ctx context.Context, id domain.SessionID) error {
+			return persistenthost.Shutdown(ctx, cfg.DataDir, string(id))
+		},
 		// Adapts the store's own snapshot type, so the chat service never has to
 		// import the storage layer.
 		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
@@ -498,6 +502,7 @@ func Run() error {
 		}
 		return fmt.Errorf("wire session service: %w", err)
 	}
+	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
 
 	// servers isn't clobbered. See preview_wiring.go (issue #4500).

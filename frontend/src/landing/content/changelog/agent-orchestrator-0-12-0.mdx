@@ -1,0 +1,99 @@
+---
+title: "Agent Orchestrator 0.12.0"
+description: "80 commits since 0.11.2. The desktop app now speaks eight languages, sits on a new color palette, and lets you pin sessions and pick a reviewer per session. The mobile app got theming and hold-to-talk dictation. Containers a session started get cleaned up when it dies."
+date: "2026-08-05T06:52:44Z"
+---
+
+> Covers everything since **v0.11.2**.
+>
+> **macOS users should go straight to [0.12.1](/changelog/agent-orchestrator-0-12-1) or later.** This build leaks file descriptors and breaks the Files view and task creation after a few hours of use.
+
+0.11.0 was about the foundation holding weight. 0.12.0 is what got built on it: the app now speaks eight languages, the sidebar and settings work the way you would expect them to, and a class of failure that could wipe every session off your board is gone.
+
+80 commits from 22 authors, 26 features and 44 fixes, no breaking changes.
+
+---
+
+## Highlights
+
+### The app speaks eight languages
+
+The desktop app has a real localization layer now, built on i18next, with the language picked under **Settings > General** and remembered in `~/.ao/ui-settings.json`. Simplified Chinese landed first and covers the shell chrome, sidebar, board, settings, dialogs, inspector tabs, command palette and terminal copy. Japanese, Korean, Spanish, French, German and Brazilian Portuguese followed, along with READMEs in each. English stays the default and the fallback, so an untranslated string shows English rather than a key. (#3465, #3541)
+
+### Mobile: themes, native sheets, and hold-to-talk
+
+The mobile app is no longer dark-only. It ships light and dark palettes plus a "system" preference that keeps following the OS instead of latching onto whatever it read at launch, with the app shell rebuilt on native sheets and the session board splitting on terminated runtime rather than finished status.
+
+It also has **push-to-talk dictation**. Hold the mic key in the composer to speak, release to insert, or swipe up to latch it hands-free. Recognition runs on-device (iOS `SFSpeechRecognizer`, Android `SpeechRecognizer`), so there is no API key and no per-minute cost, and it is biased toward the vocabulary that agent prompts are full of, so you get "git" and "npm" instead of "get" and "MPM". The transcript lands in the composer as an editable draft rather than sending, because speech-to-text mishears code often enough that silent submission is not safe. Held bursts append, so several presses build one prompt.
+
+Plus a Liquid Glass app icon matching the desktop build, and a fix for the default LAN port, which pointed at the loopback-only daemon port instead of the mobile bridge on 3011, so a fresh install could not connect without hand-editing it. (#3399, #3400, #3304, #3494)
+
+### A new color foundation
+
+The renderer moved onto an oklch design token palette with Geist as the UI font and shadcn color aliases mapped onto it, replacing hardcoded values across the component library. Session status now has one consistent palette everywhere it appears: working is blue, needs-you is orange, in-review is yellow, ready is green. (#3421)
+
+### Pin the sessions you keep coming back to
+
+Sessions can be pinned to a **Pinned** section at the top of the sidebar, persisted server-side so the pin survives a restart. The sidebar itself became collapsible: Pinned and Projects each fold away, and a click on a project's folder icon expands or collapses it without switching to it first. (#3511, #3310)
+
+### Pick the reviewer per session
+
+The reviewer agent used to be a single project-wide setting. You can now pick one for an individual session, and running that pass will not change what any other session in the project uses. The Reviews tab also lists every recorded pass for the session instead of only the current and previous run for a PR, so you can compare what two different reviewers said. A declined review, when the daemon reuses an existing pass rather than running a new one, no longer reports itself as a success. (#3477)
+
+### Settings opens as a modal
+
+Settings and project settings open over the board instead of navigating away from it, with a sidebar for General, Updates, Developer and Help. Escape or a click outside closes it, and you land back where you were. (#3497)
+
+### Notifications you can act on
+
+When a session needs you and the window is not focused, the macOS dock bounces, the Windows taskbar flashes until you come back, and the badge count of unread notifications stays in sync on macOS, Windows and Linux.
+
+Inside the panel, whole rows are click targets rather than just the title text, and the manual Unread/All tabs and mark-as-read are gone. Notifications now track two independent things: whether you have seen it (cleared when you open the panel) and whether the underlying issue is still open (written only by lifecycle). A notification you already read stays listed while the thing it reported is unresolved, and closes itself when the session leaves the needs-input state, terminates, or the PR merges or closes. Transitions that happened while the daemon was down are re-checked at startup. (#2534, #3296, #3495, #3558)
+
+### Command palette actions and a menu bar tray
+
+Cmd/Ctrl+K now carries session actions, not just navigation, and the task composer behind New Task was extracted so the palette can spawn work with the same UI. macOS also gets an attention tray icon in the menu bar for sessions waiting on you. (#3531)
+
+### Containers a session started get cleaned up
+
+Docker containers a session launched are removed when that session reaches a terminal state, including when it crashes or is SIGKILLed rather than only when you kill it explicitly. Label a container `ao.session=$AO_SESSION_ID` to have it reaped, or `ao.spare=true` for shared infrastructure that should outlive the session. Docker calls are bounded by a timeout, and a project that fails to load fails closed rather than reaping. (#3153)
+
+### Files and diffs
+
+The Files panel replaced its toggled search button and file-count label with an always-visible search input, dropped the refresh button (the list already polls), and rebuilt the list as an accordion with a live file count on the tab. The diff viewer streams workspace changes as they happen, has a clearer layout toggle and inline per-file feedback, and expands properly in the maximized view. Workspace diffs are also base-aware now, so a child session diffs against the branch it actually came from instead of a fixed base. (#3466, #3503, #3492, #3369, #3214)
+
+---
+
+## Reliability
+
+**One outage no longer wipes your board.** This was the big one (#3475). Three separate bugs could archive every session at once. Preview teardown group-killed a bare PID without re-verifying it still belonged to the process it launched, and a recycled PID number took out an unrelated process family; because a tmux server is its own group leader, one stale group kill destroyed every session. A tmux "no server running" probe was read as per-session death when it says nothing about any individual session, so a server hiccup archived the board. And a burned migration returned 500s that the board treated as absent sessions. Liveness probes now report inconclusive instead of dead, the reaper refuses to conclude a pass where most of the board probes dead simultaneously, and the migration ledger repairs itself on histories that were already burned. (#3491, #3598)
+
+**Orchestrators.** Duplicate active orchestrators can no longer be created for the same project, `ao session ls` surfaces hidden orchestrator sessions and counts hidden terminated ones instead of quietly dropping them, and the automated orchestrator re-engagement messages were reverted after they proved noisier than useful. (#3397, #3393, #3394)
+
+**Agents.** Droid forwards role-specific model config through its settings file, written under the data dir rather than a temp directory. Grok prompts are delivered after its TUI finishes starting instead of into a terminal that is not listening yet, and its terminal scrolls with the wheel. The internal fake test harness no longer shows up in agent pickers. (#3156, #3534, #3533, #3518)
+
+**Browser.** Annotation selection is locked while a prompt is in flight so a click cannot retarget it mid-send, native views no longer paint over the app when hidden, URL editing works in the maximized browser on macOS, the element selector badge is out of the annotation dialog, and switching away from a session and back no longer re-asserts a preview URL you had already navigated away from. (#3232, #3295, #3488, #3464, #3538, #3370)
+
+**Desktop.** The auto-updater logs 404s on missing release manifests instead of raising a dialog telling you to check an auth token you do not have. Sidebar and inspector drags clamp at their minimum width rather than snapping shut. The daemon ignores SIGPIPE on closed output. PR and Completion sections in the inspector stay hidden when there is nothing in them, and duplicate PR summaries are deduped. Alongside those, a pass of chrome fixes: titlebar nav aligned to the macOS traffic lights, terminal tab bar polish, settings and archive hairlines, terminal topbar padding, and text selection disabled on app chrome and marketing pages. (#3012, #3478, #3193, #3325, #3250, #3505, #3480, #3507, #3556, #3508, #3520)
+
+---
+
+## Under the hood
+
+Telemetry gained a runtime kill switch: `AO_TELEMETRY_DISABLED_EVENTS` silences named streams (with `*` prefix matching) without shipping a release, and silenced streams still land in local SQLite so they stay debuggable. Daemon events are stamped with a version, update events are recorded, PostHog controls were hardened, and autocapture is asserted off in tests. CI now emits a Linux `.rpm` alongside the `.deb`.
+
+On the site: docs are published as Markdown twins with the full hierarchy exposed in `llms.txt`, agent comparison pages were added, the hero board, delegation demo and mobile mockup were rebuilt to match what the desktop app actually looks like, and the iOS beta CTA went live. Duplicate Organization structured data was removed and content signals now apply to allowed crawlers. (#3401, #3388, #3406, #3395, #3363, #3438, #3344, #3430, #3496, #3428, #3429, #3500, #3521, #3522, #3144, #3367, #3365, #3389)
+
+---
+
+## Upgrading
+
+GitHub Releases and Homebrew are the supported install paths. Existing installs update in place. If a previous update left your migration ledger in a broken state, 0.12.0 repairs it on start rather than failing the boot.
+
+---
+
+## Contributors
+
+22 authors landed work in this range. Thanks to Just_Anniee, prateek, ronish, VenkataSakethDakuri, Vaibhaav Tiwari, Prasad Ware, Pulkit Saraf, Khushi Diwan, Harshit Singh Bhandari, Tamish Mhatre, Maaz, Hardik Sharma, Anmol, AllBeingsFuture, Aditi, vanshx999, i-trytoohard, achal, Yash Maheshwari, Keshav Varshney, AshutoshIIT1234 and Apoorv Singh.
+
+**Full changelog:** https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.11.2...v0.12.0

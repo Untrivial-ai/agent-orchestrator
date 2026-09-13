@@ -561,6 +561,27 @@ describe("TerminalCacheProvider", () => {
 		}
 	});
 
+	it("skips layout for a retained terminal while it is parked", async () => {
+		const view = renderCachedPane({ session: sessionA, sessions: [sessionA, sessionB] });
+		try {
+			await waitFor(() => activeXterm());
+			view.show(sessionB);
+			await waitFor(() => expect(activeXterm()).not.toBeNull());
+
+			const parked = document.querySelector<HTMLElement>(
+				`[data-terminal-cache-key^="session:${sessionA.id}:worker|"]`,
+			);
+			expect(parked).toHaveAttribute("data-terminal-activation-phase", "parked");
+			expect(parked?.style.contentVisibility).toBe("hidden");
+
+			view.show(sessionA);
+			await waitFor(() => expect(activeXterm()).toBeInTheDocument());
+			expect(parked?.style.contentVisibility).toBe("");
+		} finally {
+			view.restore();
+		}
+	});
+
 	it("focuses each retained TUI terminal when switching among TUI sessions", async () => {
 		const tuiA = { ...sessionA, mode: "tui" as const };
 		const tuiB = { ...sessionB, mode: "tui" as const };

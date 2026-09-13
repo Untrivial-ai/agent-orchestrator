@@ -264,6 +264,21 @@ go run ./cmd/ao --help
 
 ### Code generation drift
 
+If CI fails on `sqlc-drift`, run the pinned generator from the repository root
+and commit the generated storage changes together with their SQL/config source:
+
+```bash
+npm run sqlc
+git diff --exit-code -- backend/internal/storage/sqlite/gen
+```
+
+The diff check should pass after committing the regenerated files. Do not edit
+`gen/` by hand or use a different sqlc version; the version in `package.json` is
+authoritative. Review any unexpected query or generated type changes before
+committing. The storage tests also check that the config is valid YAML and keeps
+the boolean overrides for `agent_switch_failure_policy.enabled` and
+`app_settings.cloud_offering`.
+
 If CI fails on the `api-drift` check, the OpenAPI-generated files are out of sync with source. Regenerate them locally and commit the updated files:
 
 ```bash

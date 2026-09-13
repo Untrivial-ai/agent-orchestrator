@@ -4,19 +4,11 @@ import type { TFunction } from "i18next";
 import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
 	DndContext,
-	DragOverlay,
 	PointerSensor,
 	closestCenter,
-	pointerWithin,
-	useDraggable,
-	useDroppable,
 	useSensor,
 	useSensors,
-	type CollisionDetection,
 	type Modifier,
-	type DragMoveEvent,
-	type DragOverEvent,
-	type DragStartEvent,
 	type DragEndEvent,
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -53,8 +45,9 @@ import {
 	useState,
 	type CSSProperties,
 	type MouseEvent,
-	type PointerEvent as ReactPointerEvent,
+	type DragEvent as ReactDragEvent,
 	type ReactNode,
+	type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -157,7 +150,6 @@ const SECTION_ROW_CLASS =
 	"flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-passive [&_svg]:size-icon-md [&_svg]:shrink-0";
 // Hover fill only for collapsible section headers (Pinned). Projects is a static label.
 const SECTION_ROW_INTERACTIVE_CLASS = "transition-colors hover:bg-interactive-hover hover:text-foreground";
-const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
 
 // Mirrors the daemon's display-name cap (maxDisplayNameLen) and the spawn
 // `--name` flag, so inline edits never round-trip a value the API would reject.
@@ -166,6 +158,10 @@ const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
 // distance keeps a plain navigation/disclosure click from starting a drag;
 // nested action buttons remain outside that activator surface.
 const REORDER_ACTIVATION_DISTANCE = 4;
+// A transparent 1x1 image replaces the browser's default drag ghost, so the
+// dragged row stays put at reduced opacity instead of trailing under the cursor.
+const EMPTY_DRAG_IMAGE = typeof Image === "undefined" ? null : new Image();
+if (EMPTY_DRAG_IMAGE) EMPTY_DRAG_IMAGE.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 /** Stable drag-context ids: one for the project list, one per project's sessions. */
 export const PROJECT_DND_ID = "sidebar-projects";
@@ -237,37 +233,8 @@ const restrictToListBounds: Modifier = ({ activeNodeRect, containerNodeRect, tra
 	};
 };
 
-type DragBounds = { minY: number; maxY: number };
 type ProjectDropPlacement = "before" | "after";
 
-// Each full project block is one droppable. Pointer intersection covers the
-// row and expanded sessions; the fallback exposes the outermost top/bottom
-// boundaries and the tiny gaps between adjacent blocks.
-const projectBlockCollision: CollisionDetection = (args) => {
-	const direct = pointerWithin(args);
-	if (direct.length > 0 || !args.pointerCoordinates) return direct;
-	const { x, y } = args.pointerCoordinates;
-	let closest: {
-		container: (typeof args.droppableContainers)[number];
-		rect: NonNullable<ReturnType<typeof args.droppableRects.get>>;
-		distance: number;
-	} | null = null;
-	let listLeft = Number.POSITIVE_INFINITY;
-	let listRight = Number.NEGATIVE_INFINITY;
-	for (const container of args.droppableContainers) {
-		const rect = args.droppableRects.get(container.id);
-		if (!rect) continue;
-		listLeft = Math.min(listLeft, rect.left);
-		listRight = Math.max(listRight, rect.right);
-		const distance = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
-		if (!closest || distance < closest.distance) closest = { container, rect, distance };
-	}
-	if (!closest || x < listLeft || x > listRight) return [];
-	return [{
-		id: closest.container.id,
-		data: { droppableContainer: closest.container, value: closest.distance },
-	}];
-};
 
 function reorderAtProjectBoundary(
 	ids: string[],
@@ -340,6 +307,8 @@ type SidebarProps = {
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
 	onRemoveProject: (projectId: string) => Promise<void>;
+	/** Fixed shell chrome that also consumes the live sidebar width. */
+	resizeAuxiliaryTargetRef?: RefObject<HTMLElement | null>;
 };
 
 // Selection state comes from the URL: which project/session is active is the
@@ -356,6 +325,7 @@ function useSelection() {
 		select: (state) => state.location.pathname,
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
+	const goAllSessions = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
 	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
 	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
@@ -373,9 +343,11 @@ function useSelection() {
 	);
 	return useMemo(() => ({
 		isHome: pathname === "/",
+		isAllSessions: pathname === "/sessions",
 		activeProjectId: params.projectId,
 		activeSessionId: params.sessionId,
 		goHome,
+		goAllSessions,
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings,
@@ -383,7 +355,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
+	}), [goAllSessions, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
 }
 
 // Colour tracks the session's board section, preserving SCM state while the
@@ -416,6 +388,7 @@ export function Sidebar({
 	onCreateProject,
 	onInitializeProject,
 	onRemoveProject,
+	resizeAuxiliaryTargetRef,
 }: SidebarProps) {
 	const { t } = useTranslation();
 	const selection = useSelection();
@@ -481,16 +454,27 @@ export function Sidebar({
 	const isNightly = typeof appVersion === "string" && appVersion.includes("-nightly.");
 
 	// agent-orchestrator's sidebar resize: drag the right edge (200-420px,
-	// persisted), double-click to reset to 240px. Drives --ao-sidebar-w on :root,
-	// which the provider forwards into shadcn's --sidebar-width. Dragging clamps
+	// persisted), double-click to reset to 240px. The width variable is written
+	// only to the two layout consumers and fixed titlebar strip, rather than
+	// :root. Dragging clamps
 	// at SIDEBAR_MIN_WIDTH — collapsing stays on the explicit toggle (⌘B /
 	// titlebar button), never on a drag.
+	const resizeScopeRef = useRef<HTMLDivElement>(null);
+	const getResizeTargets = useCallback(() => {
+		const scope = resizeScopeRef.current;
+		return [
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-gap"]') ?? null,
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null,
+			resizeAuxiliaryTargetRef?.current ?? null,
+		];
+	}, [resizeAuxiliaryTargetRef]);
 	const {
 		onPointerDown: onResizePointerDown,
 		onCollapsedPointerDown: onCollapsedResizePointerDown,
 		onDoubleClick: onResizeDoubleClick,
 	} = useResizable({
 		cssVar: "--ao-sidebar-w",
+		getCssTargets: getResizeTargets,
 		storageKey: "ao-sidebar-w",
 		defaultWidth: SIDEBAR_DEFAULT_WIDTH,
 		min: SIDEBAR_MIN_WIDTH,
@@ -499,8 +483,15 @@ export function Sidebar({
 		onExpand: () => setOpen(true),
 	});
 
+	// Suppress layout animations for the first 500ms so background session
+	// re-sorts during daemon settle don't cause visible row shuffling.
+	const [layoutSettled, setLayoutSettled] = useState(false);
+	useEffect(() => {
+		const timer = window.setTimeout(() => setLayoutSettled(true), 500);
+		return () => window.clearTimeout(timer);
+	}, []);
+
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
-	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
@@ -513,117 +504,83 @@ export function Sidebar({
 		[selection, workspaces],
 	);
 	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
-	const reorderSensors = useReorderSensors();
-	const projectDragClickGuard = usePostDragClickGuard();
 	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
-	const projectDragBoundsRef = useRef<DragBounds | null>(null);
+	// Project rows reorder with native HTML5 drag-and-drop. The browser owns the
+	// drag image, so there is no overlay clone, no dnd-kit measurement, and no
+	// re-render while dragging: only the dragged row re-renders (via `isDragged`),
+	// and the drop indicator is a DOM attribute set on dragover, never React state.
+	const draggingProjectIdRef = useRef<string | null>(null);
 	const projectDropTargetRef = useRef<{ overId: string; placement: ProjectDropPlacement } | null>(null);
-	const projectDropNodesRef = useRef(new Map<string, HTMLElement>());
 	useGrabbingCursor(draggingProjectId !== null);
+	// The drop line is a single element placed at the boundary's gap centre, so
+	// "after A" and "before B" resolve to the same spot (no shift across the
+	// boundary). Its top animates so the line slides between projects.
+	const [dropLine, setDropLine] = useState<{ top: number; visible: boolean }>({ top: 0, visible: false });
 
-	const activeDragWorkspace = useMemo(
-		() => orderedWorkspaces.find((workspace) => workspace.id === draggingProjectId) ?? null,
-		[draggingProjectId, orderedWorkspaces],
-	);
-	const activeDragSessions = useMemo(
-		() => activeDragWorkspace
-			? applyOrder(
-				sortedWorkerSessions(activeDragWorkspace.sessions).filter((session) => session.isTerminated !== true),
-				(session) => session.id,
-				sessionOrderByProject[activeDragWorkspace.id] ?? [],
-				"start",
-			)
-			: [],
-		[activeDragWorkspace, sessionOrderByProject],
-	);
-	const recordSessionOrder = useCallback((projectId: string, order: string[]) => {
-		setSessionOrderByProject((previous) => ({ ...previous, [projectId]: order }));
-	}, []);
-	const restrictProjectOverlayToRows = useCallback<Modifier>(({ transform }) => {
-		const bounds = projectDragBoundsRef.current;
-		return {
-			...transform,
-			x: 0,
-			y: bounds ? Math.min(bounds.maxY, Math.max(bounds.minY, transform.y)) : transform.y,
-			scaleX: 1,
-			scaleY: 1,
-		};
-	}, []);
-
-	const commitProjectOrder = useCallback((next: string[] | null) => {
-		if (next) setProjectOrder(next);
-	}, []);
-	const setProjectDropIndicator = useCallback((next: { overId: string; placement: ProjectDropPlacement } | null) => {
-		const previous = projectDropTargetRef.current;
-		if (previous && (previous.overId !== next?.overId || previous.placement !== next?.placement)) {
-			projectDropNodesRef.current.get(previous.overId)?.removeAttribute("data-drop-indicator");
-		}
-		if (next && (previous?.overId !== next.overId || previous.placement !== next.placement)) {
-			projectDropNodesRef.current.get(next.overId)?.setAttribute("data-drop-indicator", next.placement);
-		}
-		projectDropTargetRef.current = next;
-	}, []);
-
-	const onProjectDragEnd = useCallback(
-		({ active, over }: DragEndEvent) => {
-			const projectId = String(active.id);
-			projectDragClickGuard.markDragEnded(projectId);
-			if (over) {
-				const targetId = String(over.id);
-				const placement = projectDropTargetRef.current?.overId === targetId
-					? projectDropTargetRef.current.placement
-					: projectIds.indexOf(projectId) < projectIds.indexOf(targetId) ? "after" : "before";
-				commitProjectOrder(reorderAtProjectBoundary(projectIds, projectId, targetId, placement));
-			}
-			projectDragBoundsRef.current = null;
-			setProjectDropIndicator(null);
-			projectDropNodesRef.current.clear();
-			setDraggingProjectId(null);
-		},
-		[commitProjectOrder, projectDragClickGuard, projectIds, setProjectDropIndicator],
-	);
-	const onProjectDragStart = useCallback(({ active }: DragStartEvent) => {
-		const projectId = String(active.id);
-		projectDragBoundsRef.current = null;
+	const clearProjectDropIndicator = useCallback(() => {
 		projectDropTargetRef.current = null;
-		const blocks = Array.from(document.querySelectorAll<HTMLElement>("[data-project-drop-target]"));
-		projectDropNodesRef.current = new Map(blocks.map((block) => [block.dataset.projectId ?? "", block]));
-		const activeRow = blocks.find((block) => block.dataset.projectId === projectId)
-			?.querySelector<HTMLElement>("[data-project-drag-row]");
-		if (activeRow && blocks.length > 0) {
-			const activeTop = activeRow.getBoundingClientRect().top;
-			projectDragBoundsRef.current = {
-				minY: blocks[0].getBoundingClientRect().top - activeTop,
-				maxY: blocks[blocks.length - 1].getBoundingClientRect().bottom - activeTop,
-			};
-		}
+		setDropLine((previous) => ({ ...previous, visible: false }));
+	}, []);
+
+	const handleProjectDragStart = useCallback((event: ReactDragEvent<HTMLElement>, projectId: string) => {
+		event.dataTransfer.effectAllowed = "move";
+		// Some engines refuse to begin a drag unless the transfer carries data.
+		event.dataTransfer.setData("text/plain", projectId);
+		if (EMPTY_DRAG_IMAGE) event.dataTransfer.setDragImage(EMPTY_DRAG_IMAGE, 0, 0);
+		draggingProjectIdRef.current = projectId;
+		projectDropTargetRef.current = null;
 		setDraggingProjectId(projectId);
 	}, []);
-	const updateProjectDropTarget = useCallback(({ active, activatorEvent, delta, over }: DragMoveEvent | DragOverEvent) => {
-		const activeId = String(active.id);
-		const overId = over ? String(over.id) : null;
-		if (!over || activeId === overId) {
-			setProjectDropIndicator(null);
+
+	const handleProjectDragEnd = useCallback(() => {
+		draggingProjectIdRef.current = null;
+		clearProjectDropIndicator();
+		setDraggingProjectId(null);
+	}, [clearProjectDropIndicator]);
+
+	const handleProjectDragOver = useCallback((event: ReactDragEvent<HTMLElement>, overId: string) => {
+		const activeId = draggingProjectIdRef.current;
+		if (!activeId || activeId === overId) {
+			clearProjectDropIndicator();
 			return;
 		}
-		const pointerY = activatorEvent && "clientY" in activatorEvent && typeof activatorEvent.clientY === "number"
-			? activatorEvent.clientY + delta.y
-			: null;
-		const activeRect = active.rect.current.translated ?? active.rect.current.initial;
-		const activeCenter = activeRect ? activeRect.top + activeRect.height / 2 : null;
-		const boundaryReference = pointerY ?? activeCenter;
-		const placement: ProjectDropPlacement = boundaryReference === null
-			? projectIds.indexOf(activeId) < projectIds.indexOf(overId!) ? "after" : "before"
-			: boundaryReference <= over.rect.top + over.rect.height / 2 ? "before" : "after";
-		const changesOrder = reorderAtProjectBoundary(projectIds, activeId, overId!, placement) !== null;
-		setProjectDropIndicator(changesOrder ? { overId: overId!, placement } : null);
-	}, [projectIds, setProjectDropIndicator]);
-	const onProjectDragCancel = useCallback(() => {
-		projectDragBoundsRef.current = null;
-		setProjectDropIndicator(null);
-		projectDropNodesRef.current.clear();
-		setDraggingProjectId(null);
-	}, [setProjectDropIndicator]);
+		const row = event.currentTarget;
+		const rect = row.getBoundingClientRect();
+		const placement: ProjectDropPlacement = event.clientY <= rect.top + rect.height / 2 ? "before" : "after";
+		if (reorderAtProjectBoundary(projectIds, activeId, overId, placement) === null) {
+			clearProjectDropIndicator();
+			return;
+		}
+		// Only invite the drop once this is a real reorder target.
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "move";
+		const target = projectDropTargetRef.current;
+		if (target?.overId === overId && target.placement === placement) return;
+		projectDropTargetRef.current = { overId, placement };
+		const rows = row.parentElement
+			? Array.from(row.parentElement.querySelectorAll<HTMLElement>(":scope > [data-project-drop-target]"))
+			: [row];
+		const index = rows.indexOf(row);
+		const insertAt = placement === "before" ? index : index + 1;
+		const last = rows[rows.length - 1];
+		const top =
+			insertAt <= 0
+				? rows[0].offsetTop
+				: insertAt >= rows.length
+					? last.offsetTop + last.offsetHeight
+					: (rows[insertAt - 1].offsetTop + rows[insertAt - 1].offsetHeight + rows[insertAt].offsetTop) / 2;
+		setDropLine({ top, visible: true });
+	}, [clearProjectDropIndicator, projectIds]);
+
+	const handleProjectDrop = useCallback((event: ReactDragEvent<HTMLElement>) => {
+		const activeId = draggingProjectIdRef.current;
+		const target = projectDropTargetRef.current;
+		if (!activeId || !target) return;
+		event.preventDefault();
+		const next = reorderAtProjectBoundary(projectIds, activeId, target.overId, target.placement);
+		if (next) setProjectOrder(next);
+		handleProjectDragEnd();
+	}, [handleProjectDragEnd, projectIds]);
 
 	const pinnedSessions = useMemo(
 		() => workspaces
@@ -641,6 +598,7 @@ export function Sidebar({
 		// Pinned sidebars start below shell chrome.
 		<SidebarRoot
 			collapsible="offcanvas"
+			resizeScopeRef={resizeScopeRef}
 			data-expanded-chrome={expandedChromeVisible ? "visible" : "hidden"}
 			data-topbar-offset={underTopbar ? topbarOffset : undefined}
 			className={cn(
@@ -660,14 +618,18 @@ export function Sidebar({
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
 				>
-					<span
+					<button
+						aria-label={t("shell.openAllSessions")}
 						className={cn(
-							"grid h-5.5 w-5.5 shrink-0 place-items-center",
-							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
+							"grid h-5.5 w-5.5 shrink-0 place-items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50",
+							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:hover:bg-interactive-hover",
+							selection.isAllSessions && "group-data-[collapsible=icon]:bg-interactive-active",
 						)}
+						onClick={selection.goAllSessions}
+						type="button"
 					>
 						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
-					</span>
+					</button>
 					{isWindows ? (
 						<span
 							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
@@ -735,6 +697,7 @@ export function Sidebar({
 									key={session.id}
 									session={session}
 									active={selection.activeSessionId === session.id}
+									layoutSettled={layoutSettled}
 									onOpenSession={selection.goSession}
 								/>
 								))}
@@ -773,50 +736,31 @@ export function Sidebar({
 								<p className="mt-1 text-caption text-passive">{workspaceError}</p>
 							</div>
 						) : workspaces.length === 0 ? null : (
-							<DndContext
-								collisionDetection={projectBlockCollision}
-								id={PROJECT_DND_ID}
-								onDragStart={onProjectDragStart}
-								onDragMove={updateProjectDropTarget}
-								onDragOver={updateProjectDropTarget}
-								onDragCancel={onProjectDragCancel}
-								onDragEnd={onProjectDragEnd}
-								sensors={reorderSensors}
-							>
-								<SidebarMenu className="min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
-									{orderedWorkspaces.map((workspace) => (
-										<ProjectItem
-											key={workspace.id}
-											workspace={workspace}
-											expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
-											suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
-											selection={selection}
-											draggingProjectId={draggingProjectId}
-											consumeDragClick={projectDragClickGuard.consumeClick}
-											onSessionOrderChange={recordSessionOrder}
-											onToggle={toggleProjectDisclosure}
-											onRemoveProject={onRemoveProject}
-										/>
-									))}
-									{isCollapsed && <CreateProjectListItem />}
-								</SidebarMenu>
-								<DragOverlay adjustScale={false} dropAnimation={null} modifiers={[restrictProjectOverlayToRows]} style={PROJECT_DRAG_OVERLAY_STYLE} zIndex={60}>
-									{activeDragWorkspace ? (
-										<ProjectDragPreview
-											expanded={
-												!isCollapsed &&
-												(expandedIds.has(activeDragWorkspace.id) ||
-													(initialActiveSessionProjectId === activeDragWorkspace.id &&
-														!dismissedInitialActiveProjectIds.has(activeDragWorkspace.id)))
-											}
-											selection={selection}
-											sessions={activeDragSessions}
-											workspace={activeDragWorkspace}
-										/>
-									) : null}
-								</DragOverlay>
-							</DndContext>
-						)}
+							<SidebarMenu className="relative min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
+								{orderedWorkspaces.map((workspace) => (
+									<ProjectItem
+										key={workspace.id}
+										workspace={workspace}
+										expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
+										suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
+										selection={selection}
+										isDragged={draggingProjectId === workspace.id}
+										onToggle={toggleProjectDisclosure}
+										onRemoveProject={onRemoveProject}
+										onProjectDragStart={handleProjectDragStart}
+										onProjectDragEnd={handleProjectDragEnd}
+										onProjectDragOver={handleProjectDragOver}
+										onProjectDrop={handleProjectDrop}
+									/>
+								))}
+								{isCollapsed && <CreateProjectListItem />}
+								<div
+									aria-hidden="true"
+									data-project-drop-line=""
+									className="pointer-events-none absolute inset-x-0 z-[70] h-px rounded-full bg-foreground transition-opacity duration-100"
+									style={{ top: dropLine.top, opacity: dropLine.visible ? 1 : 0 }}
+								/>
+							</SidebarMenu>						)}
 					</SidebarGroupContent>
 				</SidebarGroup>
 			</SidebarContent>
@@ -843,12 +787,18 @@ export function Sidebar({
 					<UpdateStatusRow
 						availableDismissed={updateDismissal.dismissed}
 						onDismissAvailable={updateDismissal.dismiss}
-						onRequestInstall={requestUpdateInstall}
 						status={updateStatus}
 						tabIndex={isCollapsed ? -1 : 0}
 					/>
 					<CloudSignInRow tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
+					{/* Install cue sits above Connect mobile / Settings — never overlays them. */}
+					<UpdateInstallSlide
+						availableDismissed={updateDismissal.dismissed}
+						onRequestInstall={requestUpdateInstall}
+						status={updateStatus}
+						tabIndex={isCollapsed ? -1 : 0}
+					/>
 					<button
 						aria-label={t("settings.connectMobile")}
 						className={cn(
@@ -942,83 +892,27 @@ type ProjectItemProps = {
 	workspace: WorkspaceSummary;
 	expanded: boolean;
 	selection: Selection;
-	draggingProjectId?: string | null;
-	consumeDragClick: (id: string) => boolean;
-	onSessionOrderChange: (projectId: string, order: string[]) => void;
-	onToggle: (projectId: string) => void;
+	isDragged: boolean;	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
+	onProjectDragStart: (event: ReactDragEvent<HTMLElement>, projectId: string) => void;
+	onProjectDragEnd: () => void;
+	onProjectDragOver: (event: ReactDragEvent<HTMLElement>, overId: string) => void;
+	onProjectDrop: (event: ReactDragEvent<HTMLElement>) => void;
 };
 
-type ProjectDraggable = ReturnType<typeof useDraggable>;
-type ProjectItemDndProps = Pick<ProjectDraggable, "listeners" | "setActivatorNodeRef"> & {
-	setDraggableNodeRef: ProjectDraggable["setNodeRef"];
-	setDroppableNodeRef: ReturnType<typeof useDroppable>["setNodeRef"];
-};
-
-// Keep the pointer-frequency draggable subscription outside the expensive
-// project/session subtree. The content only rerenders when its visible props
-// change (drag start/end or a different drop boundary), not for every transform.
-const ProjectItem = memo(function ProjectItem(props: ProjectItemProps) {
-	const draggable = useDraggable({
-		id: props.workspace.id,
-	});
-	const droppable = useDroppable({
-		id: props.workspace.id,
-	});
-	// dnd-kit refreshes the objects returned by these hooks as the pointer moves.
-	// Keep that high-frequency churn in this thin wrapper: the project content
-	// contains the expanded session tree and must not receive new props merely
-	// because the cursor crossed another project.
-	const draggableRef = useRef(draggable);
-	const droppableRef = useRef(droppable);
-	draggableRef.current = draggable;
-	droppableRef.current = droppable;
-	const listeners = useMemo<ProjectDraggable["listeners"]>(
-		() => ({
-			onPointerDown: (event: ReactPointerEvent<HTMLElement>) =>
-				draggableRef.current.listeners?.onPointerDown?.(event),
-		}),
-		[],
-	);
-	const setActivatorNodeRef = useCallback(
-		(node: HTMLElement | null) => draggableRef.current.setActivatorNodeRef(node),
-		[],
-	);
-	const setDraggableNodeRef = useCallback(
-		(node: HTMLElement | null) => draggableRef.current.setNodeRef(node),
-		[],
-	);
-	const setDroppableNodeRef = useCallback(
-		(node: HTMLElement | null) => droppableRef.current.setNodeRef(node),
-		[],
-	);
-	return (
-		<ProjectItemContent
-			{...props}
-			listeners={listeners}
-			setActivatorNodeRef={setActivatorNodeRef}
-			setDraggableNodeRef={setDraggableNodeRef}
-			setDroppableNodeRef={setDroppableNodeRef}
-		/>
-	);
-});
-
-const ProjectItemContent = memo(function ProjectItemContent({
+const ProjectItem = memo(function ProjectItem({
 	workspace,
 	expanded,
 	selection,
-	draggingProjectId,
-	consumeDragClick,
-	onSessionOrderChange,
-	onToggle,
+	isDragged,	onToggle,
 	onRemoveProject,
 	suppressInitialExpandAnimation,
-	listeners,
-	setActivatorNodeRef,
-	setDraggableNodeRef,
-	setDroppableNodeRef,
-}: ProjectItemProps & ProjectItemDndProps) {
+	onProjectDragStart,
+	onProjectDragEnd,
+	onProjectDragOver,
+	onProjectDrop,
+}: ProjectItemProps) {
 	const { t } = useTranslation();
 	const prefersReducedMotion = useReducedMotion();
 	const activeProjectMatches = selection.activeProjectId === workspace.id;
@@ -1034,20 +928,19 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const [isRemoving, setIsRemoving] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [isSpawning, setIsSpawning] = useState(false);
-	const [projectPressed, setProjectPressed] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
 	// expand/collapse toggles.
 	const [animReady, setAnimReady] = useState(false);
 	const hasInteractedWithDisclosure = useRef(false);
 	useEffect(() => {
-		const id = requestAnimationFrame(() => setAnimReady(true));
-		return () => cancelAnimationFrame(id);
+		const id = window.setTimeout(() => setAnimReady(true), 500);
+		return () => window.clearTimeout(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const projectIsDragging = draggingProjectId === workspace.id;
+	const projectIsDragging = isDragged;
 	// Keep completed PR sessions reachable while their runtime still exists.
 	// Only termination removes a worker from the sidebar; archived sessions stay
 	// reachable through SessionsBoard.
@@ -1061,28 +954,23 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		[sessionOrder, visibleSessions],
 	);
 	const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
-	const sessionLayoutDependency = useMemo(() => sessionIds.join("\u0000"), [sessionIds]);
 	// Project and session reordering use nested DnD contexts. While a project is
 	// being dragged, leave the session lists as plain rows: otherwise every
 	// expanded project's DnD context measures its sortable descendants on drop.
 	// With a dense sidebar that turns one project drop into a full-tree layout.
-	const projectDragInProgress = draggingProjectId !== null && draggingProjectId !== undefined;
 	const sessionSensors = useReorderSensors();
 	const sessionDragClickGuard = usePostDragClickGuard();
-	const [sessionDragging, setSessionDragging] = useState(false);
 	const [dropTransitionDisabledId, setDropTransitionDisabledId] = useState<string | null>(null);
 
 	const commitSessionOrder = useCallback((next: string[] | null) => {
 		if (!next) return;
 		setSessionOrder(next);
-		onSessionOrderChange(workspace.id, next);
-	}, [onSessionOrderChange, workspace.id]);
+	}, []);
 
 	const onSessionDragEnd = useCallback(({ active, over }: DragEndEvent) => {
 		const sessionId = String(active.id);
 		sessionDragClickGuard.markDragEnded(sessionId);
 		if (!over) {
-			setSessionDragging(false);
 			setDropTransitionDisabledId(null);
 			if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 			return;
@@ -1092,17 +980,15 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		const next = reorderById(sessionIds, sessionId, String(over.id));
 		// Commit the destination DOM order before dnd-kit removes its live transform.
 		// Otherwise the row briefly snaps back to its derived (usually top) position,
-		// then Motion animates it forward to the persisted destination.
+		// then dnd-kit animates it forward to the persisted destination.
 		flushSync(() => {
 			commitSessionOrder(next);
-			setSessionDragging(false);
 			setDropTransitionDisabledId(sessionId);
 		});
 		requestAnimationFrame(() => setDropTransitionDisabledId(null));
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	}, [commitSessionOrder, sessionDragClickGuard, sessionIds]);
 	const onSessionDragCancel = useCallback(() => {
-		setSessionDragging(false);
 		setDropTransitionDisabledId(null);
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	}, []);
@@ -1165,7 +1051,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Do not treat orchestratorActive like the board: the project row is the
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
-		if (consumeDragClick(workspace.id)) return;
 		if (!expanded) {
 			toggleDisclosure();
 			selection.goProject(workspace.id);
@@ -1181,7 +1066,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// select click then a second click (felt like a double-click).
 	const onFolderClick = (event: MouseEvent) => {
 		event.stopPropagation();
-		if (consumeDragClick(workspace.id)) return;
 		toggleDisclosure();
 	};
 
@@ -1211,51 +1095,27 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<motion.li
+				<li
 					className={cn(
-						"group/menu-item relative group-data-[collapsible=icon]:mb-0",
-						projectIsDragging && "opacity-0",
+						"group/menu-item relative transition-opacity duration-200 group-data-[collapsible=icon]:mb-0",
+						projectIsDragging && "opacity-50",
 					)}
 					data-dragging={projectIsDragging ? "true" : undefined}
 					data-project-drop-target=""
 					data-project-id={workspace.id}
-					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-					layout={draggingProjectId ? false : "position"}
-					ref={setDroppableNodeRef}
-					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
-				>
-					<div
-						aria-hidden="true"
-						className="pointer-events-none absolute inset-x-0 top-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=before]/menu-item:opacity-100"
-						data-project-drop-indicator="before"
-					/>
-					<div
-						aria-hidden="true"
-						className="pointer-events-none absolute inset-x-0 bottom-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=after]/menu-item:opacity-100"
-						data-project-drop-indicator="after"
-					/>
-					{/* The whole visual row scales when its navigation surface is pressed.
-		    Action-button presses stop before reaching this boundary. */}
+					onDragOver={(event) => onProjectDragOver(event, workspace.id)}
+					onDrop={onProjectDrop}				>
 					<div
 						className="relative"
 						data-project-drag-row=""
 						data-project-id={workspace.id}
-						ref={setDraggableNodeRef}
+						draggable
+						onDragStart={(event) => onProjectDragStart(event, workspace.id)}
+						onDragEnd={onProjectDragEnd}
 					>
-						<div
-							className={cn(
-								"relative transition-[transform] duration-[100ms] ease-out",
-								projectPressed && !projectIsDragging && "scale-[0.98]",
-								projectIsDragging && "cursor-grabbing transition-none",
-							)}
-							data-project-press=""
-							onPointerCancel={() => setProjectPressed(false)}
-							onPointerDown={() => setProjectPressed(true)}
-							onPointerLeave={() => setProjectPressed(false)}
-							onPointerUp={() => setProjectPressed(false)}
-						>
+						<div className={cn("relative", projectIsDragging && "cursor-grabbing")}>
 							<div>
 								{/* project-sidebar__proj-row */}
 								<SidebarMenuButton
@@ -1263,9 +1123,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									aria-expanded={expanded}
 									isActive={projectActive}
 									tooltip={workspace.name}
-									{...listeners}
 									onClick={onProjectClick}
-									ref={setActivatorNodeRef}
 									className={cn(
 										NAV_ROW_CLASS,
 										// gap-2 matches SectionDisclosure so project icons/labels share the
@@ -1273,7 +1131,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										"cursor-grab gap-2 pr-sidebar-project-actions active:cursor-grabbing [&_svg]:size-icon-md",
 										"transition-none",
 										projectIsDragging && "!cursor-grabbing",
-										draggingProjectId && "hover:bg-transparent hover:text-muted-foreground active:bg-transparent active:text-muted-foreground",
 										"group-data-[collapsible=icon]:size-control-board! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:font-semibold",
 									)}
 								>
@@ -1288,7 +1145,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										<span
 											className={cn(
 												"inline-flex size-icon-md items-center justify-center transition-opacity duration-150 group-hover/menu-item:opacity-0",
-												draggingProjectId && "group-hover/menu-item:opacity-100",
 											)}
 										>
 											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
@@ -1297,7 +1153,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											className={cn(
 												"absolute inline-flex size-icon-md items-center justify-center opacity-0 transition-[opacity,transform] duration-150 group-hover/menu-item:opacity-100",
 												expanded && "rotate-90",
-												draggingProjectId && "group-hover/menu-item:opacity-0",
 											)}
 										>
 											<ChevronRight strokeWidth={1.75} />
@@ -1334,7 +1189,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									aria-expanded={expanded}
 									className="absolute inset-y-0 left-0 z-10 w-9 cursor-pointer group-data-[collapsible=icon]:hidden"
 									data-project-folder=""
-									{...listeners}
 									onClick={onFolderClick}
 									type="button"
 								/>
@@ -1346,9 +1200,9 @@ const ProjectItemContent = memo(function ProjectItemContent({
 								className={cn(
 									"sidebar-expanded-chrome absolute top-0 right-0.5 z-chrome flex h-control-form items-center gap-px",
 									"group-data-[collapsible=icon]:hidden",
-									draggingProjectId && "pointer-events-none",
 								)}
 								data-project-actions=""
+								draggable={false}
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
@@ -1447,14 +1301,15 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				<motion.div
 					key="sessions"
 					initial={
-						animReady && (!suppressInitialExpandAnimation || hasInteractedWithDisclosure.current) ? { height: 0 } : false
+						animReady && (!suppressInitialExpandAnimation || hasInteractedWithDisclosure.current) ? { gridTemplateRows: "0fr" } : false
 					}
-					animate={{ height: "auto" }}
-					exit={{ height: 0 }}
+					animate={{ gridTemplateRows: "1fr" }}
+					exit={{ gridTemplateRows: "0fr" }}
 					transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
-					style={{ overflow: "hidden" }}
+					style={{ display: "grid" }}
 					className="sidebar-expanded-chrome"
 				>
+					<div style={{ minHeight: 0, overflow: "hidden" }}>
 					<motion.div
 						initial={
 							animReady && (!suppressInitialExpandAnimation || hasInteractedWithDisclosure.current)
@@ -1465,53 +1320,36 @@ const ProjectItemContent = memo(function ProjectItemContent({
 						exit={{ y: -12, opacity: 0 }}
 						transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
 					>
-											{projectDragInProgress ? (
-												<SidebarMenuSub
-													className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
-													data-testid={`session-list-${workspace.id}`}
+											<DndContext
+												collisionDetection={closestCenter}
+												modifiers={[restrictToListBounds]}
+												id={sessionDndId(workspace.id)}
+												onDragCancel={onSessionDragCancel}
+												onDragEnd={onSessionDragEnd}
+												sensors={sessionSensors}
+											>
+												<SortableContext
+													items={sessionIds}
+													strategy={verticalListSortingStrategy}
 												>
-													{sessions.map((session) => (
-														<SessionRow
-															key={session.id}
-															session={session}
-															active={selection.activeSessionId === session.id}
-															disableLayout
-															onOpen={() => openSession(session.id)}
-														/>
-													))}
-												</SidebarMenuSub>
-											) : (
-												<DndContext
-													collisionDetection={closestCenter}
-													modifiers={[restrictToListBounds]}
-													id={sessionDndId(workspace.id)}
-													onDragStart={() => setSessionDragging(true)}
-													onDragCancel={onSessionDragCancel}
-													onDragEnd={onSessionDragEnd}
-													sensors={sessionSensors}
-												>
-													<SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
-														<SidebarMenuSub
-															className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
-															data-testid={`session-list-${workspace.id}`}
-														>
-															{sessions.map((session) => (
-																<SortableSessionRow
-																	key={session.id}
-																	session={session}
-																	active={selection.activeSessionId === session.id}
-																	consumeDragClick={sessionDragClickGuard.consumeClick}
-																	layoutDependency={sessionLayoutDependency}
-																	listIsDragging={sessionDragging}
-																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
-																	onOpen={openSession}
-																/>
-															))}
-														</SidebarMenuSub>
-													</SortableContext>
-												</DndContext>
-											)}
-								</motion.div>
+													<SidebarMenuSub
+														className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
+														data-testid={`session-list-${workspace.id}`}
+													>
+														{sessions.map((session) => (
+															<SortableSessionRow
+																key={session.id}
+																session={session}
+																active={selection.activeSessionId === session.id}
+																consumeDragClick={sessionDragClickGuard.consumeClick}
+																dropTransitionDisabled={dropTransitionDisabledId === session.id}
+																onOpen={openSession}
+															/>
+														))}
+													</SidebarMenuSub>
+												</SortableContext>
+											</DndContext>								</motion.div>
+					</div>
 							</motion.div>
 						)}
 					</AnimatePresence>
@@ -1529,7 +1367,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 						destructive
 						onConfirm={handleConfirmRemove}
 					/>
-				</motion.li>
+				</li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
 				<ContextMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
@@ -1555,67 +1393,19 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	);
 });
 
-/** Non-interactive drag snapshot: the project row is the anchor, while its
- * visible sessions travel with it without becoming collision targets. */
-const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expanded, selection, sessions }: { workspace: WorkspaceSummary; expanded: boolean; selection: Selection; sessions: WorkspaceSession[] }) {
-	const { t } = useTranslation();
-	const activeProjectMatches = selection.activeProjectId === workspace.id;
-	const projectActive =
-		(activeProjectMatches && !selection.activeSessionId) ||
-		(activeProjectMatches && workspace.sessions.some((session) => session.id === selection.activeSessionId && session.kind === "orchestrator"));
-
-	return (
-		<div className="pointer-events-none w-full cursor-grabbing" data-project-drag-overlay="">
-			<div
-				className={cn(NAV_ROW_CLASS, "flex w-full cursor-grabbing items-center gap-2 pr-sidebar-project-actions [&_svg]:size-icon-md")}
-				data-active={projectActive}
-			>
-				<span className="inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground">
-					{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
-				</span>
-				<span className="min-w-0 flex-1 translate-y-px truncate">{workspace.name}</span>
-			</div>
-			{expanded && sessions.length > 0 ? (
-				<div className="ml-3.5 py-1">
-					{sessions.map((session) => {
-						const switchPresentation = deriveSessionAgentSwitchPresentation(session);
-						const switchLabel = switchPresentation ? t(switchPresentation.compactLabelKey, switchPresentation.values) : undefined;
-						const active = selection.activeSessionId === session.id;
-						return (
-							<div className="pl-0.5" data-project-drag-preview-session="" key={session.id}>
-								<div className={cn("flex h-8 w-full items-center rounded-lg", active && "bg-interactive-active text-foreground")}>
-									<div className="flex h-8 min-w-0 flex-1 items-center gap-1.5 py-0 pl-1.5 pr-2.5 text-sm">
-										<SessionStatusDot session={session} />
-										<span className="flex min-w-0 flex-1 items-center gap-1.5">
-											<span className={cn("min-w-0 flex-1 truncate", active ? "text-foreground" : "text-muted-foreground")}>
-												{session.title}
-											</span>
-											{switchLabel ? (
-												<span className="max-w-28 shrink-0 truncate text-2xs text-muted-foreground">{switchLabel}</span>
-											) : null}
-										</span>
-									</div>
-								</div>
-							</div>
-						);
-					})}
-				</div>
-			) : null}
-		</div>
-	);
-});
-
 const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
+	layoutSettled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	layoutSettled: boolean;
 	onOpenSession: (projectId: string, sessionId: string) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
-	return <SessionRow session={session} active={active} indented={false} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders
@@ -1624,16 +1414,12 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	session,
 	active,
 	consumeDragClick,
-	layoutDependency,
-	listIsDragging,
 	dropTransitionDisabled,
 	onOpen,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
-	layoutDependency: string;
-	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
 	onOpen: (sessionId: string) => void;
 }) {
@@ -1647,8 +1433,6 @@ const SortableSessionRow = memo(function SortableSessionRow({
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
-			layoutDependency={layoutDependency}
-			listIsDragging={listIsDragging}
 			reorder={{
 				isDragging,
 				listeners,
@@ -1673,25 +1457,19 @@ function SessionRow({
 	session,
 	active,
 	indented = true,
-	layoutDependency,
-	listIsDragging = false,
-	disableLayout = false,
 	onOpen,
 	reorder,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	indented?: boolean;
-	layoutDependency?: string;
-	listIsDragging?: boolean;
-	/** Project drags pause nested session projection work. */
+	/** Not used in the native-drag implementation; accepted for call-site compatibility. */
 	disableLayout?: boolean;
 	onOpen: () => void;
 	/** Present only for rows inside a reorderable project list. */
 	reorder?: SessionReorder;
 }) {
 	const { t } = useTranslation();
-	const prefersReducedMotion = useReducedMotion();
 	useGrabbingCursor(Boolean(reorder?.isDragging));
 	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
 	const switchLabel = switchPresentation
@@ -1705,7 +1483,6 @@ function SessionRow({
 		[queryClient],
 	);
 	const rename = useSessionRename(session, refreshWorkspaces);
-	const [sessionPressed, setSessionPressed] = useState(false);
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
 	const beginRename = useCallback(() => {
@@ -1761,26 +1538,14 @@ function SessionRow({
 					ref={reorder?.setNodeRef}
 					style={reorder ? sortableRowStyle(reorder) : undefined}
 				>
-			<motion.div
-				layout={disableLayout || listIsDragging ? false : "position"}
-				layoutDependency={disableLayout ? undefined : layoutDependency}
-				transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
-			>
 				<div
 					className={cn(
-						"group/session-row flex h-8 w-full items-center rounded-lg transition-[transform] duration-[100ms] ease-out",
+						"group/session-row flex h-8 w-full items-center rounded-lg",
 						"hover:bg-interactive-hover hover:text-foreground",
 						active && "bg-interactive-active text-foreground",
-						sessionPressed && !reorder?.isDragging && "scale-[0.97]",
-						reorder?.isDragging && "transition-none",
 					)}
-					data-session-press=""
 					data-session-row=""
 					data-dragging={reorder?.isDragging ? "true" : undefined}
-					onPointerCancel={() => setSessionPressed(false)}
-					onPointerDown={() => setSessionPressed(true)}
-					onPointerLeave={() => setSessionPressed(false)}
-					onPointerUp={() => setSessionPressed(false)}
 				>
 					<div className={cn("flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
 						<button
@@ -1853,7 +1618,6 @@ function SessionRow({
 						session={session}
 					/>
 				</div>
-			</motion.div>
 				</SidebarMenuSubItem>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
@@ -2131,28 +1895,29 @@ function updateVersionLabel(
 	return t(variant === "ready" ? "shell.versionReady" : "shell.versionAvailable", { version });
 }
 
-// UpdateStatusRow makes update activity visible and actionable from the
-// sidebar: an available build downloads on click, progress reports itself, and
-// a staged build becomes the restart action. Idle/checking states stay quiet so
-// routine background checks do not flash in the sidebar.
+/** Plain version number for the install cue — base for nightlies, no channel/date. */
+function installVersionNumber(version: string | undefined): string | null {
+	if (!version) return null;
+	return parseNightlyVersion(version)?.base ?? version;
+}
+
+// UpdateStatusRow makes download progress visible in the footer. A staged build
+// ready to install renders as UpdateInstallSlide above Connect mobile / Settings.
 function UpdateStatusRow({
 	availableDismissed,
 	onDismissAvailable,
-	onRequestInstall,
 	status,
 	tabIndex,
 }: {
 	availableDismissed: boolean;
 	onDismissAvailable: () => void;
-	/** Opens the restart confirmation; installing outright would quit the app. */
-	onRequestInstall: () => void;
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
 	const { t, i18n } = useTranslation();
 	const locale = i18n.resolvedLanguage ?? i18n.language;
 	const action = sidebarUpdateAction(status, availableDismissed);
-	if (action === null) return null;
+	if (action === null || action.kind === "install") return null;
 
 	if (action.kind === "download") {
 		const versionLabel = updateVersionLabel(action.version, "available", t, locale);
@@ -2194,43 +1959,68 @@ function UpdateStatusRow({
 		);
 	}
 
-	if (action.kind === "downloading") {
-		return (
-			<div
-				aria-live="polite"
-				className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-				data-testid="sidebar-update-downloading"
-				role="status"
-			>
-				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1 truncate tabular-nums">
-					{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
-					{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
-				</span>
-			</div>
-		);
-	}
+	return (
+		<div
+			aria-live="polite"
+			className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+			data-testid="sidebar-update-downloading"
+			role="status"
+		>
+			<Download aria-hidden="true" className="size-icon-lg shrink-0" />
+			<span className="min-w-0 flex-1 truncate tabular-nums">
+				{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
+				{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
+			</span>
+		</div>
+	);
+}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
+/**
+ * Alert-style install cue above Connect mobile / Settings. Muted fill so it
+ * reads apart from nav rows; shows the version number only (no Nightly/date).
+ */
+function UpdateInstallSlide({
+	availableDismissed,
+	onRequestInstall,
+	status,
+	tabIndex,
+}: {
+	availableDismissed: boolean;
+	onRequestInstall: () => void;
+	status: UpdateStatus;
+	tabIndex: number;
+}) {
+	const { t } = useTranslation();
+	const action = sidebarUpdateAction(status, availableDismissed);
+	if (action?.kind !== "install") return null;
+
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<button
 			aria-label={
-				action.version
-					? t("shell.restartInstallUpdateVersion", { version: action.version })
+				versionNumber
+					? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"flex w-full items-center gap-2.5 rounded-lg border border-success/35 bg-success/12 p-2.5 text-left text-control font-medium text-success transition-colors hover:bg-success/18 [&_svg]:text-success",
+				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-lg bg-muted px-3 text-left text-sm font-normal text-foreground",
+				"transition-colors hover:bg-interactive-hover",
+				"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200",
 			)}
 			data-testid="sidebar-update-ready"
 			onClick={onRequestInstall}
 			tabIndex={tabIndex}
 			type="button"
 		>
-			<RefreshCw aria-hidden="true" className="size-icon-lg shrink-0" />
-			<span className="min-w-0 flex-1">
-				<span className="block truncate tracking-tight">{t("shell.restartToUpdate")}</span>
-				{versionLabel && <span className="block truncate text-caption font-normal">{versionLabel}</span>}
+			<RefreshCw aria-hidden="true" className="size-icon-sm shrink-0 text-muted-foreground" />
+			<span className="min-w-0 flex-1 truncate tracking-tight">
+				{t("shell.restartToUpdate")}
+				{versionNumber ? (
+					<>
+						{" "}
+						<span className="text-muted-foreground">{versionNumber}</span>
+					</>
+				) : null}
 			</span>
 		</button>
 	);
@@ -2250,8 +2040,7 @@ function UpdateStatusRail({
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
-	const { t, i18n } = useTranslation();
-	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const { t } = useTranslation();
 	const action = sidebarUpdateAction(status, availableDismissed);
 	if (action === null) return null;
 
@@ -2298,19 +2087,18 @@ function UpdateStatusRail({
 		);
 	}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<button
 					aria-label={
-						action.version
-							? t("shell.restartInstallUpdateVersion", { version: action.version })
+						versionNumber
+							? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 							: t("shell.restartInstallUpdate")
 					}
 					className={cn(
-						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						"bg-success/12 text-success hover:bg-success/18",
+						"grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4",
 					)}
 					onClick={onRequestInstall}
 					tabIndex={tabIndex}
@@ -2321,7 +2109,7 @@ function UpdateStatusRail({
 			</TooltipTrigger>
 			<TooltipContent side="right">
 				{t("shell.restartToUpdate")}
-				{versionLabel ? ` · ${versionLabel}` : ""}
+				{versionNumber ? ` ${versionNumber}` : ""}
 			</TooltipContent>
 		</Tooltip>
 	);

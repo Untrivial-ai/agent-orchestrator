@@ -92,6 +92,7 @@ function toWorkspaceSession(
 		kanbanColumn,
 		displayStatus: session.displayStatus || undefined,
 		isTerminated: session.isTerminated,
+		chatProviderPreserved: session.chatProviderPreserved,
 		terminateOnPrMerge: session.terminateOnPrMerge ?? false,
 		autoInjectReview: session.autoInjectReview ?? true,
 		autoInjectCI: session.autoInjectCI ?? true,
@@ -368,6 +369,7 @@ export function useWorkspaceSession(sessionId: string) {
 
 export type WorkspaceScope = {
 	project?: Pick<WorkspaceSummary, "id" | "kind" | "name" | "orchestratorAgent">;
+	hasWorkerSessions: boolean;
 	session?: WorkspaceSession;
 	orchestrator?: WorkspaceSession;
 };
@@ -393,7 +395,11 @@ function selectWorkspaceScope(
 				orchestratorAgent: workspace.orchestratorAgent,
 			}
 		: undefined;
-	return { project, session, orchestrator: workspace ? newestActiveOrchestrator(workspace.sessions) : undefined };
+	return {
+		project, session,
+		hasWorkerSessions: workspace ? workerSessions(workspace.sessions).length > 0 : false,
+		orchestrator: workspace ? newestActiveOrchestrator(workspace.sessions) : undefined,
+	};
 }
 
 /**
@@ -416,7 +422,10 @@ export function useWorkspaceScope(projectId?: string, sessionId?: string) {
 	}, [cloud.data, cloudSessions.data, org?.id, projectId, ready, sessionId]);
 	// Match useWorkspaceQuery's local-first semantics: do not reveal cloud
 	// records before the local workspace query has resolved successfully.
-	return { ...local, data: local.data ?? (local.isSuccess ? cloudScope : undefined) };
+	const data = local.data?.project || local.data?.session || !local.isSuccess
+		? local.data
+		: cloudScope ?? local.data;
+	return { ...local, data };
 }
 
 function selectTraySessions(workspaces: WorkspaceSummary[]): TraySessionEntry[] {
