@@ -3056,6 +3056,30 @@ func TestKill_MissingProjectRepoPreservesWorkspaceAndTerminates(t *testing.T) {
 	}
 }
 
+// A worktree whose directory is still pinned by a process handle (a live agent
+// or scoped shell on Windows) survives the removeAll retry budget. git has
+// already unregistered it by then, so nothing is being reconciled — only the
+// directory cannot go away right now. Erroring the kill for that stranded the
+// session in the sidebar forever: every retry answered 500 and the row never
+// left (#3408). The kill must succeed with freed=false, and the leftover
+// directory is left for a later `ao session cleanup` pass to retry.
+func TestKill_DeferredWorkspaceRemovalPreservesAndTerminates(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	ws.destroyErr = fmt.Errorf("gitworktree: remove unregistered path %q: %w (deferred: %w)", "/ws/mer-1", ports.ErrWorkspaceDeferred, errors.New("access denied"))
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("kill err = %v, want the session to terminate anyway", err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false: the worktree was left on disk")
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be marked terminated so it leaves the sidebar")
+	}
+}
+
 func TestKill_DeletesStaleRestoreMarker(t *testing.T) {
 	m, st, _, _ := newManager()
 	st.sessions["mer-1"] = mkLive("mer-1")
@@ -3201,6 +3225,41 @@ func TestKill_WorkspaceProjectDirtyRowRefusesRemoval(t *testing.T) {
 	}
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("session should be terminated even when dirty workspace cleanup is deferred")
+	}
+}
+
+// Same deferred outcome through the workspace-project path: a child repo whose
+// removal is deferred must not fail the kill, and the leftover rows stay marked
+// for a later cleanup pass to retry (#3408).
+func TestKill_WorkspaceProjectDeferredRowDefersRemoval(t *testing.T) {
+	m, st, _, ws := newManager()
+	ws.destroyErr = fmt.Errorf("gitworktree: force remove path %q: %w (deferred: %w)", "/ws/mer-1/api", ports.ErrWorkspaceDeferred, errors.New("access denied"))
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Metadata:  domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", RuntimeHandleID: "h1"},
+		Activity:  domain.Activity{State: domain.ActivityActive},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
+	}
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false: deferred rows preserve the workspace")
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session should be terminated even when workspace removal is deferred")
+	}
+	want := []string{"Destroy:api", "Destroy:__root__"}
+	if got := ws.calls; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("calls = %v, want %v", got, want)
 	}
 }
 
@@ -3570,6 +3629,29 @@ func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	}
 	if res.Skipped[0].Reason != "project is archived or unregistered — remove worktree manually" {
 		t.Fatalf("reason = %q, want archived-project reason", res.Skipped[0].Reason)
+	}
+}
+
+// A deferred removal is a skip, not a failure: the session stays terminated,
+// the leftover directory is reported visibly so the user is not left staring at
+// a silent "0 sessions cleaned", and the next cleanup run retries the unlink
+// (#3408).
+func TestCleanup_ReportsDeferredWorkspaceRemoval(t *testing.T) {
+	m, st, _, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	ws.destroyErr = fmt.Errorf("gitworktree: remove unregistered path %q: %w (deferred: %w)", "/ws/mer-1", ports.ErrWorkspaceDeferred, errors.New("access denied"))
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cleaned) != 0 {
+		t.Fatalf("cleaned = %v, want none", res.Cleaned)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
+		t.Fatalf("skipped = %v, want mer-1", res.Skipped)
+	}
+	if res.Skipped[0].Reason != "worktree is in use; will retry on a later run" {
+		t.Fatalf("reason = %q", res.Skipped[0].Reason)
 	}
 }
 

@@ -321,6 +321,52 @@ func TestDestroyFallsBackToGitWhenTheMoveIsImpossible(t *testing.T) {
 	}
 }
 
+// The git-driven teardown can be left with a directory it cannot unlink this
+// run — on Windows a live agent process or scoped shell holds a handle on the
+// worktree directory past the removal retry budget. git has already
+// unregistered the directory by then, so nothing is being reconciled anymore;
+// the failure must be typed as deferred rather than a generic teardown error,
+// or `ao session kill` answers 500 and strands the session in the sidebar
+// forever (#3408).
+func TestDestroyDefersRemovalFailureWhenTheDirectoryStillExists(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+	if err := mkdirFile(path, "stray.txt"); err != nil {
+		t.Fatalf("seed stray path: %v", err)
+	}
+	shrinkRemoveAllRetry(t, 2)
+	wedged := errors.New("The process cannot access the file because it is being used by another process")
+	stubRemoveAll(t, func(string) error { return wedged })
+	// Registration probes fail first so the discard fast path hands back to the
+	// git-driven remove; afterwards the path is reported as unregistered but
+	// still on disk, so the final removeAllWithRetry is the only remaining
+	// teardown step — and it fails.
+	listCalls := 0
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "worktree list --porcelain") {
+			listCalls++
+			if listCalls == 1 {
+				return nil, errors.New("git worktree list could not be asked")
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	err = ws.Destroy(context.Background(), ports.WorkspaceInfo{Path: path, ProjectID: "proj", SessionID: "sess", Branch: "feature/one"})
+	if !errors.Is(err, ports.ErrWorkspaceDeferred) {
+		t.Fatalf("destroy error = %v, want ports.ErrWorkspaceDeferred", err)
+	}
+	if !errors.Is(err, wedged) {
+		t.Fatalf("destroy error = %v, want the underlying removal failure preserved", err)
+	}
+}
+
 // Work that appears between the dirty probe and the delete must not be taken.
 // The probe therefore runs against the directory after it has been moved aside:
 // once the worktree path no longer resolves, nothing can add to what is about

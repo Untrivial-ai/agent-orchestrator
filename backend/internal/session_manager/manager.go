@@ -1611,14 +1611,17 @@ func (m *Manager) RollbackSpawn(ctx context.Context, id domain.SessionID) (delet
 }
 
 // workspacePreserved reports a teardown refusal that must not fail the kill.
-// Both cases leave the directory on disk and neither is the user's problem to
+// All three cases leave the directory on disk and none is the user's problem to
 // resolve before the session can go away: uncommitted work is deliberately
-// never force-removed, and a project whose repository has been deleted can
-// never have its worktree reclaimed by git at all. Erroring instead strands
-// the session in the sidebar forever, which is the one outcome a delete must
-// not produce.
+// never force-removed, a project whose repository has been deleted can never
+// have its worktree reclaimed by git at all, and a directory still pinned by a
+// process handle (Windows sharing violation) is deferred for a later cleanup
+// pass rather than unlinked mid-kill. Erroring instead strands the session in
+// the sidebar forever, which is the one outcome a delete must not produce.
 func workspacePreserved(err error) bool {
-	return errors.Is(err, ports.ErrWorkspaceDirty) || errors.Is(err, ports.ErrWorkspaceRepoUnavailable)
+	return errors.Is(err, ports.ErrWorkspaceDirty) ||
+		errors.Is(err, ports.ErrWorkspaceRepoUnavailable) ||
+		errors.Is(err, ports.ErrWorkspaceDeferred)
 }
 
 // killTeardownBudget bounds the detached teardown Kill runs below. Sized just
@@ -3787,6 +3790,9 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 func cleanupSkipReason(err error) string {
 	if errors.Is(err, ports.ErrWorkspaceDirty) {
 		return "workspace has uncommitted changes"
+	}
+	if errors.Is(err, ports.ErrWorkspaceDeferred) {
+		return "worktree is in use; will retry on a later run"
 	}
 	if errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
 		return "project repository is missing; remove worktree manually"
