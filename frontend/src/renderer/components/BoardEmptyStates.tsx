@@ -28,6 +28,7 @@ export function BoardWelcome() {
 						onCloneProject={cloneProject}
 						onCreateProject={createProject}
 						onInitializeProject={initializeProjectRepository}
+						onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 					/>
 					<GitHubOnboardingNotice />
 					<div className="flex w-full items-center gap-3 px-1">

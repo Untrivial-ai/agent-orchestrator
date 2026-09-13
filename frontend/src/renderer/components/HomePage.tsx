@@ -241,6 +241,7 @@ export function HomePage() {
 					mode="choose"
 					onCloneProject={cloneProject}
 					onCreateProject={createProject}
+					onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 					onInitializeProject={initializeProjectRepository}
 					onOpenExistingProject={openExistingProject}
 					sourceSignal={sourceSignal}

@@ -1444,6 +1444,10 @@ function ImportSourcePicker({
 	onSelect: (source: ProjectSource) => void;
 }) {
 	const { t } = useTranslation();
+	const createStandaloneAgent = () => {
+		onClose?.();
+		onCreateStandaloneAgent?.();
+	};
 	const sources: Array<{ source: ProjectSource; icon: ReactNode; label: string; description: string }> = [
 		{
 			source: "clone",
@@ -1501,7 +1505,7 @@ function ImportSourcePicker({
 					</button>
 				))}
 				{onCreateStandaloneAgent ? (
-					<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={onCreateStandaloneAgent}>
+					<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
 						<Bot className="size-5" aria-hidden="true" />
 						<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
 					</button>
