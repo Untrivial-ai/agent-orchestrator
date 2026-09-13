@@ -14,20 +14,22 @@ import {
 export const AppBrowserLinkContext = createContext<((url: string) => void) | undefined>(undefined);
 
 /** Shared web-link behavior; native fragments and special schemes retain their handlers. */
-export function AppLink({ href, onClick, onBrowserOpen, ...props }: ComponentProps<"a"> & {
+export function AppLink({ href, onClick, onBrowserOpen, inAppLink, ...props }: ComponentProps<"a"> & {
 	onBrowserOpen?: (url: string) => void;
+	inAppLink?: (url: string) => boolean;
 }) {
 	const { t } = useTranslation();
 	const sessionBrowserOpen = useContext(AppBrowserLinkContext);
 	const openBrowser = onBrowserOpen ?? sessionBrowserOpen;
 	const webLink = !!href && isWebLink(href);
+	const browserLink = !!href && (inAppLink?.(href) ?? webLink);
 	const anchor = (
 		<a
 			{...props}
 			href={href}
 			onClick={(event) => {
 				onClick?.(event);
-				if (event.defaultPrevented || !href || !webLink) return;
+				if (event.defaultPrevented || !href || !browserLink) return;
 				event.preventDefault();
 				if (openBrowser && !event.ctrlKey && !event.metaKey && !event.altKey) openBrowser(href);
 				else void openLinkInSystemBrowser(href);

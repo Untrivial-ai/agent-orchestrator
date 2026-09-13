@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { apiClient } from "../lib/api-client";
-import { isWorkspaceHtmlLink, openLinkInSystemBrowser, requiresSystemBrowser } from "../lib/external-link-policy";
+import { isWorkspaceFileLink, openLinkInSystemBrowser, requiresSystemBrowser } from "../lib/external-link-policy";
 import { useUiStore } from "../stores/ui-store";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
@@ -20,12 +20,12 @@ export function useSessionBrowserLink(
 	return useCallback(
 		(uri: string) => {
 			if (!session?.id || session.kind !== "worker" || !active) return;
-			const isLocalWorkspaceHtml = isWorkspaceHtmlLink(uri, workspacePaths);
+			const isLocalWorkspaceFile = isWorkspaceFileLink(uri, workspacePaths);
 			try {
 				const url = new URL(uri);
 				if (url.protocol !== "http:" && url.protocol !== "https:") return;
 			} catch {
-				if (!isLocalWorkspaceHtml) return;
+				if (!isLocalWorkspaceFile) return;
 			}
 			if (requiresSystemBrowser(uri)) {
 				void openLinkInSystemBrowser(uri);
@@ -38,7 +38,7 @@ export function useSessionBrowserLink(
 			// Local workspace paths must go through the daemon preview resolver first.
 			// Passing an absolute worktree path directly to BrowserView opens an empty
 			// tab because Chromium cannot navigate to the filesystem path.
-			if (openInBrowser && !isLocalWorkspaceHtml) {
+			if (openInBrowser && !isLocalWorkspaceFile) {
 				void openInBrowser(uri).catch((error) => {
 					console.warn("Unable to open link in Browser tab", error);
 				});

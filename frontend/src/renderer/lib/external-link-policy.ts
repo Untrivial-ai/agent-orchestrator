@@ -9,14 +9,17 @@ export function isWebLink(url: string): boolean {
 	}
 }
 
-export function isWorkspaceHtmlLink(url: string, workspacePaths: string[]): boolean {
+export function isWorkspaceFileLink(url: string, workspacePaths: string[]): boolean {
 	const normalized = url.trim().replace(/^\.\//, "");
 	if (!normalized || normalized.split("/").includes("..")) return false;
 	const path = normalized.split(/[?#]/, 1)[0];
-	if (!/\.html?$/i.test(path)) return false;
 	return workspacePaths.some((workspacePath) =>
 		workspacePath === path || (path.startsWith("/") && path.endsWith(`/${workspacePath}`)),
 	);
+}
+
+export function isWorkspaceHtmlLink(url: string, workspacePaths: string[]): boolean {
+	return /\.html?$/i.test(url.split(/[?#]/, 1)[0]) && isWorkspaceFileLink(url, workspacePaths);
 }
 
 /** Cloudflare challenges do not reliably complete in embedded Electron views. */
