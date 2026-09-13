@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -357,6 +358,50 @@ func TestCuesAPI_NotImplementedWithoutService(t *testing.T) {
 		body, status, _ := doRequest(t, srv, tc.method, tc.path, "")
 		if status != http.StatusNotImplemented {
 			t.Errorf("%s %s status = %d, want 501; body=%s", tc.method, tc.path, status, body)
+		}
+	}
+}
+
+func TestCuesAPI_BoundedSingleJSONBody(t *testing.T) {
+	for _, route := range []struct {
+		method, path string
+		limit        int
+	}{
+		{"POST", "/api/v1/projects/portfolio/cues", 128 << 10},
+		{"PATCH", "/api/v1/cues/cue-def456", 128 << 10},
+		{"POST", "/api/v1/cues/cue-def456/invoke", 4 << 10},
+	} {
+		for _, tc := range []struct {
+			name, body string
+			status     int
+		}{
+			{"at cap", "{}" + strings.Repeat(" ", route.limit-2), 200},
+			{"over cap", "{}" + strings.Repeat(" ", route.limit-1), 413},
+			{"large field", `{"unused":"` + strings.Repeat("x", route.limit) + `"}`, 413},
+			{"trailing JSON", "{} {}", 400},
+			{"trailing garbage", "{} x", 400},
+			{"malformed", "{", 400},
+		} {
+			t.Run(route.method+route.path+tc.name, func(t *testing.T) {
+				svc := &fakeCueService{created: sampleCue(), updated: sampleCue(), invoked: "sess-1"}
+				srv := newCueTestServer(t, svc)
+				body, status, _ := doRequest(t, srv, route.method, route.path, tc.body)
+				want := tc.status
+				if want == 200 && route.path == "/api/v1/projects/portfolio/cues" {
+					want = 201
+				}
+				if status != want {
+					t.Fatalf("status=%d want=%d body=%s", status, want, body)
+				}
+				if want >= 400 {
+					if svc.gotCueID != "" || svc.gotProject != "" {
+						t.Fatal("invalid body dispatched")
+					}
+					if !strings.Contains(string(body), "INVALID_JSON") && !strings.Contains(string(body), "CUE_BODY_TOO_LARGE") {
+						t.Fatalf("missing error envelope: %s", body)
+					}
+				}
+			})
 		}
 	}
 }

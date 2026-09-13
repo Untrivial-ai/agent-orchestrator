@@ -159,3 +159,20 @@ func TestCueValidateRejectsInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestCueInactivePayloadBounds(t *testing.T) {
+	for _, cue := range []Cue{
+		{Name: "Test", Type: CueTypeCommand, Command: "echo ok", Prompt: strings.Repeat("x", MaxCuePromptLength+1)},
+		{Name: "Test", Type: CueTypeAgent, Prompt: "hello", Command: strings.Repeat("x", MaxCueCommandLength+1)},
+	} {
+		if err := cue.Validate(); err == nil {
+			t.Fatal("oversized inactive payload accepted")
+		}
+	}
+	for _, name := range []string{strings.Repeat("é", 32), strings.Repeat("é", 33)} {
+		err := (Cue{Name: name, Type: CueTypeCommand, Command: "echo ok"}).Validate()
+		if (err == nil) != (len(name) <= MaxCueNameLength) {
+			t.Fatalf("UTF-8 name length %d: %v", len(name), err)
+		}
+	}
+}

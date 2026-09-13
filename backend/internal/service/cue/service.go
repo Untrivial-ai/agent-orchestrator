@@ -26,7 +26,7 @@ type Service struct {
 type Deps struct {
 	Store Store
 	// Sessions is the session side of cue invocation: messaging an active
-	// session or spawning a worker when none could be messaged.
+	// session or spawning a worker when no session was requested.
 	Sessions Sessions
 	// NewID overrides the cue id generator in tests.
 	NewID func() string
@@ -71,6 +71,7 @@ func (s *Service) Create(ctx context.Context, projectID domain.ProjectID, input 
 	if err := cue.Validate(); err != nil {
 		return domain.Cue{}, invalidCueError(err)
 	}
+	clearInactivePayload(&cue)
 	if err := s.store.InsertCue(ctx, cue); err != nil {
 		return domain.Cue{}, storeError(err)
 	}
@@ -127,6 +128,7 @@ func (s *Service) Update(ctx context.Context, cueID domain.CueID, input Input) (
 	if err := updated.Validate(); err != nil {
 		return domain.Cue{}, invalidCueError(err)
 	}
+	clearInactivePayload(&updated)
 	cue, ok, err := s.store.UpdateCue(ctx, updated)
 	if err != nil {
 		return domain.Cue{}, storeError(err)
@@ -153,6 +155,14 @@ func (s *Service) Delete(ctx context.Context, cueID domain.CueID) error {
 		return apierr.NotFound("CUE_NOT_FOUND", "Unknown cue")
 	}
 	return nil
+}
+
+func clearInactivePayload(cue *domain.Cue) {
+	if cue.Type == domain.CueTypeCommand {
+		cue.Prompt = ""
+	} else {
+		cue.Command = ""
+	}
 }
 
 func storeError(err error) error {

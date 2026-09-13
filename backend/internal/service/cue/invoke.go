@@ -17,7 +17,7 @@ import (
 const commandCueInstructionFmt = "Run `%s` and report the output."
 
 // Sessions is the session side of a cue invocation: resolving an active session
-// to message, or spawning a worker when no session could be messaged.
+// to message, or spawning a worker when no session was requested.
 type Sessions interface {
 	Get(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
@@ -25,13 +25,13 @@ type Sessions interface {
 }
 
 // Invoke runs one cue. Inside a session, the cue's content is sent to that
-// session as a message (command cues travel as "run this command and report the
-// output" instructions because the agent owns execution). Without a session, or
-// when the given session is stale or unusable (unknown id, other project,
-// terminated, exited, or blocked on a pending decision), AO spawns a worker
-// session for the cue's project seeded with the same message. It returns the id
-// of the session that received the message.
+// session as a message. Command execution remains agent-mediated. Only calls
+// without a session create a worker; an explicit target never falls back to a
+// different workspace. It returns the id of the session accepting the message.
 func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, sessionID domain.SessionID) (domain.SessionID, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if s == nil || s.store == nil {
 		return "", fmt.Errorf("cue: store is required")
 	}
@@ -50,15 +50,29 @@ func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, sessionID doma
 	}
 	message := invokeMessage(cue)
 
-	if strings.TrimSpace(string(sessionID)) != "" {
-		if sess, err := s.sessions.Get(ctx, sessionID); err == nil && sessionMessageable(sess, cue.ProjectID) {
-			if err := s.sessions.Send(ctx, sessionID, message, nil); err != nil {
-				return "", err
-			}
-			return sessionID, nil
+	if sessionID != "" {
+		if strings.TrimSpace(string(sessionID)) == "" {
+			return "", apierr.Invalid("INVALID_SESSION_ID", "Session id must not be blank", nil)
 		}
+		sess, err := s.sessions.Get(ctx, sessionID)
+		if err != nil {
+			return "", err
+		}
+		if !sessionMessageable(sess, cue.ProjectID) {
+			return "", apierr.Conflict("CUE_TARGET_UNAVAILABLE", "This session cannot accept the cue. Select an available session in the cue's project.", nil)
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if err := s.sessions.Send(ctx, sessionID, message, nil); err != nil {
+			return "", err
+		}
+		return sessionID, nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	spawned, _, _, err := s.sessions.Spawn(ctx, ports.SpawnConfig{
 		ProjectID: cue.ProjectID,
 		Kind:      domain.KindWorker,
@@ -82,8 +96,7 @@ func invokeMessage(cue domain.Cue) string {
 // sessionMessageable reports whether a cue may be injected into a session:
 // it must exist in the cue's project, not be terminated or exited, and must
 // not be blocked on a pending decision (stray input could answer a permission
-// dialog on the user's behalf). Everything else — unknown, stale, other
-// project — is treated as unusable and falls back to spawning a worker.
+// dialog on the user's behalf). Delivery performs its own final state checks.
 func sessionMessageable(sess domain.Session, projectID domain.ProjectID) bool {
 	if sess.IsTerminated {
 		return false

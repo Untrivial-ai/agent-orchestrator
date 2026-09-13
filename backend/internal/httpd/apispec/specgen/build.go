@@ -1170,6 +1170,7 @@ func cueOperations() []operation {
 			resps: []respUnit{
 				{http.StatusCreated, controllers.CueEnvelope{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusRequestEntityTooLarge, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
@@ -1196,6 +1197,7 @@ func cueOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.CueEnvelope{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusRequestEntityTooLarge, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
@@ -1216,12 +1218,13 @@ func cueOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/cues/{cueId}/invoke", id: "invokeCue", tag: "cues",
-			summary:    "Run a cue: message the active session, or spawn a worker when none could be messaged",
+			summary:    "Dispatch a cue to the specified session; create a worker only when sessionId is omitted",
 			pathParams: []any{controllers.CueIDParam{}},
 			reqBody:    controllers.InvokeCueRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.InvokeCueResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusRequestEntityTooLarge, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

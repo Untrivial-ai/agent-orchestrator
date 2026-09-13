@@ -1706,18 +1706,18 @@ type CueProjectIDParam struct {
 type CreateCueRequest struct {
 	Name        string `json:"name" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
 	Description string `json:"description,omitempty" description:"Optional human note about the cue, at most 240 bytes."`
-	Type        string `json:"type" description:"Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent."`
-	Command     string `json:"command,omitempty" description:"Shell command for a command cue. Ignored for agent cues."`
-	Prompt      string `json:"prompt,omitempty" description:"Agent instruction for an agent cue. Ignored for command cues."`
+	Type        string `json:"type" description:"Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB."`
+	Command     string `json:"command,omitempty" description:"Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues."`
+	Prompt      string `json:"prompt,omitempty" description:"Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues."`
 }
 
 // UpdateCueRequest is the body of PATCH /api/v1/cues/{cueId}.
 type UpdateCueRequest struct {
 	Name        string `json:"name" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
 	Description string `json:"description,omitempty" description:"Optional human note about the cue, at most 240 bytes."`
-	Type        string `json:"type" description:"Cue kind: command runs a shell command through an agent; agent sends a prompt to an agent."`
-	Command     string `json:"command,omitempty" description:"Shell command for a command cue. Ignored for agent cues."`
-	Prompt      string `json:"prompt,omitempty" description:"Agent instruction for an agent cue. Ignored for command cues."`
+	Type        string `json:"type" description:"Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB."`
+	Command     string `json:"command,omitempty" description:"Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues."`
+	Prompt      string `json:"prompt,omitempty" description:"Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues."`
 }
 
 // CueResponse is one project-scoped reusable quick action.
@@ -1740,7 +1740,7 @@ type ListCuesResponse struct {
 
 // InvokeCueRequest is the optional body of POST /api/v1/cues/{cueId}/invoke.
 type InvokeCueRequest struct {
-	SessionID string `json:"sessionId,omitempty" description:"Active session to message. Omit to spawn a worker session for the cue's project; a stale or unusable session also falls back to spawning."`
+	SessionID string `json:"sessionId,omitempty" description:"Session to message. Omit to create a worker in the cue's project. An explicit unavailable or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB."`
 }
 
 // InvokeCueResponse is the body of POST /api/v1/cues/{cueId}/invoke.
