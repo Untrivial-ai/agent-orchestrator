@@ -89,6 +89,23 @@ func TestSessionsAPI_ActivityForwardsUsageMetadataWithoutChangingActivity(t *tes
 	}
 }
 
+func TestSessionsAPI_ActivityContentionRemainsRetryableAndRecordsUsage(t *testing.T) {
+	activity := &fakeActivityRecorder{err: ports.ErrActivityProjectionContention}
+	usage := &fakeUsageHookRecorder{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil,
+		httpd.APIDeps{Activity: activity, UsageHooks: usage}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"idle","event":"stop","agentSessionId":"native-1","launchId":"launch-1","usage":{"harness":"claude-code","transcriptPath":"/tmp/main.jsonl"}}`)
+	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "ACTIVITY_PROJECTION_BUSY") {
+		t.Fatalf("contention should be explicitly retryable: %d %s", status, body)
+	}
+	if usage.calls != 1 || usage.gotSignal.TranscriptPath != "/tmp/main.jsonl" {
+		t.Fatalf("projection contention discarded independent usage signal: %+v", usage)
+	}
+}
+
 func TestSessionsAPI_ActivitySanitizesAndBoundsUsageMetadata(t *testing.T) {
 	usage := &fakeUsageHookRecorder{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -280,6 +297,37 @@ func TestSessionsAPI_ActivityThreadsCorrelationFields(t *testing.T) {
 	want := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "post-tool-use", ToolName: "Bash", ToolUseID: "toolu_42", LaunchID: "launch-7"}
 	if rec.gotSignal != want {
 		t.Fatalf("recorder signal = %#v, want %#v", rec.gotSignal, want)
+	}
+}
+
+func TestSessionsAPI_ActivityThreadsConversationCheckpointOrigin(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"coordination","providerTurnId":"native-turn"}`)
+	if status != http.StatusOK {
+		t.Fatalf("activity = %d, want 200; body=%s", status, body)
+	}
+	if rec.gotSignal.ConversationCheckpointOrigin != domain.ConversationCheckpointOriginCoordination {
+		t.Fatalf("checkpoint origin = %q, want coordination", rec.gotSignal.ConversationCheckpointOrigin)
+	}
+	if rec.gotSignal.ProviderTurnID != "native-turn" {
+		t.Fatalf("provider turn = %q", rec.gotSignal.ProviderTurnID)
+	}
+}
+
+func TestSessionsAPI_ActivityRejectsUnknownConversationCheckpointOrigin(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"provider"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("activity = %d, want 400; body=%s", status, body)
+	}
+	if !strings.Contains(string(body), `"code":"INVALID_CONVERSATION_CHECKPOINT_ORIGIN"`) {
+		t.Fatalf("body = %s, want stable checkpoint-origin error code", body)
 	}
 }
 

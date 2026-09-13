@@ -108,13 +108,38 @@ func (f *fakeStore) ListSessions(_ context.Context, project domain.ProjectID) ([
 }
 
 func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
+	rec.Revision = f.sessions[rec.ID].Revision + 1
 	f.sessions[rec.ID] = rec
 	return nil
 }
 
-func (f *fakeStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord) (bool, error) {
+func (f *fakeStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, expected int64) (bool, error) {
+	if f.sessions[rec.ID].Revision != expected {
+		return false, nil
+	}
+	rec.Revision = expected + 1
 	f.sessions[rec.ID] = rec
 	return true, nil
+}
+
+type activityRevisionConflictStore struct {
+	*fakeStore
+	conflictNext bool
+}
+
+func (f *activityRevisionConflictStore) UpdateSessionFromActivitySignal(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	expectedRevision int64,
+) (bool, error) {
+	if f.conflictNext {
+		f.conflictNext = false
+		current := f.sessions[rec.ID]
+		current.Revision = expectedRevision + 1
+		f.sessions[rec.ID] = current
+		return false, nil
+	}
+	return f.fakeStore.UpdateSessionFromActivitySignal(ctx, rec, expectedRevision)
 }
 
 func (f *fakeStore) CommitChatSpawn(
@@ -126,6 +151,7 @@ func (f *fakeStore) CommitChatSpawn(
 		return f.chatSpawnErr
 	}
 	f.chatSpawnCalls = append(f.chatSpawnCalls, boundary)
+	rec.Revision = f.sessions[rec.ID].Revision + 1
 	f.sessions[rec.ID] = rec
 	return nil
 }
@@ -136,6 +162,26 @@ func (f *fakeStore) CommitSessionControllerEpoch(
 	source, target domain.SessionMode,
 	nativeConversationID string,
 	now time.Time,
+) (bool, error) {
+	return f.changeSessionControllerEpoch(id, source, target, nativeConversationID, now, false)
+}
+
+func (f *fakeStore) RestoreSessionControllerEpoch(
+	_ context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeConversationID string,
+	now time.Time,
+) (bool, error) {
+	return f.changeSessionControllerEpoch(id, source, target, nativeConversationID, now, true)
+}
+
+func (f *fakeStore) changeSessionControllerEpoch(
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeConversationID string,
+	now time.Time,
+	restore bool,
 ) (bool, error) {
 	rec, ok := f.sessions[id]
 	if !ok || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != source {
@@ -148,8 +194,16 @@ func (f *fakeStore) CommitSessionControllerEpoch(
 	rec.Metadata.AgentSessionIDLaunchID = ""
 	rec.Metadata.ProviderConversationID = nativeConversationID
 	rec.Metadata.ControllerGeneration = ""
+	if !restore && target == domain.SessionModeTUI {
+		rec.Metadata.LatestUserPrompt = ""
+		rec.Metadata.LatestAssistantUpdate = ""
+		rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
+		rec.Metadata.ConversationCheckpointGeneration = ""
+		rec.Metadata.ConversationCheckpointNativeID = ""
+	}
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
 	rec.UpdatedAt = now
+	rec.Revision++
 	f.sessions[id] = rec
 	return true, nil
 }
@@ -239,15 +293,20 @@ func (f *fakeAgentSwitchLifecycleStore) GetSession(_ context.Context, id domain.
 func (f *fakeAgentSwitchLifecycleStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	rec.Revision = f.sessions[rec.ID].Revision + 1
 	f.sessions[rec.ID] = rec
 	return nil
 }
 
-func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord) (bool, error) {
+func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(
+	_ context.Context,
+	rec domain.SessionRecord,
+	expectedRevision int64,
+) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	current, ok := f.sessions[rec.ID]
-	if !ok || current.IsTerminated || current.Harness != rec.Harness ||
+	if !ok || current.Revision != expectedRevision || current.IsTerminated || current.Harness != rec.Harness ||
 		current.Metadata.RuntimeLaunchID != rec.Metadata.RuntimeLaunchID {
 		return false, nil
 	}
@@ -265,8 +324,13 @@ func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(_ contex
 	current.Metadata.LatestUserPrompt = rec.Metadata.LatestUserPrompt
 	current.Metadata.LatestUserPromptAt = rec.Metadata.LatestUserPromptAt
 	current.Metadata.LatestAssistantUpdate = rec.Metadata.LatestAssistantUpdate
+	current.Metadata.ConversationCheckpointState = rec.Metadata.ConversationCheckpointState
+	current.Metadata.ConversationCheckpointGeneration = rec.Metadata.ConversationCheckpointGeneration
+	current.Metadata.ConversationCheckpointNativeID = rec.Metadata.ConversationCheckpointNativeID
+	current.Metadata.ConversationCheckpointTurnID = rec.Metadata.ConversationCheckpointTurnID
 	current.Metadata.NativeTranscriptPath = rec.Metadata.NativeTranscriptPath
 	current.UpdatedAt = rec.UpdatedAt
+	current.Revision++
 	f.sessions[rec.ID] = current
 	return true, nil
 }
@@ -463,8 +527,8 @@ func TestRuntimeObservation_CrashFinalizesUsageBeforeTermination(t *testing.T) {
 	if finalizer.launchID != "launch-1" {
 		t.Fatalf("finalizer launch id=%q, want launch-1", finalizer.launchID)
 	}
-	if !finalizer.sessionRevision.Equal(rec.UpdatedAt) {
-		t.Fatalf("finalizer session revision=%s, want %s", finalizer.sessionRevision, rec.UpdatedAt)
+	if finalizer.sessionRevision != rec.Revision {
+		t.Fatalf("finalizer session revision=%d, want %d", finalizer.sessionRevision, rec.Revision)
 	}
 	if !st.sessions[rec.ID].IsTerminated {
 		t.Fatal("crashed session was not terminated")
@@ -563,7 +627,7 @@ func TestRuntimeObservation_DoesNotTerminateNewRuntimeGenerationAfterFinalizatio
 	rec.Metadata.RuntimeLaunchID = "launch-old"
 	st.sessions[rec.ID] = rec
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, _ time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, _ int64) error {
 		return m.MarkSpawned(ctx, id, domain.SessionMetadata{RuntimeLaunchID: "launch-new"})
 	}
 	m.SetUsageFinalizer(finalizer)
@@ -601,7 +665,7 @@ func TestRuntimeObservation_DoesNotTerminateAfterActivityDuringFinalization(t *t
 	}
 	st.sessions[rec.ID] = rec
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, _ time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, _ int64) error {
 		return m.ApplyActivitySignal(ctx, id, ports.ActivitySignal{
 			Valid:     true,
 			State:     domain.ActivityIdle,
@@ -636,9 +700,9 @@ func TestRuntimeObservation_RetriesAfterRevisionChangesDuringFinalization(t *tes
 	}
 	st.sessions[rec.ID] = rec
 	finalized := 0
-	var revisions []time.Time
+	var revisions []int64
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, launchID string, sessionRevision time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, launchID string, sessionRevision int64) error {
 		revisions = append(revisions, sessionRevision)
 		if finalizer.calls == 1 {
 			if err := m.ApplyActivitySignal(ctx, id, ports.ActivitySignal{
@@ -654,7 +718,7 @@ func TestRuntimeObservation_RetriesAfterRevisionChangesDuringFinalization(t *tes
 		current := st.sessions[id]
 		if !current.IsTerminated &&
 			current.Metadata.RuntimeLaunchID == launchID &&
-			current.UpdatedAt.Equal(sessionRevision) {
+			current.Revision == sessionRevision {
 			finalized++
 		}
 		return nil
@@ -681,8 +745,8 @@ func TestRuntimeObservation_RetriesAfterRevisionChangesDuringFinalization(t *tes
 	if finalizer.calls != 2 || finalized != 1 || !got.IsTerminated {
 		t.Fatalf("second pass finalizer calls=%d finalized=%d session=%+v", finalizer.calls, finalized, got)
 	}
-	if len(revisions) != 2 || !revisions[0].Equal(rec.UpdatedAt) || !revisions[1].Equal(now) {
-		t.Fatalf("finalizer revisions=%v, want [%s %s]", revisions, rec.UpdatedAt, now)
+	if len(revisions) != 2 || revisions[0] != rec.Revision || revisions[1] != rec.Revision+1 {
+		t.Fatalf("finalizer revisions=%v, want [%d %d]", revisions, rec.Revision, rec.Revision+1)
 	}
 }
 
@@ -809,11 +873,22 @@ func TestActivity_UserPromptStoresItsSignalTimestamp(t *testing.T) {
 	signalAt := time.Unix(456, 0).UTC()
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		LaunchID: "launch-1", LatestUserPrompt: "keep the row compact", Timestamp: signalAt,
+		LaunchID: "launch-1", LatestUserPrompt: "eventless payload alias", Timestamp: signalAt.Add(-time.Minute),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	got := st.sessions[rec.ID]
+	if got.Metadata.LatestUserPrompt != "" || !got.Metadata.LatestUserPromptAt.IsZero() {
+		t.Fatalf("eventless payload advanced user fact: %q at %s", got.Metadata.LatestUserPrompt, got.Metadata.LatestUserPromptAt)
+	}
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: rec.Activity.State, Event: "user-prompt-submit", LaunchID: "launch-1",
+		LatestUserPrompt: "keep the row compact", Timestamp: signalAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got = st.sessions[rec.ID]
 	if got.Metadata.LatestUserPrompt != "keep the row compact" || !got.Metadata.LatestUserPromptAt.Equal(signalAt) {
 		t.Fatalf("latest user prompt = %q at %s", got.Metadata.LatestUserPrompt, got.Metadata.LatestUserPromptAt)
 	}
@@ -828,6 +903,73 @@ func TestActivity_UserPromptStoresItsSignalTimestamp(t *testing.T) {
 	got = st.sessions[rec.ID]
 	if !got.Metadata.LatestUserPromptAt.Equal(repeatedAt) {
 		t.Fatalf("repeated user prompt timestamp = %s, want %s", got.Metadata.LatestUserPromptAt, repeatedAt)
+	}
+}
+
+func TestActivity_ReorderedPromptPreservesLatestHumanCheckpoint(t *testing.T) {
+	promptAt := time.Unix(456, 0).UTC()
+	for _, tt := range []struct {
+		name    string
+		prompt  string
+		at      time.Time
+		wantNew bool
+	}{
+		{name: "older duplicate", prompt: "current prompt", at: promptAt.Add(-time.Minute)},
+		{name: "older different prompt", prompt: "old prompt", at: promptAt.Add(-time.Minute)},
+		{name: "exact duplicate", prompt: "current prompt", at: promptAt},
+		{name: "equal time different prompt", prompt: "new prompt", at: promptAt, wantNew: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, st, _ := newManager()
+			rec := working("mer-1")
+			rec.Metadata.RuntimeLaunchID = "launch-current"
+			rec.Metadata.AgentSessionID = "native-current"
+			rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+			st.sessions[rec.ID] = rec
+			for _, signal := range []ports.ActivitySignal{
+				{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestUserPrompt: "current prompt", Timestamp: promptAt},
+				{Valid: true, State: domain.ActivityIdle, Event: "stop",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestAssistantUpdate: "current answer", Timestamp: promptAt.Add(time.Second)},
+			} {
+				if err := m.ApplyActivitySignal(ctx, rec.ID, signal); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+				LaunchID: "launch-current", AgentSessionID: "native-current",
+				LatestUserPrompt: tt.prompt, Timestamp: tt.at,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Metadata.LatestUserPromptAt.Equal(promptAt) {
+				t.Fatalf("last human message time regressed to %s, want %s", got.Metadata.LatestUserPromptAt, promptAt)
+			}
+			if tt.wantNew {
+				if got.Metadata.LatestUserPrompt != "new prompt" || got.Metadata.LatestAssistantUpdate != "" ||
+					got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointPrompt {
+					t.Fatalf("equal-time new prompt lost its own boundary: %+v", got.Metadata)
+				}
+			} else {
+				if tt.prompt != before.Metadata.LatestUserPrompt {
+					before.Metadata.ConversationCheckpointUnsettled = true
+				}
+				if got.Metadata != before.Metadata {
+					t.Fatalf("delayed or duplicate prompt replaced newer checkpoint or lost ordering uncertainty: got %+v, want %+v", got.Metadata, before.Metadata)
+				}
+			}
+		})
 	}
 }
 
@@ -890,12 +1032,13 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 	rec.FirstSignalAt = updatedAt
 	rec.UpdatedAt = updatedAt
 	st.sessions[rec.ID] = rec
+	staleRevision := rec.Revision - 1
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityIdle,
-		Event:             "terminal-idle",
-		ExpectedUpdatedAt: updatedAt.Add(-time.Second),
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Event:            "terminal-idle",
+		ExpectedRevision: &staleRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -904,10 +1047,10 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 	}
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityIdle,
-		Event:             "terminal-idle",
-		ExpectedUpdatedAt: updatedAt,
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Event:            "terminal-idle",
+		ExpectedRevision: &rec.Revision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -915,12 +1058,12 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 		t.Fatalf("current reconciliation left activity %q", got)
 	}
 
-	idleUpdatedAt := st.sessions[rec.ID].UpdatedAt
+	idleRevision := st.sessions[rec.ID].Revision
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityActive,
-		Event:             "terminal-active",
-		ExpectedUpdatedAt: idleUpdatedAt,
+		Valid:            true,
+		State:            domain.ActivityActive,
+		Event:            "terminal-active",
+		ExpectedRevision: &idleRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +1075,7 @@ func TestActivity_TerminalReconciliationRequiresUnchangedSnapshot(t *testing.T) 
 func TestActivity_RepeatedUserPromptFencesTerminalReconciliation(t *testing.T) {
 	m, st, _ := newManager()
 	before := time.Unix(100, 0).UTC()
-	after := time.Unix(200, 0).UTC()
+	after := before // Session writes need not move the wall-clock timestamp.
 	m.clock = func() time.Time { return after }
 	rec := working("mer-1")
 	rec.FirstSignalAt = before
@@ -951,10 +1094,10 @@ func TestActivity_RepeatedUserPromptFencesTerminalReconciliation(t *testing.T) {
 	}
 
 	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid:             true,
-		State:             domain.ActivityIdle,
-		Event:             "terminal-idle",
-		ExpectedUpdatedAt: before,
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Event:            "terminal-idle",
+		ExpectedRevision: &rec.Revision,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1306,7 +1449,7 @@ func TestActivity_InternalSourceHandoffUpdateNeverReplacesUserFacingAssistant(t 
 			m := New(store, &fakeMessenger{})
 
 			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-				LaunchID: "source-generation", LatestAssistantUpdate: "internal handoff submitted",
+				Event: "stop", LaunchID: "source-generation", LatestAssistantUpdate: "internal handoff submitted",
 			}); err != nil {
 				t.Fatalf("ApplyActivitySignal: %v", err)
 			}
@@ -1314,6 +1457,479 @@ func TestActivity_InternalSourceHandoffUpdateNeverReplacesUserFacingAssistant(t 
 				t.Fatalf("latest assistant update = %q, want preserved %q", got, rec.Metadata.LatestAssistantUpdate)
 			}
 		})
+	}
+}
+
+func TestActivity_MainPromptStartsNewConversationCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "previous prompt"
+	rec.Metadata.LatestAssistantUpdate = "previous answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "launch-current"
+	rec.Metadata.ConversationCheckpointNativeID = "native-current"
+	rec.Metadata.ConversationCheckpointUnsettled = true
+	store.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+		LaunchID: "launch-current", AgentSessionID: "native-current",
+		LatestUserPrompt: "current prompt", LatestAssistantUpdate: "stale payload alias",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal prompt: %v", err)
+	}
+	got := store.sessions[rec.ID].Metadata
+	if got.LatestUserPrompt != "current prompt" || got.LatestAssistantUpdate != "" {
+		t.Fatalf("checkpoint after prompt = user:%q assistant:%q, want current prompt with no prior-turn answer",
+			got.LatestUserPrompt, got.LatestAssistantUpdate)
+	}
+	if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt ||
+		got.ConversationCheckpointGeneration != "launch-current" ||
+		got.ConversationCheckpointNativeID != "native-current" ||
+		got.ConversationCheckpointUnsettled {
+		t.Fatalf("prompt provenance = state:%q generation:%q native:%q", got.ConversationCheckpointState,
+			got.ConversationCheckpointGeneration, got.ConversationCheckpointNativeID)
+	}
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		LaunchID: "launch-current", AgentSessionID: "native-current",
+		LatestUserPrompt: "stale payload alias", LatestAssistantUpdate: "current answer",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal stop: %v", err)
+	}
+	got = store.sessions[rec.ID].Metadata
+	if got.LatestUserPrompt != "current prompt" || got.LatestAssistantUpdate != "current answer" {
+		t.Fatalf("completed checkpoint = user:%q assistant:%q", got.LatestUserPrompt, got.LatestAssistantUpdate)
+	}
+	if got.ConversationCheckpointState != domain.ConversationCheckpointComplete {
+		t.Fatalf("completed checkpoint state = %q, want complete", got.ConversationCheckpointState)
+	}
+}
+
+func TestActivity_CodexCheckpointRequiresSameTurnStop(t *testing.T) {
+	for _, stopTurn := range []string{"native-turn", "older-turn", ""} {
+		t.Run("stop="+stopTurn, func(t *testing.T) {
+			m, store, _ := newManager()
+			rec := working("mer-1")
+			rec.Harness = domain.HarnessCodex
+			rec.Metadata.RuntimeLaunchID = "launch-current"
+			rec.Metadata.AgentSessionID = "native-current"
+			rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+			store.sessions[rec.ID] = rec
+			prompt := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+				LaunchID: "launch-current", AgentSessionID: "native-current", ProviderTurnID: "native-turn", LatestUserPrompt: "continue"}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, prompt); err != nil {
+				t.Fatal(err)
+			}
+			got := store.sessions[rec.ID].Metadata
+			if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt || got.ConversationCheckpointTurnID != "native-turn" {
+				t.Fatalf("prompt checkpoint: %+v", got)
+			}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop",
+				LaunchID: "launch-current", AgentSessionID: "native-current", ProviderTurnID: stopTurn}); err != nil {
+				t.Fatal(err)
+			}
+			got = store.sessions[rec.ID].Metadata
+			if stopTurn == "native-turn" {
+				if got.ConversationCheckpointState != domain.ConversationCheckpointComplete || got.ConversationCheckpointUnsettled {
+					t.Fatalf("matching Stop checkpoint: %+v", got)
+				}
+			} else if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt || !got.ConversationCheckpointUnsettled {
+				t.Fatalf("unmatched Stop must fail closed: %+v", got)
+			}
+		})
+	}
+}
+
+func TestActivity_MainPromptWithoutTextInvalidatesPriorConversationCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "previous prompt"
+	rec.Metadata.LatestAssistantUpdate = "previous answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "launch-current"
+	rec.Metadata.ConversationCheckpointNativeID = "native-current"
+	store.sessions[rec.ID] = rec
+
+	// The event boundary is authoritative even when a provider omits the prompt
+	// text. Retaining the previous completed pair would make it look like the new
+	// turn never started and could permanently gate replay on stale history.
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+		LaunchID: "launch-current", AgentSessionID: "native-current",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	got := store.sessions[rec.ID].Metadata
+	if got.LatestUserPrompt != "" || got.LatestAssistantUpdate != "" {
+		t.Fatalf("prior checkpoint survived a new main-turn boundary without text: %+v", got)
+	}
+	if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt {
+		t.Fatalf("missing-text prompt state = %q, want prompt", got.ConversationCheckpointState)
+	}
+}
+
+func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	previousPromptAt := time.Unix(122, 0).UTC()
+	coordinationPromptAt := previousPromptAt.Add(time.Minute)
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "terminal-generation"
+	rec.Metadata.AgentSessionID = "native-1"
+	rec.Metadata.AgentSessionIDLaunchID = "terminal-generation"
+	rec.Metadata.LatestUserPrompt = "last real user direction"
+	rec.Metadata.LatestUserPromptAt = previousPromptAt
+	rec.Metadata.LatestAssistantUpdate = "last real assistant update"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "terminal-generation"
+	rec.Metadata.ConversationCheckpointNativeID = "native-1"
+	store.sessions[rec.ID] = rec
+
+	// The hook client recognizes AO's continuation kickoff and therefore omits
+	// its text. Lifecycle must still carry that ineligible turn boundary across
+	// to the provider's later Stop, which need not echo the prompt.
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+		LaunchID: "terminal-generation", AgentSessionID: "native-1",
+		Timestamp:                    coordinationPromptAt,
+		ConversationCheckpointOrigin: domain.ConversationCheckpointOriginCoordination,
+	}); err != nil {
+		t.Fatalf("apply coordination prompt boundary: %v", err)
+	}
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		LaunchID: "terminal-generation", AgentSessionID: "native-1",
+		LatestAssistantUpdate: "AO continuation acknowledged",
+		Timestamp:             coordinationPromptAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("apply promptless coordination Stop: %v", err)
+	}
+
+	got := store.sessions[rec.ID].Metadata
+	if got.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
+		!got.LatestUserPromptAt.Equal(previousPromptAt) ||
+		got.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
+		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination {
+		t.Fatalf("coordination turn advanced user checkpoint: got %+v, want prior human facts at %s",
+			got, previousPromptAt)
+	}
+}
+
+func TestActivity_StopWithoutCurrentPromptNeverPairsWithPriorTurn(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "prior turn prompt"
+	rec.Metadata.LatestUserPromptAt = time.Unix(122, 0).UTC()
+	rec.Metadata.LatestAssistantUpdate = "prior turn answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "launch-current"
+	rec.Metadata.ConversationCheckpointNativeID = "native-current"
+	store.sessions[rec.ID] = rec
+
+	// The current turn's UserPromptSubmit was lost. Stop must not combine its
+	// assistant with the only prompt AO has, which belongs to the prior turn. The
+	// older coherent checkpoint stays intact while a hard unresolved-boundary
+	// witness records that replay cannot safely stop there.
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		LaunchID: "launch-current", AgentSessionID: "native-current",
+		LatestAssistantUpdate: "new turn answer with missing prompt boundary",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal stop: %v", err)
+	}
+	got := store.sessions[rec.ID].Metadata
+	if got.LatestUserPrompt != "prior turn prompt" || !got.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
+		got.LatestAssistantUpdate != "prior turn answer" ||
+		got.ConversationCheckpointState != domain.ConversationCheckpointComplete ||
+		got.ConversationCheckpointGeneration != "launch-current" ||
+		got.ConversationCheckpointNativeID != "native-current" ||
+		!got.ConversationCheckpointUnsettled {
+		t.Fatalf("out-of-order Stop did not retain unresolved boundary: %+v", got)
+	}
+}
+
+func TestActivity_NonBoundaryEventCannotReplaceConversationCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "trusted prompt"
+	rec.Metadata.LatestUserPromptAt = time.Unix(123, 0).UTC()
+	rec.Metadata.LatestAssistantUpdate = "trusted answer"
+	store.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "post-tool-use",
+		LaunchID: "launch-current", AgentSessionID: "native-current",
+		LatestUserPrompt: "repeated payload alias", LatestAssistantUpdate: "tool output alias",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	got := store.sessions[rec.ID].Metadata
+	if got.LatestUserPrompt != "trusted prompt" || !got.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
+		got.LatestAssistantUpdate != "trusted answer" {
+		t.Fatalf("non-boundary event replaced the trusted checkpoint: %+v", got)
+	}
+}
+
+func TestActivity_NewNativeConversationClearsPriorConversationCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-old"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "old conversation prompt"
+	rec.Metadata.LatestAssistantUpdate = "old conversation answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	store.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		LaunchID: "launch-current", AgentSessionID: "native-new",
+		TranscriptPath: "/tmp/native-new.jsonl",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	got := store.sessions[rec.ID].Metadata
+	if got.AgentSessionID != "native-new" || got.AgentSessionIDLaunchID != "launch-current" {
+		t.Fatalf("native identity = id:%q launch:%q", got.AgentSessionID, got.AgentSessionIDLaunchID)
+	}
+	if got.LatestUserPrompt != "" || got.LatestAssistantUpdate != "" {
+		t.Fatalf("old native conversation checkpoint survived identity change: %+v", got)
+	}
+	if got.ConversationCheckpointState != domain.ConversationCheckpointEmpty {
+		t.Fatalf("new conversation checkpoint state = %q, want empty", got.ConversationCheckpointState)
+	}
+}
+
+func TestActivity_NewRuntimeLaunchClearsPriorConversationCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-old"
+	rec.Metadata.LatestUserPrompt = "old launch prompt"
+	rec.Metadata.LatestAssistantUpdate = "old launch answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointUnsettled = true
+	store.sessions[rec.ID] = rec
+
+	// A SessionStart hook proves that this native conversation belongs to the
+	// current runtime launch, but it carries no main-turn checkpoint of its own.
+	// Text observed under the prior launch must not become a hard replay gate for
+	// an interface switch from this launch.
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Event: "session-start", LaunchID: "launch-current", AgentSessionID: "native-current",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	got := store.sessions[rec.ID].Metadata
+	if got.AgentSessionID != "native-current" || got.AgentSessionIDLaunchID != "launch-current" {
+		t.Fatalf("native identity = id:%q launch:%q", got.AgentSessionID, got.AgentSessionIDLaunchID)
+	}
+	if got.LatestUserPrompt != "" || got.LatestAssistantUpdate != "" {
+		t.Fatalf("old runtime launch checkpoint survived current-launch identity proof: %+v", got)
+	}
+	if got.ConversationCheckpointState != domain.ConversationCheckpointEmpty {
+		t.Fatalf("new launch checkpoint state = %q, want empty", got.ConversationCheckpointState)
+	}
+	if !got.ConversationCheckpointUnsettled {
+		t.Fatal("same-native runtime restart erased unresolved provider turn boundary")
+	}
+}
+
+func TestActivity_NewCheckpointEpochKeepsLastHumanTimeMonotonic(t *testing.T) {
+	lastHumanAt := time.Unix(456, 0).UTC()
+	for _, tt := range []struct {
+		name           string
+		previousLaunch string
+		previousNative string
+	}{
+		{name: "new native identity", previousLaunch: "launch-current", previousNative: "native-old"},
+		{name: "new runtime launch", previousLaunch: "launch-old", previousNative: "native-current"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, st, _ := newManager()
+			rec := working("mer-1")
+			rec.Metadata = domain.SessionMetadata{
+				RuntimeLaunchID: "launch-current", AgentSessionID: tt.previousNative,
+				AgentSessionIDLaunchID: tt.previousLaunch, LatestUserPrompt: "old prompt",
+				LatestUserPromptAt: lastHumanAt, LatestAssistantUpdate: "old answer",
+				ConversationCheckpointState:      domain.ConversationCheckpointComplete,
+				ConversationCheckpointGeneration: tt.previousLaunch,
+				ConversationCheckpointNativeID:   tt.previousNative,
+			}
+			st.sessions[rec.ID] = rec
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Event: "session-start", LaunchID: "launch-current", AgentSessionID: "native-current",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cleared, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cleared.Metadata.LatestUserPromptAt.Equal(lastHumanAt) ||
+				cleared.Metadata.LatestUserPrompt != "" || cleared.Metadata.LatestAssistantUpdate != "" ||
+				cleared.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty {
+				t.Fatalf("epoch reset mixed old checkpoint with new owner or lost human time: %+v", cleared.Metadata)
+			}
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+				LaunchID: "launch-current", AgentSessionID: "native-current",
+				LatestUserPrompt: "new owner prompt", Timestamp: lastHumanAt.Add(-time.Minute),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Metadata.LatestUserPromptAt.Equal(lastHumanAt) ||
+				got.Metadata.LatestUserPrompt != "new owner prompt" || got.Metadata.LatestAssistantUpdate != "" ||
+				got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointPrompt ||
+				got.Metadata.ConversationCheckpointGeneration != "launch-current" ||
+				got.Metadata.ConversationCheckpointNativeID != "native-current" {
+				t.Fatalf("current owner did not establish an independent checkpoint with monotonic human time: %+v", got.Metadata)
+			}
+			// The retained time is a session-wide high-water mark, not this
+			// owner's clock. A later prompt below it is ordering-ambiguous and
+			// its Stop must not validate the previous prompt with a new answer.
+			for _, signal := range []ports.ActivitySignal{
+				{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestUserPrompt: "later skewed prompt", Timestamp: lastHumanAt.Add(-time.Second)},
+				{Valid: true, State: domain.ActivityIdle, Event: "stop",
+					LaunchID: "launch-current", AgentSessionID: "native-current",
+					LatestAssistantUpdate: "later answer", Timestamp: lastHumanAt},
+			} {
+				if err := m.ApplyActivitySignal(ctx, rec.ID, signal); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, _, err = st.GetSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Metadata.ConversationCheckpointUnsettled ||
+				got.Metadata.LatestUserPrompt != "new owner prompt" || got.Metadata.LatestAssistantUpdate != "" ||
+				!got.Metadata.LatestUserPromptAt.Equal(lastHumanAt) {
+				t.Fatalf("ambiguous prompt's Stop admitted a mixed checkpoint: %+v", got.Metadata)
+			}
+		})
+	}
+}
+
+func TestActivity_OldRuntimeGenerationCannotReplaceConversationCheckpoint(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "current prompt"
+	rec.Metadata.LatestAssistantUpdate = "current answer"
+	store.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		LaunchID: "launch-old", AgentSessionID: "native-old",
+		LatestAssistantUpdate: "late old-generation answer",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	if got := store.sessions[rec.ID]; got != rec {
+		t.Fatalf("old generation mutated current checkpoint: got %+v, want %+v", got, rec)
+	}
+}
+
+func TestActivity_UntaggedTUIHookCannotMutateLaunchedRuntime(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Mode = domain.SessionModeTUI
+	rec.Metadata.RuntimeLaunchID = "launch-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-current"
+	rec.Metadata.LatestUserPrompt = "current prompt"
+	rec.Metadata.LatestAssistantUpdate = "current answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "launch-current"
+	rec.Metadata.ConversationCheckpointNativeID = "native-current"
+	store.sessions[rec.ID] = rec
+
+	// Once a runtime launch owns the TUI session, an untagged legacy callback
+	// cannot prove that it belongs to that generation. A delayed callback from a
+	// prior launch must therefore be ignored in its entirety.
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		AgentSessionID: "native-old", LatestAssistantUpdate: "late untagged answer",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	if got := store.sessions[rec.ID]; got != rec {
+		t.Fatalf("untagged callback mutated launched runtime: got %+v, want %+v", got, rec)
+	}
+}
+
+func TestActivity_LaunchTaggedTUIStopAfterChatEpochCannotMutateSession(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Mode = domain.SessionModeChat
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.ProviderConversationID = "native-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.LatestUserPrompt = "trusted terminal prompt"
+	rec.Metadata.LatestAssistantUpdate = "trusted terminal answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "tui-launch"
+	rec.Metadata.ConversationCheckpointNativeID = "native-current"
+	store.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", LaunchID: "tui-launch",
+		AgentSessionID: "native-current", LatestAssistantUpdate: "late terminal stop",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	if got := store.sessions[rec.ID]; got != rec {
+		t.Fatalf("late TUI Stop mutated Chat owner: got %+v, want %+v", got, rec)
+	}
+}
+
+func TestActivity_UntaggedTUIStopAfterChatEpochCannotMutateSession(t *testing.T) {
+	m, store, _ := newManager()
+	rec := working("mer-1")
+	rec.Mode = domain.SessionModeChat
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.ProviderConversationID = "native-current"
+	rec.Metadata.ControllerGeneration = "chat-current"
+	rec.Metadata.AgentSessionID = "native-current"
+	rec.Metadata.LatestUserPrompt = "trusted terminal prompt"
+	rec.Metadata.LatestAssistantUpdate = "trusted terminal answer"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "tui-launch"
+	rec.Metadata.ConversationCheckpointNativeID = "native-current"
+	store.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		AgentSessionID: "native-current", LatestAssistantUpdate: "late untagged terminal stop",
+	}); err != nil {
+		t.Fatalf("ApplyActivitySignal: %v", err)
+	}
+	if got := store.sessions[rec.ID]; got != rec {
+		t.Fatalf("untagged late TUI Stop mutated Chat owner: got %+v, want %+v", got, rec)
 	}
 }
 
@@ -1334,12 +1950,15 @@ func TestActivity_SourceUpdateBeforeInternalHandoffRequestRemainsUserFacing(t *t
 			m := New(store, &fakeMessenger{})
 
 			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-				LaunchID: "source-generation", LatestAssistantUpdate: "real turn completed before AO requested a handoff",
+				Event: "stop", LaunchID: "source-generation", LatestAssistantUpdate: "real turn completed before AO requested a handoff",
 			}); err != nil {
 				t.Fatalf("ApplyActivitySignal: %v", err)
 			}
 			if got := store.session(rec.ID).Metadata.LatestAssistantUpdate; got != "real turn completed before AO requested a handoff" {
 				t.Fatalf("latest assistant update = %q, want legitimate pre-request update", got)
+			}
+			if got := store.session(rec.ID).Metadata.ConversationCheckpointState; got != domain.ConversationCheckpointLegacy {
+				t.Fatalf("checkpoint state = %q, want legacy standalone assistant", got)
 			}
 		})
 	}
@@ -1561,16 +2180,16 @@ type fakeUsageFinalizer struct {
 	calls           int
 	sawTerminated   bool
 	launchID        string
-	sessionRevision time.Time
+	sessionRevision int64
 	err             error
-	onFinalize      func(domain.SessionID, string, time.Time) error
+	onFinalize      func(domain.SessionID, string, int64) error
 }
 
 func (f *fakeUsageFinalizer) FinalizeSession(
 	_ context.Context,
 	id domain.SessionID,
 	launchID string,
-	sessionRevision time.Time,
+	sessionRevision int64,
 ) error {
 	f.calls++
 	f.sawTerminated = f.store.sessions[id].IsTerminated
@@ -1638,8 +2257,8 @@ func TestMarkTerminatedFinalizesUsageBeforeLifecycleTransition(t *testing.T) {
 	if finalizer.calls != 1 || finalizer.sawTerminated {
 		t.Fatalf("finalizer calls=%d sawTerminated=%v, want 1/false", finalizer.calls, finalizer.sawTerminated)
 	}
-	if !finalizer.sessionRevision.Equal(rec.UpdatedAt) {
-		t.Fatalf("finalizer session revision=%s, want %s", finalizer.sessionRevision, rec.UpdatedAt)
+	if finalizer.sessionRevision != rec.Revision {
+		t.Fatalf("finalizer session revision=%d, want %d", finalizer.sessionRevision, rec.Revision)
 	}
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("finalizer failure prevented session termination")
@@ -1658,7 +2277,7 @@ func TestMarkTerminatedDoesNotTerminateNewRuntimeGeneration(t *testing.T) {
 	rec.Metadata.RuntimeLaunchID = "launch-old"
 	st.sessions[rec.ID] = rec
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, _ time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, _ int64) error {
 		return m.MarkSpawned(ctx, id, domain.SessionMetadata{RuntimeLaunchID: "launch-new"})
 	}
 	m.SetUsageFinalizer(finalizer)
@@ -1681,13 +2300,13 @@ func TestMarkTerminatedRetriesFinalizationAfterSameLaunchRevisionChange(t *testi
 	rec.Metadata.RuntimeLaunchID = "launch-1"
 	rec.UpdatedAt = time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
 	st.sessions[rec.ID] = rec
-	var revisions []time.Time
+	var revisions []int64
 	finalizer := &fakeUsageFinalizer{store: st}
-	finalizer.onFinalize = func(id domain.SessionID, _ string, revision time.Time) error {
+	finalizer.onFinalize = func(id domain.SessionID, _ string, revision int64) error {
 		revisions = append(revisions, revision)
 		if len(revisions) == 1 {
 			current := st.sessions[id]
-			current.UpdatedAt = current.UpdatedAt.Add(time.Second)
+			current.Revision++
 			st.sessions[id] = current
 		}
 		return nil
@@ -1697,7 +2316,7 @@ func TestMarkTerminatedRetriesFinalizationAfterSameLaunchRevisionChange(t *testi
 	if err := m.MarkTerminated(ctx, rec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if len(revisions) != 2 || !revisions[0].Equal(rec.UpdatedAt) || !revisions[1].Equal(rec.UpdatedAt.Add(time.Second)) {
+	if len(revisions) != 2 || revisions[0] != rec.Revision || revisions[1] != rec.Revision+1 {
 		t.Fatalf("finalization revisions = %v", revisions)
 	}
 	if !st.sessions[rec.ID].IsTerminated {
@@ -1768,7 +2387,10 @@ func TestCommitControllerEpochOwnsModeAndActivityFacts(t *testing.T) {
 		Activity: domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: time.Unix(10, 0)},
 		Metadata: domain.SessionMetadata{
 			RuntimeHandleID: "runtime-1", RuntimeLaunchID: "launch-1",
-			AgentSessionID: "native-1",
+			AgentSessionID:   "native-1",
+			LatestUserPrompt: "trusted Terminal turn A", LatestAssistantUpdate: "trusted Terminal answer A",
+			ConversationCheckpointState:      domain.ConversationCheckpointComplete,
+			ConversationCheckpointGeneration: "launch-1", ConversationCheckpointNativeID: "native-1",
 		},
 	}
 
@@ -1789,11 +2411,47 @@ func TestCommitControllerEpochOwnsModeAndActivityFacts(t *testing.T) {
 		got.Metadata.ControllerGeneration != "" {
 		t.Fatalf("controller metadata = %+v", got.Metadata)
 	}
+	if got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointComplete ||
+		got.Metadata.LatestUserPrompt != "trusted Terminal turn A" ||
+		got.Metadata.LatestAssistantUpdate != "trusted Terminal answer A" {
+		t.Fatalf("TUI -> Chat discarded the admission checkpoint: %+v", got.Metadata)
+	}
 	changed, err = m.CommitControllerEpoch(
 		ctx, "mer-1", domain.SessionModeTUI, domain.SessionModeChat, "native-1", false,
 	)
 	if err != nil || changed {
 		t.Fatalf("stale controller epoch: changed=%v err=%v", changed, err)
+	}
+	changed, err = m.RestoreControllerEpoch(
+		ctx, "mer-1", domain.SessionModeChat, domain.SessionModeTUI, "native-1", false,
+	)
+	if err != nil || !changed {
+		t.Fatalf("restore Chat -> TUI controller epoch: changed=%v err=%v", changed, err)
+	}
+	got = st.sessions["mer-1"]
+	if got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointComplete ||
+		got.Metadata.LatestUserPrompt != "trusted Terminal turn A" ||
+		got.Metadata.LatestAssistantUpdate != "trusted Terminal answer A" {
+		t.Fatalf("rollback discarded the unaccepted replay checkpoint: %+v", got.Metadata)
+	}
+	changed, err = m.CommitControllerEpoch(
+		ctx, "mer-1", domain.SessionModeTUI, domain.SessionModeChat, "native-1", false,
+	)
+	if err != nil || !changed {
+		t.Fatalf("second TUI -> Chat controller epoch: changed=%v err=%v", changed, err)
+	}
+	changed, err = m.CommitControllerEpoch(
+		ctx, "mer-1", domain.SessionModeChat, domain.SessionModeTUI, "native-1", false,
+	)
+	if err != nil || !changed {
+		t.Fatalf("Chat -> TUI controller epoch: changed=%v err=%v", changed, err)
+	}
+	got = st.sessions["mer-1"]
+	if got.Metadata.LatestUserPrompt != "" || got.Metadata.LatestAssistantUpdate != "" ||
+		got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
+		got.Metadata.ConversationCheckpointGeneration != "" ||
+		got.Metadata.ConversationCheckpointNativeID != "" {
+		t.Fatalf("Chat -> TUI retained stale admission checkpoint: %+v", got.Metadata)
 	}
 }
 
@@ -4401,9 +5059,15 @@ func TestActivitySignalFencesChatByControllerGenerationDespiteStaleRuntimeMetada
 	st.sessions["mer-1"] = domain.SessionRecord{
 		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
 		Metadata: domain.SessionMetadata{
-			RuntimeHandleID:      "stale-tui-runtime",
-			RuntimeLaunchID:      "stale-tui-generation",
-			ControllerGeneration: "chat-generation",
+			RuntimeHandleID:                  "stale-tui-runtime",
+			RuntimeLaunchID:                  "stale-tui-generation",
+			ControllerGeneration:             "chat-generation",
+			AgentSessionID:                   "native-current",
+			LatestUserPrompt:                 "trusted terminal prompt",
+			LatestAssistantUpdate:            "trusted terminal answer",
+			ConversationCheckpointState:      domain.ConversationCheckpointComplete,
+			ConversationCheckpointGeneration: "stale-tui-generation",
+			ConversationCheckpointNativeID:   "native-current",
 		},
 		Activity: domain.Activity{State: domain.ActivityIdle},
 	}
@@ -4412,12 +5076,16 @@ func TestActivitySignalFencesChatByControllerGenerationDespiteStaleRuntimeMetada
 	for _, signal := range []ports.ActivitySignal{
 		{Valid: true, State: domain.ActivityActive, LaunchID: "stale-tui-generation"},
 		{Valid: true, State: domain.ActivityActive, ControllerGeneration: "foreign-generation"},
+		{Valid: true, State: domain.ActivityIdle, Event: "stop", LaunchID: "stale-tui-generation", AgentSessionID: "native-current", LatestAssistantUpdate: "late terminal answer"},
 	} {
 		if err := m.ApplyActivitySignal(ctx, "mer-1", signal); err != nil {
 			t.Fatalf("reject non-owner signal: %v", err)
 		}
 		if got := st.sessions["mer-1"].Activity.State; got != domain.ActivityIdle {
 			t.Fatalf("non-owner signal changed activity to %q", got)
+		}
+		if got := st.sessions["mer-1"].Metadata.LatestAssistantUpdate; got != "trusted terminal answer" {
+			t.Fatalf("non-owner signal changed checkpoint to %q", got)
 		}
 	}
 
@@ -4430,6 +5098,25 @@ func TestActivitySignalFencesChatByControllerGenerationDespiteStaleRuntimeMetada
 		if got := st.sessions["mer-1"].Activity.State; got != state {
 			t.Fatalf("current Chat signal left activity at %q, want %q", got, state)
 		}
+	}
+}
+
+func TestActivitySignalRetryPreservesCursorPermissionCorrelation(t *testing.T) {
+	st := &activityRevisionConflictStore{fakeStore: newFakeStore()}
+	seedSignaled(st.fakeStore, "mer-1", domain.ActivityActive)
+	m := New(st, nil)
+	mustApply(t, m, "mer-1", sig(domain.ActivityBlocked, "before-shell-execution", "git push", ""))
+
+	// Finishing the approved tool removes its in-memory correlation before the
+	// durable write. A revision miss must restore that correlation for the retry,
+	// or the real completion is suppressed and the UI remains stuck on approval.
+	st.conflictNext = true
+	mustApply(t, m, "mer-1", sig(domain.ActivityActive, "after-shell-execution", "git push", ""))
+	if st.conflictNext {
+		t.Fatal("test did not exercise a conflicting activity projection")
+	}
+	if got := stateOf(st.fakeStore, "mer-1"); got != domain.ActivityActive {
+		t.Fatalf("state after approved tool and revision retry = %q, want active", got)
 	}
 }
 

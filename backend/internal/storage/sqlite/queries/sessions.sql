@@ -7,15 +7,15 @@ INSERT INTO sessions (
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
+    native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
@@ -24,7 +24,10 @@ UPDATE sessions SET
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
     runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?,
+    conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
+    conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?,
+    native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
@@ -52,6 +55,11 @@ WHERE id = sqlc.arg(id)
 UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
     latest_user_prompt_at = sqlc.arg(updated_at),
+    latest_assistant_update = '',
+    conversation_checkpoint_state = 'legacy',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_terminated = 0
@@ -64,6 +72,11 @@ WHERE id = sqlc.arg(id)
 UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
     latest_user_prompt_at = sqlc.arg(latest_user_prompt_at),
+    latest_assistant_update = '',
+    conversation_checkpoint_state = 'legacy',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = MAX(updated_at, sqlc.arg(latest_user_prompt_at))
 WHERE id = sqlc.arg(id)
   AND is_terminated = 0
@@ -88,52 +101,85 @@ WHERE id = ? AND session_mode = 'chat' AND is_terminated = 0;
 -- process-specific handle prevents either interface from inheriting the
 -- other's writer identity.
 UPDATE sessions
-SET session_mode = ?,
+SET session_mode = sqlc.arg(target_mode),
     runtime_handle_id = '',
     runtime_launch_id = '',
-    agent_session_id = ?,
+    agent_session_id = sqlc.arg(agent_session_id),
     agent_session_id_launch_id = '',
-    provider_conversation_id = ?,
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
+    controller_generation = '',
+    latest_user_prompt = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE latest_user_prompt END,
+    latest_assistant_update = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE latest_assistant_update END,
+    conversation_checkpoint_state = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN 'empty' ELSE conversation_checkpoint_state END,
+    conversation_checkpoint_generation = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE conversation_checkpoint_generation END,
+    conversation_checkpoint_native_id = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE conversation_checkpoint_native_id END,
+    conversation_checkpoint_unsettled = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN 0 ELSE conversation_checkpoint_unsettled END,
+    conversation_checkpoint_turn_id = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE conversation_checkpoint_turn_id END,
+    activity_state = 'idle',
+    activity_last_at = sqlc.arg(activity_last_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND session_mode = sqlc.arg(source_mode) AND is_terminated = 0;
+
+-- name: RestoreSessionControllerEpoch :execrows
+-- Rollback owns the same controller/activity facts but retains the source replay
+-- checkpoint: the failed target never accepted it, so a later strict retry must
+-- prove the same checkpoint again.
+UPDATE sessions
+SET session_mode = sqlc.arg(target_mode),
+    runtime_handle_id = '',
+    runtime_launch_id = '',
+    agent_session_id = sqlc.arg(agent_session_id),
+    agent_session_id_launch_id = '',
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
     controller_generation = '',
     activity_state = 'idle',
-    activity_last_at = ?,
-    updated_at = ?
-WHERE id = ? AND session_mode = ? AND is_terminated = 0;
+    activity_last_at = sqlc.arg(activity_last_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND session_mode = sqlc.arg(source_mode) AND is_terminated = 0;
 
 -- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE project_id = ? ORDER BY num;
 
 -- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num;
 
 
@@ -179,6 +225,7 @@ SELECT EXISTS(
       AND agent_session_id = ''
       AND prompt = ''
       AND latest_user_prompt = ''
+      AND latest_user_prompt_at IS NULL
       AND latest_assistant_update = ''
       AND native_transcript_path = ''
 ) AS is_seed;

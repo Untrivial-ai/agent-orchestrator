@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 )
 
@@ -20,6 +22,30 @@ type activityCapture struct {
 	body string
 	path string
 	hits int
+}
+
+func TestHookConversationFactsCodexTurnIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		harness domain.AgentHarness
+		event   string
+		payload string
+		want    string
+	}{
+		{"prompt", domain.HarnessCodex, "user-prompt-submit", `{"prompt":"continue","turn_id":"turn-1"}`, "turn-1"},
+		{"stop", domain.HarnessCodex, "stop", `{"turn_id":"turn-1"}`, "turn-1"},
+		{"subagent", domain.HarnessCodex, "stop", `{"turn_id":"turn-1","agent_id":"child"}`, ""},
+		{"unrelated event", domain.HarnessCodex, "post-tool-use", `{"turn_id":"turn-1"}`, ""},
+		{"other provider", domain.HarnessClaudeCode, "stop", `{"turn_id":"turn-1"}`, ""},
+		{"missing ID", domain.HarnessCodex, "stop", `{}`, ""},
+		{"oversized ID", domain.HarnessCodex, "stop", `{"turn_id":"` + strings.Repeat("a", 257) + `"}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hookConversationFacts(tt.harness, tt.event, []byte(tt.payload)).ProviderTurnID; got != tt.want {
+				t.Fatalf("turn ID = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 // activityServer accepts POST /api/v1/sessions/{id}/activity and records what
@@ -406,7 +432,7 @@ func TestHooks_StopReportsIdle(t *testing.T) {
 	}
 }
 
-func TestHooks_StopReportsConversationFacts(t *testing.T) {
+func TestHooks_StopReportsOnlyMainAssistantCheckpoint(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")
 	cfg := setConfigEnv(t)
@@ -425,7 +451,7 @@ func TestHooks_StopReportsConversationFacts(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
 		t.Fatal(err)
 	}
-	if req.LatestUserPrompt != "finish the regression test" || req.LatestAssistantUpdate != "I updated the generation fence." {
+	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "I updated the generation fence." {
 		t.Fatalf("conversation facts = %#v", req)
 	}
 	if req.TranscriptPath != "/tmp/provider/session.jsonl" {
@@ -451,8 +477,152 @@ func TestHooks_ContinueStopReportsClaudeCompatibleConversationFacts(t *testing.T
 	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
 		t.Fatal(err)
 	}
-	if req.LatestUserPrompt != "finish the Continue fix" || req.LatestAssistantUpdate != "I updated the detector." || req.TranscriptPath != "/tmp/continue/session.jsonl" {
+	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "I updated the detector." || req.TranscriptPath != "/tmp/continue/session.jsonl" {
 		t.Fatalf("conversation facts = %#v", req)
+	}
+}
+
+func TestHooks_CodexStopDoesNotReportClaudeAssistantCheckpoint(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"last_assistant_message":"Claude-only checkpoint field","transcript_path":"/tmp/provider/session.jsonl"}`
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "codex", "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.LatestAssistantUpdate != "" {
+		t.Fatalf("Codex Stop promoted Claude-only checkpoint = %q", req.LatestAssistantUpdate)
+	}
+}
+
+func TestHooks_UserPromptSubmitReportsOnlyMainUserCheckpoint(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"prompt":"finish the regression test","last_assistant_message":"stale answer from the prior turn","transcript_path":"/tmp/provider/session.jsonl"}`
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "claude-code", "user-prompt-submit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.LatestUserPrompt != "finish the regression test" || req.LatestAssistantUpdate != "" ||
+		req.ConversationCheckpointOrigin != domain.ConversationCheckpointOriginHuman {
+		t.Fatalf("conversation facts = %#v", req)
+	}
+}
+
+func TestHooks_SubagentStopCannotReportMainConversationCheckpoint(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"session_id":"native-main","agent_id":"subagent-1","prompt":"subagent task","last_assistant_message":"subagent answer","transcript_path":"/tmp/provider/session.jsonl","agent_transcript_path":"/tmp/provider/subagent.jsonl"}`
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "claude-code", "subagent-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "" {
+		t.Fatalf("subagent conversation facts escaped onto the main checkpoint: %#v", req)
+	}
+}
+
+func TestHooks_InternalHandoffStopCannotReportAssistantCheckpoint(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"session_id":"native-main","prompt":"<ao-handoff-request switch-id=\"switch-1\">prepare context","last_assistant_message":"internal handoff submitted","transcript_path":"/tmp/provider/session.jsonl"}`
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "claude-code", "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "" {
+		t.Fatalf("internal handoff escaped onto the main checkpoint: %#v", req)
+	}
+}
+
+func TestHooks_InternalContinuationStopCannotReportConversationCheckpoint(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	prompt := "AO transferred the previous agent's context in hidden system instructions. Continue a clear, safe, already-authorized unfinished action; otherwise, acknowledge the current objective and wait for the user."
+	payload := `{"session_id":"native-main","prompt":` + mustJSONString(t, prompt) + `,"last_assistant_message":"AO continuation acknowledged","transcript_path":"/tmp/provider/session.jsonl"}`
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "claude-code", "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "" ||
+		req.ConversationCheckpointOrigin != domain.ConversationCheckpointOriginCoordination {
+		t.Fatalf("internal continuation escaped onto the completed checkpoint: %#v", req)
+	}
+}
+
+func TestHookConversationFactsTrustsOnlyDocumentedClaudeStopAssistantField(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{name: "documented snake case", payload: `{"last_assistant_message":"trusted"}`, want: "trusted"},
+		{name: "camel case lookalike", payload: `{"lastAssistantMessage":"untrusted"}`},
+		{name: "assistant snake case lookalike", payload: `{"assistant_message":"untrusted"}`},
+		{name: "assistant camel case lookalike", payload: `{"assistantMessage":"untrusted"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hookConversationFacts(domain.HarnessClaudeCode, "stop", []byte(tt.payload))
+			if got.LatestAssistantUpdate != tt.want {
+				t.Fatalf("assistant checkpoint = %q, want %q", got.LatestAssistantUpdate, tt.want)
+			}
+		})
 	}
 }
 
@@ -485,25 +655,21 @@ func TestHookConversationFactsExcludesAOCoordinationUserTurns(t *testing.T) {
 		"<ao-handoff-request switch-id=\"switch-1\">\nprepare context",
 		"AO transferred the previous agent's context in hidden system instructions. Continue the unfinished action.",
 	} {
-		got := hookConversationFacts([]byte(`{"prompt":` + mustJSONString(t, prompt) + `,"lastAssistantMessage":"ok"}`))
+		got := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", []byte(`{"prompt":`+mustJSONString(t, prompt)+`,"lastAssistantMessage":"ok"}`))
 		if got.LatestUserPrompt != "" {
 			t.Fatalf("prompt %q was retained as real user intent", prompt)
 		}
-		wantAssistant := "ok"
-		if strings.HasPrefix(prompt, "<ao-handoff-request") {
-			wantAssistant = ""
-		}
-		if got.LatestAssistantUpdate != wantAssistant {
-			t.Fatalf("assistant update = %q, want %q", got.LatestAssistantUpdate, wantAssistant)
+		if got.LatestAssistantUpdate != "" {
+			t.Fatalf("assistant update = %q, want event-scoped empty value", got.LatestAssistantUpdate)
 		}
 	}
 }
 
 func TestHookMetadataAndConversationFactsTolerateMalformedOtherProjection(t *testing.T) {
 	t.Run("malformed usage retains conversation", func(t *testing.T) {
-		payload := []byte(`{"prompt":"continue investigating","lastAssistantMessage":"updated","transcriptPath":"/tmp/conversation.jsonl","model":false}`)
-		conversation := hookConversationFacts(payload)
-		if conversation.LatestUserPrompt != "continue investigating" || conversation.LatestAssistantUpdate != "updated" || conversation.TranscriptPath != "/tmp/conversation.jsonl" {
+		payload := []byte(`{"prompt":"continue investigating","last_assistant_message":"updated","transcriptPath":"/tmp/conversation.jsonl","model":false}`)
+		conversation := hookConversationFacts(domain.HarnessClaudeCode, "stop", payload)
+		if conversation.LatestUserPrompt != "" || conversation.LatestAssistantUpdate != "updated" || conversation.TranscriptPath != "/tmp/conversation.jsonl" {
 			t.Fatalf("conversation = %+v", conversation)
 		}
 		if usage := hookUsageMetadata("claude-code", payload); usage != nil {
@@ -1129,6 +1295,60 @@ func TestHooks_DaemonDownIsBestEffort(t *testing.T) {
 	}, "hooks", "claude-code", "session-end")
 	if err != nil {
 		t.Fatalf("hooks must be best-effort (exit 0) when the daemon is down, got: %v", err)
+	}
+}
+
+func TestHooks_RetryOnlyUncommittedActivityProjection(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		code      string
+		failures  int32
+		wantCalls int32
+	}{
+		{"transient contention", "ACTIVITY_PROJECTION_BUSY", 2, 3},
+		{"persistent contention", "ACTIVITY_PROJECTION_BUSY", 9, 4},
+		{"other unavailable error is not safe to repeat", "SERVICE_UNAVAILABLE", 2, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			cfg := setConfigEnv(t)
+			var calls atomic.Int32
+			payloads := make(chan string, 10)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				payloads <- string(body)
+				if calls.Add(1) <= tt.failures {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_ = json.NewEncoder(w).Encode(map[string]string{"code": tt.code, "message": "try again", "requestId": "hook-request"})
+					return
+				}
+				_, _ = io.WriteString(w, `{"ok":true}`)
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, Deps{In: strings.NewReader(`{"session_id":"native-1","last_assistant_message":"answer"}`),
+				ProcessAlive: func(int) bool { return true }}, "hooks", "claude-code", "stop")
+			if err != nil || calls.Load() != tt.wantCalls {
+				t.Fatalf("hook delivery = %d calls, %v; want %d", calls.Load(), err, tt.wantCalls)
+			}
+			first := <-payloads
+			for i := int32(1); i < tt.wantCalls; i++ {
+				if got := <-payloads; got != first {
+					t.Fatalf("retry changed original signal: %s != %s", got, first)
+				}
+			}
+			failure, logErr := os.ReadFile(filepath.Join(cfg.dataDir, "hooks.log"))
+			if tt.failures < tt.wantCalls {
+				if !errors.Is(logErr, fs.ErrNotExist) {
+					t.Fatalf("successful retry logged a failed delivery: %s %v", failure, logErr)
+				}
+			} else if logErr != nil || !strings.Contains(string(failure), "hook-request") {
+				t.Fatalf("exhausted retry lost request-correlated evidence: %s %v", failure, logErr)
+			}
+		})
 	}
 }
 

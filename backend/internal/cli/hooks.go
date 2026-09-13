@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -44,16 +46,18 @@ const (
 // native payload when present. All four are optional: an old daemon decodes
 // the body leniently and simply ignores them.
 type setActivityAPIRequest struct {
-	State                 string             `json:"state,omitempty"`
-	Event                 string             `json:"event,omitempty"`
-	ToolName              string             `json:"toolName,omitempty"`
-	ToolUseID             string             `json:"toolUseId,omitempty"`
-	AgentSessionID        string             `json:"agentSessionId,omitempty"`
-	LatestUserPrompt      string             `json:"latestUserPrompt,omitempty"`
-	LatestAssistantUpdate string             `json:"latestAssistantUpdate,omitempty"`
-	TranscriptPath        string             `json:"transcriptPath,omitempty"`
-	LaunchID              string             `json:"launchId,omitempty"`
-	Usage                 *usageHookMetadata `json:"usage,omitempty"`
+	State                        string                              `json:"state,omitempty"`
+	Event                        string                              `json:"event,omitempty"`
+	ToolName                     string                              `json:"toolName,omitempty"`
+	ToolUseID                    string                              `json:"toolUseId,omitempty"`
+	AgentSessionID               string                              `json:"agentSessionId,omitempty"`
+	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty"`
+	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty"`
+	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty"`
+	ProviderTurnID               string                              `json:"providerTurnId,omitempty"`
+	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
+	LaunchID                     string                              `json:"launchId,omitempty"`
+	Usage                        *usageHookMetadata                  `json:"usage,omitempty"`
 }
 
 type usageHookMetadata struct {
@@ -238,38 +242,68 @@ func hookRouteFlagEnabled(value string) bool {
 }
 
 type hookConversationSnapshot struct {
+	ProviderTurnID        string
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
+	CheckpointOrigin      domain.ConversationCheckpointOrigin
 	TranscriptPath        string
 }
 
-func hookConversationFacts(payload []byte) hookConversationSnapshot {
+func hookConversationFacts(agent domain.AgentHarness, event string, payload []byte) hookConversationSnapshot {
 	var p struct {
-		Prompt                    string `json:"prompt"`
-		UserPrompt                string `json:"user_prompt"`
-		UserPromptCamel           string `json:"userPrompt"`
-		LastAssistantMessage      string `json:"last_assistant_message"`
-		LastAssistantMessageCamel string `json:"lastAssistantMessage"`
-		AssistantMessage          string `json:"assistant_message"`
-		AssistantMessageCamel     string `json:"assistantMessage"`
-		TranscriptPath            string `json:"transcript_path"`
-		TranscriptPathCamel       string `json:"transcriptPath"`
+		Prompt               string `json:"prompt"`
+		TurnID               string `json:"turn_id"`
+		UserPrompt           string `json:"user_prompt"`
+		UserPromptCamel      string `json:"userPrompt"`
+		LastAssistantMessage string `json:"last_assistant_message"`
+		TranscriptPath       string `json:"transcript_path"`
+		TranscriptPathCamel  string `json:"transcriptPath"`
+		SubagentID           string `json:"agent_id"`
 	}
 	_ = json.Unmarshal(payload, &p)
-	userPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
-	assistant := firstHookValue(p.LastAssistantMessage, p.LastAssistantMessageCamel, p.AssistantMessage, p.AssistantMessageCamel)
+	observedPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
+	var userPrompt, assistant, turnID string
+	origin := domain.ConversationCheckpointOriginUnknown
+	// Conversation checkpoints are trusted only at the main-turn boundaries that
+	// own each fact. Several Claude payloads repeat prompt/assistant aliases on
+	// unrelated events, and SubagentStop uses the same shape as the main Stop.
+	// Treating those copies as current main-thread facts can permanently make an
+	// otherwise healthy provider replay look incomplete.
+	if strings.TrimSpace(p.SubagentID) == "" {
+		if agent == domain.HarnessCodex && (event == "user-prompt-submit" || event == "stop") {
+			turnID = strings.TrimSpace(p.TurnID)
+			if len(turnID) > maxActivityMetaLen || domain.SanitizeControlChars(turnID) != turnID {
+				turnID = ""
+			}
+		}
+		switch event {
+		case "user-prompt-submit":
+			userPrompt = observedPrompt
+			origin = domain.ConversationCheckpointOriginHuman
+		case "stop":
+			// Claude and Continue's Claude-compatible hooks report this field on
+			// Stop. Similar-looking fields from Codex do not carry the same
+			// main-turn guarantee and must not become hard replay checkpoints.
+			if agent == domain.HarnessClaudeCode || agent == domain.HarnessContinue {
+				assistant = p.LastAssistantMessage
+			}
+		}
+	}
 	// AO's own handoff request and continuation kickoff are coordination turns,
 	// not the latest real user instruction. They remain in provider history but
 	// must not overwrite deterministic user intent.
-	if strings.HasPrefix(strings.TrimSpace(userPrompt), "<ao-handoff-request") {
-		assistant = ""
-	}
-	if isAOCoordinationMessage(userPrompt) {
+	if isAOCoordinationMessage(observedPrompt) {
 		userPrompt = ""
+		assistant = ""
+		if event == "user-prompt-submit" || event == "stop" {
+			origin = domain.ConversationCheckpointOriginCoordination
+		}
 	}
 	return hookConversationSnapshot{
+		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
 		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
+		CheckpointOrigin:      origin,
 		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
 	}
 }
@@ -400,29 +434,51 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	conversation := hookConversationSnapshot{}
 	switch domain.AgentHarness(agent) {
 	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue:
-		conversation = hookConversationFacts(payload)
+		conversation = hookConversationFacts(domain.AgentHarness(agent), event, payload)
 	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"
 	req := setActivityAPIRequest{
-		Event:                 event,
-		ToolName:              toolName,
-		ToolUseID:             toolUseID,
-		AgentSessionID:        agentSessionID,
-		LatestUserPrompt:      conversation.LatestUserPrompt,
-		LatestAssistantUpdate: conversation.LatestAssistantUpdate,
-		TranscriptPath:        conversation.TranscriptPath,
-		LaunchID:              launchID,
-		Usage:                 usage,
+		Event:                        event,
+		ToolName:                     toolName,
+		ToolUseID:                    toolUseID,
+		AgentSessionID:               agentSessionID,
+		LatestUserPrompt:             conversation.LatestUserPrompt,
+		LatestAssistantUpdate:        conversation.LatestAssistantUpdate,
+		ConversationCheckpointOrigin: conversation.CheckpointOrigin,
+		ProviderTurnID:               conversation.ProviderTurnID,
+		TranscriptPath:               conversation.TranscriptPath,
+		LaunchID:                     launchID,
+		Usage:                        usage,
 	}
 	if hasActivity {
 		req.State = string(state)
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postActivityHook(ctx, path, req); err != nil {
 		// Surface the failure for diagnosis, but exit 0: a failed activity
 		// report must not disrupt the agent.
 		c.reportHookFailure(agent, event, sessionID, err)
 	}
 	return nil
+}
+
+func (c *commandContext) postActivityHook(ctx context.Context, path string, req setActivityAPIRequest) error {
+	for attempt := 0; ; attempt++ {
+		err := c.postJSON(ctx, path, req, nil)
+		var response apiResponseError
+		// Only this response guarantees the signal did not commit. Retrying
+		// transport errors or generic 503s could duplicate an applied Stop.
+		if attempt >= 3 || !errors.As(err, &response) || response.StatusCode != http.StatusServiceUnavailable ||
+			response.ErrorBody.Code != "ACTIVITY_PROJECTION_BUSY" {
+			return err
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func isCursorPermissionHook(agent, event string) bool {
@@ -454,7 +510,7 @@ func (c *commandContext) runCursorPermissionHook(ctx context.Context, agent, eve
 		AgentSessionID: hookAgentSessionID(payload),
 		LaunchID:       launchID,
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postActivityHook(ctx, path, req); err != nil {
 		c.reportHookFailure(agent, event, sessionID, err)
 		if decision.Permission == "ask" {
 			return fmt.Errorf("persist blocked Cursor activity: %w", err)

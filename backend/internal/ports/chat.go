@@ -76,6 +76,61 @@ var (
 	ErrChatHistoryUnavailable = errors.New("chat conversation history replay is unavailable")
 )
 
+// ChatHistoryMismatchDimension identifies the exact durable checkpoint fact a
+// provider replay has not reached. Callers may offer provider-history recovery
+// only when every dimension is legacy hook text; trusted text and AO high-water
+// facts remain hard gates.
+type ChatHistoryMismatchDimension string
+
+// Chat history mismatch dimensions.
+const (
+	ChatHistoryMismatchUntrustedUserText      ChatHistoryMismatchDimension = "untrusted_user_text"
+	ChatHistoryMismatchUntrustedAssistantText ChatHistoryMismatchDimension = "untrusted_assistant_text"
+	ChatHistoryMismatchTrustedUserText        ChatHistoryMismatchDimension = "trusted_user_text"
+	ChatHistoryMismatchTrustedTurn            ChatHistoryMismatchDimension = "trusted_turn_boundary"
+	ChatHistoryMismatchTrustedAssistantText   ChatHistoryMismatchDimension = "trusted_assistant_text"
+	ChatHistoryMismatchNativeIdentity         ChatHistoryMismatchDimension = "native_identity"
+	ChatHistoryMismatchAOHighWater            ChatHistoryMismatchDimension = "ao_high_water"
+	ChatHistoryMismatchUnsettledBoundary      ChatHistoryMismatchDimension = "unsettled_turn_boundary"
+)
+
+// ChatHistoryUnsettledError preserves mismatch dimensions while unwrapping to
+// ErrChatHistoryUnsettled for existing admission and API handling.
+type ChatHistoryUnsettledError struct {
+	Dimensions []ChatHistoryMismatchDimension
+}
+
+func (e *ChatHistoryUnsettledError) Error() string {
+	return fmt.Sprintf("%s: checkpoint mismatches %v", ErrChatHistoryUnsettled, e.Dimensions)
+}
+
+func (e *ChatHistoryUnsettledError) Unwrap() error { return ErrChatHistoryUnsettled }
+
+// ChatHistoryMismatchDimensions returns a copy of typed checkpoint dimensions.
+func ChatHistoryMismatchDimensions(err error) []ChatHistoryMismatchDimension {
+	var mismatch *ChatHistoryUnsettledError
+	if !errors.As(err, &mismatch) {
+		return nil
+	}
+	return append([]ChatHistoryMismatchDimension(nil), mismatch.Dimensions...)
+}
+
+// ChatHistoryMismatchOnlyUntrustedText reports whether an explicit provider-
+// history recovery may safely waive every mismatch in err.
+func ChatHistoryMismatchOnlyUntrustedText(err error) bool {
+	dimensions := ChatHistoryMismatchDimensions(err)
+	if len(dimensions) == 0 {
+		return false
+	}
+	for _, dimension := range dimensions {
+		if dimension != ChatHistoryMismatchUntrustedUserText &&
+			dimension != ChatHistoryMismatchUntrustedAssistantText {
+			return false
+		}
+	}
+	return true
+}
+
 // ChatCapabilityError reports why a harness cannot satisfy one session's Chat
 // admission policy. It unwraps to ErrChatUnsupported so existing callers keep
 // their stable error code while typed clients can render a safe recovery action

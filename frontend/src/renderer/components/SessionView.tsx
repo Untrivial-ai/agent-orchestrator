@@ -38,6 +38,7 @@ import {
 	SessionInterfaceSwitchDialog,
 	SessionInterfaceSwitchMenuItem,
 	SessionInterfaceTransitionNotice,
+	interfaceTransitionOffersHistoryRecovery,
 } from "./SessionInterfaceSwitch";
 import { ShellTopbar } from "./ShellTopbar";
 import { SwitchAgentDialog } from "./SwitchAgentDialog";
@@ -61,6 +62,7 @@ import {
 import {
 	interfaceTransitionHasUnacknowledgedNotice,
 	interfaceTransitionIsActive,
+	interfaceTransitionNeedsRestart,
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
@@ -156,6 +158,7 @@ type ReviewerTerminalTarget = { handleId: string; harness: string };
 type InterfaceSwitchDialogScope = {
 	sessionId: string;
 	targetMode: "chat" | "tui";
+	historyPolicy?: "strict" | "provider_history";
 };
 
 type WorkspaceLayoutMode = "utility" | "browser" | "files";
@@ -1245,6 +1248,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 
 	const activeInterfaceTransition = interfaceTransitionIsActive(interfaceSwitch.transition);
+	const hasInterfaceNotice = interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition);
+	const historyRecoveryNotice = hasInterfaceNotice && interfaceTransitionOffersHistoryRecovery(interfaceSwitch.transition);
+	const restartRequiredNotice = interfaceTransitionNeedsRestart(interfaceSwitch.transition);
 	const chatLeaveLocked = Boolean(
 		chatLeaveLock?.sessionId === sessionId && session?.mode === "chat",
 	);
@@ -1302,7 +1308,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 	const chatToTerminal = session?.mode === "chat" && interfaceTarget === "tui";
 	const beginInterfaceSwitch = useCallback(
-		async (policy: "drain" | "interrupt", targetMode: "chat" | "tui", dialogScope?: InterfaceSwitchDialogScope) => {
+		async (
+			policy: "drain" | "interrupt",
+			targetMode: "chat" | "tui",
+			dialogScope?: InterfaceSwitchDialogScope,
+			historyPolicy: "strict" | "provider_history" = "strict",
+		) => {
 			const draftLeaveDecision = chatToTerminal && getChatDraftBoundaries(sessionId).length > 0
 				? await confirmUnsafeDraftLeave()
 				: ({ kind: "safe" } satisfies UnsafeDraftLeaveDecision);
@@ -1324,7 +1335,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				});
 			}
 			try {
-				const response = await interfaceSwitch.start({ targetMode, policy });
+				const response = await interfaceSwitch.start({ targetMode, policy, historyPolicy });
 				if (chatLeaveRequestId !== undefined) {
 					setChatLeaveLock((current) =>
 						current?.requestId === chatLeaveRequestId && response?.transition?.id
@@ -1386,9 +1397,26 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				policy,
 				interfaceSwitchDialogScope.targetMode,
 				interfaceSwitchDialogScope,
+				interfaceSwitchDialogScope.historyPolicy,
 			);
 		},
 		[beginInterfaceSwitch, interfaceSwitchDialogScope, interfaceTarget, session],
+	);
+	const requestFailedInterfaceSwitch = useCallback(
+		(historyPolicy: "strict" | "provider_history") => {
+			const failed = interfaceSwitch.transition;
+			if (!session || !failed || failed.sessionId !== session.id || failed.targetMode !== interfaceTarget) return;
+			interfaceSwitch.resetStartError();
+			// A failed attempt's interrupt policy is stale consent. Re-evaluate the
+			// current Terminal state and either choose the safe drain default or ask
+			// again before cancelling newly started work.
+			if (!interfaceBusy) {
+				void beginInterfaceSwitch("drain", failed.targetMode, undefined, historyPolicy);
+				return;
+			}
+			setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: failed.targetMode, historyPolicy });
+		},
+		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the button entirely rather than showing a permanently disabled control.
@@ -2062,7 +2090,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									/>
 								</div>
 							) : null}
-							{interfaceSwitch.startError && !interfaceSwitchDialogOpen ? (
+							{interfaceSwitch.startError && !interfaceSwitchDialogOpen && !historyRecoveryNotice && !restartRequiredNotice ? (
 								<div role="alert" className="absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-3 rounded-lg border border-destructive/40 bg-popover px-3 py-2.5 text-xs shadow-md">
 									<div className="min-w-0 flex-1">
 										<p className="font-medium">{t("session.interfaceSwitchFailed")}</p>
@@ -2071,7 +2099,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									<button type="button" aria-label={t("session.dismissInterfaceSwitchError")} className="shrink-0 rounded px-1 text-muted-foreground hover:text-foreground" onClick={interfaceSwitch.resetStartError}>{t("session.dismissInterfaceSwitchNotice")}</button>
 								</div>
 							) : null}
-							{!interfaceSwitch.startError && interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) ? (
+							{(!interfaceSwitch.startError || historyRecoveryNotice || restartRequiredNotice) && hasInterfaceNotice ? (
 								<SessionInterfaceTransitionNotice
 									transition={interfaceSwitch.transition}
 									dismissing={interfaceSwitch.acknowledgingNotice}
@@ -2086,6 +2114,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 										if (targetMode) void beginInterfaceSwitch("interrupt", targetMode);
 									}}
 									interrupting={interfaceSwitch.starting}
+									onRetry={() => {
+										requestFailedInterfaceSwitch("strict");
+									}}
+									onUseProviderHistory={() => {
+										requestFailedInterfaceSwitch("provider_history");
+									}}
+									recoveryError={interfaceSwitch.startError}
+									retrying={interfaceSwitch.starting}
 								/>
 							) : null}
 						</div>

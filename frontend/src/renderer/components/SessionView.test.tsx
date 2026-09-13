@@ -80,33 +80,8 @@ vi.mock("../hooks/useCloudCp", () => ({
 		ready: true,
 	}),
 }));
-vi.mock("../hooks/useSessionInterfaceTransition", () => ({
-	interfaceTransitionIsActive: (transition?: { phase?: string }) =>
-		Boolean(
-			transition &&
-				[
-					"requested",
-					"preflighting",
-					"draining",
-					"source_stopping",
-					"source_stopped",
-					"target_starting",
-					"activating",
-				].includes(transition.phase ?? ""),
-		),
-	interfaceTransitionIsCancellable: (transition?: { phase?: string }) =>
-		Boolean(
-			transition && ["requested", "preflighting", "draining"].includes(transition.phase ?? ""),
-		),
-	interfaceTransitionHasUnacknowledgedNotice: (transition?: {
-		phase?: string;
-		noticeAcknowledgedAt?: string;
-	}) =>
-		Boolean(
-			transition &&
-				!transition.noticeAcknowledgedAt &&
-				(transition.phase === "failed" || transition.phase === "recovery_required"),
-		),
+vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
+	...await importOriginal<typeof import("../hooks/useSessionInterfaceTransition")>(),
 	useSessionInterfaceTransition: () => ({
 		status: interfaceTransitionState.status,
 		transition: interfaceTransitionState.status?.transition,
@@ -367,6 +342,7 @@ vi.mock("./chat/SessionChatSurface", async () => {
 });
 vi.mock("./CenterPane", () => ({
 	CenterPane: ({
+		agentInputDisabled,
 		session,
 		shellTerminals = [],
 		onCloseShellTerminal,
@@ -382,6 +358,7 @@ vi.mock("./CenterPane", () => ({
 		terminalTarget,
 		auxiliaryTabOrder,
 	}: {
+		agentInputDisabled?: boolean;
 		session?: WorkspaceSession;
 		shellTerminals?: Array<{ handleId: string; title: string }>;
 		onCloseShellTerminal?: (handleId: string) => void;
@@ -397,7 +374,7 @@ vi.mock("./CenterPane", () => ({
 		terminalTarget?: { kind: string; handleId?: string };
 		auxiliaryTabOrder?: string[];
 	}) => (
-		<div>
+		<div data-testid="terminal-center" data-agent-input-disabled={agentInputDisabled ? "true" : "false"}>
 			terminal center
 			<div data-testid={`auxiliary-tab-order-tui-${session?.id ?? "none"}`}>
 				{auxiliaryTabOrder?.join("|") ?? ""}
@@ -638,6 +615,7 @@ function testInterfaceTransition(
 		sourceMode: "chat" as const,
 		targetMode: "tui" as const,
 		policy: "interrupt" as const,
+		historyPolicy: "strict" as const,
 		phase,
 		createdAt: "2026-08-26T09:00:00.000Z",
 		updatedAt: "2026-08-26T09:00:01.000Z",
@@ -1202,7 +1180,7 @@ describe("SessionView", () => {
 		await chooseSessionAction(buttonName);
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode, policy: "drain" });
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode, policy: "drain", historyPolicy: "strict" });
 	});
 
 	it.each([
@@ -1225,6 +1203,7 @@ describe("SessionView", () => {
 			expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
 				targetMode: "tui",
 				policy: "drain",
+				historyPolicy: "strict",
 			}),
 		);
 	});
@@ -1259,7 +1238,7 @@ describe("SessionView", () => {
 	it("prioritizes a new refusal over an older transition notice until dismissed", () => {
 		workerSession("sess-1");
 		interfaceTransitionState.status = { supported: true, targetMode: "chat", transition: {
-			id: "old-transition", sessionId: "sess-1", sourceMode: "tui", targetMode: "chat", policy: "drain", phase: "failed",
+			id: "old-transition", sessionId: "sess-1", sourceMode: "tui", targetMode: "chat", policy: "drain", historyPolicy: "strict", phase: "failed",
 			errorDetail: "Previous switch failed", createdAt: "2026-09-05T00:00:00Z", updatedAt: "2026-09-05T00:00:00Z",
 		} };
 		interfaceTransitionState.startError = "Current request refused";
@@ -1288,7 +1267,7 @@ describe("SessionView", () => {
 		});
 
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "interrupt" });
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "interrupt", historyPolicy: "strict" });
 	});
 
 	it.each([
@@ -1463,6 +1442,7 @@ describe("SessionView", () => {
 			expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
 				targetMode: "tui",
 				policy: "interrupt",
+				historyPolicy: "strict",
 			}),
 		);
 		expect(nativeConfirm).not.toHaveBeenCalled();
@@ -1507,6 +1487,7 @@ describe("SessionView", () => {
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
 			targetMode: "tui",
 			policy: "interrupt",
+			historyPolicy: "strict",
 		});
 		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
 		expect(staging.result.current.preparing).toBe(true);
@@ -1937,6 +1918,7 @@ describe("SessionView", () => {
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
 			targetMode: "tui",
 			policy: "interrupt",
+			historyPolicy: "strict",
 		});
 		expect(staging.result.current.preparing).toBe(true);
 		interfaceTransitionState.status = {
@@ -2010,7 +1992,7 @@ describe("SessionView", () => {
 		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain" });
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain", historyPolicy: "strict" });
 	});
 
 	it.each([
@@ -2030,7 +2012,7 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${buttonName}`) }));
 
 		expect(interfaceTransitionMock.start).toHaveBeenCalledOnce();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy });
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy, historyPolicy: "strict" });
 	});
 
 	it("disables Chat input while an accepted Chat-to-Terminal drain starts, runs, or settles", async () => {
@@ -2046,7 +2028,7 @@ describe("SessionView", () => {
 
 		await chooseSessionAction("Switch to terminal UI");
 		fireEvent.click(screen.getByRole("button", { name: /^Finish work, then switch/ }));
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain" });
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain", historyPolicy: "strict" });
 
 		interfaceTransitionState.starting = true;
 		view.rerender(<SessionView sessionId="sess-1" />);
@@ -2062,6 +2044,7 @@ describe("SessionView", () => {
 				sourceMode: "chat",
 				targetMode: "tui",
 				policy: "drain",
+				historyPolicy: "strict",
 				phase: "draining",
 				createdAt: "2026-08-06T00:00:00Z",
 				updatedAt: "2026-08-06T00:00:01Z",
@@ -2122,6 +2105,7 @@ describe("SessionView", () => {
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
 			targetMode: "tui",
 			policy: "interrupt",
+			historyPolicy: "strict",
 		});
 
 		view.rerender(<SessionView sessionId="sess-2" />);
@@ -2168,7 +2152,7 @@ describe("SessionView", () => {
 		await chooseSessionAction("Switch to chat UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "chat", policy: "drain" });
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "chat", policy: "drain", historyPolicy: "strict" });
 	});
 
 	it("does not resurrect an acknowledged recovery notice after the session view remounts", async () => {
@@ -2178,6 +2162,7 @@ describe("SessionView", () => {
 			sourceMode: "chat" as const,
 			targetMode: "tui" as const,
 			policy: "drain" as const,
+			historyPolicy: "strict" as const,
 			phase: "recovery_required" as const,
 			errorCode: "DAEMON_RESTARTED",
 			errorDetail: "AO recovered the session in its last committed mode.",
@@ -2202,6 +2187,208 @@ describe("SessionView", () => {
 		expect(screen.queryByText(transition.errorDetail)).not.toBeInTheDocument();
 	});
 
+	it.each([
+		["Retry switch to Chat UI", "TARGET_HISTORY_UNSETTLED", "strict"],
+		["Use provider history and switch", "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH", "provider_history"],
+	] as const)("requires fresh busy-work consent for %s", (action, errorCode, historyPolicy) => {
+		const transition = {
+			id: "transition-history-unsettled",
+			sessionId: "sess-1",
+			sourceMode: "tui" as const,
+			targetMode: "chat" as const,
+			policy: "interrupt" as const,
+			historyPolicy: "strict" as const,
+			phase: "failed" as const,
+			errorCode,
+			errorDetail: "Interface switch failed (AO-2L): target history is not settled.",
+			createdAt: "2026-08-25T09:00:00Z",
+			updatedAt: "2026-08-25T09:00:01Z",
+			completedAt: "2026-08-25T09:00:01Z",
+		};
+		interfaceTransitionState.status = { supported: true, targetMode: "chat", transition };
+
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("button", { name: action }));
+		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+		const dialog = screen.getByRole("dialog", { name: "Switch to Chat UI?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: /^Finish work, then switch/ }));
+
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "chat",
+			policy: "drain",
+			historyPolicy,
+		});
+	});
+
+	it("does not carry provider-history consent to another session after navigation", async () => {
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "chat",
+			transition: {
+				id: "legacy-session-one",
+				sessionId: "sess-1",
+				sourceMode: "tui",
+				targetMode: "chat",
+				policy: "interrupt",
+				historyPolicy: "strict",
+				phase: "failed",
+				errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+				createdAt: "2026-09-12T00:00:00Z",
+				updatedAt: "2026-09-12T00:00:00Z",
+			},
+		};
+		const view = render(<SessionView sessionId="sess-1" />);
+		await userEvent.click(screen.getByRole("button", { name: "Use provider history and switch" }));
+		expect(screen.getByRole("dialog", { name: "Switch to Chat UI?" })).toBeInTheDocument();
+		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+
+		interfaceTransitionState.status = { supported: true, targetMode: "chat" };
+		view.rerender(<SessionView sessionId="sess-2" />);
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+		await chooseSessionAction("Switch to chat UI");
+		await userEvent.click(screen.getByRole("button", { name: /^Finish work, then switch/ }));
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "chat",
+			policy: "drain",
+			historyPolicy: "strict",
+		});
+	});
+
+	it("uses explicit provider-history recovery with the safe drain default", () => {
+		const session = workerSession("sess-1");
+		session.status = "idle";
+		delete session.activity;
+		const transition = {
+			id: "transition-legacy-history",
+			sessionId: "sess-1",
+			sourceMode: "tui" as const,
+			targetMode: "chat" as const,
+			policy: "interrupt" as const,
+			historyPolicy: "strict" as const,
+			phase: "failed" as const,
+			errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+			errorDetail: "Interface switch failed (AO-2L): legacy text mismatch.",
+			createdAt: "2026-08-25T09:00:00Z",
+			updatedAt: "2026-08-25T09:00:01Z",
+			completedAt: "2026-08-25T09:00:01Z",
+		};
+		interfaceTransitionState.status = { supported: true, targetMode: "chat", transition };
+
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("button", { name: "Use provider history and switch" }));
+
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "chat",
+			policy: "drain",
+			historyPolicy: "provider_history",
+		});
+	});
+
+	it("retries persisted provider-history consent after daemon recovery", () => {
+		const session = workerSession("sess-1");
+		session.status = "idle";
+		delete session.activity;
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "chat",
+			transition: {
+				id: "transition-provider-restart",
+				sessionId: "sess-1",
+				sourceMode: "tui",
+				targetMode: "chat",
+				policy: "drain",
+				historyPolicy: "provider_history",
+				phase: "recovery_required",
+				errorCode: "DAEMON_RESTARTED",
+				errorDetail: "AO restored Terminal after the daemon restarted.",
+				createdAt: "2026-08-25T09:00:00Z",
+				updatedAt: "2026-08-25T09:00:01Z",
+				completedAt: "2026-08-25T09:00:01Z",
+			},
+		};
+
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("button", { name: "Use provider history and switch" }));
+
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "chat",
+			policy: "drain",
+			historyPolicy: "provider_history",
+		});
+	});
+
+	it("announces a rejected recovery attempt in the persistent AO-2L notice", () => {
+		interfaceTransitionState.startError = "Provider history recovery is no longer available.";
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "chat",
+			transition: {
+				id: "transition-legacy-history",
+				sessionId: "sess-1",
+				sourceMode: "tui",
+				targetMode: "chat",
+				policy: "drain",
+				historyPolicy: "strict",
+				phase: "failed",
+				errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+				errorDetail: "Interface switch failed (AO-2L).",
+				createdAt: "2026-08-25T09:00:00Z",
+				updatedAt: "2026-08-25T09:00:01Z",
+			},
+		};
+
+		render(<SessionView sessionId="sess-1" />);
+		const [announcement] = screen.getAllByRole("alert");
+		expect(screen.getAllByRole("alert")).toHaveLength(1);
+		expect(announcement).toHaveTextContent("Interface switch failed (AO-2L).");
+		expect(announcement).toHaveTextContent(
+			"Recovery attempt failed: Provider history recovery is no longer available.",
+		);
+	});
+
+	it.each([undefined, "A newer start request was refused."])(
+		"shows unconfirmed target shutdown through SessionView while keeping Terminal input fenced (%s)",
+		(startError) => {
+			workerSession("sess-1").mode = "tui";
+			interfaceTransitionState.startError = startError;
+			const errorDetail =
+				"AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface. target still running";
+			interfaceTransitionState.status = {
+				supported: true,
+				targetMode: "chat",
+				transition: {
+					id: "transition-target-stop-unconfirmed",
+					sessionId: "sess-1",
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					historyPolicy: "strict",
+					phase: "target_starting",
+					errorCode: "TARGET_STOP_UNCONFIRMED",
+					errorDetail,
+					createdAt: "2026-08-23T17:00:00Z",
+					updatedAt: "2026-08-23T17:01:00Z",
+				},
+			};
+
+			render(<SessionView sessionId="sess-1" />);
+
+			expect(screen.getAllByRole("alert")).toHaveLength(1);
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent("Interface switch needs attention");
+			expect(alert).toHaveTextContent(errorDetail);
+			expect(within(alert).queryByRole("button")).not.toBeInTheDocument();
+			expect(screen.getByTestId("terminal-center")).toHaveAttribute("data-agent-input-disabled", "true");
+			expect(screen.getByRole("status", { name: /^Interface switch needs attention/ }).querySelector(".animate-spin")).toBeNull();
+			expect(screen.queryByRole("button", { name: "Cancel switch to Chat UI" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Retry switch to Chat UI" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Stay in Terminal" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Use provider history and switch" })).not.toBeInTheDocument();
+			expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+			expect(interfaceTransitionMock.acknowledgeNotice).not.toHaveBeenCalled();
+		},
+	);
+
 	it("returns to the source terminal while a failed Chat switch mode refetch settles", () => {
 		const session = workerSession("sess-1");
 		// The workspace cache observed the transition's intermediate mode commit,
@@ -2213,6 +2400,7 @@ describe("SessionView", () => {
 			sourceMode: "tui" as const,
 			targetMode: "chat" as const,
 			policy: "drain" as const,
+			historyPolicy: "strict" as const,
 			phase: "failed" as const,
 			errorCode: "TARGET_HISTORY_UNSETTLED",
 			errorDetail: "The native conversation history did not settle.",

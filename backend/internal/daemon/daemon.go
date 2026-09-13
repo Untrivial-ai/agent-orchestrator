@@ -646,8 +646,8 @@ func Run() error {
 
 	// Durable agent-switch and interface-transition recovery is the startup
 	// safety boundary. The in-memory input fence disappeared with the previous
-	// daemon; if AO cannot prove and close every active saga, do not bind a
-	// usable API with user input accidentally reopened. Runtime/worktree
+	// daemon; every active saga must be closed or explicitly quarantined before
+	// binding a usable API, without accidentally reopening input. Runtime/worktree
 	// restoration follows in the background after the listener is live.
 	if reconcileErr := sessMgr.ReconcileStartupSafety(ctx); reconcileErr != nil {
 		stop()

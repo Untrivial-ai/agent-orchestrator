@@ -90,6 +90,9 @@ type ChatStart struct {
 	// RequireNativeHistory is set only for a TUI -> Chat handoff. The target must
 	// replay the provider transcript before it can become the committed UI.
 	RequireNativeHistory bool
+	// HistoryPolicy is persisted by an interface transition and scopes explicit
+	// provider-history recovery to legacy hook text only.
+	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy
 	// SkipNativeHistoryImport is set by agent switching: the target's provider
 	// boundary is committed inside ControllerReady, so old provider events must
 	// not be projected into the source branch before that atomic write.
@@ -359,6 +362,7 @@ func (m *Manager) resumeChatController(
 	ws ports.WorkspaceInfo,
 	requireNativeHistory bool,
 	controllerGeneration string,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (RestoreResult, error) {
 	if m.chat == nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
@@ -437,6 +441,7 @@ func (m *Manager) resumeChatController(
 		// second restart can still prove exact target ownership.
 		ControllerGeneration: controllerGeneration,
 		RequireNativeHistory: requireNativeHistory,
+		HistoryPolicy:        historyPolicy,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path

@@ -120,7 +120,7 @@ func TestInterfaceTransitionUnpromptedChatRoundTrip(t *testing.T) {
 				}
 			}
 			transition, err := manager.StartInterfaceTransition(context.Background(), rec.ID,
-				domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+				domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
 			if tc.providerTurn {
 				if !errors.Is(err, ErrNativeConversationMissing) || len(*log) != 0 {
 					t.Fatalf("provider turn without text was treated as untouched: err=%v log=%v", err, *log)
@@ -177,7 +177,7 @@ func TestInterfaceTransitionUnpromptedChatRoundTrip(t *testing.T) {
 					"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\ngpt-6-astra · /workspace\n"
 			}
 			transition, err = manager.StartInterfaceTransition(ctx, rec.ID,
-				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
 			if err != nil {
 				t.Fatalf("unprompted terminal-to-Chat return was refused: %v", err)
 			}
@@ -211,7 +211,7 @@ func TestInterfaceTransitionUnpromptedChatWithoutNativeID(t *testing.T) {
 		t.Fatalf("untouched Chat status = %+v, err=%v", status, err)
 	}
 	transition, err := manager.StartInterfaceTransition(context.Background(), rec.ID,
-		domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+		domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestInterfaceTransitionChatRequiresUntouchedConversationProof(t *testing.T)
 			manager.agents = singleAgent{agent: emptyTransitionAgent{}}
 			tc.mutate(withFreshChatHistory(manager, store))
 			_, err := manager.StartInterfaceTransition(context.Background(), "session-1",
-				domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+				domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
 			if !errors.Is(err, ErrNativeConversationMissing) {
 				t.Fatalf("switch without untouched proof = %v", err)
 			}
@@ -270,7 +270,7 @@ func TestInterfaceTransitionFreshChatRechecksAfterFencing(t *testing.T) {
 		history.conversation.LatestSequence = 1
 	}}
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
-		domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+		domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
 	if err != nil {
 		t.Fatal(err)
 	}

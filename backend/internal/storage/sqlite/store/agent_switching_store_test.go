@@ -81,6 +81,11 @@ func TestActivateChatAgentSwitchTargetMovesSourceGenerationToTarget(t *testing.T
 	rec.Metadata.RuntimeLaunchID = ""
 	rec.Metadata.ProviderConversationID = "source-chat-native"
 	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	rec.Metadata.LatestUserPrompt = "source Chat user checkpoint"
+	rec.Metadata.LatestUserPromptAt = now
+	rec.Metadata.LatestAssistantUpdate = "source Chat assistant checkpoint"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointLegacy
+	rec.Metadata.ConversationCheckpointUnsettled = true
 	session, err := s.CreateSession(ctx, rec)
 	if err != nil {
 		t.Fatalf("create Chat session: %v", err)
@@ -197,6 +202,16 @@ func TestActivateChatAgentSwitchTargetMovesSourceGenerationToTarget(t *testing.T
 		got.Metadata.ControllerGeneration != "target-chat-generation" ||
 		got.Metadata.BrowserCapabilityVerifier != "target-chat-verifier" {
 		t.Fatalf("activated Chat session = %+v", got)
+	}
+	if got.Metadata.LatestUserPrompt != "" || got.Metadata.LatestAssistantUpdate != "" ||
+		got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
+		got.Metadata.ConversationCheckpointGeneration != "" ||
+		got.Metadata.ConversationCheckpointNativeID != "" ||
+		got.Metadata.ConversationCheckpointUnsettled {
+		t.Fatalf("Chat target activation retained source replay checkpoint: %+v", got.Metadata)
+	}
+	if want := now.Add(600 * time.Millisecond); !got.Metadata.LatestUserPromptAt.Equal(want) {
+		t.Fatalf("Chat target activation last human message at = %s, want %s", got.Metadata.LatestUserPromptAt, want)
 	}
 	conversation, err = s.ConversationForSession(ctx, session.ID)
 	if err != nil {
@@ -1399,7 +1414,9 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	rec.Metadata.NativeTranscriptPath = "/claude/source.jsonl"
 	rec.Metadata.Prompt = "original task"
 	rec.Metadata.LatestUserPrompt = "latest user direction"
+	rec.Metadata.LatestUserPromptAt = now
 	rec.Metadata.LatestAssistantUpdate = "latest assistant update"
+	rec.Metadata.ConversationCheckpointUnsettled = true
 	rec.Metadata.PreviewURL = "http://localhost:3000"
 	session, err := s.CreateSession(ctx, rec)
 	if err != nil {
@@ -1475,7 +1492,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	lateSource.Metadata.AgentSessionID = "late-source-native"
 	lateSource.Metadata.LatestAssistantUpdate = "late source callback"
 	lateSource.UpdatedAt = now.Add(2500 * time.Millisecond)
-	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource); err != nil || applied {
+	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource, exited.Revision); err != nil || applied {
 		t.Fatalf("late source activity after stop confirmation: applied=%v err=%v", applied, err)
 	}
 	stillExited, ok, err := s.GetSession(ctx, session.ID)
@@ -1560,6 +1577,20 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if !activated.FirstSignalAt.IsZero() {
 		t.Fatalf("target activation retained old hook receipt: %v", activated.FirstSignalAt)
 	}
+	// The checkpoint belongs to the source provider. If Claude's text survives
+	// the ownership transfer, an immediate Codex TUI -> Chat transition compares
+	// that text against Codex history and fails as an untrusted mismatch before
+	// the target has emitted a new main-turn hook.
+	if activated.Metadata.LatestUserPrompt != "" || activated.Metadata.LatestAssistantUpdate != "" ||
+		activated.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
+		activated.Metadata.ConversationCheckpointGeneration != "" ||
+		activated.Metadata.ConversationCheckpointNativeID != "" ||
+		activated.Metadata.ConversationCheckpointUnsettled {
+		t.Fatalf("target activation retained source replay checkpoint: %+v", activated.Metadata)
+	}
+	if !activated.Metadata.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) {
+		t.Fatalf("target activation last human message at = %s, want %s", activated.Metadata.LatestUserPromptAt, rec.Metadata.LatestUserPromptAt)
+	}
 	activatedConversation, err := s.ConversationForSession(ctx, session.ID)
 	if err != nil {
 		t.Fatalf("get activated conversation: %v", err)
@@ -1570,13 +1601,12 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if activated.IsTerminated || activated.DisplayName != rec.DisplayName ||
 		activated.TerminateOnPRMerge != rec.TerminateOnPRMerge || activated.CleanupGeneration != rec.CleanupGeneration ||
 		activated.Metadata.Branch != rec.Metadata.Branch || activated.Metadata.WorkspacePath != rec.Metadata.WorkspacePath ||
-		activated.Metadata.Prompt != rec.Metadata.Prompt || activated.Metadata.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
-		activated.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate || activated.Metadata.PreviewURL != rec.Metadata.PreviewURL {
+		activated.Metadata.Prompt != rec.Metadata.Prompt || activated.Metadata.PreviewURL != rec.Metadata.PreviewURL {
 		t.Fatalf("target activation changed unrelated session facts: %+v", activated)
 	}
 	lateSource.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(5 * time.Second)}
 	lateSource.UpdatedAt = now.Add(5 * time.Second)
-	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource); err != nil || applied {
+	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource, exited.Revision); err != nil || applied {
 		t.Fatalf("late source activity after target activation: applied=%v err=%v", applied, err)
 	}
 	stillActivated, ok, err := s.GetSession(ctx, session.ID)
@@ -1599,7 +1629,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	targetSignal.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(7 * time.Second)}
 	targetSignal.FirstSignalAt = now.Add(7 * time.Second)
 	targetSignal.UpdatedAt = now.Add(7 * time.Second)
-	if applied, err := s.UpdateSessionFromActivitySignal(ctx, targetSignal); err != nil || !applied {
+	if applied, err := s.UpdateSessionFromActivitySignal(ctx, targetSignal, activated.Revision); err != nil || !applied {
 		t.Fatalf("target activity during delivery: applied=%v err=%v", applied, err)
 	}
 	acknowledgedAt := now.Add(8 * time.Second)
