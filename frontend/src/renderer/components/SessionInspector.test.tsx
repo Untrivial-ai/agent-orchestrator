@@ -616,6 +616,53 @@ describe("SessionInspector PR section", () => {
     expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
   });
 
+  it("offers Merge when the provider requires no review", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open", { review: "none" })])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [prSummary(7, "open")]);
+      },
+    );
+
+    expect(screen.getByRole("button", { name: "Merge PR #7" })).toBeEnabled();
+    expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
+    expect(prSection("Pull request").queryByText("Review pending")).not.toBeInTheDocument();
+  });
+
+  it.each(["review_required", "changes_requested"] as const)(
+    "does not offer Merge when the review decision is %s",
+    (decision) => {
+      renderWithQuery(
+        <SessionInspector session={session([pr(7, "open")])} />,
+        undefined,
+        (client) => {
+          client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+            prSummary(7, "open", {
+              review: { decision, hasUnresolvedHumanComments: false, unresolvedBy: [] },
+            }),
+          ]);
+        },
+      );
+      expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not offer Merge while human review comments are unresolved", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            review: { decision: "none", hasUnresolvedHumanComments: true, unresolvedBy: [] },
+          }),
+        ]);
+      },
+    );
+    expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+  });
+
   it("uses the state chip as the single merged-state indicator", () => {
     renderWithQuery(
       <SessionInspector
