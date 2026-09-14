@@ -1,36 +1,23 @@
 {
-  "name": "agent-orchestrator",
-  "private": true,
-  "scripts": {
-    "lint": "cd backend && go test ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --path-mode=abs",
-    "frontend:typecheck": "npm --prefix frontend run typecheck",
-    "cloud:check": "npm --prefix packages/cloud-client run generate && git diff --exit-code -- packages/cloud-client/src/schema.ts && npm --prefix packages/cloud-client run typecheck && npm --prefix packages/cloud-client test && npm --prefix packages/cloud-client run build",
-    "cloud:local": "bash cloud/scripts/cloud-local-up.sh",
-    "cloud:local:down": "bash cloud/scripts/cloud-local-down.sh",
-    "cloud:local:reset": "bash cloud/scripts/cloud-local-reset.sh",
-    "cloud:local:smoke": "bash cloud/scripts/test-cloud-local.sh",
-    "cloud:staging": "bash cloud/scripts/cloud-staging.sh",
-    "product-ui:check": "npm --prefix packages/product-ui run typecheck && npm --prefix packages/product-ui test && npm --prefix packages/product-ui run build",
-    "shared:check": "npm run cloud:check && npm run product-ui:check",
-    "sqlc": "cd backend && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate",
-    "api:spec": "cd backend && go generate ./internal/httpd/apispec/...",
-    "api:ts": "openapi-typescript backend/internal/httpd/apispec/openapi.yaml -o frontend/src/api/schema.ts",
-    "api": "npm run api:spec && npm run api:ts",
-    "cloud:build-worker": "cd backend && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/ao-worker-linux-amd64 ./cmd/ao-worker",
-    "cloud:build-image": "docker build -f ao-cloud/docker/worker.Dockerfile -t ao-cloud-worker:local .",
-    "cloud:publish-worker": "bash ao-cloud/scripts/publish-daytona-snapshot.sh",
-    "cloud:postgres": "docker compose -f ao-cloud/docker-compose.local.yml up -d postgres",
-    "cloud:test": "sh -c 'cd backend && go test ./internal/cloud/...'",
-    "cloud:local": "bash ao-cloud/scripts/local.sh",
-    "cloud:workos": "bash ao-cloud/scripts/local.sh workos",
-    "cloud:workos:gated": "bash ao-cloud/scripts/local.sh workos-gated",
-    "cloud:local:stop": "bash ao-cloud/scripts/local.sh stop",
-    "cloud:local:clear-db": "bash ao-cloud/scripts/local.sh clear-db",
-    "cloud:local:reset-db": "bash ao-cloud/scripts/local.sh reset-db",
-    "cloud:server": "set -a; . ./.env.cloud.local; set +a; cd backend && go run ./cmd/ao-cloud",
-    "cloud:web": "npm --prefix frontend/src/landing run dev -- --hostname 127.0.0.1 --port 5174"
-  },
-  "devDependencies": {
-    "openapi-typescript": "7.4.4"
-  }
+	"name": "agent-orchestrator",
+	"private": true,
+	"scripts": {
+		"lint": "cd backend && go test ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --path-mode=abs",
+		"frontend:typecheck": "npm --prefix frontend run typecheck",
+		"cloud:check": "npm --prefix packages/cloud-client run generate && git diff --exit-code -- packages/cloud-client/src/schema.ts && npm --prefix packages/cloud-client run typecheck && npm --prefix packages/cloud-client test && npm --prefix packages/cloud-client run build",
+		"cloud:local": "bash cloud/scripts/cloud-local-up.sh",
+		"cloud:local:down": "bash cloud/scripts/cloud-local-down.sh",
+		"cloud:local:reset": "bash cloud/scripts/cloud-local-reset.sh",
+		"cloud:local:smoke": "bash cloud/scripts/test-cloud-local.sh",
+		"cloud:staging": "bash cloud/scripts/cloud-staging.sh",
+		"product-ui:check": "npm --prefix packages/product-ui run typecheck && npm --prefix packages/product-ui test && npm --prefix packages/product-ui run build",
+		"shared:check": "npm run cloud:check && npm run product-ui:check",
+		"sqlc": "cd backend && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate",
+		"api:spec": "cd backend && go generate ./internal/httpd/apispec/...",
+		"api:ts": "openapi-typescript backend/internal/httpd/apispec/openapi.yaml -o frontend/src/api/schema.ts",
+		"api": "npm run api:spec && npm run api:ts"
+	},
+	"devDependencies": {
+		"openapi-typescript": "7.4.4"
+	}
 }

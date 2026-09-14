@@ -1,10 +1,6 @@
 package domain
 
-import (
-	"time"
-
-	"github.com/aoagents/agent-orchestrator/backend/internal/contract"
-)
+import "time"
 
 // ActivityState is how busy the agent is, reported via the agent's CLI hook
 // callbacks, not inferred from transcript/JSONL
@@ -22,11 +18,11 @@ type ActivityState string
 // the state existed in the original activity model and returns with the
 // permission-prompt producers.)
 const (
-	ActivityActive       ActivityState = ActivityState(contract.ActivityActive)
-	ActivityIdle         ActivityState = ActivityState(contract.ActivityIdle)
-	ActivityWaitingInput ActivityState = ActivityState(contract.ActivityWaitingInput)
-	ActivityBlocked      ActivityState = ActivityState(contract.ActivityBlocked)
-	ActivityExited       ActivityState = ActivityState(contract.ActivityExited)
+	ActivityActive       ActivityState = "active"
+	ActivityIdle         ActivityState = "idle"
+	ActivityWaitingInput ActivityState = "waiting_input"
+	ActivityBlocked      ActivityState = "blocked"
+	ActivityExited       ActivityState = "exited"
 )
 
 // IsSticky reports whether an activity state must NOT be aged/demoted by the

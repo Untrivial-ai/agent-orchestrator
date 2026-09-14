@@ -3,14 +3,12 @@
 import { Button } from "@ao/ui/button";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import posthog from "posthog-js";
 import { useEffect, useState } from "react";
 
 import { ANALYTICS_CONSENT_KEY } from "@/lib/constants";
 
 export function CookieConsent() {
-	const pathname = usePathname();
 	const [showBanner, setShowBanner] = useState(false);
 
 	useEffect(() => {
@@ -31,8 +29,6 @@ export function CookieConsent() {
 		posthog.opt_out_capturing();
 		setShowBanner(false);
 	};
-
-	if (pathname === "/app" || pathname.startsWith("/app/")) return null;
 
 	return (
 		<AnimatePresence>

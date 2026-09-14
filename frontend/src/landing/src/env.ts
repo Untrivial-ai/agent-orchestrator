@@ -14,7 +14,6 @@ export const env = createEnv({
   },
   client: {
     NEXT_PUBLIC_API_URL: z.string().url().optional(),
-    NEXT_PUBLIC_AO_AUTH_MODE: z.enum(["local", "workos"]).default("local"),
     NEXT_PUBLIC_WEB_URL: z.string().url().optional(),
     NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_HOST: z.string().url().optional(),
@@ -26,7 +25,6 @@ export const env = createEnv({
   experimental__runtimeEnv: {
     NODE_ENV: process.env.NODE_ENV,
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-    NEXT_PUBLIC_AO_AUTH_MODE: process.env.NEXT_PUBLIC_AO_AUTH_MODE,
     NEXT_PUBLIC_WEB_URL: process.env.NEXT_PUBLIC_WEB_URL,
     NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
     NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,

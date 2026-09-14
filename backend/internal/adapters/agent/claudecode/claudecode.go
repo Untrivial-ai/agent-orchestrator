@@ -541,12 +541,9 @@ func (p *Plugin) claudeBinary(ctx context.Context) (string, error) {
 	return binary, nil
 }
 
-// claudeConfigPath returns Claude Code's global config file. A configured
-// CLAUDE_CONFIG_DIR owns both Claude's settings and global state.
+// claudeConfigPath returns the path to Claude Code's global config file,
+// ~/.claude.json.
 func claudeConfigPath() (string, error) {
-	if configDir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); configDir != "" {
-		return filepath.Join(configDir, ".claude.json"), nil
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("claude-code: resolve home directory: %w", err)

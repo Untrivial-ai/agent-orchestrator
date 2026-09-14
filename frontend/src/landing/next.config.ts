@@ -1,25 +1,11 @@
-import { resolve } from "node:path";
 import type { NextConfig } from "next";
 
-// The landing app imports shared CSS from the sibling site-theme package.
-const landingRoot = resolve(process.cwd(), "..");
-const usesServerRuntime =
-	Boolean(process.env.NEXT_PUBLIC_API_URL) ||
-	process.env.NEXT_PUBLIC_AO_AUTH_MODE === "workos" ||
-	process.env.AO_CLOUD_AUTH_MODE === "workos";
-
 // GitHub Pages serves a static export (see .github/workflows/deploy-landing.yml).
-// Cloud uses live Next route handlers, so its web app must opt out of static
-// export even when it uses local email/password auth.
+// Features that need a Node server (rewrites, proxy.ts) are intentionally omitted.
 const config: NextConfig = {
-	output: usesServerRuntime ? undefined : "export",
+	output: "export",
 	reactStrictMode: true,
-	trailingSlash: usesServerRuntime ? false : true,
-	turbopack: {
-		// Keep Windows development from selecting a parent checkout's lockfile as
-		// the workspace root and watching unrelated files.
-		root: landingRoot,
-	},
+	trailingSlash: true,
 	images: {
 		unoptimized: true,
 		qualities: [75, 80],

@@ -7,14 +7,13 @@
     "dev": "next dev",
     "build": "next build",
     "postbuild": "node scripts/generate-markdown-twins.mjs",
-    "start": "next start",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "start": "next start"
   },
   "workspaces": [
     "packages/*"
   ],
   "dependencies": {
+    "@ao/auth": "workspace:*",
     "@ao/email": "workspace:*",
     "@ao/shared": "workspace:*",
     "@ao/ui": "workspace:*",
@@ -23,9 +22,6 @@
     "@paper-design/shaders-react": "workspace:*",
     "@sentry/nextjs": "10.46.0",
     "@t3-oss/env-nextjs": "0.13.11",
-    "@workos-inc/authkit-nextjs": "^4.3.1",
-    "@workos-inc/node": "^10.9.0",
-    "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
     "framer-motion": "12.38.0",
@@ -53,21 +49,15 @@
     "@ao/typescript": "workspace:*",
     "@tailwindcss/postcss": "4.2.2",
     "@tailwindcss/typography": "0.5.19",
-    "@testing-library/dom": "^10.4.1",
-    "@testing-library/jest-dom": "^7.0.0",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
     "@types/mdx": "2.0.13",
     "@types/node": "24.12.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@types/three": "^0.181.0",
     "cheerio": "1.2.0",
-    "jsdom": "^30.0.1",
     "node-html-markdown": "2.0.0",
     "tailwindcss": "4.2.2",
     "three": "^0.181.2",
-    "typescript": "6.0.3",
-    "vitest": "^4.1.10"
+    "typescript": "6.0.3"
   }
 }

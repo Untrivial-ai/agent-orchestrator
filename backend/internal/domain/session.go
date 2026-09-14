@@ -1,10 +1,6 @@
 package domain
 
-import (
-	"time"
-
-	"github.com/aoagents/agent-orchestrator/backend/internal/contract"
-)
+import "time"
 
 // These ID types are distinct string types so they can't be swapped at a call
 // site by accident.
@@ -22,8 +18,8 @@ type SessionKind string
 
 // Session kinds.
 const (
-	KindWorker       SessionKind = SessionKind(contract.KindWorker)
-	KindOrchestrator SessionKind = SessionKind(contract.KindOrchestrator)
+	KindWorker       SessionKind = "worker"
+	KindOrchestrator SessionKind = "orchestrator"
 )
 
 // SessionMetadata is the typed, off-status metadata for a session: operational

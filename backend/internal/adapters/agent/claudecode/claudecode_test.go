@@ -908,26 +908,6 @@ func TestClaudeAuthStatusFromOutputUnknownForUnrecognizedFailure(t *testing.T) {
 	}
 }
 
-func TestPreLaunchTrustsWorkspaceInConfiguredClaudeDirectory(t *testing.T) {
-	configDir := t.TempDir()
-	workspace := "/workspace/repository"
-	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-
-	p := &Plugin{}
-	if err := p.PreLaunch(context.Background(), ports.LaunchConfig{
-		WorkspacePath: workspace,
-	}); err != nil {
-		t.Fatalf("PreLaunch() error = %v", err)
-	}
-
-	root := readJSON(t, filepath.Join(configDir, ".claude.json"))
-	projects := root["projects"].(map[string]any)
-	entry := projects[workspace].(map[string]any)
-	if entry["hasTrustDialogAccepted"] != true {
-		t.Fatalf("workspace trust entry = %#v, want accepted", entry)
-	}
-}
-
 func TestEnsureWorkspaceTrustedCreatesEntry(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".claude.json")

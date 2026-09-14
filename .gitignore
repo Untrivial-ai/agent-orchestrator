@@ -44,7 +44,6 @@ frontend/.tanstack/
 .env
 .env.*
 !.env.example
-!/ao-cloud/.env.hosted.example
 
 # Editor / IDE
 .vscode/
@@ -94,18 +93,8 @@ frontend/agent-browser/
 !.agents/skills/bug-triage/**
 skills-lock.json
 
-# Cloud planning and operator notes remain local-only. The architecture design
-# is the single tracked Cloud design document.
-/cloud_setup_demo.md
-/ao-cloud/README.md
-/ao-cloud/cloud-todo.md
-/ao-cloud/architecture/CLOUD_AUTH.md
-/ao-cloud/architecture/CLOUD_ROADMAP.md
-/ao-cloud/setup/HOSTED_SETUP.md
-
 # e2e pod gate: downloaded pod logs/traces (uploaded as CI artifacts, not committed)
 e2e-artifacts/
 
 # Local pnpm artifacts
 pnpm-lock.yaml
-.vercel
