@@ -97,6 +97,7 @@ export type WorkspaceEntryPage = Schemas["WorkspaceEntryPage"];
 export type WorkspaceFile = Schemas["WorkspaceFile"];
 export type WorkspaceFileWriteInput = Schemas["WorkspaceFileWriteInput"];
 export type WorkspaceFileStatus = Schemas["WorkspaceFileStatus"];
+export type WorkspaceDiffCategory = Schemas["WorkspaceDiffCategory"];
 export type WorkspaceDiffFile = Schemas["WorkspaceDiffFile"];
 export type WorkspaceDiffFileDetail = Schemas["WorkspaceDiffFileDetail"];
 export type WorkspaceDiff = Schemas["WorkspaceDiff"];

@@ -704,9 +704,9 @@ paths:
       operationId: readWorkspaceDiffFile
       tags: [Workspace]
       description: >-
-        Read one Docker-backed workspace file with its bounded unified diff.
-        NodeOps and Coder sessions intentionally return not implemented until
-        their provider-specific paths support this operation.
+        Read one supported cloud workspace file with its bounded unified diff.
+        Docker, NodeOps, and Coder sessions use the same isolated ao-worker
+        workspace protocol.
       parameters:
         - name: path
           in: query
@@ -714,9 +714,14 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/WorkspaceDiffCategory"
       responses:
         "200":
-          description: Docker workspace file review details.
+          description: Cloud workspace file review details.
           content:
             application/json:
               schema:
@@ -733,9 +738,8 @@ paths:
       operationId: getWorkspaceDiff
       tags: [Workspace]
       description: >-
-        Docker-only changed-file summary and line counts relative to the session
-        compare base. NodeOps and Coder sessions return not implemented until their
-        provider-specific paths support this operation.
+        Changed-file summary and line counts for Docker, NodeOps, and Coder
+        sessions, relative to the session compare base.
       responses:
         "200":
           description: Workspace changes relative to the session compare base.
@@ -3637,6 +3641,9 @@ components:
     WorkspaceFileStatus:
       type: string
       enum: [unmodified, modified, added, deleted, renamed, untracked, copied, changed]
+    WorkspaceDiffCategory:
+      type: string
+      enum: [uncommitted, unpushed, pushed]
     WorkspaceDiffFile:
       type: object
       additionalProperties: false
@@ -3663,7 +3670,7 @@ components:
     WorkspaceDiffFileDetail:
       type: object
       additionalProperties: false
-      required: [path, status, additions, deletions, size, binary, deleted, content, contentTruncated, diff, diffTruncated]
+      required: [path, status, additions, deletions, size, binary, deleted, content, baseContent, contentTruncated, diff, diffTruncated]
       properties:
         path:
           type: string
@@ -3685,12 +3692,27 @@ components:
           type: boolean
         content:
           type: string
+        baseContent:
+          type: string
         contentTruncated:
           type: boolean
         diff:
           type: string
         diffTruncated:
           type: boolean
+    WorkspaceDiffCategorySummary:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceDiffFile"
+        baseRef:
+          type: string
+        headRef:
+          type: string
     WorkspaceDiff:
       type: object
       additionalProperties: false
@@ -3716,6 +3738,16 @@ components:
           type: array
           items:
             type: string
+        categories:
+          type: object
+          additionalProperties: false
+          properties:
+            uncommitted:
+              $ref: "#/components/schemas/WorkspaceDiffCategorySummary"
+            unpushed:
+              $ref: "#/components/schemas/WorkspaceDiffCategorySummary"
+            pushed:
+              $ref: "#/components/schemas/WorkspaceDiffCategorySummary"
         truncated:
           type: object
           additionalProperties: false

@@ -507,7 +507,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Read one Docker-backed workspace file with its bounded unified diff. NodeOps and Coder sessions intentionally return not implemented until their provider-specific paths support this operation. */
+        /** @description Read one supported cloud workspace file with its bounded unified diff. Docker, NodeOps, and Coder sessions use the same isolated ao-worker workspace protocol. */
         get: operations["readWorkspaceDiffFile"];
         put?: never;
         post?: never;
@@ -527,7 +527,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Docker-only changed-file summary and line counts relative to the session compare base. NodeOps and Coder sessions return not implemented until their provider-specific paths support this operation. */
+        /** @description Changed-file summary and line counts for Docker, NodeOps, and Coder sessions, relative to the session compare base. */
         get: operations["getWorkspaceDiff"];
         put?: never;
         post?: never;
@@ -1884,6 +1884,8 @@ export interface components {
         };
         /** @enum {string} */
         WorkspaceFileStatus: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
+        /** @enum {string} */
+        WorkspaceDiffCategory: "uncommitted" | "unpushed" | "pushed";
         WorkspaceDiffFile: {
             path: string;
             oldPath?: string;
@@ -1904,9 +1906,15 @@ export interface components {
             binary: boolean;
             deleted: boolean;
             content: string;
+            baseContent: string;
             contentTruncated: boolean;
             diff: string;
             diffTruncated: boolean;
+        };
+        WorkspaceDiffCategorySummary: {
+            files: components["schemas"]["WorkspaceDiffFile"][];
+            baseRef?: string;
+            headRef?: string;
         };
         WorkspaceDiff: {
             status: string;
@@ -1917,6 +1925,11 @@ export interface components {
             diffBaseSha?: string;
             files: components["schemas"]["WorkspaceDiffFile"][];
             untrackedFiles: string[];
+            categories?: {
+                uncommitted?: components["schemas"]["WorkspaceDiffCategorySummary"];
+                unpushed?: components["schemas"]["WorkspaceDiffCategorySummary"];
+                pushed?: components["schemas"]["WorkspaceDiffCategorySummary"];
+            };
             truncated: {
                 combined: boolean;
                 stats: boolean;
@@ -2947,6 +2960,7 @@ export interface operations {
         parameters: {
             query: {
                 path: string;
+                category?: components["schemas"]["WorkspaceDiffCategory"];
             };
             header?: never;
             path: {
@@ -2957,7 +2971,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Docker workspace file review details. */
+            /** @description Cloud workspace file review details. */
             200: {
                 headers: {
                     [name: string]: unknown;

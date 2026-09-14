@@ -51,59 +51,61 @@ func (s *workspaceHandlerStore) GetWorkspaceRequest(_ context.Context, _ domain.
 	return domain.WorkerRequest{Status: "succeeded", Response: response}, nil
 }
 
-func TestReadWorkspaceDiffFileDispatchesOnlyForDocker(t *testing.T) {
+func TestWorkspaceDiffDispatchesForSupportedProviders(t *testing.T) {
+	providers := []string{sandbox.ProviderDocker, sandbox.ProviderNodeOps, sandbox.ProviderCoder}
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			store := &workspaceHandlerStore{provider: provider}
+			server := workspaceHandlerServer(store)
+			recorder := httptest.NewRecorder()
+			server.readWorkspaceDiffFile(recorder, workspaceHandlerRequest(t, "notes.txt", "unpushed"))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("diff-file status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !store.created || store.createdKind != "workspace.diff-file" {
+				t.Fatalf("created request = %t %q", store.created, store.createdKind)
+			}
+			var payload worker.WorkspaceDiffFileRequest
+			if err := json.Unmarshal(store.createdPayload, &payload); err != nil || payload.Path != "notes.txt" || payload.Category != "unpushed" {
+				t.Fatalf("transport payload = %#v, err=%v", payload, err)
+			}
+
+			store.created = false
+			recorder = httptest.NewRecorder()
+			server.getWorkspaceDiff(recorder, workspaceHandlerRequest(t, "", ""))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("diff status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !store.created || store.createdKind != "workspace.diff" {
+				t.Fatalf("created request = %t %q", store.created, store.createdKind)
+			}
+		})
+	}
+}
+
+func TestWorkspaceDiffRejectsUnknownProviderWithoutDispatch(t *testing.T) {
+	store := &workspaceHandlerStore{provider: "unknown"}
+	server := workspaceHandlerServer(store)
+	recorder := httptest.NewRecorder()
+	server.readWorkspaceDiffFile(recorder, workspaceHandlerRequest(t, "notes.txt", ""))
+	if recorder.Code != http.StatusNotImplemented {
+		t.Fatalf("diff-file status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if store.created {
+		t.Fatal("unknown provider dispatched a diff-file request")
+	}
+}
+
+func TestReadWorkspaceDiffFileRejectsUnknownCategoryWithoutDispatch(t *testing.T) {
 	store := &workspaceHandlerStore{provider: sandbox.ProviderDocker}
 	server := workspaceHandlerServer(store)
 	recorder := httptest.NewRecorder()
-	server.readWorkspaceDiffFile(recorder, workspaceHandlerRequest(t, "notes.txt"))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("Docker diff-file status = %d, body=%s", recorder.Code, recorder.Body.String())
-	}
-	if !store.created || store.createdKind != "workspace.diff-file" {
-		t.Fatalf("created request = %t %q", store.created, store.createdKind)
-	}
-	var payload worker.WorkspaceDiffFileRequest
-	if err := json.Unmarshal(store.createdPayload, &payload); err != nil || payload.Path != "notes.txt" {
-		t.Fatalf("transport payload = %#v, err=%v", payload, err)
-	}
-}
-
-func TestReadWorkspaceDiffFileRejectsOtherProvidersWithoutDispatch(t *testing.T) {
-	store := &workspaceHandlerStore{provider: sandbox.ProviderCoder}
-	server := workspaceHandlerServer(store)
-	recorder := httptest.NewRecorder()
-	server.readWorkspaceDiffFile(recorder, workspaceHandlerRequest(t, "notes.txt"))
-	if recorder.Code != http.StatusNotImplemented {
-		t.Fatalf("Coder diff-file status = %d, body=%s", recorder.Code, recorder.Body.String())
+	server.readWorkspaceDiffFile(recorder, workspaceHandlerRequest(t, "notes.txt", "unexpected"))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("diff-file status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 	if store.created {
-		t.Fatal("Coder session dispatched a Docker-only diff-file request")
-	}
-}
-
-func TestGetWorkspaceDiffDispatchesOnlyForDocker(t *testing.T) {
-	store := &workspaceHandlerStore{provider: sandbox.ProviderDocker}
-	server := workspaceHandlerServer(store)
-	recorder := httptest.NewRecorder()
-	server.getWorkspaceDiff(recorder, workspaceHandlerRequest(t, ""))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("Docker diff status = %d, body=%s", recorder.Code, recorder.Body.String())
-	}
-	if !store.created || store.createdKind != "workspace.diff" {
-		t.Fatalf("created request = %t %q", store.created, store.createdKind)
-	}
-}
-
-func TestGetWorkspaceDiffRejectsOtherProvidersWithoutDispatch(t *testing.T) {
-	store := &workspaceHandlerStore{provider: sandbox.ProviderCoder}
-	server := workspaceHandlerServer(store)
-	recorder := httptest.NewRecorder()
-	server.getWorkspaceDiff(recorder, workspaceHandlerRequest(t, ""))
-	if recorder.Code != http.StatusNotImplemented {
-		t.Fatalf("Coder diff status = %d, body=%s", recorder.Code, recorder.Body.String())
-	}
-	if store.created {
-		t.Fatal("Coder session dispatched a Docker-only diff request")
+		t.Fatal("invalid category dispatched a diff-file request")
 	}
 }
 
@@ -115,9 +117,13 @@ func workspaceHandlerServer(store Store) *Server {
 	}
 }
 
-func workspaceHandlerRequest(t *testing.T, path string) *http.Request {
+func workspaceHandlerRequest(t *testing.T, path, category string) *http.Request {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/workspace/file/diff?path="+url.QueryEscape(path), nil)
+	query := url.Values{"path": []string{path}}
+	if category != "" {
+		query.Set("category", category)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/workspace/file/diff?"+query.Encode(), nil)
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("orgId", workspaceTestOrgID)
 	routeContext.URLParams.Add("sessionId", workspaceTestSessionID)

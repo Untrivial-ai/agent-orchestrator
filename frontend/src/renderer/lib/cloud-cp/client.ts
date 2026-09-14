@@ -138,9 +138,9 @@ export interface CloudCpClient {
 		sessionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpResumeSessionResponse>;
-	/** Docker-only changed-file summary for a cloud session. */
+	/** Changed-file summary for a supported cloud sandbox session. */
 	getWorkspaceDiff(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceDiff>;
-	/** Docker-only selected-file review details for a cloud session. */
+	/** Selected-file review details for a supported cloud sandbox session. */
 	readWorkspaceDiffFile(
 		orgId: string,
 		sessionId: string,

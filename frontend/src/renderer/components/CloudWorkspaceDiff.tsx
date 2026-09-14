@@ -38,20 +38,20 @@ const statusTone: Record<CloudCpWorkspaceDiffFile["status"], string> = {
 };
 
 /**
- * Cloud Files tab for Docker sandboxes. Cloud workspaces are remote, so they
- * cannot use the daemon-only file explorer; this deliberately consumes the
- * control-plane review endpoints instead. NodeOps and Coder never mount it.
+ * Cloud Files tab for cloud sandboxes. Cloud workspaces are remote, so they
+ * cannot use the daemon-only file explorer; this consumes the shared worker
+ * review endpoints for Docker, NodeOps, and Coder sessions.
  */
 export function CloudWorkspaceDiff({ session }: CloudWorkspaceDiffProps) {
 	const { t } = useTranslation();
 	const { client, ready, baseUrl } = useCloudCp();
 	const cloud = session.cloud;
-	const docker = cloud?.sandboxProvider === "docker";
+	const supportsWorkspaceDiff = cloud?.sandboxProvider === "docker" || cloud?.sandboxProvider === "nodeops" || cloud?.sandboxProvider === "coder";
 	const orgId = cloud?.orgId;
 	const [selectedPath, setSelectedPath] = useState<string | undefined>();
 	const [view, setView] = useState<"files" | "diff">("files");
 	const [category, setCategory] = useState<"uncommitted" | "unpushed" | "pushed">("uncommitted");
-	const enabled = ready && docker && orgId !== undefined;
+	const enabled = ready && supportsWorkspaceDiff && orgId !== undefined;
 	const diffQuery = useQuery({
 		queryKey: ["cloud-workspace-diff", baseUrl, orgId ?? "", session.id],
 		enabled,
@@ -81,7 +81,7 @@ export function CloudWorkspaceDiff({ session }: CloudWorkspaceDiffProps) {
 		}
 	}, [files, selectedPath]);
 
-	if (!docker) {
+	if (!supportsWorkspaceDiff) {
 		return <PanelMessage>{t("files.noneChanged")}</PanelMessage>;
 	}
 

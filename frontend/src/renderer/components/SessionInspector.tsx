@@ -187,7 +187,7 @@ export const SessionInspector = memo(function SessionInspector({
 	const cloudOrgId = session?.cloud?.orgId;
 	const cloudDiff = useQuery({
 		queryKey: ["cloud-workspace-diff", cloudBaseUrl, cloudOrgId ?? "", session?.id ?? ""],
-		enabled: !browserOnly && cloudReady && session?.cloud?.sandboxProvider === "docker" && cloudOrgId !== undefined,
+		enabled: !browserOnly && cloudReady && (session?.cloud?.sandboxProvider === "docker" || session?.cloud?.sandboxProvider === "nodeops" || session?.cloud?.sandboxProvider === "coder") && cloudOrgId !== undefined,
 		refetchInterval: 5_000,
 		queryFn: () => cloudCpClient.getWorkspaceDiff(cloudOrgId!, session!.id),
 	});

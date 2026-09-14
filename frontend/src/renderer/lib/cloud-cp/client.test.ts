@@ -31,7 +31,7 @@ describe("cloud control-plane session lifecycle", () => {
 		);
 	});
 
-	it("gets Docker workspace summary and encodes selected diff paths", async () => {
+	it("gets cloud workspace summaries and encodes selected diff categories", async () => {
 		const fetchMock = vi.fn(async () =>
 			new Response(
 				JSON.stringify({
@@ -50,6 +50,7 @@ describe("cloud control-plane session lifecycle", () => {
 
 		await client.getWorkspaceDiff("org/1", "session/1");
 		await client.readWorkspaceDiffFile("org/1", "session/1", "notes/one two.txt");
+		await client.readWorkspaceDiffFile("org/1", "session/1", "notes/one two.txt", "unpushed");
 
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			1,
@@ -59,6 +60,11 @@ describe("cloud control-plane session lifecycle", () => {
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			2,
 			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/file/diff?path=notes%2Fone+two.txt",
+			expect.anything(),
+		);
+		expect(fetchMock).toHaveBeenNthCalledWith(
+			3,
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/file/diff?path=notes%2Fone+two.txt&category=unpushed",
 			expect.anything(),
 		);
 	});

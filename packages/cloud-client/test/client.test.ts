@@ -353,7 +353,7 @@ describe("CloudClient", () => {
     });
   });
 
-	 it("reads a Docker workspace file with its unified diff", async () => {
+	 it("reads a cloud workspace file with its selected comparison category", async () => {
 		const file = {
 			path: "src/main.ts",
 			status: "modified",
@@ -376,9 +376,9 @@ describe("CloudClient", () => {
 			fetch: fetchMock as typeof fetch,
 		});
 
-		await expect(client.readWorkspaceDiffFile("tenant one", "session one", file.path)).resolves.toEqual(file);
+		await expect(client.readWorkspaceDiffFile("tenant one", "session one", file.path, "unpushed")).resolves.toEqual(file);
 		expect(fetchMock.mock.calls[0]?.[0]).toBe(
-			"https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/workspace/file/diff?path=src%2Fmain.ts",
+			"https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/workspace/file/diff?path=src%2Fmain.ts&category=unpushed",
 		);
 	});
 

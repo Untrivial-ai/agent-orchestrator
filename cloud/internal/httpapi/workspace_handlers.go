@@ -81,9 +81,7 @@ func (s *Server) readWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
-// readWorkspaceDiffFile exposes the Docker worker's per-file review model.
-// It is intentionally provider-gated: NodeOps and Coder have different
-// workspace execution paths and must opt in with their own implementations.
+// readWorkspaceDiffFile exposes the shared cloud worker's per-file review model.
 func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 	orgID, sessionID, ok := workspaceRoute(w, r)
 	if !ok {
@@ -95,6 +93,10 @@ func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid workspace-relative path is required.")
 		return
 	}
+	if !validWorkspaceDiffCategory(category) {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid workspace diff category is required.")
+		return
+	}
 	principal := principalFrom(r)
 	session, err := s.store.GetSession(r.Context(), principal, orgID, sessionID)
 	if err != nil {
@@ -102,9 +104,9 @@ func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if session.SandboxProvider != sandbox.ProviderDocker {
+	if !supportsWorkspaceDiff(session.SandboxProvider) {
 		s.logger.Warn("workspace diff-file request unsupported", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
-		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_FILE_UNSUPPORTED", "Per-file diffs are currently available only for Docker cloud sessions.")
+		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_FILE_UNSUPPORTED", "Per-file diffs are unavailable for this cloud sandbox provider.")
 		return
 	}
 
@@ -172,9 +174,9 @@ func (s *Server) getWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if session.SandboxProvider != sandbox.ProviderDocker {
+	if !supportsWorkspaceDiff(session.SandboxProvider) {
 		s.logger.Warn("workspace diff request unsupported", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
-		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_UNSUPPORTED", "Workspace diffs are currently available only for Docker cloud sessions.")
+		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_UNSUPPORTED", "Workspace diffs are unavailable for this cloud sandbox provider.")
 		return
 	}
 	s.logger.Info("workspace diff request started", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
@@ -197,6 +199,28 @@ func (s *Server) getWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("workspace diff request completed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider, "file_count", fileCount)
 	writeJSON(w, http.StatusOK, value)
+}
+
+// supportsWorkspaceDiff is intentionally explicit: all supported providers
+// bootstrap the same ao-worker and supply it an isolated repository through
+// AO_WORKSPACE_DIR. Unknown providers must opt in before they can dispatch
+// workspace review requests.
+func supportsWorkspaceDiff(provider string) bool {
+	switch provider {
+	case sandbox.ProviderDocker, sandbox.ProviderNodeOps, sandbox.ProviderCoder:
+		return true
+	default:
+		return false
+	}
+}
+
+func validWorkspaceDiffCategory(category string) bool {
+	switch category {
+	case "", "uncommitted", "unpushed", "pushed":
+		return true
+	default:
+		return false
+	}
 }
 
 func workspaceRoute(w http.ResponseWriter, r *http.Request) (string, string, bool) {

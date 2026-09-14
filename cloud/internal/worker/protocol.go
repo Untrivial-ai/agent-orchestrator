@@ -211,9 +211,9 @@ type WorkspaceReadRequest struct {
 }
 
 // WorkspaceDiffFileRequest asks the worker for one file's current text and
-// its bounded unified patch against HEAD. It is deliberately distinct from
-// WorkspaceReadRequest so providers that have not implemented diff-file
-// support never receive a request they could mistake for an ordinary read.
+// its bounded unified patch against the requested comparison category. It is
+// deliberately distinct from WorkspaceReadRequest so it cannot be mistaken
+// for an ordinary file read.
 type WorkspaceDiffFileRequest struct {
 	Path     string `json:"path"`
 	Category string `json:"category,omitempty"`
@@ -268,9 +268,9 @@ type WorkspaceFile struct {
 	Size    int64  `json:"size"`
 }
 
-// WorkspaceDiffFile is the Docker worker's per-file review model. It mirrors
-// the local daemon's useful file-review facts without exposing host paths or
-// provider implementation details.
+// WorkspaceDiffFile is the shared cloud worker's per-file review model. It
+// mirrors the local daemon's useful file-review facts without exposing host
+// paths or provider implementation details.
 type WorkspaceDiffFile struct {
 	Path             string `json:"path"`
 	Status           string `json:"status"`
