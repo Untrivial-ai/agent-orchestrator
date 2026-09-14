@@ -90,6 +90,7 @@ func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := r.URL.Query().Get("path")
+	category := r.URL.Query().Get("category")
 	if strings.TrimSpace(path) == "" || len(path) > maxWorkspacePath {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid workspace-relative path is required.")
 		return
@@ -108,7 +109,7 @@ func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("workspace diff-file request started", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
-	payload, _ := json.Marshal(worker.WorkspaceDiffFileRequest{Path: path})
+	payload, _ := json.Marshal(worker.WorkspaceDiffFileRequest{Path: path, Category: category})
 	result, ok := s.runWorkspaceRequest(w, r, orgID, sessionID, "workspace.diff-file", payload)
 	if !ok {
 		s.logger.Warn("workspace diff-file request failed", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)

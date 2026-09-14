@@ -230,6 +230,7 @@ export interface CloudCpWorkspaceDiffFile {
 /** Docker-only changed-file summary, compared with the session's HEAD. */
 export interface CloudCpWorkspaceDiff {
 	files: CloudCpWorkspaceDiffFile[];
+	categories?: Partial<Record<"uncommitted" | "unpushed" | "pushed", { files: CloudCpWorkspaceDiffFile[]; baseRef?: string; headRef?: string }>>;
 	diffBaseRef: string;
 	diffBaseSha?: string;
 	truncated: { combined: boolean; stats: boolean };
@@ -240,6 +241,7 @@ export interface CloudCpWorkspaceDiffFileDetail extends CloudCpWorkspaceDiffFile
 	size: number;
 	deleted: boolean;
 	content: string;
+	baseContent: string;
 	contentTruncated: boolean;
 	diff: string;
 	diffTruncated: boolean;

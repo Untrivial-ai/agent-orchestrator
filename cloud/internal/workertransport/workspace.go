@@ -155,6 +155,9 @@ func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFile
 		return worker.WorkspaceDiffFile{}, err
 	}
 
+	if input.Category != "" && input.Category != "uncommitted" {
+		return w.diffCommittedFile(ctx, path, input.Category)
+	}
 	status, err := w.fileStatus(ctx, path)
 	if err != nil {
 		return worker.WorkspaceDiffFile{}, err
@@ -170,6 +173,7 @@ func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFile
 		file.Content, file.Size = content, size
 		file.Binary, file.ContentTruncated = binary, truncated
 	}
+	file.BaseContent, _, _ = w.gitFileContent(ctx, "HEAD", path)
 
 	if status == "unmodified" {
 		return file, nil
@@ -192,6 +196,44 @@ func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFile
 	}
 	file.Diff, file.DiffTruncated = diff, truncated
 	return file, nil
+}
+
+func (w *workspace) diffCommittedFile(ctx context.Context, path, category string) (worker.WorkspaceDiffFile, error) {
+	base, err := w.defaultBranchRef(ctx)
+	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	from, to := base, "HEAD"
+	branch, _, _ := w.git(ctx, "branch", "--show-current")
+	remote := "origin/" + strings.TrimSpace(branch)
+	if _, _, remoteErr := w.git(ctx, "rev-parse", "--verify", remote); remoteErr == nil {
+		if category == "pushed" { to = remote } else if category == "unpushed" { from = remote }
+	}
+	name, _, err := w.git(ctx, "diff", "--name-status", "--find-renames", from+"..."+to, "--", path)
+	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	line := strings.TrimSpace(name)
+	if line == "" { return worker.WorkspaceDiffFile{Path: wirePath(path), Status: "unmodified"}, nil }
+	parts := strings.Split(line, "\t")
+	status := gitStatus(parts[0])
+	file := worker.WorkspaceDiffFile{Path: wirePath(path), Status: status, Deleted: status == "deleted"}
+	if !file.Deleted {
+		content, truncated, contentErr := w.gitFileContent(ctx, to, path)
+		if contentErr != nil { return worker.WorkspaceDiffFile{}, contentErr }
+		file.Content, file.Size, file.ContentTruncated = content, int64(len(content)), truncated
+	}
+	numstat, _, err := w.git(ctx, "diff", "--numstat", from+"..."+to, "--", path)
+	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	file.Additions, file.Deletions, file.Binary = diffNumstat(numstat, false)
+	patch, truncated, err := w.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", from+"..."+to, "--", path)
+	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	file.Diff, file.DiffTruncated = patch, truncated
+	file.BaseContent, _, _ = w.gitFileContent(ctx, from, path)
+	return file, nil
+}
+
+func (w *workspace) gitFileContent(ctx context.Context, ref, path string) (string, bool, error) {
+	content, truncated, err := w.git(ctx, "show", ref+":"+filepath.ToSlash(path))
+	if err != nil { return "", false, nil }
+	if !utf8.ValidString(content) || strings.IndexByte(content, 0) >= 0 { return "", truncated, nil }
+	return content, truncated, nil
 }
 
 func (w *workspace) diffFileContent(path string) (string, int64, bool, bool, error) {
@@ -382,16 +424,64 @@ func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
 		combined = combined[:maxDiffOutput]
 		combinedTruncated = true
 	}
+	categories := map[string]any{
+		"uncommitted": map[string]any{"files": files},
+	}
+	if base, baseErr := w.defaultBranchRef(ctx); baseErr == nil {
+		branch, _, branchErr := w.git(ctx, "branch", "--show-current")
+		if branchErr == nil && strings.TrimSpace(branch) != "" {
+			branch = strings.TrimSpace(branch)
+			remoteBranch := "origin/" + branch
+			if _, _, remoteErr := w.git(ctx, "rev-parse", "--verify", remoteBranch); remoteErr == nil {
+				if pushed, err := w.diffSummary(ctx, base, remoteBranch); err == nil {
+					categories["pushed"] = pushed
+				}
+				if unpushed, err := w.diffSummary(ctx, remoteBranch, "HEAD"); err == nil {
+					categories["unpushed"] = unpushed
+				}
+			} else if unpushed, err := w.diffSummary(ctx, base, "HEAD"); err == nil {
+				categories["unpushed"] = unpushed
+			}
+		}
+	}
 	return map[string]any{
 		"status": status, "unstaged": unstaged, "staged": staged,
 		"combined": combined, "diffBaseRef": "HEAD",
 		"diffBaseSha": strings.TrimSpace(base), "files": files,
 		"untrackedFiles": untracked,
+		"categories": categories,
 		"truncated": map[string]bool{
 			"combined": combinedTruncated,
 			"stats":    statusTruncated || numstatTruncated,
 		},
 	}, nil
+}
+
+func (w *workspace) defaultBranchRef(ctx context.Context) (string, error) {
+	for _, ref := range []string{"origin/HEAD", "origin/main", "origin/master"} {
+		if _, _, err := w.git(ctx, "rev-parse", "--verify", ref); err == nil {
+			return ref, nil
+		}
+	}
+	return "", errors.New("default branch reference is unavailable")
+}
+
+func (w *workspace) diffSummary(ctx context.Context, from, to string) (map[string]any, error) {
+	nameStatus, _, err := w.git(ctx, "diff", "--name-status", "--find-renames", from+"..."+to)
+	if err != nil { return nil, err }
+	numstat, _, err := w.git(ctx, "diff", "--numstat", "--find-renames", from+"..."+to)
+	if err != nil { return nil, err }
+	stats := diffNumstats(numstat)
+	files := make([]map[string]any, 0)
+	for _, line := range strings.Split(strings.TrimSuffix(nameStatus, "\n"), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 { continue }
+		path := parts[len(parts)-1]
+		status := gitStatus(parts[0])
+		stat := stats[path]
+		files = append(files, map[string]any{"path": path, "status": status, "additions": stat.additions, "deletions": stat.deletions, "binary": stat.binary})
+	}
+	return map[string]any{"files": files, "baseRef": from, "headRef": to}, nil
 }
 
 type diffStat struct {

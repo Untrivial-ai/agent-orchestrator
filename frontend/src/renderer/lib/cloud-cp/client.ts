@@ -145,6 +145,7 @@ export interface CloudCpClient {
 		orgId: string,
 		sessionId: string,
 		path: string,
+		category?: "uncommitted" | "unpushed" | "pushed",
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpWorkspaceDiffFileDetail>;
 
@@ -403,9 +404,9 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/diff`, {
 				signal: o?.signal,
 			}),
-		readWorkspaceDiffFile: (orgId, sessionId, path, o) =>
+		readWorkspaceDiffFile: (orgId, sessionId, path, category, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/file/diff`, {
-				query: { path },
+				query: { path, category },
 				signal: o?.signal,
 			}),
 

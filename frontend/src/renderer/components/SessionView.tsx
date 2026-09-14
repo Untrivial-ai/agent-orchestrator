@@ -2116,7 +2116,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								filesView={
 									inspectorView === "files" && session ? (
 										session.cloud ? (
-											<CloudWorkspaceDiff onToggleMaximized={handleToggleFilesPopOut} session={session} />
+											<CloudWorkspaceDiff session={session} />
 										) : (
 											<SessionFileExplorer
 											onOpenFile={openCenterFile}
@@ -2209,7 +2209,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					if (!open) settleUnsafeDraftLeave(false);
 				}}
 			/>
-			{filesPoppedOut && session
+			{filesPoppedOut && session && !session.cloud
 				? createPortal(
 						<div
 							className={cn(
@@ -2217,17 +2217,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-overlay--mac-windowed",
 							)}
 						>
-							{session.cloud ? (
-								<CloudWorkspaceDiff isMaximized onToggleMaximized={handleToggleFilesPopOut} session={session} />
-							) : (
-								<SessionFileExplorer
+							<SessionFileExplorer
 									isMaximized
 									onSplitChange={setFilesSplit}
 									onToggleMaximized={handleToggleFilesPopOut}
 									sessionId={session.id}
 									split={filesSplit}
 								/>
-							)}
 						</div>,
 						document.body,
 					)

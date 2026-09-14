@@ -215,7 +215,8 @@ type WorkspaceReadRequest struct {
 // WorkspaceReadRequest so providers that have not implemented diff-file
 // support never receive a request they could mistake for an ordinary read.
 type WorkspaceDiffFileRequest struct {
-	Path string `json:"path"`
+	Path     string `json:"path"`
+	Category string `json:"category,omitempty"`
 }
 
 type WorkspaceWriteRequest struct {
@@ -279,6 +280,7 @@ type WorkspaceDiffFile struct {
 	Binary           bool   `json:"binary"`
 	Deleted          bool   `json:"deleted"`
 	Content          string `json:"content"`
+	BaseContent      string `json:"baseContent"`
 	ContentTruncated bool   `json:"contentTruncated"`
 	Diff             string `json:"diff"`
 	DiffTruncated    bool   `json:"diffTruncated"`
