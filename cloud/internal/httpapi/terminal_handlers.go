@@ -166,6 +166,11 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 		pingResult <- keepTerminalAlive(ctx, connection)
 	}()
 
+	pingResult := make(chan error, 1)
+	go func() {
+		pingResult <- keepTerminalAlive(ctx, connection)
+	}()
+
 	select {
 	case err = <-readResult:
 	case err = <-writeResult:
@@ -219,6 +224,24 @@ func (s *Server) refreshTerminalInteraction(ctx context.Context, terminal domain
 					s.logger.Debug("refresh terminal interaction lease", "error", err, "terminal_id", terminal.ID)
 				}
 				return
+			}
+		}
+	}
+}
+
+func keepTerminalAlive(ctx context.Context, connection *websocket.Conn) error {
+	ticker := time.NewTicker(terminalPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, terminalPingTimeout)
+			err := connection.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return err
 			}
 		}
 	}
