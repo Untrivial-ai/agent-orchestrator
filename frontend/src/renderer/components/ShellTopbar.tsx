@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { Folder, LayoutDashboard, Plus, Trash2, Zap } from "lucide-react";
+import { Folder, LayoutDashboard, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { animate, LayoutGroup, motion, useMotionValue, useReducedMotion } from "motion/react";
 import { NotificationCenter } from "./NotificationCenter";
@@ -39,7 +39,7 @@ import {
 	deriveSessionAgentSwitchPresentation,
 } from "../lib/agent-switch-presentation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { useCuesDialogStore } from "../stores/cues-dialog-store";
+import { ProjectCueMenu } from "./chat/CueComposerMenu";
 
 const isMac = isMacPlatform();
 const boardActionsInPanel = usesBoardActionsInPanel();
@@ -81,7 +81,6 @@ export function ShellTopbar({
 	compactActions?: boolean;
 } = {}) {
 	const { t } = useTranslation();
-	const openCuesDialog = useCuesDialogStore((s) => s.openCuesDialog);
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
@@ -312,24 +311,12 @@ export function ShellTopbar({
 							</TooltipTrigger>
 							<TooltipContent side="bottom">{orchestratorTooltip}</TooltipContent>
 						</Tooltip>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span className="inline-flex" style={noDragStyle}>
-									<TopbarButton
-										aria-label={t("cues.title")}
-										className="topbar-control--labeled"
-										data-priority="secondary"
-										disabled={isProjectRestarting || isProvisioning}
-										onClick={openCuesDialog}
-										variant="primary"
-									>
-										<Zap className="size-icon-md" aria-hidden="true" />
-										<span data-compact-label>{t("cues.title")}</span>
-									</TopbarButton>
-								</span>
-							</TooltipTrigger>
-							<TooltipContent side="bottom">{t("cues.title")}</TooltipContent>
-						</Tooltip>
+						<span className="inline-flex" style={noDragStyle}>
+							<ProjectCueMenu
+								projectId={projectId!}
+								disabled={isProjectRestarting || isProvisioning}
+							/>
+						</span>
 					</>
 				) : null}
 				{isSessionRoute ? (

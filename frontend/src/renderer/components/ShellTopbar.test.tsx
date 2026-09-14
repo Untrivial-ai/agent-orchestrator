@@ -358,6 +358,7 @@ describe("ShellTopbar orchestrator actions", () => {
 
 		const actions = screen.getByTestId("workspace-topbar-actions");
 		expect(actions.closest("header")).toHaveClass("workspace-topbar-container");
+		expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
 	});
 
 	it.each([

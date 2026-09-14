@@ -7,7 +7,7 @@ import {
 	SessionsBoardGridView,
 	archiveToggleOffsetClassName,
 } from "@aoagents/product-ui";
-import { AlertTriangle, LayoutDashboard, Plus, RotateCw, Zap } from "lucide-react";
+import { AlertTriangle, LayoutDashboard, Plus, RotateCw } from "lucide-react";
 import {
 	type WorkspaceSession,
 	hasConfiguredOrchestratorAgent,
@@ -52,8 +52,7 @@ import {
 	sessionsBoardLabels,
 } from "./SessionsBoardAdapters";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { CuesDialog } from "./CuesDialog";
-import { useCuesDialogStore } from "../stores/cues-dialog-store";
+import { ProjectCueMenu } from "./chat/CueComposerMenu";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
@@ -122,8 +121,6 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const [isSpawning, setIsSpawning] = useState(false);
 	const [spawnError, setSpawnError] = useState<string | null>(null);
 	const [canCreateAsTui, setCanCreateAsTui] = useState(false);
-	const cuesOpen = useCuesDialogStore((s) => s.open);
-	const closeCuesDialog = useCuesDialogStore((s) => s.closeCuesDialog);
 	const restartingProjectIds = useUiStore((state) => state.restartingProjectIds);
 	const orchestratorStartupError = useUiStore((state) =>
 		projectId ? (state.orchestratorStartupErrors[projectId] ?? null) : null,
@@ -144,7 +141,6 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	useEffect(() => {
 		setSpawnError(null);
 		setCanCreateAsTui(false);
-		closeCuesDialog();
 	}, [projectId]);
 	const previousProjectIdRef = useRef(projectId);
 	useEffect(() => {
@@ -329,24 +325,12 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 								: t("shell.spawnOrchestrator")}
 				</TooltipContent>
 			</Tooltip>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<span className="inline-flex">
-						<TopbarButton
-							aria-label={t("cues.title")}
-							className="topbar-control--labeled"
-							data-priority="secondary"
-							disabled={isProjectRestarting || isProvisioning}
-							onClick={useCuesDialogStore.getState().openCuesDialog}
-							variant="primary"
-						>
-							<Zap className="size-icon-md" aria-hidden="true" />
-							<span data-compact-label>{t("cues.title")}</span>
-						</TopbarButton>
-					</span>
-				</TooltipTrigger>
-				<TooltipContent side="bottom">{t("cues.title")}</TooltipContent>
-			</Tooltip>
+			<span className="inline-flex">
+				<ProjectCueMenu
+					projectId={projectId}
+					disabled={isProjectRestarting || isProvisioning}
+				/>
+			</span>
 			{boardOwnsNotificationCenter ? (
 				<>
 					<NotificationCenter />
@@ -469,7 +453,6 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				/>
 			) : null}
 			{showStartup ? <DaemonStartupLoader /> : null}
-			{projectId ? <CuesDialog open={cuesOpen} onOpenChange={(next) => (next ? useCuesDialogStore.getState().openCuesDialog() : closeCuesDialog())} projectId={projectId} /> : null}
 		</div>
 	);
 }

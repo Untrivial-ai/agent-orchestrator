@@ -1,4 +1,4 @@
-import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Disc3, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
@@ -6,8 +6,9 @@ import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import {
 	ProjectSettingsForm,
 	type ProjectSettingsSaveState,
-	type ProjectSettingsSection,
+	type ProjectSettingsSection as ProjectFormSection,
 } from "./ProjectSettingsForm";
+import { CuesSettings } from "./CuesDialog";
 import {
 	Dialog,
 	DialogClose,
@@ -27,6 +28,8 @@ import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCa
 function initialProjectSaveState(): ProjectSettingsSaveState {
 	return { phase: "idle" };
 }
+
+type ProjectSettingsSection = ProjectFormSection | "cues";
 
 export function SettingsDialog() {
 	const { t } = useTranslation();
@@ -52,19 +55,23 @@ export function SettingsDialog() {
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
 		{ id: "workflow", label: t("settings.project.workflow"), icon: GitBranch },
 		{ id: "intake", label: t("settings.project.intake"), icon: Inbox },
+		{ id: "cues", label: t("cues.title"), icon: Disc3 },
 	];
 
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
+	const [cueBusy, setCueBusy] = useState(false);
+	const projectOperationPending =
+		projectSaveState.phase === "pending" || projectSaveState.phase === "saving" || cueBusy;
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.identity"))
 		: globalSettingsItem(activeSection, { cloudEnabled }).label(t);
 
 	const closeSettingsDialog = () => {
-		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) return;
+		if (isProjectSettings && projectOperationPending) return;
 		closeSettings();
 	};
 
@@ -75,6 +82,7 @@ export function SettingsDialog() {
 		if (settingsModal?.scope === "project") {
 			setActiveProjectSection("general");
 			setProjectSaveState(initialProjectSaveState());
+			setCueBusy(false);
 		}
 	}, [cloudEnabled, settingsModal]);
 
@@ -99,6 +107,7 @@ export function SettingsDialog() {
 											icon={icon}
 											key={id}
 											label={label}
+											disabled={projectOperationPending}
 											onClick={() => setActiveProjectSection(id)}
 										/>
 									))
@@ -112,7 +121,7 @@ export function SettingsDialog() {
 										/>
 									))}
 						</nav>
-						{isProjectSettings && (
+						{isProjectSettings && activeProjectSection !== "cues" && (
 							<div className="mt-auto flex flex-col gap-2 border-t border-(--color-border-settings-dialog-header) p-3">
 								<Button
 									type="submit"
@@ -162,16 +171,22 @@ export function SettingsDialog() {
 							<DialogClose
 								aria-label={t("settings.close")}
 								className="settings-close-button"
-								disabled={isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")}
+								disabled={isProjectSettings && projectOperationPending}
 							>
 								<X aria-hidden="true" className="size-4" />
 							</DialogClose>
 						</DialogHeader>
 						<div className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}>
-							{displaySettings?.scope === "project" ? (
+							{displaySettings?.scope === "project" && activeProjectSection === "cues" ? (
+								<CuesSettings
+									key={displaySettings.projectId}
+									projectId={displaySettings.projectId}
+									onBusyChange={setCueBusy}
+								/>
+							) : displaySettings?.scope === "project" ? (
 								<ProjectSettingsForm
 									projectId={displaySettings.projectId}
-									section={activeProjectSection}
+									section={activeProjectSection as ProjectFormSection}
 									onSaveState={setProjectSaveState}
 								/>
 							) : (
