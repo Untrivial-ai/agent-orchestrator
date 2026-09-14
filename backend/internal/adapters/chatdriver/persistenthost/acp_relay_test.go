@@ -72,6 +72,33 @@ func TestACPRelayReclaimsPromptAcrossAttachment(t *testing.T) {
 	}
 }
 
+func TestACPRelayTracksActiveCompactionPrompt(t *testing.T) {
+	relay := newTestACPRelay(t)
+
+	// Start /compact prompt
+	providerPrompt := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"session-live","prompt":[{"type":"text","text":"/compact"}]}}`+"\n"), 1)
+	promptID := frameID(t, providerPrompt)
+
+	state := relay.snapshot()
+	if !state.ActivePrompt {
+		t.Fatal("ActivePrompt = false, want true")
+	}
+	if !state.ActiveCompaction {
+		t.Fatal("ActiveCompaction = false, want true for /compact prompt")
+	}
+
+	// Complete prompt
+	relayProviderFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":`+promptID+`,"result":{"stopReason":"end_turn"}}`+"\n"), 1, true)
+
+	stateAfter := relay.snapshot()
+	if stateAfter.ActivePrompt {
+		t.Fatal("ActivePrompt = true, want false after completion")
+	}
+	if stateAfter.ActiveCompaction {
+		t.Fatal("ActiveCompaction = true, want false after completion")
+	}
+}
+
 func TestACPRelayGivesReplayedProviderRequestStableIdentity(t *testing.T) {
 	relay := newTestACPRelay(t)
 	frame := []byte(`{"jsonrpc":"2.0","id":"permission-7","method":"session/request_permission","params":{"sessionId":"s","options":[]}}` + "\n")

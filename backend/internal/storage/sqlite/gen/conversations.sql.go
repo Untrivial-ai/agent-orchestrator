@@ -366,7 +366,7 @@ WHERE conversation_id = ?1
   AND client_message_id = ?2
   AND state = 'reserved' AND provider_work_started = 0
   AND EXISTS (
-    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.session_id
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.current_session_id
     WHERE c.id = conversation_edit_deliveries.conversation_id
       AND s.controller_generation = ?3
       AND s.session_mode = 'chat' AND s.is_terminated = 0

@@ -205,9 +205,9 @@ func (s *Service) WorkspaceWatchPaths(ctx context.Context, id domain.SessionID) 
 }
 
 // InvalidateWorkspaceCache purges cached compare-base and git-status data for
-// a session. Called from the workspace SSE stream the instant its filesystem
-// watcher observes a real change, so a list/detail request racing a fresh
-// git mutation never returns stale cached state.
+// a session when the workspace SSE filesystem watcher observes a change.
+// Callers sharing an in-flight load may still receive its uncached snapshot;
+// the first request after that load completes recomputes the data.
 func (s *Service) InvalidateWorkspaceCache(id domain.SessionID) {
 	s.workspaceCache.invalidateSession(id)
 }
@@ -1070,14 +1070,16 @@ func (s *Service) resolveWorkspaceChanges(
 		if cached, ok := s.workspaceCache.get(key); ok {
 			return cached, nil
 		}
+		entry := s.workspaceCache.beginLoad(key)
+		defer s.workspaceCache.finishLoad(key, entry, false)
 		compare := resolve(ctx)
 		changes, err := workspaceChangeMaps(ctx, root, compare.gitBase())
 		if err != nil {
 			return nil, err
 		}
-		entry := workspaceCacheEntry{at: s.now(), compare: compare, changes: changes}
-		s.workspaceCache.set(key, entry)
-		return entry, nil
+		*entry = workspaceCacheEntry{at: s.now(), compare: compare, changes: changes}
+		s.workspaceCache.finishLoad(key, entry, true)
+		return *entry, nil
 	})
 	if err != nil {
 		return workspaceCompareTarget{}, workspaceChangeSet{}, err

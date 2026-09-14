@@ -173,6 +173,28 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	}, nil
 }
 
+// NewRESTClient builds a Client that can only make bearer-token REST calls
+// (CreatePullRequest, GetPullRequestRecord, CreatePullRequestReview,
+// GetRepositoryAsUser, ...). It has no GitHub App credentials, so the
+// installation-token-minting helpers will fail. It exists so an environment
+// without a local GitHub App (e.g. staging, which reaches GitHub read-only
+// through the remote capability broker) can still perform user-PAT
+// authenticated writes: the caller supplies the token per request.
+func NewRESTClient(apiBaseURL string, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	base := strings.TrimRight(apiBaseURL, "/")
+	if base == "" {
+		base = defaultAPIBaseURL
+	}
+	return &Client{
+		apiBaseURL: base,
+		httpClient: httpClient,
+		now:        time.Now,
+	}
+}
+
 func (c *Client) InstallationURL(state string) string {
 	query := url.Values{"state": {state}}
 	return c.webBaseURL + "/apps/" + url.PathEscape(c.appSlug) +

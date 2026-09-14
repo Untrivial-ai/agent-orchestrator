@@ -56,6 +56,15 @@ func (s *Store) ClaimWorkerTurn(
 							AND turn.state IN ('provisioning', 'running', 'cancel_requested')
 						)
 					)
+					-- Hold delivery while the agent is mid-turn: injected text
+					-- would sit unsubmitted in the harness composer (a report the
+					-- orchestrator is polling for would deadlock it). The
+					-- staleness valve keeps a session whose activity hooks never
+					-- fire from blackholing its queue.
+					AND (
+						session.activity_state <> 'active'
+						OR turn.created_at < now() - interval '5 minutes'
+					)
 				ORDER BY turn.created_at, turn.id
 				FOR UPDATE OF turn SKIP LOCKED
 				LIMIT 1
