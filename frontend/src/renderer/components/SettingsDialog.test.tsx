@@ -34,6 +34,20 @@ vi.mock("./ProjectSettingsForm", () => ({
 	),
 }));
 
+vi.mock("./CloudProjectSettingsForm", () => ({
+	CloudProjectSettingsForm: ({ projectId }: { projectId: string }) => (
+		<div data-testid="cloud-project-settings-form">{projectId}</div>
+	),
+}));
+
+const { workspaceQueryDataMock } = vi.hoisted(() => ({
+	workspaceQueryDataMock: vi.fn<() => Array<{ id: string; kind?: string }> | undefined>(() => undefined),
+}));
+
+vi.mock("../hooks/useWorkspaceQuery", () => ({
+	useWorkspaceQuery: () => ({ data: workspaceQueryDataMock() }),
+}));
+
 vi.mock("./GlobalSettingsForm", () => ({
 	GlobalSettingsForm: ({ section }: { section: string }) => <div data-testid="global-settings-section">{section}</div>,
 }));
@@ -48,6 +62,7 @@ describe("SettingsDialog", () => {
 	beforeEach(() => {
 		postMock.mockReset().mockResolvedValue({ data: { operationId: "login-1", status: "cancelled" } });
 		useUiStore.setState({ settingsModal: null });
+		workspaceQueryDataMock.mockReset().mockReturnValue(undefined);
 	});
 
 	function renderSettingsDialog() {
@@ -65,6 +80,31 @@ describe("SettingsDialog", () => {
 
 		await userEvent.keyboard("{Escape}");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
+	});
+
+	it("routes a cloud project to the read-only cloud settings form with the full project-spec nav", async () => {
+		workspaceQueryDataMock.mockReturnValue([{ id: "cloud-proj-1", kind: "cloud" }]);
+		useUiStore.getState().openProjectSettings("cloud-proj-1");
+		renderSettingsDialog();
+
+		expect(await screen.findByTestId("cloud-project-settings-form")).toHaveTextContent("cloud-proj-1");
+		expect(screen.queryByRole("button", { name: "Start pending save" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Identity" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Agents" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Workflow" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Intake" })).toBeInTheDocument();
+	});
+
+	it("keeps a local project on the local settings form with the full nav", async () => {
+		workspaceQueryDataMock.mockReturnValue([{ id: "proj-1", kind: "single_repo" }]);
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderSettingsDialog();
+
+		expect(await screen.findByRole("button", { name: "Start pending save" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Agents" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Workflow" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Intake" })).toBeInTheDocument();
 	});
 
 	it("opens the requested global settings page", async () => {

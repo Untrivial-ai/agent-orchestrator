@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { CLOUD_PROJECT_KIND } from "../types/workspace";
+import { CloudProjectSettingsForm } from "./CloudProjectSettingsForm";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import {
 	ProjectSettingsForm,
@@ -31,8 +34,18 @@ export function SettingsDialog() {
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	// Reads the daemon settings the dialog tree already queries; no extra fetch.
 	const { cloudEnabled } = useCloudGate();
+	// The workspace query is already subscribed elsewhere in the shell, so this
+	// is a cache read, not an extra fetch: it just tells us whether the project
+	// behind settingsModal.projectId is control-plane-hosted so we can route to
+	// the cloud project form instead of the local daemon one.
+	const workspaceQuery = useWorkspaceQuery();
 
 	const displaySettings = settingsModal;
+	const targetWorkspace =
+		displaySettings?.scope === "project"
+			? workspaceQuery.data?.find((item) => item.id === displaySettings.projectId)
+			: undefined;
+	const isCloudProject = targetWorkspace?.kind === CLOUD_PROJECT_KIND;
 	// The selected page includes several store/query subscribers. Mount it one
 	// frame after the lightweight dialog chrome so the opening interaction can
 	// paint first.
@@ -46,6 +59,9 @@ export function SettingsDialog() {
 
 	const globalSections = visibleGlobalSettings({ cloudEnabled });
 
+	// Cloud projects use the same project-spec navigation as local projects.
+	// CloudProjectSettingsForm renders each section read-only from the
+	// control-plane response; local projects retain their editable form.
 	const projectSections: Array<{ id: ProjectSettingsSection; label: string; icon: LucideIcon }> = [
 		{ id: "general", label: t("settings.project.identity"), icon: MonitorCog },
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
@@ -146,7 +162,7 @@ export function SettingsDialog() {
 										/>
 									))}
 						</nav>
-						{isProjectSettings && (
+						{isProjectSettings && !isCloudProject && (
 							<div className="mt-auto flex flex-col gap-2 border-t border-(--color-border-settings-dialog-header) p-3">
 								<Button
 									type="submit"
@@ -210,11 +226,18 @@ export function SettingsDialog() {
 						>
 							{isBodyReady ? (
 								displaySettings?.scope === "project" ? (
-									<ProjectSettingsForm
-										projectId={displaySettings.projectId}
-										section={activeProjectSection}
-										onSaveState={setProjectSaveState}
-									/>
+									isCloudProject ? (
+										<CloudProjectSettingsForm
+											projectId={displaySettings.projectId}
+											section={activeProjectSection}
+										/>
+									) : (
+										<ProjectSettingsForm
+											projectId={displaySettings.projectId}
+											section={activeProjectSection}
+											onSaveState={setProjectSaveState}
+										/>
+									)
 								) : (
 									<GlobalSettingsForm
 										cloudEnabled={cloudEnabled}
