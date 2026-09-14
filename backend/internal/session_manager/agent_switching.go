@@ -18,6 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/session_manager/switchengine"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 )
 
@@ -439,8 +440,15 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 				recorder.callOutcome = domain.AgentSwitchCallTimedOut
 			}
 		}
-		rollbackSafe := retErr != nil && sourceStopConfirmed && !targetOwnerCommitted && !targetRuntimeAmbiguous
-		if retErr != nil && targetWorkspacePrepared && !targetOwnerCommitted && !targetRuntimeAmbiguous {
+		// Settlement decisions are shared policy (switchengine.Outcome). The
+		// closure rebuilds the Outcome on every call so each branch observes
+		// the current saga facts — result mutates as markers and failures
+		// persist — exactly as the sequential inlined conditions did.
+		settlement := func() switchengine.Outcome {
+			return switchOutcomePolicy(retErr != nil, sourceStopConfirmed, targetOwnerCommitted, targetRuntimeAmbiguous, targetWorkspacePrepared, result.State.Terminal(), result.RequiresRecovery(), skipTerminalization)
+		}
+		rollbackSafe := settlement().RollbackSafe()
+		if settlement().NeedsWorkspaceCleanup() {
 			recorder.boundary(domain.AgentSwitchFailureTargetWorkspaceCleanup)
 			cleanupCtx, cancel := switchDurableContext(workerCtx)
 			cleanupErr := m.cleanupPreparedAgentWorkspaceStrict(cleanupCtx, target.agent, id, rec.Metadata.WorkspacePath, target.env)
@@ -480,7 +488,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 				m.logger.Info("agent switch: source restored after target failure", "sessionID", id, "switchID", result.ID, "harness", result.FromHarness)
 			}
 		}
-		if retErr != nil && !result.State.Terminal() && skipTerminalization && !result.RequiresRecovery() {
+		if settlement().NeedsRetainedMarker() {
 			recorder.retain(targetRuntimeAmbiguous)
 			markerCtx, markerCancel := switchDurableContext(workerCtx)
 			var marked domain.AgentSwitch
@@ -497,7 +505,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 				result = marked
 			}
 		}
-		if retErr != nil && !result.State.Terminal() && !skipTerminalization {
+		if settlement().NeedsTerminalFailure() {
 			settleCtx, cancel := switchDurableContext(ctx)
 			settled, failErr := m.failAgentSwitchWithRecorder(settleCtx, store, result, switchErrorCode(retErr, result.State), recorder)
 			cancel()
@@ -510,7 +518,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 				m.logger.Error("agent switch: failed to persist terminal failure", "sessionID", id, "switchID", result.ID, "state", result.State, "error", failErr)
 			}
 		}
-		if targetWorkspacePrepared && !targetOwnerCommitted && !targetRuntimeAmbiguous {
+		if settlement().NeedsDeferredWorkspaceCleanup() {
 			cleanupCtx, cancel := switchDurableContext(ctx)
 			m.cleanupPreparedAgentWorkspace(cleanupCtx, target.agent, id, rec.Metadata.WorkspacePath, target.env)
 			cancel()
@@ -660,10 +668,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 	}
 	// The source is now conclusively gone and the durable saga owns recovery.
 	// Finish target creation and delivery on a bounded daemon-owned context.
-	postStopWait := m.switchPostStopWait
-	if postStopWait <= 0 {
-		postStopWait = switchPostStopWait
-	}
+	postStopWait := switchengine.ResolvePostStopWait(m.switchPostStopWait, switchPostStopWait)
 	postStopCtx, cancelPostStop := context.WithTimeout(workerCtx, postStopWait)
 	defer cancelPostStop()
 	ctx = postStopCtx
@@ -810,12 +815,8 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 		recorder.callOutcome = domain.AgentSwitchCallEffectUnknown
 		recorder.retain(true)
 		skipTerminalization = true
-		markCtx, cancelMark := switchDurableContext(ctx)
-		marked, markErr := m.markTargetStartUnconfirmedWithRecorder(markCtx, store, result, recorder)
-		cancelMark()
-		if markErr == nil {
-			result = marked
-		}
+		marked, markErr := m.markTargetStartAmbiguous(ctx, store, result, recorder)
+		result = marked
 		if createErr != nil {
 			return result, fmt.Errorf("switch agent %s: start target runtime: %w", id, errors.Join(createErr, markErr))
 		}
@@ -849,12 +850,8 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 				recorder.callOutcome = domain.AgentSwitchCallCleanupFailed
 				recorder.retain(true)
 				skipTerminalization = true
-				markCtx, cancelMark := switchDurableContext(ctx)
-				marked, markErr := m.markTargetStartUnconfirmedWithRecorder(markCtx, store, result, recorder)
-				cancelMark()
-				if markErr == nil {
-					result = marked
-				}
+				marked, markErr := m.markTargetStartAmbiguous(ctx, store, result, recorder)
+				result = marked
 				return result, fmt.Errorf("switch agent %s: start target runtime: %w", id, errors.Join(createErr, markErr))
 			}
 		case ports.RuntimeCleanupSucceeded:
