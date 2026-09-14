@@ -38,7 +38,7 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 		Title:     rec.Title,
 		Body:      rec.Body,
 		Status:    rec.Status,
-		CreatedAt: rec.CreatedAt,
+		CreatedAt: utcTime(rec.CreatedAt),
 	})
 	if err != nil {
 		if isSQLiteUnique(err) {

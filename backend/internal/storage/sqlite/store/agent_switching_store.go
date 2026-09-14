@@ -102,7 +102,7 @@ func (s *Store) UpdateAgentNativeSession(ctx context.Context, rec domain.AgentNa
 	n, err := s.qw.UpdateAgentNativeSession(ctx, gen.UpdateAgentNativeSessionParams{
 		ConfigDir: rec.ConfigDir, NativeSessionID: rec.NativeSessionID,
 		TranscriptPath:   rec.TranscriptPath,
-		NextGenerationID: rec.LastGenerationID, LastUsedAt: rec.LastUsedAt,
+		NextGenerationID: rec.LastGenerationID, LastUsedAt: utcTime(rec.LastUsedAt),
 		ID: rec.ID, AoSessionID: rec.AOSessionID,
 		ExpectedGenerationID: expectedGenerationID,
 	})
@@ -274,7 +274,7 @@ func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, e
 		NextTargetRuntimeHandleID: rec.TargetRuntimeHandleID,
 		ErrorCode:                 string(rec.ErrorCode),
 		FailurePoint:              string(rec.FailurePoint),
-		UpdatedAt:                 rec.UpdatedAt,
+		UpdatedAt:                 utcTime(rec.UpdatedAt),
 		ID:                        rec.ID, SessionID: rec.SessionID, ExpectedState: expectedState,
 		ExpectedSourceGenerationID: expectedSourceGenerationID,
 		ExpectedTargetGenerationID: expectedTargetGenerationID,
@@ -323,16 +323,16 @@ func (s *Store) RecordAgentHandoff(ctx context.Context, id domain.AgentSwitchID,
 	switch status {
 	case domain.AgentHandoffRequested:
 		n, err = s.qw.RequestAgentHandoff(ctx, gen.RequestAgentHandoffParams{
-			UpdatedAt: updatedAt, ID: id, SourceGenerationID: sourceGenerationID,
+			UpdatedAt: utcTime(updatedAt), ID: id, SourceGenerationID: sourceGenerationID,
 		})
 	case domain.AgentHandoffUnavailable:
 		n, err = s.qw.MarkAgentHandoffUnavailable(ctx, gen.MarkAgentHandoffUnavailableParams{
-			UpdatedAt: updatedAt, ID: id, SourceGenerationID: sourceGenerationID,
+			UpdatedAt: utcTime(updatedAt), ID: id, SourceGenerationID: sourceGenerationID,
 		})
 	case domain.AgentHandoffReceived, domain.AgentHandoffTimedOut, domain.AgentHandoffFailed, domain.AgentHandoffRejected:
 		n, err = s.qw.SettleAgentHandoff(ctx, gen.SettleAgentHandoffParams{
 			NextAgentHandoffStatus: status, AgentHandoffPath: handoffPath, AgentHandoffHash: handoffHash,
-			UpdatedAt: updatedAt, ID: id, SourceGenerationID: sourceGenerationID,
+			UpdatedAt: utcTime(updatedAt), ID: id, SourceGenerationID: sourceGenerationID,
 		})
 	default:
 		return false, fmt.Errorf("record agent handoff for %s: status %q cannot advance a handoff", id, status)
@@ -363,7 +363,7 @@ func (s *Store) FinalizeAgentSwitchHandoff(ctx context.Context, id domain.AgentS
 		FinalHandoffPath: handoffPath, FinalHandoffHash: handoffHash,
 		SemanticIncluded:       semanticIncluded,
 		SourceTranscriptStatus: sourceTranscriptStatus,
-		UpdatedAt:              updatedAt, ID: id, SessionID: sessionID,
+		UpdatedAt:              utcTime(updatedAt), ID: id, SessionID: sessionID,
 		SourceGenerationID: sourceGenerationID, TargetGenerationID: targetGenerationID,
 	})
 	if err != nil {
@@ -412,13 +412,13 @@ func (s *Store) ConfirmAgentSwitchSourceStopped(ctx context.Context, confirmatio
 	var n int64
 	if domain.NormalizeSessionMode(confirmation.SourceMode) == domain.SessionModeChat {
 		n, err = q.MarkChatSessionAgentSwitchSourceStopped(ctx, gen.MarkChatSessionAgentSwitchSourceStoppedParams{
-			StoppedAt: confirmation.StoppedAt, SessionID: confirmation.SessionID,
+			StoppedAt: utcTime(confirmation.StoppedAt), SessionID: confirmation.SessionID,
 			ExpectedSourceHarness:              confirmation.SourceHarness,
 			ExpectedSourceControllerGeneration: confirmation.ExpectedSourceControllerGeneration,
 		})
 	} else {
 		n, err = q.MarkSessionAgentSwitchSourceStopped(ctx, gen.MarkSessionAgentSwitchSourceStoppedParams{
-			StoppedAt: confirmation.StoppedAt, SessionID: confirmation.SessionID,
+			StoppedAt: utcTime(confirmation.StoppedAt), SessionID: confirmation.SessionID,
 			ExpectedSourceHarness:         confirmation.SourceHarness,
 			ExpectedSourceRuntimeLaunchID: confirmation.ExpectedSourceRuntimeLaunchID,
 		})
@@ -430,7 +430,7 @@ func (s *Store) ConfirmAgentSwitchSourceStopped(ctx context.Context, confirmatio
 		return false, nil
 	}
 	n, err = q.MarkAgentSwitchSourceStopped(ctx, gen.MarkAgentSwitchSourceStoppedParams{
-		StoppedAt: confirmation.StoppedAt, ID: confirmation.SwitchID,
+		StoppedAt: utcTime(confirmation.StoppedAt), ID: confirmation.SwitchID,
 		SessionID: confirmation.SessionID, ExpectedSourceHarness: confirmation.SourceHarness,
 		ExpectedSourceGenerationID: confirmation.SourceGenerationID,
 		ExpectedTargetGenerationID: confirmation.TargetGenerationID,
@@ -459,8 +459,8 @@ func (s *Store) AcknowledgeAgentSwitchTarget(ctx context.Context, id domain.Agen
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	n, err := s.qw.AcknowledgeAgentSwitchTarget(ctx, gen.AcknowledgeAgentSwitchTargetParams{
-		TargetAcknowledgedAt: sql.NullTime{Time: acknowledgedAt, Valid: true},
-		UpdatedAt:            acknowledgedAt, ID: id, SessionID: sessionID,
+		TargetAcknowledgedAt: sql.NullTime{Time: utcTime(acknowledgedAt), Valid: true},
+		UpdatedAt:            utcTime(acknowledgedAt), ID: id, SessionID: sessionID,
 		TargetGenerationID: targetGenerationID,
 	})
 	if err != nil {
@@ -528,7 +528,7 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 	}
 
 	n, err := q.ActivateSessionAgentSwitchTarget(ctx, gen.ActivateSessionAgentSwitchTargetParams{
-		TargetHarness: activation.TargetHarness, ActivatedAt: activation.ActivatedAt,
+		TargetHarness: activation.TargetHarness, ActivatedAt: utcTime(activation.ActivatedAt),
 		RuntimeHandleID:            activation.RuntimeHandleID,
 		TargetGenerationID:         string(activation.TargetGenerationID),
 		TargetNativeSessionID:      targetNative.NativeSessionID,
@@ -543,13 +543,13 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 		return false, nil
 	}
 	if err := q.ResetConversationAgentOverridesForSession(ctx, gen.ResetConversationAgentOverridesForSessionParams{
-		UpdatedAt: activation.ActivatedAt, CurrentSessionID: &activation.SessionID,
+		UpdatedAt: utcTime(activation.ActivatedAt), CurrentSessionID: &activation.SessionID,
 	}); err != nil {
 		return false, fmt.Errorf("activate agent switch target %s: reset conversation agent overrides: %w", activation.SwitchID, err)
 	}
 	targetRef := activation.TargetNativeSessionRef
 	n, err = q.MarkAgentSwitchTargetReady(ctx, gen.MarkAgentSwitchTargetReadyParams{
-		ActivatedAt: activation.ActivatedAt, ID: activation.SwitchID,
+		ActivatedAt: utcTime(activation.ActivatedAt), ID: activation.SwitchID,
 		SessionID: activation.SessionID, ExpectedSourceHarness: activation.SourceHarness,
 		ExpectedTargetHarness:          activation.TargetHarness,
 		ExpectedSourceGenerationID:     activation.SourceGenerationID,
@@ -619,7 +619,7 @@ func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation do
 	}
 
 	n, err := q.ActivateChatSessionAgentSwitchTarget(ctx, gen.ActivateChatSessionAgentSwitchTargetParams{
-		TargetHarness: activation.TargetHarness, ActivatedAt: activation.ActivatedAt,
+		TargetHarness: activation.TargetHarness, ActivatedAt: utcTime(activation.ActivatedAt),
 		TargetNativeSessionID:      targetNative.NativeSessionID,
 		ProviderConversationID:     activation.ProviderConversationID,
 		TargetControllerGeneration: activation.ControllerGeneration,
@@ -648,13 +648,13 @@ func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation do
 		ParentBranchID:         conversationRow.ActiveBranchID,
 		ForkAfterSequence:      conversationRow.LatestSequence,
 		ProviderScopeID:        providerBoundaryID,
-		CreatedAt:              activation.ActivatedAt,
-	}, activation.ActivatedAt); err != nil {
+		CreatedAt:              utcTime(activation.ActivatedAt),
+	}, utcTime(activation.ActivatedAt)); err != nil {
 		return false, fmt.Errorf("activate Chat agent switch target %s: create provider boundary: %w", activation.SwitchID, err)
 	}
 	conversationRows, err := q.ActivateConversationBranch(ctx, gen.ActivateConversationBranchParams{
 		ActiveBranchID: providerBoundaryID,
-		UpdatedAt:      activation.ActivatedAt,
+		UpdatedAt:      utcTime(activation.ActivatedAt),
 		ID:             conversationRow.ID,
 	})
 	if err != nil {
@@ -664,13 +664,13 @@ func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation do
 		return false, fmt.Errorf("activate Chat agent switch target %s: conversation %s disappeared", activation.SwitchID, conversationRow.ID)
 	}
 	if err := q.ResetConversationAgentOverridesForSession(ctx, gen.ResetConversationAgentOverridesForSessionParams{
-		UpdatedAt: activation.ActivatedAt, CurrentSessionID: &activation.SessionID,
+		UpdatedAt: utcTime(activation.ActivatedAt), CurrentSessionID: &activation.SessionID,
 	}); err != nil {
 		return false, fmt.Errorf("activate Chat agent switch target %s: reset conversation agent overrides: %w", activation.SwitchID, err)
 	}
 	targetRef := activation.TargetNativeSessionRef
 	n, err = q.MarkAgentSwitchTargetReady(ctx, gen.MarkAgentSwitchTargetReadyParams{
-		ActivatedAt: activation.ActivatedAt, ID: activation.SwitchID,
+		ActivatedAt: utcTime(activation.ActivatedAt), ID: activation.SwitchID,
 		SessionID: activation.SessionID, ExpectedSourceHarness: activation.SourceHarness,
 		ExpectedTargetHarness:          activation.TargetHarness,
 		ExpectedSourceGenerationID:     activation.SourceGenerationID,
@@ -869,8 +869,8 @@ func agentNativeSessionToInsert(rec domain.AgentNativeSession) gen.InsertAgentNa
 	return gen.InsertAgentNativeSessionParams{
 		ID: rec.ID, AoSessionID: rec.AOSessionID, Harness: rec.Harness, ConfigDir: rec.ConfigDir,
 		NativeSessionID: rec.NativeSessionID, TranscriptPath: rec.TranscriptPath,
-		LastGenerationID: rec.LastGenerationID, CreatedAt: rec.CreatedAt,
-		LastUsedAt: rec.LastUsedAt,
+		LastGenerationID: rec.LastGenerationID, CreatedAt: utcTime(rec.CreatedAt),
+		LastUsedAt: utcTime(rec.LastUsedAt),
 	}
 }
 
@@ -911,7 +911,7 @@ func agentSwitchToInsert(rec domain.AgentSwitch) gen.InsertAgentSwitchParams {
 		TargetAcknowledgedAt:    timePtrToNull(rec.TargetAcknowledgedAt),
 		ErrorCode:               string(rec.ErrorCode),
 		FailurePoint:            string(rec.FailurePoint),
-		RequestedAt:             rec.RequestedAt, UpdatedAt: rec.UpdatedAt,
+		RequestedAt:             utcTime(rec.RequestedAt), UpdatedAt: utcTime(rec.UpdatedAt),
 	}
 }
 
@@ -971,7 +971,7 @@ func timePtrToNull(value *time.Time) sql.NullTime {
 	if value == nil || value.IsZero() {
 		return sql.NullTime{}
 	}
-	return sql.NullTime{Time: *value, Valid: true}
+	return utcNullTime(sql.NullTime{Time: *value, Valid: true})
 }
 
 func nullTimeToPtr(value sql.NullTime) *time.Time {

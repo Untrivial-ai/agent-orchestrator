@@ -158,7 +158,7 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 		Verdict:          r.Verdict,
 		Body:             r.Body,
 		GithubReviewID:   r.GithubReviewID,
-		CreatedAt:        r.CreatedAt,
+		CreatedAt:        utcTime(r.CreatedAt),
 		AutoInjectReview: r.AutoInjectReview,
 	})
 	if isSQLiteUnique(err) {
@@ -228,7 +228,7 @@ func (s *Store) MarkReviewRunDelivered(ctx context.Context, id string, delivered
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	n, err := s.qw.MarkReviewRunDelivered(ctx, gen.MarkReviewRunDeliveredParams{
-		DeliveredAt: sql.NullTime{Time: deliveredAt, Valid: true},
+		DeliveredAt: sql.NullTime{Time: utcTime(deliveredAt), Valid: true},
 		ID:          id,
 	})
 	if err != nil {

@@ -86,7 +86,7 @@ func (s *Store) ClaimPR(ctx context.Context, pr domain.PullRequest, checks []dom
 		}
 		if err := q.ClaimPRForSession(ctx, gen.ClaimPRForSessionParams{
 			URL: pr.URL, SessionID: pr.SessionID, Number: int64(pr.Number), PRState: prState(pr),
-			ReviewDecision: reviewOrDefault(pr.Review), CIState: ciOrDefault(pr.CI), Mergeability: mergeabilityOrDefault(pr.Mergeability), UpdatedAt: pr.UpdatedAt,
+			ReviewDecision: reviewOrDefault(pr.Review), CIState: ciOrDefault(pr.CI), Mergeability: mergeabilityOrDefault(pr.Mergeability), UpdatedAt: utcTime(pr.UpdatedAt),
 			StateChangedAt: nullTime(initialPRStateChangedAt(pr)), ID: pr.SessionID,
 		}); err != nil {
 			return err
@@ -555,7 +555,7 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		ReviewDecision:           reviewOrDefault(r.Review),
 		CIState:                  ciOrDefault(r.CI),
 		Mergeability:             mergeabilityOrDefault(r.Mergeability),
-		UpdatedAt:                r.UpdatedAt,
+		UpdatedAt:                utcTime(r.UpdatedAt),
 		StateChangedAt:           nullTime(initialPRStateChangedAt(r)),
 		Provider:                 r.Provider,
 		Host:                     r.Host,
@@ -705,7 +705,7 @@ func genCheckParams(prURL string, c domain.PullRequestCheck) gen.UpsertPRCheckPa
 	}
 	return gen.UpsertPRCheckParams{
 		PRURL: prURL, Name: c.Name, CommitHash: c.CommitHash,
-		Status: status, URL: c.URL, LogTail: c.LogTail, CreatedAt: c.CreatedAt,
+		Status: status, URL: c.URL, LogTail: c.LogTail, CreatedAt: utcTime(c.CreatedAt),
 		Conclusion: c.Conclusion, Details: c.Details,
 	}
 }
@@ -721,7 +721,7 @@ func checkRowFromGen(c gen.PRCheck) domain.PullRequestCheck {
 func genCommentParams(prURL string, c domain.PullRequestComment) gen.UpsertPRCommentParams {
 	return gen.UpsertPRCommentParams{
 		PRURL: prURL, CommentID: c.ID, Author: c.Author, File: c.File,
-		Line: int64(c.Line), Body: c.Body, Resolved: c.Resolved, CreatedAt: c.CreatedAt,
+		Line: int64(c.Line), Body: c.Body, Resolved: c.Resolved, CreatedAt: utcTime(c.CreatedAt),
 		ThreadID: c.ThreadID, ReviewID: c.ReviewID, URL: c.URL, IsBot: boolInt(c.IsBot), AutoInjectReview: c.AutoInjectReview,
 	}
 }
@@ -748,7 +748,7 @@ func genReviewThreadParams(prURL string, th domain.PullRequestReviewThread) gen.
 		PRURL: prURL, ThreadID: th.ThreadID, Path: th.Path,
 		Line: int64(th.Line), Resolved: boolInt(th.Resolved),
 		IsBot: boolInt(th.IsBot), SemanticHash: th.SemanticHash,
-		UpdatedAt: th.UpdatedAt,
+		UpdatedAt: utcTime(th.UpdatedAt),
 	}
 }
 
@@ -772,7 +772,7 @@ func genReviewParams(prURL string, review domain.PullRequestReview) gen.UpsertPR
 		State:            string(reviewOrDefault(review.State)),
 		URL:              review.URL,
 		IsBot:            boolInt(review.IsBot),
-		SubmittedAt:      review.SubmittedAt,
+		SubmittedAt:      utcTime(review.SubmittedAt),
 		Body:             review.Body,
 		TargetSha:        review.TargetSHA,
 		AutoInjectReview: review.AutoInjectReview,
