@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,12 +34,24 @@ var captureGate = struct {
 }{}
 
 var (
-	homePath = regexp.MustCompile(`/(?:Users|home)/[^\s"']+`)
-	winPath  = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+`)
+	homePath = regexp.MustCompile(`/(?:Users|home)/[^\r\n"']+`)
+	winPath  = regexp.MustCompile(`[A-Za-z]:\\[^\r\n"']+|\\\\[^\r\n"']+`)
 )
 
 func scrub(s string) string {
-	return winPath.ReplaceAllString(homePath.ReplaceAllString(s, "[redacted-path]"), "[redacted-path]")
+	return winPath.ReplaceAllStringFunc(homePath.ReplaceAllStringFunc(s, scrubPath), scrubPath)
+}
+
+func scrubPath(path string) string {
+	for _, marker := range []string{" failed", " denied", " error", " no such file"} {
+		if i := strings.Index(path, marker); i >= 0 {
+			return "[redacted-path]" + path[i:]
+		}
+	}
+	if i := strings.Index(path, ": "); i >= 0 {
+		return "[redacted-path]" + path[i+1:]
+	}
+	return "[redacted-path]"
 }
 
 // Config configures the daemon Sentry client.
