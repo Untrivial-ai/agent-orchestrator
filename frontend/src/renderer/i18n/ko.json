@@ -1340,5 +1340,9 @@
 	"workflow.error.rolesLoadFailed": "Failed to load agent roles",
 	"status.role.enabled": "Enabled",
 	"status.role.disabled": "Disabled",
-	"workflow.task.noRole": "No role assigned"
+	"workflow.task.noRole": "No role assigned",
+	"workflow.task.roleInfo": "Role Information",
+	"workflow.task.providerSource.taskOverride": "Task Override",
+	"workflow.task.providerSource.roleDefault": "Role Default",
+	"workflow.task.providerSource.systemDefault": "System Default"
 }

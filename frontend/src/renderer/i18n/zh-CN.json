@@ -1322,5 +1322,9 @@
 	"workflow.task.noRole": "未分配角色",
 	"status.review.pending": "待审核",
 	"status.review.passed": "已通过",
-	"status.review.rejected": "已拒绝"
+	"status.review.rejected": "已拒绝",
+	"workflow.task.roleInfo": "角色信息",
+	"workflow.task.providerSource.taskOverride": "任务覆盖",
+	"workflow.task.providerSource.roleDefault": "角色默认",
+	"workflow.task.providerSource.systemDefault": "系统默认"
 }

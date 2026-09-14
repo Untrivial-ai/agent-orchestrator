@@ -9,6 +9,7 @@ import { StatusBadge } from "./StatusBadge";
 import { RunEntry } from "./RunEntry";
 import { ReviewTab } from "./ReviewTab";
 import { useWorkflowRuns, useCreateRun, useStartRun, useCancelRun } from "../../hooks/useWorkflowRuns";
+import { TaskRoleInfo } from "./TaskRoleInfo";
 
 type TaskDetailPanelProps = {
 	taskId: string;
@@ -87,19 +88,12 @@ export function TaskDetailPanel({ taskId, projectId, onClose, onNavigateSession 
 									<p className="text-muted-foreground">{t("workflow.task.type")}</p>
 									<p>{task.taskType || "—"}</p>
 								</div>
-								<div>
-									<p className="text-muted-foreground">{t("workflow.task.role")}</p>
-									<p>{task.agentRoleId || "—"}</p>
-								</div>
-								<div>
-									<p className="text-muted-foreground">{t("workflow.task.provider")}</p>
-									<p>{task.providerId || "—"}</p>
-								</div>
-								<div>
-									<p className="text-muted-foreground">{t("workflow.task.model")}</p>
-									<p>{task.providerModelId || "—"}</p>
-								</div>
 							</div>
+							<TaskRoleInfo
+								agentRoleId={task.agentRoleId}
+								providerId={task.providerId}
+								providerModelId={task.providerModelId}
+							/>
 						</div>
 					</TabsContent>
 
