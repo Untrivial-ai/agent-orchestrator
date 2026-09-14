@@ -422,3 +422,104 @@ func isRefusal(err error) bool {
 	var refusal interface{ ChatRefusal() bool }
 	return errors.As(err, &refusal) && refusal.ChatRefusal()
 }
+
+func TestResumeHistoryUsesReturnedSnapshotOnceThenRefreshes(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("thread/resume", threadWithRenderedHistory)
+	srv.reply("thread/read", threadWithTurns)
+	resumed, err := d.Resume(context.Background(), ports.ChatResumeConfig{SessionID: "ao-1", ProviderConversationID: "thread-1", WorkspacePath: "/tmp/ws"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	c := resumed.(*conversation)
+	events, err := c.ReadHistory(context.Background())
+	if err != nil || len(events) != 5 {
+		t.Fatalf("resume snapshot: events=%d err=%v", len(events), err)
+	}
+	if srv.sentMethod("thread/read") {
+		t.Fatal("resume fetched history twice")
+	}
+	events, err = c.RefreshHistory(context.Background())
+	if err != nil || len(events) != 6 || !srv.sentMethod("thread/read") {
+		t.Fatalf("fresh read: events=%d err=%v", len(events), err)
+	}
+}
+
+func TestResumeHistoryMissingOrMismatchedSnapshotFallsBack(t *testing.T) {
+	for _, reply := range []string{`{}`, `{"thread":{"id":"thread-1"}}`, `{"thread":{"id":"other","turns":[]}}`, `{"thread":{"id":"thread-1","turns":[{"id":"turn-a","status":"completed"}]}}`} {
+		t.Run(reply, func(t *testing.T) {
+			d, srv := newTestDriver(t)
+			srv.reply("thread/resume", reply)
+			srv.reply("thread/read", threadWithRenderedHistory)
+			resumed, err := d.Resume(context.Background(), ports.ChatResumeConfig{SessionID: "ao-1", ProviderConversationID: "thread-1", WorkspacePath: "/tmp/ws"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resumed.Close()
+			events, err := resumed.(*conversation).ReadHistory(context.Background())
+			if err != nil || len(events) != 5 || !srv.sentMethod("thread/read") {
+				t.Fatalf("fallback: events=%d err=%v", len(events), err)
+			}
+		})
+	}
+}
+
+func TestResumeHistoryCancellationPreservesSnapshot(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("thread/resume", threadWithRenderedHistory)
+	resumed, err := d.Resume(context.Background(), ports.ChatResumeConfig{SessionID: "ao-1", ProviderConversationID: "thread-1", WorkspacePath: "/tmp/ws"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	c := resumed.(*conversation)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err = c.ReadHistory(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled read: %v", err)
+	}
+	events, err := c.ReadHistory(context.Background())
+	if err != nil || len(events) != 5 || srv.sentMethod("thread/read") {
+		t.Fatalf("snapshot after cancellation: events=%d err=%v", len(events), err)
+	}
+}
+
+func TestResumeUnsettledHistoryRefreshesProvider(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("thread/resume", `{"thread":{"id":"thread-1","turns":[{"id":"turn-a","status":"inProgress"}]}}`)
+	srv.reply("thread/read", threadWithRenderedHistory)
+	resumed, err := d.Resume(context.Background(), ports.ChatResumeConfig{SessionID: "ao-1", ProviderConversationID: "thread-1", WorkspacePath: "/tmp/ws"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	c := resumed.(*conversation)
+	if _, err = c.ReadHistory(context.Background()); !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+		t.Fatalf("unsettled history: %v", err)
+	}
+	events, err := c.RefreshHistory(context.Background())
+	if err != nil || len(events) != 5 || !srv.sentMethod("thread/read") {
+		t.Fatalf("settled refresh: events=%d err=%v", len(events), err)
+	}
+}
+
+func TestLiveTurnInvalidatesUnusedResumeHistory(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("thread/resume", threadWithRenderedHistory)
+	srv.reply("thread/read", threadWithTurns)
+	resumed, err := d.Resume(context.Background(), ports.ChatResumeConfig{SessionID: "ao-1", ProviderConversationID: "thread-1", WorkspacePath: "/tmp/ws"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	srv.push(`{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"live-turn","status":"inProgress"}}}`)
+	ev := <-resumed.Events()
+	if ev.Kind != ports.ChatEventTurnStarted {
+		t.Fatalf("event=%s", ev.Kind)
+	}
+	events, err := resumed.(*conversation).ReadHistory(context.Background())
+	if err != nil || len(events) != 6 || !srv.sentMethod("thread/read") {
+		t.Fatalf("fresh history after live turn: events=%d err=%v", len(events), err)
+	}
+}

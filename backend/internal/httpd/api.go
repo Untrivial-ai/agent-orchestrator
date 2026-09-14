@@ -36,7 +36,10 @@ type APIDeps struct {
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
-	ShellTerminals     controllers.ShellTerminalService
+	// SessionImport discovers on-disk agent conversations and imports one as a
+	// resumable session. Nil keeps the routes registered but answering 501.
+	SessionImport  controllers.SessionImportService
+	ShellTerminals controllers.ShellTerminalService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
 	Conversations controllers.ConversationService
@@ -148,6 +151,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 			Attachments:   attachmentstore.New(cfg.DataDir),
 			PreviewServer: deps.PreviewServer,
 			Capabilities:  deps.SessionCapabilities,
+			Import:        deps.SessionImport,
 		},
 		desktop:       &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
 		usage:         &controllers.UsageController{Svc: deps.UsageSummary},

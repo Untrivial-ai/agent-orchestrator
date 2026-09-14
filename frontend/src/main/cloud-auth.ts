@@ -127,12 +127,15 @@ function decodeStore(value: Buffer): AuthStore {
 export async function readAuthStore(dataDir: string): Promise<AuthStore> {
   const memoryStore = memoryStores.get(dataDir);
   if (memoryStore) return memoryStore;
-  if (!protectedStorageAvailable()) {
-    await rm(storePath(dataDir), { force: true });
-    return emptyStore();
-  }
   try {
-    return decodeStore(await readFile(storePath(dataDir)));
+    // A fresh profile has nothing to decrypt. Avoid initializing the OS
+    // keychain on the startup path until an encrypted store actually exists.
+    const value = await readFile(storePath(dataDir));
+    if (!protectedStorageAvailable()) {
+      await rm(storePath(dataDir), { force: true });
+      return emptyStore();
+    }
+    return decodeStore(value);
   } catch {
     await rm(storePath(dataDir), { force: true });
     return emptyStore();

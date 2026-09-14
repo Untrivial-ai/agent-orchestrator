@@ -526,6 +526,15 @@ describe("Sidebar", () => {
 		expect(content).not.toContainElement(screen.getByText("Projects"));
 	});
 
+	it("navigates home when the Agent Orchestrator brand is clicked", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+
+		await user.click(screen.getByRole("button", { name: "Agent Orchestrator" }));
+
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+	});
+
 	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
 		const user = userEvent.setup();
 		renderSidebar({ workspaces: [{ ...workspace, orchestratorAgent: undefined }] });
@@ -714,6 +723,29 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Pin session")).toHaveProperty("tabIndex", 0);
 		expect(screen.queryByRole("button", { name: "Rename fix login" })).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Kill session")).toHaveProperty("tabIndex", 0);
+	});
+
+	it("leaves a session route after killing that session from the sidebar", async () => {
+		mockParams.sessionId = session.id;
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		await userEvent.click(screen.getByLabelText("Kill session"));
+		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId",
+			params: { projectId: workspace.id },
+		}));
+	});
+
+	it("keeps the current route when killing a different sidebar session", async () => {
+		mockParams.sessionId = "another-session";
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		await userEvent.click(screen.getByLabelText("Kill session"));
+		await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/kill",
+			expect.anything(),
+		));
+		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
 	it("fades the message age out in favor of the overlaid hover actions", () => {
@@ -2448,4 +2480,15 @@ describe("Sidebar", () => {
 			document.documentElement.classList.remove("dark");
 		}
 	});
+});
+
+describe("project import menus", () => {
+ it.each(["dropdown", "context"])("offers project import through the %s menu without a persistent row", async (kind) => {
+  const user = userEvent.setup();
+  renderSidebar();
+  expect(screen.queryByRole("button", { name: "Import sessions" })).not.toBeInTheDocument();
+  if (kind === "dropdown") await user.click(screen.getByLabelText("Project actions for Project One"));
+  else fireEvent.contextMenu(screen.getByText("Project One"));
+  expect(await screen.findByRole("menuitem", { name: "Import sessions" })).toBeInTheDocument();
+ });
 });

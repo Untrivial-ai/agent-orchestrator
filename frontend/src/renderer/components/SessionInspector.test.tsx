@@ -1312,9 +1312,13 @@ describe("SessionInspector Activity section", () => {
       />,
     );
 
-    await userEvent.click(
-      activitySection().getByRole("button", { name: "Resume agent" }),
-    );
+		const activity = activitySection();
+		const resumeButton = activity.getByRole("button", { name: "Resume agent" });
+		const timeline = activity.getAllByTestId("inspector-timeline-event")[0];
+		expect(
+			resumeButton.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).not.toBe(0);
+		await userEvent.click(resumeButton);
 
     await waitFor(() =>
       expect(postMock).toHaveBeenCalledWith(

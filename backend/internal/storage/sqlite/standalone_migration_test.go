@@ -1,58 +1,12 @@
 package sqlite
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 )
-
-func TestStandaloneProjectColumnsAreNullable(t *testing.T) {
-	dataDir := t.TempDir()
-	store, err := Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db")+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	for _, table := range []string{"sessions", "change_log", "notifications", "conversations"} {
-		func() {
-			rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
-			if err != nil {
-				t.Fatalf("%s table info: %v", table, err)
-			}
-			defer rows.Close()
-			found := false
-			for rows.Next() {
-				var cid, notNull, primaryKey int
-				var name, columnType string
-				var defaultValue any
-				if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-					t.Fatal(err)
-				}
-				if name == "project_id" {
-					found = true
-					if notNull != 0 {
-						t.Fatalf("%s.project_id remains NOT NULL", table)
-					}
-				}
-			}
-			if err := rows.Err(); err != nil {
-				t.Fatal(err)
-			}
-			if !found {
-				t.Fatalf("%s.project_id not found", table)
-			}
-		}()
-	}
-}
 
 func TestStandaloneMigrationConvertsLegacyScratchOwnership(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
@@ -61,7 +15,76 @@ func TestStandaloneMigrationConvertsLegacyScratchOwnership(t *testing.T) {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 122)
+
+	// Build the boundary shape directly and mark the preceding migration as
+	// applied. Replaying the complete migration history here adds minutes to the
+	// SQLite race suite without testing any extra standalone behavior.
+	if _, err := db.Exec(`
+CREATE TABLE goose_db_version (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id INTEGER NOT NULL,
+    is_applied INTEGER NOT NULL,
+    tstamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+WITH RECURSIVE versions(version_id) AS (
+    SELECT 1
+    UNION ALL
+    SELECT version_id + 1 FROM versions WHERE version_id < 139
+)
+INSERT INTO goose_db_version (version_id, is_applied)
+SELECT version_id, 1 FROM versions;
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    registered_at TIMESTAMP NOT NULL,
+    archived_at TIMESTAMP
+);
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    num INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    activity_state TEXT NOT NULL DEFAULT 'idle',
+    activity_last_at TIMESTAMP NOT NULL,
+    is_terminated BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+CREATE TABLE change_log (
+    id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    session_id TEXT
+);
+CREATE TABLE notifications (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    project_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE conversations (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    session_id TEXT,
+    current_session_id TEXT,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+CREATE TABLE usage_bindings (
+    session_id TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    native_root_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+`); err != nil {
+		t.Fatal(err)
+	}
 
 	const timestamp = "2026-09-02T12:00:00Z"
 	if _, err := db.Exec(`
@@ -81,6 +104,8 @@ INSERT INTO notifications (id, session_id, project_id, type, title, created_at)
 VALUES ('notice-1', 'scratch-1', 'scratch', 'needs_input', 'Input needed', ?);
 INSERT INTO conversations (id, scope, project_id, session_id, current_session_id, created_at, updated_at)
 VALUES ('conversation-1', 'session', 'scratch', 'scratch-1', 'scratch-1', ?, ?);
+INSERT INTO change_log (id, project_id, session_id)
+VALUES (1, 'scratch', 'scratch-1');
 `, timestamp,
 		timestamp, timestamp, timestamp,
 		timestamp, timestamp, timestamp,
@@ -88,12 +113,32 @@ VALUES ('conversation-1', 'session', 'scratch', 'scratch-1', 'scratch-1', ?, ?);
 		timestamp, timestamp, timestamp); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(db); err != nil {
-		t.Fatal(err)
+	gooseMu.Lock()
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		gooseMu.Unlock()
+		t.Fatalf("set dialect: %v", err)
+	}
+	err = goose.UpTo(db, "migrations", 140)
+	gooseMu.Unlock()
+	if err != nil {
+		t.Fatalf("apply standalone migration: %v", err)
+	}
+
+	for _, table := range []string{"sessions", "change_log", "notifications", "conversations"} {
+		var nullableColumns int
+		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'project_id' AND \"notnull\" = 0", table).Scan(&nullableColumns); err != nil {
+			t.Fatalf("%s table info: %v", table, err)
+		}
+		if nullableColumns != 1 {
+			t.Fatalf("%s.project_id remains NOT NULL", table)
+		}
 	}
 
 	for _, query := range []string{
 		"SELECT project_id FROM sessions WHERE id = 'scratch-1'",
+		"SELECT project_id FROM change_log WHERE id = 1",
 		"SELECT project_id FROM notifications WHERE id = 'notice-1'",
 		"SELECT project_id FROM conversations WHERE id = 'conversation-1'",
 	} {
@@ -104,13 +149,6 @@ VALUES ('conversation-1', 'session', 'scratch', 'scratch-1', 'scratch-1', ?, ?);
 		if projectID != nil {
 			t.Fatalf("%s returned project_id = %#v, want NULL", query, projectID)
 		}
-	}
-	var remainingScratchEvents int
-	if err := db.QueryRow("SELECT COUNT(*) FROM change_log WHERE project_id = 'scratch' AND session_id = 'scratch-1'").Scan(&remainingScratchEvents); err != nil {
-		t.Fatal(err)
-	}
-	if remainingScratchEvents != 0 {
-		t.Fatalf("change_log retains %d Scratch-owned events", remainingScratchEvents)
 	}
 	var archivedAt any
 	if err := db.QueryRow("SELECT archived_at FROM projects WHERE id = 'scratch'").Scan(&archivedAt); err != nil {

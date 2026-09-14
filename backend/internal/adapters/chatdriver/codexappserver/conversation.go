@@ -54,6 +54,8 @@ type conversation struct {
 	mu      sync.Mutex
 	pending map[string]*parkedRequest
 	closed  bool
+	// One-use snapshot returned by resume, protected by mu. Never persisted.
+	resumeHistory *codexproto.Thread
 
 	// sendMu serializes turn dispatch so only one operation mutates the provider
 	// conversation at a time.
@@ -161,6 +163,7 @@ func (c *conversation) pump() {
 			rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
 			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
 				c.mu.Lock()
+				c.resumeHistory = nil
 				c.activeTurn = ev.ProviderTurnID
 				// Snapshot the context position this turn starts from. Cheap on every
 				// turn, and the only way to know what a compaction reclaimed.

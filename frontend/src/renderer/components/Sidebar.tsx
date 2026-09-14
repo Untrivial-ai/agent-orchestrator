@@ -129,6 +129,8 @@ import { useUiStore } from "../stores/ui-store"
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
+import { ImportSessionDialog } from "./ImportSessionDialog";
+import { useImportRunStore } from "../stores/import-run-store";
 import { ResizeHandle } from "./ResizeHandle";
 import { isMacPlatform, isWindowsPlatform } from "../lib/platform";
 import { useCloudSession } from "../lib/cloud-session";
@@ -694,11 +696,14 @@ export function Sidebar({
 			<SidebarHeader className="gap-0 p-0 px-3 pt-2 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:pt-2">
 				{/* Brand (project-sidebar__brand); in the icon rail it becomes the old
             36px board button wrapping the 22px accent mark. */}
-				<div
+				<button
+					aria-label="Agent Orchestrator"
 					className={cn(
-						"group/brand flex shrink-0 items-center gap-1.5 rounded-md px-0.5 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
+						"group/brand flex shrink-0 items-center gap-1.5 rounded-md px-0.5 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
+					onClick={selection.goHome}
+					type="button"
 				>
 					<span
 						className={cn(
@@ -726,7 +731,7 @@ export function Sidebar({
 							{t("shell.nightly")}
 						</span>
 					)}
-				</div>
+				</button>
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<button
@@ -1072,6 +1077,9 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		);
 	const projectActive = dashboardActive || orchestratorActive;
 	const queryClient = useQueryClient();
+	const [importOpen, setImportOpen] = useState(false);
+	const importRun = useImportRunStore((state) => state.runs[workspace.id]);
+	const importLabel = importRun?.running ? t("importSession.importingProgress", { done: importRun.progress.done, total: importRun.progress.total }) : t("importSearch.projectAction");
 	const [removeError, setRemoveError] = useState<string | null>(null);
 	const [isRemoving, setIsRemoving] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
@@ -1473,15 +1481,18 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										<DropdownMenuContent side="right" align="start" className="min-w-44">
 											<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
 												<Plus aria-hidden="true" />
-												{t("shell.newSession")}
-											</DropdownMenuItem>
-											<DropdownMenuSeparator />
-											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+											{t("shell.newSession")}
+										</DropdownMenuItem>
+										<DropdownMenuSeparator />
+										<DropdownMenuItem onSelect={() => setImportOpen(true)}>
+											{importLabel}{!!importRun?.errors.length && ` (${importRun.errors.length})`}
+										</DropdownMenuItem>
+										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 												<Settings aria-hidden="true" />
 												{t("shell.projectSettings")}
 											</DropdownMenuItem>
-											<DropdownMenuSeparator />
-											<DropdownMenuItem
+										<DropdownMenuSeparator />
+										<DropdownMenuItem
 											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
 											disabled={isRemoving}
 											onSelect={() => void removeProject()}
@@ -1505,6 +1516,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 							{removeError}
 						</div>
 					) : null}
+					{importOpen && <ImportSessionDialog open={importOpen} onOpenChange={setImportOpen} projectId={workspace.id} projectName={workspace.name} />}
 					{/* project-sidebar__sessions: indented under the project parent so worker
           sessions read as children without adding a persistent guide rail. */}
 		<AnimatePresence initial={false}>
@@ -1603,6 +1615,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				</ContextMenuItem>
 				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
 				<ContextMenuSeparator />
+				<ContextMenuItem onSelect={() => setImportOpen(true)}>{importLabel}{!!importRun?.errors.length && ` (${importRun.errors.length})`}</ContextMenuItem>
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
 					{t("shell.projectSettings")}
@@ -1938,6 +1951,7 @@ function SessionRow({
 					{/* The timestamp is stable at the right edge. Pin and kill use label
 					    space while idle, then reveal without changing the row footprint. */}
 					<SessionActions
+						active={active}
 						isDragging={Boolean(reorder?.isDragging)}
 						session={session}
 					/>
@@ -1973,15 +1987,30 @@ const SessionMessageAge = memo(function SessionMessageAge({ session }: { session
 
 const SessionActions = memo(function SessionActions({
 	session,
+	active,
 	isDragging,
 }: {
 	session: WorkspaceSession;
+	active: boolean;
 	isDragging: boolean;
 }) {
 	const { t } = useTranslation();
+	const navigate = useNavigate();
 	const { mutate: pinSession } = usePinSession();
 	const { mutate: unpinSession } = useUnpinSession();
-	const { mutate: terminateSession, isPending: isKilling } = useTerminateSession();
+	const { mutate: terminateSession, isPending: isKilling } = useTerminateSession({
+		onSuccess: (terminated) => {
+			if (!active) return;
+			if (terminated.workspaceId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/" });
+				return;
+			}
+			void navigate({
+				to: "/projects/$projectId",
+				params: { projectId: terminated.workspaceId },
+			});
+		},
+	});
 
 	return (
 		<div

@@ -768,19 +768,21 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 			}
 		}
 		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
-		if origin, ok := originRepos[sess.ProjectID]; ok {
-			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace})
-				repos = append(repos, repo)
+		for _, candidate := range sessionMatchBranches(sess) {
+			if origin, ok := originRepos[sess.ProjectID]; ok {
+				for _, repo := range scanRepos[sess.ProjectID] {
+					sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: candidate, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace})
+					repos = append(repos, repo)
+				}
 			}
-		}
-		childRepos, err := o.workspaceSCMSessionRepos(ctx, proj, sess, branch)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, child := range childRepos {
-			sessionRepos = append(sessionRepos, child)
-			repos = append(repos, child.repo)
+			childRepos, err := o.workspaceSCMSessionRepos(ctx, proj, sess, candidate)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, child := range childRepos {
+				sessionRepos = append(sessionRepos, child)
+				repos = append(repos, child.repo)
+			}
 		}
 		if len(repos) == 0 {
 			o.logger.Debug("scm observer: project has no supported SCM origins", "project", proj.ID)
@@ -1270,6 +1272,29 @@ func workspaceHyphenBranch(sr sessionRepo) bool {
 	// a generated branch and broaden their ownership.
 	n, err := strconv.Atoi(suffix)
 	return err == nil && n >= 2 && strconv.Itoa(n) == suffix
+}
+
+// sessionMatchBranches lists every branch a pull request may be matched against
+// for one session, most specific first.
+//
+// It is normally just the branch the session owns. An imported conversation
+// also carries the branch it originally ran on, which is often not the branch
+// its session ended up with: git allows one checkout per branch, so an import
+// whose branch was already checked out elsewhere lands on a fresh one. Without
+// matching that original too, every imported session sits awaiting a pull
+// request that exists but can never be found.
+func sessionMatchBranches(sess domain.SessionRecord) []string {
+	branch := strings.TrimSpace(sess.Metadata.Branch)
+	source := strings.TrimSpace(sess.Metadata.SourceBranch)
+
+	branches := make([]string, 0, 2)
+	if branch != "" {
+		branches = append(branches, branch)
+	}
+	if source != "" && source != branch {
+		branches = append(branches, source)
+	}
+	return branches
 }
 
 func sessionBranchPrefixes(branch string) []string {
