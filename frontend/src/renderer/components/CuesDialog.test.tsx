@@ -2,8 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ReactNode } from "react";
-import { CuesDialog } from "./CuesDialog";
-import { CueComposerMenu } from "./chat/CueComposerMenu";
+import { CuesSettings } from "./CuesDialog";
+import { CueComposerMenu, ProjectCueMenu } from "./chat/CueComposerMenu";
 import { TooltipProvider } from "./ui/tooltip";
 import * as cues from "../lib/cues";
 
@@ -38,27 +38,26 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-test("dialog refreshes even fresh cached cues on every opening, including external edits and deletion", async () => {
-	const props = { projectId: "project", onOpenChange: vi.fn() };
-	const view = setup(<CuesDialog {...props} open />);
+test("settings refresh even fresh cached cues on every opening, including external edits and deletion", async () => {
+	const view = setup(<CuesSettings projectId="project" />);
 	await screen.findByText("Tests");
-	view.rerender(<CuesDialog {...props} open={false} />);
+	view.rerender(null);
 	const refresh = deferred<cues.CueDTO[]>();
 	vi.mocked(cues.fetchProjectCues).mockReturnValueOnce(refresh.promise);
-	view.rerender(<CuesDialog {...props} open />);
+	view.rerender(<CuesSettings projectId="project" />);
 	expect(screen.queryByRole("button", { name: "Run in new session" })).toBeNull();
 	await act(async () => refresh.resolve([{ ...cue, name: "Updated" }]));
 	await screen.findByText("Updated");
-	view.rerender(<CuesDialog {...props} open={false} />);
+	view.rerender(null);
 	vi.mocked(cues.fetchProjectCues).mockResolvedValue([]);
-	view.rerender(<CuesDialog {...props} open />);
+	view.rerender(<CuesSettings projectId="project" />);
 	await screen.findByText(/No cues yet/);
 	expect(cues.fetchProjectCues).toHaveBeenCalledTimes(3);
 });
 
-test("dialog blocks stale invocation after refresh failure and supports retry", async () => {
+test("settings block stale content after refresh failure and support retry", async () => {
 	vi.mocked(cues.fetchProjectCues).mockRejectedValueOnce(new Error("offline"));
-	setup(<CuesDialog open projectId="project" onOpenChange={vi.fn()} />);
+	setup(<CuesSettings projectId="project" />);
 	await screen.findByRole("alert");
 	expect(screen.queryByRole("button", { name: "Run in new session" })).toBeNull();
 	fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -66,7 +65,7 @@ test("dialog blocks stale invocation after refresh failure and supports retry", 
 });
 
 test("validates bytes and required command, preserves content and recovers from save failure", async () => {
-	setup(<CuesDialog open projectId="project" onOpenChange={vi.fn()} />);
+	setup(<CuesSettings projectId="project" />);
 	fireEvent.click(screen.getByRole("button", { name: "New cue" }));
 	fireEvent.change(screen.getByLabelText("Name"), { target: { value: "é".repeat(33) } });
 	fireEvent.change(screen.getByLabelText("Command"), { target: { value: "  " } });
@@ -89,15 +88,14 @@ test("validates bytes and required command, preserves content and recovers from 
 test("save blocks duplicate submissions and dismissal; completion from another project is ignored", async () => {
 	const save = deferred<cues.CueDTO>();
 	vi.mocked(cues.updateCue).mockReturnValue(save.promise);
-	const onOpenChange = vi.fn();
-	const view = setup(<CuesDialog open projectId="project" onOpenChange={onOpenChange} />);
+	const onBusyChange = vi.fn();
+	const view = setup(<CuesSettings projectId="project" onBusyChange={onBusyChange} />);
 	fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
 	const button = screen.getByRole("button", { name: "Save" });
 	fireEvent.click(button); fireEvent.click(button);
-	fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-	expect(onOpenChange).not.toHaveBeenCalled();
 	await waitFor(() => expect(cues.updateCue).toHaveBeenCalledTimes(1));
-	view.rerender(<CuesDialog open projectId="other" onOpenChange={onOpenChange} />);
+	expect(onBusyChange).toHaveBeenCalledWith(true);
+	view.rerender(<CuesSettings projectId="other" onBusyChange={onBusyChange} />);
 	await act(async () => save.resolve(cue));
 	expect(toast).not.toHaveBeenCalled();
 });
@@ -105,7 +103,7 @@ test("save blocks duplicate submissions and dismissal; completion from another p
 test("failed deletion stays open for retry and pending deletion cannot be dismissed", async () => {
 	const deletion = deferred<void>();
 	vi.mocked(cues.deleteCue).mockReturnValueOnce(deletion.promise);
-	setup(<CuesDialog open projectId="project" onOpenChange={vi.fn()} />);
+	setup(<CuesSettings projectId="project" />);
 	fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 	const dialog = screen.getByRole("dialog", { name: "Delete this cue?" });
 	const confirm = within(dialog).getByRole("button", { name: "Delete" });
@@ -120,11 +118,13 @@ test("failed deletion stays open for retry and pending deletion cannot be dismis
 	expect(cues.deleteCue).toHaveBeenCalledTimes(2);
 });
 
-test("project invocation creates a worker once and navigates after dispatch", async () => {
+test("project topbar invocation creates a worker once and navigates after dispatch", async () => {
 	const invocation = deferred<string>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
-	setup(<CuesDialog open projectId="project" onOpenChange={vi.fn()} />);
-	const run = await screen.findByRole("button", { name: "Run in new session" });
+	setup(<ProjectCueMenu projectId="project" />);
+	expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
+	openMenu();
+	const run = await screen.findByRole("menuitem", { name: "Tests" });
 	fireEvent.click(run); fireEvent.click(run);
 	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", undefined));
 	await act(async () => invocation.resolve("worker"));
@@ -171,24 +171,22 @@ test("composer ignores late responses after switching sessions and never retries
 	expect(cues.invokeCue).toHaveBeenCalledTimes(1);
 });
 
-test("closing and reopening the dialog isolates an earlier invocation response", async () => {
+test("unmounting the project menu isolates an earlier invocation response", async () => {
 	const invocation = deferred<string>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
-	const props = { projectId: "project", onOpenChange: vi.fn() };
-	const view = setup(<CuesDialog {...props} open />);
-	fireEvent.click(await screen.findByRole("button", { name: "Run in new session" }));
+	const view = setup(<ProjectCueMenu projectId="project" />);
+	openMenu();
+	fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
 	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledTimes(1));
-	view.rerender(<CuesDialog {...props} open={false} />);
-	view.rerender(<CuesDialog {...props} open />);
+	view.rerender(null);
 	await act(async () => invocation.resolve("worker"));
 	expect(navigate).not.toHaveBeenCalled();
-	expect(props.onOpenChange).not.toHaveBeenCalled();
 	expect(toast).not.toHaveBeenCalled();
 });
 
 test("agent editing validates required content and keeps a failed update editable", async () => {
 	vi.mocked(cues.fetchProjectCues).mockResolvedValue([{ ...cue, type: "agent", prompt: "explain", command: "" }]);
-	setup(<CuesDialog open projectId="project" onOpenChange={vi.fn()} />);
+	setup(<CuesSettings projectId="project" />);
 	fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
 	fireEvent.change(screen.getByLabelText("Agent instruction"), { target: { value: "  " } });
 	fireEvent.click(screen.getByRole("button", { name: "Save" }));

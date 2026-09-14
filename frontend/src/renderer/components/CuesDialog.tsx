@@ -1,14 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, MessageSquare, Pencil, Play, Plus, Trash2, X, Zap } from "lucide-react";
-import { cn } from "../lib/utils";
+import { Disc3, Loader2, MessageSquare, Pencil, Plus, TerminalSquare, Trash2 } from "lucide-react";
 import { apiErrorMessage } from "../lib/api-client";
-import { useNavigateToSession } from "../lib/navigate-to-session";
 import { useUiStore } from "../stores/ui-store";
 import {
 	useCreateCueMutation,
 	useDeleteCueMutation,
-	useInvokeCueMutation,
 	useProjectCuesQuery,
 	useUpdateCueMutation,
 } from "../hooks/useCuesQuery";
@@ -17,22 +14,11 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
-import {
-	Dialog,
-	DialogClose,
-	DialogContent,
-	DialogTitle,
-	settingsDialogBodyClass,
-	settingsDialogContentClass,
-	settingsDialogFooterClass,
-	settingsDialogHeaderClass,
-} from "./ui/dialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 
-type CuesDialogProps = {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
+type CuesSettingsProps = {
 	projectId: string;
+	onBusyChange?: (busy: boolean) => void;
 };
 
 type CueType = "command" | "agent";
@@ -48,22 +34,20 @@ function CueTypeIcon({ type, className }: { type: CueType; className?: string })
 	if (type === "agent") {
 		return <MessageSquare aria-hidden="true" className={className} />;
 	}
-	return <Zap aria-hidden="true" className={className} />;
+	return <TerminalSquare aria-hidden="true" className={className} />;
 }
 
-export function CuesDialog(props: CuesDialogProps) {
-	return props.open ? <OpenCuesDialog key={props.projectId} {...props} /> : null;
+export function CuesSettings(props: CuesSettingsProps) {
+	return <ProjectCuesSettings key={props.projectId} {...props} />;
 }
 
-function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
+function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 	const { t } = useTranslation();
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
-	const navigateToSession = useNavigateToSession();
 	const cuesQuery = useProjectCuesQuery(projectId);
 	const createMutation = useCreateCueMutation(projectId);
 	const updateMutation = useUpdateCueMutation(projectId);
 	const deleteMutation = useDeleteCueMutation(projectId);
-	const invokeMutation = useInvokeCueMutation();
 
 	const [formOpen, setFormOpen] = useState<"new" | CueDTO | null>(null);
 	const [deletingCue, setDeletingCue] = useState<CueDTO | null>(null);
@@ -73,21 +57,24 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	const [command, setCommand] = useState("");
 	const [prompt, setPrompt] = useState("");
 	const [formError, setFormError] = useState<string | null>(null);
-	const [invokeError, setInvokeError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
+	const [deleting, setDeleting] = useState(false);
 	const pending = useRef(false);
 	const mounted = useRef(true);
 	useEffect(() => {
 		mounted.current = true;
 		return () => { mounted.current = false; };
 	}, []);
-	const [runningCueId, setRunningCueId] = useState<string | null>(null);
-
 	useEffect(() => {
 		setFormOpen(null);
 		setDeletingCue(null);
-		setInvokeError(null);
-	}, [open, projectId]);
+	}, [projectId]);
+
+	const busy = saving || deleting;
+	useEffect(() => {
+		onBusyChange?.(busy);
+		return () => onBusyChange?.(false);
+	}, [busy, onBusyChange]);
 
 	const openNew = () => {
 		if (pending.current) return;
@@ -163,29 +150,10 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 		}
 	};
 
-	const handleInvoke = async (cue: CueDTO) => {
-		if (pending.current || !cuesQuery.isFetchedAfterMount || cuesQuery.isFetching || cuesQuery.isError) return;
-		pending.current = true;
-		setInvokeError(null);
-		setRunningCueId(cue.id);
-		try {
-			const sessionId = await invokeMutation.mutateAsync({ cueId: cue.id });
-			if (!mounted.current) return;
-			showGlobalToast(t("cues.invokeSent"), t("cues.invokeSentBody", { name: cue.name }));
-			onOpenChange(false);
-			navigateToSession(projectId, sessionId);
-		} catch (error) {
-			if (!mounted.current) return;
-			setInvokeError(apiErrorMessage(error, t("cues.invokeFailed")));
-		} finally {
-			pending.current = false;
-			if (mounted.current) setRunningCueId(null);
-		}
-	};
-
 	const handleDelete = async () => {
 		if (!deletingCue || pending.current) return;
 		pending.current = true;
+		setDeleting(true);
 		try {
 			await deleteMutation.mutateAsync(deletingCue.id);
 			if (!mounted.current) return;
@@ -196,6 +164,7 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 			showGlobalToast(t("cues.deleteFailed"), apiErrorMessage(error, t("cues.deleteFailed")), "error");
 		} finally {
 			pending.current = false;
+			if (mounted.current) setDeleting(false);
 		}
 	};
 
@@ -224,7 +193,7 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 		if (cues.length === 0) {
 			return (
 				<div className="flex flex-col items-center gap-3 py-10 text-center">
-					<Zap className="size-8 text-passive" aria-hidden="true" />
+					<Disc3 className="size-8 text-passive" aria-hidden="true" />
 					<p className="max-w-sm text-sm leading-5 text-muted-foreground">{t("cues.empty")}</p>
 				</div>
 			);
@@ -252,23 +221,7 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 									type="button"
 									variant="ghost"
 									size="icon-sm"
-									disabled={runningCueId !== null || saving || deleteMutation.isPending}
-									onClick={() => void handleInvoke(cue)}
-									aria-label={t("cues.runNewSession")}
-									title={t("cues.runNewSession")}
-									className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
-								>
-									{runningCueId === cue.id ? (
-										<Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-									) : (
-										<Play className="size-3.5" aria-hidden="true" />
-									)}
-								</Button>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon-sm"
-									disabled={runningCueId !== null || saving || deleteMutation.isPending}
+									disabled={busy}
 									onClick={() => openEdit(cue)}
 									aria-label={t("cues.edit")}
 									title={t("cues.edit")}
@@ -280,7 +233,7 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 									type="button"
 									variant="ghost"
 									size="icon-sm"
-									disabled={runningCueId !== null || saving || deleteMutation.isPending}
+									disabled={busy}
 									onClick={() => { if (!pending.current) { deleteMutation.reset(); setDeletingCue(cue); } }}
 									aria-label={t("cues.delete")}
 									title={t("cues.delete")}
@@ -334,7 +287,7 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 					</SelectTrigger>
 					<SelectContent>
 						<SelectItem value="command">
-							<Zap className="size-3.5 text-muted-foreground" aria-hidden="true" />
+							<TerminalSquare className="size-3.5 text-muted-foreground" aria-hidden="true" />
 							{t("cues.typeName.command")}
 						</SelectItem>
 						<SelectItem value="agent">
@@ -386,59 +339,26 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 	);
 
 	return (
-		<>
-			<Dialog open={open} onOpenChange={(next) => { if (!pending.current) onOpenChange(next); }}>
-				<DialogContent
-					aria-describedby={undefined}
-					showCloseButton={false}
-					className={cn(settingsDialogContentClass, "w-[min(640px,calc(100vw-24px))]")}
-				>
-					<DialogClose asChild>
-						<button
-							type="button"
-							disabled={saving || deleteMutation.isPending || runningCueId !== null}
-							className="settings-dialog-close-button settings-close-button"
-							aria-label={t("confirm.close")}
-							title={t("confirm.closeEsc")}
-						>
-							<X className="size-4" aria-hidden="true" />
-						</button>
-					</DialogClose>
-
-					<div className={cn(settingsDialogHeaderClass, "p-5 pr-12")}>
-						<DialogTitle className="settings-dialog-title text-base">{t("cues.title")}</DialogTitle>
-					</div>
-
-					{invokeError ? (
-						<div className={cn(settingsDialogBodyClass, "p-5 py-3")}>
-							<p role="alert" className="text-caption leading-4 text-error">
-								{invokeError}
-							</p>
-						</div>
-					) : null}
-
-					<div className={cn(settingsDialogBodyClass, "p-5")}><fieldset disabled={saving || deleteMutation.isPending || runningCueId !== null}>{formOpen ? renderForm() : renderList()}</fieldset></div>
-
-					<div className={cn(settingsDialogFooterClass, "gap-2 p-4")}>
-						{formOpen ? (
-							<>
-								<Button type="button" variant="footer" disabled={saving} onClick={() => setFormOpen(null)}>
-									{t("cues.cancel")}
-								</Button>
-								<Button type="button" variant="footer-primary" disabled={saving} onClick={() => void handleSave()}>
-									{saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-									{formOpen === "new" ? t("cues.create") : t("cues.save")}
-								</Button>
-							</>
-						) : (
-							<Button type="button" variant="footer-primary" disabled={saving || deleteMutation.isPending || runningCueId !== null} onClick={openNew}>
-								<Plus className="size-4" aria-hidden="true" />
-								{t("cues.newCue")}
-							</Button>
-						)}
-					</div>
-				</DialogContent>
-			</Dialog>
+		<div className="flex min-h-full flex-col gap-4 pb-5">
+			<fieldset disabled={busy}>{formOpen ? renderForm() : renderList()}</fieldset>
+			<div className="mt-auto flex justify-end gap-2 border-t border-border pt-4">
+				{formOpen ? (
+					<>
+						<Button type="button" variant="footer" disabled={saving} onClick={() => setFormOpen(null)}>
+							{t("cues.cancel")}
+						</Button>
+						<Button type="button" variant="footer-primary" disabled={saving} onClick={() => void handleSave()}>
+							{saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+							{formOpen === "new" ? t("cues.create") : t("cues.save")}
+						</Button>
+					</>
+				) : (
+					<Button type="button" variant="footer-primary" disabled={busy} onClick={openNew}>
+						<Plus className="size-4" aria-hidden="true" />
+						{t("cues.newCue")}
+					</Button>
+				)}
+			</div>
 
 			<ConfirmDialog
 				open={deletingCue !== null}
@@ -446,13 +366,13 @@ function OpenCuesDialog({ open, onOpenChange, projectId }: CuesDialogProps) {
 				description={deletingCue ? t("cues.deleteBody", { name: deletingCue.name }) : ""}
 				confirmLabel={t("cues.delete")}
 				destructive
-				busy={deleteMutation.isPending}
+				busy={deleting}
 				error={deleteMutation.isError ? apiErrorMessage(deleteMutation.error, t("cues.deleteFailed")) : null}
 				onConfirm={() => void handleDelete()}
 				onOpenChange={(nextOpen) => {
 					if (!nextOpen && !pending.current) setDeletingCue(null);
 				}}
 			/>
-		</>
+		</div>
 	);
 }

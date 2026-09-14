@@ -7,7 +7,7 @@ import {
 	SessionsBoardGridView,
 	archiveToggleOffsetClassName,
 } from "@aoagents/product-ui";
-import { AlertTriangle, LayoutDashboard, RotateCw, Zap } from "lucide-react";
+import { AlertTriangle, LayoutDashboard, RotateCw } from "lucide-react";
 import {
 	type WorkspaceSession,
 	newestActiveOrchestrator,
@@ -45,9 +45,7 @@ import {
 	BoardSessionCardAdapter,
 	sessionsBoardLabels,
 } from "./SessionsBoardAdapters";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { CuesDialog } from "./CuesDialog";
-import { useCuesDialogStore } from "../stores/cues-dialog-store";
+import { ProjectCueMenu } from "./chat/CueComposerMenu";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
@@ -113,15 +111,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
 	const projectActions = useProjectOrchestratorAction({ projectId, project: workspace, orchestrator, source: "board" });
 	const { isProjectRestarting, isProvisioning } = projectActions;
-	const cuesOpen = useCuesDialogStore((s) => s.open);
-	const closeCuesDialog = useCuesDialogStore((s) => s.closeCuesDialog);
 	const setProjectRestarting = useUiStore((state) => state.setProjectRestarting);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
-	useEffect(() => {
-		closeCuesDialog();
-	}, [closeCuesDialog, projectId]);
-
 	const archived = sessions
 		.filter(isArchivedSession)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -159,24 +151,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const actions = projectId ? (
 		<>
 			<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} />
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<span className="inline-flex">
-						<TopbarButton
-							aria-label={t("cues.title")}
-							className="topbar-control--labeled"
-							data-priority="secondary"
-							disabled={isProjectRestarting || isProvisioning}
-							onClick={useCuesDialogStore.getState().openCuesDialog}
-							variant="primary"
-						>
-							<Zap className="size-icon-md" aria-hidden="true" />
-							<span data-compact-label>{t("cues.title")}</span>
-						</TopbarButton>
-					</span>
-				</TooltipTrigger>
-				<TooltipContent side="bottom">{t("cues.title")}</TooltipContent>
-			</Tooltip>
+			<span className="inline-flex">
+				<ProjectCueMenu projectId={projectId} disabled={isProjectRestarting || isProvisioning} />
+			</span>
 			{boardOwnsNotificationCenter ? (
 				<>
 					<NotificationCenter />
@@ -285,7 +262,6 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				/>
 			) : null}
 			{showStartup ? <DaemonStartupLoader /> : null}
-			{projectId ? <CuesDialog open={cuesOpen} onOpenChange={(next) => (next ? useCuesDialogStore.getState().openCuesDialog() : closeCuesDialog())} projectId={projectId} /> : null}
 		</div>
 	);
 }
