@@ -3,6 +3,8 @@ import { toKanbanColumn, type WorkspaceSession, type WorkspaceSummary } from "..
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
+import { useUiStore } from "../stores/ui-store";
+import { appI18n } from "../i18n";
 
 type TerminateSessionOptions = {
 	onSuccess?: (session: WorkspaceSession) => void;
@@ -72,6 +74,10 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 		mutationKey: terminateSessionMutationKey,
 		mutationFn: async (session: WorkspaceSession) => {
 			void captureRendererEvent("ao.renderer.session_kill_requested", { project_id: session.workspaceId });
+			
+			const toastTitle = appI18n.t("shell.killingNamed", { title: session.branch || session.workspaceName || "Session" });
+			useUiStore.getState().showGlobalToast(toastTitle, undefined, "info");
+
 			const { error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
 				params: { path: { sessionId: session.id } },
 			});

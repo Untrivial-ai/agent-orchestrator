@@ -56,7 +56,7 @@ import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
 import { prBrowserUrl, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
+import { resolveNextNavigationAfterSessionKill, sortedPRs } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
@@ -1093,17 +1093,20 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 
 	const confirmTermination = () => {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
-		const orchestrator = findProjectOrchestrator(workspaces, session.workspaceId);
+		const workspace = workspaces.find((w) => w.id === session.workspaceId);
+		const nextNav = resolveNextNavigationAfterSessionKill(workspace, session.id);
+		
 		setConfirmOpen(false);
 		terminate.mutate(session);
-		if (orchestrator) {
+		
+		if (nextNav.target === "session") {
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId: session.workspaceId, sessionId: orchestrator.id },
+				params: { projectId: session.workspaceId, sessionId: nextNav.sessionId },
 			});
-			return;
+		} else {
+			void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 		}
-		void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 	};
 
 	if (session.isTerminated === true) return null;
