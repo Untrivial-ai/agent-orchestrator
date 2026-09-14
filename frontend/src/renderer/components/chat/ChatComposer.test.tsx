@@ -329,6 +329,20 @@ describe("send keys", () => {
 		expect(field.textContent).toBe("do not lose this task");
 	});
 
+	it("clears a plain-text draft as soon as the local send acknowledgement starts", async () => {
+		const pending = deferred<void>();
+		const onSend = vi.fn().mockReturnValue(pending.promise);
+		render(<ChatComposer onSend={onSend} />);
+		const field = screen.getByLabelText("Message the agent") as HTMLElement;
+
+		await typeInComposer(field, "show this immediately");
+		await userEvent.keyboard("{Enter}");
+
+		expect(onSend).toHaveBeenCalledWith("show this immediately");
+		expect(field).toHaveTextContent("");
+		pending.resolve();
+	});
+
 	it.each([false, true])("keeps the composer editable after a successful live send (queued: %s)", async (willQueue) => {
 		const sessionId = `composer-live-send-acceptance-${willQueue}`;
 		const pending = deferred<void>();

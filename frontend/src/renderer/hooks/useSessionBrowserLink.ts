@@ -5,8 +5,11 @@ import { useUiStore } from "../stores/ui-store";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
-/** Route an HTTP(S) link to the browser surface available for the active session. */
-export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string) => void {
+/** Open an HTTP(S) link in the active session's AO Browser panel. */
+export function useSessionBrowserLink(
+	session?: WorkspaceSession,
+	openInBrowser?: (uri: string) => Promise<void>,
+): (uri: string) => void {
 	const queryClient = useQueryClient();
 	const setInspectorView = useUiStore((state) => state.setInspectorView);
 	const setInspectorOpen = useUiStore((state) => state.setInspectorOpen);
@@ -25,6 +28,12 @@ export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string)
 			const sessionId = session.id;
 			setInspectorView(sessionId, "browser");
 			setInspectorOpen(sessionId, true);
+			if (openInBrowser) {
+				void openInBrowser(uri).catch((error) => {
+					console.warn("Unable to open link in Browser tab", error);
+				});
+				return;
+			}
 			void (async () => {
 				try {
 					const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/preview", {
@@ -41,6 +50,6 @@ export function useSessionBrowserLink(session?: WorkspaceSession): (uri: string)
 				}
 			})();
 		},
-		[active, queryClient, session?.id, session?.kind, setInspectorOpen, setInspectorView],
+		[active, openInBrowser, queryClient, session?.id, session?.kind, setInspectorOpen, setInspectorView],
 	);
 }

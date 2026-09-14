@@ -673,6 +673,25 @@ describe("shell new-shell-terminal shortcut subscription", () => {
 		);
 	});
 
+	it("preserves the cloud identity for a session-scoped terminal", async () => {
+		const session = workspaces[0]!.sessions[0]!;
+		session.cloud = { orgId: "cloud-org" };
+		shellMocks.state.routeParams = { sessionId: "sess-1" };
+		await renderShell();
+
+		pressNewShellTerminal();
+
+		expect(shellMocks.openShellTerminal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				sessionId: "sess-1",
+				cloud: { orgId: "cloud-org" },
+			}),
+			expect.anything(),
+		);
+		delete session.cloud;
+	});
+
 	// Session terminals always belong to the session on screen — there is no
 	// longer an "owner" session whose worktree could be borrowed here (#3208).
 	it("scopes the terminal to the session on screen, not the route's project alone", async () => {

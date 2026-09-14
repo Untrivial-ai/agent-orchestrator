@@ -75,6 +75,7 @@ import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
 import type { ApprovalMode } from "../../types/conversation";
+import type { ConversationLocalEcho } from "../../hooks/useConversation";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import { sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
 import type { TerminalTarget } from "../../types/terminal";
@@ -377,6 +378,8 @@ export interface ChatWorkspaceProps {
 	filePaths?: string[];
 	/** The path list was capped by the daemon rather than being all of them. */
 	filePathsTruncated?: boolean;
+	/** Renderer-only human messages awaiting their exact durable counterpart. */
+	localEchos?: ConversationLocalEcho[];
 	/**
 	 * Writes staged images into the worktree and answers with the paths the agent
 	 * can open. Absent means no attach control is offered — the fixture preview has
@@ -566,6 +569,7 @@ function ChatWorkspaceContent({
 	skills,
 	filePaths,
 	filePathsTruncated,
+	localEchos,
 	onStageAttachments,
 	nativeImages,
 	onSteer,
@@ -1176,7 +1180,7 @@ function ChatWorkspaceContent({
 	);
 	// Empty chats center the prompt; once a turn or item exists the composer docks
 	// at the bottom and stays there for the rest of the session.
-	const conversationEmpty = snapshot.items.length === 0 && !turn;
+	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0;
 	const composerDockRef = useRef<HTMLDivElement>(null);
 	const composerCenteredTopRef = useRef<number | null>(null);
 	const composerFlipDyRef = useRef<number | null>(null);
@@ -1386,6 +1390,7 @@ function ChatWorkspaceContent({
 								activateBranchPending={activateBranchPending}
 								activateBranchError={activateBranchError}
 								newWorkDisabled={newWorkDisabled}
+								localEchos={localEchos}
 							/>
 						</ChatLinkProvider>
 
@@ -1938,6 +1943,7 @@ function Timeline({
 	activateBranchPending,
 	activateBranchError,
 	newWorkDisabled,
+	localEchos = [],
 }: {
 	snapshot: ConversationSnapshot;
 	draftScope: ChatDraftScope;
@@ -1959,6 +1965,7 @@ function Timeline({
 	activateBranchPending?: boolean;
 	activateBranchError?: string;
 	newWorkDisabled?: boolean;
+	localEchos?: ConversationLocalEcho[];
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const scroller = useRef<HTMLDivElement>(null);
@@ -1973,6 +1980,8 @@ function Timeline({
 	const pinnedRef = useRef(true);
 	const [pinned, setPinned] = useState(true);
 	const [hoveredMarker, setHoveredMarker] = useState<number | null>(null);
+	const hoveredMarkerRef = useRef<number | null>(null);
+	hoveredMarkerRef.current = hoveredMarker;
 	const [messageEdit, setMessageEdit] = useState<MessageEditDraft | undefined>(
 		() => readChatSessionDraft(draftScope).inlineEdit,
 	);
@@ -2032,8 +2041,12 @@ function Timeline({
 		() => () => setChatDraftBoundary(snapshot.sessionId, "inline-edit", undefined),
 		[snapshot.sessionId],
 	);
-	const isInspectorOpen = useUiStore(
-		(state) => state.inspectorSessions[snapshot.sessionId]?.isOpen ?? true,
+	// The inspector changes the minimap's visibility, but it must not cause this
+	// entire timeline to rerender. A live conversation can contain hundreds of
+	// DOM nodes, and inspector toggles are otherwise a broad synchronous commit.
+	// Keep that small accessibility/interaction boundary imperative instead.
+	const inspectorOpenRef = useRef(
+		useUiStore.getState().inspectorSessions[snapshot.sessionId]?.isOpen ?? true,
 	);
 	const turn = activeTurn(snapshot);
 	const [scrollbar, setScrollbar] = useState({
@@ -2051,7 +2064,7 @@ function Timeline({
 	// prompts — not only when the transcript overflows. Closing the rail
 	// widens chat; shorter histories (common on non-Codex harnesses) often
 	// stop overflowing and used to lose the minimap exactly then.
-	const minimapEnabled = !isInspectorOpen && scrollbar.markers.length > 0;
+	const minimapEnabled = scrollbar.markers.length > 0;
 	const queued = useMemo(() => queuedTurnIds(snapshot), [snapshot]);
 	const decide = useStableCallback(onDecide);
 	const resolveInput = useStableCallback(onResolveInput);
@@ -2145,11 +2158,31 @@ function Timeline({
 		setMessageEdit(undefined);
 	}, [draftScope, snapshot.activeBranchId, snapshot.sessionId]);
 	useEffect(() => {
-		if (isInspectorOpen) {
-			drag.current = null;
-			setHoveredMarker(null);
-		}
-	}, [isInspectorOpen]);
+		const setInspectorOpen = (isOpen: boolean) => {
+			inspectorOpenRef.current = isOpen;
+			const track = scrollTrack.current;
+			if (track) {
+				track.dataset.inspectorOpen = String(isOpen);
+				track.setAttribute("aria-hidden", String(isOpen));
+				track.tabIndex = minimapEnabled && !isOpen ? 0 : -1;
+				track.classList.toggle("cursor-pointer", minimapEnabled && !isOpen);
+				track.classList.toggle("pointer-events-none", !minimapEnabled || isOpen);
+				track.classList.toggle("opacity-100", minimapEnabled && !isOpen);
+				track.classList.toggle("opacity-0", !minimapEnabled || isOpen);
+				if (isOpen && document.activeElement === track) track.blur();
+			}
+			if (isOpen) {
+				drag.current = null;
+				if (hoveredMarkerRef.current !== null) setHoveredMarker(null);
+			}
+		};
+		setInspectorOpen(useUiStore.getState().inspectorSessions[snapshot.sessionId]?.isOpen ?? true);
+		return useUiStore.subscribe((state, previous) => {
+			const currentOpen = state.inspectorSessions[snapshot.sessionId]?.isOpen ?? true;
+			const previousOpen = previous.inspectorSessions[snapshot.sessionId]?.isOpen ?? true;
+			if (currentOpen !== previousOpen) setInspectorOpen(currentOpen);
+		});
+	}, [minimapEnabled, snapshot.sessionId]);
 	const consumedRetrySources = useMemo(() => retrySourceTurnIds(snapshot), [snapshot]);
 	const retryableTurns = useMemo(
 		() =>
@@ -2468,12 +2501,40 @@ function Timeline({
 		lastSeenLatestSequence.current = snapshot.latestSequence;
 		if (added.size > 0) setNewHumanMessageIds(added);
 	}, [items, snapshot.latestSequence]);
+	const localItems = useMemo(() => {
+		return localEchos
+			.filter(
+				(echo) =>
+					!items.some(
+						(item) =>
+							item.kind === "message" &&
+							item.role === "user" &&
+							item.origin === "human" &&
+							((echo.turnId && item.turnId === echo.turnId) ||
+								(!echo.turnId && item.text === echo.text && item.createdAt >= echo.createdAt)),
+					),
+			)
+			.map((echo, index): ConversationMessage => ({
+				kind: "message",
+				id: `local:${echo.clientMessageId}`,
+				turnId: `local:${echo.clientMessageId}`,
+				sequence: snapshot.latestSequence + index + 0.01,
+				revision: 0,
+				role: "user",
+				origin: "human",
+				text: echo.text,
+				streaming: false,
+				delivery: echo.turnId ? "accepted" : "sending",
+				createdAt: echo.createdAt,
+			}));
+	}, [items, localEchos, snapshot.latestSequence]);
+	const timelineItems = useStableList([...items, ...localItems], itemKey, sameContent);
 	const grouped = useMemo(() => {
 		const hiddenTurns = hiddenTimelineTurnIds(snapshot);
-		return groupByTurn({ ...snapshot, items }).filter(
+		return groupByTurn({ ...snapshot, items: timelineItems }).filter(
 			(group) => !group.turnId || !hiddenTurns.has(group.turnId),
 		);
-	}, [snapshot, items]);
+	}, [snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
 	const navigableGroups = useMemo(() => groups.filter(groupHasHumanPrompt), [groups]);
 	const previews = useMemo(() => navigableGroups.map(groupPreview), [navigableGroups]);
@@ -2647,7 +2708,7 @@ function Timeline({
 	}
 
 	function onScrollbarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const track = scrollTrack.current;
 		const node = scroller.current;
 		if (!track || !node) return;
@@ -2667,7 +2728,7 @@ function Timeline({
 	}
 
 	function onScrollbarPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const active = drag.current;
 		const node = scroller.current;
 		const track = scrollTrack.current;
@@ -2702,7 +2763,7 @@ function Timeline({
 	}
 
 	function onScrollbarWheel(event: ReactWheelEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const node = scroller.current;
 		if (!node) return;
 		event.preventDefault();
@@ -2711,7 +2772,7 @@ function Timeline({
 	}
 
 	function onScrollbarKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-		if (!minimapEnabled) return;
+		if (!minimapEnabled || inspectorOpenRef.current) return;
 		const node = scroller.current;
 		if (!node) return;
 		const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
@@ -2730,12 +2791,19 @@ function Timeline({
 		updateScrollbar();
 	}
 
-	if (items.length === 0 && !messageEdit && !turn) {
+	if (timelineItems.length === 0 && !messageEdit && !turn) {
 		return null;
 	}
 
 	return (
-		<div className="relative min-h-0 flex-1">
+		<div
+			className="relative min-h-0 flex-1"
+			data-testid="chat-timeline"
+			// The timeline is a fixed-size flex item with its own scroll viewport.
+			// Isolating its layout and paint means Lexical selection/composer updates
+			// cannot invalidate the complete mounted conversation history or shell.
+			style={{ contain: "layout paint" }}
+		>
 			<div
 				ref={scroller}
 				onScroll={onScroll}
@@ -2869,12 +2937,13 @@ function Timeline({
 				</div>
 			</div>
 
-			<div
-				ref={scrollTrack}
-				role="scrollbar"
-				data-testid="chat-conversation-minimap"
-				tabIndex={minimapEnabled ? 0 : -1}
-				aria-hidden={isInspectorOpen || undefined}
+				<div
+					ref={scrollTrack}
+					role="scrollbar"
+					data-testid="chat-conversation-minimap"
+					data-inspector-open={inspectorOpenRef.current}
+					tabIndex={minimapEnabled && !inspectorOpenRef.current ? 0 : -1}
+					aria-hidden={inspectorOpenRef.current || undefined}
 				aria-label="Conversation scrollbar"
 				aria-orientation="vertical"
 				aria-valuemin={0}
@@ -2887,7 +2956,7 @@ function Timeline({
 				onWheel={onScrollbarWheel}
 				onKeyDown={onScrollbarKeyDown}
 				onFocus={() => {
-					if (!minimapEnabled || scrollbar.markers.length === 0) return;
+						if (!minimapEnabled || inspectorOpenRef.current || scrollbar.markers.length === 0) return;
 					setHoveredMarker(
 						Math.min(
 							scrollbar.markers.length - 1,
@@ -2897,13 +2966,16 @@ function Timeline({
 				}}
 				onBlur={() => setHoveredMarker(null)}
 				onPointerLeave={() => setHoveredMarker(null)}
-				className={cn(
-					"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-logo-accent/60",
-					minimapEnabled ? "cursor-pointer opacity-100" : "pointer-events-none opacity-0",
-				)}
-			>
-				<div className="absolute inset-0 cursor-grab group-active/scroll:cursor-grabbing">
-					{minimapEnabled
+					className={cn(
+						"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-logo-accent/60",
+						minimapEnabled && !inspectorOpenRef.current
+							? "cursor-pointer opacity-100"
+							: "pointer-events-none opacity-0",
+						"data-[inspector-open=true]:pointer-events-none data-[inspector-open=true]:opacity-0",
+					)}
+				>
+					<div className="absolute inset-0 cursor-grab group-active/scroll:cursor-grabbing">
+						{minimapEnabled && !inspectorOpenRef.current
 						? scrollbar.markers.map((marker, index) => {
 								const distance =
 									hoveredMarker === null

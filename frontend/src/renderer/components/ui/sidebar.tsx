@@ -154,11 +154,13 @@ function Sidebar({
 	collapsible = "offcanvas",
 	className,
 	children,
+	resizeScopeRef,
 	...props
 }: React.ComponentProps<"div"> & {
 	side?: "left" | "right";
 	variant?: "sidebar" | "floating" | "inset";
 	collapsible?: "offcanvas" | "icon" | "none";
+	resizeScopeRef?: React.RefObject<HTMLDivElement | null>;
 }) {
 	const { t } = useTranslation();
 	const prefersReducedMotion = useReducedMotion();
@@ -216,7 +218,7 @@ function Sidebar({
 				? variant === "floating" || variant === "inset"
 					? "calc(var(--sidebar-width-icon) + 1rem)"
 					: "var(--sidebar-width-icon)"
-				: "var(--sidebar-width)";
+				: "var(--ao-sidebar-w, var(--sidebar-width))";
 
 	// Several React HTML event types conflict with Motion's overloaded versions.
 	// Cast once so callers can keep passing through plain div props.
@@ -231,6 +233,7 @@ function Sidebar({
 			data-variant={variant}
 			data-side={side}
 			data-slot="sidebar"
+			ref={resizeScopeRef}
 		>
 			{/* Layout gap follows the sidebar width so <main> expands and contracts
 			    smoothly with the shell instead of snapping on a separate CSS timer. */}
@@ -249,7 +252,7 @@ function Sidebar({
 				animate={{ x: containerX }}
 				transition={activeTransition}
 				className={cn(
-					"fixed inset-y-0 z-chrome hidden h-svh w-(--sidebar-width) md:flex",
+					"fixed inset-y-0 z-chrome hidden h-svh w-(--ao-sidebar-w,var(--sidebar-width)) md:flex",
 					side === "left" ? "left-0" : "right-0",
 					// Adjust the padding for floating and inset variants.
 					variant === "floating" || variant === "inset"

@@ -15,6 +15,15 @@ Run from a clean private `main` checkout:
 AWS_PROFILE=ao-cloud ./scripts/deploy-staging.sh
 ```
 
+NodeOps remains the default. To deploy a release against the environment's
+Coder connection instead:
+
+```bash
+AO_CLOUD_SANDBOX_PROVIDER=coder \
+  AWS_PROFILE=ao-cloud \
+  ./scripts/deploy-staging.sh
+```
+
 The script requires `AO_CLOUD_RELEASE` to resolve to the clean checkout's
 current full Git SHA and:
 
@@ -83,6 +92,7 @@ role:
 - `ao-cloud/staging/migration-database-url`
 - `ao-cloud/staging/provider-secret-key`
 - `ao-cloud/staging/nodeops`
+- `ao-cloud/staging/coder` (required only when the Coder provider is selected)
 - `ao-cloud/staging/worker`
 - `ao-cloud/repository-broker`
 
@@ -98,6 +108,18 @@ baked into the image or task-definition environment.
 every field before building or registering a task, and ECS injects each value
 directly from its environment-scoped secret. Provider auto-pause is
 intentionally absent from this deployment configuration.
+
+`coder` is a JSON secret with `url`, `token`, `owner`, `template_id`,
+`agent_name`, `parameters_json`, `durable_root`, and `worker_token_ttl`.
+`durable_root` is the approved template's exact persistent-volume mount point,
+not a deployment-wide assumption about the Coder user's home. It must be an
+absolute normalized non-root path. `parameters_json` must be a JSON object whose
+values are strings; use `{}` when the approved template has no parameters. The
+deployment validates only the selected provider and removes the other
+provider's environment variables and secret references from the new task
+definition. The ECS execution role needs
+`secretsmanager:GetSecretValue` for the selected environment-scoped provider
+secret.
 
 `ao-cloud/repository-broker` is shared only by the production control plane,
 environment control planes, and the server-side web BFF. It is a JSON secret
@@ -182,7 +204,8 @@ existing production definitions—not staging—so production-only secrets survi
 and staging variables, URLs, log groups, or secret ARNs cannot cross the
 environment boundary. It then:
 
-1. Validates the production-scoped NodeOps and worker secret documents.
+1. Validates the production-scoped sandbox-provider and worker secret
+   documents for the provider already verified in staging.
 2. Registers production API and migration task definitions using the exact
    control-plane digest and records the exact worker digest.
 3. Runs `/ao-cloud-migrate` against production as a one-off task.
@@ -222,12 +245,13 @@ The service reads only these production-scoped secrets:
 - `ao-cloud/production/provider-secret-key`
 - `ao-cloud/production/github`
 - `ao-cloud/production/nodeops`
+- `ao-cloud/production/coder` (required only when Coder is running in staging)
 - `ao-cloud/production/worker`
 - `ao-cloud/repository-broker`
 
-The production `nodeops` and `worker` documents use the same schema as staging.
-Promotion reads and validates production values; it never copies secret values
-or ARNs from staging.
+The production provider and `worker` documents use the same schemas as staging.
+Promotion refuses to change providers during promotion, reads and validates
+production values, and never copies secret values or ARNs from staging.
 
 Staging and production intentionally use the same WorkOS environment. This
 shares users and provider configuration across both AO environments; split them

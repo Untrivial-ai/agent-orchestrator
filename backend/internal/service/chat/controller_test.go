@@ -4918,7 +4918,11 @@ type compactingConversation struct {
 }
 
 func newCompactingConversation() *compactingConversation {
-	return &compactingConversation{fakeConversation: newFakeConversation()}
+	conv := &compactingConversation{fakeConversation: newFakeConversation()}
+	caps := productionCaps()
+	caps[ports.ChatCapabilityCompaction] = true
+	conv.setCapabilities(caps)
+	return conv
 }
 
 func (c *compactingConversation) Compact(context.Context) (ports.ChatCompactionResult, error) {
@@ -5056,6 +5060,21 @@ func TestCompactReportsWhatIsAboutToBeReclaimed(t *testing.T) {
 // cannot act on. The plain fake conversation does not implement ChatCompactor.
 func TestCompactOnAProviderThatCannotIsTyped(t *testing.T) {
 	h := newHarness(t)
+
+	_, err := h.svc.Compact(context.Background(), testSession)
+	if !errors.Is(err, chatsvc.ErrCompactionUnsupported) {
+		t.Fatalf("err = %v, want ErrCompactionUnsupported", err)
+	}
+}
+
+// An agent might implement ChatCompactor statically (e.g. ACP conversation),
+// but if the agent has not advertised the capability, Compact must return ErrCompactionUnsupported.
+func TestCompactRefusesWhenProviderImplementsCompactorWithoutCapability(t *testing.T) {
+	conv := newCompactingConversation()
+	caps := productionCaps()
+	delete(caps, ports.ChatCapabilityCompaction)
+	conv.setCapabilities(caps)
+	h := newHarnessWithConversation(t, conv)
 
 	_, err := h.svc.Compact(context.Background(), testSession)
 	if !errors.Is(err, chatsvc.ErrCompactionUnsupported) {

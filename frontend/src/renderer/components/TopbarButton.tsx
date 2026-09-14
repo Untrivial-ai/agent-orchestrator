@@ -6,6 +6,8 @@ const topbarButtonVariants = cva(
 	{
 		variants: {
 			variant: {
+				secondary:
+					"topbar-control--secondary h-control-lg gap-1.5 rounded-md px-3.5 text-sm font-semibold leading-none text-muted-foreground hover:bg-interactive-hover hover:text-foreground",
 				primary:
 					"topbar-control--primary h-control-lg gap-1.5 rounded-md bg-accent-strong px-3.5 text-sm font-semibold leading-none text-accent-foreground hover:brightness-110 active:brightness-95",
 				accent:

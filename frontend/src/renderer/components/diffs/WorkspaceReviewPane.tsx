@@ -317,6 +317,12 @@ export function WorkspaceReviewPane({
 		if (annotation.target?.surface === "review") annotation.cancel();
 		setCollapsedPaths(new Set(files.map((file) => file.path)));
 	}, [annotation, files]);
+	const expandAll = useCallback(() => {
+		setLoadedDeferredPaths(new Set(files.filter(isDeferredByDefault).map((file) => file.path)));
+		setCollapsedPaths(new Set());
+	}, [files]);
+	const allFilesCollapsed = files.length > 0 && files.every((file) => collapsedPaths.has(file.path));
+	const toggleAll = allFilesCollapsed ? expandAll : collapseAll;
 	const selectCommit = useCallback((commit: WorkspaceCommitSummary) => {
 		if ((scope !== "committed" || selectedCommitSha !== commit.sha) && annotation.target?.surface === "review") annotation.cancel();
 		setSelectedCommitSha(commit.sha);
@@ -372,14 +378,10 @@ export function WorkspaceReviewPane({
 				</Button>
 				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
 					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
-					<HeaderActionTooltip label={t("files.collapseAll")}>
-						<Button aria-label={t("files.collapseAll")} onClick={collapseAll} size="icon-sm" type="button" variant="ghost"><ChevronsDownUp aria-hidden="true" /></Button>
-					</HeaderActionTooltip>
-					<HeaderActionTooltip label={t("files.expandAll")}>
-						<Button aria-label={t("files.expandAll")} onClick={() => {
-							setLoadedDeferredPaths(new Set(files.filter(isDeferredByDefault).map((file) => file.path)));
-							setCollapsedPaths(new Set());
-						}} size="icon-sm" type="button" variant="ghost"><ChevronsUpDown aria-hidden="true" /></Button>
+					<HeaderActionTooltip label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")}>
+						<Button aria-label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")} onClick={toggleAll} size="icon-sm" type="button" variant="ghost">
+							{allFilesCollapsed ? <ChevronsUpDown aria-hidden="true" /> : <ChevronsDownUp aria-hidden="true" />}
+						</Button>
 					</HeaderActionTooltip>
 				</div> : <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
 			</div>

@@ -119,6 +119,21 @@ describe("WorkspaceReviewPane", () => {
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "false");
 	});
 
+	it("uses one toggle for collapsing and expanding all files", async () => {
+		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
+
+		const toggle = screen.getByRole("button", { name: "Collapse all files" });
+		await userEvent.click(toggle);
+		expect(screen.getByRole("button", { name: "Expand all files" })).toBeInTheDocument();
+		expect(screen.getByTestId("code-view").querySelectorAll('[data-collapsed="true"]')).toHaveLength(1);
+
+		await userEvent.click(screen.getByRole("button", { name: "Expand all files" }));
+		expect(screen.getByRole("button", { name: "Collapse all files" })).toBeInTheDocument();
+		expect(screen.getByTestId("code-view").querySelectorAll('[data-collapsed="false"]')).toHaveLength(1);
+	});
+
 	it("closes a file's feedback composer when that file is collapsed", async () => {
 		const model = annotation();
 		model.target = { path: "src/App.tsx", side: "file", scope: "committed", surface: "review" };

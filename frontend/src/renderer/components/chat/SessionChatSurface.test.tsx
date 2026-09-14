@@ -414,6 +414,7 @@ describe("SessionChatSurface link routing", () => {
 
 	it("opens a plain Chat link from an active orchestrator in its Browser panel", async () => {
 		const user = userEvent.setup();
+		const openInNewTab = vi.fn().mockResolvedValue(undefined);
 		const queryClient = new QueryClient({
 			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
 		});
@@ -427,18 +428,35 @@ describe("SessionChatSurface link routing", () => {
 		try {
 			render(
 				<Wrapper client={queryClient}>
-					<SessionChatSurface session={orchestratorSession} />
+					<SessionChatSurface session={orchestratorSession} onOpenLinkInBrowser={openInNewTab} />
 				</Wrapper>,
 			);
 			await user.click(screen.getByRole("button", { name: "Open chat link" }));
 
 			expect(useUiStore.getState().inspectorSessions[orchestratorSession.id]).toMatchObject({ isOpen: true, view: "browser" });
-			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
-				params: { path: { sessionId: orchestratorSession.id } }, body: { url: LINK },
-			});
+			expect(openInNewTab).toHaveBeenCalledWith(LINK);
+			expect(postMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", expect.anything());
 		} finally {
 			queryClient.clear();
 		}
+	});
+
+	it("opens each plain Chat link in a new AO Browser tab", async () => {
+		const user = userEvent.setup();
+		const openInNewTab = vi.fn().mockResolvedValue(undefined);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+
+		render(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={openInNewTab} />
+			</Wrapper>,
+		);
+		await user.click(screen.getByRole("button", { name: "Open chat link" }));
+
+		expect(openInNewTab).toHaveBeenCalledWith(LINK);
+		expect(postMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", expect.anything());
 	});
 
 	// SessionView owns the switch-agent control on the primary session tab; the chat
@@ -656,9 +674,12 @@ describe("SessionChatSurface link routing", () => {
 			controller: { state: "busy" },
 			harness: "codex",
 		};
+		// SessionChatSurface is memoized; in the app the controller transition
+		// re-renders it through the useConversation subscription. Mimic that with a
+		// fresh session reference (same id) so the memo boundary re-reads state.
 		view.rerender(
 			<Wrapper client={queryClient}>
-				<SessionChatSurface session={targetSession} />
+				<SessionChatSurface session={{ ...targetSession }} />
 			</Wrapper>,
 		);
 
@@ -912,7 +933,10 @@ describe("project remembering waits for provider permissions", () => {
 		expect(screen.getByTestId("remember-available")).toHaveTextContent("false");
 		configState.loaded = true;
 		configState.options = [{ id: "model", name: "Model", category: "model", type: "select", choices: [] }];
-		rerender(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
+		// The real query observer schedules this component when catalog data lands.
+		// The lightweight hook mock has no subscription, so change the parent
+		// session identity to model that notification through the memo boundary.
+		rerender(<Wrapper client={client}><SessionChatSurface session={{ ...session }} /></Wrapper>);
 		expect(screen.getByTestId("remember-available")).toHaveTextContent("true");
 	});
 });

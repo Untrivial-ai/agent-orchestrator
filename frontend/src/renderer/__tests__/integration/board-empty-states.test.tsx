@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { act, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode, type ReactNode } from "react";
@@ -17,7 +17,7 @@ function render(ui: ReactNode) {
 // first-run states, mocking only the HTTP client, the router, and the native
 // folder picker: an empty daemon shows the import chooser (no column shells), a
 // fresh project shows the task invitation, and any session brings the columns back.
-const { getMock, postMock, deleteMock, navigateMock, chooseDirectoryMock, clipboardWriteMock, spawnOrchestratorMock, terminalPanePropsMock } = vi.hoisted(() => ({
+const { getMock, postMock, deleteMock, navigateMock, chooseDirectoryMock, clipboardWriteMock, spawnOrchestratorMock, terminalPanePropsMock, paramsMock, boardActionsInPanelMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
 	postMock: vi.fn(),
 	deleteMock: vi.fn(),
@@ -26,6 +26,13 @@ const { getMock, postMock, deleteMock, navigateMock, chooseDirectoryMock, clipbo
 	clipboardWriteMock: vi.fn(),
 	spawnOrchestratorMock: vi.fn(),
 	terminalPanePropsMock: vi.fn(),
+	paramsMock: { projectId: undefined as string | undefined, sessionId: undefined as string | undefined },
+	boardActionsInPanelMock: vi.fn(() => false),
+}));
+
+vi.mock("../../lib/platform", async (importOriginal) => ({
+	...await importOriginal<typeof import("../../lib/platform")>(),
+	usesBoardActionsInPanel: () => boardActionsInPanelMock(),
 }));
 
 vi.mock("../../lib/spawn-orchestrator", () => ({
@@ -65,10 +72,13 @@ vi.mock("../../lib/bridge", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@tanstack/react-router")>();
-	return { ...actual, useNavigate: () => navigateMock };
+	return { ...actual, useNavigate: () => navigateMock, useParams: () => paramsMock };
 });
 
 import { SessionsBoard } from "../../components/SessionsBoard";
+import { ShellTopbar } from "../../components/ShellTopbar";
+import { workspaceQueryKey } from "../../hooks/useWorkspaceQuery";
+import type { WorkspaceSummary } from "../../types/workspace";
 import { ShellProvider, type ShellContextValue } from "../../lib/shell-context";
 import { useUiStore } from "../../stores/ui-store";
 
@@ -177,6 +187,9 @@ const columnCount = () => document.querySelectorAll("section").length;
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	paramsMock.projectId = undefined;
+	paramsMock.sessionId = undefined;
+	boardActionsInPanelMock.mockReturnValue(false);
 	cloneProjectMock.mockResolvedValue(undefined);
 	createProjectMock.mockResolvedValue(undefined);
 	initializeProjectRepositoryMock.mockResolvedValue(undefined);
@@ -445,7 +458,7 @@ describe("project board with no sessions", () => {
 		renderBoard(<SessionsBoard projectId="proj-1" />);
 
 		expect(await screen.findByText("No worker sessions yet")).toBeInTheDocument();
-		// Board header + empty state each offer the pair; the orchestrator is primary in both.
+		// Both launchers remain reachable from the empty-state invitation.
 		expect(screen.getAllByRole("button", { name: "Spawn Orchestrator" }).length).toBeGreaterThan(0);
 		expect(screen.getAllByRole("button", { name: "New task" }).length).toBeGreaterThan(0);
 		expect(screen.queryByText("Add a project")).not.toBeInTheDocument();
@@ -612,5 +625,114 @@ describe("project board with no sessions", () => {
 		expect(await screen.findByText("fix the bug")).toBeInTheDocument();
 		expect(screen.queryByText("No worker sessions yet")).not.toBeInTheDocument();
 		expect(columnCount()).toBe(4);
+	});
+});
+
+// Mount the actual header and board together. Separate component tests cannot
+// catch divergent emptiness decisions or independent in-flight launch state.
+describe.each([false, true])("shared project board actions, in-panel header=%s", (inPanel) => {
+	function board(projectId = "proj-1") {
+		paramsMock.projectId = projectId;
+		return <><ShellTopbar /><SessionsBoard projectId={projectId} /></>;
+	}
+
+	function updateWorkers(sessions: WorkspaceSummary["sessions"]) {
+		act(() => lastQueryClient!.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
+			workspaces?.map((workspace) => workspace.id === "proj-1" ? { ...workspace, sessions } : workspace),
+		));
+	}
+
+	beforeEach(() => boardActionsInPanelMock.mockReturnValue(inPanel));
+
+	it("keeps quiet header copies only while the center invitation is visible", async () => {
+		respondWith([project], []);
+		renderBoard(board());
+		const empty = await screen.findByTestId("project-board-empty");
+		const headerTask = screen.getAllByRole("button", { name: "New task" }).find((button) => !empty.contains(button))!;
+		const headerOrchestrator = screen.getAllByRole("button", { name: "Spawn Orchestrator" }).find((button) => !empty.contains(button))!;
+		expect(headerTask).toHaveClass("topbar-control--secondary", "topbar-control--labeled");
+		expect(headerOrchestrator).toHaveClass("topbar-control--secondary", "topbar-control--labeled");
+		expect(headerTask).toHaveAttribute("data-priority", "primary");
+		expect(headerTask.querySelector("[data-compact-label]")).not.toBeNull();
+		expect(within(empty).getByRole("button", { name: "Spawn Orchestrator" })).toHaveClass("topbar-control--primary");
+		expect(within(empty).getByRole("button", { name: "New task" })).toHaveClass("topbar-control--accent");
+
+		for (const button of screen.getAllByRole("button", { name: "New task" })) {
+			useUiStore.setState({ newTaskRequest: null });
+			await userEvent.click(button);
+			expect(useUiStore.getState().newTaskRequest?.projectId).toBe("proj-1");
+		}
+
+		const worker: WorkspaceSummary["sessions"][number] = {
+			id: "worker-1", workspaceId: "proj-1", workspaceName: "my-app", title: "First task",
+			provider: "claude-code", kind: "worker", status: "working", updatedAt: "2026-07-04T10:00:00Z", prs: [],
+		};
+		for (const session of [worker, { ...worker, status: "terminated" as const, isTerminated: true }]) {
+			updateWorkers([session]);
+			await waitFor(() => expect(screen.queryByTestId("project-board-empty")).not.toBeInTheDocument());
+			expect(screen.getByRole("button", { name: "New task" })).toHaveClass("topbar-control--accent");
+			expect(screen.getByRole("button", { name: "Spawn Orchestrator" })).toHaveClass("topbar-control--primary");
+		}
+		updateWorkers([]);
+		await screen.findByTestId("project-board-empty");
+		expect(headerTask).toHaveClass("topbar-control--secondary");
+	});
+
+	it("shares pending state and Terminal UI recovery after either copy starts a request", async () => {
+		respondWith([project], []);
+		let rejectSpawn!: (error: Error) => void;
+		spawnOrchestratorMock.mockImplementationOnce(() => new Promise<string>((_resolve, reject) => { rejectSpawn = reject; }));
+		spawnOrchestratorMock.mockResolvedValueOnce("orch-retry");
+		renderBoard(board());
+		await screen.findByTestId("project-board-empty");
+		const buttons = screen.getAllByRole("button", { name: "Spawn Orchestrator" });
+		expect(buttons).toHaveLength(2);
+		act(() => { buttons[0].click(); buttons[1].click(); });
+		await waitFor(() => expect(spawnOrchestratorMock).toHaveBeenCalledTimes(1));
+		for (const button of buttons) {
+			expect(button).toBeDisabled();
+			expect(button).toHaveAttribute("aria-busy", "true");
+		}
+		act(() => rejectSpawn(Object.assign(new Error("Chat driver unavailable"), { code: "CHAT_DRIVER_UNAVAILABLE" })));
+		expect(await screen.findByText("Chat driver unavailable")).toBeInTheDocument();
+		for (const button of buttons) expect(button).toBeEnabled();
+		await userEvent.click(await screen.findByRole("button", { name: "Create as Terminal UI" }));
+		await waitFor(() => expect(spawnOrchestratorMock).toHaveBeenCalledTimes(2));
+		expect(spawnOrchestratorMock).toHaveBeenLastCalledWith("proj-1", "board", false, "tui");
+		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId", params: { projectId: "proj-1", sessionId: "orch-retry" },
+		}));
+	});
+
+	it.each(["success", "failure"])("keeps a late %s scoped to its original project", async (outcome) => {
+		respondWith([project, { ...project, id: "proj-2", name: "other-app" }], []);
+		let resolveSpawn!: (id: string) => void;
+		let rejectSpawn!: (error: Error) => void;
+		spawnOrchestratorMock.mockImplementationOnce(() => new Promise<string>((resolve, reject) => {
+			resolveSpawn = resolve; rejectSpawn = reject;
+		}));
+		const view = renderBoard(board());
+		await screen.findByTestId("project-board-empty");
+		await userEvent.click(screen.getAllByRole("button", { name: "Spawn Orchestrator" })[0]);
+		await waitFor(() => expect(spawnOrchestratorMock).toHaveBeenCalledTimes(1));
+		view.rerender(<QueryClientProvider client={lastQueryClient!}><ShellProvider value={lastShell!}>{board("proj-2")}</ShellProvider></QueryClientProvider>);
+		await waitFor(() => {
+			for (const button of screen.getAllByRole("button", { name: "Spawn Orchestrator" })) expect(button).toBeEnabled();
+		});
+		act(() => outcome === "success" ? resolveSpawn("old-project-orchestrator") : rejectSpawn(new Error("Old project failed")));
+		await waitFor(() => expect(lastQueryClient!.isMutating()).toBe(0));
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(screen.queryByText("Old project failed")).not.toBeInTheDocument();
+	});
+
+	it.each(["loading", "error", "missing"])("does not demote header actions for a %s project", async (state) => {
+		if (state === "loading") getMock.mockImplementation(() => new Promise(() => undefined));
+		else if (state === "error") getMock.mockResolvedValue({ error: new Error("Offline") });
+		else respondWith([], []);
+		renderBoard(board());
+		if (state === "missing") await waitFor(() => expect(lastQueryClient!.getQueryState(workspaceQueryKey)?.status).toBe("success"));
+		expect(screen.queryByTestId("project-board-empty")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "New task" })).toHaveClass("topbar-control--accent");
+		expect(screen.getByRole("button", { name: "Spawn Orchestrator" })).toHaveClass("topbar-control--primary");
 	});
 });

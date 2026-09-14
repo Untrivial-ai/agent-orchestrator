@@ -625,6 +625,53 @@ describe("SessionInspector PR section", () => {
     expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
   });
 
+  it("offers Merge when the provider requires no review", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open", { review: "none" })])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [prSummary(7, "open")]);
+      },
+    );
+
+    expect(screen.getByRole("button", { name: "Merge PR #7" })).toBeEnabled();
+    expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
+    expect(prSection("Pull request").queryByText("Review pending")).not.toBeInTheDocument();
+  });
+
+  it.each(["review_required", "changes_requested"] as const)(
+    "does not offer Merge when the review decision is %s",
+    (decision) => {
+      renderWithQuery(
+        <SessionInspector session={session([pr(7, "open")])} />,
+        undefined,
+        (client) => {
+          client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+            prSummary(7, "open", {
+              review: { decision, hasUnresolvedHumanComments: false, unresolvedBy: [] },
+            }),
+          ]);
+        },
+      );
+      expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not offer Merge while human review comments are unresolved", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            review: { decision: "none", hasUnresolvedHumanComments: true, unresolvedBy: [] },
+          }),
+        ]);
+      },
+    );
+    expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+  });
+
   it("uses the state chip as the single merged-state indicator", () => {
     renderWithQuery(
       <SessionInspector
@@ -1757,7 +1804,7 @@ describe("SessionInspector tabs", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Reviews" }));
 
     expect(await screen.findByText("Review controls")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Review latest commit" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Re-review PR" })).not.toBeDisabled();
   });
 
   it("hides the Reviews tab when every PR is merged or closed", async () => {
@@ -1833,7 +1880,7 @@ describe("SessionInspector summary reviews", () => {
     await openReviewsSection();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Review latest commit" }),
+      await screen.findByRole("button", { name: "Re-review PR" }),
     );
 
     await waitFor(() =>
@@ -1979,7 +2026,7 @@ describe("SessionInspector summary reviews", () => {
     await openReviewsSection();
 
     expect(
-      screen.getByRole("button", { name: "Review latest commit" }),
+      screen.getByRole("button", { name: "Re-review PR" }),
     ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Select reviewer agent" }),
@@ -2105,7 +2152,7 @@ describe("SessionInspector summary reviews", () => {
     await openReviewsSection();
 
     expect(
-      await screen.findByRole("button", { name: "Review latest commit" }),
+      await screen.findByRole("button", { name: "Re-review PR" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("AO code reviews")).not.toBeInTheDocument();
     expect(screen.queryByText("Reviewable change 3")).not.toBeInTheDocument();
@@ -2173,7 +2220,7 @@ describe("SessionInspector summary reviews", () => {
     expect(screen.queryByText("Reviewable change 5")).not.toBeInTheDocument();
     expect(screen.getAllByText("Approved")).not.toHaveLength(0);
     expect(
-      screen.getByRole("button", { name: "Review latest commit" }),
+      screen.getByRole("button", { name: "Re-review PR" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Open terminal" }),
@@ -2465,9 +2512,9 @@ describe("SessionInspector summary reviews", () => {
       "needs_review",
       "changes_requested",
       "Review needed",
-      "Review latest commit",
+      "Re-review PR",
     ],
-    ["cancelled", "approved", "Review needed", "Review latest commit"],
+    ["cancelled", "approved", "Review needed", "Re-review PR"],
     ["running", "approved", "Reviewing...", "Stop review"],
   ] as const)(
     "keeps the current AO review state clear while the current head is %s",
@@ -2937,7 +2984,7 @@ describe("SessionInspector summary reviews", () => {
       ),
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Review latest commit" }),
+      screen.getByRole("button", { name: "Re-review PR" }),
     );
 
     expect(postMock).toHaveBeenCalledWith(
@@ -3635,7 +3682,7 @@ describe("SessionInspector summary reviews", () => {
     expect(screen.queryByText("Failed")).not.toBeInTheDocument();
     expect(screen.queryByText("reviewer crashed")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Review latest commit" }),
+      screen.getByRole("button", { name: "Re-review PR" }),
     ).toBeEnabled();
   });
 
@@ -3673,7 +3720,7 @@ describe("SessionInspector summary reviews", () => {
 
     expect(screen.queryByText("Failed")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Review latest commit" }),
+      screen.getByRole("button", { name: "Re-review PR" }),
     ).toBeEnabled();
   });
 

@@ -1781,7 +1781,7 @@ var ErrCompactionWhileBusy = errors.New("cannot compact while a turn is in fligh
 // then queues behind the compaction turn like any other.
 func (c *Controller) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
 	compactor, ok := c.conv.(ports.ChatCompactor)
-	if !ok {
+	if !ok || !c.Capabilities().Has(ports.ChatCapabilityCompaction) {
 		return ports.ChatCompactionResult{}, ErrCompactionUnsupported
 	}
 
