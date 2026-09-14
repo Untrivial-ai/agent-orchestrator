@@ -150,6 +150,19 @@ describe("AgentModelCombobox", () => {
 		expect(onRefresh).toHaveBeenCalledOnce();
 	});
 
+	it("offers a manual refresh for direct-entry agents whose cached catalog may be stale", async () => {
+		const onRefresh = vi.fn();
+		renderCombobox([{ id: "gpt-5.6-sol", label: "Sol" }], { onRefresh });
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		expect(screen.getByText("Can’t find your model?")).toBeInTheDocument();
+		expect(
+			screen.getByText("Not listed yet? The list is cached — refresh to pick up a new model."),
+		).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+		expect(onRefresh).toHaveBeenCalledOnce();
+	});
+
 	it("does not expose free text for fixed model catalogs", async () => {
 		renderCombobox([{ id: "account/model", label: "Account model" }], {
 			allowCustom: false,
