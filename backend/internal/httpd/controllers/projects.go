@@ -5,7 +5,6 @@
 package controllers
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -43,7 +42,7 @@ func (c *ProjectsController) prepareClone(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var in projectsvc.CloneInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -61,7 +60,7 @@ func (c *ProjectsController) cleanupPreparedClone(w http.ResponseWriter, r *http
 		return
 	}
 	var in projectsvc.ClonePreparationCleanupInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -78,7 +77,7 @@ func (c *ProjectsController) clone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in projectsvc.CloneInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -112,7 +111,7 @@ func (c *ProjectsController) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in projectsvc.AddInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -130,7 +129,7 @@ func (c *ProjectsController) initialize(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var in projectsvc.InitializeRepositoryInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -165,7 +164,7 @@ func (c *ProjectsController) updateSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var in projectsvc.UpdateSettingsInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -183,7 +182,7 @@ func (c *ProjectsController) setConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in projectsvc.SetConfigInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
@@ -212,26 +211,13 @@ func projectID(r *http.Request) domain.ProjectID {
 	return domain.ProjectID(chi.URLParam(r, "id"))
 }
 
-func decodeJSON(r *http.Request, out any) error {
-	return json.NewDecoder(r.Body).Decode(out)
-}
-
-// decodeJSONStrict rejects request bodies that include keys outside the target
-// type. It is used where misspelled or retired fields must surface as a 400
-// instead of being silently dropped.
-func decodeJSONStrict(r *http.Request, out any) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	return dec.Decode(out)
-}
-
 func (c *ProjectsController) setPermissions(w http.ResponseWriter, r *http.Request) {
 	if c.Mgr == nil {
 		apispec.NotImplemented(w, r, "PATCH", "/api/v1/projects/{id}/permissions")
 		return
 	}
 	var in projectsvc.SetPermissionsInput
-	if err := decodeJSONStrict(r, &in); err != nil {
+	if err := decodeJSONStrictBounded(w, r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}

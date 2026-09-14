@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -731,13 +730,18 @@ func conversationRequestID(w http.ResponseWriter, r *http.Request) (string, bool
 }
 
 func decodeConversationBody(w http.ResponseWriter, r *http.Request, into any) bool {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxConversationBody))
+	err := decodeRequestJSON(w, r, into, decodePolicy{
+		MaxBytes:              maxConversationBody,
+		DisallowUnknownFields: false,
+		AllowEmpty:            false,
+	})
 	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
-			"INVALID_BODY", "could not read request body", nil)
-		return false
-	}
-	if err := json.Unmarshal(body, into); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+				"INVALID_BODY", "could not read request body", nil)
+			return false
+		}
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"INVALID_BODY", "request body is not valid JSON", nil)
 		return false
