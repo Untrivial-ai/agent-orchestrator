@@ -5,7 +5,7 @@ vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(), setItemAsync: vi.fn
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
 
 import { fetch as expoFetch } from "expo/fetch";
-import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, restoreSession, resumeSessionAgent, spawnSession } from "./api";
+import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mergePR, mobileReachablePreviewURL, restoreSession, resumeSessionAgent, spawnSession } from "./api";
 import * as chatApi from "./chat/api";
 import type { ServerConfig } from "./config";
 
@@ -88,6 +88,23 @@ describe("mobile Chat API boundaries", () => {
 		const [, init] = vi.mocked(fetch).mock.calls[0];
 		expect(JSON.parse(String(init?.body))).toMatchObject({ projectId: "p-1", clean: true, mode: "tui" });
 		expect(orchestrator.mode).toBe("tui");
+	});
+
+	it("sends the PR URL and observed head SHA when merging", async () => {
+		vi.mocked(fetch).mockResolvedValue(response({ ok: true, prNumber: 42, method: "squash" }));
+
+		await mergePR(cfg, {
+			number: 42,
+			url: "https://github.com/acme/widgets/pull/42",
+			headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		});
+
+		const [url, init] = vi.mocked(fetch).mock.calls[0];
+		expect(url).toBe("http://ao.test:3011/api/v1/prs/42/merge");
+		expect(JSON.parse(String(init?.body))).toEqual({
+			prUrl: "https://github.com/acme/widgets/pull/42",
+			expectedHeadSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		});
 	});
 
 	it("resumes a stopped Chat controller without restoring the AO session", async () => {
