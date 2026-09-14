@@ -34,13 +34,14 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
+import { isSessionLink, remarkSessionLinks } from "../../lib/session-links";
 import { AppLink } from "../AppLink";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
@@ -63,7 +64,7 @@ export const ActivityTitle = memo(function ActivityTitle({ text }: { text: strin
 });
 
 /** GitHub-flavoured markdown: tables, strikethrough, task lists, autolinks. */
-const PLUGINS = [remarkGfm];
+const PLUGINS = [remarkGfm, remarkSessionLinks];
 
 /**
  * Whether the prose is still arriving, for the fences inside it.
@@ -74,15 +75,22 @@ const PLUGINS = [remarkGfm];
  */
 const StreamingProse = createContext(false);
 const OpenChatLink = createContext<((url: string) => void) | undefined>(undefined);
+const OpenSessionLink = createContext<((url: string) => void) | undefined>(undefined);
 
 export function ChatLinkProvider({
 	onLinkOpen,
+	onSessionLinkOpen,
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
+	onSessionLinkOpen?: (url: string) => void;
 	children: ReactNode;
 }) {
-	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
+	return (
+		<OpenChatLink.Provider value={onLinkOpen}>
+			<OpenSessionLink.Provider value={onSessionLinkOpen}>{children}</OpenSessionLink.Provider>
+		</OpenChatLink.Provider>
+	);
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
@@ -107,7 +115,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 					muted ? "text-[13px] text-muted-foreground" : "text-sm text-foreground",
 				)}
 			>
-				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS} urlTransform={chatUrlTransform}>
 					{text}
 				</Markdown>
 			</div>
@@ -209,23 +217,32 @@ function compactEmoji(children: ReactNode): ReactNode {
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
 	const onLinkOpen = useContext(OpenChatLink);
+	const onSessionLinkOpen = useContext(OpenSessionLink);
+	const sessionLink = Boolean(href && isSessionLink(href));
 	return (
 		<AppLink
 			href={href}
 			onBrowserOpen={onLinkOpen}
 			onClick={(event) => {
-				if (href && !isWebLink(href)) {
+				if (href && sessionLink) {
+					event.preventDefault();
+					onSessionLinkOpen?.(href);
+				} else if (href && !isWebLink(href)) {
 					event.preventDefault();
 					void openLinkInSystemBrowser(href);
 				}
 			}}
-			target="_blank"
+			target={sessionLink ? undefined : "_blank"}
 			rel="noreferrer noopener"
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
 			{children}
 		</AppLink>
 	);
+}
+
+function chatUrlTransform(url: string): string {
+	return isSessionLink(url) ? url : defaultUrlTransform(url);
 }
 
 /**

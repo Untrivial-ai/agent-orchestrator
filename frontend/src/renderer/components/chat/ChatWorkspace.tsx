@@ -301,6 +301,7 @@ export interface ChatWorkspaceProps {
 	shellError?: string;
 	/** Open an HTTP(S) link in this session's AO Browser panel. */
 	onLinkOpen?: (url: string) => void;
+	onSessionLinkOpen?: (url: string) => void;
 	/** A send or decision is in flight. */
 	busy?: boolean;
 	/** The provider's model catalog. Empty hides the model control. */
@@ -540,6 +541,7 @@ function ChatWorkspaceContent({
 	openingShell,
 	shellError,
 	onLinkOpen,
+	onSessionLinkOpen,
 	busy,
 	models,
 	onChooseSettings,
@@ -1367,7 +1369,7 @@ function ChatWorkspaceContent({
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
-						<ChatLinkProvider onLinkOpen={onLinkOpen}>
+						<ChatLinkProvider onLinkOpen={onLinkOpen} onSessionLinkOpen={onSessionLinkOpen}>
 							<Timeline
 								key={draftScopeKey}
 								snapshot={snapshot}
