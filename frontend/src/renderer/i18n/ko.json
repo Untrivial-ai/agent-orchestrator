@@ -1,5 +1,6 @@
 {
 	"browser.sitePermissionRequest": "{{origin}}에서 {{permissions}} 사용을 요청합니다.",
+	"browser.siteSecureConnection": "연결이 안전합니다",
 	"browser.siteAllowOnce": "한 번 허용",
 	"browser.siteAlwaysAllow": "항상 허용",
 	"browser.siteSettings": "사이트 설정",
@@ -17,7 +18,6 @@
 	"browser.siteReloadNotice": "변경 사항을 적용하려면 새로고침하세요.",
 	"browser.historySuggestions": "방문 기록 추천",
 	"browser.siteInfo": "사이트 정보 보기",
-	"browser.siteProtocol": "프로토콜",
 	"browser.siteHttpNotice": "이 페이지는 암호화되지 않은 HTTP 연결을 사용합니다.",
 	"browser.sitePermissions": "사이트 권한",
 	"browser.siteCamera": "카메라",

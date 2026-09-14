@@ -184,6 +184,11 @@ describe("BrowserPanel", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "Device preset" }));
 	}
 
+	async function openSitePermissions() {
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		await userEvent.click(screen.getByRole("button", { name: "Site permissions" }));
+	}
+
 	beforeEach(() => {
 		useUiStore.setState({ globalToast: null, settingsModal: null });
 		hookState.navigate.mockReset();
@@ -379,9 +384,10 @@ describe("BrowserPanel", () => {
 		const info = screen.getByRole("dialog", { name: "View site information" });
 		expect(info.matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
 		expect(info).toHaveTextContent("example.com");
-		expect(info).toHaveTextContent("HTTPS");
+		expect(info).toHaveTextContent("Connection is secure");
+		await userEvent.click(within(info).getByRole("button", { name: "Site permissions" }));
 		await waitFor(() => expect(within(info).getAllByRole("combobox")).toHaveLength(4));
-		expect(within(info).getByRole("combobox", { name: "Camera" })).toHaveValue("block");
+		expect(within(info).getByRole("combobox", { name: "Camera" })).toHaveTextContent("Block");
 		expect(info).not.toHaveTextContent("other.example");
 		expect(hookState.navigate).not.toHaveBeenCalled();
 		await userEvent.keyboard("{Escape}");
@@ -395,8 +401,8 @@ describe("BrowserPanel", () => {
 		window.ao!.browser.getSiteSettings = vi.fn(async () => ({
 			...initial, permissions: { ...initial.permissions, microphone: "allow" as const },
 		}));
-		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
-		await waitFor(() => expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("allow"));
+		await openSitePermissions();
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveTextContent("Allow"));
 	});
 
 	it("prefetches site settings and keeps permission rows stable while they load", async () => {
@@ -408,6 +414,7 @@ describe("BrowserPanel", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
 		const info = screen.getByRole("dialog", { name: "View site information" });
+		await userEvent.click(within(info).getByRole("button", { name: "Site permissions" }));
 		const permissions = within(info).getByRole("region", { name: "Site permissions" });
 		expect(permissions).toHaveAttribute("aria-busy", "true");
 		for (const label of ["Camera", "Microphone", "Location", "Notifications"]) {
@@ -470,11 +477,13 @@ describe("BrowserPanel", () => {
 		window.ao!.browser.setSitePermission = vi.fn(async (input) => ({ ...target, permissions: { ...target.permissions, [input.permission]: input.setting } }));
 		window.ao!.browser.clearSiteData = vi.fn(async () => undefined);
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		await openSitePermissions();
 		const camera = await screen.findByRole("combobox", { name: "Camera" });
-		await userEvent.selectOptions(camera, "allow");
+		await userEvent.click(camera);
+		await userEvent.click(screen.getByRole("option", { name: "Allow" }));
 		expect(window.ao!.browser.setSitePermission).toHaveBeenCalledWith(expect.objectContaining({ origin: "https://example.com", permission: "camera", setting: "allow" }));
-		await waitFor(() => expect(camera).toHaveValue("allow"));
+		await waitFor(() => expect(camera).toHaveTextContent("Allow"));
+		await userEvent.click(screen.getByRole("button", { name: "Site settings" }));
 		await userEvent.click(screen.getByRole("button", { name: "Cookies and site data" }));
 		expect(window.ao!.browser.clearSiteData).not.toHaveBeenCalled();
 		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));

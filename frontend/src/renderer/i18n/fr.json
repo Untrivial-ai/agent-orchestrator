@@ -1,5 +1,6 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} souhaite utiliser : {{permissions}}.",
+	"browser.siteSecureConnection": "La connexion est sécurisée",
 	"browser.siteAllowOnce": "Autoriser une fois",
 	"browser.siteAlwaysAllow": "Toujours autoriser",
 	"browser.siteSettings": "Paramètres du site",
@@ -17,7 +18,6 @@
 	"browser.siteReloadNotice": "Rechargez pour appliquer les modifications.",
 	"browser.historySuggestions": "Suggestions de l’historique",
 	"browser.siteInfo": "Afficher les informations du site",
-	"browser.siteProtocol": "Protocole",
 	"browser.siteHttpNotice": "Cette page utilise une connexion HTTP non chiffrée.",
 	"browser.sitePermissions": "Autorisations du site",
 	"browser.siteCamera": "Caméra",

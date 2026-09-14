@@ -1,5 +1,6 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} möchte Folgendes verwenden: {{permissions}}.",
+	"browser.siteSecureConnection": "Die Verbindung ist sicher",
 	"browser.siteAllowOnce": "Einmal zulassen",
 	"browser.siteAlwaysAllow": "Immer zulassen",
 	"browser.siteSettings": "Website-Einstellungen",
@@ -17,7 +18,6 @@
 	"browser.siteReloadNotice": "Zum Anwenden der Änderungen neu laden.",
 	"browser.historySuggestions": "Vorschläge aus dem Verlauf",
 	"browser.siteInfo": "Website-Informationen anzeigen",
-	"browser.siteProtocol": "Protokoll",
 	"browser.siteHttpNotice": "Diese Seite verwendet eine unverschlüsselte HTTP-Verbindung.",
 	"browser.sitePermissions": "Website-Berechtigungen",
 	"browser.siteCamera": "Kamera",

@@ -1,5 +1,6 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} が次の機能の使用を求めています：{{permissions}}。",
+	"browser.siteSecureConnection": "接続は保護されています",
 	"browser.siteAllowOnce": "今回のみ許可",
 	"browser.siteAlwaysAllow": "常に許可",
 	"browser.siteSettings": "サイトの設定",
@@ -17,7 +18,6 @@
 	"browser.siteReloadNotice": "再読み込みして変更を適用します。",
 	"browser.historySuggestions": "履歴の候補",
 	"browser.siteInfo": "サイト情報を表示",
-	"browser.siteProtocol": "プロトコル",
 	"browser.siteHttpNotice": "このページは暗号化されていない HTTP 接続を使用しています。",
 	"browser.sitePermissions": "サイトの権限",
 	"browser.siteCamera": "カメラ",

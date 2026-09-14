@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bell, Camera, ChevronDown, Globe2, Info, MapPin, Mic, RotateCcw, Settings2, Trash2, X } from "lucide-react";
+import { Bell, Camera, ChevronLeft, ChevronRight, Globe2, Info, LockKeyhole, MapPin, Mic, RotateCcw, Settings2, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
 	browserSiteOrigin,
@@ -10,6 +10,7 @@ import {
 } from "../../shared/browser-site-settings";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 const permissionRows = [
 	{ permission: "camera", label: "browser.siteCamera", Icon: Camera },
@@ -96,6 +97,7 @@ export function BrowserSiteInfo({ url, native, viewId, tabId }: { url: string; n
 	const [error, setError] = useState(false);
 	const [needsReload, setNeedsReload] = useState(false);
 	const [confirmClear, setConfirmClear] = useState(false);
+	const [page, setPage] = useState<"summary" | "permissions">("summary");
 	const origin = browserSiteOrigin(url);
 	useEffect(() => {
 		if (!native || !origin) {
@@ -133,7 +135,13 @@ export function BrowserSiteInfo({ url, native, viewId, tabId }: { url: string; n
 		}
 	};
 	return (
-		<Popover open={open} onOpenChange={(value) => { setOpen(value); setConfirmClear(false); }}>
+		<Popover open={open} onOpenChange={(value) => {
+			setOpen(value);
+			if (!value) {
+				setConfirmClear(false);
+				setPage("summary");
+			}
+		}}>
 			<PopoverTrigger asChild>
 				<Button aria-label={t("browser.siteInfo")} className="browser-panel__site-info"
 					onMouseDown={(event) => event.preventDefault()} size="icon-sm" type="button" variant="ghost">
@@ -143,63 +151,70 @@ export function BrowserSiteInfo({ url, native, viewId, tabId }: { url: string; n
 			<PopoverContent align="start" collisionPadding={8} aria-label={t("browser.siteInfo")} role="dialog"
 				className="browser-panel__site-info-content" data-browser-native-overlay="true">
 				<header className="browser-site__header">
-					<Globe2 aria-hidden="true" className="browser-site__header-icon" />
-					<div className="min-w-0 flex-1">
-						<p className="browser-site__host" title={address.host}>{address.host}</p>
-					</div>
+					{page === "permissions" ? <Button aria-label={t("browser.siteSettings")} size="icon-sm" type="button" variant="ghost" onClick={() => setPage("summary")}>
+						<ChevronLeft aria-hidden="true" size={15} />
+					</Button> : <span className="browser-site__identity"><Globe2 aria-hidden="true" /></span>}
+					<p className="browser-site__host" title={page === "summary" ? address.host : undefined}>
+						{page === "summary" ? address.host : t("browser.sitePermissions")}
+					</p>
 					<Button aria-label={t("browser.siteClose")} size="icon-sm" type="button" variant="ghost" onClick={() => setOpen(false)}>
 						<X aria-hidden="true" size={14} />
 					</Button>
 				</header>
-				<div className="browser-site__connection">
-					<Info aria-hidden="true" className="size-icon-base" />
-					<div><p>{t("browser.siteProtocol")}: {address.protocol === "https:" ? "HTTPS" : "HTTP"}</p>
-						{address.protocol === "http:" && <p className="browser-site__subtitle">{t("browser.siteHttpNotice")}</p>}
+				{page === "summary" ? <>
+					<div className="browser-site__connection">
+						{address.protocol === "https:" ? <LockKeyhole aria-hidden="true" /> : <Info aria-hidden="true" />}
+						<div><p>{address.protocol === "https:" ? t("browser.siteSecureConnection") : "HTTP"}</p>
+							{address.protocol === "http:" && <p className="browser-site__subtitle">{t("browser.siteHttpNotice")}</p>}
+						</div>
 					</div>
-				</div>
-				{native && <>
+					{native && <div className="browser-site__summary-actions">
+						<button className="browser-site__action" type="button" onClick={() => setPage("permissions")}>
+							<Settings2 aria-hidden="true" />
+							<span>{t("browser.sitePermissions")}</span>
+							<ChevronRight aria-hidden="true" className="ml-auto" />
+						</button>
+						<button className="browser-site__action" disabled={!settings || busy} type="button" onClick={() => setConfirmClear(true)}>
+							<Trash2 aria-hidden="true" />
+							<span>{t("browser.siteClearData")}</span>
+						</button>
+					</div>}
+					{confirmClear && settings && <div className="browser-site__confirmation">
+						<p className="browser-site__subtitle">{t("browser.siteClearNotice")}</p>
+						<div className="flex justify-end gap-2 mt-3">
+							<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmClear(false)}>{t("browser.siteCancel")}</Button>
+							<Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void change(() => window.ao!.browser.clearSiteData(settings))}>{t("browser.siteClearConfirm")}</Button>
+						</div>
+					</div>}
+				</> : native && <>
 					<section className="browser-site__permissions" aria-busy={loading} aria-label={t("browser.sitePermissions")}>
-						<p className="browser-site__section-label">{t("browser.sitePermissions")}</p>
 						{permissionRows.map(({ permission, label, Icon }) => (
-							<label key={permission} className="browser-site__permission">
+							<div key={permission} className="browser-site__permission">
 								<Icon aria-hidden="true" className="size-icon-base" />
 								<span className="flex-1">{t(label)}</span>
-								{settings ? <span className="browser-site__select-wrap">
-									<select aria-label={t(label)} disabled={busy} value={settings.permissions[permission]}
-										onChange={(event) => void change(() => window.ao!.browser.setSitePermission({
-											...settings, permission, setting: event.target.value as BrowserSitePermissionSetting,
-										}))}>
-										<option value="block">{t("browser.siteBlock")}</option>
-										<option value="ask">{t("browser.siteAsk")}</option>
-										<option value="allow">{t("browser.siteAllow")}</option>
-									</select>
-									<ChevronDown aria-hidden="true" size={12} />
-								</span> : <span aria-hidden="true" className="browser-site__permission-placeholder" />}
-							</label>
+								{settings ? <Select disabled={busy} value={settings.permissions[permission]}
+									onValueChange={(setting: BrowserSitePermissionSetting) => void change(() => window.ao!.browser.setSitePermission({ ...settings, permission, setting }))}>
+									<SelectTrigger aria-label={t(label)} className="browser-site__permission-select" size="sm"><SelectValue /></SelectTrigger>
+									<SelectContent align="end" data-browser-native-overlay="true" position="popper">
+										<SelectItem value="ask">{t("browser.siteAsk")}</SelectItem>
+										<SelectItem value="allow">{t("browser.siteAllow")}</SelectItem>
+										<SelectItem value="block">{t("browser.siteBlock")}</SelectItem>
+									</SelectContent>
+								</Select> : <span aria-hidden="true" className="browser-site__permission-placeholder" />}
+							</div>
 						))}
 					</section>
 					{settings && <footer className="browser-site__actions">
-						{confirmClear ? <>
-							<p className="browser-site__subtitle">{t("browser.siteClearNotice")}</p>
-							<div className="flex justify-end gap-2 mt-3">
-								<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmClear(false)}>{t("browser.siteCancel")}</Button>
-								<Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void change(() => window.ao!.browser.clearSiteData(settings))}>{t("browser.siteClearConfirm")}</Button>
-							</div>
-						</> : <>
-							<button type="button" disabled={busy} className="browser-site__action" onClick={() => setConfirmClear(true)}>
-								<Trash2 aria-hidden="true" size={16} />{t("browser.siteClearData")}
-							</button>
-							<button type="button" disabled={busy} className="browser-site__action" onClick={() => void change(() => window.ao!.browser.resetSitePermissions(settings))}>
-								<RotateCcw aria-hidden="true" size={16} />{t("browser.siteResetPermissions")}
-							</button>
-						</>}
+						<button type="button" disabled={busy} className="browser-site__action" onClick={() => void change(() => window.ao!.browser.resetSitePermissions(settings))}>
+							<RotateCcw aria-hidden="true" />{t("browser.siteResetPermissions")}
+						</button>
 					</footer>}
-					{error && <p role="alert" className="browser-site__feedback">{t("browser.siteError")}</p>}
-					{needsReload && <div role="status" className="browser-site__feedback flex items-center justify-between gap-2">
+				</>}
+				{error && <p role="alert" className="browser-site__feedback">{t("browser.siteError")}</p>}
+				{needsReload && <div role="status" className="browser-site__feedback flex items-center justify-between gap-2">
 						<span>{t("browser.siteReloadNotice")}</span>
 						<Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void change(async () => { await window.ao!.browser.reload(viewId); setOpen(false); })}>{t("browser.reload")}</Button>
-					</div>}
-				</>}
+				</div>}
 			</PopoverContent>
 		</Popover>
 	);

@@ -1,5 +1,6 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} 想要使用：{{permissions}}。",
+	"browser.siteSecureConnection": "连接安全",
 	"browser.siteAllowOnce": "允许一次",
 	"browser.siteAlwaysAllow": "始终允许",
 	"browser.siteSettings": "网站设置",
@@ -17,7 +18,6 @@
 	"browser.siteReloadNotice": "重新加载以应用更改。",
 	"browser.historySuggestions": "历史记录建议",
 	"browser.siteInfo": "查看网站信息",
-	"browser.siteProtocol": "协议",
 	"browser.siteHttpNotice": "此页面使用未加密的 HTTP 连接。",
 	"browser.sitePermissions": "网站权限",
 	"browser.siteCamera": "摄像头",
