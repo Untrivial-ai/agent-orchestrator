@@ -864,8 +864,12 @@ describe("BrowserProfileImportService", () => {
 		const root = await fixtureRoot();
 		const stateDir = path.join(root, "ao-state");
 		const stale = path.join(stateDir, "browser-import-staging", "stale", "snapshot.sqlite");
+		const active = path.join(stateDir, "browser-import-staging", "active", "snapshot.sqlite");
 		await mkdir(path.dirname(stale), { recursive: true });
 		await writeFile(stale, "partial");
+		await fs.utimes(path.dirname(stale), new Date("2020-01-01"), new Date("2020-01-01"));
+		await mkdir(path.dirname(active), { recursive: true });
+		await writeFile(active, "in use");
 		const profileStore = new BrowserProfileStore({ stateDir });
 		await profileStore.load();
 		const service = new BrowserProfileImportService({
@@ -880,7 +884,10 @@ describe("BrowserProfileImportService", () => {
 		});
 
 		await service.initialize();
-		await expect(stat(path.join(stateDir, "browser-import-staging"))).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(stat(path.dirname(stale))).rejects.toMatchObject({ code: "ENOENT" });
+		expect(await readFile(active, "utf8")).toBe("in use");
+		await service.dispose();
+		expect(await readFile(active, "utf8")).toBe("in use");
 	});
 
 	it("retains a visible destination when Electron session cleanup cannot start", async () => {

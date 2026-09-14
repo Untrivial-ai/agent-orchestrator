@@ -8,6 +8,7 @@ import {
 	readFile,
 	readdir,
 	realpath,
+	rmdir,
 	rm,
 	stat,
 } from "node:fs/promises";
@@ -45,6 +46,7 @@ const SOURCE_FILE_MAX_BYTES = 256 * 1024 * 1024;
 const SOURCE_SIDECAR_MAX_BYTES = 64 * 1024 * 1024;
 const IMPORT_TOTAL_MAX_BYTES = 512 * 1024 * 1024;
 const LOCAL_STATE_MAX_BYTES = 4 * 1024 * 1024;
+const STAGING_STALE_AGE_MS = 24 * 60 * 60 * 1_000;
 const SOURCE_ID_PATTERN = /^[0-9a-f]{32}$/;
 
 type BrowserFamily = "chromium" | "firefox" | "safari";
@@ -261,6 +263,32 @@ async function existingRealDirectory(candidate: string, throwAccessDenied = fals
 	}
 }
 
+async function removeStaleStagingDirectories(root: string): Promise<void> {
+	const entries = await readdir(root, { withFileTypes: true }).catch((error) => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	});
+	const cutoff = Date.now() - STAGING_STALE_AGE_MS;
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+		const directory = path.join(root, entry.name);
+		try {
+			if ((await lstat(directory)).mtimeMs < cutoff) await rm(directory, { recursive: true, force: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+}
+
+async function removeEmptyDirectory(directory: string): Promise<void> {
+	try {
+		await rmdir(directory);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+	}
+}
+
 function isAccessDenied(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return code === "EACCES" || code === "EPERM";
@@ -427,6 +455,7 @@ async function readSafariProfileNames(root: string, relativeDatabase: string, st
 		// TCC may block SafariTabs.db. UUID directory discovery still works.
 	} finally {
 		await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+		await removeEmptyDirectory(stagingRoot);
 	}
 	return names;
 }
@@ -469,6 +498,7 @@ function cookieCapability(
 export class BrowserProfileImportService {
 	private readonly context: DiscoveryContext;
 	private readonly now: () => Date;
+	private readonly stagingInstanceId = randomUUID();
 	private activeImport: Promise<BrowserImportResult> | null = null;
 	private activeController: AbortController | null = null;
 	private disposePromise: Promise<void> | null = null;
@@ -486,7 +516,8 @@ export class BrowserProfileImportService {
 	async initialize(): Promise<void> {
 		if (this.disposed) throw new Error("Browser profile import is unavailable.");
 		if (this.activeImport) throw new Error("Another browser import is already running.");
-		await rm(this.stagingRoot(), { recursive: true, force: true });
+		await removeStaleStagingDirectories(this.stagingBase());
+		await removeEmptyDirectory(this.stagingBase());
 	}
 
 	dispose(): Promise<void> {
@@ -497,12 +528,17 @@ export class BrowserProfileImportService {
 		this.disposePromise = (async () => {
 			if (activeImport) await activeImport.catch(() => undefined);
 			await rm(this.stagingRoot(), { recursive: true, force: true }).catch(() => undefined);
+			await removeEmptyDirectory(this.stagingBase());
 		})();
 		return this.disposePromise;
 	}
 
-	private stagingRoot(): string {
+	private stagingBase(): string {
 		return path.join(this.options.stateDir, "browser-import-staging");
+	}
+
+	private stagingRoot(): string {
+		return path.join(this.stagingBase(), this.stagingInstanceId);
 	}
 
 	async discover(): Promise<BrowserImportDiscovery> {
@@ -605,9 +641,10 @@ export class BrowserProfileImportService {
 			}
 			return await this.commitImport(source, request, readData, onProgress, signal);
 		} catch (error) {
-			throw redactSourcePaths(error, sourceRoots);
+			throw redactImportPaths(error, sourceRoots, this.stagingBase());
 		} finally {
 			await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+			await removeEmptyDirectory(this.stagingRoot());
 		}
 	}
 
@@ -703,12 +740,15 @@ export class BrowserProfileImportService {
 	}
 }
 
-function redactSourcePaths(error: unknown, sourceRoots: string[]): Error {
+function redactImportPaths(error: unknown, sourceRoots: string[], stagingRoot: string): Error {
 	let message = error instanceof Error ? error.message : "Browser data could not be imported.";
 	for (const root of sourceRoots.sort((a, b) => b.length - a.length)) {
 		for (const variant of new Set([root, root.replaceAll("\\", "/")])) {
 			message = message.replaceAll(variant, "<browser source>");
 		}
+	}
+	for (const variant of new Set([stagingRoot, stagingRoot.replaceAll("\\", "/")])) {
+		message = message.replaceAll(variant, "<browser import staging>");
 	}
 	return new Error(message || "Browser data could not be imported.");
 }
@@ -883,7 +923,12 @@ async function snapshotSQLite(
 	try {
 		source.pragma("query_only = ON");
 		await source.backup(destination);
-		const output = await stat(destination);
+		const output = await stat(destination).catch((error) => {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				throw new Error("AO's temporary browser data snapshot disappeared before it could be read. Restart AO and retry the import.");
+			}
+			throw error;
+		});
 		if (!output.isFile() || output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
 			throw new Error("Browser source database exceeds the snapshot size limit.");
 		}
