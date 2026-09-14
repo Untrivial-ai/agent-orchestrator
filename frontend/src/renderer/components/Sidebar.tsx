@@ -1360,7 +1360,9 @@ const ProjectItem = memo(function ProjectItem({
 						description={
 							<>
 								<p className="text-sm font-medium text-foreground">{t("shell.removeProjectLead", { name: workspace.name })}</p>
-								<p className="mt-1 text-xs text-muted-foreground">{t("shell.removeProjectBody")}</p>
+								<p className="mt-1 text-xs text-muted-foreground">
+									{t(workspace.kind === "cloud" ? "shell.removeCloudProjectBody" : "shell.removeProjectBody")}
+								</p>
 							</>
 						}
 						confirmLabel={t("shell.remove")}
