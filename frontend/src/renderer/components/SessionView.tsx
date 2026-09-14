@@ -296,6 +296,7 @@ type SessionViewProps = {
 // panel slides on `x` with SHELL_PANEL_SPRING. Dragging uses useResizable
 // (clamped at min, never auto-collapse). Collapse is the explicit toggle only.
 function SessionInspectorRail({
+	showCollapsedHandle = true,
 	children,
 	isOpen,
 	onExpand,
@@ -305,6 +306,7 @@ function SessionInspectorRail({
 	settledClosed,
 	splitRef,
 }: {
+	showCollapsedHandle?: boolean;
 	children: ReactNode;
 	isOpen: boolean;
 	onExpand: () => void;
@@ -400,7 +402,7 @@ function SessionInspectorRail({
 				/>
 				<div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">{children}</div>
 			</motion.div>
-			{isOpen ? null : (
+			{isOpen || !showCollapsedHandle ? null : (
 				<div
 					className="absolute inset-y-0 right-0 z-chrome w-2 cursor-e-resize touch-none"
 					data-slot="inspector-collapsed-rail"
@@ -1533,12 +1535,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	}, [clearVisibleTerminalKind, routedTerminalTarget.kind, sessionId, setVisibleTerminalKind]);
 
 	const prepareFilesInspector = useCallback(() => {
+		if (browserOnly) return;
 		setBrowserPopOutState({ sessionId, phase: "docked" });
 		setFilesPoppedOut(false);
 		setFilesChangedOnly(sessionId, true);
 		transitionInspectorView("files");
 		setInspectorOpenForSession(sessionId, true);
-	}, [sessionId, setFilesChangedOnly, setInspectorOpenForSession, transitionInspectorView]);
+	}, [browserOnly, sessionId, setFilesChangedOnly, setInspectorOpenForSession, transitionInspectorView]);
 
 	const fetchWorkspaceFiles = useCallback(async () => {
 		return queryClient.fetchQuery(
@@ -1550,12 +1553,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		async (rawPath: string) => {
 			const data = await fetchWorkspaceFiles();
 			const path = matchWorkspaceFilePath(rawPath, data.files ?? []);
+			if (browserOnly) {
+				openCenterFile(path);
+				return;
+			}
 			setFilePreviewRequestsBySession((current) => ({
 				...current,
 				[sessionId]: { path, key: (current[sessionId]?.key ?? 0) + 1 },
 			}));
 		},
-		[fetchWorkspaceFiles, sessionId],
+		[browserOnly, openCenterFile, fetchWorkspaceFiles, sessionId],
 	);
 
 	const handleOpenFiles = useCallback(() => {
@@ -1947,7 +1954,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									shellError={
 										openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined
 									}
-									onOpenFiles={handleOpenFiles}
+									onOpenFiles={browserOnly ? undefined : handleOpenFiles}
 									onOpenFile={handleOpenFile}
 								/>
 							) : (
@@ -2027,6 +2034,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				</div>
 				{hasInspector ? (
 					<SessionInspectorRail
+						showCollapsedHandle={!browserOnly}
 						isOpen={isInspectorOpen}
 						onCloseAnimationComplete={handleInspectorCloseAnimationComplete}
 						onExpand={() => setInspectorOpenForSession(sessionId, true)}

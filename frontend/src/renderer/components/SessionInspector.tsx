@@ -178,7 +178,7 @@ export function SessionInspector({
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const filesChangedCount = useSessionWorkspaceFilesChangedCount(session?.id);
+	const filesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);

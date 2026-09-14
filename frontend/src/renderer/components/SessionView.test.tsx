@@ -2721,8 +2721,18 @@ describe("SessionView", () => {
 	it("starts the orchestrator Browser closed and opens it with the inspector shortcut", () => {
 		render(<SessionView sessionId="sess-orch" />);
 		expect(inspectorOpen("sess-orch")).toBe(false);
+		expect(screen.queryByTestId("inspector-collapsed-rail")).not.toBeInTheDocument();
 		fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true });
 		expect(inspectorOpen("sess-orch")).toBe(true);
+		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
+	});
+
+	it("opens orchestrator chat files in the center without revealing Browser", async () => {
+		workerSession("sess-orch").mode = "chat";
+		render(<SessionView sessionId="sess-orch" />);
+		fireEvent.click(screen.getByRole("button", { name: "open chat basename" }));
+		await waitFor(() => expect(screen.getByTestId("session-file-workspace")).toBeInTheDocument());
+		expect(inspectorOpen("sess-orch")).toBe(false);
 		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
 	});
 

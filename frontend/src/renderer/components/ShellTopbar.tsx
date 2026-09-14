@@ -84,9 +84,6 @@ export function ShellTopbar({
 	const queryClient = useQueryClient();
 	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
 	const currentSessionId = params.sessionId;
-	const isInspectorOpen = useUiStore((state) =>
-		currentSessionId ? (state.inspectorSessions[currentSessionId]?.isOpen ?? true) : false,
-	);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const isFullScreen = useWindowFullScreen();
@@ -117,6 +114,9 @@ export function ShellTopbar({
 	const session = workspaceScope?.session;
 	const isSessionRoute = Boolean(params.sessionId);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
+	const isInspectorOpen = useUiStore((state) =>
+		currentSessionId ? (state.inspectorSessions[currentSessionId]?.isOpen ?? !isOrchestrator) : false,
+	);
 	// Project in scope: the session's workspace wins over the route param so the
 	// cross-project /sessions/$sessionId route still resolves a crumb. A
 	// projectId that no longer resolves (stale route after the project was
@@ -429,7 +429,7 @@ export function ShellTopbar({
 						) : null}
 					</>
 				) : null}
-				{isSessionRoute && !isOrchestrator ? (
+				{isSessionRoute ? (
 					/* The pinned controls are owned by SessionView so they stay at the
 					   window's right edge. Reserve their width only when the rail is closed. */
 					<div
