@@ -2410,7 +2410,6 @@ export interface components {
             mode?: string;
             model?: string;
             permissions?: string;
-            speedMode?: string;
         };
         AgentInfo: {
             /**
@@ -2471,13 +2470,11 @@ export interface components {
         };
         AgentModelInfo: {
             defaultEffort?: string;
-            defaultSpeedMode?: string;
             efforts?: string[];
             id: string;
             isDefault?: boolean;
             label: string;
             provider?: string;
-            speedModes?: components["schemas"]["PortsAgentSpeedMode"][];
         };
         AgentModelsResponse: {
             agentId: string;
@@ -2985,12 +2982,10 @@ export interface components {
         ConversationModelResponse: {
             default: boolean;
             defaultEffort?: string;
-            defaultSpeedMode?: string;
             description?: string;
             displayName: string;
             efforts?: string[];
             id: string;
-            speedModes?: components["schemas"]["PortsAgentSpeedMode"][];
         };
         ConversationModelsResponse: {
             models: components["schemas"]["ConversationModelResponse"][];
@@ -3097,7 +3092,6 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             model?: string;
             reasoningEffort?: string;
-            speedMode?: string;
         };
         ConversationUsagePayload: {
             /** Format: int64 */
@@ -3135,7 +3129,6 @@ export interface components {
             mode?: "tui" | "chat";
             model?: string;
             projectId: string;
-            speedMode?: null | string;
         };
         DelegateTaskResponse: {
             ok: boolean;
@@ -3536,11 +3529,6 @@ export interface components {
             status: "needs_review" | "running" | "up_to_date" | "changes_requested" | "ineligible";
             targetSha: string;
             title: string;
-        };
-        PortsAgentSpeedMode: {
-            description?: string;
-            id: string;
-            label: string;
         };
         PreviewServerStatusResponse: {
             configuration?: string;

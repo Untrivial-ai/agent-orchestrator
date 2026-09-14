@@ -837,7 +837,6 @@ func TestDefaultChatSpawnFallbackSkipsChatTuningResolution(t *testing.T) {
 	mgr.modelCatalog = tuningCatalog{err: errors.New("model discovery unavailable")}
 	project := store.projects[string(chatTestProject)]
 	project.Config.Worker.AgentConfig.Effort = "high"
-	project.Config.Worker.AgentConfig.SpeedMode = "fast"
 	store.projects[string(chatTestProject)] = project
 
 	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{

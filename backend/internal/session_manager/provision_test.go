@@ -200,8 +200,8 @@ func TestHookPATH(t *testing.T) {
 
 func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	cfg := domain.ProjectConfig{
-		AgentConfig:  domain.AgentConfig{Model: "base", Effort: "medium", SpeedMode: "standard", Mode: "low", Permissions: domain.PermissionModeAuto},
-		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker", Effort: "high", SpeedMode: "fast", Mode: "high"}},
+		AgentConfig:  domain.AgentConfig{Model: "base", Effort: "medium", Mode: "low", Permissions: domain.PermissionModeAuto},
+		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker", Effort: "high", Mode: "high"}},
 		Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode},
 	}
 
@@ -219,7 +219,7 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 
 	// Role override merges over the base agent config (set fields win; unset keep base).
 	got := effectiveAgentConfig(domain.KindWorker, cfg)
-	if got.Model != "worker" || got.Effort != "high" || got.SpeedMode != "fast" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
+	if got.Model != "worker" || got.Effort != "high" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
 		t.Fatalf("merged worker config = %#v, want model=worker mode=high permissions=auto", got)
 	}
 	// Orchestrator has no agent-config override, so the base config is used as-is.
@@ -231,18 +231,22 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 type tuningCatalog struct {
 	catalog ports.AgentModelCatalog
 	err     error
+	calls   *int
 }
 
 func (c tuningCatalog) Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
+	if c.calls != nil {
+		*c.calls++
+	}
 	return c.catalog, c.err
 }
 
 func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
 	m := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
-		{ID: "old", Efforts: []string{"high"}, SpeedModes: []ports.AgentSpeedMode{{ID: "fast"}}},
-		{ID: "new", Efforts: []string{"low"}, SpeedModes: []ports.AgentSpeedMode{{ID: "standard"}}},
+		{ID: "old", Efforts: []string{"high"}},
+		{ID: "new", Efforts: []string{"low"}},
 	}}}}
-	project := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "old", Effort: "high", SpeedMode: "fast"}}}
+	project := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "old", Effort: "high"}}}
 	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
 		AgentConfig: ports.AgentConfig{Model: "new"},
@@ -250,14 +254,14 @@ func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Model != "new" || resolved.Effort != "" || resolved.SpeedMode != "" {
+	if resolved.Model != "new" || resolved.Effort != "" {
 		t.Fatalf("resolved = %#v, want new model with provider defaults", resolved)
 	}
 	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
-		AgentConfig: ports.AgentConfig{Model: "old"}, EffortOverride: true, SpeedModeOverride: true,
+		AgentConfig: ports.AgentConfig{Model: "old"}, EffortOverride: true,
 	}, project)
-	if err != nil || resolved.Effort != "" || resolved.SpeedMode != "" {
+	if err != nil || resolved.Effort != "" {
 		t.Fatalf("explicit provider defaults did not clear role tuning: %#v, %v", resolved, err)
 	}
 
@@ -269,19 +273,11 @@ func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
 		t.Fatalf("error = %v, want ErrUnsupportedEffort", err)
 	}
 
-	_, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
-		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
-		AgentConfig: ports.AgentConfig{Model: "new", SpeedMode: "fast"},
-	}, project)
-	if !errors.Is(err, ports.ErrUnsupportedSpeedMode) {
-		t.Fatalf("error = %v, want ErrUnsupportedSpeedMode", err)
-	}
-
 	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
 		AgentConfig: ports.AgentConfig{Model: "custom"},
 	}, project)
-	if err != nil || resolved.Model != "custom" || resolved.Effort != "" || resolved.SpeedMode != "" {
+	if err != nil || resolved.Model != "custom" || resolved.Effort != "" {
 		t.Fatalf("custom model with provider defaults = %#v, %v", resolved, err)
 	}
 
@@ -299,6 +295,26 @@ func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
 	}, domain.ProjectConfig{})
 	if !errors.Is(err, ports.ErrModelCapabilitiesUnavailable) {
 		t.Fatalf("error = %v, want ErrModelCapabilitiesUnavailable", err)
+	}
+}
+
+func TestResolveChatAgentConfigDropsEffortForNonCodexHarnesses(t *testing.T) {
+	catalogCalls := 0
+	m := &Manager{modelCatalog: tuningCatalog{calls: &catalogCalls, catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "sonnet", IsDefault: true},
+	}}}}
+	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		AgentConfig: ports.AgentConfig{Model: "sonnet", Effort: "high"}, EffortOverride: true,
+	}, domain.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Effort != "" {
+		t.Fatalf("Claude Code effort = %q, want provider default", resolved.Effort)
+	}
+	if catalogCalls != 0 {
+		t.Fatalf("Claude Code model catalog calls = %d, want 0", catalogCalls)
 	}
 }
 

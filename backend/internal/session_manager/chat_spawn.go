@@ -70,7 +70,6 @@ type ChatStart struct {
 	Env                     map[string]string
 	Model                   string
 	Effort                  string
-	SpeedMode               string
 	Permissions             ports.PermissionMode
 	SystemPrompt            string
 	AdditionalDirectories   []string
@@ -195,7 +194,6 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		Env:                     env,
 		Model:                   agentConfig.Model,
 		Effort:                  agentConfig.Effort,
-		SpeedMode:               agentConfig.SpeedMode,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            in.systemPrompt,
 		AdditionalDirectories:   workspaceProjectDirectories(in.workspace.Path, in.workspaceProject),
@@ -412,7 +410,6 @@ func (m *Manager) resumeChatController(
 		Env:                     env,
 		Model:                   agentConfig.Model,
 		Effort:                  agentConfig.Effort,
-		SpeedMode:               agentConfig.SpeedMode,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            systemPrompt,
 		AdditionalDirectories:   additionalDirectories,

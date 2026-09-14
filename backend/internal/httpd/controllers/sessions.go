@@ -1421,7 +1421,6 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		RequestedAgent: in.Agent,
 		Model:          domain.SanitizeControlChars(strings.TrimSpace(in.Model)),
 		Effort:         sanitizedOptionalString(in.Effort),
-		SpeedMode:      sanitizedOptionalString(in.SpeedMode),
 		ApprovalMode:   in.ApprovalMode,
 		RequestedMode:  in.Mode,
 		Attachments:    attachments,

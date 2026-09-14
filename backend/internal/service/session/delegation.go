@@ -29,7 +29,6 @@ type DelegateTaskInput struct {
 	RequestedAgent domain.AgentHarness
 	Model          string
 	Effort         *string
-	SpeedMode      *string
 	ApprovalMode   domain.PermissionMode
 	RequestedMode  domain.SessionMode
 	Attachments    []ports.SpawnAttachment
@@ -63,7 +62,6 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	}
 
 	effort, effortOverride := optionalTuningValue(in.Effort)
-	speedMode, speedModeOverride := optionalTuningValue(in.SpeedMode)
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:   in.ProjectID,
 		Kind:        domain.KindWorker,
@@ -73,13 +71,11 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		AgentConfig: ports.AgentConfig{
 			Model:       strings.TrimSpace(in.Model),
 			Effort:      effort,
-			SpeedMode:   speedMode,
 			Permissions: in.ApprovalMode,
 		},
-		EffortOverride:    effortOverride,
-		SpeedModeOverride: speedModeOverride,
-		RequestedMode:     in.RequestedMode,
-		Attachments:       in.Attachments,
+		EffortOverride: effortOverride,
+		RequestedMode:  in.RequestedMode,
+		Attachments:    in.Attachments,
 	})
 	if err != nil {
 		return DelegateTaskOutcome{}, toSpawnAPIError(err)

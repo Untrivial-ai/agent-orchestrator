@@ -1134,15 +1134,16 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 	if cfg.EffortOverride {
 		resolved.Effort = requested.Effort
 	}
-	if cfg.SpeedModeOverride {
-		resolved.SpeedMode = requested.SpeedMode
+	if cfg.Harness != domain.HarnessCodex {
+		resolved.Effort = ""
+		return resolved, nil
 	}
 	if m.modelCatalog == nil {
 		return resolved, nil
 	}
 	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
 	if err != nil {
-		if resolved.Effort != "" || resolved.SpeedMode != "" {
+		if resolved.Effort != "" {
 			return ports.AgentConfig{}, fmt.Errorf("%w: %w", ports.ErrModelCapabilitiesUnavailable, err)
 		}
 		return resolved, nil
@@ -1167,11 +1168,8 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 		if !cfg.EffortOverride && requested.Effort == "" && (selected == nil || !containsString(selected.Efforts, base.Effort)) {
 			resolved.Effort = ""
 		}
-		if !cfg.SpeedModeOverride && requested.SpeedMode == "" && (selected == nil || !containsSpeedMode(selected.SpeedModes, base.SpeedMode)) {
-			resolved.SpeedMode = ""
-		}
 	}
-	if resolved.Effort == "" && resolved.SpeedMode == "" {
+	if resolved.Effort == "" {
 		return resolved, nil
 	}
 	if catalog.Stale || selected == nil {
@@ -1179,9 +1177,6 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 	}
 	if resolved.Effort != "" && !containsString(selected.Efforts, resolved.Effort) {
 		return ports.AgentConfig{}, fmt.Errorf("%w %q for model %q", ports.ErrUnsupportedEffort, resolved.Effort, modelID)
-	}
-	if resolved.SpeedMode != "" && !containsSpeedMode(selected.SpeedModes, resolved.SpeedMode) {
-		return ports.AgentConfig{}, fmt.Errorf("%w %q for model %q", ports.ErrUnsupportedSpeedMode, resolved.SpeedMode, modelID)
 	}
 	return resolved, nil
 }
@@ -1192,15 +1187,6 @@ func containsString(values []string, value string) bool {
 	}
 	for _, candidate := range values {
 		if candidate == value {
-			return true
-		}
-	}
-	return false
-}
-
-func containsSpeedMode(values []ports.AgentSpeedMode, value string) bool {
-	for _, candidate := range values {
-		if candidate.ID == value && value != "" {
 			return true
 		}
 	}
@@ -1525,9 +1511,6 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	if override.Effort != "" {
 		merged.Effort = override.Effort
 	}
-	if override.SpeedMode != "" {
-		merged.SpeedMode = override.SpeedMode
-	}
 	if override.Mode != "" {
 		merged.Mode = override.Mode
 	}
@@ -1543,9 +1526,6 @@ func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	}
 	if override.Effort != "" {
 		base.Effort = override.Effort
-	}
-	if override.SpeedMode != "" {
-		base.SpeedMode = override.SpeedMode
 	}
 	if override.Mode != "" {
 		base.Mode = override.Mode

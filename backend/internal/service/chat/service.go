@@ -143,7 +143,6 @@ type StartConfig struct {
 	Env                   map[string]string
 	Model                 string
 	Effort                string
-	SpeedMode             string
 	Permissions           ports.PermissionMode
 	SystemPrompt          string
 	AdditionalDirectories []string
@@ -423,7 +422,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	if cfg.ProviderConversationID != "" {
 		cfg.Effort = conversation.Settings.ReasoningEffort
-		cfg.SpeedMode = conversation.Settings.SpeedMode
 	}
 	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
 		cfg.Permissions = conversation.Settings.ApprovalMode
@@ -434,7 +432,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if cfg.ProviderConversationID == "" {
 		conversation.Settings.Model = cfg.Model
 		conversation.Settings.ReasoningEffort = cfg.Effort
-		conversation.Settings.SpeedMode = cfg.SpeedMode
 		conversation.Settings.ApprovalMode = cfg.Permissions
 		if err := s.store.SetConversationSettings(ctx, conversation.ID, conversation.Settings, s.now()); err != nil {
 			return nil, fmt.Errorf("record initial conversation settings: %w", err)
@@ -459,7 +456,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Env:                    launchEnv,
 			Model:                  cfg.Model,
 			Effort:                 cfg.Effort,
-			SpeedMode:              cfg.SpeedMode,
 			Permissions:            cfg.Permissions,
 			SystemPrompt:           cfg.SystemPrompt,
 			ProviderScopeID:        providerScopeID,
@@ -474,7 +470,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Env:                   launchEnv,
 			Model:                 cfg.Model,
 			Effort:                cfg.Effort,
-			SpeedMode:             cfg.SpeedMode,
 			Permissions:           cfg.Permissions,
 			SystemPrompt:          cfg.SystemPrompt,
 			ProviderScopeID:       providerScopeID,
@@ -1190,7 +1185,6 @@ type StartRequest struct {
 	Env                     map[string]string
 	Model                   string
 	Effort                  string
-	SpeedMode               string
 	Permissions             ports.PermissionMode
 	SystemPrompt            string
 	AdditionalDirectories   []string
@@ -1344,7 +1338,6 @@ func settingsFromConfigOptions(
 ) (domain.ConversationSettings, bool) {
 	next := settings
 	hasEffort := false
-	hasFast := false
 	for _, option := range options {
 		for _, choice := range option.Choices {
 			if choice.Value == option.Current.Select && choice.PermissionMode != "" {
@@ -1359,19 +1352,10 @@ func settingsFromConfigOptions(
 		case option.ID == "effort" || option.Category == "thought_level":
 			hasEffort = true
 			next.ReasoningEffort = option.Current.Select
-		case option.ID == "fast" && option.Type == ports.ChatConfigOptionBoolean:
-			hasFast = true
-			next.SpeedMode = "standard"
-			if option.Current.Boolean != nil && *option.Current.Boolean {
-				next.SpeedMode = "fast"
-			}
 		}
 	}
 	if !hasEffort {
 		next.ReasoningEffort = ""
-	}
-	if !hasFast {
-		next.SpeedMode = ""
 	}
 	return next, next != settings
 }

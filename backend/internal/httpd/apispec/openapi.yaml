@@ -6822,8 +6822,6 @@ components:
           type: string
         permissions:
           type: string
-        speedMode:
-          type: string
       type: object
     AgentInfo:
       properties:
@@ -6970,8 +6968,6 @@ components:
       properties:
         defaultEffort:
           type: string
-        defaultSpeedMode:
-          type: string
         efforts:
           items:
             type: string
@@ -6984,10 +6980,6 @@ components:
           type: string
         provider:
           type: string
-        speedModes:
-          items:
-            $ref: '#/components/schemas/PortsAgentSpeedMode'
-          type: array
       required:
       - id
       - label
@@ -8444,8 +8436,6 @@ components:
           type: boolean
         defaultEffort:
           type: string
-        defaultSpeedMode:
-          type: string
         description:
           type: string
         displayName:
@@ -8456,10 +8446,6 @@ components:
           type: array
         id:
           type: string
-        speedModes:
-          items:
-            $ref: '#/components/schemas/PortsAgentSpeedMode'
-          type: array
       required:
       - id
       - displayName
@@ -8749,8 +8735,6 @@ components:
           type: string
         reasoningEffort:
           type: string
-        speedMode:
-          type: string
       type: object
     ConversationUsagePayload:
       properties:
@@ -8871,11 +8855,6 @@ components:
           type: string
         projectId:
           type: string
-        speedMode:
-          maxLength: 64
-          type:
-          - "null"
-          - string
       required:
       - projectId
       - brief
@@ -9945,18 +9924,6 @@ components:
       - title
       - targetSha
       - status
-      type: object
-    PortsAgentSpeedMode:
-      properties:
-        description:
-          type: string
-        id:
-          type: string
-        label:
-          type: string
-      required:
-      - id
-      - label
       type: object
     PreviewServerStatusResponse:
       properties:

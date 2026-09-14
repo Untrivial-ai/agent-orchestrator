@@ -230,7 +230,6 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 		WorkspacePath: "/tmp/ws",
 		Model:         "gpt-test",
 		Effort:        "high",
-		SpeedMode:     "fast",
 		Permissions:   ports.PermissionModeDefault,
 		SystemPrompt:  "standing rules",
 	})
@@ -248,13 +247,12 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 
 	start := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/start" })
 	var params struct {
-		Cwd                   string `json:"cwd"`
-		ApprovalPolicy        string `json:"approvalPolicy"`
-		Sandbox               string `json:"sandbox"`
-		DeveloperInstructions string `json:"developerInstructions"`
-		Model                 string `json:"model"`
-		ReasoningEffort       string `json:"reasoningEffort"`
-		ServiceTier           string `json:"serviceTier"`
+		Cwd                   string            `json:"cwd"`
+		ApprovalPolicy        string            `json:"approvalPolicy"`
+		Sandbox               string            `json:"sandbox"`
+		DeveloperInstructions string            `json:"developerInstructions"`
+		Model                 string            `json:"model"`
+		Config                map[string]string `json:"config"`
 	}
 	if err := json.Unmarshal(start.Params, &params); err != nil {
 		t.Fatalf("thread/start params: %v", err)
@@ -265,8 +263,15 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	if params.DeveloperInstructions != "standing rules" {
 		t.Errorf("developerInstructions = %q", params.DeveloperInstructions)
 	}
-	if params.Model != "gpt-test" || params.ReasoningEffort != "high" || params.ServiceTier != "fast" {
+	if params.Model != "gpt-test" || params.Config["model_reasoning_effort"] != "high" {
 		t.Errorf("model tuning = %#v", params)
+	}
+	var rawParams map[string]json.RawMessage
+	if err := json.Unmarshal(start.Params, &rawParams); err != nil {
+		t.Fatalf("thread/start raw params: %v", err)
+	}
+	if _, ok := rawParams["reasoningEffort"]; ok {
+		t.Fatal("thread/start sent unsupported top-level reasoningEffort")
 	}
 	// Default permissions must match what AO already gives a Codex TUI session.
 	if params.ApprovalPolicy != "never" || params.Sandbox != "danger-full-access" {
@@ -729,6 +734,13 @@ func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 	if params.Config["model_reasoning_effort"] != "high" {
 		t.Fatalf("thread resume effort config = %q, want high", params.Config["model_reasoning_effort"])
 	}
+	var rawParams map[string]json.RawMessage
+	if err := json.Unmarshal(resume.Params, &rawParams); err != nil {
+		t.Fatalf("thread/resume raw params: %v", err)
+	}
+	if _, ok := rawParams["reasoningEffort"]; ok {
+		t.Fatal("thread/resume sent unsupported top-level reasoningEffort")
+	}
 	if params.DeveloperInstructions != "current AO standing instructions" {
 		t.Fatalf("developerInstructions = %q", params.DeveloperInstructions)
 	}
@@ -1066,10 +1078,7 @@ func TestTurnSettingsUseTheTurnLevelWireShapes(t *testing.T) {
 	if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
 		Text: "go",
 		Settings: ports.ChatTurnSettings{
-			Model:     "gpt-5.6-terra",
-			Effort:    "high",
-			SpeedMode: "fast",
-			Approval:  ports.PermissionModeAcceptEdits,
+			Model: "gpt-5.6-terra", Effort: "high", Approval: ports.PermissionModeAcceptEdits,
 		},
 	}); err != nil {
 		t.Fatalf("SendTurn: %v", err)
@@ -1079,7 +1088,6 @@ func TestTurnSettingsUseTheTurnLevelWireShapes(t *testing.T) {
 	var params struct {
 		Model          string `json:"model"`
 		Effort         string `json:"effort"`
-		ServiceTier    string `json:"serviceTier"`
 		ApprovalPolicy string `json:"approvalPolicy"`
 		SandboxPolicy  struct {
 			Type string `json:"type"`
@@ -1088,8 +1096,8 @@ func TestTurnSettingsUseTheTurnLevelWireShapes(t *testing.T) {
 	if err := json.Unmarshal(sent.Params, &params); err != nil {
 		t.Fatalf("decode turn/start params: %v: %s", err, sent.Params)
 	}
-	if params.Model != "gpt-5.6-terra" || params.Effort != "high" || params.ServiceTier != "fast" {
-		t.Errorf("model/effort/service tier not forwarded: %+v", params)
+	if params.Model != "gpt-5.6-terra" || params.Effort != "high" {
+		t.Errorf("model/effort not forwarded: %+v", params)
 	}
 	if params.ApprovalPolicy != "on-request" {
 		t.Errorf("approvalPolicy = %q, want on-request", params.ApprovalPolicy)
@@ -1133,8 +1141,8 @@ func TestListModelsKeepsCatalogAndUsesThreadEffort(t *testing.T) {
 	d, srv := newTestDriver(t)
 	// Scripted before Start: the server goroutine reads this map, so writing it
 	// afterwards would race the connection it is already serving.
-	srv.reply("thread/start", `{"thread":{"id":"thread-1"},"model":"a","reasoningEffort":"xhigh","serviceTier":"fast","cwd":"/tmp/ws"}`)
-	srv.reply("model/list", `{"data":[{"id":"a","displayName":"Model A","description":"first","isDefault":true,"hidden":false,"defaultReasoningEffort":"medium","defaultServiceTier":"standard","serviceTiers":[{"id":"standard","name":"Standard","description":"Normal latency"},{"id":"fast","name":"Fast","description":"Low latency"}],"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"xhigh"}]},{"id":"secret","displayName":"Hidden","isDefault":false,"hidden":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[]},{"id":"b","displayName":"Model B","isDefault":false,"hidden":false,"defaultReasoningEffort":"low","supportedReasoningEfforts":[]}]}`)
+	srv.reply("thread/start", `{"thread":{"id":"thread-1"},"model":"a","reasoningEffort":"xhigh","cwd":"/tmp/ws"}`)
+	srv.reply("model/list", `{"data":[{"id":"a","displayName":"Model A","description":"first","isDefault":true,"hidden":false,"defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"xhigh"}]},{"id":"secret","displayName":"Hidden","isDefault":false,"hidden":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[]},{"id":"b","displayName":"Model B","isDefault":false,"hidden":false,"defaultReasoningEffort":"low","supportedReasoningEfforts":[]}]}`)
 
 	conv, err := d.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: "/tmp/ws"})
 	if err != nil {
@@ -1165,12 +1173,6 @@ func TestListModelsKeepsCatalogAndUsesThreadEffort(t *testing.T) {
 	}
 	if models[0].DefaultEffort != "xhigh" {
 		t.Errorf("default effort = %q, want the thread's xhigh", models[0].DefaultEffort)
-	}
-	if len(models[0].SpeedModes) != 2 || models[0].SpeedModes[1].ID != "fast" {
-		t.Errorf("speed modes = %#v, want provider service tiers", models[0].SpeedModes)
-	}
-	if models[0].DefaultSpeedMode != "fast" {
-		t.Errorf("default speed mode = %q, want thread's fast tier", models[0].DefaultSpeedMode)
 	}
 }
 

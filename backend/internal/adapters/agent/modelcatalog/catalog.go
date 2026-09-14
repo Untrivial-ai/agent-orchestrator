@@ -134,16 +134,12 @@ func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 // Discoverer implements the model-discovery port for production daemon wiring.
 type Discoverer struct {
 	CodexModels  CodexModelListFunc
-	ClaudeModels AgentModelListFunc
 	ClineOptions ClineConfigOptionListFunc
 }
 
 // CodexModelListFunc obtains Codex's account-scoped app-server catalog without
 // opening a provider thread.
 type CodexModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error)
-
-// AgentModelListFunc obtains an agent's live, model-dependent tuning catalog.
-type AgentModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error)
 
 // ClineConfigOptionListFunc obtains Cline's provider-owned model choices from
 // the ACP configuration catalog advertised by session/new.
@@ -152,21 +148,7 @@ type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRe
 // Discover uses the agent-owned model surface configured for this adapter.
 func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	if request.AgentID == "claude-code" {
-		if d.ClaudeModels == nil {
-			return discoverClaudeCatalog(request), nil
-		}
-		catalog := discoverClaudeCatalog(request)
-		models, err := d.ClaudeModels(ctx, request)
-		if err != nil {
-			return catalog, fmt.Errorf("claude-code ACP model discovery: %w", err)
-		}
-		if len(models) == 0 {
-			return catalog, errors.New("claude-code ACP model discovery returned no models")
-		}
-		catalog.Models = normalize(models)
-		catalog.Source = "acp"
-		catalog.FetchedAt = time.Now().UTC()
-		return catalog, nil
+		return discoverClaudeCatalog(request), nil
 	}
 	if request.AgentID == "muse" {
 		return Base(request.AgentID), nil
@@ -308,7 +290,6 @@ func discoverCodexCatalog(ctx context.Context, request ports.AgentModelDiscovery
 		normalized = append(normalized, ports.AgentModelInfo{
 			ID: id, Label: label, Provider: provider, IsDefault: item.Default,
 			Efforts: append([]string(nil), item.Efforts...), DefaultEffort: item.DefaultEffort,
-			SpeedModes: append([]ports.AgentSpeedMode(nil), item.SpeedModes...), DefaultSpeedMode: item.DefaultSpeedMode,
 		})
 	}
 	if len(normalized) == 0 {

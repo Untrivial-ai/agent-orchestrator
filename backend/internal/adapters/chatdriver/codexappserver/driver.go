@@ -309,10 +309,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		params["model"] = cfg.Model
 	}
 	if cfg.Effort != "" {
-		params["reasoningEffort"] = cfg.Effort
-	}
-	if cfg.SpeedMode != "" {
-		params["serviceTier"] = cfg.SpeedMode
+		params["config"] = map[string]any{"model_reasoning_effort": cfg.Effort}
 	}
 	if cfg.SystemPrompt != "" {
 		params["developerInstructions"] = cfg.SystemPrompt
@@ -324,7 +321,6 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		} `json:"thread"`
 		Model           string `json:"model"`
 		ReasoningEffort string `json:"reasoningEffort"`
-		ServiceTier     string `json:"serviceTier"`
 	}
 	openCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -337,7 +333,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, errors.New("thread/start returned no thread id")
 	}
 
-	conv.start(resp.Thread.ID, resp.Model, resp.ReasoningEffort, resp.ServiceTier)
+	conv.start(resp.Thread.ID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }
 
@@ -359,7 +355,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
-		conv.start(cfg.ProviderConversationID, cfg.Model, cfg.Effort, cfg.SpeedMode)
+		conv.start(cfg.ProviderConversationID, cfg.Model, cfg.Effort)
 		return conv, nil
 	}
 
@@ -386,21 +382,11 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	if cfg.SystemPrompt != "" {
 		params["developerInstructions"] = cfg.SystemPrompt
 	}
-	if cfg.Model != "" {
-		params["model"] = cfg.Model
-	}
-	if cfg.Effort != "" {
-		params["reasoningEffort"] = cfg.Effort
-	}
-	if cfg.SpeedMode != "" {
-		params["serviceTier"] = cfg.SpeedMode
-	}
 	resumeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	var resp struct {
 		Model           string `json:"model"`
 		ReasoningEffort string `json:"reasoningEffort"`
-		ServiceTier     string `json:"serviceTier"`
 	}
 	err = conv.conn.request(resumeCtx, "thread/resume", params, &resp)
 	if err != nil {
@@ -410,7 +396,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, err)
 	}
 
-	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort, resp.ServiceTier)
+	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }
 

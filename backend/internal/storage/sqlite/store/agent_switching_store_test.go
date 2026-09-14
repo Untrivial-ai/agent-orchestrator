@@ -1314,7 +1314,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 		t.Fatalf("create conversation: %v", err)
 	}
 	if err := s.SetConversationSettings(ctx, conversation.ID, domain.ConversationSettings{
-		Model: "source-model", ReasoningEffort: "source-mode", SpeedMode: "fast", ApprovalMode: domain.PermissionModeAcceptEdits,
+		Model: "source-model", ReasoningEffort: "source-mode", ApprovalMode: domain.PermissionModeAcceptEdits,
 	}, now); err != nil {
 		t.Fatalf("set source conversation settings: %v", err)
 	}
@@ -1440,7 +1440,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 		t.Fatalf("stale runtime handle activation: ok=%v err=%v", ok, err)
 	}
 	unchangedConversation, err := s.ConversationForSession(ctx, session.ID)
-	if err != nil || unchangedConversation.Settings.Model != "source-model" || unchangedConversation.Settings.ReasoningEffort != "source-mode" || unchangedConversation.Settings.SpeedMode != "fast" {
+	if err != nil || unchangedConversation.Settings.Model != "source-model" || unchangedConversation.Settings.ReasoningEffort != "source-mode" {
 		t.Fatalf("stale activation changed conversation settings: conversation=%+v err=%v", unchangedConversation, err)
 	}
 	unchanged, ok, err = s.GetSession(ctx, session.ID)
@@ -1468,7 +1468,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if err != nil {
 		t.Fatalf("get activated conversation: %v", err)
 	}
-	if activatedConversation.Settings.Model != "" || activatedConversation.Settings.ReasoningEffort != "" || activatedConversation.Settings.SpeedMode != "" || activatedConversation.Settings.ApprovalMode != domain.PermissionModeAcceptEdits {
+	if activatedConversation.Settings.Model != "" || activatedConversation.Settings.ReasoningEffort != "" || activatedConversation.Settings.ApprovalMode != domain.PermissionModeAcceptEdits {
 		t.Fatalf("target activation conversation settings = %+v, want target-default model/mode and preserved approval", activatedConversation.Settings)
 	}
 	if activated.IsTerminated || activated.DisplayName != rec.DisplayName ||

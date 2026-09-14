@@ -580,7 +580,7 @@ func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 	if err := st.SetConversationSettings(context.Background(), existing.ID, domain.ConversationSettings{
-		Model: "gpt-test", ReasoningEffort: "high", SpeedMode: "fast",
+		Model: "gpt-test", ReasoningEffort: "high",
 	}, time.Now()); err != nil {
 		t.Fatalf("SetConversationSettings: %v", err)
 	}
@@ -606,14 +606,14 @@ func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 	}
 	if resumed.ProviderConversationID != "thread-1" || resumed.DataDir != dataDir || resumed.WorkspacePath != workspace ||
 		resumed.SystemPrompt != "Recomputed AO orchestrator instructions" || resumed.Model != "gpt-test" ||
-		resumed.Effort != "high" || resumed.SpeedMode != "fast" {
+		resumed.Effort != "high" {
 		t.Fatalf("resume config = %#v", resumed)
 	}
 	snapshot, err := st.LoadConversationSnapshot(context.Background(), "conversation-resume")
 	if err != nil {
 		t.Fatalf("LoadConversationSnapshot: %v", err)
 	}
-	if snapshot.Conversation.Settings.Model != "gpt-test" || snapshot.Conversation.Settings.ReasoningEffort != "high" || snapshot.Conversation.Settings.SpeedMode != "fast" {
+	if snapshot.Conversation.Settings.Model != "gpt-test" || snapshot.Conversation.Settings.ReasoningEffort != "high" {
 		t.Fatalf("persisted settings = %#v", snapshot.Conversation.Settings)
 	}
 }
@@ -641,13 +641,13 @@ func TestServiceResumePreservesExplicitProviderDefaultTuning(t *testing.T) {
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
-		Effort: "high", SpeedMode: "fast",
+		Effort: "high",
 	})
 	if err != nil {
 		t.Fatalf("Start resume: %v", err)
 	}
-	if resumed.Effort != "" || resumed.SpeedMode != "" {
-		t.Fatalf("resume tuning = effort %q speed %q, want persisted provider defaults", resumed.Effort, resumed.SpeedMode)
+	if resumed.Effort != "" {
+		t.Fatalf("resume effort = %q, want persisted provider default", resumed.Effort)
 	}
 }
 
@@ -662,7 +662,7 @@ func TestServicePersistsAndPassesInitialModelTuningBeforeProviderStart(t *testin
 			return nil, err
 		}
 		settings := snapshot.Conversation.Settings
-		if settings.Model != "gpt-test" || settings.ReasoningEffort != "high" || settings.SpeedMode != "fast" {
+		if settings.Model != "gpt-test" || settings.ReasoningEffort != "high" {
 			return nil, fmt.Errorf("settings were not durable before provider start: %#v", settings)
 		}
 		return conv, nil
@@ -675,12 +675,12 @@ func TestServicePersistsAndPassesInitialModelTuningBeforeProviderStart(t *testin
 
 	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), Model: "gpt-test", Effort: "high", SpeedMode: "fast",
+		WorkspacePath: t.TempDir(), Model: "gpt-test", Effort: "high",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if started.Model != "gpt-test" || started.Effort != "high" || started.SpeedMode != "fast" {
+	if started.Model != "gpt-test" || started.Effort != "high" {
 		t.Fatalf("provider start config = %#v", started)
 	}
 }

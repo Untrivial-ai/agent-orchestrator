@@ -427,7 +427,6 @@ func (c *ConversationsController) setSettings(w http.ResponseWriter, r *http.Req
 		domain.SessionID(chi.URLParam(r, "sessionId")), domain.ConversationSettings{
 			Model:           req.Model,
 			ReasoningEffort: req.ReasoningEffort,
-			SpeedMode:       req.SpeedMode,
 			ApprovalMode:    approval,
 		})
 	if err != nil {
@@ -447,14 +446,12 @@ func conversationModelsResponse(
 	}
 	for _, model := range models {
 		out.Models = append(out.Models, ConversationModelResponse{
-			ID:               model.ID,
-			DisplayName:      model.DisplayName,
-			Description:      model.Description,
-			Default:          model.Default,
-			Efforts:          model.Efforts,
-			DefaultEffort:    model.DefaultEffort,
-			SpeedModes:       model.SpeedModes,
-			DefaultSpeedMode: model.DefaultSpeedMode,
+			ID:            model.ID,
+			DisplayName:   model.DisplayName,
+			Description:   model.Description,
+			Default:       model.Default,
+			Efforts:       model.Efforts,
+			DefaultEffort: model.DefaultEffort,
 		})
 	}
 	return out
@@ -494,7 +491,6 @@ func turnSettingsPayload(settings domain.ConversationSettings) ConversationTurnS
 	return ConversationTurnSettingsPayload{
 		Model:           settings.Model,
 		ReasoningEffort: settings.ReasoningEffort,
-		SpeedMode:       settings.SpeedMode,
 		ApprovalMode:    string(settings.ApprovalMode),
 	}
 }

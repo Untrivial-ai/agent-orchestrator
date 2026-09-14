@@ -11,8 +11,6 @@ import (
 var (
 	// ErrUnsupportedEffort reports a value the selected model did not advertise.
 	ErrUnsupportedEffort = errors.New("unsupported model effort")
-	// ErrUnsupportedSpeedMode reports a speed value the selected model did not advertise.
-	ErrUnsupportedSpeedMode = errors.New("unsupported model speed mode")
 	// ErrModelCapabilitiesUnavailable reports tuning that cannot be validated safely.
 	ErrModelCapabilitiesUnavailable = errors.New("model capabilities unavailable")
 )
@@ -162,21 +160,12 @@ const (
 
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
 type AgentModelInfo struct {
-	ID               string           `json:"id"`
-	Label            string           `json:"label"`
-	Provider         string           `json:"provider,omitempty"`
-	IsDefault        bool             `json:"isDefault,omitempty"`
-	Efforts          []string         `json:"efforts,omitempty"`
-	DefaultEffort    string           `json:"defaultEffort,omitempty"`
-	SpeedModes       []AgentSpeedMode `json:"speedModes,omitempty"`
-	DefaultSpeedMode string           `json:"defaultSpeedMode,omitempty"`
-}
-
-// AgentSpeedMode is one provider-advertised latency or service-tier choice.
-type AgentSpeedMode struct {
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
+	ID            string   `json:"id"`
+	Label         string   `json:"label"`
+	Provider      string   `json:"provider,omitempty"`
+	IsDefault     bool     `json:"isDefault,omitempty"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
 
 // AgentModelCatalog is AO's normalized model-picker response.

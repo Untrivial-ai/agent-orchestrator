@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +25,6 @@ type fakeAgent struct {
 	initParams          acpsdk.InitializeRequest
 	capabilities        *acpsdk.AgentCapabilities
 	initErr             error
-	initBlock           bool
 	newParams           acpsdk.NewSessionRequest
 	loadParams          acpsdk.LoadSessionRequest
 	resumeParams        acpsdk.ResumeSessionRequest
@@ -194,17 +192,12 @@ var _ acpsdk.Agent = (*fakeAgent)(nil)
 func (a *fakeAgent) Authenticate(context.Context, acpsdk.AuthenticateRequest) (acpsdk.AuthenticateResponse, error) {
 	return acpsdk.AuthenticateResponse{}, nil
 }
-func (a *fakeAgent) Initialize(ctx context.Context, params acpsdk.InitializeRequest) (acpsdk.InitializeResponse, error) {
+func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeRequest) (acpsdk.InitializeResponse, error) {
 	a.mu.Lock()
 	a.initParams = params
 	initErr := a.initErr
-	initBlock := a.initBlock
 	caps := a.capabilities
 	a.mu.Unlock()
-	if initBlock {
-		<-ctx.Done()
-		return acpsdk.InitializeResponse{}, ctx.Err()
-	}
 	if initErr != nil {
 		return acpsdk.InitializeResponse{}, initErr
 	}
@@ -2187,111 +2180,6 @@ func TestACPDriverRejectsAmbiguousLegacyModelAlias(t *testing.T) {
 	agent.mu.Unlock()
 	if calls != 0 {
 		t.Fatalf("legacy model setter called %d times, want 0", calls)
-	}
-}
-
-func TestACPDriverDiscoversModelDependentTuningWithoutPrompting(t *testing.T) {
-	agent := &fakeAgent{
-		newConfig: []acpsdk.SessionConfigOption{
-			selectConfigOption("model", "Model", "model", "sonnet", "sonnet", "opus"),
-		},
-		setConfig: []acpsdk.SessionConfigOption{
-			selectConfigOption("model", "Model", "model", "sonnet", "sonnet", "opus"),
-			selectConfigOption("effort", "Effort", "thought_level", "high", "low", "high"),
-			booleanConfigOption("fast", "Fast mode", true),
-		},
-	}
-	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
-		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
-		Launch: func(context.Context, LaunchConfig) (Launch, error) {
-			return Launch{Command: "fake"}, nil
-		},
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	driver.spawn = fakeSpawn(agent)
-
-	models, err := driver.DiscoverModelTuning(context.Background(), LaunchConfig{WorkspacePath: t.TempDir()})
-	if err != nil {
-		t.Fatalf("DiscoverModelTuning: %v", err)
-	}
-	if len(models) != 2 || models[0].ID != "sonnet" || !models[0].IsDefault || models[1].ID != "opus" {
-		t.Fatalf("models = %#v", models)
-	}
-	for _, model := range models {
-		if !reflect.DeepEqual(model.Efforts, []string{"low", "high"}) || model.DefaultEffort != "high" {
-			t.Errorf("effort metadata for %q = %#v", model.ID, model)
-		}
-		if len(model.SpeedModes) != 2 || model.SpeedModes[1].ID != "fast" || model.DefaultSpeedMode != "fast" {
-			t.Errorf("speed metadata for %q = %#v", model.ID, model)
-		}
-	}
-	agent.mu.Lock()
-	setCalls := agent.setCalls
-	promptText := agent.promptParams.Prompt
-	agent.mu.Unlock()
-	if setCalls != 2 {
-		t.Fatalf("model selector calls = %d, want 2", setCalls)
-	}
-	if len(promptText) != 0 {
-		t.Fatalf("discovery sent a prompt: %#v", promptText)
-	}
-}
-
-func TestACPDriverDoesNotInventFastModeWhenItIsNotAdvertised(t *testing.T) {
-	agent := &fakeAgent{
-		newConfig: []acpsdk.SessionConfigOption{
-			selectConfigOption("model", "Model", "model", "sonnet", "sonnet"),
-		},
-		setConfig: []acpsdk.SessionConfigOption{
-			selectConfigOption("model", "Model", "model", "sonnet", "sonnet"),
-			selectConfigOption("effort", "Effort", "thought_level", "low", "low"),
-		},
-	}
-	driver := New(Config{Harness: domain.HarnessClaudeCode, Launch: func(context.Context, LaunchConfig) (Launch, error) {
-		return Launch{Command: "fake"}, nil
-	}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	driver.spawn = fakeSpawn(agent)
-
-	models, err := driver.DiscoverModelTuning(context.Background(), LaunchConfig{WorkspacePath: t.TempDir()})
-	if err != nil {
-		t.Fatalf("DiscoverModelTuning: %v", err)
-	}
-	if len(models) != 1 || len(models[0].SpeedModes) != 0 {
-		t.Fatalf("models = %#v, want no guessed speed modes", models)
-	}
-}
-
-func TestACPDiscoveryDeadlineClosesTemporaryProcess(t *testing.T) {
-	agent := &fakeAgent{initBlock: true}
-	driver := New(Config{Harness: domain.HarnessClaudeCode, Launch: func(context.Context, LaunchConfig) (Launch, error) {
-		return Launch{Command: "fake"}, nil
-	}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	baseSpawn := fakeSpawn(agent)
-	stopped := make(chan struct{}, 1)
-	driver.spawn = func(launch Launch, workdir string) (*process, error) {
-		proc, err := baseSpawn(launch, workdir)
-		if err != nil {
-			return nil, err
-		}
-		stop := proc.stop
-		proc.stop = func() error {
-			select {
-			case stopped <- struct{}{}:
-			default:
-			}
-			return stop()
-		}
-		return proc, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err := driver.DiscoverModelTuning(ctx, LaunchConfig{WorkspacePath: t.TempDir()}); err == nil {
-		t.Fatal("DiscoverModelTuning succeeded after its deadline")
-	}
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("temporary ACP process was not closed after timeout")
 	}
 }
 

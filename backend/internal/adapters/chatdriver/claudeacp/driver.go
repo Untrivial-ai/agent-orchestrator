@@ -34,7 +34,7 @@ type claudePlugin interface {
 // New constructs the Claude Code ACP driver over the existing Claude agent
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
-func New(plugin claudePlugin, log *slog.Logger) *acpdriver.Driver {
+func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		Capabilities: ports.ChatCapabilities{
@@ -101,20 +101,6 @@ func New(plugin claudePlugin, log *slog.Logger) *acpdriver.Driver {
 	}, log)
 }
 
-type discoveryPlugin string
-
-func (p discoveryPlugin) ResolveBinary(context.Context) (string, error) { return string(p), nil }
-func (discoveryPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
-	return ports.AgentAuthStatusUnknown, nil
-}
-
-// DiscoverModels probes Claude's live ACP configOptions using a temporary
-// promptless session. Closing the driver also terminates the bounded probe.
-func DiscoverModels(ctx context.Context, binary, workdir string, env map[string]string) ([]ports.AgentModelInfo, error) {
-	driver := New(discoveryPlugin(binary), slog.New(slog.DiscardHandler))
-	return driver.DiscoverModelTuning(ctx, acpdriver.LaunchConfig{WorkspacePath: workdir, Env: env})
-}
-
 func validateClaudeACPExecutable(binary, goos string) error {
 	if goos != "windows" {
 		return nil
@@ -155,24 +141,12 @@ func claudeSessionMode(permission ports.PermissionMode) string {
 }
 
 func claudeSessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {
-	options := make([]acpdriver.SessionOption, 0, 3)
+	options := make([]acpdriver.SessionOption, 0, 2)
 	if settings.Model != "" {
 		options = append(options, acpdriver.SessionOption{ID: "model", Value: settings.Model})
 	}
 	if settings.Effort != "" {
 		options = append(options, acpdriver.SessionOption{ID: "effort", Value: settings.Effort})
-	}
-	if settings.SpeedMode != "" {
-		switch settings.SpeedMode {
-		case "fast", "standard":
-			fast := settings.SpeedMode == "fast"
-			options = append(options, acpdriver.SessionOption{ID: "fast", Boolean: &fast})
-		default:
-			// Do not reinterpret an unknown normalized value as Standard. The
-			// provider will reject this unknown option if one reaches the adapter
-			// outside the spawn-time catalog validation boundary.
-			options = append(options, acpdriver.SessionOption{ID: "speedMode", Value: settings.SpeedMode})
-		}
 	}
 	return options
 }

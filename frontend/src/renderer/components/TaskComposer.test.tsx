@@ -660,6 +660,28 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 	});
 
+	it("does not expose Codex effort controls for Claude Code", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "claude-code",
+						selectionMode: "catalog",
+						models: [{ id: "sonnet", label: "Sonnet", isDefault: true, efforts: ["low", "high"] }],
+						allowCustom: true,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "claude-code", config: {} } } };
+		});
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Sonnet");
+		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
+	});
+
 	it("preselects the agent's default model when the project configures none", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
@@ -843,7 +865,7 @@ describe("TaskComposer", () => {
 		);
 	});
 
-	it("inherits worker tuning visually but sends only explicit task overrides", async () => {
+	it("inherits worker effort visually but sends only explicit task overrides", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
@@ -855,7 +877,6 @@ describe("TaskComposer", () => {
 							label: "GPT Test",
 							isDefault: true,
 							efforts: ["low", "high"],
-							speedModes: [{ id: "standard", label: "Standard" }, { id: "fast", label: "Fast" }],
 						}],
 						allowCustom: true,
 						refreshRecommended: false,
@@ -864,7 +885,7 @@ describe("TaskComposer", () => {
 			}
 			return {
 				data: { status: "ok", project: { config: { worker: { agent: "codex", agentConfig: {
-					model: "gpt-test", effort: "high", speedMode: "standard",
+					model: "gpt-test", effort: "high",
 				} } } } },
 			};
 		});
@@ -872,29 +893,22 @@ describe("TaskComposer", () => {
 
 		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
 		const effort = await screen.findByRole("button", { name: "Effort" });
-		const speed = screen.getByRole("button", { name: "Speed" });
 		expect(effort).toHaveTextContent("high");
-		expect(speed).toHaveTextContent("Standard");
 
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
-		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("speedMode");
 
 		await userEvent.click(effort);
 		await userEvent.click(await screen.findByRole("menuitem", { name: "low" }));
-		await userEvent.click(screen.getByRole("button", { name: "Speed" }));
-		await userEvent.click(await screen.findByRole("menuitem", { name: "Fast" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
-		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low", speedMode: "fast" }));
+		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
 
 		await userEvent.click(screen.getByRole("button", { name: "Effort" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Provider default" }));
-		await userEvent.click(screen.getByRole("button", { name: "Speed" }));
-		await userEvent.click(await screen.findByRole("menuitem", { name: "Provider default" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
-		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "", speedMode: "" }));
+		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));
 	});
 });

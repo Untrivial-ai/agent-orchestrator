@@ -533,7 +533,6 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		Env:                     cfg.Env,
 		Model:                   cfg.Model,
 		Effort:                  cfg.Effort,
-		SpeedMode:               cfg.SpeedMode,
 		Permissions:             cfg.Permissions,
 		SystemPrompt:            cfg.SystemPrompt,
 		AdditionalDirectories:   cfg.AdditionalDirectories,

@@ -57,8 +57,6 @@ export type TaskComposerModelOption = {
 	provider?: string;
 	efforts?: string[];
 	defaultEffort?: string;
-	speedModes?: { id: string; label: string; description?: string }[];
-	defaultSpeedMode?: string;
 };
 
 export type TaskComposerModelCatalog = {

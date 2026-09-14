@@ -49,7 +49,7 @@ type conversation struct {
 	threadID string
 	events   chan ports.ChatEvent
 	// Effective defaults returned when Codex opened or resumed this thread.
-	threadModel, threadEffort, threadSpeedMode string
+	threadModel, threadEffort string
 
 	mu      sync.Mutex
 	pending map[string]*parkedRequest
@@ -117,11 +117,10 @@ func newConversation(proc *process, log *slog.Logger) *conversation {
 // start records the opened thread and begins translating notifications. It is
 // called once, after the thread is open, so no event is emitted for a
 // conversation the caller does not yet have a handle to.
-func (c *conversation) start(threadID, model, effort, speedMode string) {
+func (c *conversation) start(threadID, model, effort string) {
 	c.threadID = threadID
 	c.threadModel = model
 	c.threadEffort = effort
-	c.threadSpeedMode = speedMode
 	go c.pump()
 }
 
@@ -280,9 +279,6 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
 	if settings.Effort != "" {
 		params["effort"] = settings.Effort
 	}
-	if settings.SpeedMode != "" {
-		params["serviceTier"] = settings.SpeedMode
-	}
 	if settings.Approval != "" {
 		// The same posture thread/start applies, so a per-turn choice and a launch
 		// choice cannot mean different things. The wire shapes differ though: a
@@ -331,9 +327,6 @@ func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error
 		if models[i].ID == c.threadModel && c.threadEffort != "" {
 			models[i].DefaultEffort = c.threadEffort
 		}
-		if models[i].ID == c.threadModel && c.threadSpeedMode != "" {
-			models[i].DefaultSpeedMode = c.threadSpeedMode
-		}
 	}
 	return models, nil
 }
@@ -341,20 +334,14 @@ func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error
 func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error) {
 	type modelListResponse struct {
 		Data []struct {
-			ID                 string `json:"id"`
-			Model              string `json:"model"`
-			DisplayName        string `json:"displayName"`
-			Description        string `json:"description"`
-			IsDefault          bool   `json:"isDefault"`
-			Hidden             bool   `json:"hidden"`
-			DefaultEff         string `json:"defaultReasoningEffort"`
-			DefaultServiceTier string `json:"defaultServiceTier"`
-			ServiceTiers       []struct {
-				ID          string `json:"id"`
-				Name        string `json:"name"`
-				Description string `json:"description"`
-			} `json:"serviceTiers"`
-			Efforts []struct {
+			ID          string `json:"id"`
+			Model       string `json:"model"`
+			DisplayName string `json:"displayName"`
+			Description string `json:"description"`
+			IsDefault   bool   `json:"isDefault"`
+			Hidden      bool   `json:"hidden"`
+			DefaultEff  string `json:"defaultReasoningEffort"`
+			Efforts     []struct {
 				ReasoningEffort string `json:"reasoningEffort"`
 			} `json:"supportedReasoningEfforts"`
 		} `json:"data"`
@@ -395,26 +382,9 @@ func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error
 			if display == "" {
 				display = id
 			}
-			speedModes := make([]ports.AgentSpeedMode, 0, len(entry.ServiceTiers))
-			for _, tier := range entry.ServiceTiers {
-				if tier.ID == "" {
-					continue
-				}
-				label := tier.Name
-				if label == "" {
-					label = tier.ID
-				}
-				speedModes = append(speedModes, ports.AgentSpeedMode{ID: tier.ID, Label: label, Description: tier.Description})
-			}
 			models = append(models, ports.ChatModel{
-				ID:               id,
-				DisplayName:      display,
-				Description:      entry.Description,
-				Default:          entry.IsDefault,
-				Efforts:          efforts,
-				DefaultEffort:    entry.DefaultEff,
-				SpeedModes:       speedModes,
-				DefaultSpeedMode: entry.DefaultServiceTier,
+				ID: id, DisplayName: display, Description: entry.Description,
+				Default: entry.IsDefault, Efforts: efforts, DefaultEffort: entry.DefaultEff,
 			})
 		}
 		if resp.NextCursor == nil || *resp.NextCursor == "" {

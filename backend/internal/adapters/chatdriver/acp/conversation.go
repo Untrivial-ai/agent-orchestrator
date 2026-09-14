@@ -386,39 +386,18 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	}
 	if optionsFor != nil {
 		for _, option := range optionsFor(settings) {
-			if option.ID == "" || (option.Value == "" && option.Boolean == nil) {
+			if option.ID == "" || option.Value == "" {
 				continue
 			}
 			if (option.ID == "model" && legacyModel) || (option.ID == "mode" && legacyMode) {
 				continue
 			}
-			if option.Boolean != nil {
-				c.mu.Lock()
-				advertised := false
-				for _, live := range c.configOptions {
-					if live.ID == option.ID {
-						advertised = true
-						break
-					}
-				}
-				c.mu.Unlock()
-				if !advertised {
-					return fmt.Errorf("%w: ACP session option %q is not advertised", ports.ErrChatCapabilityUnavailable, option.ID)
-				}
-			}
-			request := acpsdk.SetSessionConfigOptionRequest{}
-			if option.Boolean != nil {
-				request.Boolean = &acpsdk.SetSessionConfigOptionBoolean{
-					SessionId: acpsdk.SessionId(sessionID), ConfigId: acpsdk.SessionConfigId(option.ID),
-					Value: *option.Boolean,
-				}
-			} else {
-				request.ValueId = &acpsdk.SetSessionConfigOptionValueId{
+			resp, err := c.conn.SetSessionConfigOption(ctx, acpsdk.SetSessionConfigOptionRequest{
+				ValueId: &acpsdk.SetSessionConfigOptionValueId{
 					SessionId: acpsdk.SessionId(sessionID), ConfigId: acpsdk.SessionConfigId(option.ID),
 					Value: acpsdk.SessionConfigValueId(option.Value),
-				}
-			}
-			resp, err := c.conn.SetSessionConfigOption(ctx, request)
+				},
+			})
 			if err != nil {
 				if isACPMethodNotFound(err) {
 					return fmt.Errorf("%w: session/set_config_option %q", ErrACPSetterUnsupported, option.ID)

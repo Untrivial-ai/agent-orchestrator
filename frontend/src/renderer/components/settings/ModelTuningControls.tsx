@@ -10,11 +10,8 @@ export type ModelTuningControlsProps = {
 	models?: Model[];
 	model: string;
 	effort: string;
-	speedMode: string;
 	onEffortChange: (value: string) => void;
-	onSpeedModeChange: (value: string) => void;
 	onEffortReset?: (value: string) => void;
-	onSpeedModeReset?: (value: string) => void;
 	onValidityChange?: (valid: boolean) => void;
 	variant: "settings" | "composer";
 	roleLabel?: string;
@@ -27,11 +24,8 @@ export function ModelTuningControls(props: ModelTuningControlsProps) {
 		models,
 		model,
 		effort,
-		speedMode,
 		onEffortChange,
-		onSpeedModeChange,
 		onEffortReset = onEffortChange,
-		onSpeedModeReset = onSpeedModeChange,
 		onValidityChange,
 		variant,
 		roleLabel,
@@ -44,29 +38,23 @@ export function ModelTuningControls(props: ModelTuningControlsProps) {
 		(model === "" ? models?.find((item) => item.isDefault) : undefined);
 	const capabilitiesKnown = models !== undefined;
 	const invalidEffort = Boolean(effort && capabilitiesKnown && !selected?.efforts?.includes(effort));
-	const invalidSpeed = Boolean(
-		speedMode && capabilitiesKnown && !selected?.speedModes?.some((item) => item.id === speedMode),
-	);
 
 	useEffect(() => {
 		if (previousModel.current === model) return;
 		if (!capabilitiesKnown) return;
 		previousModel.current = model;
 		if (effort && !selected?.efforts?.includes(effort)) onEffortReset("");
-		if (speedMode && !selected?.speedModes?.some((item) => item.id === speedMode)) {
-			onSpeedModeReset("");
-		}
-	}, [capabilitiesKnown, effort, model, onEffortReset, onSpeedModeReset, selected, speedMode]);
+	}, [capabilitiesKnown, effort, model, onEffortReset, selected]);
 
 	useEffect(() => {
-		const valid = !invalidEffort && !invalidSpeed;
+		const valid = !invalidEffort;
 		if (previousValidity.current === valid) return;
 		previousValidity.current = valid;
 		onValidityChange?.(valid);
-	}, [invalidEffort, invalidSpeed, onValidityChange]);
+	}, [invalidEffort, onValidityChange]);
 
 	const prefix = roleLabel ? `${roleLabel} ` : "";
-	const warning = invalidEffort || invalidSpeed
+	const warning = invalidEffort
 		? t("settings.models.unsupportedTuning", { role: roleLabel ? `${roleLabel} ` : "" })
 		: null;
 	if (!selected) {
@@ -87,28 +75,13 @@ export function ModelTuningControls(props: ModelTuningControlsProps) {
 			triggerClassName={variant === "composer" ? "composer-chip composer-toolbar-option" : "justify-end"}
 		/>
 	) : null;
-	const speedControl = selected.speedModes?.length ? (
-		<SettingsOptionMenu
-			aria-label={`${prefix}${t("settings.models.speed")}`}
-			value={speedMode || "__default__"}
-			disabled={disabled}
-			options={[
-				{ value: "__default__", label: t("settings.models.providerDefault") },
-				...selected.speedModes.map((value) => ({ value: value.id, label: value.label })),
-			]}
-			onChange={(value) => onSpeedModeChange(value === "__default__" ? "" : value)}
-			triggerClassName={variant === "composer" ? "composer-chip composer-toolbar-option" : "justify-end"}
-		/>
-	) : null;
-
-	if (!effortControl && !speedControl) return null;
+	if (!effortControl) return null;
 	if (variant === "composer") {
-		return <>{effortControl}{speedControl}</>;
+		return effortControl;
 	}
 	return (
 		<>
 			{effortControl ? <SettingsRow label={`${prefix}${t("settings.models.effort")}`}>{effortControl}</SettingsRow> : null}
-			{speedControl ? <SettingsRow label={`${prefix}${t("settings.models.speed")}`}>{speedControl}</SettingsRow> : null}
 			{warning ? <p role="alert" className="px-1 text-xs leading-row text-warning">{warning}</p> : null}
 		</>
 	);

@@ -38,8 +38,6 @@ type LaunchConfig struct {
 	WorkspacePath   string
 	Env             map[string]string
 	Model           string
-	Effort          string
-	SpeedMode       string
 	Permissions     ports.PermissionMode
 	SystemPrompt    string
 	ProviderScopeID string
@@ -93,9 +91,8 @@ type PermissionPolicy func(
 
 // SessionOption is one ACP session configuration selection.
 type SessionOption struct {
-	ID      string
-	Value   string
-	Boolean *bool
+	ID    string
+	Value string
 }
 
 // Driver opens ACP conversations for a single harness.
@@ -166,81 +163,6 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 	return cloneCapabilities(d.cfg.Capabilities), nil
 }
 
-// DiscoverModelTuning opens a temporary promptless ACP session and captures the
-// model-dependent effort and Fast Mode options advertised by the provider.
-func (d *Driver) DiscoverModelTuning(ctx context.Context, cfg LaunchConfig) ([]ports.AgentModelInfo, error) {
-	conv, init, err := d.connect(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = conv.Close() }()
-	additional, err := normalizeAdditionalDirectories(cfg.WorkspacePath, nil,
-		init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := conv.conn.NewSession(ctx, acpsdk.NewSessionRequest{
-		Cwd: cfg.WorkspacePath, AdditionalDirectories: additional, McpServers: []acpsdk.McpServer{},
-	})
-	if err != nil {
-		return nil, normalizeACPError("ACP session/new", err)
-	}
-	if resp.SessionId == "" {
-		return nil, errors.New("ACP session/new returned no session id")
-	}
-	conv.start(
-		string(resp.SessionId), conversationCapabilities(d.cfg.Capabilities, init),
-		d.cfg.SessionMode, d.cfg.SessionOptions, d.cfg.PermissionPolicy,
-		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
-		conv.legacyWire.modelState(), resp.Modes,
-	)
-	options, err := conv.ListConfigOptions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	modelOption := findConfigOption(options, "model")
-	if modelOption == nil || modelOption.Type != ports.ChatConfigOptionSelect {
-		return nil, fmt.Errorf("%w: ACP did not advertise a model selector", ports.ErrChatCapabilityUnavailable)
-	}
-	defaultModel := modelOption.Current.Select
-	models := make([]ports.AgentModelInfo, 0, len(modelOption.Choices))
-	for _, choice := range modelOption.Choices {
-		dependent, setErr := conv.SetConfigOption(ctx, modelOption.ID, ports.ChatConfigOptionValue{Select: choice.Value})
-		if setErr != nil {
-			return nil, setErr
-		}
-		info := ports.AgentModelInfo{ID: choice.Value, Label: choice.Name, Provider: choice.Group, IsDefault: choice.Value == defaultModel}
-		if info.Label == "" {
-			info.Label = choice.Value
-		}
-		if effort := findConfigOption(dependent, "effort"); effort != nil && effort.Type == ports.ChatConfigOptionSelect {
-			info.Efforts = make([]string, 0, len(effort.Choices))
-			for _, level := range effort.Choices {
-				info.Efforts = append(info.Efforts, level.Value)
-			}
-			info.DefaultEffort = effort.Current.Select
-		}
-		if fast := findConfigOption(dependent, "fast"); fast != nil && fast.Type == ports.ChatConfigOptionBoolean {
-			info.SpeedModes = []ports.AgentSpeedMode{{ID: "standard", Label: "Standard"}, {ID: "fast", Label: "Fast", Description: fast.Description}}
-			info.DefaultSpeedMode = "standard"
-			if fast.Current.Boolean != nil && *fast.Current.Boolean {
-				info.DefaultSpeedMode = "fast"
-			}
-		}
-		models = append(models, info)
-	}
-	return models, nil
-}
-
-func findConfigOption(options []ports.ChatConfigOption, id string) *ports.ChatConfigOption {
-	for i := range options {
-		if options[i].ID == id || options[i].Category == id {
-			return &options[i]
-		}
-	}
-	return nil
-}
-
 // Start creates a new ACP session in the AO worktree.
 func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
 	if !filepath.IsAbs(cfg.WorkspacePath) {
@@ -248,15 +170,15 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	if d.cfg.ValidateTurnSettings != nil {
 		if err := d.cfg.ValidateTurnSettings(cfg.Permissions, ports.ChatTurnSettings{
-			Model: cfg.Model, Effort: cfg.Effort, SpeedMode: cfg.SpeedMode, Approval: cfg.Permissions,
+			Model: cfg.Model, Approval: cfg.Permissions,
 		}); err != nil {
 			return nil, fmt.Errorf("validate ACP session settings: %w", err)
 		}
 	}
 	launchCfg := LaunchConfig{
 		SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
-		Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort, SpeedMode: cfg.SpeedMode,
-		Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt, ProviderScopeID: cfg.ProviderScopeID,
+		Env: cfg.Env, Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+		ProviderScopeID: cfg.ProviderScopeID,
 	}
 	conv, init, err := d.connect(ctx, launchCfg)
 	if err != nil {
@@ -304,7 +226,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 		conv.legacyWire.modelState(), resp.Modes,
 	)
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, SpeedMode: cfg.SpeedMode, Approval: cfg.Permissions}); err != nil {
+	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Approval: cfg.Permissions}); err != nil {
 		// Initial model and permission mode may have been applied via launch-time
 		// flags (e.g. kimchiacp passes --model, --auto, --yolo). An agent that
 		// does not implement the runtime ACP setters returns -32601; tolerate it
@@ -330,15 +252,15 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	}
 	if d.cfg.ValidateTurnSettings != nil {
 		if err := d.cfg.ValidateTurnSettings(cfg.Permissions, ports.ChatTurnSettings{
-			Model: cfg.Model, Effort: cfg.Effort, SpeedMode: cfg.SpeedMode, Approval: cfg.Permissions,
+			Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions,
 		}); err != nil {
 			return nil, fmt.Errorf("%w: validate ACP session settings: %w", ports.ErrChatResumeFailed, err)
 		}
 	}
 	launchCfg := LaunchConfig{
 		SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
-		Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort, SpeedMode: cfg.SpeedMode,
-		Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt, ProviderScopeID: cfg.ProviderScopeID,
+		Env: cfg.Env, Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+		ProviderScopeID: cfg.ProviderScopeID,
 	}
 	conv, init, err := d.connect(ctx, launchCfg)
 	if err != nil {
@@ -408,7 +330,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		cfg.Permissions, d.cfg.ValidateTurnSettings, configOptions,
 		conv.legacyWire.modelState(), modes,
 	)
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, SpeedMode: cfg.SpeedMode, Approval: cfg.Permissions}); err != nil {
+	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
 		if !errors.Is(err, ErrACPSetterUnsupported) {
 			_ = conv.Close()
 			return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)

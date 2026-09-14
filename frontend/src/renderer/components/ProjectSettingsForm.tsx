@@ -144,11 +144,9 @@ function SettingsBody({
 		orchestratorAgent: config.orchestrator?.agent ?? "",
 		workerModel: config.worker?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		workerEffort: config.worker?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
-		workerSpeedMode: config.worker?.agentConfig?.speedMode ?? config.agentConfig?.speedMode ?? "",
 		workerPermissions: config.worker?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		orchestratorModel: config.orchestrator?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		orchestratorEffort: config.orchestrator?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
-		orchestratorSpeedMode: config.orchestrator?.agentConfig?.speedMode ?? config.agentConfig?.speedMode ?? "",
 		orchestratorPermissions: config.orchestrator?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
@@ -156,7 +154,6 @@ function SettingsBody({
 		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		reviewerEffort: config.reviewers?.[0]?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
-		reviewerSpeedMode: config.reviewers?.[0]?.agentConfig?.speedMode ?? config.agentConfig?.speedMode ?? "",
 		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		autoReview: config.autoReview ?? false,
 		intakeEnabled: intake.enabled ?? false,
@@ -200,7 +197,6 @@ function SettingsBody({
 				model: _legacyModel,
 				mode: _legacyMode,
 				effort: _legacyEffort,
-				speedMode: _legacySpeedMode,
 				permissions: _legacyPermissions,
 				...sharedAgentConfig
 			} = config.agentConfig ?? {};
@@ -213,7 +209,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerEffort, form.workerSpeedMode, form.workerPermissions),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "codex" ? form.workerEffort : "", form.workerPermissions),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -222,8 +218,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
-								form.orchestratorEffort,
-								form.orchestratorSpeedMode,
+								form.orchestratorAgent === "codex" ? form.orchestratorEffort : "",
 								form.orchestratorPermissions,
 							),
 						},
@@ -242,7 +237,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerEffort, form.workerSpeedMode, form.workerPermissions),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "codex" ? form.workerEffort : "", form.workerPermissions),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -251,8 +246,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
-								form.orchestratorEffort,
-								form.orchestratorSpeedMode,
+								form.orchestratorAgent === "codex" ? form.orchestratorEffort : "",
 								form.orchestratorPermissions,
 							),
 						},
@@ -263,7 +257,7 @@ function SettingsBody({
 						reviewers: form.reviewerHarness
 							? [{
 									harness: form.reviewerHarness,
-									agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerEffort, form.reviewerSpeedMode, form.reviewerPermissions),
+									agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerHarness === "codex" ? form.reviewerEffort : "", form.reviewerPermissions),
 								}]
 							: undefined,
 						trackerIntake: buildIntake(intakeForm),
@@ -459,7 +453,7 @@ function SettingsBody({
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.workerAgent === ""}
 								onChange={(v) =>
-									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "", workerEffort: "", workerSpeedMode: "" }))
+									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "", workerEffort: "" }))
 								}
 							/>
 						}
@@ -471,11 +465,9 @@ function SettingsBody({
 								model={form.workerModel}
 								mode={form.workerMode}
 								effort={form.workerEffort}
-								speedMode={form.workerSpeedMode}
 								onModelChange={(workerModel) => setForm((f) => ({ ...f, workerModel }))}
 								onModeChange={(workerMode) => setForm((f) => ({ ...f, workerMode }))}
 								onEffortChange={(workerEffort) => setForm((f) => ({ ...f, workerEffort }))}
-								onSpeedModeChange={(workerSpeedMode) => setForm((f) => ({ ...f, workerSpeedMode }))}
 								onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, worker: valid }))}
 							/>
 						}
@@ -496,7 +488,6 @@ function SettingsBody({
 										orchestratorModel: "",
 										orchestratorMode: "",
 										orchestratorEffort: "",
-										orchestratorSpeedMode: "",
 									}))
 								}
 							/>
@@ -509,11 +500,9 @@ function SettingsBody({
 								model={form.orchestratorModel}
 								mode={form.orchestratorMode}
 								effort={form.orchestratorEffort}
-								speedMode={form.orchestratorSpeedMode}
 								onModelChange={(orchestratorModel) => setForm((f) => ({ ...f, orchestratorModel }))}
 								onModeChange={(orchestratorMode) => setForm((f) => ({ ...f, orchestratorMode }))}
 								onEffortChange={(orchestratorEffort) => setForm((f) => ({ ...f, orchestratorEffort }))}
-								onSpeedModeChange={(orchestratorSpeedMode) => setForm((f) => ({ ...f, orchestratorSpeedMode }))}
 								onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, orchestrator: valid }))}
 							/>
 						}
@@ -554,7 +543,7 @@ function SettingsBody({
 									reviewerHarness: v,
 									...(v !== f.reviewerHarness ? {
 										reviewerModel: "", reviewerMode: "", reviewerEffort: "",
-										reviewerSpeedMode: "", reviewerPermissions: "",
+										reviewerPermissions: "",
 									} : {}),
 									}))
 								}
@@ -573,11 +562,9 @@ function SettingsBody({
 								model={form.reviewerModel}
 								mode={form.reviewerMode}
 								effort={form.reviewerEffort}
-								speedMode={form.reviewerSpeedMode}
 								onModelChange={(reviewerModel) => setForm((f) => ({ ...f, reviewerModel }))}
 								onModeChange={(reviewerMode) => setForm((f) => ({ ...f, reviewerMode }))}
 								onEffortChange={(reviewerEffort) => setForm((f) => ({ ...f, reviewerEffort }))}
-								onSpeedModeChange={(reviewerSpeedMode) => setForm((f) => ({ ...f, reviewerSpeedMode }))}
 								onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, reviewer: valid }))}
 							/>
 						) : null}
@@ -687,11 +674,9 @@ function AgentModelField({
 	model,
 	mode,
 	effort,
-	speedMode,
 	onModelChange,
 	onModeChange,
 	onEffortChange,
-	onSpeedModeChange,
 	onValidityChange,
 }: {
 	role: "worker" | "orchestrator" | "reviewer";
@@ -700,11 +685,9 @@ function AgentModelField({
 	model: string;
 	mode: string;
 	effort: string;
-	speedMode: string;
 	onModelChange: (value: string) => void;
 	onModeChange: (value: string) => void;
 	onEffortChange: (value: string) => void;
-	onSpeedModeChange: (value: string) => void;
 	onValidityChange: (valid: boolean) => void;
 }) {
 	const { t } = useTranslation();
@@ -803,17 +786,15 @@ function AgentModelField({
 				</div>
 			</SettingsRow>
 			{warning && <p className="px-1 text-xs leading-row text-warning">{warning}</p>}
-			<ModelTuningControls
+			{agentId === "codex" ? <ModelTuningControls
 				models={catalog?.models}
 				model={model}
 				effort={effort}
-				speedMode={speedMode}
 				onEffortChange={onEffortChange}
-				onSpeedModeChange={onSpeedModeChange}
 				onValidityChange={onValidityChange}
 				variant="settings"
 				roleLabel={t(`settings.models.${role}Role`)}
-			/>
+			/> : null}
 		</>
 	);
 }
@@ -895,7 +876,6 @@ function buildRoleAgentConfig(
 	model: string,
 	mode: string,
 	effort: string,
-	speedMode: string,
 	permissions: string,
 ): components["schemas"]["AgentConfig"] | undefined {
 	const next = { ...existing };
@@ -905,8 +885,6 @@ function buildRoleAgentConfig(
 	else delete next.mode;
 	if (effort) next.effort = effort;
 	else delete next.effort;
-	if (speedMode) next.speedMode = speedMode;
-	else delete next.speedMode;
 	if (permissions) next.permissions = permissions as components["schemas"]["AgentConfig"]["permissions"];
 	else delete next.permissions;
 	return Object.keys(next).length > 0 ? next : undefined;

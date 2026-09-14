@@ -752,7 +752,6 @@ type DelegateTaskRequest struct {
 	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
 	Effort    *string             `json:"effort,omitempty" maxLength:"64"`
-	SpeedMode *string             `json:"speedMode,omitempty" maxLength:"64"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
 	// bypass value only after the user accepts an approval-less Chat fallback.
 	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
@@ -1885,10 +1884,8 @@ type ConversationModelResponse struct {
 	Default bool `json:"default"`
 	// Efforts are the reasoning levels this model supports, in the provider's
 	// order. Empty means the model does not take one.
-	Efforts          []string               `json:"efforts,omitempty"`
-	DefaultEffort    string                 `json:"defaultEffort,omitempty"`
-	SpeedModes       []ports.AgentSpeedMode `json:"speedModes,omitempty"`
-	DefaultSpeedMode string                 `json:"defaultSpeedMode,omitempty"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
 
 // ConversationSkillsResponse is the named skills the provider will let this
@@ -1922,7 +1919,6 @@ type ConversationSkillResponse struct {
 type ConversationTurnSettingsPayload struct {
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	SpeedMode       string `json:"speedMode,omitempty"`
 	ApprovalMode    string `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
 }
 
