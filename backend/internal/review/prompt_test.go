@@ -29,7 +29,7 @@ func TestReviewTextsIncludesMultiPRQueue(t *testing.T) {
 		"After every PR has its own GitHub review from step 1",
 		"printf '%s'",
 		"do not use a heredoc",
-		"ao review submit --session mer-1 --reviews -",
+		`"$AO_CLI" review submit --session mer-1 --reviews -`,
 		`"reviews": [`,
 	} {
 		if !strings.Contains(prompt, want) {

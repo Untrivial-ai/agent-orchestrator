@@ -5709,8 +5709,14 @@ func TestSpawnAndRestore_PinHookPATHToDaemonBinary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("PATH", "/usr/bin")
 			m, st, rt, _ := pathPinManager(executable)
+			project := st.projects["mer"]
+			project.Config.Env = map[string]string{"AO_CLI": "foreign"}
+			st.projects["mer"] = project
 			if err := tc.launch(m, st); err != nil {
 				t.Fatal(err)
+			}
+			if got := rt.lastCfg.Env["AO_CLI"]; got != filepath.ToSlash(daemonExe) {
+				t.Fatalf("AO_CLI = %q, want canonical %q", got, daemonExe)
 			}
 			if got := rt.lastCfg.Env["PATH"]; got != want {
 				t.Fatalf("runtime env PATH = %q, want %q", got, want)

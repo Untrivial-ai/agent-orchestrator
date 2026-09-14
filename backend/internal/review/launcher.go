@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -552,6 +554,9 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 	// pinnedDir is whichever directory ends up at the head of PATH here, so the
 	// launch-binary prepend below can put it back rather than letting a foreign
 	// `ao` beside the agent binary win a bare `ao` inside the reviewer pane.
+	if err := agentlaunch.PinCLI(env, l.executable); err != nil {
+		env[EnvAOCommandWarning] = err.Error()
+	}
 	pinnedDir := ""
 	path, err := sessionmanager.HookPATH(l.executable, os.Getenv, env, l.dataDir)
 	if err == nil {
@@ -561,7 +566,10 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 		env["PATH"] = prependPathDir(shimDir, env["PATH"])
 		pinnedDir = shimDir
 	} else {
-		env[EnvAOCommandWarning] = fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr)
+		env[EnvAOCommandWarning] = strings.TrimSpace(env[EnvAOCommandWarning] + "\n" + fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr))
+	}
+	if warning := env[EnvAOCommandWarning]; warning != "" {
+		slog.WarnContext(ctx, "reviewer canonical CLI setup degraded", "reviewSessionID", spec.ReviewSessionID, "warning", warning)
 	}
 	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath, pinnedDir)
 	return env

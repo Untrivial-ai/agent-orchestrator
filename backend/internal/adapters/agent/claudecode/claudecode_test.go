@@ -470,18 +470,18 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	// SessionStart must fire on resume (and clear/compact/fork) as well as a
 	// fresh startup: a --resume relaunch otherwise never confirms the native
 	// session id under the new RuntimeLaunchID until the user types again (#4122).
-	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+	if m := matcherForCommand(config.Hooks["SessionStart"], claudeHookCommandPrefix+"session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
 		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
 	}
-	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], "ao hooks claude-code user-prompt-submit"); m != nil {
+	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], claudeHookCommandPrefix+"user-prompt-submit"); m != nil {
 		t.Fatalf("UserPromptSubmit matcher = %v, want none", m)
 	}
 	// Notification and SessionEnd install with no matcher (they fire for all
 	// sub-types; the handler filters on the payload).
-	if m := matcherForCommand(config.Hooks["Notification"], "ao hooks claude-code notification"); m != nil {
+	if m := matcherForCommand(config.Hooks["Notification"], claudeHookCommandPrefix+"notification"); m != nil {
 		t.Fatalf("Notification matcher = %v, want none", m)
 	}
-	if m := matcherForCommand(config.Hooks["SessionEnd"], "ao hooks claude-code session-end"); m != nil {
+	if m := matcherForCommand(config.Hooks["SessionEnd"], claudeHookCommandPrefix+"session-end"); m != nil {
 		t.Fatalf("SessionEnd matcher = %v, want none", m)
 	}
 }
@@ -516,10 +516,13 @@ func TestGetAgentHooksMigratesSessionStartMatcher(t *testing.T) {
 		t.Fatal(err)
 	}
 	groups := config.Hooks["SessionStart"]
-	if m := matcherForCommand(groups, "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+	if got := countClaudeHookCommand(groups, "ao hooks claude-code session-start"); got != 0 {
+		t.Fatal("legacy PATH-based hook survived migration")
+	}
+	if m := matcherForCommand(groups, claudeHookCommandPrefix+"session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
 		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
 	}
-	if got := countClaudeHookCommand(groups, "ao hooks claude-code session-start"); got != 1 {
+	if got := countClaudeHookCommand(groups, claudeHookCommandPrefix+"session-start"); got != 1 {
 		t.Fatalf("session-start command count = %d, want 1 in %#v", got, groups)
 	}
 	if got := countClaudeHookCommand(groups, "custom startup hook"); got != 1 {
