@@ -76,6 +76,10 @@ export function prTitle(pr: DashboardPR, fallback?: string | null): string {
 }
 
 export type PRLifecycle = "draft" | "open" | "merged" | "closed";
+export type PRListFilter = "open" | "merged" | "all";
+export type PRListItem = { pr: DashboardPR; session: DashboardSession };
+export type PRListSectionKey = "ready" | "attention" | "review" | "draft" | "merged" | "closed";
+export type PRListSection = { key: PRListSectionKey; label: string; data: PRListItem[] };
 
 /** Lifecycle state, reading `isDraft` — which the card has never rendered. */
 export function prLifecycle(pr: DashboardPR): PRLifecycle {
@@ -84,6 +88,41 @@ export function prLifecycle(pr: DashboardPR): PRLifecycle {
 	// `mapPR` folds the wire's "draft" into state:"open" and records it here, so
 	// the flag is the only place draft survives.
 	return pr.isDraft ? "draft" : "open";
+}
+
+function prListSectionKey(pr: DashboardPR): PRListSectionKey {
+	const life = prLifecycle(pr);
+	if (life === "merged" || life === "closed" || life === "draft") return life;
+	if (pr.mergeability?.mergeable && pr.reviewDecision === "approved") return "ready";
+	if (pr.ciStatus === "failing" || pr.reviewDecision === "changes_requested" || !!pr.unresolvedThreads) {
+		return "attention";
+	}
+	return "review";
+}
+
+const PR_LIST_SECTIONS: readonly { key: PRListSectionKey; label: string }[] = [
+	{ key: "ready", label: "Ready to merge" },
+	{ key: "attention", label: "Needs attention" },
+	{ key: "review", label: "In review" },
+	{ key: "draft", label: "Drafts" },
+	{ key: "merged", label: "Merged" },
+	{ key: "closed", label: "Closed" },
+];
+
+export function prListSections(items: PRListItem[], filter: PRListFilter): PRListSection[] {
+	const allowed = (key: PRListSectionKey) => {
+		if (filter === "open") return key !== "merged" && key !== "closed";
+		if (filter === "merged") return key === "merged";
+		return true;
+	};
+
+	return PR_LIST_SECTIONS.flatMap(({ key, label }) => {
+		if (!allowed(key)) return [];
+		const data = items
+			.filter(({ pr }) => prListSectionKey(pr) === key)
+			.sort((a, b) => b.pr.number - a.pr.number);
+		return data.length ? [{ key, label, data }] : [];
+	});
 }
 
 export function prStateVisual(t: Theme, pr: DashboardPR): { label: PRLifecycle; color: string; tint: string } {

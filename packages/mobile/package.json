@@ -15,6 +15,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
+		"@expo/ui": "~57.0.14",
 		"@expo/vector-icons": "^15.0.3",
 		"@fressh/react-native-xtermjs-webview": "^0.0.8",
 		"@react-native-async-storage/async-storage": "2.2.0",
@@ -42,6 +43,7 @@
 		"posthog-react-native": "^4.62.0",
 		"react": "19.2.3",
 		"react-native": "0.86.3",
+		"react-native-gesture-handler": "~2.32.0",
 		"react-native-safe-area-context": "~5.7.0",
 		"react-native-screens": "~4.26.0",
 		"react-native-webview": "13.16.1"
