@@ -2,7 +2,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@te
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
-import { purgeFileAttachmentsForSession, useFileAttachments } from "../../hooks/useFileAttachments";
+import { capturePendingFileAttachmentsForSession, discardCapturedPendingFileAttachments, purgeFileAttachmentsForSession, useFileAttachments } from "../../hooks/useFileAttachments";
 import { readChatSessionDraft } from "../../lib/chat-drafts";
 import { chatFixture } from "../../lib/chat-fixture";
 import { typeInLexicalEditor } from "../../test/lexical";
@@ -91,6 +91,7 @@ async function pasteImage(field: HTMLElement, name = "shot.png") {
 		},
 	});
 	await screen.findByLabelText(`Remove ${name}`);
+	await waitFor(() => expect((readChatSessionDraft(chatFixture.sessionId).queuedEdit?.stagedAttachments ?? readChatSessionDraft(chatFixture.sessionId).composer.attachments)?.some((attachment) => attachment.name === name)).toBe(true));
 }
 
 describe("queued message attachments", () => {
@@ -152,7 +153,7 @@ describe("queued message attachments", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() =>
 			expect(edit).toHaveBeenCalledWith("q1", `inspect this\n\n${suffix}`, {
-				attachments: [{ mimeType: "image/png", data: expect.any(String) }],
+				attachments: [{ mimeType: "image/png", data: expect.any(String), name: "shot.png" }],
 				retainedContent: [],
 				clientMessageId: expect.any(String), expectedRevision: 0,
 			}),
@@ -203,7 +204,7 @@ describe("queued message attachments", () => {
 			"q1", count === 8 ? `inspect this carefully\n\n${suffix}` : "inspect this carefully",
 			{
 				retainedContent: resources.map((_, index) => index), clientMessageId: expect.any(String), expectedRevision: 0,
-				...(count === 8 ? { attachments: [{ mimeType: "image/png", data: expect.any(String) }] } : {}),
+				...(count === 8 ? { attachments: [{ mimeType: "image/png", data: expect.any(String), name: "shot.png" }] } : {}),
 			},
 		));
 	});
@@ -266,9 +267,19 @@ describe("queued message attachments", () => {
 				}
 				view.unmount();
 				// Mounting the retired key with no durable seed exposes any leaked registry descriptors.
-				const cache = renderHook(() => useFileAttachments({ initialKey }));
-				expect(cache.result.current.attachments).toHaveLength(action === "unmount" || action === "failed cleanup" ? 1 : 0);
-				cache.unmount();
+				if (action === "unmount" || action === "failed cleanup") {
+					// A live editor restores committed descriptors from its durable draft.
+					// A failed cleanup must leave that owner and its attachment recoverable.
+					storage?.mockRestore();
+					const restored = setup();
+					expect(screen.getByLabelText("Remove shot.png")).toBeInTheDocument();
+					expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit?.ownerId).toBe(edit.ownerId);
+					restored.unmount();
+				} else {
+					const cache = renderHook(() => useFileAttachments({ initialKey }));
+					expect(cache.result.current.attachments).toHaveLength(0);
+					cache.unmount();
+				}
 			} finally { storage?.mockRestore(); }
 		},
 	);
@@ -338,6 +349,24 @@ describe("queued message attachments", () => {
 		expect(screen.queryByLabelText("Remove shot.png")).not.toBeInTheDocument();
 	});
 
+	it("keeps a failed queued attachment write eligible for explicit discard", async () => {
+		const { stage } = setup();
+		let settle!: (paths: string[]) => void;
+		stage.mockImplementation(() => new Promise<string[]>((resolve) => { settle = resolve; }));
+		await beginEdit();
+		fireEvent.paste(screen.getByRole("combobox"), { clipboardData: { files: [new File(["file"], "unsaved.txt", { type: "text/plain" })], items: [] } });
+		await waitFor(() => expect(stage).toHaveBeenCalledOnce());
+		const storage = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => { throw new Error("disk full"); });
+		try {
+			await act(async () => settle([".ao/attachments/unsaved.txt"]));
+			await screen.findByText(/queued edit.*saved|save.*queued edit/i);
+			expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit?.stagedAttachments ?? []).toEqual([]);
+			const captured = capturePendingFileAttachmentsForSession(chatFixture.sessionId);
+			act(() => discardCapturedPendingFileAttachments(captured));
+			await waitFor(() => expect(screen.queryByLabelText("Remove unsaved.txt")).not.toBeInTheDocument());
+		} finally { storage.mockRestore(); }
+	});
+
 	it("keeps a canceled upload out of a replacement queued editor", async () => {
 		const { stage } = setup();
 		let settle!: (paths: string[]) => void;
@@ -388,7 +417,7 @@ describe("queued message attachments", () => {
 			await waitFor(() => expect(second.edit).toHaveBeenCalledOnce());
 			expect(second.edit.mock.calls[0]?.[2]).toEqual({
 				retainedContent: [], clientMessageId: expect.any(String), expectedRevision: 0,
-				attachments: [{ mimeType: "image/png", data: btoa("restored-first") }, { mimeType: "image/png", data: "iVBORw==" }],
+				attachments: [{ mimeType: "image/png", data: btoa("restored-first"), name: "first.png" }, { mimeType: "image/png", data: "iVBORw==", name: "second.png" }],
 			});
 			expect(fetch).toHaveBeenCalledOnce();
 		} finally { fetch.mockRestore(); }
@@ -402,7 +431,7 @@ describe("queued message attachments", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await screen.findByText("response lost");
 		const request = first.edit.mock.calls[0];
-		expect(request?.[2].attachments).toEqual([{ mimeType: "image/png", data: "iVBORw==" }]);
+		expect(request?.[2].attachments).toEqual([{ mimeType: "image/png", data: "iVBORw==", name: "shot.png" }]);
 		first.unmount();
 		purgeFileAttachmentsForSession(chatFixture.sessionId);
 		const second = setup("inspect this", [], false);

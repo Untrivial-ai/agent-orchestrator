@@ -189,7 +189,7 @@ describe("ChatComposer steering", () => {
 		await waitFor(() => expect(stage).toHaveBeenCalledOnce());
 		expect(onSteer).toHaveBeenCalledWith(
 			"Attached files (read these files in the workspace):\n- .ao/attachments/shot.png",
-			[{ mimeType: "image/png", data: expect.any(String) }],
+			[{ mimeType: "image/png", data: expect.any(String), name: "shot.png" }],
 		);
 		expect(onSend).not.toHaveBeenCalled();
 		await waitFor(() => expect(screen.queryAllByRole("listitem")).toHaveLength(0));
@@ -240,7 +240,7 @@ describe("ChatComposer steering", () => {
 		await waitFor(() =>
 			expect(onSteer).toHaveBeenCalledWith(
 				"inspect this\n\nAttached files (read these files in the workspace):\n- .ao/attachments/slow.png",
-				[{ mimeType: "image/png", data: "iVBORw==" }],
+				[{ mimeType: "image/png", data: "iVBORw==", name: "slow.png" }],
 			),
 		);
 		expect(onSteer).toHaveBeenCalledOnce();

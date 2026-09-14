@@ -8,7 +8,7 @@ import { AppLink } from "../AppLink";
  * re-sorting. Those belong to the daemon.
  */
 
-import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH, STAGED_ATTACHMENT_PATH } from "./messageAttachments";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -379,6 +379,72 @@ function formatTokens(tokens: number): string {
 	return `${(tokens / 1000).toFixed(1)}k`;
 }
 
+function normalizedImageMIMEType(mimeType: string | undefined): string {
+	const normalized = mimeType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+	return normalized === "image/jpg" ? "image/jpeg" : normalized;
+}
+
+function stagedImageMIMEType(path: string): string {
+	const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+	switch (extension) {
+		case "png":
+			return "image/png";
+		case "jpg":
+		case "jpeg":
+			return "image/jpeg";
+		case "gif":
+			return "image/gif";
+		case "webp":
+			return "image/webp";
+		case "bmp":
+			return "image/bmp";
+		default:
+			return "";
+	}
+}
+
+function incrementCount(counts: Map<string, number>, key: string): void {
+	counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+// Older combined-delivery messages did not retain native image names, so modern
+// name-based dedupe cannot identify their duplicates. Suppress those legacy
+// blocks only when the complete staged/native supported-image MIME multisets
+// match. Any unsupported, named, missing, or extra image keeps all unnamed
+// native content visible rather than guessing which attachment it represents.
+function legacyCombinedImageIndexes(
+	attachments: string[],
+	content: NonNullable<ConversationMessage["content"]>,
+): ReadonlySet<number> {
+	const noMatches = new Set<number>();
+	if (attachments.some((path) => !STAGED_ATTACHMENT_PATH.test(path))) return noMatches;
+
+	const stagedCounts = new Map<string, number>();
+	for (const path of attachments) {
+		const mimeType = stagedImageMIMEType(path);
+		if (mimeType) incrementCount(stagedCounts, mimeType);
+	}
+	if (stagedCounts.size === 0) return noMatches;
+
+	const nativeCounts = new Map<string, number>();
+	const nativeIndexes: number[] = [];
+	for (let index = 0; index < content.length; index += 1) {
+		const item = content[index];
+		if (item?.type !== "image") continue;
+		if (item.name) return noMatches;
+		const mimeType = normalizedImageMIMEType(item.mimeType);
+		if (!mimeType || !stagedCounts.has(mimeType)) return noMatches;
+		incrementCount(nativeCounts, mimeType);
+		nativeIndexes.push(index);
+	}
+	if (nativeIndexes.length === 0 || nativeCounts.size !== stagedCounts.size) return noMatches;
+	for (const [mimeType, count] of stagedCounts) {
+		if (nativeCounts.get(mimeType) !== count) return noMatches;
+	}
+	return new Set(nativeIndexes);
+}
+
+
 function StagedAttachmentItems({
 	paths,
 	sessionId,
@@ -512,6 +578,17 @@ export function HumanMessage({
 	activateBranchError?: string;
 }) {
 	const { body, attachments } = stagedAttachmentParts(message.text);
+	const referencedNames = new Set(attachments.map(attachmentName));
+	const content = message.content ?? [];
+	const legacyCombinedIndexes = legacyCombinedImageIndexes(attachments, content);
+	// Combined delivery records the same image as a native prompt block and a
+	// staged path. The path supplies the real preview, so do not add a second chip.
+	const durableContent = content.filter(
+		(item, index) =>
+			!legacyCombinedIndexes.has(index) &&
+			!(item.type === "image" && item.name && referencedNames.has(item.name)),
+	);
+
 	return (
 		<div className="group/message flex flex-col items-end gap-1">
 			{/* A queued message reads as not-yet-sent rather than as sent-and-ignored:
@@ -552,6 +629,12 @@ export function HumanMessage({
 						apiBaseUrl={apiBaseUrl}
 						ariaLabel="Attached files"
 						className={cn(body && "mt-2")}
+					/>
+					<ConversationContentItems
+						content={durableContent}
+						ariaLabel="Attached files"
+						imageLabel="Attached image"
+						className={cn((body || attachments.length > 0) && "mt-2")}
 					/>
 				</div>
 			)}

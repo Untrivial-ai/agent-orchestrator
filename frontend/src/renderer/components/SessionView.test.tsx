@@ -1410,6 +1410,98 @@ describe("SessionView", () => {
 		});
 	});
 
+	it("abandons settled undurable attachment sources after confirmed route navigation", async () => {
+		const scopeKey = chatDraftScopeKey({
+			sessionId: "sess-1",
+			incarnation: "2026-08-26T08:30:00.000Z",
+		});
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: scopeKey,
+				prepareAttachments: () => Promise.reject(new Error("disk full")),
+			}),
+		);
+		await act(async () => {
+			await staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "settled-undurable.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		expect(staging.result.current.preparing).toBe(false);
+		expect(staging.result.current.attachments).toHaveLength(1);
+		expect(staging.result.current.attachments[0]?.stagedPath).toBeUndefined();
+		const abandonedID = staging.result.current.attachments[0]?.id ?? "";
+
+		act(() => setChatDraftBoundary("sess-1", "composer", "persistence-failed"));
+		render(<SessionView sessionId="sess-1" />);
+		let allowed: boolean | Promise<boolean> | undefined;
+		act(() => { allowed = routeBlockerState.options?.shouldBlockFn(); });
+		await confirmUnsafeChatLeave();
+		expect(await allowed).toBe(false);
+		await waitFor(() => expect(staging.result.current.attachments).toEqual([]));
+		staging.unmount();
+
+		const replacement = renderHook(() => useFileAttachments({ initialKey: scopeKey }));
+		expect(replacement.result.current.attachments).toEqual([]);
+		expect(replacement.result.current.error).toBeNull();
+		const reread = vi.spyOn(FileReader.prototype, "readAsDataURL");
+		let retried = true;
+		await act(async () => {
+			retried = await replacement.result.current.retry(abandonedID);
+		});
+		expect(retried).toBe(false);
+		expect(reread).not.toHaveBeenCalled();
+		reread.mockRestore();
+		act(() => setChatDraftBoundary("sess-1", "composer", undefined));
+	});
+
+	it("does not resurrect a staged descriptor whose local draft record was abandoned", async () => {
+		const scopeKey = chatDraftScopeKey({
+			sessionId: "sess-1",
+			incarnation: "2026-08-26T08:45:00.000Z",
+		});
+		const persistDraft = vi.fn(() => false);
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: scopeKey,
+				prepareAttachments: async (attachments) =>
+					attachments.map((attachment) => ({
+						...attachment,
+						stagedPath: `.ao/attachments/${attachment.name}`,
+					})),
+				onAttachmentsChange: persistDraft,
+			}),
+		);
+		await act(async () => {
+			await staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "staged-but-unrecorded.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		expect(staging.result.current.attachments).toMatchObject([
+			{
+				name: "staged-but-unrecorded.txt",
+				stagedPath: ".ao/attachments/staged-but-unrecorded.txt",
+			},
+		]);
+		expect(persistDraft).toHaveLastReturnedWith(false);
+
+		act(() => setChatDraftBoundary("sess-1", "composer", "persistence-failed"));
+		render(<SessionView sessionId="sess-1" />);
+		let allowed: boolean | Promise<boolean> | undefined;
+		act(() => { allowed = routeBlockerState.options?.shouldBlockFn(); });
+		await confirmUnsafeChatLeave();
+		expect(await allowed).toBe(false);
+
+		staging.unmount();
+		const replacement = renderHook(() => useFileAttachments({ initialKey: scopeKey }));
+		expect(replacement.result.current.attachments).toEqual([]);
+		expect(replacement.result.current.preparing).toBe(false);
+		act(() => setChatDraftBoundary("sess-1", "composer", undefined));
+	});
+
 	it("publishes the full stable native risk set and clears it only on unmount", async () => {
 		const publishRisk = vi.spyOn(window.ao!.app, "setChatDraftRisk");
 		const view = render(<SessionView sessionId="sess-1" />);

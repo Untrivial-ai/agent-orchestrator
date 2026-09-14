@@ -41,6 +41,25 @@ func TestWriteSpawnAttachments(t *testing.T) {
 	}
 }
 
+func TestWriteSpawnAttachmentsKeepsTheSanitizedDisplayName(t *testing.T) {
+	dir := t.TempDir()
+	m := New(Deps{DataDir: t.TempDir()})
+	refs, err := m.writeSpawnAttachments(context.Background(), "ao-1", dir, []ports.SpawnAttachment{
+		{Name: "original.png", Ext: ".png", Data: []byte("image")},
+	})
+	if err != nil {
+		t.Fatalf("writeSpawnAttachments: %v", err)
+	}
+
+	want := ".ao/attachments/attachment-1-original.png"
+	if len(refs) != 1 || refs[0] != want {
+		t.Fatalf("refs = %v, want [%s]", refs, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(want))); err != nil {
+		t.Fatalf("named attachment missing on disk: %v", err)
+	}
+}
+
 func TestStageAttachmentsUsesNeutralFileNames(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -68,6 +87,53 @@ func TestStageAttachmentsUsesNeutralFileNames(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "attachments", "ao-1", filepath.Base(refs[0]))); err != nil {
 		t.Fatalf("canonical attachment missing on disk: %v", err)
+	}
+}
+
+func TestStageAttachmentsKeepsTheSanitizedDisplayNameInItsDurablePath(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := t.TempDir()
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: dir},
+	}
+	m := New(Deps{Store: st, Workspace: &fakeWorkspace{}, DataDir: dataDir})
+	m.attachmentSuffix = func() (string, error) { return "cafebabe00", nil }
+
+	refs, err := m.StageAttachments(context.Background(), "ao-1", []ports.SpawnAttachment{
+		{Name: "original.png", Ext: ".png", Data: []byte("image")},
+	})
+	if err != nil {
+		t.Fatalf("StageAttachments: %v", err)
+	}
+	want := ".ao/attachments/attachment-cafebabe00-original.png"
+	if len(refs) != 1 || refs[0] != want {
+		t.Fatalf("refs = %v, want [%s]", refs, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(want))); err != nil {
+		t.Fatalf("named attachment missing on disk: %v", err)
+	}
+}
+
+func TestStageAttachmentsRefusesAnUnvalidatedNameThatCouldEscapeTheAttachmentDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+	m := New(Deps{Store: st, Workspace: &fakeWorkspace{}, DataDir: t.TempDir()})
+	m.attachmentSuffix = func() (string, error) { return "cafebabe00", nil }
+
+	_, err := m.StageAttachments(context.Background(), "ao-1", []ports.SpawnAttachment{
+		{Name: "../outside.png", Ext: ".png", Data: []byte("image")},
+	})
+	if err == nil {
+		t.Fatal("StageAttachments accepted an attachment name containing a path")
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "outside.png")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside path exists after rejected staging: %v", statErr)
 	}
 }
 

@@ -3933,9 +3933,10 @@ func promptProjectContext(projectID domain.ProjectID, project domain.ProjectReco
 // attachments are projected for agents.
 const attachmentsDir = attachmentstore.WorkspaceDir
 
-// writeSpawnAttachments writes canonical and worktree-projected copies named
-// attachment-1<ext>, attachment-2<ext>, ... and returns the worktree-relative
-// paths in order. The projections are excluded from git via info/exclude.
+// writeSpawnAttachments writes canonical and worktree-projected copies. A
+// controller-sanitized display name is retained after the stable sequence prefix;
+// legacy callers without one keep attachment-1<ext>, attachment-2<ext>, ... .
+// The projections are excluded from git via info/exclude.
 func (m *Manager) writeSpawnAttachments(ctx context.Context, id domain.SessionID, workspacePath string, attachments []ports.SpawnAttachment) ([]string, error) {
 	refs := make([]string, 0, len(attachments))
 	for i, a := range attachments {
@@ -3944,6 +3945,9 @@ func (m *Manager) writeSpawnAttachments(ctx context.Context, id domain.SessionID
 			ext = ".bin"
 		}
 		name := fmt.Sprintf("attachment-%d%s", i+1, ext)
+		if a.Name != "" {
+			name = fmt.Sprintf("attachment-%d-%s", i+1, a.Name)
+		}
 		if err := m.attachments.Put(ctx, id, workspacePath, name, a.Data); err != nil {
 			return nil, fmt.Errorf("write attachment %d: %w", i+1, err)
 		}

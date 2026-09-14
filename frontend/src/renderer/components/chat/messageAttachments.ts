@@ -4,7 +4,7 @@
 // its durable history.
 const ATTACHMENT_REFERENCE_BLOCK =
 	/(?:^|\n\n)(?:Attached files \(read these files in the workspace(?: for context)?\)|Attached images \(read these files in the workspace for visual context\)):\n((?:- [^\n]+(?:\n|$))+)$/;
-const STAGED_ATTACHMENT_PATH = /^\.ao\/attachments\/(?:attachment|image)-[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const STAGED_ATTACHMENT_PATH = /^\.ao\/attachments\/(?:attachment|image)-[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const IMAGE_ATTACHMENT_PATH = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
 export function stagedAttachmentParts(text: string): { body: string; attachments: string[] } {
@@ -26,7 +26,8 @@ export function stagedAttachmentParts(text: string): { body: string; attachments
 }
 
 export function attachmentName(path: string): string {
-	return path.slice(path.lastIndexOf("/") + 1);
+	const name = path.slice(path.lastIndexOf("/") + 1);
+	return /^attachment-[A-Za-z0-9]+-(.+)$/.exec(name)?.[1] ?? name;
 }
 
 export function attachmentURL(apiBaseUrl: string, sessionId: string, path: string): string {

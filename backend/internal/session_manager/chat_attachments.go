@@ -60,6 +60,9 @@ func (m *Manager) StageAttachments(
 				return nil, fmt.Errorf("name attachment %d: %w", i+1, err)
 			}
 			name = "attachment-" + suffix + ext
+			if a.Name != "" {
+				name = "attachment-" + suffix + "-" + a.Name
+			}
 			err = m.attachments.Put(ctx, id, rec.Metadata.WorkspacePath, name, a.Data)
 			if err == nil {
 				break

@@ -53,6 +53,10 @@ const (
 	maxAttachments      = 8
 	maxAttachmentBytes  = attachmentstore.MaxFileBytes // 10 MiB per file, decoded
 	maxAttachmentsBytes = 25 << 20                     // 25 MiB total, decoded
+	// A staged attachment name can include "attachment-", a 32-character random
+	// suffix, a separator, the 180-byte sanitized stem, and this extension.
+	// Keeping the extension within 31 bytes preserves the store's 255-byte cap.
+	maxAttachmentExtensionBytes = 31
 	// maxSpawnBodyBytes bounds the raw request body before it is decoded. The
 	// per-attachment and total caps above only apply after the whole body is
 	// materialized, so without this an oversized body (base64 inflates the
@@ -301,11 +305,60 @@ type attachmentError struct {
 	message string
 }
 
-// extensionForMimeType returns a file extension for a MIME type. For known
-// MIME types, it returns a standard extension. For unknown types, it attempts
-// to extract a reasonable extension from the MIME type, or falls back to ".bin".
+// normalizeAttachmentMIMEType parses an untrusted declared MIME type into its
+// canonical media type without parameters. Invalid MIME strings are not safe
+// inputs for filename derivation.
+func normalizeAttachmentMIMEType(raw string) (string, bool) {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(raw))
+	if err != nil || mediaType == "" {
+		return "", false
+	}
+	return strings.ToLower(mediaType), true
+}
+
+// attachmentMIMETypeIsBlocked fails closed when a blocked base media type has
+// malformed parameters. ParseMediaType rejects the whole declaration in that
+// case, but downstream consumers may still interpret the base type as SVG.
+func attachmentMIMETypeIsBlocked(raw string) bool {
+	if mediaType, ok := normalizeAttachmentMIMEType(raw); ok {
+		return blockedAttachmentMimes[mediaType]
+	}
+	base, _, _ := strings.Cut(strings.TrimSpace(raw), ";")
+	return blockedAttachmentMimes[strings.ToLower(strings.TrimSpace(base))]
+}
+
+// normalizeAttachmentExtension accepts only portable, bounded basename
+// characters. The leading dot is required; additional dots are allowed for
+// conventional compound extensions but never consecutively or at the edges.
+func normalizeAttachmentExtension(raw string) string {
+	ext := strings.ToLower(strings.TrimSpace(raw))
+	if len(ext) < 2 || len(ext) > maxAttachmentExtensionBytes || ext[0] != '.' {
+		return ""
+	}
+	body := ext[1:]
+	if strings.HasPrefix(body, ".") || strings.HasSuffix(body, ".") || strings.Contains(body, "..") {
+		return ""
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return ""
+	}
+	return ext
+}
+
+// extensionForMimeType returns a portable file extension for an untrusted MIME
+// type. Known types retain their standard extension. Unknown but valid types
+// may use a bounded subtype-derived extension; all other inputs fall back to
+// ".bin".
 func extensionForMimeType(mimeType string) string {
-	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	var ok bool
+	mimeType, ok = normalizeAttachmentMIMEType(mimeType)
+	if !ok {
+		return ".bin"
+	}
 
 	// Preferred extensions for MIME types with multiple options
 	preferredExts := map[string]string{
@@ -324,12 +377,17 @@ func extensionForMimeType(mimeType string) string {
 	if err == nil && len(exts) > 0 {
 		// Prefer common extensions when available
 		for _, ext := range exts {
+			ext = normalizeAttachmentExtension(ext)
 			switch ext {
 			case ".jpg", ".jpeg", ".png", ".gif", ".pdf", ".txt", ".json", ".xml", ".html", ".css", ".js", ".md", ".zip", ".tar", ".gz":
 				return ext
 			}
 		}
-		return exts[0] // Return the primary extension if no preferred match
+		for _, ext := range exts {
+			if ext = normalizeAttachmentExtension(ext); ext != "" {
+				return ext
+			}
+		}
 	}
 
 	// Fallback: extract from the MIME type itself
@@ -341,11 +399,53 @@ func extensionForMimeType(mimeType string) string {
 		if idx := strings.Index(subtype, "+"); idx >= 0 {
 			subtype = subtype[:idx]
 		}
-		return "." + subtype
+		if ext := normalizeAttachmentExtension("." + subtype); ext != "" {
+			return ext
+		}
 	}
 
 	// Ultimate fallback for unknown MIME types
 	return ".bin"
+}
+
+// sanitizeAttachmentDisplayName turns an untrusted browser filename into a
+// portable basename. The MIME-derived extension stays authoritative so a
+// misleading client name cannot change the on-disk type or bypass blocked-type
+// checks. Empty names keep the legacy neutral attachment name.
+func sanitizeAttachmentDisplayName(raw, ext string) string {
+	if ext = normalizeAttachmentExtension(ext); ext == "" {
+		ext = ".bin"
+	}
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, `\`, "/"))
+	if raw == "" {
+		return ""
+	}
+	base := path.Base(raw)
+	stem := strings.TrimSpace(strings.TrimSuffix(base, path.Ext(base)))
+
+	var clean strings.Builder
+	separator := false
+	for _, r := range stem {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			clean.WriteRune(r)
+			separator = false
+			continue
+		}
+		if !separator {
+			clean.WriteByte('-')
+			separator = true
+		}
+	}
+	name := strings.Trim(clean.String(), "-_")
+	if name == "" {
+		name = "file"
+	}
+	// Leave room for "attachment-", the random suffix, a separator, and the
+	// extension under the attachment store's 255-byte filename cap.
+	if len(name) > 180 {
+		name = strings.TrimRight(name[:180], "-_")
+	}
+	return name + ext
 }
 
 // decodeAttachment validates and base64-decodes a single inline file
@@ -353,11 +453,10 @@ func extensionForMimeType(mimeType string) string {
 // the blocked-MIME-type rule and per-file size cap. Callers handling multiple
 // attachments are responsible for the count and total-size caps.
 func decodeAttachment(a AttachmentInput) (ports.SpawnAttachment, *attachmentError) {
-	mimeType := strings.ToLower(strings.TrimSpace(a.MimeType))
-	if blockedAttachmentMimes[mimeType] {
+	if attachmentMIMETypeIsBlocked(a.MimeType) {
 		return ports.SpawnAttachment{}, &attachmentError{"UNSUPPORTED_ATTACHMENT_TYPE", "unsupported attachment type"}
 	}
-	ext := extensionForMimeType(mimeType)
+	ext := extensionForMimeType(a.MimeType)
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(a.Data))
 	if err != nil {
 		return ports.SpawnAttachment{}, &attachmentError{"INVALID_ATTACHMENT_DATA", "attachment data is not valid base64"}
@@ -368,7 +467,11 @@ func decodeAttachment(a AttachmentInput) (ports.SpawnAttachment, *attachmentErro
 	if len(data) > maxAttachmentBytes {
 		return ports.SpawnAttachment{}, &attachmentError{"ATTACHMENT_TOO_LARGE", "attachment is too large"}
 	}
-	return ports.SpawnAttachment{Ext: ext, Data: data}, nil
+	return ports.SpawnAttachment{
+		Name: sanitizeAttachmentDisplayName(a.Name, ext),
+		Ext:  ext,
+		Data: data,
+	}, nil
 }
 
 // decodeSpawnAttachments validates and base64-decodes the inline file

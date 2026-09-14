@@ -7507,6 +7507,9 @@ components:
           type: string
         mimeType:
           type: string
+        name:
+          maxLength: 255
+          type: string
       required:
       - data
       type: object
@@ -8695,6 +8698,9 @@ components:
         data:
           type: string
         mimeType:
+          type: string
+        name:
+          maxLength: 255
           type: string
       required:
       - mimeType

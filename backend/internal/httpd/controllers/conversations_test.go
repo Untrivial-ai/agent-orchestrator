@@ -277,7 +277,7 @@ func TestSendConversationPreservesNativeImageAndResourceContent(t *testing.T) {
 	body := []byte(`{
 		"text":"inspect this",
 		"clientMessageId":"message-1",
-		"attachments":[{"mimeType":"image/png","data":"aW1hZ2U="}],
+		"attachments":[{"name":"folder\\\\diagram.png","mimeType":"image/png","data":"aW1hZ2U="}],
 		"resources":[
 			{"uri":"file:///repo/README.md","name":"README.md"},
 			{"uri":"file:///repo/notes.txt","name":"notes.txt","mimeType":"text/plain","text":"notes"}
@@ -303,6 +303,9 @@ func TestSendConversationPreservesNativeImageAndResourceContent(t *testing.T) {
 	}
 	if service.sent.Content[0].Type != "image" || service.sent.Content[1].Type != "resource_link" || service.sent.Content[2].Type != "resource" {
 		t.Fatalf("content = %#v", service.sent.Content)
+	}
+	if service.sent.Content[0].Name != "diagram.png" {
+		t.Fatalf("native image name = %q, want diagram.png", service.sent.Content[0].Name)
 	}
 }
 

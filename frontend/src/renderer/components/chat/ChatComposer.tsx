@@ -23,8 +23,8 @@ import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
  *
  * Every affordance is conditional on being able to deliver. The `/` menu only opens
  * when the provider actually reported skills, and the attach control only appears
- * when a caller supplied somewhere to put the bytes — a control that cannot do what
- * it says should not be drawn.
+ * when a caller can stage worktree files or deliver native image blocks — a control
+ * that cannot do what it says should not be drawn.
  */
 
 import {
@@ -90,9 +90,9 @@ import {
 	writeChatAttachments,
 	writeChatComposerContent,
 	type ChatDraftMutationToken,
+	type ChatDraftAttachment,
 	type ChatComposerDelivery,
 	type ChatDraftScope,
-	type ChatDraftAttachment,
 	type ChatDraftRetainedAttachment,
 	type DraftClearResult,
 } from "../../lib/chat-drafts";
@@ -142,6 +142,38 @@ function withAttachmentReferences(text: string, paths: string[]): string {
 	if (paths.length === 0) return text;
 	const lead = text.trim() === "" ? "" : `${text}\n\n`;
 	return `${lead}Attached files (read these files in the workspace):\n${paths.map((path) => `- ${path}`).join("\n")}`;
+}
+
+function restoreFileAttachments(attachments: readonly ChatDraftAttachment[]): FileAttachment[] {
+	return attachments.map((attachment) => ({
+		id: attachment.id,
+		name: attachment.name,
+		mimeType: attachment.mimeType,
+		bytes: attachment.bytes,
+		status: "ready",
+		stagedPath: attachment.path,
+	}));
+}
+
+function attachmentDeliveryLabel(
+	attachment: FileAttachment,
+	canStage: boolean,
+	nativeImages: boolean,
+	canRestoreNative: boolean,
+): string {
+	if (attachment.status === "reading") return "Reading…";
+	if (attachment.status === "failed") return "Read failed · retry or remove";
+	const deliversNativeImage =
+		nativeImages &&
+		(attachment.data !== undefined || (canRestoreNative && Boolean(attachment.stagedPath))) &&
+		isSupportedImageAttachment(attachment.mimeType);
+	const hasWorktreePath = Boolean(attachment.stagedPath);
+	if (hasWorktreePath && deliversNativeImage) return "Worktree path + native image";
+	if (deliversNativeImage && canStage) return "Native image · worktree save pending";
+	if (deliversNativeImage) return "Native image";
+	if (hasWorktreePath) return "Worktree path · agent must read";
+	if (canStage) return "Worktree save pending";
+	return "Cannot be delivered";
 }
 
 function restoredDeliveryNotice(delivery: ChatComposerDelivery | undefined): string | null {
@@ -218,8 +250,8 @@ export const ChatComposer = memo(function ChatComposer({
 	fileCatalog?: WorkspaceFileCatalog;
 	/**
 	 * Writes staged files into the worktree and answers with the paths the agent
-	 * can open. Absent means files cannot be delivered, and no attach control is
-	 * offered at all.
+	 * can open. When absent, supported images can still be delivered if native
+	 * image blocks were negotiated.
 	 */
 	onStageAttachments?: (attachments: FileAttachmentPayload[]) => Promise<string[]>;
 	/** Send the same staged bytes as native ACP image blocks when negotiated. */
@@ -245,7 +277,7 @@ export const ChatComposer = memo(function ChatComposer({
 	onCancelQueuedEdit?: () => void;
 	onQueuedDraftChange?: (text: string) => void;
 	queuedDraftScope?: ChatDraftScope;
-	onQueuedAttachmentsChange?: (attachments: ChatDraftAttachment[]) => void;
+	onQueuedAttachmentsChange?: (attachments: ChatDraftAttachment[]) => boolean;
 	onQueuedRetainedAttachmentsChange?: (attachments: ChatDraftRetainedAttachment[]) => void;
 	/** The queued edit mutation is in flight for the turn being edited. */
 	savingQueuedEditPending?: boolean;
@@ -309,6 +341,7 @@ export const ChatComposer = memo(function ChatComposer({
 	const [isComposing, setIsComposing] = useState(false);
 	const [dragging, setDragging] = useState(false);
 	const [sendError, setSendError] = useState<string | null>(null);
+	const [retryPendingError, setRetryPendingError] = useState<string | null>(null);
 	const [steerOutcomeNotice, setSteerOutcomeNotice] = useState<string | null>(null);
 	const [deliveryRecoveryNotice, setDeliveryRecoveryNotice] = useState<string | null>(null);
 	const [deliveryUncertain, setDeliveryUncertain] = useState(
@@ -340,6 +373,7 @@ export const ChatComposer = memo(function ChatComposer({
 
 	const editor = useRef<ComposerEditorHandle>(null);
 	const filePicker = useRef<HTMLInputElement>(null);
+	const retryPendingIdsRef = useRef<Set<string>>(new Set());
 	const submitInFlight = useRef<Promise<void> | null>(null);
 	// Disabling the active editor can move focus to the document body. Remember
 	// keyboard-origin submissions so focus can return once the editor is enabled.
@@ -371,16 +405,16 @@ export const ChatComposer = memo(function ChatComposer({
 	const [appliedAcceptanceSequence, setAppliedAcceptanceSequence] = useState(0);
 	const composerRevision = useRef(persistedDraft?.composer.revision ?? 0);
 	const synchronouslyClearedDeliveryRevision = useRef<number | undefined>(undefined);
-	const restoredAttachments = useMemo<FileAttachment[]>(
-		() =>
-			(persistedDraft?.composer.attachments ?? draftSeed?.stagedAttachments)?.map((attachment) => ({
-				id: attachment.id,
-				name: attachment.name,
-				mimeType: attachment.mimeType,
-				bytes: attachment.bytes,
-				stagedPath: attachment.path,
-			})) ?? [],
+	const restoredAttachments = useMemo(
+		() => restoreFileAttachments(persistedDraft?.composer.attachments ?? draftSeed?.stagedAttachments ?? []),
 		[persistedDraft, draftSeed?.stagedAttachments],
+	);
+	const readPersistedAttachments = useCallback(
+		() =>
+			restoreFileAttachments(
+				draftScope ? readChatSessionDraft(draftScope).composer.attachments : [],
+			),
+		[draftScope],
 	);
 	const persistAttachments = useCallback(
 		(attachments: FileAttachment[]) => {
@@ -388,8 +422,7 @@ export const ChatComposer = memo(function ChatComposer({
 				? [{ id: attachment.id, path: attachment.stagedPath, name: attachment.name, mimeType: attachment.mimeType, bytes: attachment.bytes }]
 				: []);
 			if (!draftScope) {
-				onQueuedAttachmentsChange?.(descriptors);
-				return;
+				return onQueuedAttachmentsChange?.(descriptors) ?? true;
 			}
 			const result = writeChatAttachments(draftScope, descriptors);
 			composerRevision.current = result.draft.composer.revision;
@@ -398,6 +431,7 @@ export const ChatComposer = memo(function ChatComposer({
 					? null
 					: "chat.draft.saveFailed",
 			);
+			return result.ok;
 		},
 		[draftScope, onQueuedAttachmentsChange],
 	);
@@ -405,8 +439,8 @@ export const ChatComposer = memo(function ChatComposer({
 		async (attachments: FileAttachment[]): Promise<FileAttachment[]> => {
 			if (!onStageAttachments) throw new Error("Attachment staging is unavailable");
 			const paths = await onStageAttachments(
-				attachments.flatMap(({ mimeType, data }) =>
-					data ? [{ mimeType, data }] : [],
+				attachments.flatMap(({ mimeType, data, name }) =>
+					data ? [{ mimeType, data, name }] : [],
 				),
 			);
 			if (paths.length !== attachments.length) {
@@ -436,10 +470,12 @@ export const ChatComposer = memo(function ChatComposer({
 	const fileAttachments = useFileAttachments({
 		initialAttachments: restoredAttachments,
 		initialKey: attachmentScopeKey,
+		readPersistedAttachments: draftScope ? readPersistedAttachments : undefined,
 		prepareAttachments: onStageAttachments ? prepareAttachments : undefined,
 		onAttachmentsChange: persistAttachments,
 	});
-	const canAttach = Boolean(onStageAttachments) && !queuedEditRecovery;
+	const canAttach = Boolean(onStageAttachments || nativeImages) && !queuedEditRecovery;
+	const canStageAttachments = Boolean(onStageAttachments);
 
 	const slashCommands = useMemo<ChatSkill[]>(() => {
 		if (!onCompact || compactUnavailable === "This agent cannot compact its history") return skills;
@@ -508,9 +544,8 @@ export const ChatComposer = memo(function ChatComposer({
 		!steerPending &&
 		!savingQueuedEditPending &&
 		!draftMutationPending &&
-			!acceptedClearFailed &&
-			!durableDelivery &&
-			!fileAttachments.preparing;
+		!acceptedClearFailed &&
+		!durableDelivery;
 	const sendActionEnabled = canSend || canRecoverDelivery;
 	const sendActionLabel = translateDraft(durableDelivery
 		? durableDelivery.state === "accepted"
@@ -539,6 +574,8 @@ export const ChatComposer = memo(function ChatComposer({
 	const draftSeedId = draftSeed?.id ?? (draftScopeKey ? `session:${draftScopeKey}` : undefined);
 	const draftPersistenceError =
 		textDraftPersistenceError ?? attachmentDraftPersistenceError;
+	const attachmentPersistenceAtRisk =
+		fileAttachments.hasUndurableAttachments && !fileAttachments.preparing;
 
 	useEffect(() => {
 		if (!boundarySessionId) return;
@@ -550,14 +587,14 @@ export const ChatComposer = memo(function ChatComposer({
 			boundarySessionId,
 			"composer",
 			[
-				...(draftPersistenceError && !deliveryWasSynchronouslyCleared
+				...((draftPersistenceError || attachmentPersistenceAtRisk) && !deliveryWasSynchronouslyCleared
 					? (["persistence-failed"] as const)
 					: []),
 
 				...(fileAttachments.preparing ? (["pending-attachments"] as const) : []),
 			],
 		);
-	}, [draftPersistenceError, boundarySessionId, durableDelivery, fileAttachments.preparing]);
+	}, [draftPersistenceError, attachmentPersistenceAtRisk, boundarySessionId, durableDelivery, fileAttachments.preparing]);
 
 	useEffect(
 		() => () => {
@@ -1031,7 +1068,13 @@ export const ChatComposer = memo(function ChatComposer({
 			return;
 		}
 
-		const attachmentPayloads = await fileAttachments.toSettledPayload();
+		let attachmentPayloads: FileAttachmentPayload[];
+		try {
+			attachmentPayloads = await fileAttachments.toSettledPayload();
+		} catch (error) {
+			setSendError(error instanceof Error ? error.message : "Some files could not be read. Retry or remove them before sending.");
+			return;
+		}
 		// A replacement hook can still have staging work owned by the old surface.
 		if (fileAttachments.hasPendingReads()) return;
 		const settledAttachments = fileAttachments.getAttachments();
@@ -1052,7 +1095,15 @@ export const ChatComposer = memo(function ChatComposer({
 			}
 			return;
 		}
-		if (hasAttachments && settledPaths.length !== settledAttachments.length) {
+		if (settledPaths.length !== settledAttachments.length && !onStageAttachments && (!nativeImages || settledAttachments.some((attachment) => !isSupportedImageAttachment(attachment.mimeType)))) {
+			setSendError("This agent can receive attached images natively, but not other file types. Remove unsupported files before sending.");
+			return;
+		}
+		if (settledPaths.length !== settledAttachments.length && !onStageAttachments && draftScope) {
+			setSendError("These native-only attachments cannot be recovered safely after a restart. Attach them in a session with worktree staging.");
+			return;
+		}
+		if (hasAttachments && onStageAttachments && settledPaths.length !== settledAttachments.length) {
 			setSendError("chat.draft.filesUnavailable");
 			return;
 		}
@@ -1074,7 +1125,7 @@ export const ChatComposer = memo(function ChatComposer({
 				for (const attachment of settledAttachments) {
 					if (!isSupportedImageAttachment(attachment.mimeType)) continue;
 					if (attachment.data) {
-						restored.push({ mimeType: attachment.mimeType, data: attachment.data });
+						restored.push({ mimeType: attachment.mimeType, data: attachment.data, name: attachment.name });
 						continue;
 					}
 					if (!attachment.stagedPath) throw new Error("Missing staged attachment");
@@ -1087,7 +1138,7 @@ export const ChatComposer = memo(function ChatComposer({
 						reader.onerror = () => reject(new Error("Could not read staged attachment"));
 						reader.readAsDataURL(blob);
 					});
-					restored.push({ mimeType: attachment.mimeType, data });
+					restored.push({ mimeType: attachment.mimeType, data, name: attachment.name });
 				}
 				nativePayloads = restored;
 				return true;
@@ -1175,6 +1226,7 @@ export const ChatComposer = memo(function ChatComposer({
 			setTextDraftPersistenceError(
 				"chat.draft.prepareFailed",
 			);
+			setSubmitting(false);
 			return;
 		}
 		const delivery = prepared.mutation;
@@ -1190,12 +1242,12 @@ export const ChatComposer = memo(function ChatComposer({
 		);
 		if (delivery.state === "accepted") {
 			acceptAndClearDurableDelivery(delivery);
+			setSubmitting(false);
 			return;
 		}
 
 		if (!mutationToken) return;
 		let mutationFinished = false;
-		setSubmitting(true);
 		try {
 			if (!await restoreNativePayloads()) return;
 			if (!isChatComposerMutationCurrent(draftScope, mutationToken)) return;
@@ -1377,11 +1429,12 @@ export const ChatComposer = memo(function ChatComposer({
 	}, []);
 
 	const attachmentError =
+		retryPendingError ??
 		fileAttachments.error ??
 		draftPersistenceError ??
 		deliveryRecoveryNotice ??
 		sendError ??
-		(fileAttachments.attachments.some((file) => !file.data && !file.stagedPath)
+		(fileAttachments.attachments.some((file) => !file.data && !file.stagedPath && !file.status)
 			? "chat.draft.filesUnavailable" : null) ??
 		commandError;
 	const withQueueStack = (form: ReactElement) =>
@@ -1420,6 +1473,7 @@ export const ChatComposer = memo(function ChatComposer({
 		<form
 			// Cmd/Ctrl steering remains available as a quiet power-user action.
 			onSubmit={(event) => void submit(event, modifierHeldRef.current && canSteerDraft)}
+			aria-busy={submitting || undefined}
 				onDragOver={(event) => {
 					if (!canAttach || submitInFlight.current) return;
 					event.preventDefault();
@@ -1485,16 +1539,50 @@ export const ChatComposer = memo(function ChatComposer({
 										<File aria-hidden="true" className="size-3.5 text-muted-foreground" />
 									</div>
 								)}
-								<span
-									className="max-w-[120px] truncate text-[11px] text-muted-foreground"
-									title={file.name}
-								>
-									{file.name}
-								</span>
+								<div className="flex min-w-0 max-w-[150px] flex-col">
+									<span className="truncate text-[11px] text-muted-foreground" title={file.name}>
+										{file.name}
+									</span>
+									<span
+										role="status"
+										aria-live="polite"
+										aria-atomic="true"
+										className="truncate text-[10px] leading-tight text-muted-foreground"
+									>
+										{"mimeType" in file && "bytes" in file
+										? attachmentDeliveryLabel(file, canStageAttachments, durableDelivery?.nativeImages ?? Boolean(nativeImages), Boolean(queuedDraftScope ?? draftScope))
+										: file.contentType === "image" ? "Retained native image" : path ? "Worktree path · agent must read" : "Retained attachment"}
+									</span>
+								</div>
+								{"status" in file && file.status === "failed" ? (
+									<button
+										type="button"
+										disabled={disabled || draftMutationPending}
+										onClick={() => {
+											const firstPendingRetry = retryPendingIdsRef.current.size === 0;
+											retryPendingIdsRef.current.add(file.id);
+											if (firstPendingRetry) {
+												setRetryPendingError(fileAttachments.error ?? sendError);
+											}
+											void fileAttachments.retry(file.id).then((succeeded) => {
+												retryPendingIdsRef.current.delete(file.id);
+												if (retryPendingIdsRef.current.size === 0) setRetryPendingError(null);
+												if (succeeded) setSendError(null);
+											});
+										}}
+										aria-label={`Retry ${file.name}`}
+										className="inline-flex min-h-6 min-w-6 items-center justify-center rounded px-1 text-[10px] text-muted-foreground hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-50"
+									>
+										Retry
+									</button>
+								) : null}
 								<button
 									type="button"
 									onClick={() => {
 									if (submitInFlight.current) return;
+									retryPendingIdsRef.current.delete(file.id);
+									if (retryPendingIdsRef.current.size === 0) setRetryPendingError(null);
+									setSendError(null);
 									if (visibleRetainedAttachments.some((attachment) => attachment.id === file.id)) {
 										const next = retainedAttachments.filter((attachment) => attachment.id !== file.id);
 										setRetainedAttachments(next);
@@ -1503,7 +1591,7 @@ export const ChatComposer = memo(function ChatComposer({
 									}}
 									disabled={controlsDisabled || queuedEditRecovery || draftMutationPending || fileAttachments.preparing}
 									aria-label={`Remove ${file.name}`}
-									className="text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+									className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-50"
 								>
 									<X aria-hidden="true" className="size-3" />
 								</button>
@@ -1577,7 +1665,8 @@ export const ChatComposer = memo(function ChatComposer({
 						</Button>
 					</div>
 				) : null}
-				{fileAttachments.preparing ? (
+				{fileAttachments.preparing &&
+				!fileAttachments.attachments.some(({ status }) => status === "reading") ? (
 					<p role="status" className="px-1.5 text-[11px] leading-snug text-muted-foreground">
 						Saving attachments… Wait before leaving this chat.
 					</p>

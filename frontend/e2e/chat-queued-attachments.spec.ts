@@ -135,7 +135,7 @@ test("queued image edits preserve attachments and the ordinary draft @T0", async
 	expect(edits[0]).toEqual({
 		clientMessageId: expect.any(String),
 		text: `Inspect the screenshot\n\nAttached files (read these files in the workspace):\n- ${path}`,
-		attachments: [{ mimeType: "image/png", data: png }],
+		attachments: [{ mimeType: "image/png", data: png, name: "screenshot.png" }],
 		retainedContent: [],
 		expectedRevision: 0,
 	});

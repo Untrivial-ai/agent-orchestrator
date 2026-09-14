@@ -76,6 +76,7 @@ import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
 import type { ApprovalMode } from "../../types/conversation";
 import type { ConversationLocalEcho } from "../../hooks/useConversation";
+import type { FileAttachmentPayload } from "../../hooks/useFileAttachments";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import { sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
 import type { TerminalTarget } from "../../types/terminal";
@@ -379,11 +380,10 @@ export interface ChatWorkspaceProps {
 	/** Renderer-only human messages awaiting their exact durable counterpart. */
 	localEchos?: ConversationLocalEcho[];
 	/**
-	 * Writes staged images into the worktree and answers with the paths the agent
-	 * can open. Absent means no attach control is offered — the fixture preview has
-	 * no worktree to write into.
+	 * Writes staged files into the worktree and answers with the paths the agent
+	 * can open. It may be absent when nativeImages provides native-only delivery.
 	 */
-	onStageAttachments?: (attachments: { mimeType: string; data: string }[]) => Promise<string[]>;
+	onStageAttachments?: (attachments: FileAttachmentPayload[]) => Promise<string[]>;
 	/** The provider negotiated native image prompt blocks. */
 	nativeImages?: boolean;
 	/**
@@ -747,17 +747,18 @@ function ChatWorkspaceContent({
 	}, [queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
 	const changeQueuedAttachments = useCallback((field: "attachments" | "stagedAttachments", attachments: ChatDraftRetainedAttachment[] | ChatDraftAttachment[]) => {
 		const current = queueEditRef.current;
-		if (!current || current.clientMessageId || current.turnId !== queueEdit?.turnId || current.ownerId !== queueEdit.ownerId) return;
-		if (JSON.stringify(current[field] ?? []) === JSON.stringify(attachments)) return;
+		if (!current || current.clientMessageId || current.turnId !== queueEdit?.turnId || current.ownerId !== queueEdit.ownerId) return false;
+		if (!queueDraftError && !unprovenQueueWrite.current && JSON.stringify(current[field] ?? []) === JSON.stringify(attachments)) return true;
 		const next = { ...current, [field]: attachments, saving: undefined, clientMessageId: undefined };
 		const result = updateQueueDraft(next, current.revision);
 		if (!result.ok) {
 			queueEditRef.current = next;
 			setQueueEdit(next);
 		}
-	}, [queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
+		return result.ok;
+	}, [queueDraftError, queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
 	const changeQueuedStagedAttachments = useCallback((attachments: ChatDraftAttachment[]) => {
-		changeQueuedAttachments("stagedAttachments", attachments);
+		return changeQueuedAttachments("stagedAttachments", attachments);
 	}, [changeQueuedAttachments]);
 	const changeQueuedRetainedAttachments = useCallback((attachments: ChatDraftRetainedAttachment[]) => {
 		changeQueuedAttachments("attachments", attachments);

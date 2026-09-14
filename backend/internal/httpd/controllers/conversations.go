@@ -604,18 +604,21 @@ func conversationContent(req SendConversationMessageRequest) ([]ports.ChatConten
 	spawnInputs := make([]AttachmentInput, 0, len(req.Attachments))
 	for _, attachment := range req.Attachments {
 		spawnInputs = append(spawnInputs, AttachmentInput{
+			Name:     attachment.Name,
 			MimeType: attachment.MIMEType,
 			Data:     attachment.Data,
 		})
 	}
-	if _, err := decodeSpawnAttachments(spawnInputs); err != nil {
+	decoded, err := decodeSpawnAttachments(spawnInputs)
+	if err != nil {
 		return nil, err
 	}
 	content := make([]ports.ChatContent, 0, len(req.Attachments)+len(req.Resources))
-	for _, attachment := range req.Attachments {
+	for i, attachment := range req.Attachments {
 		content = append(content, ports.ChatContent{
 			Type: "image", Data: attachment.Data,
 			MIMEType: strings.ToLower(strings.TrimSpace(attachment.MIMEType)),
+			Name:     decoded[i].Name,
 		})
 	}
 	for _, resource := range req.Resources {

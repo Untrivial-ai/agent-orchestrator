@@ -53,6 +53,9 @@ type SpawnConfig struct {
 // already-decoded bytes; the manager derives the on-disk filename from the
 // MIME type.
 type SpawnAttachment struct {
+	// Name is a sanitized display filename. It never contains a path; an empty
+	// value preserves the legacy neutral generated name.
+	Name string
 	// Ext is the file extension (including the leading dot, e.g. ".png")
 	// inferred from the attachment's declared MIME type, or ".bin" for unknown types.
 	Ext  string

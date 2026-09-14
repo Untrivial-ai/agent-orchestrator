@@ -47,7 +47,8 @@ export function ConversationContentItems({
 				}
 
 				const Icon = item.type === "image" ? ImageIcon : item.type === "resource" ? FileText : Tag;
-				const label = item.type === "image" ? item.mimeType || imageLabel : item.name || item.uri || item.type;
+				const label =
+					item.name || (item.type === "image" ? item.mimeType || imageLabel : item.uri || item.type);
 				return (
 					<li
 						key={key}

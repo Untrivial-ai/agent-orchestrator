@@ -63,6 +63,7 @@ type WireMessage = components["schemas"]["ConversationMessageResponse"];
 type WireActivity = components["schemas"]["ConversationActivityResponse"];
 type WireImageContent = components["schemas"]["ConversationImageContentRequest"];
 type WireResourceContent = components["schemas"]["ConversationResourceContentRequest"];
+type WireStagedAttachment = components["schemas"]["AttachmentInput"];
 
 export interface ConversationSendInput {
 	text: string;
@@ -1387,7 +1388,7 @@ export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: bo
  */
 export function useStageAttachments(sessionId: string | undefined) {
 	return useCallback(
-		async (attachments: { mimeType: string; data: string }[]): Promise<string[]> => {
+		async (attachments: WireStagedAttachment[]): Promise<string[]> => {
 			if (!sessionId || attachments.length === 0) return [];
 			const { data, error } = await apiClient.POST("/api/v1/sessions/{sessionId}/attachments", {
 				params: { path: { sessionId } },

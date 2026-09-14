@@ -310,6 +310,9 @@ type SpawnSessionRequest struct {
 // AttachmentInput is one file attached to a spawn, delegate, stage, or send
 // request.
 type AttachmentInput struct {
+	// Name is the original client-side filename for display. The daemon treats it
+	// as untrusted, strips any path, and normalizes it before durable use.
+	Name string `json:"name,omitempty" maxLength:"255"`
 	// MimeType is the browser-reported content type (e.g. "image/png"). Used to
 	// derive the on-disk file extension. Explicitly blocked types are rejected.
 	MimeType string `json:"mimeType,omitempty"`
@@ -1845,6 +1848,9 @@ type SendConversationMessageRequest struct {
 type ConversationImageContentRequest struct {
 	MIMEType string `json:"mimeType"`
 	Data     string `json:"data"`
+	// Name is the original client-side filename. It is sanitized before the
+	// provider-neutral content is recorded or sent to a driver.
+	Name string `json:"name,omitempty" maxLength:"255"`
 }
 
 // EditQueuedConversationMessageRequest changes an undispatched prompt. Omitted
