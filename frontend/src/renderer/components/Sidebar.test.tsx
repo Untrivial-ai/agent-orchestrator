@@ -740,17 +740,18 @@ describe("Sidebar", () => {
 			"absolute",
 			"right-0.5",
 			"opacity-0",
-			"group-hover/session-row:pointer-events-auto",
-			"group-hover/session-row:opacity-100",
+			"scale-[0.8]",
+			"duration-normal",
 			"group-focus-within/session-row:pointer-events-auto",
+			"group-focus-within/session-row:scale-100",
 			"group-focus-within/session-row:opacity-100",
 		);
+		expect(actionButtons).toHaveAttribute("data-session-action-buttons", "");
 		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
 		expect(time).toHaveClass(
 			"absolute",
 			"right-1.5",
 			"opacity-100",
-			"group-hover/session-row:opacity-0",
 			"group-focus-within/session-row:opacity-0",
 		);
 		expect(openSession).toHaveClass("pl-1.5");

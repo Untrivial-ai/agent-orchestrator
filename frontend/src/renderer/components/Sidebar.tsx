@@ -150,9 +150,62 @@ const HOVER_ACTION_CLASS =
 const SESSION_ACTION_CLASS =
 	"sidebar-icon-action grid size-5 shrink-0 place-items-center rounded-md !bg-transparent p-1 text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3!";
 
-// Shared nav-row chrome (Codex-style): inset pill hover/selected, 14px type, no accent bar.
+// Shared nav-row chrome (Codex-style): inset pill, 14px type, no accent bar.
+// Plain fill stays for non-interactive status rows; interactive rows use
+// {@link NavRowHighlight} via {@link NAV_ROW_HIGHLIGHT_HOST_CLASS}.
 const NAV_ROW_CLASS =
-	"h-9 gap-2.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-[background-color,color] hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:text-foreground data-[active=true]:bg-interactive-active data-[active=true]:font-medium data-[active=true]:text-foreground";
+	"h-9 gap-2.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:text-foreground data-[active=true]:bg-interactive-active data-[active=true]:font-medium data-[active=true]:text-foreground";
+
+/** Host for {@link NavRowHighlight}: transparent shell, text still tints on hover/active. */
+const NAV_ROW_HIGHLIGHT_HOST_CLASS =
+	"group/nav-row relative hover:bg-transparent! active:bg-transparent! data-[active=true]:bg-transparent! hover:text-foreground data-[active=true]:font-medium data-[active=true]:text-foreground";
+
+/** Expanded footer action row: growing highlight behind icon + label. */
+const FOOTER_NAV_BUTTON_CLASS = cn(
+	NAV_ROW_CLASS,
+	NAV_ROW_HIGHLIGHT_HOST_CLASS,
+	"flex h-9 w-full items-center text-left transition-none",
+);
+
+/** Collapsed footer icon-rail control: same growing highlight in the square. */
+const FOOTER_RAIL_BUTTON_CLASS = cn(
+	NAV_ROW_HIGHLIGHT_HOST_CLASS,
+	"grid size-control-board place-items-center rounded-lg text-muted-foreground [&_svg]:size-icon-base",
+);
+
+/**
+ * Absolute pill behind row content. Starts 4px smaller on both axes
+ * (centered); hover/focus grows width+height to fill the host. Opacity snaps.
+ * Hover paint is gated in styles.css to fine pointers; focus-within always works.
+ */
+function NavRowHighlight({
+	active = false,
+	disabled = false,
+}: {
+	active?: boolean;
+	disabled?: boolean;
+}) {
+	return (
+		<span
+			aria-hidden="true"
+			className={cn(
+				"pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-lg bg-interactive-hover",
+				"transition-[width,height] duration-normal ease-[var(--ease-out)]",
+				"motion-reduce:h-full motion-reduce:w-full motion-reduce:transition-none",
+				active
+					? "h-full w-full bg-interactive-active opacity-100"
+					: cn(
+							"h-[calc(100%-4px)] w-[calc(100%-4px)] opacity-0",
+							!disabled &&
+								"group-focus-within/nav-row:h-full group-focus-within/nav-row:w-full group-focus-within/nav-row:opacity-100",
+						),
+				disabled && !active && "opacity-0!",
+			)}
+			data-nav-row-highlight=""
+			data-nav-row-highlight-idle={active || disabled ? undefined : ""}
+		/>
+	);
+}
 
 // Search + Pinned/Projects section chrome: same type, icon, and row size.
 const SECTION_ROW_CLASS =
@@ -405,13 +458,17 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 	return (
 		<span
 			aria-hidden="true"
-			className={cn(
-				"size-2 shrink-0 rounded-full",
-				dot.className,
-				dot.breathe && "animate-status-pulse",
-			)}
-			data-session-status={session.status}
-		/>
+			className="relative z-[1] inline-flex shrink-0 items-center justify-center px-1.5"
+		>
+			<span
+				className={cn(
+					"size-2 rounded-full",
+					dot.className,
+					dot.breathe && "animate-status-pulse",
+				)}
+				data-session-status={session.status}
+			/>
+		</span>
 	);
 }
 
@@ -872,12 +929,14 @@ export function Sidebar({
 											aria-label={t("shell.showMoreProjects", { count: hiddenProjectCount })}
 											className={cn(
 												SECTION_ROW_CLASS,
-												"sidebar-expanded-chrome mb-1 text-left text-muted-foreground hover:bg-interactive-hover hover:text-foreground group-data-[collapsible=icon]:hidden",
+												NAV_ROW_HIGHLIGHT_HOST_CLASS,
+												"sidebar-expanded-chrome mb-1 rounded-lg text-left text-muted-foreground group-data-[collapsible=icon]:hidden",
 											)}
 											onClick={() => setShowAllProjects(true)}
 											type="button"
 										>
-											<span className="truncate">{t("shell.showMore")}</span>
+											<NavRowHighlight />
+											<span className="relative z-[1] truncate">{t("shell.showMore")}</span>
 										</button>
 									) : null}
 									{isCollapsed && <CreateProjectListItem />}
@@ -938,29 +997,29 @@ export function Sidebar({
 					/>
 					<button
 						aria-label={t("settings.connectMobile")}
-						className={cn(
-							NAV_ROW_CLASS,
-							"flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0",
-						)}
+						className={FOOTER_NAV_BUTTON_CLASS}
 						onClick={() => selection.goConnectMobile()}
 						tabIndex={isCollapsed ? -1 : 0}
 						type="button"
 					>
-						<Smartphone aria-hidden="true" />
-						<span className="tracking-tight">{t("settings.connectMobile")}</span>
+						<NavRowHighlight />
+						<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+							<Smartphone aria-hidden="true" />
+							<span className="tracking-tight">{t("settings.connectMobile")}</span>
+						</span>
 					</button>
 					<button
 						aria-label={t("shell.settings")}
-						className={cn(
-							NAV_ROW_CLASS,
-							"flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0",
-						)}
+						className={FOOTER_NAV_BUTTON_CLASS}
 						onClick={() => selection.goGlobalSettings()}
 						tabIndex={isCollapsed ? -1 : 0}
 						type="button"
 					>
-						<Settings aria-hidden="true" />
-						<span className="tracking-tight">{t("shell.settings")}</span>
+						<NavRowHighlight />
+						<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+							<Settings aria-hidden="true" />
+							<span className="tracking-tight">{t("shell.settings")}</span>
+						</span>
 					</button>
 				</div>
 				<div
@@ -979,12 +1038,15 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("settings.connectMobile")}
-								className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								className={FOOTER_RAIL_BUTTON_CLASS}
 								onClick={() => selection.goConnectMobile()}
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
 							>
-								<Smartphone aria-hidden="true" />
+								<NavRowHighlight />
+								<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+									<Smartphone aria-hidden="true" />
+								</span>
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">{t("settings.connectMobile")}</TooltipContent>
@@ -993,12 +1055,15 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("shell.settings")}
-								className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								className={FOOTER_RAIL_BUTTON_CLASS}
 								onClick={() => selection.goGlobalSettings()}
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
 							>
-								<Settings aria-hidden="true" />
+								<NavRowHighlight />
+								<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+									<Settings aria-hidden="true" />
+								</span>
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">{t("shell.settings")}</TooltipContent>
@@ -1351,37 +1416,42 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									ref={setActivatorNodeRef}
 									className={cn(
 										NAV_ROW_CLASS,
+										NAV_ROW_HIGHLIGHT_HOST_CLASS,
 										// gap-2 matches SectionDisclosure so project icons/labels share the
 										// Projects header's left edge (NAV_ROW defaults to gap-2.5).
 										"cursor-grab gap-2 pr-sidebar-project-actions active:cursor-grabbing [&_svg]:size-icon-md",
 										"transition-none",
 										projectIsDragging && "!cursor-grabbing",
-										draggingProjectId && "hover:bg-transparent hover:text-muted-foreground active:bg-transparent active:text-muted-foreground",
+										draggingProjectId && "hover:text-muted-foreground active:text-muted-foreground",
 										"group-data-[collapsible=icon]:size-control-board! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:font-semibold",
 									)}
 								>
+									<NavRowHighlight active={projectActive} disabled={Boolean(draggingProjectId)} />
 									{/* Expanded sidebar: visual folder/chevron icon (decorative — toggle button is a sibling).
 		    size-icon-md matches the Projects section row; an 18px centered box was
 		    optically indenting these icons relative to the header. */}
 									<span
 										aria-hidden="true"
-										className="relative inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+										className="relative z-[1] inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+										data-expanded={expanded ? "" : undefined}
 										data-project-folder-visual=""
 									>
+										{/* 1.2 — contextual icon swap: scale 0.8↔1 (animated); opacity snaps for hide.
+										    Hover paint lives in styles.css (fine pointer only). */}
 										<span
-											className={cn(
-												"inline-flex size-icon-md items-center justify-center group-hover/menu-item:opacity-0",
-												draggingProjectId && "group-hover/menu-item:opacity-100",
-											)}
+											className="inline-flex size-icon-md items-center justify-center transition-[scale] duration-normal ease-[var(--ease-out)] motion-reduce:transition-none"
+											data-project-folder-icon=""
 										>
 											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
 										</span>
 										<span
 											className={cn(
-												"absolute inline-flex size-icon-md items-center justify-center opacity-0 transition-transform duration-150 group-hover/menu-item:opacity-100",
+												"absolute inline-flex size-icon-md scale-[0.8] items-center justify-center opacity-0",
+												"transition-[scale,rotate] duration-normal ease-[var(--ease-out)]",
+												"motion-reduce:transition-none",
 												expanded && "rotate-90",
-												draggingProjectId && "group-hover/menu-item:opacity-0",
 											)}
+											data-project-chevron-icon=""
 										>
 											<ChevronRight strokeWidth={1.75} />
 										</span>
@@ -1389,12 +1459,12 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									{/* Collapsed icon rail: folder icon */}
 									<span
 										aria-hidden="true"
-										className="hidden group-data-[collapsible=icon]:inline-flex size-8 items-center justify-center text-muted-foreground"
+										className="relative z-[1] hidden size-8 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:inline-flex"
 									>
 										{expanded ? <FolderOpen className="size-5" strokeWidth={1.75} /> : <Folder className="size-5" strokeWidth={1.75} />}
 									</span>
 									<span
-										className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
+										className="sidebar-expanded-chrome relative z-[1] min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
 										data-project-label=""
 									>
 										{workspace.name}
@@ -1402,7 +1472,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									{workspace.kind === "cloud" && (
 										<Badge
 											variant="outline"
-											className="sidebar-expanded-chrome h-4 shrink-0 px-1.5 text-2xs group-data-[collapsible=icon]:hidden"
+											className="sidebar-expanded-chrome relative z-[1] h-4 shrink-0 px-1.5 text-2xs group-data-[collapsible=icon]:hidden"
 										>
 											{t("shell.cloudProjectBadge")}
 										</Badge>
@@ -1813,17 +1883,18 @@ function SessionRow({
 			<SidebarMenuSubItem className={cn(indented && "pl-0.5")}>
 				<div
 					className={cn(
-						"relative flex h-8 w-full items-center gap-1.5 rounded-lg py-0 pl-1.5 pr-1",
-						active && "bg-interactive-active text-foreground",
+						"group/nav-row relative flex h-8 w-full items-center gap-1.5 rounded-lg py-0 pl-1.5 pr-1",
+						active && "text-foreground",
 					)}
 					data-session-row=""
 				>
+					<NavRowHighlight active={active} />
 					<SessionStatusDot session={session} />
 					<input
 						aria-label={t("shell.renameSession", { title: session.title })}
 						autoFocus
 						className={cn(
-							"h-full min-w-0 flex-1 appearance-none border-0 bg-transparent! p-0 text-sm text-foreground outline-none ring-0 focus:outline-none focus:ring-0",
+							"relative z-[1] h-full min-w-0 flex-1 appearance-none border-0 bg-transparent! p-0 text-sm text-foreground outline-none ring-0 focus:outline-none focus:ring-0",
 							session.lastUserMessageAt && "pr-[36px]",
 						)}
 						data-session-inline-editor=""
@@ -1864,14 +1935,15 @@ function SessionRow({
 			>
 				<div
 					className={cn(
-						"group/session-row flex h-8 w-full items-center rounded-lg",
-						"hover:bg-interactive-hover hover:text-foreground",
-						active && "bg-interactive-active text-foreground",
+						"group/session-row group/nav-row relative flex h-8 w-full items-center rounded-lg",
+						"hover:text-foreground",
+						active && "text-foreground",
 					)}
 					data-session-row=""
 					data-dragging={reorder?.isDragging ? "true" : undefined}
 				>
-					<div className={cn("flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
+					<NavRowHighlight active={active} disabled={Boolean(reorder?.isDragging)} />
+					<div className={cn("relative z-[1] flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
 						<button
 							aria-current={active ? "page" : undefined}
 							aria-describedby={describedBy}
@@ -1961,7 +2033,7 @@ const SessionMessageAge = memo(function SessionMessageAge({ session }: { session
 
 	return (
 		<time
-			className="absolute inset-y-0 right-1.5 flex min-w-0 shrink-0 items-center whitespace-nowrap font-sans text-micro tabular-nums text-passive opacity-100 transition-opacity duration-100 ease-out group-hover/session-row:opacity-0 group-focus-within/session-row:opacity-0"
+			className="absolute inset-y-0 right-1.5 z-[1] flex min-w-0 shrink-0 items-center whitespace-nowrap font-sans text-micro tabular-nums text-passive opacity-100 group-focus-within/session-row:opacity-0"
 			data-session-message-age=""
 			dateTime={session.lastUserMessageAt}
 			title={t("shell.lastMessageAt", { time: formatTimeCompact(session.lastUserMessageAt) })}
@@ -1991,9 +2063,12 @@ const SessionActions = memo(function SessionActions({
 		>
 			<div
 				className={cn(
-					"absolute inset-y-0 right-0.5 flex items-center gap-px opacity-0 transition-opacity duration-100 ease-out",
+					/* 1.3 — pin/kill: scale 0.8↔1 (animated); opacity snaps for hide */
+					"absolute inset-y-0 right-0.5 flex origin-right scale-[0.8] items-center gap-px opacity-0",
+					"transition-[scale] duration-normal ease-[var(--ease-out)]",
+					"motion-reduce:transition-none",
 					!isDragging &&
-						"group-hover/session-row:pointer-events-auto group-hover/session-row:opacity-100 group-focus-within/session-row:pointer-events-auto group-focus-within/session-row:opacity-100",
+						"group-focus-within/session-row:pointer-events-auto group-focus-within/session-row:scale-100 group-focus-within/session-row:opacity-100",
 				)}
 				data-session-action-buttons=""
 			>
@@ -2011,7 +2086,7 @@ const SessionActions = memo(function SessionActions({
 							{session.isPinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
 						</button>
 					</TooltipTrigger>
-					<TooltipContent side="left">
+					<TooltipContent side="top">
 						{session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
 					</TooltipContent>
 				</Tooltip>
@@ -2030,7 +2105,7 @@ const SessionActions = memo(function SessionActions({
 							<Trash2 aria-hidden="true" />
 						</button>
 					</TooltipTrigger>
-					<TooltipContent side="left">{t("shell.killSession")}</TooltipContent>
+					<TooltipContent side="top">{t("shell.killSession")}</TooltipContent>
 				</Tooltip>
 			</div>
 			<SessionMessageAge session={session} />
@@ -2054,16 +2129,16 @@ function CloudSignInRow({ tabIndex }: { tabIndex: number }) {
 	return (
 		<button
 			aria-label={t("shell.signInToAOCloud")}
-			className={cn(
-				NAV_ROW_CLASS,
-				"flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0",
-			)}
+			className={FOOTER_NAV_BUTTON_CLASS}
 			onClick={onSignIn}
 			tabIndex={tabIndex}
 			type="button"
 		>
-			<LogIn aria-hidden="true" />
-			<span className="tracking-tight">{t("shell.signInToAOCloud")}</span>
+			<NavRowHighlight />
+			<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+				<LogIn aria-hidden="true" />
+				<span className="tracking-tight">{t("shell.signInToAOCloud")}</span>
+			</span>
 		</button>
 	);
 }
@@ -2084,12 +2159,15 @@ function CloudSignInRailButton({ tabIndex }: { tabIndex: number }) {
 			<TooltipTrigger asChild>
 				<button
 					aria-label={t("shell.signInToAOCloud")}
-					className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+					className={FOOTER_RAIL_BUTTON_CLASS}
 					onClick={onSignIn}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<LogIn aria-hidden="true" />
+					<NavRowHighlight />
+					<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+						<LogIn aria-hidden="true" />
+					</span>
 				</button>
 			</TooltipTrigger>
 			<TooltipContent side="right">{t("shell.signInToAOCloud")}</TooltipContent>
@@ -2112,13 +2190,16 @@ function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 					aria-label={t("shell.signedInAs", {
 						email: session?.user.email ?? "AO Cloud",
 					})}
-					className={cn(NAV_ROW_CLASS, "flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0")}
+					className={FOOTER_NAV_BUTTON_CLASS}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<User aria-hidden="true" />
-					<span className="min-w-0 flex-1 truncate tracking-tight">
-						{session?.user.email ?? "AO Cloud"}
+					<NavRowHighlight />
+					<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+						<User aria-hidden="true" />
+						<span className="min-w-0 flex-1 truncate tracking-tight">
+							{session?.user.email ?? "AO Cloud"}
+						</span>
 					</span>
 				</button>
 			</DropdownMenuTrigger>
@@ -2149,12 +2230,15 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 					aria-label={t("shell.signedInAs", {
 						email: session?.user.email ?? "AO Cloud",
 					})}
-					className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+					className={FOOTER_RAIL_BUTTON_CLASS}
 					onClick={() => void signOut()}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<User aria-hidden="true" />
+					<NavRowHighlight />
+					<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+						<User aria-hidden="true" />
+					</span>
 				</button>
 			</TooltipTrigger>
 			<TooltipContent side="right">
@@ -2271,17 +2355,20 @@ function UpdateStatusRow({
 							? t("shell.downloadUpdateVersion", { version: action.version })
 							: t("shell.downloadUpdate")
 					}
-					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0")}
+					className={cn(FOOTER_NAV_BUTTON_CLASS, "min-w-0 flex-1")}
 					onClick={() => void aoBridge.updates.download()}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<Download aria-hidden="true" className="size-icon-lg shrink-0" />
-					<span className="min-w-0 flex-1">
-						<span className="block truncate tracking-tight">{t("shell.updateAvailable")}</span>
-						{versionLabel && (
-							<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
-						)}
+					<NavRowHighlight />
+					<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+						<Download aria-hidden="true" className="size-icon-lg shrink-0" />
+						<span className="min-w-0 flex-1">
+							<span className="block truncate tracking-tight">{t("shell.updateAvailable")}</span>
+							{versionLabel && (
+								<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
+							)}
+						</span>
 					</span>
 				</button>
 				{action.version && (
@@ -2414,12 +2501,15 @@ function UpdateStatusRail({
 								? t("shell.downloadUpdateVersion", { version: action.version })
 								: t("shell.downloadUpdate")
 						}
-						className="grid size-9 place-items-center rounded-lg text-passive hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
+						className={cn(FOOTER_RAIL_BUTTON_CLASS, "size-9 text-passive [&_svg]:size-4")}
 						onClick={() => void aoBridge.updates.download()}
 						tabIndex={tabIndex}
 						type="button"
 					>
-						<Download aria-hidden="true" />
+						<NavRowHighlight />
+						<span className="relative z-[1] grid place-items-center [&_svg]:size-4">
+							<Download aria-hidden="true" />
+						</span>
 					</button>
 				</TooltipTrigger>
 				<TooltipContent side="right">{label}</TooltipContent>
