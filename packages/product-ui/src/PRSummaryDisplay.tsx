@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { ExternalLinkComponent } from "./external-link";
 import { ArrowUpRightIcon } from "./icons";
 import { UserAvatar } from "./UserAvatar";
@@ -38,13 +38,11 @@ export function PRSummaryMeta({
 	className?: string;
 	countNounLabel?: CountNounLabel;
 	externalLink: ExternalLinkComponent;
-	leading?: string;
+	leading?: ReactNode;
 	pr: PRSummaryMetadata;
 }) {
 	const branchRange = prBranchRange(pr);
-	const hasDiff = hasDiffMetadata(pr);
 	const authorHandle = pr.author?.replace(/^@/, "") ?? "";
-	const primary: ReactNode[] = [leading, branchRange].filter(Boolean);
 	let author: ReactNode = null;
 	if (authorHandle) {
 		author =
@@ -64,34 +62,44 @@ export function PRSummaryMeta({
 				<span>{authorHandle}</span>
 			);
 	}
-	if (primary.length === 0 && !hasDiff && !author) {
+	const identity: ReactNode[] = [];
+	if (leading) identity.push(leading);
+	if (branchRange) identity.push(branchRange);
+	const details: ReactNode[] = [];
+	if (author) details.push(author);
+	details.push(...prDiffMetaParts(countNounLabel, pr));
+	if (identity.length === 0 && details.length === 0) {
 		return null;
 	}
 	return (
-		<div className={cn("min-w-0 font-mono text-2xs leading-4", className)}>
-			{primary.length > 0 ? (
-				<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted-foreground">
-					{primary.map((part, index) => (
-						<Fragment key={index}>
-							{index > 0 ? <span className="shrink-0 text-passive">·</span> : null}
-							<span className="min-w-0 break-words [overflow-wrap:anywhere]">{part}</span>
-						</Fragment>
+		<div
+			className={cn(
+				"min-w-0 space-y-0.5 font-mono text-2xs leading-4 text-muted-foreground",
+				className,
+			)}
+		>
+			{identity.length > 0 ? (
+				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+					{identity.map((part, index) => (
+						<span className="min-w-0 break-words [overflow-wrap:anywhere]" key={index}>{part}</span>
 					))}
 				</div>
 			) : null}
-			{author ? <div className="mt-0.5 min-w-0 break-words [overflow-wrap:anywhere] text-muted-foreground">{author}</div> : null}
-			{hasDiff ? <PRDiffMeta countNounLabel={countNounLabel} pr={pr} /> : null}
+			{details.length > 0 ? (
+				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+					{details.map((part, index) => (
+						<span className="min-w-0 break-words [overflow-wrap:anywhere]" key={index}>{part}</span>
+					))}
+				</div>
+			) : null}
 		</div>
 	);
 }
 
-function PRDiffMeta({
-	countNounLabel,
-	pr,
-}: {
-	countNounLabel: CountNounLabel;
-	pr: PRSummaryMetadata;
-}) {
+function prDiffMetaParts(
+	countNounLabel: CountNounLabel,
+	pr: PRSummaryMetadata,
+): ReactNode[] {
 	const parts: ReactNode[] = [];
 	if (pr.changedFiles > 0) {
 		parts.push(
@@ -114,16 +122,7 @@ function PRDiffMeta({
 			</span>,
 		);
 	}
-	return (
-		<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-muted-foreground">
-			{parts.map((part, index) => (
-				<Fragment key={index}>
-					{index > 0 ? <span className="text-passive">·</span> : null}
-					{part}
-				</Fragment>
-			))}
-		</div>
-	);
+	return parts;
 }
 
 export function PRCardStatusSummary({
@@ -183,8 +182,7 @@ export function PRCardStatusSummary({
 	return (
 		<div className={cn("border-t border-border pt-2", className)}>
 			<div className="flex min-w-0 items-center gap-3">
-				<div className="flex min-w-0 flex-1 flex-col gap-1.5">
-					<div className="flex min-w-0 items-start gap-2">
+				<div className="flex min-w-0 flex-1 items-start gap-2">
 						<span
 							aria-hidden="true"
 							className={cn(
@@ -193,57 +191,58 @@ export function PRCardStatusSummary({
 								presentation.primary.breathe && "animate-status-pulse",
 							)}
 						/>
-						<div className="min-w-0 flex-1">
-							<div
-								className={cn(
-									"text-xs font-semibold leading-4",
-									toneClass[presentation.primary.tone],
-								)}
-							>
-								<PRCardStatusLink externalLink={externalLink} status={presentation.primary} />
-							</div>
-							{presentation.primary.detail ? (
-								<div className="mt-0.5 min-w-0 break-words text-2xs leading-4 text-muted-foreground">
-									{presentation.primary.detail}
+						<div
+							className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1"
+							data-slot="pr-status-layout"
+						>
+							<div className="min-w-0">
+								<div className={cn("text-xs font-semibold leading-4", toneClass[presentation.primary.tone])}>
+									<PRCardStatusLink externalLink={externalLink} status={presentation.primary} />
 								</div>
-							) : null}
-							{presentation.primary.links.length > 0 ? (
-								<div className="mt-1 flex min-w-0 flex-wrap gap-x-1.5 gap-y-1 font-mono text-2xs">
-									{presentation.primary.links.slice(0, 3).map((link, index) => (
-										<SummaryLink
-											className={toneClass[presentation.primary.tone]}
-											externalLink={externalLink}
-											interactive
-											key={`${presentation.primary.key}-${index}-${link.label}`}
-											link={link}
-										/>
+								{presentation.primary.detail ? (
+									<div className="mt-0.5 min-w-0 break-words text-2xs leading-4 text-muted-foreground">
+										{presentation.primary.detail}
+									</div>
+								) : null}
+								{presentation.primary.links.length > 0 ? (
+									<div className="mt-1 flex min-w-0 flex-wrap gap-x-1.5 gap-y-1 font-mono text-2xs">
+										{presentation.primary.links.slice(0, 3).map((link, index) => (
+											<SummaryLink
+												className={toneClass[presentation.primary.tone]}
+												externalLink={externalLink}
+												interactive
+												key={`${presentation.primary.key}-${index}-${link.label}`}
+												link={link}
+											/>
+										))}
+									</div>
+								) : null}
+							</div>
+							{presentation.readiness || supporting.length > 0 ? (
+								<div
+									className="flex shrink-0 flex-col items-end gap-1 text-2xs leading-4"
+									data-slot="pr-secondary-statuses"
+								>
+									{presentation.readiness ? (
+										<span className={toneClass[presentation.readiness.tone]}>
+											<PRCardStatusLink
+												externalLink={externalLink}
+												status={{ key: "merge", links: [], ...presentation.readiness }}
+											/>
+										</span>
+									) : null}
+									{supporting.map((status) => (
+										<span
+											className={status.tone === "passive" ? "text-muted-foreground" : toneClass[status.tone]}
+											key={status.key}
+										>
+											<PRCardStatusLink externalLink={externalLink} status={status} />
+										</span>
 									))}
 								</div>
 							) : null}
 						</div>
 					</div>
-					{supporting.length > 0 ? (
-						<div className="min-w-0 pl-4">
-							<div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 font-mono text-2xs">
-								{supporting.map((status) => (
-									<span
-										className={cn("inline-flex items-center gap-1", toneClass[status.tone])}
-										key={status.key}
-									>
-										<span
-											aria-hidden="true"
-											className={cn(
-												"size-1 rounded-full bg-current",
-												status.breathe && "animate-status-pulse",
-											)}
-										/>
-										<PRCardStatusLink externalLink={externalLink} status={status} />
-									</span>
-								))}
-							</div>
-						</div>
-					) : null}
-				</div>
 				{action ? <div className="shrink-0 self-center">{action}</div> : null}
 			</div>
 		</div>

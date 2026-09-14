@@ -203,17 +203,16 @@ describe("prDiffSummary", () => {
 });
 
 describe("prCardPresentation", () => {
-	const priorityCases: Array<[string, Partial<SessionPRSummary>, string]> = [
-		["conflict + passing + approval", { mergeability: { state: "conflicting", reasons: [], prUrl: "" } }, "Not mergeable yet"],
-		["clean + passing + approval", { mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Mergeable"],
-		["clean + failing + approval", { ci: { autoInjectCI: true, state: "failing", failingChecks: [] }, mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Not mergeable yet"],
+	const priorityCases: Array<[string, Partial<SessionPRSummary>, string, string]> = [
+		["conflict + passing + approval", { mergeability: { state: "conflicting", reasons: [], prUrl: "" } }, "Merge conflict", "Merge conflict"],
+		["clean + passing + approval", { mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Review approved", "Ready to merge"],
+		["clean + failing + approval", { ci: { autoInjectCI: true, state: "failing", failingChecks: [] }, mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Checks failing", "Merge blocked"],
 	];
-	it.each(priorityCases)("renders the priority stack for %s", (_name, overrides, readiness) => {
+	it.each(priorityCases)("keeps %s concise while exposing merge readiness", (_name, overrides, primaryLabel, readinessLabel) => {
 		const presentation = prCardPresentation(summary(overrides));
-		expect(presentation.statusRows?.map((status) => status.label)).toEqual(
-			readiness === "Mergeable" ? ["Checks passing", "Review status"] : overrides.mergeability?.state === "conflicting" ? ["Merge conflict", "Checks passing", "Review status"] : ["Checks failing", "Review status"],
-		);
-		expect(presentation.readiness?.label).toBe(readiness);
+		expect(presentation.primary.label).toBe(primaryLabel);
+		expect(presentation.statusRows).toBeUndefined();
+		expect(presentation.readiness?.label).toBe(readinessLabel);
 	});
 
 	it("shows a required review once instead of repeating it as a merge blocker", () => {
@@ -235,9 +234,10 @@ describe("prCardPresentation", () => {
 			tone: "review",
 		});
 		expect(presentation.supporting.map((status) => status.label)).toEqual(["Checks passing"]);
+		expect(presentation.readiness?.label).toBe("Merge blocked");
 	});
 
-	it("shows checking merge readiness while provider state is pending", () => {
+	it("uses the primary status while provider state is pending", () => {
 		const presentation = prCardPresentation(
 			summary({
 				ci: { autoInjectCI: true, state: "pending", failingChecks: [] },
@@ -245,11 +245,12 @@ describe("prCardPresentation", () => {
 			}),
 		);
 
-		expect(presentation.readiness?.label).toBe("Checking merge readiness");
-		expect(presentation.readiness?.detail).toBe("Waiting for the latest checks and review state.");
+		expect(presentation.primary.label).toBe("Checks running");
+		expect(presentation.statusRows).toBeUndefined();
+		expect(presentation.readiness?.label).toBe("Merge pending");
 	});
 
-	it("prioritizes failing checks over lower-priority review and merge facts", () => {
+	it("keeps reviewer attention left while exposing failing checks and readiness separately", () => {
 		const presentation = prCardPresentation(
 			summary({
 				ci: {
@@ -266,9 +267,13 @@ describe("prCardPresentation", () => {
 			}),
 		);
 
-		expect(presentation.primary.label).toBe("Checks failing");
-		expect(presentation.primary.links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
-		expect(presentation.supporting).toEqual([]);
+		expect(presentation.primary.label).toBe("Review required");
+		expect(presentation.supporting[0]).toMatchObject({
+			label: "Checks failing",
+			tone: "error",
+		});
+		expect(presentation.supporting[0].links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
+		expect(presentation.readiness?.label).toBe("Merge blocked");
 	});
 
 	it("retains running checks as linked supporting state when review is the primary action", () => {
@@ -290,6 +295,7 @@ describe("prCardPresentation", () => {
 			href: "https://github.com/acme/repo/pull/7/checks",
 			breathe: true,
 		});
+		expect(presentation.readiness?.label).toBe("Merge blocked");
 	});
 
 	it("shows running checks instead of an internal provider blocker", () => {
