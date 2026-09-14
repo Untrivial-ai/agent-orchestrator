@@ -3825,6 +3825,121 @@ func TestServiceStopAllClosesHealthyControllerAfterStuckStreamExhaustsShutdownCo
 	t.Fatal("healthy controller remained registered after StopAll initiated detach")
 }
 
+func TestServiceStopAllReturnsByDeadlineWhenControllerGateIsHeld(t *testing.T) {
+	st := openStore(t)
+	now := time.Date(2026, 9, 14, 17, 0, 0, 0, time.UTC)
+	healthyRecord, err := st.CreateSession(context.Background(), domain.SessionRecord{
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	heldSession := testSession
+	healthySession := healthyRecord.ID
+	if heldSession >= healthySession {
+		t.Fatalf("held session %s must sort before healthy session %s so StopAll waits on the contended gate first", heldSession, healthySession)
+	}
+
+	heldRelease := make(chan struct{})
+	held := newFakeConversation()
+	held.providerConversationID = "held-thread"
+	held.closeStarted = make(chan struct{})
+	held.closeEventsRelease = heldRelease
+	healthy := newFakeConversation()
+	healthy.providerConversationID = "healthy-thread"
+	var healthyClosed atomic.Bool
+	healthy.onClose = func() { healthyClosed.Store(true) }
+
+	var nextID atomic.Int32
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{
+			start: func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+				switch cfg.SessionID {
+				case heldSession:
+					return held, nil
+				case healthySession:
+					return healthy, nil
+				default:
+					return nil, fmt.Errorf("unexpected session %s", cfg.SessionID)
+				}
+			},
+		}},
+		Log: slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			return fmt.Sprintf("stopall-held-%d", nextID.Add(1))
+		},
+	})
+	workspace := t.TempDir()
+	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: heldSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("Start held: %v", err)
+	}
+	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: healthySession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("Start healthy: %v", err)
+	}
+
+	var releaseHeld sync.Once
+	releaseHeldStream := func() { releaseHeld.Do(func() { close(heldRelease) }) }
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- svc.Stop(context.Background(), heldSession) }()
+	t.Cleanup(func() {
+		releaseHeldStream()
+		select {
+		case <-stopDone:
+		case <-time.After(time.Second):
+		}
+		_ = svc.Stop(context.Background(), healthySession)
+	})
+	select {
+	case <-held.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not acquire the held session gate")
+	}
+
+	const shutdownTimeout = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.StopAll(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(shutdownTimeout + 200*time.Millisecond):
+		t.Fatal("StopAll did not return by the shutdown deadline while a controller gate was held")
+	}
+
+	if !healthyClosed.Load() {
+		t.Fatal("healthy controller was not closed while another session gate was held")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := svc.Controller(healthySession); errors.Is(err, chatsvc.ErrNoController) {
+			if svc.HasLiveChatController(healthySession) {
+				t.Fatal("healthy live-controller guard remained set after detach")
+			}
+			releaseHeldStream()
+			select {
+			case <-stopDone:
+			case <-time.After(time.Second):
+				t.Fatal("held Stop did not return after its stream was released")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("healthy controller remained registered after StopAll initiated detach")
+}
+
 func TestServiceStopAllOnlyDetachesPersistentConversation(t *testing.T) {
 	provider := &terminatingConversation{fakeConversation: newFakeConversation()}
 	h := newHarnessWithConversation(t, provider)

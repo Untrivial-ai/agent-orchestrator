@@ -70,6 +70,15 @@ func (g controllerGate) lock(ctx context.Context) error {
 	}
 }
 
+func (g controllerGate) tryLock() bool {
+	select {
+	case g <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 func (g controllerGate) unlock() { <-g }
 
 // Options configures a Service. The id factory and clock are injected so tests
@@ -952,12 +961,14 @@ func (s *Service) StopAll(ctx context.Context) {
 
 	for _, target := range targets {
 		gate := s.controllerGate(target.id)
-		// Close waits on the shared shutdown context, so a stuck earlier stream
-		// can expire it. Locking with that same ctx would take the cancellation
-		// branch and skip Close for every remaining controller.
-		if err := gate.lock(context.WithoutCancel(ctx)); err != nil {
-			s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
-			continue
+		// Take an uncontended gate immediately so an expired shared shutdown
+		// context cannot skip Close. If Start/Stop/edit/branch already holds it,
+		// wait only until the original deadline — never past ShutdownTimeout.
+		if !gate.tryLock() {
+			if err := gate.lock(ctx); err != nil {
+				s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
+				continue
+			}
 		}
 		s.mu.RLock()
 		current, ok := s.controllers[target.id]
