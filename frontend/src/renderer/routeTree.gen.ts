@@ -17,6 +17,7 @@ import { Route as ShellSessionsSessionIdRouteImport } from './routes/_shell.sess
 import { Route as ShellProjectsProjectIdRouteImport } from './routes/_shell.projects.$projectId'
 import { Route as ShellProjectsProjectIdWorkflowRouteImport } from './routes/_shell.projects.$projectId_.workflow'
 import { Route as ShellProjectsProjectIdSettingsRouteImport } from './routes/_shell.projects.$projectId_.settings'
+import { Route as ShellProjectsProjectIdWorkflowRolesRouteImport } from './routes/_shell.projects.$projectId_.workflow.roles'
 import { Route as ShellProjectsProjectIdWorkflowPlanIdRouteImport } from './routes/_shell.projects.$projectId_.workflow.$planId'
 import { Route as ShellProjectsProjectIdSessionsSessionIdRouteImport } from './routes/_shell.projects.$projectId_.sessions.$sessionId'
 
@@ -61,6 +62,12 @@ const ShellProjectsProjectIdSettingsRoute =
     path: '/projects/$projectId/settings',
     getParentRoute: () => ShellRoute,
   } as any)
+const ShellProjectsProjectIdWorkflowRolesRoute =
+  ShellProjectsProjectIdWorkflowRolesRouteImport.update({
+    id: '/roles',
+    path: '/roles',
+    getParentRoute: () => ShellProjectsProjectIdWorkflowRoute,
+  } as any)
 const ShellProjectsProjectIdWorkflowPlanIdRoute =
   ShellProjectsProjectIdWorkflowPlanIdRouteImport.update({
     id: '/$planId',
@@ -84,6 +91,7 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId/workflow': typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
   '/projects/$projectId/workflow/$planId': typeof ShellProjectsProjectIdWorkflowPlanIdRoute
+  '/projects/$projectId/workflow/roles': typeof ShellProjectsProjectIdWorkflowRolesRoute
 }
 export interface FileRoutesByTo {
   '/settings': typeof ShellSettingsRoute
@@ -95,6 +103,7 @@ export interface FileRoutesByTo {
   '/projects/$projectId/workflow': typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
   '/projects/$projectId/workflow/$planId': typeof ShellProjectsProjectIdWorkflowPlanIdRoute
+  '/projects/$projectId/workflow/roles': typeof ShellProjectsProjectIdWorkflowRolesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -108,6 +117,7 @@ export interface FileRoutesById {
   '/_shell/projects/$projectId_/workflow': typeof ShellProjectsProjectIdWorkflowRouteWithChildren
   '/_shell/projects/$projectId_/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
   '/_shell/projects/$projectId_/workflow/$planId': typeof ShellProjectsProjectIdWorkflowPlanIdRoute
+  '/_shell/projects/$projectId_/workflow/roles': typeof ShellProjectsProjectIdWorkflowRolesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId/workflow'
     | '/projects/$projectId/sessions/$sessionId'
     | '/projects/$projectId/workflow/$planId'
+    | '/projects/$projectId/workflow/roles'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/settings'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId/workflow'
     | '/projects/$projectId/sessions/$sessionId'
     | '/projects/$projectId/workflow/$planId'
+    | '/projects/$projectId/workflow/roles'
   id:
     | '__root__'
     | '/_shell'
@@ -144,6 +156,7 @@ export interface FileRouteTypes {
     | '/_shell/projects/$projectId_/workflow'
     | '/_shell/projects/$projectId_/sessions/$sessionId'
     | '/_shell/projects/$projectId_/workflow/$planId'
+    | '/_shell/projects/$projectId_/workflow/roles'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -208,6 +221,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellProjectsProjectIdSettingsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/projects/$projectId_/workflow/roles': {
+      id: '/_shell/projects/$projectId_/workflow/roles'
+      path: '/roles'
+      fullPath: '/projects/$projectId/workflow/roles'
+      preLoaderRoute: typeof ShellProjectsProjectIdWorkflowRolesRouteImport
+      parentRoute: typeof ShellProjectsProjectIdWorkflowRoute
+    }
     '/_shell/projects/$projectId_/workflow/$planId': {
       id: '/_shell/projects/$projectId_/workflow/$planId'
       path: '/$planId'
@@ -227,12 +247,15 @@ declare module '@tanstack/react-router' {
 
 interface ShellProjectsProjectIdWorkflowRouteChildren {
   ShellProjectsProjectIdWorkflowPlanIdRoute: typeof ShellProjectsProjectIdWorkflowPlanIdRoute
+  ShellProjectsProjectIdWorkflowRolesRoute: typeof ShellProjectsProjectIdWorkflowRolesRoute
 }
 
 const ShellProjectsProjectIdWorkflowRouteChildren: ShellProjectsProjectIdWorkflowRouteChildren =
   {
     ShellProjectsProjectIdWorkflowPlanIdRoute:
       ShellProjectsProjectIdWorkflowPlanIdRoute,
+    ShellProjectsProjectIdWorkflowRolesRoute:
+      ShellProjectsProjectIdWorkflowRolesRoute,
   }
 
 const ShellProjectsProjectIdWorkflowRouteWithChildren =
