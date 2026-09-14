@@ -113,9 +113,8 @@ func writeAgentLaunchList(cmd *cobra.Command, readiness agentReadinessResponse) 
 		reason := "-"
 		if snapshot.Installation.State != "installed" && snapshot.Installation.ReasonCode != "" {
 			reason = snapshot.Installation.ReasonCode
-		} else if snapshot.Authentication.ReasonCode != "" && (
-			snapshot.Authentication.State != "authorized" && snapshot.Authentication.State != "not_applicable" ||
-				snapshot.EffectiveReadiness != "ready" && snapshot.Authentication.ReasonCode != "authorized") {
+		} else if snapshot.Authentication.ReasonCode != "" && (snapshot.Authentication.State != "authorized" && snapshot.Authentication.State != "not_applicable" ||
+			snapshot.EffectiveReadiness != "ready" && snapshot.Authentication.ReasonCode != "authorized") {
 			reason = snapshot.Authentication.ReasonCode
 		}
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", snapshot.ID, snapshot.Label, snapshot.Installation.State, snapshot.Authentication.State, snapshot.EffectiveReadiness, reason); err != nil {
