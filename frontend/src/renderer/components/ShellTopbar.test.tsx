@@ -159,6 +159,7 @@ function renderTopbarSessions(
 	paramsMock.projectId = sessions[0].workspaceId;
 	paramsMock.sessionId = sessionId;
 	const queryClient = new QueryClient();
+	queryClient.setQueryData(["workspaces"], data);
 	const topbar = () => (
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>

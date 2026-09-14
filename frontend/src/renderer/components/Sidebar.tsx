@@ -63,6 +63,7 @@ import {
 	type WorkspaceSummary,
 	sortedWorkerSessions,
 	workerSessions,
+	resolveNextNavigationAfterSessionKill,
 	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
@@ -400,43 +401,10 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 	);
 }
 
-export type NextSessionNavigation =
-	| { target: "session"; sessionId: string }
-	| { target: "project" };
-
-/**
- * Resolves where to navigate after an active session is killed.
- * Prioritizes:
- * 1. Adjacent remaining worker session (previous if available, else first remaining).
- * 2. Active non-terminated orchestrator if no worker sessions remain.
- * 3. Project board if no alive sessions remain.
- */
-export function resolveNextNavigationAfterSessionKill(
-	workspace: WorkspaceSummary | undefined,
-	killedSessionId: string,
-	sessionsInDisplayOrder?: WorkspaceSession[],
-): NextSessionNavigation {
-	if (!workspace) return { target: "project" };
-
-	const workerList = (sessionsInDisplayOrder ?? sortedWorkerSessions(workspace.sessions)).filter(
-		(s) => s.isTerminated !== true,
-	);
-	const currentIndex = workerList.findIndex((s) => s.id === killedSessionId);
-	const remaining = workerList.filter((s) => s.id !== killedSessionId);
-
-	if (remaining.length > 0) {
-		const nextIndex = currentIndex > 0 ? currentIndex - 1 : 0;
-		const nextSession = remaining[nextIndex] ?? remaining[0];
-		return { target: "session", sessionId: nextSession.id };
-	}
-
-	const orchestrator = newestActiveOrchestrator(workspace.sessions);
-	if (orchestrator && orchestrator.id !== killedSessionId && orchestrator.isTerminated !== true) {
-		return { target: "session", sessionId: orchestrator.id };
-	}
-
-	return { target: "project" };
-}
+export {
+	resolveNextNavigationAfterSessionKill,
+	type NextSessionNavigation,
+} from "../types/workspace";
 
 // Built on shadcn's sidebar primitives (components/ui/sidebar): the provider in
 // _shell owns the persistent open state. Collapsed sidebars move fully off-canvas.
@@ -703,23 +671,14 @@ export function Sidebar({
 		(killedSession: WorkspaceSession) => {
 			if (selection.activeSessionId !== killedSession.id) return;
 			const workspace = workspaces.find((w) => w.id === killedSession.workspaceId);
-			const projectOrder = sessionOrderByProject[killedSession.workspaceId] ?? [];
-			const displaySessions = workspace
-				? applyOrder(
-						sortedWorkerSessions(workspace.sessions).filter((s) => s.isTerminated !== true),
-						(s) => s.id,
-						projectOrder,
-						"start",
-				  )
-				: undefined;
-			const nextRoute = resolveNextNavigationAfterSessionKill(workspace, killedSession.id, displaySessions);
+			const nextRoute = resolveNextNavigationAfterSessionKill(workspace, killedSession.id);
 			if (nextRoute.target === "session") {
 				selection.goSession(killedSession.workspaceId, nextRoute.sessionId);
 			} else {
 				selection.goProject(killedSession.workspaceId);
 			}
 		},
-		[selection, sessionOrderByProject, workspaces],
+		[selection, workspaces],
 	);
 
 	return (
