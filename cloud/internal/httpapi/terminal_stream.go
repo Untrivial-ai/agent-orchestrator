@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -53,6 +54,17 @@ type workerTerminalStream struct {
 type terminalRelayOutput struct {
 	sequence int64
 	data     []byte
+}
+
+// terminalRelayStats aggregates one worker stream's hot-path relay activity.
+// It is emitted once when the stream closes so saturation remains observable
+// without creating a CloudWatch record for every terminal frame.
+type terminalRelayStats struct {
+	forwardedFrames  atomic.Uint64
+	forwardedBytes   atomic.Uint64
+	mirroredFrames   atomic.Uint64
+	mirroredBytes    atomic.Uint64
+	saturatedClients atomic.Uint64
 }
 
 func newTerminalStreams() *terminalStreams {
@@ -315,6 +327,19 @@ func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 	}
 	deregister := s.terminalStreams.registerWorker(terminalID, stream)
 	defer deregister()
+	relayStats := &terminalRelayStats{}
+	defer func() {
+		if s.terminalRelayEnabled && s.logger != nil {
+			s.logger.Debug("terminal relay stream summary",
+				"terminal_id", terminalID,
+				"forwarded_frames", relayStats.forwardedFrames.Load(),
+				"forwarded_bytes", relayStats.forwardedBytes.Load(),
+				"mirrored_frames", relayStats.mirroredFrames.Load(),
+				"mirrored_bytes", relayStats.mirroredBytes.Load(),
+				"saturated_clients", relayStats.saturatedClients.Load(),
+			)
+		}
+	}()
 
 	var writeMu sync.Mutex
 	writeFrame := func(frame worker.TerminalStreamFrame) error {
@@ -356,8 +381,10 @@ func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 					cancel()
 					return
 				}
+				relayStats.mirroredFrames.Add(1)
+				relayStats.mirroredBytes.Add(uint64(len(queued.frame.Data)))
 				if s.logger != nil {
-					s.logger.Info("terminal relay output mirrored",
+					s.logger.Debug("terminal relay output mirrored",
 						"terminal_id", terminalID, "sequence", sequence,
 						"bytes", len(queued.frame.Data))
 				}
@@ -404,8 +431,11 @@ func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 			dropped := s.terminalStreams.relayOutput(terminalID, terminalRelayOutput{
 				sequence: frame.ID, data: frame.Data,
 			})
+			relayStats.forwardedFrames.Add(1)
+			relayStats.forwardedBytes.Add(uint64(len(frame.Data)))
+			relayStats.saturatedClients.Add(uint64(dropped))
 			if s.logger != nil {
-				s.logger.Info("terminal relay output forwarded",
+				s.logger.Debug("terminal relay output forwarded",
 					"terminal_id", terminalID, "sequence", frame.ID,
 					"bytes", len(frame.Data), "saturated_clients", dropped)
 			}

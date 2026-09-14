@@ -302,7 +302,7 @@ func (s *Server) readTerminalInput(
 			// the interaction lease on its own timer, so no durable row is
 			// needed to keep the session from idle-pausing.
 			if s.terminalRelayEnabled && s.logger != nil {
-				s.logger.Info("terminal relay input forwarded",
+				s.logger.Debug("terminal relay input forwarded",
 					"terminal_id", terminal.ID, "bytes", len(data))
 			}
 		} else if err := retryTerminalRequest(ctx, func() error {
@@ -491,7 +491,7 @@ func (s *Server) writeTerminalOutput(
 			}
 			after = frame.sequence
 			if s.logger != nil {
-				s.logger.Info("terminal relay output delivered",
+				s.logger.Debug("terminal relay output delivered",
 					"terminal_id", terminal.ID, "sequence", frame.sequence,
 					"bytes", len(frame.data))
 			}
