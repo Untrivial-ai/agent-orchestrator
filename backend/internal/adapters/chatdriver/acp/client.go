@@ -543,6 +543,16 @@ func (c *conversation) discardPermission(requestID string) {
 }
 
 func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNotification) error {
+	// Keep replay normalization off the SDK's bounded notification queue.
+	if c.captureReplayUpdate(params) {
+		return nil
+	}
+	return c.processUpdate(params)
+}
+
+// processUpdate runs the full ACP -> AO normalization for one update: live
+// notifications and replayed updates during the post-load drain.
+func (c *conversation) processUpdate(params acpsdk.SessionNotification) error {
 	if c.prepareHistoryUpdate(params.Update) {
 		return nil
 	}
