@@ -25,7 +25,20 @@ import {
 	workerSessions,
 	type WorkspaceSession,
 	type WorkspaceSummary,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
+
+const AD_HOC_AGENTS_WORKSPACE_NAME = "Ad hoc agents";
+
+function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): WorkspaceSummary[] {
+	const standalone = workspaces.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
+	if (!standalone) return workspaces;
+	return [
+		...workspaces.filter((workspace) => workspace.id !== STANDALONE_WORKSPACE_ID),
+		standalone,
+	];
+}
 
 function toAgentSwitchSummary(
 	agentSwitch: components["schemas"]["AgentSwitch"],
@@ -120,6 +133,59 @@ function reportUnknownSessionField(field: "status" | "activity", value?: string)
 	void captureRendererEvent("ao.renderer.session_state_unknown", { field, reason });
 }
 
+function toLocalWorkspaceSession(
+	session: components["schemas"]["ControllersSessionView"],
+	workspaceId: string,
+	workspaceName: string,
+): WorkspaceSession {
+	const status = toSessionStatus(session.status, session.isTerminated);
+	const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
+	const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
+	const activity = toSessionActivity(session.activity);
+	if (status === "unknown") reportUnknownSessionField("status", session.status);
+	if (!activity || activity.state === "unknown") reportUnknownSessionField("activity", session.activity?.state);
+	return {
+		id: session.id,
+		terminalHandleId: session.terminalHandleId,
+		terminalGeneration: session.terminalGeneration,
+		workspaceId,
+		workspaceName,
+		title: session.displayName ?? session.issueId ?? session.id,
+		issueId: session.issueId,
+		provider: toAgentProvider(session.harness),
+		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
+		reviewerConfig: session.reviewerConfig ? {
+			model: session.reviewerConfig.model ?? undefined,
+			mode: session.reviewerConfig.mode ?? undefined,
+			permissions: session.reviewerConfig.permissions ?? undefined,
+		} : undefined,
+		autoReviewEnabled: session.autoReviewEnabled ?? false,
+		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
+		// Carried through verbatim: the session surface must render from
+		// the mode this session was created with, not from the current default.
+		mode: session.mode === "chat" ? "chat" : "tui",
+		branch: session.branch || undefined,
+		status,
+		scmStatus,
+		kanbanColumn,
+		displayStatus: session.displayStatus || undefined,
+		isTerminated: session.isTerminated,
+		terminateOnPrMerge: session.terminateOnPrMerge ?? false,
+		autoInjectReview: session.autoInjectReview ?? true,
+		autoInjectCI: session.autoInjectCI ?? true,
+		createdAt: session.createdAt,
+		updatedAt: session.updatedAt,
+		lastUserMessageAt: session.lastUserMessageAt ?? undefined,
+		activity,
+		activeAgentSwitch: session.activeAgentSwitch ? toAgentSwitchSummary(session.activeAgentSwitch) : undefined,
+		previewUrl: session.previewUrl,
+		previewRevision: session.previewRevision,
+		isPinned: session.isPinned ?? false,
+		pinnedAt: session.pinnedAt ?? undefined,
+		prs: (session.prs ?? []).map(toPullRequestFacts),
+	};
+}
+
 // e2e seam (dev:web only): the Playwright fake-agent harness injects
 // `window.__aoFakeAgent` (see e2e/support/fake-bridge.ts) to drive a
 // deterministic, mutable session timeline off the SSE refetch path. Compiled
@@ -150,20 +216,31 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	agentSwitchVisibility.setQueryHealthy("active", true, "workspaces");
 	agentSwitchVisibility.setQueryHealthy("history", true, "workspaces");
 
-	return (projectsData?.projects ?? []).map((project) => {
+	const sessions = sessionsData?.sessions ?? [];
+	const projects = (projectsData?.projects ?? []).map((project) => {
 		const kind = toProjectKind(project.kind);
 		return {
-		id: project.id,
-		name: project.name,
-		kind,
-		path: project.path,
-		folderMissing: project.folderMissing,
-		orchestratorAgent: project.orchestratorAgent ? toAgentProvider(project.orchestratorAgent) : undefined,
-			sessions: (sessionsData?.sessions ?? [])
+			id: project.id,
+			name: project.name,
+			kind,
+			path: project.path,
+			folderMissing: project.folderMissing,
+			orchestratorAgent: project.orchestratorAgent ? toAgentProvider(project.orchestratorAgent) : undefined,
+			sessions: sessions
 				.filter((session) => session.projectId === project.id)
 				.map((session) => toWorkspaceSession(session, project)),
 		};
 	});
+	const standalone: WorkspaceSummary = {
+		id: STANDALONE_WORKSPACE_ID,
+		name: AD_HOC_AGENTS_WORKSPACE_NAME,
+		kind: STANDALONE_PROJECT_KIND,
+		path: "Not attached to a project",
+		sessions: sessions
+			.filter((session) => !session.projectId)
+			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, AD_HOC_AGENTS_WORKSPACE_NAME)),
+	};
+	return standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired
@@ -299,7 +376,10 @@ export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
 		// cloud projects would keep rendering for a signed-out user.
 		if (!ready || orgId === undefined) return localData;
 		const sessions = cloudSessionData ?? [];
-		return [...localData, ...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId))];
+		return placeStandaloneWorkspaceLast([
+			...localData,
+			...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId)),
+		]);
 	}, [localData, cloudData, cloudSessionData, orgId, ready]);
 	return { ...local, data };
 }
@@ -330,9 +410,10 @@ export function useWorkspaceSession(sessionId: string) {
 			if (error) throw error;
 			const session = data?.session;
 			if (!session) return undefined;
-			const project =
-				localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
-				({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">);
+			const project = session.projectId
+				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
+					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
+				: ({ id: STANDALONE_WORKSPACE_ID, name: AD_HOC_AGENTS_WORKSPACE_NAME } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});
@@ -441,7 +522,7 @@ function selectTraySessions(workspaces: WorkspaceSummary[]): TraySessionEntry[] 
 			const zone = attentionZone(session);
 			if ((zone === "merge" && session.status === "merged") || (zone !== "action" && zone !== "merge")) continue;
 			entries.push({
-				projectId: workspace.id,
+				projectId: session.workspaceId,
 				projectName: workspace.name,
 				sessionId: session.id,
 				title: session.title,

@@ -8,6 +8,7 @@ import {
 	CircleDashed,
 	ChevronRight,
 	Cloud,
+	Bot,
 	Folder,
 	FolderClosed,
 	Folders,
@@ -132,6 +133,7 @@ export function CreateProjectFlow({
 	mode = "single_repo",
 	onCreateProject,
 	onInitializeProject,
+	onCreateStandaloneAgent,
 	onOpenExistingProject,
 	openSignal,
 	sourceSignal,
@@ -151,6 +153,7 @@ export function CreateProjectFlow({
 	onCloneProject: (input: CloneProjectInput) => Promise<void>;
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
+	onCreateStandaloneAgent?: () => void;
 	onOpenExistingProject?: (path: string) => void | Promise<void>;
 	// Monotonic counter: each new value opens the flow programmatically (the ⌘N
 	// "no project in scope" fallback). Lets the shortcut reuse the sidebar's own
@@ -734,7 +737,7 @@ export function CreateProjectFlow({
 							<CloudSignInPanel disabled={isBusy} onSignIn={cloudSignIn} />
 						)
 					) : (
-						<ImportSourcePicker disabled={isBusy} onSelect={selectSource} />
+						<ImportSourcePicker disabled={isBusy} onSelect={selectSource} onCreateStandaloneAgent={onCreateStandaloneAgent} />
 					)}
 					{error && !folderPickerOpen && selectedPath === null && (
 						<p className="text-caption leading-body text-error" role="status">
@@ -754,6 +757,7 @@ export function CreateProjectFlow({
 						onCloudCreated={onCloudProjectCreated}
 						onOfferingChange={setOffering}
 						onSignIn={cloudSignIn}
+						onCreateStandaloneAgent={onCreateStandaloneAgent}
 						open={modePickerOpen}
 					onOpenChange={(open) => {
 							if (isBusy) return;
@@ -1100,6 +1104,7 @@ function CreateProjectSourceDialog({
 	onOfferingChange,
 	onSignIn,
 	onOpenChange,
+	onCreateStandaloneAgent,
 	onSelect,
 	open,
 }: {
@@ -1112,6 +1117,7 @@ function CreateProjectSourceDialog({
 	onOfferingChange: (offering: ProjectOffering) => void;
 	onSignIn: () => void;
 	onOpenChange: (open: boolean) => void;
+	onCreateStandaloneAgent?: () => void;
 	onSelect: (source: ProjectSource) => void;
 	open: boolean;
 }) {
@@ -1141,7 +1147,7 @@ function CreateProjectSourceDialog({
 								<CloudSignInPanel dialog disabled={disabled} onSignIn={onSignIn} />
 							)
 						) : (
-							<ImportSourcePicker disabled={disabled} onClose={() => onOpenChange(false)} onSelect={onSelect} dialog />
+							<ImportSourcePicker disabled={disabled} onClose={() => onOpenChange(false)} onSelect={onSelect} onCreateStandaloneAgent={onCreateStandaloneAgent} dialog />
 						)}
 					</div>
 				</Dialog.Content>
@@ -1429,14 +1435,20 @@ function ImportSourcePicker({
 	dialog = false,
 	disabled,
 	onClose,
+	onCreateStandaloneAgent,
 	onSelect,
 }: {
 	dialog?: boolean;
 	disabled: boolean;
 	onClose?: () => void;
+	onCreateStandaloneAgent?: () => void;
 	onSelect: (source: ProjectSource) => void;
 }) {
 	const { t } = useTranslation();
+	const createStandaloneAgent = () => {
+		onClose?.();
+		onCreateStandaloneAgent?.();
+	};
 	const sources: Array<{ source: ProjectSource; icon: ReactNode; label: string; description: string }> = [
 		{
 			source: "clone",
@@ -1493,6 +1505,12 @@ function ImportSourcePicker({
 						</span>
 					</button>
 				))}
+				{onCreateStandaloneAgent ? (
+					<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
+						<Bot className="size-5" aria-hidden="true" />
+						<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
+					</button>
+				) : null}
 				</div>
 			</div>
 			{dialog && onClose ? (

@@ -171,7 +171,12 @@ function visibleSlotRect(node: HTMLElement): BrowserRect {
 		right = Math.min(right, bounds.right);
 		bottom = Math.min(bottom, bounds.bottom);
 	}
-	return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+	return {
+		x: left,
+		y: top,
+		width: Math.max(0, right - left),
+		height: Math.max(0, bottom - top),
+	};
 }
 
 // `requestFullscreen` (the terminal pane's fullscreen button) promotes an element
@@ -220,7 +225,10 @@ export function useBrowserView({
 	const frameRef = useRef<number | null>(null);
 	const settleTimerRef = useRef<number | null>(null);
 	const observerRef = useRef<ResizeObserver | null>(null);
-	const previewTriggerRef = useRef<{ revision: number | null; target: string } | null>(null);
+	const previewTriggerRef = useRef<{
+		revision: number | null;
+		target: string;
+	} | null>(null);
 	const overlayOpenRef = useRef(false);
 	const tabNoticeTimerRef = useRef<number | null>(null);
 	const tabsStateRef = useRef(tabsState);
@@ -262,7 +270,11 @@ export function useBrowserView({
 
 	const sendHiddenBounds = useCallback((id = viewIdRef.current) => {
 		if (!id) return;
-		window.ao?.browser.setBounds({ viewId: id, rect: HIDDEN_RECT, visible: false });
+		window.ao?.browser.setBounds({
+			viewId: id,
+			rect: HIDDEN_RECT,
+			visible: false,
+		});
 	}, []);
 
 	const measureAndSend = useCallback(() => {
@@ -345,9 +357,13 @@ export function useBrowserView({
 			const gap = node.closest(".session-split")?.querySelector("[data-slot='inspector-gap']");
 			if (gap) observer.observe(gap);
 			observerRef.current = observer;
+			// Ref handoffs run old-node -> null -> new-node in one React commit. Send
+			// the replacement geometry immediately so the native view is restored in
+			// the same event-loop turn instead of remaining parked for a painted frame.
+			measureAndSend();
 			scheduleMeasure();
 		},
-		[scheduleMeasure, sendHiddenBounds],
+		[measureAndSend, scheduleMeasure, sendHiddenBounds],
 	);
 
 	useEffect(() => {
@@ -386,8 +402,16 @@ export function useBrowserView({
 			viewIdRef.current = state.viewId;
 			setViewId(state.viewId);
 			setNavState(state);
-			setDevtoolsState((current) => ({ ...current, viewId: state.viewId, activeTabId: "" }));
-			setProfileState({ viewId: state.viewId, profileId: null, temporary: true });
+			setDevtoolsState((current) => ({
+				...current,
+				viewId: state.viewId,
+				activeTabId: "",
+			}));
+			setProfileState({
+				viewId: state.viewId,
+				profileId: null,
+				temporary: true,
+			});
 			return () => {
 				disposed = true;
 				viewIdRef.current = "";
@@ -417,7 +441,10 @@ export function useBrowserView({
 			const id = viewIdRef.current;
 			if (id) {
 				if (annotationModeRef.current) {
-					void window.ao?.browser.setAnnotationMode({ viewId: id, enabled: false });
+					void window.ao?.browser.setAnnotationMode({
+						viewId: id,
+						enabled: false,
+					});
 					setAnnotationModeState(false);
 				}
 				sendHiddenBounds(id);
@@ -529,16 +556,24 @@ export function useBrowserView({
 
 	useEffect(() => {
 		if (!hasNativeBrowser) return;
+		let isResizing = document.body.classList.contains("is-resizing-x");
 		const update = () => {
-			const open =
-				document.body.classList.contains("is-resizing-x") ||
-				document.querySelector(OPEN_BROWSER_OVERLAY_SELECTOR) !== null;
-			if (open === overlayOpenRef.current) return;
-			overlayOpenRef.current = open;
-			// The live page never moves or becomes a bitmap. Reordering the explicit
-			// transparent shell is the complete overlay handoff.
-			window.ao?.browser.setOverlayOpen(open);
-			if (!open) scheduleSettleMeasure();
+			const wasResizing = isResizing;
+			isResizing = document.body.classList.contains("is-resizing-x");
+			const open = document.querySelector(OPEN_BROWSER_OVERLAY_SELECTOR) !== null;
+			if (open !== overlayOpenRef.current) {
+				overlayOpenRef.current = open;
+				// The live page never moves or becomes a bitmap. Reordering the explicit
+				// transparent shell is the complete overlay handoff for menus/dialogs.
+				window.ao?.browser.setOverlayOpen(open);
+			}
+			if (!wasResizing && isResizing) {
+				// Sidebar resize started: measure bounds to track the animation
+				scheduleSettleMeasure();
+			} else if (wasResizing && !isResizing) {
+				// Sidebar resize ended: measure bounds immediately and after animation settles
+				scheduleSettleMeasure();
+			}
 		};
 		update();
 		const observer = new MutationObserver(update);
@@ -557,15 +592,16 @@ export function useBrowserView({
 			attributeFilter: ["data-state"],
 		});
 		// useResizable.ts toggles `is-resizing-x` on <body> (outside React) while the
-		// inspector's own drag handle is held — that handle sits right at the edge of
-		// the browser panel, and the WebContentsView swallows every pointer event the
-		// instant the cursor crosses into it, killing the drag dead mid-resize. Raise
-		// the shell for the same duration so the drag keeps receiving events there too.
+		// inspector's own drag handle is held. The handle captures its pointer in
+		// useResizable, so we only need to keep the native bounds synchronized here.
 		// A dedicated, non-subtree observer keeps this cheap: unlike `data-state` above,
 		// `class` churns on nearly every render throughout the app, so watching it
 		// subtree-wide would run `update()` far more often than the dialog/menu case.
 		const resizeObserver = new MutationObserver(update);
-		resizeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+		resizeObserver.observe(document.body, {
+			attributes: true,
+			attributeFilter: ["class"],
+		});
 		return () => {
 			observer.disconnect();
 			resizeObserver.disconnect();
@@ -640,7 +676,7 @@ export function useBrowserView({
 			// Read from the ref, not the tabsState closure, so this callback's
 			// identity stays stable across tab updates instead of churning on
 			// every nav/title-update/loading-state push (it cascades into
-			// handleCloseTab in BrowserTabsRail.tsx otherwise).
+			// handleCloseTab in BrowserPanel.tsx otherwise).
 			const closing = tabsStateRef.current.tabs.find((tab) => tab.id === tabId);
 			try {
 				const state = await window.ao!.browser.closeTab({ viewId, tabId });
@@ -742,7 +778,11 @@ export function useBrowserView({
 			const id = viewIdRef.current;
 			if (!id || !hasNativeBrowser) return;
 			try {
-				const next = await window.ao!.browser.devtools({ viewId: id, operation, placement });
+				const next = await window.ao!.browser.devtools({
+					viewId: id,
+					operation,
+					placement,
+				});
 				if (viewIdRef.current === next.viewId) setDevtoolsState(next);
 			} catch {
 				// The main process reports the unavailable state through the normal
@@ -790,7 +830,12 @@ export function useBrowserView({
 
 	const clear = useCallback(() => {
 		if (!hasNativeBrowser) {
-			setNavState((current) => ({ ...current, url: "", title: "", isLoading: false }));
+			setNavState((current) => ({
+				...current,
+				url: "",
+				title: "",
+				isLoading: false,
+			}));
 			return Promise.resolve();
 		}
 		return withView((id) => window.ao!.browser.clear(id));

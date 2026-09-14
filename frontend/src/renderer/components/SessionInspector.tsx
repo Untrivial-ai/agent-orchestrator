@@ -58,7 +58,7 @@ import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
 import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
+import { findProjectOrchestrator, sortedPRs, STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
@@ -164,7 +164,7 @@ export const SessionInspector = memo(function SessionInspector({
 	browserPoppedOut?: boolean;
 	browserAnnotationQueue?: BrowserAnnotationQueueModel;
 	isInspectorVisible?: boolean;
-	onToggleBrowserPopOut?: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+	onToggleBrowserPopOut?: (next: boolean) => void;
 	onOpenFiles?: () => void;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	filesView?: ReactNode;
@@ -175,6 +175,7 @@ export const SessionInspector = memo(function SessionInspector({
 }) {
 	const { t } = useTranslation();
 	const [internalView, setInternalView] = useState<InspectorView>("summary");
+	const [browserTopbarHost, setBrowserTopbarHost] = useState<HTMLDivElement | null>(null);
 	const requestedView = viewProp ?? internalView;
 	// Badge the Browser tab when a preview target arrived without us opening it.
 	const browserUnseen = useUiStore((state) =>
@@ -232,11 +233,21 @@ export const SessionInspector = memo(function SessionInspector({
 							isActive={isInspectorVisible && !browserPoppedOut}
 							onTogglePopOut={onToggleBrowserPopOut}
 							session={session}
+							topbarHost={browserTopbarHost}
 						/>
 					) : undefined
 				}
 				filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
-				headerActions={<span aria-hidden="true" className="session-inspector-actions-spacer" />}
+						headerActions={
+							view === "browser" && !browserPoppedOut ? (
+								<>
+									<div className="browser-panel__topbar-host min-w-0 flex-1" ref={setBrowserTopbarHost} />
+									<span aria-hidden="true" className="session-inspector-actions-spacer" />
+								</>
+							) : (
+								<span aria-hidden="true" className="session-inspector-actions-spacer" />
+							)
+						}
 				isVisible={isInspectorVisible}
 				loadingText={session ? undefined : t("inspector.loadingSession")}
 				onViewChange={setView}
@@ -1099,6 +1110,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	});
 	const policyError = policy.error instanceof Error ? policy.error.message : null;
 	const canTerminateNow = session.status === "merged";
+	const isStandaloneSession = session.workspaceId === STANDALONE_WORKSPACE_ID;
 
 	const confirmTermination = () => {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
@@ -1112,42 +1124,54 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 			});
 			return;
 		}
+		if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
+			void navigate({ to: "/" });
+			return;
+		}
 		void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 	};
 
 	if (session.isTerminated === true) return null;
+
+	const terminateAction = (
+		<div className="flex items-center justify-between gap-3 py-1">
+			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<SessionTerminationPopover
+							onConfirm={confirmTermination}
+							onOpenChange={setConfirmOpen}
+							open={confirmOpen}
+							session={session}
+							trigger={
+								<button
+									aria-label={t("inspector.terminate")}
+									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									onClick={() => clearTerminateSessionState(queryClient, session.id)}
+									type="button"
+								>
+									<Trash2 className="size-icon-sm" aria-hidden="true" />
+								</button>
+							}
+						/>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
+			</Tooltip>
+		</div>
+	);
+
+	if (isStandaloneSession) {
+		return <Section title={t("inspector.sessionControls")}>{terminateAction}</Section>;
+	}
 
 	return (
 		<Section title={t("inspector.sessionControls")}>
 			<AutoInjectCIPolicyControl session={session} />
 			<AutoInjectReviewPolicyControl session={session} />
 			{session.kind === "orchestrator" ? null : canTerminateNow ? (
-				<div className="flex items-center justify-between gap-3 py-1">
-					<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<span className="inline-flex">
-								<SessionTerminationPopover
-									onConfirm={confirmTermination}
-									onOpenChange={setConfirmOpen}
-									open={confirmOpen}
-									session={session}
-									trigger={
-										<button
-											aria-label={t("inspector.terminate")}
-											className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-											onClick={() => clearTerminateSessionState(queryClient, session.id)}
-											type="button"
-										>
-											<Trash2 className="size-icon-sm" aria-hidden="true" />
-										</button>
-									}
-								/>
-							</span>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
-					</Tooltip>
-				</div>
+				terminateAction
 			) : (
 				<>
 					<InspectorPolicyRow
@@ -2462,13 +2486,15 @@ function BrowserView({
 	browserAnnotationQueue,
 	onTogglePopOut,
 	browserView,
+	topbarHost,
 }: {
 	session: WorkspaceSession;
 	isActive: boolean;
 	browserPoppedOut: boolean;
 	browserAnnotationQueue?: BrowserAnnotationQueueModel;
-	onTogglePopOut?: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+	onTogglePopOut?: (next: boolean) => void;
 	browserView?: BrowserViewModel;
+	topbarHost?: HTMLElement | null;
 }) {
 	// While maximized, the browser is a full-window overlay that covers the rail,
 	// so the inspector's Browser tab has nothing to show (and must not mount a
@@ -2497,9 +2523,10 @@ function BrowserView({
 			active={isActive}
 			annotationQueue={browserAnnotationQueue}
 			browserView={browserView}
-			onTogglePopOut={(next, sourceRect) => onTogglePopOut?.(next, sourceRect)}
+			onTogglePopOut={(next) => onTogglePopOut?.(next)}
 			poppedOut={false}
 			session={session}
+			topbarHost={topbarHost}
 		/>
 	);
 }

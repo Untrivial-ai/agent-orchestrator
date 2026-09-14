@@ -136,7 +136,6 @@ const inspectorWidthVar = "--ao-inspector-w";
 const INSPECTOR_SPRING_MS = 300;
 const INSPECTOR_SPRING_EASING =
 	"linear(0, 0.333 12.5%, 0.642 25%, 0.813 37.5%, 0.902 50%, 0.949 62.5%, 0.974 75%, 0.986 87.5%, 1)";
-const BROWSER_POPOUT_MOTION_MS = 320;
 const shellTopbarHiddenByPlatform = hidesShellTopbar();
 const isMac = isMacPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : undefined;
@@ -261,18 +260,11 @@ function sizingGeometryEqual(a: InspectorSizing, b: InspectorSizing): boolean {
 	);
 }
 
-type BrowserPopOutPhase = "docked" | "opening" | "open" | "closing";
-type BrowserPopOutRect = { top: number; left: number; width: number; height: number };
+type BrowserPopOutPhase = "docked" | "mounting" | "open";
 type BrowserPopOutState = {
 	sessionId: string;
 	phase: BrowserPopOutPhase;
-	dockRect?: BrowserPopOutRect;
 };
-
-function browserPopOutRect(rect?: DOMRectReadOnly | null): BrowserPopOutRect | undefined {
-	if (!rect || rect.width <= 0 || rect.height <= 0) return undefined;
-	return { top: rect.top, left: rect.left, width: rect.width, height: rect.height };
-}
 
 function topbarSecondaryLabelMode(width: number): "compact" | "expanded" {
 	return width <= TOPBAR_SECONDARY_COMPACT_MAX_PX ? "compact" : "expanded";
@@ -572,7 +564,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const workspaceQuery = useWorkspaceSession(sessionId);
 	const { client: cloudCpClient } = useCloudCp();
 	const theme = useResolvedTheme();
-	const prefersReducedMotion = useReducedMotion();
 	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
 	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
@@ -589,7 +580,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const sessionSplitRef = useRef<HTMLDivElement | null>(null);
 	const terminalLiveResizeTimerRef = useRef<number | null>(null);
 	const workspaceResizeTimerRef = useRef<number | null>(null);
-	const browserPopOutHandoffFrameRef = useRef<number | null>(null);
 	const [inspectorSettledClosed, setInspectorSettledClosed] = useState(!isInspectorOpen);
 	const inspectorPanelVisible = isInspectorOpen || !inspectorSettledClosed;
 	const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>({ kind: "worker" });
@@ -654,7 +644,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId],
 	);
 	const browserPopOutPhase = browserPopOutState.sessionId === sessionId ? browserPopOutState.phase : "docked";
-	const browserPoppedOut = browserPopOutPhase !== "docked";
+	const browserPopOutMounted = browserPopOutPhase !== "docked";
+	const browserPoppedOut = browserPopOutPhase === "open";
+	const [browserPopoutTopbarHost, setBrowserPopoutTopbarHost] = useState<HTMLDivElement | null>(null);
+	useLayoutEffect(() => {
+		if (browserPopOutPhase !== "mounting" || !browserPopoutTopbarHost) return;
+		// Establish the portal destination before moving the browser. This layout
+		// effect completes before paint, so the user sees one atomic geometry change
+		// and the address/tabs never spend a frame underneath the native view.
+		setBrowserPopOutState({ sessionId, phase: "open" });
+	}, [browserPopOutPhase, browserPopoutTopbarHost, sessionId]);
 	const [handoffDialogOpen, setHandoffDialogOpen] = useState(false);
 	const handoffDialogContainerRef = useRef<HTMLDivElement | null>(null);
 	const [handoffDialogContainer, setHandoffDialogContainer] = useState<HTMLDivElement | null>(null);
@@ -1444,7 +1443,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const previewUrl = session?.previewUrl?.trim() || undefined;
 	const previewRevision = session?.previewRevision;
 	const browserSlotVisible = Boolean(
-		session && hasInspector && (browserPoppedOut || (isInspectorOpen && inspectorView === "browser")),
+		session &&
+			hasInspector &&
+			(browserPoppedOut || (inspectorPanelVisible && inspectorView === "browser")),
 	);
 	const terminated = session ? !sessionIsActive(session) : false;
 	const browserView = useBrowserView({
@@ -1685,88 +1686,20 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId, setInspectorOpenForSession, transitionInspectorView],
 	);
 
-	const measureBrowserDockRect = useCallback(() => {
-		const target = sessionSplitRef.current?.querySelector<HTMLElement>("[data-browser-dock-target]");
-		return browserPopOutRect(target?.getBoundingClientRect());
-	}, []);
-
 	const handleToggleBrowserPopOut = useCallback(
-		(next: boolean, sourceRect?: DOMRectReadOnly) => {
+		(next: boolean) => {
 			if (next) setFilesPoppedOut(false);
 			setBrowserPopOutState((current) => {
 				if (next) {
 					if (current.sessionId === sessionId && current.phase !== "docked") return current;
-					return {
-						sessionId,
-						phase: prefersReducedMotion ? "open" : "opening",
-						dockRect: browserPopOutRect(sourceRect) ?? measureBrowserDockRect(),
-					};
+					return { sessionId, phase: "mounting" };
 				}
 				if (current.sessionId !== sessionId || current.phase === "docked") return current;
-				if (prefersReducedMotion) return { sessionId, phase: "docked" };
-				return {
-					sessionId,
-					phase: "closing",
-					dockRect: measureBrowserDockRect() ?? current.dockRect,
-				};
+				return { sessionId, phase: "docked" };
 			});
 		},
-		[measureBrowserDockRect, prefersReducedMotion, sessionId],
+		[sessionId],
 	);
-
-	// Mount the portal at the exact docked geometry for one painted frame, then
-	// let CSS interpolate its real box. The native WebContentsView follows that
-	// moving slot through its ResizeObserver instead of snapping full-screen.
-	useEffect(() => {
-		if (browserPopOutPhase !== "opening") return;
-		const frame = window.requestAnimationFrame(() => {
-			setBrowserPopOutState((current) =>
-				current.sessionId === sessionId && current.phase === "opening"
-					? { ...current, phase: "open" }
-					: current,
-			);
-		});
-		return () => window.cancelAnimationFrame(frame);
-	}, [browserPopOutPhase, sessionId]);
-
-	const commitBrowserPopOutClose = useCallback(() => {
-		setBrowserPopOutState((current) =>
-			current.sessionId === sessionId && current.phase === "closing"
-				? { sessionId, phase: "docked" }
-				: current,
-		);
-	}, [sessionId]);
-
-	const finishBrowserPopOutClose = useCallback(() => {
-		if (browserPopOutHandoffFrameRef.current !== null) return;
-		// Hold the portal at the exact destination for two painted frames. Electron's
-		// native WebContentsView bounds update trails the DOM transition slightly;
-		// handing back to the dock immediately exposes that final compositor step.
-		browserPopOutHandoffFrameRef.current = window.requestAnimationFrame(() => {
-			browserPopOutHandoffFrameRef.current = window.requestAnimationFrame(() => {
-				browserPopOutHandoffFrameRef.current = null;
-				commitBrowserPopOutClose();
-			});
-		});
-	}, [commitBrowserPopOutClose]);
-
-	useEffect(
-		() => () => {
-			if (browserPopOutHandoffFrameRef.current !== null) {
-				window.cancelAnimationFrame(browserPopOutHandoffFrameRef.current);
-				browserPopOutHandoffFrameRef.current = null;
-			}
-		},
-		[],
-	);
-
-	// transitionend is the normal path; the timer protects restore when a window
-	// resize or compositor interruption suppresses that DOM event.
-	useEffect(() => {
-		if (browserPopOutPhase !== "closing") return;
-		const timer = window.setTimeout(finishBrowserPopOutClose, BROWSER_POPOUT_MOTION_MS + 80);
-		return () => window.clearTimeout(timer);
-	}, [browserPopOutPhase, finishBrowserPopOutClose]);
 
 	useEffect(() => {
 		if (!hasInspector) return;
@@ -2259,43 +2192,36 @@ export function SessionView({ sessionId }: SessionViewProps) {
           sidebar + topbar, not just the session area) and sits outside any
           `[data-panel]` column, so the native WebContentsView is not clamped
           and fills the window below any native titlebar overlay. */}
-			{browserPoppedOut && session
+			{browserPopOutMounted && session
 				? createPortal(
 						<div
-							aria-busy={browserPopOutPhase === "opening" || browserPopOutPhase === "closing"}
 							className={cn(
 								"browser-popout-overlay",
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "browser-popout-overlay--mac-windowed",
 							)}
 							data-phase={browserPopOutPhase}
-							style={
-								browserPopOutState.sessionId === sessionId && browserPopOutState.dockRect
-									? ({
-											"--browser-popout-dock-top": `${browserPopOutState.dockRect.top}px`,
-											"--browser-popout-dock-left": `${browserPopOutState.dockRect.left}px`,
-											"--browser-popout-dock-width": `${browserPopOutState.dockRect.width}px`,
-											"--browser-popout-dock-height": `${browserPopOutState.dockRect.height}px`,
-										} as CSSProperties)
-									: undefined
-							}
 						>
 							<div aria-hidden="true" className="browser-popout-backdrop" />
 							<div
-								className="browser-popout-frame"
-								onTransitionEnd={(event) => {
-									if (event.target === event.currentTarget && event.propertyName === "width") {
-										finishBrowserPopOutClose();
-									}
-								}}
-							>
-								<BrowserPanelView
+								className={cn(
+									"browser-popout-titlebar browser-panel__topbar-host",
+									shellTopbarHiddenByPlatform &&
+										!isNativeFullScreen &&
+										"browser-popout-titlebar--mac-windowed",
+								)}
+								data-testid="browser-popout-topbar"
+								ref={setBrowserPopoutTopbarHost}
+							/>
+							<div className="browser-popout-frame">
+								{browserPoppedOut && browserPopoutTopbarHost ? <BrowserPanelView
 									active
 									annotationQueue={browserAnnotationQueue}
 									browserView={browserView}
 									onTogglePopOut={handleToggleBrowserPopOut}
 									poppedOut
 									session={session}
-								/>
+									topbarHost={browserPopoutTopbarHost}
+								/> : null}
 							</div>
 						</div>,
 						document.body,

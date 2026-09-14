@@ -194,6 +194,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		setBounds: vi.fn(),
 		setBorderRadius: vi.fn(),
 		setVisible: vi.fn(),
+		setIgnoreMouseEvents: vi.fn(),
 	};
 	const runtime =
 		agentBrowserRuntime ??
@@ -655,7 +656,7 @@ function setupTabHost(
 				listener?.({}, level, message, line, sourceId);
 			},
 		};
-		const view = { webContents, listeners, setBounds: vi.fn(), setBorderRadius: vi.fn(), setVisible: vi.fn() };
+		const view = { webContents, listeners, setBounds: vi.fn(), setBorderRadius: vi.fn(), setVisible: vi.fn(), setIgnoreMouseEvents: vi.fn() };
 		views.push(view);
 		return view;
 	};

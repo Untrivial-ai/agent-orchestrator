@@ -339,7 +339,7 @@ const MAC_WINDOW_BUTTON_Y = 12;
 const RENDERER_SCHEME = "app";
 const RENDERER_HOST = "renderer";
 const RENDERER_ORIGIN = `${RENDERER_SCHEME}://${RENDERER_HOST}`;
-const NATIVE_WINDOW_BACKGROUND_DARK = "#0f1014";
+const NATIVE_WINDOW_BACKGROUND_DARK = "#0c0c0e";
 const NATIVE_WINDOW_BACKGROUND_LIGHT = "#fbfbfb";
 
 function getShellWebContents(): WebContents | null {

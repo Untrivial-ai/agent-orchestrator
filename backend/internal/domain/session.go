@@ -93,7 +93,7 @@ type SessionMetadata struct {
 // metadata. The user-facing Status is derived from these facts plus PR facts.
 type SessionRecord struct {
 	ID        SessionID    `json:"id"`
-	ProjectID ProjectID    `json:"projectId"`
+	ProjectID ProjectID    `json:"projectId,omitempty"`
 	IssueID   IssueID      `json:"issueId,omitempty"`
 	Kind      SessionKind  `json:"kind"`
 	Harness   AgentHarness `json:"harness,omitempty"`
@@ -134,6 +134,9 @@ type SessionRecord struct {
 	IsPinned          bool       `json:"isPinned"`
 	PinnedAt          *time.Time `json:"pinnedAt,omitempty"`
 }
+
+// IsStandalone reports whether the session has no registered project owner.
+func (s SessionRecord) IsStandalone() bool { return s.ProjectID == "" }
 
 // SessionControllerOwner is the durable identity of the process/controller
 // currently allowed to act for a session. Narrow lifecycle writes compare this

@@ -556,7 +556,7 @@ vi.mock("./SessionInspector", () => ({
 		isInspectorVisible?: boolean;
 		onOpenFiles?: () => void;
 		onOpenReviewFile?: (target: { line?: number; path: string }) => void;
-		onToggleBrowserPopOut?: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+		onToggleBrowserPopOut?: (next: boolean) => void;
 		onViewChange?: (view: InspectorView) => void;
 		view?: string;
 	}) => {
@@ -576,9 +576,7 @@ vi.mock("./SessionInspector", () => ({
 					<button
 						type="button"
 						data-view={view}
-						onClick={(event) =>
-							onToggleBrowserPopOut?.(true, event.currentTarget.parentElement?.getBoundingClientRect())
-						}
+						onClick={() => onToggleBrowserPopOut?.(true)}
 					>
 						pop browser
 					</button>
@@ -2508,6 +2506,18 @@ describe("SessionView", () => {
 		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("aria-hidden", "false");
 	});
 
+	it("keeps the live browser active throughout the inspector close transition", () => {
+		render(<SessionView sessionId="sess-1" />);
+		act(() => useUiStore.getState().setInspectorView("sess-1", "browser"));
+		expect(browserViewOptions.current).toMatchObject({ active: true });
+
+		fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true });
+
+		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("data-state", "collapsed");
+		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("aria-hidden", "false");
+		expect(browserViewOptions.current).toMatchObject({ active: true });
+	});
+
 	it("keeps StrictMode mount from collapsing, then collapses on the first user toggle", () => {
 		render(
 			<StrictMode>
@@ -2870,7 +2880,7 @@ describe("SessionView", () => {
 		expect(inspectorOpen("sess-orch")).toBe(true);
 	});
 
-	it("smoothly morphs the browser over the whole app window and back to its dock", async () => {
+	it("switches the browser between its dock and the whole app window immediately", () => {
 		const dockRect = {
 			x: 780,
 			y: 96,
@@ -2890,27 +2900,19 @@ describe("SessionView", () => {
 			expect(screen.getByText("terminal center")).toBeInTheDocument();
 			fireEvent.click(screen.getByRole("button", { name: "pop browser" }));
 
-			// The portal begins exactly where the docked browser was, then expands.
+			// Native browser geometry switches atomically. Animating it would require
+			// resizing the WebContentsView over IPC on every frame and leaves the
+			// portaled URL bar visible until the animation finishes.
 			const overlay = document.querySelector(".browser-popout-overlay");
-			expect(overlay).toHaveAttribute("data-phase", "opening");
-			expect(overlay).toHaveStyle({ "--browser-popout-dock-left": "780px", "--browser-popout-dock-width": "500px" });
+			expect(overlay).toHaveAttribute("data-phase", "open");
 			expect(overlay).toHaveClass("browser-popout-overlay--mac-windowed");
+			expect(overlay?.querySelector(".browser-popout-titlebar")).toBeInTheDocument();
+			expect(overlay?.querySelector(".browser-popout-frame")?.contains(overlay?.querySelector(".browser-popout-titlebar") ?? null)).toBe(false);
 			expect(screen.getByRole("button", { name: "browser center" })).toBeInTheDocument();
 			expect(screen.getByText("terminal center")).toBeInTheDocument();
-			await waitFor(() => expect(overlay).toHaveAttribute("data-phase", "open"));
-
 			fireEvent.click(screen.getByRole("button", { name: "browser center" }));
-			expect(overlay).toHaveAttribute("data-phase", "closing");
-			expect(screen.getByRole("button", { name: "browser center" })).toBeInTheDocument();
-			fireEvent.transitionEnd(overlay?.querySelector(".browser-popout-frame") as Element, {
-				propertyName: "width",
-			});
-			// Keep the portal alive briefly at the destination so the native browser
-			// can commit its final bounds before React hands ownership back to the dock.
-			expect(screen.getByRole("button", { name: "browser center" })).toBeInTheDocument();
-			await waitFor(() =>
-				expect(screen.queryByRole("button", { name: "browser center" })).not.toBeInTheDocument(),
-			);
+			expect(document.querySelector(".browser-popout-overlay")).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "browser center" })).not.toBeInTheDocument();
 			expect(screen.getByText("terminal center")).toBeInTheDocument();
 			expect(browserDestroy).not.toHaveBeenCalled();
 		} finally {

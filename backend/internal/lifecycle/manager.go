@@ -1410,9 +1410,11 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 // RetireForReplacement, and tracker-driven termination - funnels through
 // here, so this single hook covers every terminal-state path rather than
 // only explicit ao session kill. Best-effort: logged on failure, never
-// returned, matching the rest of AO's terminal-state teardown. A project-load
-// error skips reaping rather than guessing - the package's stated bias is to
-// spare on ambiguity, not to reap on it.
+// returned, matching the rest of AO's terminal-state teardown. Standalone
+// sessions have no project-level opt-out, so they use the default reap-enabled
+// policy. For project sessions, a project-load error skips reaping rather than
+// guessing - the package's stated bias is to spare on ambiguity, not to reap on
+// it.
 func (m *Manager) reapSessionContainers(ctx context.Context, id domain.SessionID) {
 	if m.containers == nil {
 		return
@@ -1423,13 +1425,15 @@ func (m *Manager) reapSessionContainers(ctx context.Context, id domain.SessionID
 			slog.Default().Warn("lifecycle: container reap: session lookup failed, skipping", "session", id, "err", err)
 			return
 		}
-		project, ok, err := m.projects.GetProject(ctx, string(rec.ProjectID))
-		if err != nil || !ok {
-			slog.Default().Warn("lifecycle: container reap: project lookup failed or missing, skipping rather than guessing", "session", id, "project", rec.ProjectID, "err", err)
-			return
-		}
-		if project.Config.ContainerReap.Disabled {
-			return
+		if !rec.IsStandalone() {
+			project, ok, err := m.projects.GetProject(ctx, string(rec.ProjectID))
+			if err != nil || !ok {
+				slog.Default().Warn("lifecycle: container reap: project lookup failed or missing, skipping rather than guessing", "session", id, "project", rec.ProjectID, "err", err)
+				return
+			}
+			if project.Config.ContainerReap.Disabled {
+				return
+			}
 		}
 	}
 	removed, err := m.containers.ReapSessionContainers(ctx, id)

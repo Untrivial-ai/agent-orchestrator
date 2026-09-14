@@ -269,6 +269,7 @@ export function invalidateConversationProviderCatalogs(queryClient: QueryClient,
 
 const CONVERSATION_PAGE_SIZE = 200;
 const CONFIG_OPTIONS_POLL_INTERVAL_MS = 5_000;
+const SKILLS_POLL_INTERVAL_MS = 60_000;
 
 /**
  * Answers that will never change on a retry. SESSION_MODE_MISMATCH is permanent
@@ -1296,8 +1297,19 @@ export function useConversationSkills(sessionId: string | undefined, enabled: bo
 		// second renderer event channel solely for ephemeral provider metadata. The
 		// catalog can be large and changes rarely, so it intentionally refreshes much
 		// less often than conversation state.
-		staleTime: 60 * 1000,
-		refetchInterval: 60 * 1000,
+		staleTime: SKILLS_POLL_INTERVAL_MS,
+		// The catalog is only served once a live controller owns the session; before
+		// then the daemon answers 409 CHAT_CONTROLLER_NOT_READY. A cached "ready"
+		// snapshot can outlive the controller (a restart or interface switch), so a
+		// mounted query keeps `enabled` true and would re-request the catalog on every
+		// interval, turning one readiness conflict into a steady 409 stream. Stop the
+		// poll while that conflict stands; readiness returning re-enables the query
+		// (the controller-gated `enabled`) or invalidates it, which refetches once and
+		// resumes polling on success.
+		refetchInterval: (query) =>
+			apiErrorCode(query.state.error) === "CHAT_CONTROLLER_NOT_READY"
+				? false
+				: SKILLS_POLL_INTERVAL_MS,
 		retry: false,
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET(
