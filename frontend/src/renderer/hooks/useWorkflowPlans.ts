@@ -13,6 +13,8 @@ export const workflowQueryKeys = {
 	tasks: (stageId: string) => ["workflow", "tasks", stageId] as const,
 	task: (taskId: string) => ["workflow", "task", taskId] as const,
 	runs: (taskId: string) => ["workflow", "runs", taskId] as const,
+	reviews: (runId: string) => ["workflow", "reviews", runId] as const,
+	review: (reviewId: string) => ["workflow", "review", reviewId] as const,
 };
 
 export function useWorkflowPlans(projectId: string) {
