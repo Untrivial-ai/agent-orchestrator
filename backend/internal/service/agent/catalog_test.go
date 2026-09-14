@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,7 +12,6 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
-	gooseagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/goose"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
 	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -579,34 +575,37 @@ func TestWarmReadinessAndFindInstalledShareOnlyProcessFreeGoosePresence(t *testi
 }
 
 func TestPresslyGooseDoesNotSatisfyStartupOrFreshInventory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Pressly fixture uses a Unix executable name")
+	var normalResolveCalls atomic.Int32
+	var presenceCalls atomic.Int32
+	// The Goose adapter's help-level Pressly classification is covered in its
+	// own tests. Inject the resulting identity-unknown observation here so this
+	// service contract cannot inspect host-wide fallback paths.
+	pressly := identityPendingAgent{
+		fakeAgent:          fakeAgent{err: ports.ErrAgentBinaryNotFound},
+		normalResolveCalls: &normalResolveCalls,
+		presenceCalls:      &presenceCalls,
 	}
-	pathDir := t.TempDir()
-	t.Setenv("PATH", pathDir)
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("VOLTA_HOME", "")
-	t.Setenv("FNM_DIR", "")
-	binary := filepath.Join(pathDir, "goose")
-	if err := os.WriteFile(binary, []byte(`#!/bin/sh
-printf '%s\n' 'Usage: goose [command]' '  up  Migrate up' '  down  Migrate down' '  status  Migration status' '  create  Create a migration'
-`), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	goose := gooseagent.New()
 	svc := NewWithAgents([]agentregistry.HarnessAgent{{
 		Harness:  domain.AgentHarness("goose"),
-		Manifest: goose.Manifest(),
-		Agent:    goose,
+		Manifest: adapters.Manifest{ID: "goose", Name: "Goose"},
+		Agent:    pressly,
 	}})
 	if _, ok := svc.FindInstalledBinary(context.Background()); ok {
 		t.Fatal("Pressly-only PATH match satisfied the process-free startup check")
+	}
+	if got := presenceCalls.Load(); got != 1 {
+		t.Fatalf("startup presence calls = %d, want 1", got)
+	}
+	if got := normalResolveCalls.Load(); got != 0 {
+		t.Fatalf("startup normal resolution calls = %d, want 0", got)
 	}
 
 	inventory, err := svc.Refresh(context.Background())
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
+	}
+	if got := normalResolveCalls.Load(); got != 1 {
+		t.Fatalf("fresh normal resolution calls = %d, want 1", got)
 	}
 	if len(inventory.Installed) != 0 {
 		t.Fatalf("Pressly-only fresh inventory Installed = %#v, want empty", inventory.Installed)

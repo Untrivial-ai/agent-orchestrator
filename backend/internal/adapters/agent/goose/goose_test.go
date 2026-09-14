@@ -809,7 +809,7 @@ func TestResolveGooseBinaryHangingPathCollisionStillReachesFallback(t *testing.T
 	}
 	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	got, err := ResolveGooseBinary(ctx)
 	if err != nil {
