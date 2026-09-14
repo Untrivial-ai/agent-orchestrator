@@ -1348,6 +1348,8 @@
 	"shell.pinSession": "Pin session",
 	"shell.unpinSession": "Unpin session",
 	"shell.projects": "Projects",
+	"shell.showMore": "Show more",
+	"shell.showMoreProjects": "Show {{count}} more projects",
 	"shell.projectActions": "Project actions for {{name}}",
 	"shell.projectSettings": "Project settings",
 	"shell.provisioning": "Setting up the project — starting the orchestrator…",

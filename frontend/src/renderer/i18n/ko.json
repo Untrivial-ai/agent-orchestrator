@@ -1227,6 +1227,8 @@
 	"shell.orchestratorWithActivity": "오케스트레이터, {{activity}}",
 	"shell.pinned": "고정됨",
 	"shell.projects": "프로젝트",
+	"shell.showMore": "더 보기",
+	"shell.showMoreProjects": "프로젝트 {{count}}개 더 보기",
 	"shell.projectActions": "{{name}} 프로젝트 작업",
 	"shell.projectSettings": "프로젝트 설정",
 	"shell.provisioning": "프로젝트를 설정하는 중 — 오케스트레이터를 시작하고 있습니다…",

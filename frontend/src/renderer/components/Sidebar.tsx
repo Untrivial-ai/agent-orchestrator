@@ -95,14 +95,12 @@ import {
 	ContextMenu,
 	ContextMenuContent,
 	ContextMenuItem,
-	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "./ui/context-menu";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
-	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import {
@@ -142,14 +140,15 @@ const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperti
 
 // Shared styling for the per-project hover action buttons (orchestrator, kebab):
 // a 20px square icon button that tints on hover, matching the old
-// SidebarMenuAction footprint.
+// SidebarMenuAction footprint. Never painted — `.sidebar-icon-action` also
+// opts out of the sidebar focus fill in styles.css.
 const HOVER_ACTION_CLASS =
-	"grid size-5 shrink-0 place-items-center rounded-md bg-transparent text-passive hover:bg-transparent focus:bg-transparent focus-visible:bg-transparent active:bg-transparent data-[state=open]:bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-lg";
+	"sidebar-icon-action grid size-5 shrink-0 place-items-center rounded-md !bg-transparent text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-lg";
 
 // Session actions overlay the row without changing its footprint. The primary
 // label only yields their width while the row is hovered or contains focus.
 const SESSION_ACTION_CLASS =
-	"grid size-5 shrink-0 place-items-center rounded-md bg-transparent p-1 text-passive hover:bg-transparent focus:bg-transparent focus-visible:bg-transparent active:bg-transparent data-[state=open]:bg-transparent hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3!";
+	"sidebar-icon-action grid size-5 shrink-0 place-items-center rounded-md !bg-transparent p-1 text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3!";
 
 // Shared nav-row chrome (Codex-style): inset pill hover/selected, 14px type, no accent bar.
 const NAV_ROW_CLASS =
@@ -319,6 +318,8 @@ function useGrabbingCursor(active: boolean) {
 export const SIDEBAR_DEFAULT_WIDTH = 240;
 export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 420;
+/** Cap the project list until the user expands it with Show more. */
+const SIDEBAR_INITIAL_PROJECT_LIMIT = 12;
 const expandedProjectsStorageKey = "ao.sidebar.expanded-projects";
 
 function readExpandedProjectIds(): ReadonlySet<string> {
@@ -537,12 +538,39 @@ export function Sidebar({
 		onExpand: () => setOpen(true),
 	});
 
+	// Suppress layout animations for the first 500ms so background session
+	// re-sorts during daemon settle don't cause visible row shuffling.
+	const [layoutSettled, setLayoutSettled] = useState(false);
+	useEffect(() => {
+		const timer = window.setTimeout(() => setLayoutSettled(true), 500);
+		return () => window.clearTimeout(timer);
+	}, []);
+
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
 	);
+	const [showAllProjects, setShowAllProjects] = useState(false);
+	const activeProjectBeyondLimit = useMemo(() => {
+		if (showAllProjects || orderedWorkspaces.length <= SIDEBAR_INITIAL_PROJECT_LIMIT) return false;
+		const activeId = selection.activeProjectId;
+		if (!activeId) return false;
+		const index = orderedWorkspaces.findIndex((workspace) => workspace.id === activeId);
+		return index >= SIDEBAR_INITIAL_PROJECT_LIMIT;
+	}, [orderedWorkspaces, selection.activeProjectId, showAllProjects]);
+	useEffect(() => {
+		if (activeProjectBeyondLimit) setShowAllProjects(true);
+	}, [activeProjectBeyondLimit]);
+	const visibleWorkspaces = useMemo(
+		() =>
+			showAllProjects || orderedWorkspaces.length <= SIDEBAR_INITIAL_PROJECT_LIMIT
+				? orderedWorkspaces
+				: orderedWorkspaces.slice(0, SIDEBAR_INITIAL_PROJECT_LIMIT),
+		[orderedWorkspaces, showAllProjects],
+	);
+	const hiddenProjectCount = Math.max(0, orderedWorkspaces.length - SIDEBAR_INITIAL_PROJECT_LIMIT);
 	const projectIds = useMemo(
 		() => orderedWorkspaces
 			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
@@ -775,6 +803,7 @@ export function Sidebar({
 									key={session.id}
 									session={session}
 									active={selection.activeSessionId === session.id}
+									layoutSettled={layoutSettled}
 									onOpenSession={selection.goSession}
 								/>
 								))}
@@ -784,7 +813,7 @@ export function Sidebar({
 				)}
 
 				{/* Projects — always open; only the trailing "+" is interactive. */}
-				<div className="sidebar-expanded-chrome flex shrink-0 pb-1.5 group-data-[collapsible=icon]:hidden">
+				<div className="sidebar-expanded-chrome flex shrink-0 pb-0.5 group-data-[collapsible=icon]:hidden">
 					<SectionDisclosure
 						label={t("shell.projects")}
 						collapsible={false}
@@ -823,7 +852,7 @@ export function Sidebar({
 								sensors={reorderSensors}
 							>
 								<SidebarMenu className="min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
-									{orderedWorkspaces.map((workspace) => (
+									{visibleWorkspaces.map((workspace) => (
 										<ProjectItem
 											key={workspace.id}
 											workspace={workspace}
@@ -831,12 +860,26 @@ export function Sidebar({
 											suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
 											selection={selection}
 											draggingProjectId={draggingProjectId}
+											layoutSettled={layoutSettled}
 											consumeDragClick={projectDragClickGuard.consumeClick}
 											onSessionOrderChange={recordSessionOrder}
 											onToggle={toggleProjectDisclosure}
 											onRemoveProject={onRemoveProject}
 										/>
 									))}
+									{!showAllProjects && hiddenProjectCount > 0 ? (
+										<button
+											aria-label={t("shell.showMoreProjects", { count: hiddenProjectCount })}
+											className={cn(
+												SECTION_ROW_CLASS,
+												"sidebar-expanded-chrome mb-1 text-left text-muted-foreground hover:bg-interactive-hover hover:text-foreground group-data-[collapsible=icon]:hidden",
+											)}
+											onClick={() => setShowAllProjects(true)}
+											type="button"
+										>
+											<span className="truncate">{t("shell.showMore")}</span>
+										</button>
+									) : null}
 									{isCollapsed && <CreateProjectListItem />}
 								</SidebarMenu>
 								<DragOverlay adjustScale={false} dropAnimation={null} modifiers={[restrictProjectOverlayToRows]} style={PROJECT_DRAG_OVERLAY_STYLE} zIndex={60}>
@@ -861,9 +904,9 @@ export function Sidebar({
 			</SidebarContent>
 
 			{/* Footer — Settings opens the global settings page directly.
-			    Its hairline and row height match the board Archive bar. Bottom
-			    spacing stays inside the footer so there is no empty strip beneath
-			    the final action. */}
+			    Footer rows share NAV_ROW height so Settings, Connect mobile,
+			    and account actions line up. Bottom spacing stays inside the
+			    footer so there is no empty strip beneath the final action. */}
 			<SidebarFooter
 				className="relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-20 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-2 group-data-[collapsible=icon]:!pt-1.5"
 			>
@@ -882,17 +925,22 @@ export function Sidebar({
 					<UpdateStatusRow
 						availableDismissed={updateDismissal.dismissed}
 						onDismissAvailable={updateDismissal.dismiss}
-						onRequestInstall={openUpdateInstallPrompt}
 						status={updateStatus}
 						tabIndex={isCollapsed ? -1 : 0}
 					/>
 					<CloudSignInRow tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
+					<UpdateInstallSlide
+						availableDismissed={updateDismissal.dismissed}
+						onRequestInstall={openUpdateInstallPrompt}
+						status={updateStatus}
+						tabIndex={isCollapsed ? -1 : 0}
+					/>
 					<button
 						aria-label={t("settings.connectMobile")}
 						className={cn(
 							NAV_ROW_CLASS,
-							"flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
+							"flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0",
 						)}
 						onClick={() => selection.goConnectMobile()}
 						tabIndex={isCollapsed ? -1 : 0}
@@ -905,7 +953,7 @@ export function Sidebar({
 						aria-label={t("shell.settings")}
 						className={cn(
 							NAV_ROW_CLASS,
-							"flex h-[42px] w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
+							"flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0",
 						)}
 						onClick={() => selection.goGlobalSettings()}
 						tabIndex={isCollapsed ? -1 : 0}
@@ -931,7 +979,7 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("settings.connectMobile")}
-								className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
 								onClick={() => selection.goConnectMobile()}
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
@@ -945,7 +993,7 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("shell.settings")}
-								className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
 								onClick={() => selection.goGlobalSettings()}
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
@@ -983,6 +1031,7 @@ type ProjectItemProps = {
 	selection: Selection;
 	draggingProjectId?: string | null;
 	consumeDragClick: (id: string) => boolean;
+	layoutSettled: boolean;
 	onSessionOrderChange: (projectId: string, order: string[]) => void;
 	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
@@ -1052,6 +1101,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	selection,
 	draggingProjectId,
 	consumeDragClick,
+	layoutSettled,
 	onSessionOrderChange,
 	onToggle,
 	onRemoveProject,
@@ -1076,15 +1126,14 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const [isRemoving, setIsRemoving] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [isSpawning, setIsSpawning] = useState(false);
-	const [projectPressed, setProjectPressed] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
 	// expand/collapse toggles.
 	const [animReady, setAnimReady] = useState(false);
 	const hasInteractedWithDisclosure = useRef(false);
 	useEffect(() => {
-		const id = requestAnimationFrame(() => setAnimReady(true));
-		return () => cancelAnimationFrame(id);
+		const id = window.setTimeout(() => setAnimReady(true), 500);
+		return () => window.clearTimeout(id);
 	}, []);
 	const isProjectProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
@@ -1269,7 +1318,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-					layout={draggingProjectId ? false : "position"}
+					layout={!layoutSettled || draggingProjectId ? false : "position"}
 					ref={setDroppableNodeRef}
 					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>
@@ -1283,26 +1332,13 @@ const ProjectItemContent = memo(function ProjectItemContent({
 						className="pointer-events-none absolute inset-x-0 bottom-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=after]/menu-item:opacity-100"
 						data-project-drop-indicator="after"
 					/>
-					{/* The whole visual row scales when its navigation surface is pressed.
-		    Action-button presses stop before reaching this boundary. */}
 					<div
 						className="relative"
 						data-project-drag-row=""
 						data-project-id={workspace.id}
 						ref={setDraggableNodeRef}
 					>
-						<div
-							className={cn(
-								"relative transition-[transform] duration-[100ms] ease-out",
-								projectPressed && !projectIsDragging && "scale-[0.98]",
-								projectIsDragging && "cursor-grabbing transition-none",
-							)}
-							data-project-press=""
-							onPointerCancel={() => setProjectPressed(false)}
-							onPointerDown={() => setProjectPressed(true)}
-							onPointerLeave={() => setProjectPressed(false)}
-							onPointerUp={() => setProjectPressed(false)}
-						>
+						<div className={cn("relative", projectIsDragging && "cursor-grabbing")}>
 							<div>
 								{/* project-sidebar__proj-row */}
 								<SidebarMenuButton
@@ -1334,7 +1370,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									>
 										<span
 											className={cn(
-												"inline-flex size-icon-md items-center justify-center transition-opacity duration-150 group-hover/menu-item:opacity-0",
+												"inline-flex size-icon-md items-center justify-center group-hover/menu-item:opacity-0",
 												draggingProjectId && "group-hover/menu-item:opacity-100",
 											)}
 										>
@@ -1342,7 +1378,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										</span>
 										<span
 											className={cn(
-												"absolute inline-flex size-icon-md items-center justify-center opacity-0 transition-[opacity,transform] duration-150 group-hover/menu-item:opacity-100",
+												"absolute inline-flex size-icon-md items-center justify-center opacity-0 transition-transform duration-150 group-hover/menu-item:opacity-100",
 												expanded && "rotate-90",
 												draggingProjectId && "group-hover/menu-item:opacity-0",
 											)}
@@ -1386,9 +1422,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									type="button"
 								/>
 							</div>
-							{/* Per-project actions: orchestrator and kebab menu. Inside the scaled visual
-		row, but outside its navigation surface so their own presses stay independent.
-		Always visible (not hover-gated) to avoid CSS :hover group propagation in Chromium. */}
+							{/* Per-project actions: orchestrator and kebab menu. Outside the row's
+		navigation surface so their own presses stay independent. */}
 							<div
 								className={cn(
 									"sidebar-expanded-chrome absolute top-0 right-0.5 z-chrome flex h-control-form items-center gap-px",
@@ -1450,44 +1485,33 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									</Tooltip>
 								) : (
 									<DropdownMenu>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<DropdownMenuTrigger asChild>
-													<button
-														aria-label={t("shell.projectActions", {
-															name: workspace.name,
-														})}
-														className={HOVER_ACTION_CLASS}
-														type="button"
-													>
-														<MoreVertical aria-hidden="true" />
-													</button>
-												</DropdownMenuTrigger>
-											</TooltipTrigger>
-											<TooltipContent>
-												{t("shell.projectActions", {
+										<DropdownMenuTrigger asChild>
+											<button
+												aria-label={t("shell.projectActions", {
 													name: workspace.name,
 												})}
-											</TooltipContent>
-										</Tooltip>
+												className={HOVER_ACTION_CLASS}
+												type="button"
+											>
+												<MoreVertical aria-hidden="true" />
+											</button>
+										</DropdownMenuTrigger>
 										<DropdownMenuContent side="right" align="start" className="min-w-44">
 											<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
 												<Plus aria-hidden="true" />
-												{t("shell.newSession")}
+												{t("shell.newTask")}
 											</DropdownMenuItem>
-											<DropdownMenuSeparator />
 											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 												<Settings aria-hidden="true" />
 												{t("shell.projectSettings")}
 											</DropdownMenuItem>
-											<DropdownMenuSeparator />
 											<DropdownMenuItem
-											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
-											disabled={isRemoving}
-											onSelect={() => void removeProject()}
-										>
-											<Trash2 aria-hidden="true" />
-											{t("shell.removeProjectTitle")}
+												className="text-destructive focus:text-destructive [&_svg]:text-destructive focus:[&_svg]:text-destructive"
+												disabled={isRemoving}
+												onSelect={() => void removeProject()}
+											>
+												<Trash2 aria-hidden="true" />
+												{t("shell.removeProjectTitle")}
 											</DropdownMenuItem>
 										</DropdownMenuContent>
 									</DropdownMenu>
@@ -1512,14 +1536,15 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				<motion.div
 					key="sessions"
 					initial={
-						animReady && (!suppressInitialExpandAnimation || hasInteractedWithDisclosure.current) ? { height: 0 } : false
+						animReady && (!suppressInitialExpandAnimation || hasInteractedWithDisclosure.current) ? { gridTemplateRows: "0fr" } : false
 					}
-					animate={{ height: "auto" }}
-					exit={{ height: 0 }}
+					animate={{ gridTemplateRows: "1fr" }}
+					exit={{ gridTemplateRows: "0fr" }}
 					transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
-					style={{ overflow: "hidden" }}
+					style={{ display: "grid" }}
 					className="sidebar-expanded-chrome"
 				>
+					<div style={{ minHeight: 0, overflow: "hidden" }}>
 					<motion.div
 						initial={
 							animReady && (!suppressInitialExpandAnimation || hasInteractedWithDisclosure.current)
@@ -1566,6 +1591,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																	session={session}
 																	active={selection.activeSessionId === session.id}
 																	consumeDragClick={sessionDragClickGuard.consumeClick}
+																	disableLayout={!layoutSettled}
 																	layoutDependency={sessionLayoutDependency}
 																	listIsDragging={sessionDragging}
 																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
@@ -1577,6 +1603,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 												</DndContext>
 											)}
 								</motion.div>
+							</div>
 							</motion.div>
 						)}
 					</AnimatePresence>
@@ -1599,17 +1626,15 @@ const ProjectItemContent = memo(function ProjectItemContent({
 			<ContextMenuContent className="min-w-44">
 				<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
 					<Plus aria-hidden="true" />
-					{t("shell.newSession")}
+					{t("shell.newTask")}
 				</ContextMenuItem>
 				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
-				<ContextMenuSeparator />
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
 					{t("shell.projectSettings")}
 				</ContextMenuItem>
-				<ContextMenuSeparator />
 				<ContextMenuItem
-					className="text-destructive focus:text-destructive [&_svg]:text-destructive"
+					className="text-destructive focus:text-destructive [&_svg]:text-destructive focus:[&_svg]:text-destructive"
 					disabled={isRemoving}
 					onSelect={() => void removeProject()}
 				>
@@ -1675,14 +1700,16 @@ const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expande
 const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
+	layoutSettled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	layoutSettled: boolean;
 	onOpenSession: (projectId: string, sessionId: string) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
-	return <SessionRow session={session} active={active} indented={false} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders
@@ -1691,6 +1718,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	session,
 	active,
 	consumeDragClick,
+	disableLayout = false,
 	layoutDependency,
 	listIsDragging,
 	dropTransitionDisabled,
@@ -1699,6 +1727,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	session: WorkspaceSession;
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
+	disableLayout?: boolean;
 	layoutDependency: string;
 	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
@@ -1714,6 +1743,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
+			disableLayout={disableLayout}
 			layoutDependency={layoutDependency}
 			listIsDragging={listIsDragging}
 			reorder={{
@@ -1772,20 +1802,11 @@ function SessionRow({
 		[queryClient],
 	);
 	const rename = useSessionRename(session, refreshWorkspaces);
-	const [sessionPressed, setSessionPressed] = useState(false);
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
-	const pendingOpenRef = useRef<number | null>(null);
-	const cancelPendingOpen = useCallback(() => {
-		if (pendingOpenRef.current === null) return;
-		window.clearTimeout(pendingOpenRef.current);
-		pendingOpenRef.current = null;
-	}, []);
-	useEffect(() => cancelPendingOpen, [cancelPendingOpen]);
 	const beginRename = useCallback(() => {
-		cancelPendingOpen();
 		rename.begin();
-	}, [cancelPendingOpen, rename.begin]);
+	}, [rename.begin]);
 
 	if (rename.isEditing) {
 		return (
@@ -1843,19 +1864,12 @@ function SessionRow({
 			>
 				<div
 					className={cn(
-						"group/session-row flex h-8 w-full items-center rounded-lg transition-[transform] duration-[100ms] ease-out",
+						"group/session-row flex h-8 w-full items-center rounded-lg",
 						"hover:bg-interactive-hover hover:text-foreground",
 						active && "bg-interactive-active text-foreground",
-						sessionPressed && !reorder?.isDragging && "scale-[0.97]",
-						reorder?.isDragging && "transition-none",
 					)}
-					data-session-press=""
 					data-session-row=""
 					data-dragging={reorder?.isDragging ? "true" : undefined}
-					onPointerCancel={() => setSessionPressed(false)}
-					onPointerDown={() => setSessionPressed(true)}
-					onPointerLeave={() => setSessionPressed(false)}
-					onPointerUp={() => setSessionPressed(false)}
 				>
 					<div className={cn("flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
 						<button
@@ -1873,26 +1887,12 @@ function SessionRow({
 							)}
 							{...(reorder?.listeners ?? {})}
 							onClick={(event) => {
-								if (event.detail === 0) {
-									cancelPendingOpen();
-									onOpen();
-									return;
-								}
-								if (event.detail > 1) {
-									cancelPendingOpen();
-									return;
-								}
+								if (event.detail > 1) return;
 								if (suppressTouchOpenRef.current) {
 									suppressTouchOpenRef.current = false;
 									return;
 								}
-								// Wait for the native double-click window before navigating. A
-								// second click cancels this so inline rename has no route side effect.
-								cancelPendingOpen();
-								pendingOpenRef.current = window.setTimeout(() => {
-									pendingOpenRef.current = null;
-									onOpen();
-								}, 500);
+								onOpen();
 							}}
 							onKeyDown={(event) => {
 								if (event.key !== "F2") return;
@@ -1961,7 +1961,7 @@ const SessionMessageAge = memo(function SessionMessageAge({ session }: { session
 
 	return (
 		<time
-			className="absolute inset-y-0 right-1.5 flex min-w-0 shrink-0 items-center whitespace-nowrap font-mono text-micro text-passive opacity-100 transition-opacity duration-100 ease-out group-hover/session-row:opacity-0 group-focus-within/session-row:opacity-0"
+			className="absolute inset-y-0 right-1.5 flex min-w-0 shrink-0 items-center whitespace-nowrap font-sans text-micro tabular-nums text-passive opacity-100 transition-opacity duration-100 ease-out group-hover/session-row:opacity-0 group-focus-within/session-row:opacity-0"
 			data-session-message-age=""
 			dateTime={session.lastUserMessageAt}
 			title={t("shell.lastMessageAt", { time: formatTimeCompact(session.lastUserMessageAt) })}
@@ -1997,29 +1997,41 @@ const SessionActions = memo(function SessionActions({
 				)}
 				data-session-action-buttons=""
 			>
-				<button
-					aria-label={session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
-					className={cn(SESSION_ACTION_CLASS, session.isPinned && "text-foreground")}
-					onClick={(event) => {
-						event.stopPropagation();
-						session.isPinned ? unpinSession(session) : pinSession(session);
-					}}
-					type="button"
-				>
-					{session.isPinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
-				</button>
-				<button
-					aria-label={t("shell.killSession")}
-					className={cn(SESSION_ACTION_CLASS, "hover:text-destructive")}
-					disabled={isKilling}
-					onClick={(event) => {
-						event.stopPropagation();
-						terminateSession(session);
-					}}
-					type="button"
-				>
-					<Trash2 aria-hidden="true" />
-				</button>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							aria-label={session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
+							className={cn(SESSION_ACTION_CLASS, session.isPinned && "text-foreground")}
+							onClick={(event) => {
+								event.stopPropagation();
+								session.isPinned ? unpinSession(session) : pinSession(session);
+							}}
+							type="button"
+						>
+							{session.isPinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="left">
+						{session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
+					</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							aria-label={t("shell.killSession")}
+							className={cn(SESSION_ACTION_CLASS, "hover:text-destructive")}
+							disabled={isKilling}
+							onClick={(event) => {
+								event.stopPropagation();
+								terminateSession(session);
+							}}
+							type="button"
+						>
+							<Trash2 aria-hidden="true" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="left">{t("shell.killSession")}</TooltipContent>
+				</Tooltip>
 			</div>
 			<SessionMessageAge session={session} />
 		</div>
@@ -2044,7 +2056,7 @@ function CloudSignInRow({ tabIndex }: { tabIndex: number }) {
 			aria-label={t("shell.signInToAOCloud")}
 			className={cn(
 				NAV_ROW_CLASS,
-				"flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
+				"flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0",
 			)}
 			onClick={onSignIn}
 			tabIndex={tabIndex}
@@ -2072,7 +2084,7 @@ function CloudSignInRailButton({ tabIndex }: { tabIndex: number }) {
 			<TooltipTrigger asChild>
 				<button
 					aria-label={t("shell.signInToAOCloud")}
-					className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+					className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
 					onClick={onSignIn}
 					tabIndex={tabIndex}
 					type="button"
@@ -2100,7 +2112,7 @@ function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 					aria-label={t("shell.signedInAs", {
 						email: session?.user.email ?? "AO Cloud",
 					})}
-					className={cn(NAV_ROW_CLASS, "flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+					className={cn(NAV_ROW_CLASS, "flex h-9 w-full items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0")}
 					tabIndex={tabIndex}
 					type="button"
 				>
@@ -2137,7 +2149,7 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 					aria-label={t("shell.signedInAs", {
 						email: session?.user.email ?? "AO Cloud",
 					})}
-					className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+					className="grid size-control-board place-items-center rounded-lg text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
 					onClick={() => void signOut()}
 					tabIndex={tabIndex}
 					type="button"
@@ -2223,28 +2235,29 @@ function updateVersionLabel(
 	return t(variant === "ready" ? "shell.versionReady" : "shell.versionAvailable", { version });
 }
 
-// UpdateStatusRow makes update activity visible and actionable from the
-// sidebar: an available build downloads on click, progress reports itself, and
-// a staged build becomes the restart action. Idle/checking states stay quiet so
-// routine background checks do not flash in the sidebar.
+/** Plain version number for the install cue — base for nightlies, no channel/date. */
+function installVersionNumber(version: string | undefined): string | null {
+	if (!version) return null;
+	return parseNightlyVersion(version)?.base ?? version;
+}
+
+// UpdateStatusRow makes download progress visible in the footer. A staged build
+// ready to install renders as UpdateInstallSlide above Connect mobile / Settings.
 function UpdateStatusRow({
 	availableDismissed,
 	onDismissAvailable,
-	onRequestInstall,
 	status,
 	tabIndex,
 }: {
 	availableDismissed: boolean;
 	onDismissAvailable: () => void;
-	/** Opens the restart confirmation; installing outright would quit the app. */
-	onRequestInstall: () => void;
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
 	const { t, i18n } = useTranslation();
 	const locale = i18n.resolvedLanguage ?? i18n.language;
 	const action = sidebarUpdateAction(status, availableDismissed);
-	if (action === null) return null;
+	if (action === null || action.kind === "install") return null;
 
 	if (action.kind === "download") {
 		const versionLabel = updateVersionLabel(action.version, "available", t, locale);
@@ -2258,7 +2271,7 @@ function UpdateStatusRow({
 							? t("shell.downloadUpdateVersion", { version: action.version })
 							: t("shell.downloadUpdate")
 					}
-					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left transition-none [&_svg]:size-icon-md [&_svg]:shrink-0")}
 					onClick={() => void aoBridge.updates.download()}
 					tabIndex={tabIndex}
 					type="button"
@@ -2274,7 +2287,7 @@ function UpdateStatusRow({
 				{action.version && (
 					<button
 						aria-label={t("shell.dismissUpdateVersion", { version: action.version })}
-						className="grid size-8 shrink-0 place-items-center text-muted-foreground transition-colors hover:text-foreground"
+						className="grid size-8 shrink-0 place-items-center text-muted-foreground hover:text-foreground"
 						onClick={onDismissAvailable}
 						tabIndex={tabIndex}
 						type="button"
@@ -2302,49 +2315,71 @@ function UpdateStatusRow({
 		);
 	}
 
-	if (action.kind === "retry") {
-		return (
-			<button
-				aria-label={t("shell.retryUpdateCheck")}
-				className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning transition-colors hover:bg-warning/18 [&_svg]:text-warning"
-				data-testid="sidebar-update-failed"
-				onClick={() => void aoBridge.updates.check()}
-				tabIndex={tabIndex}
-				type="button"
-			>
-				<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1">
-					<span className="block truncate tracking-tight">{t("shell.updateCheckFailed")}</span>
-					<span className="block truncate text-caption font-normal text-warning">
-						{t("shell.retryUpdateCheck")}
-					</span>
+	return (
+		<button
+			aria-label={t("shell.retryUpdateCheck")}
+			className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning hover:bg-warning/18 [&_svg]:text-warning"
+			data-testid="sidebar-update-failed"
+			onClick={() => void aoBridge.updates.check()}
+			tabIndex={tabIndex}
+			type="button"
+		>
+			<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
+			<span className="min-w-0 flex-1">
+				<span className="block truncate tracking-tight">{t("shell.updateCheckFailed")}</span>
+				<span className="block truncate text-caption font-normal text-warning">
+					{t("shell.retryUpdateCheck")}
 				</span>
-			</button>
-		);
-	}
+			</span>
+		</button>
+	);
+}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
+/**
+ * Alert-style install cue above Connect mobile / Settings. Muted fill so it
+ * reads apart from nav rows; shows the version number only (no Nightly/date).
+ */
+function UpdateInstallSlide({
+	availableDismissed,
+	onRequestInstall,
+	status,
+	tabIndex,
+}: {
+	availableDismissed: boolean;
+	onRequestInstall: () => void;
+	status: UpdateStatus;
+	tabIndex: number;
+}) {
+	const { t } = useTranslation();
+	const action = sidebarUpdateAction(status, availableDismissed);
+	if (action?.kind !== "install") return null;
+
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<button
 			aria-label={
-				action.version
-					? t("shell.restartInstallUpdateVersion", { version: action.version })
+				versionNumber
+					? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"flex w-full items-center gap-2.5 rounded-lg border border-primary/35 bg-primary/12 p-2.5 text-left text-control font-medium text-primary transition-colors hover:bg-primary/18 [&_svg]:text-primary",
-				action.escalated &&
-					"border-working/35 bg-working/12 text-working hover:bg-working/18 [&_svg]:text-working",
+				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-lg bg-muted px-3 text-left text-sm font-normal text-foreground",
+				"hover:bg-interactive-hover",
 			)}
 			data-testid="sidebar-update-ready"
 			onClick={onRequestInstall}
 			tabIndex={tabIndex}
 			type="button"
 		>
-			<RefreshCw aria-hidden="true" className="size-icon-lg shrink-0" />
-			<span className="min-w-0 flex-1">
-				<span className="block truncate tracking-tight">{t("shell.restartToUpdate")}</span>
-				{versionLabel && <span className="block truncate text-caption font-normal">{versionLabel}</span>}
+			<RefreshCw aria-hidden="true" className="size-icon-sm shrink-0 text-muted-foreground" />
+			<span className="min-w-0 flex-1 truncate tracking-tight">
+				{t("shell.restartToUpdate")}
+				{versionNumber ? (
+					<>
+						{" "}
+						<span className="text-muted-foreground">{versionNumber}</span>
+					</>
+				) : null}
 			</span>
 		</button>
 	);
@@ -2364,8 +2399,7 @@ function UpdateStatusRail({
 	status: UpdateStatus;
 	tabIndex: number;
 }) {
-	const { t, i18n } = useTranslation();
-	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const { t } = useTranslation();
 	const action = sidebarUpdateAction(status, availableDismissed);
 	if (action === null) return null;
 
@@ -2380,7 +2414,7 @@ function UpdateStatusRail({
 								? t("shell.downloadUpdateVersion", { version: action.version })
 								: t("shell.downloadUpdate")
 						}
-						className="grid size-9 place-items-center rounded-lg text-passive transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
+						className="grid size-9 place-items-center rounded-lg text-passive hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
 						onClick={() => void aoBridge.updates.download()}
 						tabIndex={tabIndex}
 						type="button"
@@ -2418,7 +2452,7 @@ function UpdateStatusRail({
 				<TooltipTrigger asChild>
 					<button
 						aria-label={t("shell.retryUpdateCheck")}
-						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning transition-colors hover:bg-warning/18 [&_svg]:size-4"
+						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning hover:bg-warning/18 [&_svg]:size-4"
 						onClick={() => void aoBridge.updates.check()}
 						tabIndex={tabIndex}
 						type="button"
@@ -2433,22 +2467,17 @@ function UpdateStatusRail({
 		);
 	}
 
-	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
+	const versionNumber = installVersionNumber(action.version);
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<button
 					aria-label={
-						action.version
-							? t("shell.restartInstallUpdateVersion", { version: action.version })
+						versionNumber
+							? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 							: t("shell.restartInstallUpdate")
 					}
-					className={cn(
-						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						action.escalated
-							? "bg-working/12 text-working hover:bg-working/18"
-							: "text-passive hover:bg-interactive-hover hover:text-foreground",
-					)}
+					className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
 					onClick={onRequestInstall}
 					tabIndex={tabIndex}
 					type="button"
@@ -2458,7 +2487,7 @@ function UpdateStatusRail({
 			</TooltipTrigger>
 			<TooltipContent side="right">
 				{t("shell.restartToUpdate")}
-				{versionLabel ? ` · ${versionLabel}` : ""}
+				{versionNumber ? ` ${versionNumber}` : ""}
 			</TooltipContent>
 		</Tooltip>
 	);
@@ -2617,7 +2646,7 @@ function CreateProjectButton({
 							<button
 								aria-label={t("shell.newProject")}
 								className={cn(
-									"grid size-icon-xl shrink-0 place-items-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground",
+									"sidebar-icon-action grid size-icon-xl shrink-0 place-items-center rounded-sm !bg-transparent text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent hover:text-foreground",
 									hideTrigger && "hidden",
 								)}
 								disabled={disabled}

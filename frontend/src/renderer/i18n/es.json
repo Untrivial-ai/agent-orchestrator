@@ -1248,6 +1248,8 @@
 	"shell.orchestratorWithActivity": "Orquestador, {{activity}}",
 	"shell.pinned": "Fijados",
 	"shell.projects": "Proyectos",
+	"shell.showMore": "Mostrar más",
+	"shell.showMoreProjects": "Mostrar {{count}} proyectos más",
 	"shell.projectActions": "Acciones del proyecto {{name}}",
 	"shell.projectSettings": "Ajustes del proyecto",
 	"shell.provisioning": "Configurando el proyecto: iniciando el orquestador…",

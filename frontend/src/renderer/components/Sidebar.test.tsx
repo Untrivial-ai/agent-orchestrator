@@ -484,7 +484,8 @@ describe("Sidebar", () => {
 
 		const footer = document.querySelector('[data-sidebar="footer"]');
 		expect(footer).toHaveClass("border-t", "border-border-strong", "!py-2");
-		expect(screen.getAllByRole("button", { name: "Settings" })[0]).toHaveClass("h-[42px]");
+		expect(screen.getAllByRole("button", { name: "Settings" })[0]).toHaveClass("h-9");
+		expect(screen.getAllByRole("button", { name: "Connect mobile" })[0]).toHaveClass("h-9");
 		expect(footer?.className).not.toContain("--size-center-panel-bottom-inset");
 		expect(footer?.className).not.toContain("--size-center-panel-inset-mac");
 	});
@@ -632,7 +633,7 @@ describe("Sidebar", () => {
 		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
 
 		await user.click(screen.getByLabelText("Project actions for Project One"));
-		await user.click(await screen.findByRole("menuitem", { name: /New session/ }));
+		await user.click(await screen.findByRole("menuitem", { name: /New task/ }));
 
 		const request = useUiStore.getState().newTaskRequest;
 		expect(request?.projectId).toBe("proj-1");
@@ -773,17 +774,6 @@ describe("Sidebar", () => {
 		expect(row).toContainElement(openSession);
 		expect(row).toContainElement(status as HTMLElement);
 		expect(row).toContainElement(screen.getByLabelText("Pin session"));
-	});
-
-	it("applies a tap scale effect to session rows", () => {
-		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
-
-		const openSession = screen.getByLabelText("Open fix login");
-		const row = openSession.closest<HTMLElement>("[data-session-row]");
-		if (!row) throw new Error("Session row not found");
-
-		fireEvent.pointerDown(openSession);
-		expect(row).toHaveClass("scale-[0.97]");
 	});
 
 	it("toggles project sessions from the folder icon without selecting the project first", async () => {
@@ -1670,28 +1660,23 @@ describe("Sidebar", () => {
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
 		await user.dblClick(screen.getByRole("button", { name: "Open fix login" }));
-		expect(navigateMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledTimes(1);
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
 		await user.type(input, "polish login{Enter}");
 
 		await waitFor(() => expect(renameSessionMock).toHaveBeenCalledWith("proj-1-1", "polish login"));
-		expect(navigateMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("still opens a session after an unpaired single click", async () => {
-		vi.useFakeTimers();
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
 
 		fireEvent.click(screen.getByRole("button", { name: "Open fix login" }), { detail: 1 });
-		await act(async () => {
-			vi.advanceTimersByTime(500);
-		});
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "proj-1-1" },
 		});
-		vi.useRealTimers();
 	});
 
 	it("starts the same inline rename from the session context menu", async () => {
@@ -1739,6 +1724,8 @@ describe("Sidebar", () => {
 		expect(input.parentElement).toHaveClass("bg-interactive-active", "text-foreground", "pr-1");
 		expect(time).toHaveAttribute("data-session-message-age", "");
 		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
+		expect(time).toHaveClass("font-sans", "tabular-nums");
+		expect(time).not.toHaveClass("font-mono");
 	});
 
 	it("offers F2 as a keyboard rename path", async () => {
@@ -1791,24 +1778,33 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).not.toHaveClass("opacity-0");
 	});
 
-	it("applies a tap scale effect to project rows", () => {
-		renderSidebar();
-
-		const projectRow = screen.getByText("Project One").closest('button, [role="button"]');
-		const dragRow = projectRow?.closest<HTMLElement>("[data-project-drag-row]");
-
-		if (!projectRow || !dragRow) throw new Error("Project drag row not found");
-
-		fireEvent.pointerDown(projectRow);
-		expect(dragRow.firstElementChild).toHaveClass("scale-[0.98]");
-	});
-
 	it("optically aligns the project folder and label with its action icons", () => {
 		renderSidebar();
 
 		const projectRow = screen.getByText("Project One").closest('button, [role="button"]');
 		expect(projectRow?.querySelector("[data-project-folder-visual]")).toHaveClass("translate-y-px");
 		expect(projectRow?.querySelector("[data-project-label]")).toHaveClass("translate-y-px");
+	});
+
+	it("caps the project list at 12 until Show more is clicked", async () => {
+		const user = userEvent.setup();
+		const manyProjects = Array.from({ length: 14 }, (_, index) => ({
+			...workspace,
+			id: `proj-${index + 1}`,
+			name: `Project ${index + 1}`,
+			path: `/repo/project-${index + 1}`,
+		}));
+		renderSidebar({ workspaces: manyProjects });
+
+		expect(screen.getByText("Project 12")).toBeInTheDocument();
+		expect(screen.queryByText("Project 13")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 2 more projects" })).toBeVisible();
+
+		await user.click(screen.getByRole("button", { name: "Show 2 more projects" }));
+
+		expect(screen.getByText("Project 13")).toBeInTheDocument();
+		expect(screen.getByText("Project 14")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /more projects/ })).not.toBeInTheDocument();
 	});
 
 	it("clamps width at minimum when dragged past the resize floor (no auto-collapse)", async () => {
@@ -2247,11 +2243,11 @@ describe("Sidebar", () => {
 		// A build ready to install is more actionable than "checks are failing".
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveClass("border-primary/35", "bg-primary/12", "rounded-lg", "w-full");
-		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
+		expect(readyRow).toHaveClass("bg-muted", "rounded-lg", "w-full");
+		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12", "border-primary/35", "bg-primary/12");
 		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
-		expect(within(readyRow).getByText("v9.9.9 ready")).toBeVisible();
-		expect(within(readyRow).queryByText(/Nightly/)).not.toBeInTheDocument();
+		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
+		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();
 		expect(readyRow.querySelector(".rounded-full")).toBeNull();
 		expect(screen.queryAllByLabelText("Retry update check")).toHaveLength(0);
 		// Stays above Connect mobile / Settings — not overlaid on them.
@@ -2286,8 +2282,9 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
-		expect(within(readyRow).getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
-		expect(screen.getAllByLabelText("Restart to install update v0.12.11-nightly.202609021713")).not.toHaveLength(0);
+		expect(within(readyRow).getByText("0.12.11")).toBeVisible();
+		expect(within(readyRow).queryByText(/Nightly|Sep/)).not.toBeInTheDocument();
+		expect(screen.getAllByLabelText("Restart to install update v0.12.11")).not.toHaveLength(0);
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {
@@ -2312,11 +2309,11 @@ describe("Sidebar", () => {
 		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
 		for (const button of buttons) {
-			expect(button).toHaveClass("bg-working/12");
-			expect(button).not.toHaveClass("text-success");
+			expect(button).toHaveClass("bg-muted");
+			expect(button).not.toHaveClass("text-success", "bg-working/12");
 		}
 		expect(screen.getByTestId("sidebar-update-ready")).toHaveTextContent("Restart to update");
-		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("v9.9.9 ready")).toBeVisible();
+		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("9.9.9")).toBeVisible();
 	});
 
 	it("keeps install label and version number on one line without nightly copy", async () => {
@@ -2329,9 +2326,9 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(readyRow).toHaveTextContent("Restart to update");
-		expect(readyRow).toHaveTextContent("Nightly 0.12.11 · Sep 2");
-		expect(within(readyRow).queryByText(/ready/)).not.toBeInTheDocument();
-		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11-nightly.202609021713");
+		expect(readyRow).toHaveTextContent("0.12.11");
+		expect(within(readyRow).queryByText(/Nightly|ready/)).not.toBeInTheDocument();
+		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11");
 	});
 
 	it("commits a project drop", () => {

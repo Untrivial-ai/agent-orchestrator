@@ -1227,6 +1227,8 @@
 	"shell.orchestratorWithActivity": "Orchestrator, {{activity}}",
 	"shell.pinned": "Angeheftet",
 	"shell.projects": "Projekte",
+	"shell.showMore": "Mehr anzeigen",
+	"shell.showMoreProjects": "{{count}} weitere Projekte anzeigen",
 	"shell.projectActions": "Projektaktionen für {{name}}",
 	"shell.projectSettings": "Projekteinstellungen",
 	"shell.provisioning": "Projekt wird eingerichtet — Orchestrator wird gestartet…",

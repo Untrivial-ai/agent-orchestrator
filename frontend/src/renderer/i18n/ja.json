@@ -1227,6 +1227,8 @@
 	"shell.orchestratorWithActivity": "オーケストレーター、{{activity}}",
 	"shell.pinned": "ピン留め",
 	"shell.projects": "プロジェクト",
+	"shell.showMore": "さらに表示",
+	"shell.showMoreProjects": "あと {{count}} 件のプロジェクトを表示",
 	"shell.projectActions": "{{name}} のプロジェクト操作",
 	"shell.projectSettings": "プロジェクト設定",
 	"shell.provisioning": "プロジェクトをセットアップしています — オーケストレーターを起動中…",

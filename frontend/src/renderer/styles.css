@@ -2031,6 +2031,12 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	box-shadow: none !important;
 }
 
+/* Icon-only trailing controls (project kebab/orchestrator, session pin/kill,
+   Projects "+") tint the glyph only — never pick up the focus fill above. */
+.sidebar-focusless .sidebar-icon-action:focus-visible {
+	background-color: transparent !important;
+}
+
 /* A reorder can leave its source row, so lock the renderer cursor until the
    drag ends or is cancelled. */
 html.sidebar-reordering,
