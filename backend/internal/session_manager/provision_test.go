@@ -88,6 +88,9 @@ func TestRuntimeEnvInjectsBrowserCapability(t *testing.T) {
 	if env[EnvBrowserCapability] != "capability-1" {
 		t.Fatalf("%s = %q", EnvBrowserCapability, env[EnvBrowserCapability])
 	}
+	if env[EnvDeviceCapability] != "capability-1" {
+		t.Fatalf("%s = %q", EnvDeviceCapability, env[EnvDeviceCapability])
+	}
 	if verifier != "verifier-1" {
 		t.Fatalf("verifier = %q", verifier)
 	}
@@ -102,9 +105,13 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
+		EnvDeviceCapability:         "project-secret",
 	})
 	if env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
 		t.Fatalf("daemon browser runtime credentials leaked to worker: token=%q stdin=%q", env[EnvBrowserRuntimeToken], env[EnvBrowserRuntimeTokenStdin])
+	}
+	if env[EnvDeviceCapability] != "" {
+		t.Fatalf("project device capability leaked to worker: %q", env[EnvDeviceCapability])
 	}
 }
 

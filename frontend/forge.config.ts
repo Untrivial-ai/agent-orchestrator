@@ -63,6 +63,7 @@ export function extraResourcesForPlatform(platform: NodeJS.Platform): string[] {
 		"daemon",
 		"agent-browser",
 		"resources/acp-runtime",
+		...(platform === "darwin" ? ["resources/device-runtime"] : []),
 		...(platform === "darwin" ? ["update-helper"] : []),
 		...(platform === "darwin" || platform === "linux" ? ["tmux"] : []),
 		"assets/icon.png",
@@ -87,6 +88,14 @@ const ACP_RUNTIME_NODE_PATH = "/Contents/Resources/acp-runtime/node/bin/node";
 // frontend/docs/desktop-release.md.
 const ACP_RUNTIME_NODE_ENTITLEMENTS = [
 	"com.apple.security.cs.allow-jit",
+	// Preserve the upstream Node entitlement when Forge re-signs this runtime.
+	// The pinned iOS device hub loads its native capture framework dynamically;
+	// stripping this lets Simulator boot but prevents its stream helper starting.
+	"com.apple.security.cs.disable-library-validation",
+];
+
+const ACP_RUNTIME_NODE_X64_ENTITLEMENTS = [
+	...ACP_RUNTIME_NODE_ENTITLEMENTS,
 	"com.apple.security.cs.allow-unsigned-executable-memory",
 ];
 
@@ -98,7 +107,11 @@ export function macSignOptionsForFile(filePath: string): { entitlements?: string
 	// optionsForFile and aborts the signing pass. Never fall back to
 	// process.arch or to "no entitlements" — silently signing the Intel Node
 	// without allow-unsigned-executable-memory is exactly the #3879 crash.
-	return machoHasX86_64Slice(filePath) ? { entitlements: ACP_RUNTIME_NODE_ENTITLEMENTS } : {};
+	return {
+		entitlements: machoHasX86_64Slice(filePath)
+			? ACP_RUNTIME_NODE_X64_ENTITLEMENTS
+			: ACP_RUNTIME_NODE_ENTITLEMENTS,
+	};
 }
 
 // parseReleaseRepo turns an "owner/repo" string (from AO_RELEASE_REPO) into the

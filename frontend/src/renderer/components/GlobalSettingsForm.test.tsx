@@ -179,7 +179,7 @@ beforeEach(async () => {
 		saving: false,
 		saveError: false,
 	});
-	useUiStore.setState({ developerMode: false });
+	useUiStore.setState({ developerMode: false, virtualDevicesEnabled: false });
 	useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true }, loaded: true, saving: false, saveError: false });
 	document.documentElement.lang = "en";
 });
@@ -220,6 +220,18 @@ describe("GlobalSettingsForm", () => {
 		expect(window.localStorage.getItem("ao.developerMode")).toBe("true");
 		await user.click(screen.getByLabelText("Channel"));
 		expect(await screen.findByRole("menuitem", { name: "Feature builds" })).toBeInTheDocument();
+	});
+
+	it("offers virtual devices only in developer mode and persists the opt-in", async () => {
+		const user = userEvent.setup();
+		renderForm();
+		expect(screen.queryByRole("switch", { name: "Virtual devices" })).not.toBeInTheDocument();
+
+		await user.click(await screen.findByRole("switch", { name: "Developer mode" }));
+		const devicesToggle = await screen.findByRole("switch", { name: "Virtual devices" });
+		expect(devicesToggle).toHaveAttribute("aria-checked", "false");
+		await user.click(devicesToggle);
+		expect(window.localStorage.getItem("ao.virtualDevices.enabled")).toBe("true");
 	});
 
 	it("shows the available feature builds after choosing Feature builds", async () => {

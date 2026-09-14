@@ -22,7 +22,7 @@ import { scmUserAvatarUrl } from "./scm-avatar";
 import { cn } from "./utils";
 import { UserAvatar } from "./UserAvatar";
 
-export type InspectorView = "summary" | "reviews" | "browser" | "files";
+export type InspectorView = "summary" | "reviews" | "browser" | "device" | "files";
 
 export type InspectorTab = {
 	badge?: boolean;
@@ -42,6 +42,7 @@ export function SessionInspectorShellView({
 	ariaLabel,
 	browserPoppedOut,
 	browserView,
+	deviceView,
 	filesView,
 	headerActions,
 	isVisible = true,
@@ -55,6 +56,7 @@ export function SessionInspectorShellView({
 	ariaLabel: string;
 	browserPoppedOut: boolean;
 	browserView?: ReactNode;
+	deviceView?: ReactNode;
 	filesView?: ReactNode;
 	headerActions?: ReactNode;
 	isVisible?: boolean;
@@ -163,17 +165,19 @@ export function SessionInspectorShellView({
 				className={cn(
 					inspectorBodyBaseClass,
 					!isVisible && "invisible pointer-events-none",
-					activeView !== "browser" && activeView !== "files" && inspectorScrollableBodyClass,
+					activeView !== "browser" && activeView !== "device" && activeView !== "files" && inspectorScrollableBodyClass,
 					activeView === "browser" &&
 						!browserPoppedOut &&
 						"session-inspector__body--browser p-0 overflow-hidden [&>[role=tabpanel]]:border-0 [&>[role=tabpanel]]:rounded-none",
 					activeView === "files" && "p-0 overflow-hidden [&>[role=tabpanel]]:h-full",
+					activeView === "device" && "p-0 overflow-hidden [&>[role=tabpanel]]:h-full",
 				)}
 				inert={!isVisible}
 			>
 				{activeView === "summary" ? summaryView : null}
 				{activeView === "reviews" ? reviewsView : null}
 				{activeView === "browser" ? browserView : null}
+				{activeView === "device" ? deviceView : null}
 				{activeView === "files" ? filesView : null}
 			</div>
 		</aside>

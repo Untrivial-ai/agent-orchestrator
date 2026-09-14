@@ -100,6 +100,12 @@ describe("native runtime resources", () => {
 		expect(extraResourcesForPlatform("win32")).not.toContain("update-helper");
 	});
 
+	it("bundles the audited device runtime only in macOS builds", () => {
+		expect(extraResourcesForPlatform("darwin")).toContain("resources/device-runtime");
+		expect(extraResourcesForPlatform("linux")).not.toContain("resources/device-runtime");
+		expect(extraResourcesForPlatform("win32")).not.toContain("resources/device-runtime");
+	});
+
 	it.each(["darwin", "linux"] as const)("bundles tmux on %s", (platform) => {
 		expect(extraResourcesForPlatform(platform)).toContain("tmux");
 	});
@@ -137,7 +143,12 @@ afterEach(() => {
 describe("macOS signing", () => {
 	const NODE_ENTITLEMENTS = [
 		"com.apple.security.cs.allow-jit",
+		"com.apple.security.cs.disable-library-validation",
 		"com.apple.security.cs.allow-unsigned-executable-memory",
+	];
+	const ARM_NODE_ENTITLEMENTS = [
+		"com.apple.security.cs.allow-jit",
+		"com.apple.security.cs.disable-library-validation",
 	];
 
 	it("allows the bundled Node runtime to execute V8 JIT code on Intel Macs", () => {
@@ -159,9 +170,13 @@ describe("macOS signing", () => {
 		expect(macSignOptionsForFile(foreign)).toEqual({});
 	});
 
-	it("keeps the narrower default JIT entitlement when the binary has no x86_64 slice", () => {
-		expect(macSignOptionsForFile(acpNodeWith(thinMachO(CPU_TYPE_ARM64)))).toEqual({});
-		expect(macSignOptionsForFile(acpNodeWith(fatMachO([CPU_TYPE_ARM64])))).toEqual({});
+	it("preserves library validation access for the arm64 device capture runtime", () => {
+		expect(macSignOptionsForFile(acpNodeWith(thinMachO(CPU_TYPE_ARM64)))).toEqual({
+			entitlements: ARM_NODE_ENTITLEMENTS,
+		});
+		expect(macSignOptionsForFile(acpNodeWith(fatMachO([CPU_TYPE_ARM64])))).toEqual({
+			entitlements: ARM_NODE_ENTITLEMENTS,
+		});
 	});
 
 	it("fails the signing pass when the file cannot be parsed", () => {
@@ -178,9 +193,9 @@ describe("macOS signing", () => {
 		const fromX64Host = withHostArch("x64", () => macSignOptionsForFile(acpNode));
 		const fromArm64Host = withHostArch("arm64", () => macSignOptionsForFile(acpNode));
 		const fromAbsurdHost = withHostArch("ppc64", () => macSignOptionsForFile(acpNode));
-		expect(fromX64Host).toEqual({});
-		expect(fromArm64Host).toEqual({});
-		expect(fromAbsurdHost).toEqual({});
+		expect(fromX64Host).toEqual({ entitlements: ARM_NODE_ENTITLEMENTS });
+		expect(fromArm64Host).toEqual({ entitlements: ARM_NODE_ENTITLEMENTS });
+		expect(fromAbsurdHost).toEqual({ entitlements: ARM_NODE_ENTITLEMENTS });
 	});
 
 	it.each([

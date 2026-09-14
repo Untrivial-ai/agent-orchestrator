@@ -64,6 +64,7 @@ var lanControlBlockedPrefixes = []string{
 	"/api/v1/mobile",
 	"/api/v1/dev",
 	"/api/v1/browser",
+	"/api/v1/devices",
 	"/api/v1/desktop",
 	"/api/v1/system/install",
 	"/api/v1/agents/codex/accounts",

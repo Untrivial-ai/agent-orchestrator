@@ -51,7 +51,7 @@ func TestLANManagerAuthGatesSharedHandler(t *testing.T) {
 
 // TestLANManagerBlocksLoopbackOnlyControlRoutes proves the LAN listener never
 // serves /shutdown, /internal/*, /api/v1/mobile*, /api/v1/dev*,
-// /api/v1/browser*, or the Codex credential routes under
+// /api/v1/browser*, /api/v1/devices*, or the Codex credential routes under
 // /api/v1/agents/codex/accounts* and /api/v1/agents/codex/account-switches* —
 // even when the request carries a spoofed Host: 127.0.0.1
 // and valid LAN auth, since gating on Host alone (localControlRequest) is what
@@ -79,6 +79,7 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 		"/api/v1/mobile/devices/i1",
 		"/api/v1/dev/import-projects",
 		"/api/v1/browser/status",
+		"/api/v1/devices/status",
 		"/api/v1/desktop/sessions/ao-1/workspace",
 		"/api/v1/system/install/tmux",
 		"/api/v1/sessions/ao-1/preview/server",

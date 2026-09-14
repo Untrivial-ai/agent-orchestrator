@@ -75,6 +75,15 @@ import type {
 	BrowserDownloadActionInput,
 	BrowserDownloadsState,
 } from "./shared/browser-downloads";
+import type {
+	LocalDeviceCommand,
+	LocalDeviceCommandResult,
+	LocalDeviceInventory,
+	LocalDeviceStatus,
+	LocalDeviceSetupCommand,
+	LocalDeviceSetupResult,
+	LocalDeviceSetupStatus,
+} from "./shared/local-device";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -341,6 +350,13 @@ const api = {
 				ipcRenderer.off("daemon:status", wrapped);
 			};
 		},
+	},
+	device: {
+		status: (sessionId: string) => ipcRenderer.invoke("device:status", sessionId) as Promise<LocalDeviceStatus>,
+		list: (sessionId: string) => ipcRenderer.invoke("device:list", sessionId) as Promise<LocalDeviceInventory>,
+		command: (command: LocalDeviceCommand) => ipcRenderer.invoke("device:command", command) as Promise<LocalDeviceCommandResult>,
+		setupStatus: (sessionId: string) => ipcRenderer.invoke("device:setup-status", sessionId) as Promise<LocalDeviceSetupStatus>,
+		setup: (command: LocalDeviceSetupCommand) => ipcRenderer.invoke("device:setup", command) as Promise<LocalDeviceSetupResult>,
 	},
 	editorHandoff: {
 		getState: (sessionId: string) =>

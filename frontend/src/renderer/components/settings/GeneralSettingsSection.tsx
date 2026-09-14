@@ -153,6 +153,8 @@ export function GeneralSettingsSection({
 	const soundNotificationsSaveError = useSoundNotificationsStore((state) => state.saveError);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const setDeveloperMode = useUiStore((state) => state.setDeveloperMode);
+	const virtualDevicesEnabled = useUiStore((state) => state.virtualDevicesEnabled);
+	const setVirtualDevicesEnabled = useUiStore((state) => state.setVirtualDevicesEnabled);
 
 	const themeOptions = [
 		{ value: "light", label: t("settings.theme.light") },
@@ -243,7 +245,18 @@ export function GeneralSettingsSection({
 						onCheckedChange={setDeveloperMode}
 					/>
 				</SettingsRow>
-				{developerMode && <CloudOfferingRow />}
+				{developerMode ? (
+					<>
+						<SettingsRow label={t("settings.virtualDevices")}>
+							<Switch
+								aria-label={t("settings.virtualDevices")}
+								checked={virtualDevicesEnabled}
+								onCheckedChange={setVirtualDevicesEnabled}
+							/>
+						</SettingsRow>
+						<CloudOfferingRow />
+					</>
+				) : null}
 			</SettingsSection>
 		</>
 	);

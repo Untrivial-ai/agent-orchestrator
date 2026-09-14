@@ -145,6 +145,19 @@ describe("SessionInspectorShellView", () => {
     );
     expect(body).not.toHaveClass("p-3");
     expect(screen.getByText("browser slot")).toBeInTheDocument();
+
+		rerender(
+			<SessionInspectorShellView
+				activeView="device"
+				ariaLabel="Session inspector"
+				browserPoppedOut={false}
+				deviceView={<div role="tabpanel">device slot</div>}
+				onViewChange={onViewChange}
+				tabs={tabs}
+			/>,
+		);
+		expect(body).toHaveClass("p-0", "overflow-hidden");
+		expect(screen.getByText("device slot")).toBeInTheDocument();
   });
 
   it("renders the loading state without tab chrome", () => {
