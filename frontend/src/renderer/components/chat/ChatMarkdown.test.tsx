@@ -324,6 +324,74 @@ describe("ChatMarkdown", () => {
 
 /* -------------------------------------------------------------------------- */
 
+describe("ChatMarkdown images", () => {
+	it("caps a single image's height instead of letting it fill the column", () => {
+		render(<ChatMarkdown text={"![diagram](https://example.com/a.png)"} />);
+		const image = screen.getByRole("img", { name: "diagram" });
+		expect(image).toHaveClass("max-h-80", "max-w-full", "object-contain");
+		expect(screen.queryByRole("group", { name: "Images" })).not.toBeInTheDocument();
+	});
+
+	it("lays out a paragraph of only images as a gallery of equal-height thumbnails", () => {
+		render(
+			<ChatMarkdown
+				text={"![before](https://example.com/a.png) ![after](https://example.com/b.png)\n![diff](https://example.com/c.png)"}
+			/>,
+		);
+		const gallery = screen.getByRole("group", { name: "Images" });
+		expect(gallery).toHaveClass("flex-wrap");
+		// A gallery is block content; nesting it in a <p> is invalid markup.
+		expect(gallery.closest("p")).toBeNull();
+		const thumbnails = screen.getAllByRole("img");
+		expect(thumbnails).toHaveLength(3);
+		for (const thumbnail of thumbnails) {
+			expect(gallery).toContainElement(thumbnail);
+			expect(thumbnail).toHaveClass("h-40");
+		}
+	});
+
+	it("keeps images inline with prose when the paragraph also has text", () => {
+		render(
+			<ChatMarkdown text={"Before ![a](https://example.com/a.png) and after ![b](https://example.com/b.png)"} />,
+		);
+		expect(screen.queryByRole("group", { name: "Images" })).not.toBeInTheDocument();
+		expect(screen.getByRole("img", { name: "a" }).closest("p")).not.toBeNull();
+	});
+
+	it("opens a clicked image at full size in a dialog that Escape dismisses", async () => {
+		const user = userEvent.setup();
+		render(<ChatMarkdown text={"![diagram](https://example.com/a.png)"} />);
+
+		await user.click(screen.getByRole("button", { name: "Open image: diagram" }));
+
+		const dialog = await screen.findByRole("dialog", { name: "diagram" });
+		expect(dialog.querySelector("img")).toHaveAttribute("src", "https://example.com/a.png");
+		expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+
+		await user.keyboard("{Escape}");
+		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+	});
+
+	it("falls back to the alt text when an image fails to load", () => {
+		render(<ChatMarkdown text={"![build graph](https://example.com/missing.png)"} />);
+
+		fireEvent.error(screen.getByRole("img", { name: "build graph" }));
+
+		expect(screen.queryByRole("img")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /open image/i })).not.toBeInTheDocument();
+		expect(screen.getByText("build graph")).toBeInTheDocument();
+	});
+
+	it("leaves a linked image to its link rather than nesting a button inside it", () => {
+		render(<ChatMarkdown text={"[![badge](https://example.com/badge.svg)](https://example.com/ci)"} />);
+		const link = screen.getByRole("link", { name: "badge" });
+		expect(link.querySelector("button")).toBeNull();
+		expect(link).toContainElement(screen.getByRole("img", { name: "badge" }));
+	});
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("ChatMarkdown code highlighting", () => {
 	const block = (language: string, code: string) => `\`\`\`${language}\n${code}\n\`\`\``;
 
