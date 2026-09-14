@@ -224,6 +224,7 @@ export function SessionInspectorSummaryView({
 	pullRequestTitle,
 	reviews,
 	usage,
+	workers,
 }: {
 	activity: ReactNode;
 	activityTitle: string;
@@ -232,9 +233,15 @@ export function SessionInspectorSummaryView({
 	pullRequestTitle: string;
 	reviews?: ReactNode;
 	usage?: ReactNode;
+	/**
+	 * The sessions this orchestrator spawned. Rendered first: for an
+	 * orchestrator, its workers are the summary's primary content.
+	 */
+	workers?: ReactNode;
 }) {
 	return (
 		<div role="tabpanel">
+			{workers}
 			<InspectorSection surface={false} title={pullRequestTitle}>
 				<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
 			</InspectorSection>

@@ -137,7 +137,7 @@ describe("clone repository input", () => {
 			onError,
 		});
 
-		const duplicateMessage = "A project already exists at this location";
+		const duplicateMessage = "A repository already exists at this location";
 		expect(onError).not.toHaveBeenCalled();
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		fireEvent.blur(screen.getByRole("textbox", { name: "Repository URL" }));

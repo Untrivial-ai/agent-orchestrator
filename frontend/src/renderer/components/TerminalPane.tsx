@@ -37,6 +37,7 @@ import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { createCloudTerminalMux } from "../lib/cloud-terminal-mux";
+import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -167,6 +168,10 @@ function cacheDescriptor(
 	};
 }
 
+export function cloudTerminalKind(terminalTarget?: TerminalTarget): "agent" | "workspace" {
+	return terminalTarget?.kind === "shell" ? "workspace" : "agent";
+}
+
 function blurTerminal(container: HTMLElement): void {
 	const active = document.activeElement;
 	if (active instanceof HTMLElement && container.contains(active)) {
@@ -191,16 +196,19 @@ function setTerminalPhase(
 	}
 	if (interactive) {
 		entry.container.style.visibility = "";
+		entry.container.style.contentVisibility = "";
 	} else {
 		entry.container.style.visibility = "hidden";
+		// `visibility: hidden` still lays out the complete xterm subtree. Parked
+		// terminals retain their buffer and keep accepting output, but are never
+		// fitted while hidden, so Chromium can skip their expensive DOM layout
+		// until the container returns to the active pane.
+		entry.container.style.contentVisibility = "hidden";
 	}
 }
 
 function parkTerminal(entry: CachedTerminalEntry, parking: HTMLDivElement): void {
 	entry.activationId += 1;
-	const rect = entry.container.getBoundingClientRect();
-	if (rect.width > 0) entry.container.style.width = `${rect.width}px`;
-	if (rect.height > 0) entry.container.style.height = `${rect.height}px`;
 	blurTerminal(entry.container);
 	setTerminalPhase(entry, "parked");
 	parking.appendChild(entry.container);
@@ -210,10 +218,10 @@ function showTerminal(entry: CachedTerminalEntry, slot: HTMLDivElement): void {
 	entry.activationId += 1;
 	// Do not hide a retained terminal while it crosses xterm's two paint-frame
 	// preparation cycle: that made every return to a tab flash blank.
-	setTerminalPhase(entry, "visible");
 	entry.container.style.width = "100%";
 	entry.container.style.height = "100%";
 	slot.appendChild(entry.container);
+	setTerminalPhase(entry, "visible");
 }
 
 function CachedTerminalPortal({
@@ -304,25 +312,58 @@ export function TerminalCacheProvider({
 	cloudCpRef.current = { client: cloudClient, baseUrl: cloudBaseUrl };
 	const cloudMuxFactoriesRef = useRef(new Map<string, () => TerminalMux>());
 	const resolveCreateMux = useCallback(
-		(paneSession?: WorkspaceSession): (() => TerminalMux) => {
+		(paneSession?: WorkspaceSession, terminalTarget?: TerminalTarget): (() => TerminalMux) => {
 			const cloud = paneSession?.cloud;
 			if (!cloud) return muxPool.acquire;
-			const cached = cloudMuxFactoriesRef.current.get(paneSession.id);
+			const kind = cloudTerminalKind(terminalTarget);
+			const identity = terminalTarget?.kind === "shell" ? terminalTarget.handleId : "agent";
+			const factoryKey = `${paneSession.id}:${kind}:${identity}`;
+			const cached = cloudMuxFactoriesRef.current.get(factoryKey);
 			if (cached) return cached;
 			const sessionId = paneSession.id;
 			const orgId = cloud.orgId;
+			// One replay cursor per pane, shared across every mux the hook rebuilds
+			// on reconnect (the factory closure captures it and is itself cached
+			// per factoryKey). A rebuilt mux resumes from the last sequence it
+			// received instead of replaying the whole scrollback from 0, so the
+			// terminal settles instead of flickering. A different pane gets a
+			// different factory and therefore its own cursor starting at 0.
+			const cursor = { value: 0 };
 			const factory = () =>
 				createCloudTerminalMux({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
-					kind: "agent",
-					mintTicket: async () => {
+					kind,
+					cursor,
+					// #4960: hold the agent pane in "connecting" until the worker's
+					// agent.ready arrives (do not flash the temporary workspace shell).
+					// A workspace/shell terminal attaches to its own kind immediately
+					// and must never be upgraded to the agent terminal, so gate both
+					// the wait and the agent-ready subscription on the agent pane.
+					waitForAgentReady: kind === "agent",
+					mintTicket: async (ticketKind) => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
-							kind: "agent",
+							kind: ticketKind,
 						});
 						return response.ticket;
 					},
+					subscribeAgentReady:
+						kind === "agent"
+							? (onReady) => {
+									const controller = new AbortController();
+									void subscribeSessionEventsBridged({
+										baseUrl: cloudCpRef.current.baseUrl,
+										orgId,
+										sessionId,
+										signal: controller.signal,
+										onEvent: (event) => {
+											if (event.type === "agent.ready") onReady();
+										},
+									});
+									return () => controller.abort();
+								}
+							: undefined,
 				});
-			cloudMuxFactoriesRef.current.set(sessionId, factory);
+			cloudMuxFactoriesRef.current.set(factoryKey, factory);
 			return factory;
 		},
 		[muxPool],
@@ -351,7 +392,7 @@ export function TerminalCacheProvider({
 		(descriptor: TerminalCacheDescriptor, props: TerminalPaneProps, slot: HTMLDivElement) => {
 			const parking = parkingRef.current;
 			if (!parking) return;
-			const cachedProps = { ...props, createMux: resolveCreateMux(props.session) };
+			const cachedProps = { ...props, createMux: resolveCreateMux(props.session, props.terminalTarget) };
 
 			const previous = activeRef.current;
 			if (previous && previous.key !== descriptor.cacheKey) {
@@ -427,7 +468,7 @@ export function TerminalCacheProvider({
 	const update = useCallback(
 		(cacheKey: string, props: TerminalPaneProps) => {
 			const entry = entriesRef.current.get(cacheKey);
-			const cachedProps = { ...props, createMux: resolveCreateMux(props.session) };
+			const cachedProps = { ...props, createMux: resolveCreateMux(props.session, props.terminalTarget) };
 			if (!entry || terminalPropsMatch(entry.props, cachedProps)) return;
 			entry.props = cachedProps;
 			rerender();
@@ -923,6 +964,9 @@ function AttachedTerminal({
 	const shellTerminalHandleId = terminalTarget?.kind === "shell" ? terminalTarget.handleId : undefined;
 	const { attach, state, error, replaySettled, hasAttached, syncVisibleSize } = useTerminalSession(attachSession, {
 		coverInitialReplay: terminalTarget?.kind !== "reviewer",
+		// Cloud workers can acknowledge a terminal before the coding agent emits
+		// its first screen. Keep the loading surface visible through that gap.
+		waitForInitialOutput: Boolean(attachSession?.cloud),
 		createMux,
 		daemonReady,
 		inputDisabled,
@@ -960,6 +1004,11 @@ function AttachedTerminal({
 		};
 	}, [replayPaintPending, replaySettled, terminal]);
 	const handleId = shellTerminalHandleId ?? attachSession?.terminalHandleId;
+	const handleRetry = useCallback(() => {
+		// Re-attach from scratch: resets the connect-failure counter and starts a
+		// fresh connection attempt once the user has fixed their network policy.
+		if (terminal) attach(terminal);
+	}, [attach, terminal]);
 	const provider = terminalTarget?.kind === "reviewer" ? terminalTarget.harness : session?.provider;
 	const isSessionActive = session ? sessionIsActive(session) : false;
 	// A standalone shell is never restorable: there is no session row to restore.
@@ -1033,7 +1082,17 @@ function AttachedTerminal({
 		);
 	}
 
-	const banner = bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
+	// A cloud pane that hit the connect-failure breaker (ticket minted but the
+	// WebSocket kept failing) shows a dedicated retryable overlay instead of the
+	// generic banner. Any other error (PTY crash, pane error) keeps the banner.
+	const isCloudConnectError =
+		state === "error" &&
+		Boolean(attachSession?.cloud) &&
+		!hasAttached &&
+		Boolean(error?.includes("WebSocket cannot connect"));
+	const banner = isCloudConnectError
+		? undefined
+		: bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
 	const showEmptyState = !handleId;
 	// Cover xterm while the attachment buffers the initial replay, so the pane
 	// appears already drawn at the tail instead of visibly scrolling down to it.
@@ -1099,7 +1158,8 @@ function AttachedTerminal({
 						</div>
 					</div>
 				)}
-				{showReplayCover && <ReplayCover />}
+				{showReplayCover && <ReplayCover message={attachSession?.cloud ? t("terminal.connecting") : undefined} />}
+				{isCloudConnectError && <CloudConnectError onRetry={handleRetry} />}
 				{banner && (
 					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
 						{banner}
@@ -1120,16 +1180,43 @@ function AttachedTerminal({
 	);
 }
 
-function ReplayCover() {
+// Shown when a cloud terminal ticket was issued but the WebSocket permanently
+// failed to connect (proxy/firewall/CSP block). Distinct from a PTY error: it
+// is recoverable, so the user can retry once their network policy is fixed
+// without a full page reload.
+function CloudConnectError({ onRetry }: { onRetry: () => void }) {
+	const { t } = useTranslation();
 	return (
-		// Keep this cover silent: its only job is to hide the initial replay's
-		// intermediate paints. xterm remains live underneath, and pointer events
-		// pass through so selection and wheel input never wait on attachment.
+		<div className="absolute inset-0 z-10 grid place-items-center bg-terminal-opaque pointer-events-auto">
+			<div className="flex max-w-sm flex-col items-center gap-4 rounded-lg border border-border bg-surface p-6 text-center shadow-lg">
+				<div className="font-mono text-sm font-medium text-foreground">{t("terminal.cloudConnectTitle")}</div>
+				<div className="text-xs leading-relaxed text-muted-foreground">{t("terminal.cloudConnectDescription")}</div>
+				<button
+					type="button"
+					id="cloud-terminal-retry"
+					className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-raised px-3 py-1.5 font-mono text-xs text-foreground transition hover:bg-interactive-hover"
+					onClick={onRetry}
+				>
+					<RotateCcw className="size-3" aria-hidden="true" />
+					{t("terminal.cloudConnectRetry")}
+				</button>
+			</div>
+		</div>
+	);
+}
+
+function ReplayCover({ message }: { message?: string }) {
+	return (
+		// xterm remains live underneath. Cloud startup has no meaningful output
+		// until the agent TUI draws, so it gets one continuous Connecting surface;
+		// local replay stays deliberately silent to avoid covering settled output.
 		<div
-			aria-hidden="true"
-			className="bg-terminal-opaque pointer-events-none absolute inset-0"
+			aria-hidden={message ? undefined : "true"}
+			className="bg-terminal-opaque pointer-events-none absolute inset-0 grid place-items-center"
 			data-testid="terminal-replay-cover"
-		/>
+		>
+			{message ? <span className="font-mono text-sm text-terminal-dim">{message}</span> : null}
+		</div>
 	);
 }
 

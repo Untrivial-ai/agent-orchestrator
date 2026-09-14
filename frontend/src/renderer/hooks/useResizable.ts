@@ -3,8 +3,13 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 type ResizableConstraint = number | (() => number);
 
 interface UseResizableOptions {
-	/** CSS custom property to drive (set on :root), e.g. "--ao-sidebar-w". */
+	/** CSS custom property to drive, e.g. "--ao-sidebar-w". */
 	cssVar: string;
+	/**
+	 * Limits custom-property invalidation to the elements that consume the
+	 * width. Defaults to :root for callers that do not provide local targets.
+	 */
+	getCssTargets?: () => ReadonlyArray<HTMLElement | null>;
 	/** localStorage key to persist the width. */
 	storageKey: string;
 	defaultWidth: number;
@@ -27,11 +32,12 @@ interface UseResizableOptions {
 /**
  * Pointer-driven panel resize, cloned from agent-orchestrator's useResizable.
  * Persists the width to localStorage and applies it via a CSS custom property
- * on :root (so the consuming layout reads it with `width: var(--cssVar, default)`),
- * avoiding any inline `style=`.
+ * to the nearest consuming layout elements. Keeping a high-frequency custom
+ * property off :root avoids invalidating unrelated renderer subtrees.
  */
 export function useResizable({
 	cssVar,
+	getCssTargets,
 	storageKey,
 	defaultWidth,
 	min,
@@ -44,16 +50,27 @@ export function useResizable({
 	const widthRef = useRef(defaultWidth);
 	const frameRef = useRef<number | null>(null);
 	const pendingWidthRef = useRef<number | null>(null);
+	const appliedTargetsRef = useRef(new Set<HTMLElement>());
 	const minValue = useCallback(() => (typeof min === "function" ? min() : min), [min]);
 	const maxValue = useCallback(() => (typeof max === "function" ? max() : max), [max]);
+	const cssTargets = useCallback(
+		() =>
+			getCssTargets
+				? getCssTargets().filter((target): target is HTMLElement => target !== null)
+				: [document.documentElement],
+		[getCssTargets],
+	);
 
 	const apply = useCallback(
 		(next: number) => {
 			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
 			widthRef.current = clamped;
-			document.documentElement.style.setProperty(cssVar, `${clamped}px`);
+			for (const target of cssTargets()) {
+				target.style.setProperty(cssVar, `${clamped}px`);
+				appliedTargetsRef.current.add(target);
+			}
 		},
-		[cssVar, maxValue, minValue],
+		[cssTargets, cssVar, maxValue, minValue],
 	);
 
 	const applyOnFrame = useCallback(
@@ -88,7 +105,8 @@ export function useResizable({
 		apply(restoreMin === undefined ? restored : Math.max(restoreMin, restored));
 		return () => {
 			if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
-			document.documentElement.style.removeProperty(cssVar);
+			for (const target of appliedTargetsRef.current) target.style.removeProperty(cssVar);
+			appliedTargetsRef.current.clear();
 		};
 	}, [apply, cssVar, defaultWidth, restoreMin, storageKey]);
 

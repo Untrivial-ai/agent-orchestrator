@@ -80,6 +80,7 @@ import {
 	finishChatComposerMutation,
 	getChatComposerMutation,
 	isChatComposerMutationCurrent,
+	loadChatSessionDraft,
 	markChatComposerDeliveryAccepted,
 	prepareChatComposerDelivery,
 	readChatSessionDraft,
@@ -684,11 +685,6 @@ export const ChatComposer = memo(function ChatComposer({
 				);
 				return false;
 			}
-			const acceptedDelivery = accepted.draft.composer.delivery ?? {
-				...delivery,
-				state: "accepted" as const,
-			};
-			setDurableDelivery(acceptedDelivery);
 			return clearAcceptedDraft(delivery.revision, mutationToken);
 		},
 		[clearAcceptedDraft, draftScope],
@@ -790,16 +786,28 @@ export const ChatComposer = memo(function ChatComposer({
 
 	useEffect(() => {
 		if (!durableDelivery || !draftScope) return;
+		// The live send owns completion until its receipt has been applied.
+		if (composerMutation.pending || composerMutation.accepted) return;
+		// A replacement can commit after another surface cleared its rendered seed.
+		const current = loadChatSessionDraft(draftScope);
+		// A failed read cannot prove that the delivery was cleared.
+		const delivery = current.ok ? current.draft.composer.delivery : durableDelivery;
+		if (!delivery || delivery.clientMessageId !== durableDelivery.clientMessageId) {
+			setDurableDelivery(delivery);
+			return;
+		}
 		const observedSteer =
-			durableDelivery.kind === "steer" &&
-			acceptedClientMessageIds?.has(durableDelivery.clientMessageId);
-		if (durableDelivery.state !== "accepted" && !observedSteer) return;
-		if (automaticDeliveryRecoveryAttempted.current === durableDelivery.clientMessageId) return;
-		automaticDeliveryRecoveryAttempted.current = durableDelivery.clientMessageId;
-		acceptAndClearDurableDelivery(durableDelivery);
+			delivery.kind === "steer" &&
+			acceptedClientMessageIds?.has(delivery.clientMessageId);
+		if (delivery.state !== "accepted" && !observedSteer) return;
+		if (automaticDeliveryRecoveryAttempted.current === delivery.clientMessageId) return;
+		automaticDeliveryRecoveryAttempted.current = delivery.clientMessageId;
+		acceptAndClearDurableDelivery(delivery);
 	}, [
 		acceptAndClearDurableDelivery,
 		acceptedClientMessageIds,
+		composerMutation.pending,
+		composerMutation.accepted,
 		draftScope,
 		durableDelivery,
 	]);
@@ -1072,7 +1080,12 @@ export const ChatComposer = memo(function ChatComposer({
 		}
 		if (!draftScope || savingQueuedEdit) {
 			setSubmitting(true);
+			// A plain-text send has a local timeline echo — clear the editor immediately
+			// so the user sees one acknowledgement rather than their draft stranded until
+			// the daemon round-trip completes. Attachments retain the retry path.
+			const clearForLocalEcho = !shouldSteer && !savingQueuedEdit && nativePayloads.length === 0;
 			try {
+				if (clearForLocalEcho) clearEditorView();
 				if (shouldSteer && onSteer) {
 					const outcome = nativePayloads.length > 0
 						? await onSteer(message, nativePayloads)
@@ -1091,9 +1104,15 @@ export const ChatComposer = memo(function ChatComposer({
 				} else {
 					await onSend(message);
 				}
-				clearEditorView();
+				if (!clearForLocalEcho) clearEditorView();
 				fileAttachments.clear();
 			} catch (error) {
+				if (clearForLocalEcho) {
+					textRef.current = currentText;
+					hasTextRef.current = currentText.trim().length > 0;
+					setHasText(hasTextRef.current);
+					editor.current?.setText(currentText);
+				}
 				setSendError(
 					savingQueuedEdit
 						? apiErrorMessage(error, "chat.draft.queueSaveFailed")

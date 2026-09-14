@@ -103,6 +103,7 @@ describe("SessionFileExplorer", () => {
 		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Split diff view" })).not.toBeInTheDocument();
 		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { mode: "file" });
 	});
 
@@ -193,6 +194,7 @@ describe("SessionFileExplorer", () => {
 		expect(screen.queryByTestId("review-pane")).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Changes" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Split diff view" })).not.toBeInTheDocument();
 	});
 
 	it("keeps the continuous right-side diff visible when opening the full file in center", async () => {
