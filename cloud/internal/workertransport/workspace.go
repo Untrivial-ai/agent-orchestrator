@@ -200,30 +200,46 @@ func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFile
 
 func (w *workspace) diffCommittedFile(ctx context.Context, path, category string) (worker.WorkspaceDiffFile, error) {
 	base, err := w.defaultBranchRef(ctx)
-	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
 	from, to := base, "HEAD"
 	branch, _, _ := w.git(ctx, "branch", "--show-current")
 	remote := "origin/" + strings.TrimSpace(branch)
 	if _, _, remoteErr := w.git(ctx, "rev-parse", "--verify", remote); remoteErr == nil {
-		if category == "pushed" { to = remote } else if category == "unpushed" { from = remote }
+		if category == "pushed" {
+			to = remote
+		} else if category == "unpushed" {
+			from = remote
+		}
 	}
 	name, _, err := w.git(ctx, "diff", "--name-status", "--find-renames", from+"..."+to, "--", path)
-	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
 	line := strings.TrimSpace(name)
-	if line == "" { return worker.WorkspaceDiffFile{Path: wirePath(path), Status: "unmodified"}, nil }
+	if line == "" {
+		return worker.WorkspaceDiffFile{Path: wirePath(path), Status: "unmodified"}, nil
+	}
 	parts := strings.Split(line, "\t")
 	status := gitStatus(parts[0])
 	file := worker.WorkspaceDiffFile{Path: wirePath(path), Status: status, Deleted: status == "deleted"}
 	if !file.Deleted {
 		content, truncated, contentErr := w.gitFileContent(ctx, to, path)
-		if contentErr != nil { return worker.WorkspaceDiffFile{}, contentErr }
+		if contentErr != nil {
+			return worker.WorkspaceDiffFile{}, contentErr
+		}
 		file.Content, file.Size, file.ContentTruncated = content, int64(len(content)), truncated
 	}
 	numstat, _, err := w.git(ctx, "diff", "--numstat", from+"..."+to, "--", path)
-	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
 	file.Additions, file.Deletions, file.Binary = diffNumstat(numstat, false)
 	patch, truncated, err := w.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", from+"..."+to, "--", path)
-	if err != nil { return worker.WorkspaceDiffFile{}, err }
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
 	file.Diff, file.DiffTruncated = patch, truncated
 	file.BaseContent, _, _ = w.gitFileContent(ctx, from, path)
 	return file, nil
@@ -231,8 +247,12 @@ func (w *workspace) diffCommittedFile(ctx context.Context, path, category string
 
 func (w *workspace) gitFileContent(ctx context.Context, ref, path string) (string, bool, error) {
 	content, truncated, err := w.git(ctx, "show", ref+":"+filepath.ToSlash(path))
-	if err != nil { return "", false, nil }
-	if !utf8.ValidString(content) || strings.IndexByte(content, 0) >= 0 { return "", truncated, nil }
+	if err != nil {
+		return "", false, nil
+	}
+	if !utf8.ValidString(content) || strings.IndexByte(content, 0) >= 0 {
+		return "", truncated, nil
+	}
 	return content, truncated, nil
 }
 
@@ -449,7 +469,7 @@ func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
 		"combined": combined, "diffBaseRef": "HEAD",
 		"diffBaseSha": strings.TrimSpace(base), "files": files,
 		"untrackedFiles": untracked,
-		"categories": categories,
+		"categories":     categories,
 		"truncated": map[string]bool{
 			"combined": combinedTruncated,
 			"stats":    statusTruncated || numstatTruncated,
@@ -468,14 +488,20 @@ func (w *workspace) defaultBranchRef(ctx context.Context) (string, error) {
 
 func (w *workspace) diffSummary(ctx context.Context, from, to string) (map[string]any, error) {
 	nameStatus, _, err := w.git(ctx, "diff", "--name-status", "--find-renames", from+"..."+to)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	numstat, _, err := w.git(ctx, "diff", "--numstat", "--find-renames", from+"..."+to)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	stats := diffNumstats(numstat)
 	files := make([]map[string]any, 0)
 	for _, line := range strings.Split(strings.TrimSuffix(nameStatus, "\n"), "\n") {
 		parts := strings.Split(line, "\t")
-		if len(parts) < 2 { continue }
+		if len(parts) < 2 {
+			continue
+		}
 		path := parts[len(parts)-1]
 		status := gitStatus(parts[0])
 		stat := stats[path]

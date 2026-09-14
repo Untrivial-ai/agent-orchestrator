@@ -96,7 +96,7 @@ export function CloudWorkspaceDiff({ session }: CloudWorkspaceDiffProps) {
 						role="tab"
 						type="button"
 					>
-						{t("files.file")}
+						{t("files.fileView")}
 					</button>
 					<button
 						aria-selected={view === "diff"}
@@ -168,9 +168,10 @@ function CloudDiffDetail({ detailQuery }: { detailQuery: UseQueryResult<CloudCpW
 	const metadata = parsePatchFiles(diff, `cloud:${detailQuery.data.path}`, true).flatMap((entry) => entry.files);
 	if (metadata.length === 0) return <PanelMessage>{t("files.deferredDiff")}</PanelMessage>;
 	return <CodeView className="ao-pierre-surface board-scrollbar h-full overflow-y-auto" disableWorkerPool={typeof Worker === "undefined"} items={metadata.map((file) => ({ id: file.name, type: "diff" as const, fileDiff: file }))} options={{ collapsedContextThreshold: 8, diffIndicators: "classic", diffStyle: "unified", expansionLineCount: 20, loadDiffFiles: async (file) => {
-		const oldFile = detailQuery.data.status === "added" || detailQuery.data.status === "untracked" ? null : { name: file.prevName ?? file.name, contents: detailQuery.data.baseContent, cacheKey: `${detailQuery.data.path}:base` };
-		const newFile = detailQuery.data.deleted ? null : { name: file.name, contents: detailQuery.data.content, cacheKey: `${detailQuery.data.path}:current` };
-		if (file.type === "rename-pure") return { oldFile: null, newFile };
+		const oldFile = { name: file.prevName ?? file.name, contents: detailQuery.data.baseContent, cacheKey: `${detailQuery.data.path}:base` };
+		const newFile = { name: file.name, contents: detailQuery.data.content, cacheKey: `${detailQuery.data.path}:current` };
+		if (file.type === "rename-pure" || detailQuery.data.status === "added" || detailQuery.data.status === "untracked") return { oldFile: null, newFile };
+		if (detailQuery.data.deleted) return { oldFile, newFile: null };
 		return { oldFile, newFile };
 	}, overflow: "wrap", stickyHeaders: true, theme: { dark: "github-dark", light: "github-light" }, unsafeCSS: AO_PIERRE_SURFACE_CSS }} />;
 }
