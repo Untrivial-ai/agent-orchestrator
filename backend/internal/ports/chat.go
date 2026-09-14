@@ -816,6 +816,11 @@ type ChatEvent struct {
 	// provider supplies one. It is deliberately distinct from ProviderItemID:
 	// start, delta and completion events commonly share one item id.
 	ProviderEventID string
+	// ProviderEventFresh is a driver's proof that an identified observation was
+	// first emitted after attachment, rather than replayed from prior delivery.
+	// It permits transient preview only; durable deduplication still uses the ID.
+	// Drivers without this proof leave it false.
+	ProviderEventFresh bool
 
 	// ProviderTurnID is set on every event that belongs to a turn.
 	ProviderTurnID string
