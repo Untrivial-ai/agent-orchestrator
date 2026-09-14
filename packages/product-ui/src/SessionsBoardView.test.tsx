@@ -398,6 +398,38 @@ describe("SessionsBoardView", () => {
 		expect(onOpen).toHaveBeenCalledOnce();
 	});
 
+	it("links a tracker issue when the forge URL is unambiguous", () => {
+		const onOpen = vi.fn();
+		render(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "5m ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: {
+						short: "PR",
+						states: { closed: "closed", draft: "draft", merged: "merged", open: "open" },
+					},
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				onOpen={onOpen}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={{
+					...baseSession,
+					trackerIssueId: "github:acme/demo#12",
+					trackerIssueLabel: "#12",
+					trackerIssueUrl: "https://github.com/acme/demo/issues/12",
+				}}
+			/>,
+		);
+
+		const issue = screen.getByRole("link", { name: "Issue #12" });
+		expect(issue).toHaveAttribute("href", "https://github.com/acme/demo/issues/12");
+		expect(issue).toHaveTextContent("#12");
+		fireEvent.click(issue);
+		expect(onOpen).not.toHaveBeenCalled();
+	});
+
 	it("uses the shared loading and error fallback for reviewer avatars", () => {
 		const avatarUrl = "https://avatars.githubusercontent.com/ada?size=64";
 		render(

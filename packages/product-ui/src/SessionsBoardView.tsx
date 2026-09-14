@@ -65,6 +65,10 @@ export type BoardSessionPresentation = {
 	statusPresentation?: BoardSessionStatusPresentation;
 	title: string;
 	trackerIssueId?: string;
+	/** Compact visible label, e.g. `#12`. Absent when the issue cannot be linked. */
+	trackerIssueLabel?: string;
+	/** Forge URL for the session's tracker issue. Omit rather than guess. */
+	trackerIssueUrl?: string;
 	updatedAt: string;
 	lastUserMessageAt?: string;
 };
@@ -242,7 +246,7 @@ export function SessionCardView({
 	branchAction,
 	branchIcon,
 	error,
-	externalLink,
+	externalLink: ExternalLink,
 	footer,
 	interactive = true,
 	labels,
@@ -334,11 +338,27 @@ export function SessionCardView({
 						</div>
 					) : null}
 				</div>
-				{showBranch && (
+				{(showBranch || session.trackerIssueUrl) && (
 					<div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
-						{branchIcon ?? <GitBranchIcon aria-hidden="true" className="size-icon-2xs shrink-0" />}
-						<span className="truncate text-muted-foreground">{branch}</span>
-						{branchAction}
+						{showBranch ? (
+							<>
+								{branchIcon ?? <GitBranchIcon aria-hidden="true" className="size-icon-2xs shrink-0" />}
+								<span className="truncate text-muted-foreground">{branch}</span>
+								{branchAction}
+							</>
+						) : null}
+						{session.trackerIssueUrl && ExternalLink ? (
+							<ExternalLink
+								ariaLabel={labels.intakeIssue(session.trackerIssueLabel ?? session.trackerIssueId ?? session.trackerIssueUrl)}
+								className="pr-link relative z-10 hover:underline"
+								href={session.trackerIssueUrl}
+								stopPropagation
+							>
+								<span className="font-mono text-xs font-medium text-foreground">
+									{session.trackerIssueLabel ?? session.trackerIssueId}
+								</span>
+							</ExternalLink>
+						) : null}
 					</div>
 				)}
 			</div>
@@ -355,7 +375,7 @@ export function SessionCardView({
 								];
 							}).map((group) => (
 								<BoardPullRequestGroup
-									externalLink={externalLink}
+									externalLink={ExternalLink}
 									group={group}
 									key={`${group.state}-${group.prs.map((pr) => pr.url || pr.number).join("-")}`}
 									labels={labels.pr}

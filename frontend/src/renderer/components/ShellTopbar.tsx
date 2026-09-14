@@ -28,6 +28,8 @@ import { isLinuxPlatform, isMacPlatform, usesBoardActionsInPanel } from "../lib/
 import { cn } from "../lib/utils";
 import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
+import { trackerIssueLink } from "../lib/issue-url";
+import { ProductExternalLink } from "./ProductExternalLink";
 import { StatusPill } from "./StatusPill";
 import { TopbarActionError, TopbarButton, topbarHeaderClass, topbarProjectLabelClass } from "./TopbarButton";
 import { SessionTerminationPopover } from "./SessionTerminationPopover";
@@ -111,6 +113,7 @@ export function ShellTopbar({
 	const session = workspaceScope?.session;
 	const isSessionRoute = Boolean(params.sessionId);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
+	const issueLink = session && !isOrchestrator ? trackerIssueLink(session.issueId) : undefined;
 	// Project in scope: the session's workspace wins over the route param so the
 	// cross-project /sessions/$sessionId route still resolves a crumb. A
 	// projectId that no longer resolves (stale route after the project was
@@ -155,7 +158,18 @@ export function ShellTopbar({
 								<span className="max-w-content-max truncate">{projectLabel}</span>
 							</span>
 						) : (
-							<span className={cn(topbarProjectLabelClass, "max-w-content-max truncate")}>{session.title}</span>
+							<span className="inline-flex min-w-0 items-center gap-1.5">
+								<span className={cn(topbarProjectLabelClass, "max-w-content-max truncate")}>{session.title}</span>
+								{issueLink ? (
+									<ProductExternalLink
+										ariaLabel={t("shell.intakeIssue", { id: issueLink.nativeId })}
+										className="shrink-0 font-mono text-xs text-muted-foreground hover:underline"
+										href={issueLink.url}
+									>
+										{issueLink.label}
+									</ProductExternalLink>
+								) : null}
+							</span>
 						)}
 						<span aria-hidden="true" className="workspace-topbar__identity-separator" />
 						<SessionStatusPill session={session} />

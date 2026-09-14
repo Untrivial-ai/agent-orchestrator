@@ -231,6 +231,20 @@ describe("ShellTopbar status pill", () => {
 		expect(identity.querySelector(".workspace-topbar__identity-separator")).not.toBeNull();
 	});
 
+	it("links the worker's tracker issue in the topbar when the repo is in the id", () => {
+		renderTopbar(sessionWith({ issueId: "github:acme/demo#12" }));
+
+		const issue = screen.getByRole("link", { name: "Intake issue: acme/demo#12" });
+		expect(issue).toHaveAttribute("href", "https://github.com/acme/demo/issues/12");
+		expect(issue).toHaveTextContent("#12");
+	});
+
+	it("does not invent an issue link for a number-only or missing tracker id", () => {
+		renderTopbar(sessionWith({ issueId: "github:42" }));
+
+		expect(screen.queryByRole("link", { name: /intake issue/i })).not.toBeInTheDocument();
+	});
+
 	it("shows project identity and activity without redundant Orchestrator text", () => {
 		renderTopbar(
 			sessionWith({
