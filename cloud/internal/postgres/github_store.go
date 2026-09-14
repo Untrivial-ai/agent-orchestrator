@@ -1020,7 +1020,7 @@ func (s *Store) CreateGitHubProject(
 			return ErrForbidden
 		}
 		if err != nil {
-			return normalizeConstraintError(err)
+			return normalizeProjectConstraintError(err)
 		}
 		if _, err := tx.Exec(
 			ctx,
