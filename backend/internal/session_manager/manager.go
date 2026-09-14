@@ -858,7 +858,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// Resolve the effective agent config (project base + role override + spawn
 	// override) and validate the model before any durable state is created. A
 	// model the harness cannot honor should not leave a seed row behind.
-	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, project.Config), cfg.AgentConfig)
+	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, project.Config), cfg.AgentConfig)
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
@@ -1418,13 +1418,21 @@ func roleConfigName(kind domain.SessionKind) string {
 
 // effectiveAgentConfig merges the role override's agent config over the
 // project's base agent config; set override fields win.
-func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) ports.AgentConfig {
+//
+// Model/Mode are inherited only when the launch harness matches the role's
+// configured harness — otherwise they were tuned for a different agent and
+// would leak a provider-specific alias onto the wrong harness. An empty role
+// harness means "not pinned" and always matches. Permissions is
+// harness-neutral and is always inherited.
+func effectiveAgentConfig(harness domain.AgentHarness, kind domain.SessionKind, cfg domain.ProjectConfig) ports.AgentConfig {
 	merged := cfg.AgentConfig
-	override := roleOverride(kind, cfg).AgentConfig
-	if override.Model != "" {
+	role := roleOverride(kind, cfg)
+	override := role.AgentConfig
+	harnessMatches := role.Harness == "" || role.Harness == harness
+	if harnessMatches && override.Model != "" {
 		merged.Model = override.Model
 	}
-	if override.Mode != "" {
+	if harnessMatches && override.Mode != "" {
 		merged.Mode = override.Mode
 	}
 	if override.Permissions != "" {
@@ -1436,7 +1444,7 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 // restoredAgentConfig resolves project settings while preserving a Claude
 // session's recorded model selection.
 func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
-	merged := effectiveAgentConfig(rec.Kind, cfg)
+	merged := effectiveAgentConfig(rec.Harness, rec.Kind, cfg)
 	if rec.Harness == domain.HarnessClaudeCode {
 		// A blank snapshot means either agent default or an older session whose
 		// selection was not recorded. Leave it unset so native resume can keep
@@ -1518,11 +1526,30 @@ func validateSpawnModel(harness domain.AgentHarness, model string) error {
 	return fmt.Errorf("model %q is not supported by harness %q", model, harness)
 }
 
+// roleOverride returns the role-specific override for kind, with an unpinned
+// override's Model/Mode dropped.
+//
+// A role Model/Mode is authored against a specific harness — a provider alias
+// like "custom/gpt-5.5" is meaningful only to the agent it was configured for.
+// An override that pins no Harness cannot claim one, and effectiveAgentConfig
+// treats an empty role harness as matching any launch harness, so leaving the
+// values in place would apply them to whatever agent happens to launch.
+//
+// The settings form already enforces this: the role agent is required, and
+// changing it clears the role's model and mode. ProjectConfig.Validate does
+// not, so a config written through the API, edited by hand, or saved before
+// the agent became required can still carry this shape. Normalizing on read
+// repairs those without failing to load them.
 func roleOverride(kind domain.SessionKind, cfg domain.ProjectConfig) domain.RoleOverride {
+	role := cfg.Worker
 	if kind == domain.KindOrchestrator {
-		return cfg.Orchestrator
+		role = cfg.Orchestrator
 	}
-	return cfg.Worker
+	if role.Harness == "" {
+		role.AgentConfig.Model = ""
+		role.AgentConfig.Mode = ""
+	}
+	return role
 }
 
 // sessionPrefix returns the display prefix for a project: the explicit
@@ -3819,7 +3846,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.
 		Mode:              domain.NormalizeSessionMode(cfg.RequestedMode),
-		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, projectConfig), cfg.AgentConfig).Permissions},
+		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, projectConfig), cfg.AgentConfig).Permissions},
 		AutoReviewEnabled: projectConfig.AutoReview,
 		AutoInjectReview:  true,
 		AutoInjectCI:      true,

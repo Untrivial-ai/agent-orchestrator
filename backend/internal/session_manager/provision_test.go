@@ -217,13 +217,45 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	}
 
 	// Role override merges over the base agent config (set fields win; unset keep base).
-	got := effectiveAgentConfig(domain.KindWorker, cfg)
+	got := effectiveAgentConfig(domain.HarnessCodex, domain.KindWorker, cfg)
 	if got.Model != "worker" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
 		t.Fatalf("merged worker config = %#v, want model=worker mode=high permissions=auto", got)
 	}
 	// Orchestrator has no agent-config override, so the base config is used as-is.
-	if got := effectiveAgentConfig(domain.KindOrchestrator, cfg); got.Model != "base" {
+	if got := effectiveAgentConfig(domain.HarnessClaudeCode, domain.KindOrchestrator, cfg); got.Model != "base" {
 		t.Fatalf("orchestrator config = %#v, want base", got)
+	}
+	// A launch harness that differs from the role's configured harness drops the
+	// role's model/mode — they were tuned for the other agent — but keeps the
+	// harness-neutral permissions.
+	if got := effectiveAgentConfig(domain.HarnessAider, domain.KindWorker, cfg); got.Model != "base" || got.Mode != "low" || got.Permissions != domain.PermissionModeAuto {
+		t.Fatalf("mismatched-harness worker config = %#v, want model=base mode=low permissions=auto", got)
+	}
+	// A role override that pins no harness cannot claim one, so its model/mode
+	// are dropped rather than applied to whatever agent happens to launch: the
+	// values were authored against some specific harness and nothing records
+	// which. Permissions is harness-neutral and survives. Assert it across two
+	// unrelated harnesses so the leak cannot silently come back.
+	unpinned := domain.ProjectConfig{
+		AgentConfig: domain.AgentConfig{Model: "base", Mode: "low"},
+		Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{
+			Model: "custom/gpt-5.5", Mode: "high", Permissions: domain.PermissionModeAuto,
+		}},
+	}
+	for _, harness := range []domain.AgentHarness{domain.HarnessAider, domain.HarnessCodex} {
+		got := effectiveAgentConfig(harness, domain.KindWorker, unpinned)
+		if got.Model != "base" || got.Mode != "low" {
+			t.Fatalf("unpinned worker config for %q = %#v, want model=base mode=low", harness, got)
+		}
+		if got.Permissions != domain.PermissionModeAuto {
+			t.Fatalf("unpinned worker permissions for %q = %q, want auto", harness, got.Permissions)
+		}
+	}
+
+	// effectiveHarness reads only the pinned harness, so an unpinned override
+	// still resolves to "no harness" and leaves the caller's choice intact.
+	if h := effectiveHarness("", domain.KindWorker, unpinned); h != "" {
+		t.Fatalf("unpinned worker harness = %q, want empty", h)
 	}
 }
 
@@ -290,14 +322,14 @@ func TestSpawnPermissionPrecedence(t *testing.T) {
 		} {
 			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
 				cfg := domain.ProjectConfig{AgentConfig: domain.AgentConfig{Permissions: tc.base}, Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: tc.role}}, Orchestrator: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: tc.role}}}
-				got := applySpawnAgentConfig(effectiveAgentConfig(kind, cfg), domain.AgentConfig{Permissions: tc.spawn})
+				got := applySpawnAgentConfig(effectiveAgentConfig(domain.HarnessCodex, kind, cfg), domain.AgentConfig{Permissions: tc.spawn})
 				if got.Permissions != tc.want {
 					t.Fatalf("got %q want %q", got.Permissions, tc.want)
 				}
 			})
 		}
 	}
-	if got := effectiveAgentConfig(domain.KindWorker, domain.ProjectConfig{}); got.Permissions != "" {
+	if got := effectiveAgentConfig(domain.HarnessCodex, domain.KindWorker, domain.ProjectConfig{}); got.Permissions != "" {
 		t.Fatalf("non-spawn resolution changed: %q", got.Permissions)
 	}
 }

@@ -1577,6 +1577,60 @@ func TestSpawnModelPersisted(t *testing.T) {
 	}
 }
 
+// A spawn that names a harness other than the role override's must not inherit
+// that role's model: it was tuned for the other agent and would reach the
+// selected harness as an unknown provider alias. The harness picks its own
+// default instead, while harness-neutral permissions still carry over.
+// Both roles resolve through the same override, so both leak the same way; the
+// orchestrator case is asserted explicitly rather than left implied.
+func TestSpawn_DropsRoleModelOnHarnessMismatch(t *testing.T) {
+	roleConfig := domain.RoleOverride{
+		Harness:     domain.HarnessOpenCode,
+		AgentConfig: domain.AgentConfig{Model: "custom/gpt-5.5", Permissions: domain.PermissionModeAuto},
+	}
+	for _, tc := range []struct {
+		name string
+		kind domain.SessionKind
+		cfg  domain.ProjectConfig
+	}{
+		{"worker", domain.KindWorker, domain.ProjectConfig{Worker: roleConfig}},
+		{"orchestrator", domain.KindOrchestrator, domain.ProjectConfig{Orchestrator: roleConfig}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: tc.cfg}
+			agent := &recordingAgent{}
+			m := New(Deps{
+				Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{},
+				Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+				LookPath: func(string) (string, error) { return "/bin/true", nil },
+			})
+
+			rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+				ProjectID: "mer", Kind: tc.kind, Harness: domain.HarnessCodex,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if agent.lastConfig.Model != "" {
+				t.Fatalf("launch model = %q, want empty so codex uses its own default", agent.lastConfig.Model)
+			}
+			if agent.lastConfig.Permissions != domain.PermissionModeAuto {
+				t.Fatalf("launch permissions = %q, want auto (harness-neutral)", agent.lastConfig.Permissions)
+			}
+			// The mismatched model must not survive into the record the API
+			// and UI read back either.
+			stored, ok, err := st.GetSession(ctx, rec.ID)
+			if err != nil || !ok {
+				t.Fatalf("get session: err=%v ok=%v", err, ok)
+			}
+			if stored.Metadata.Model != "" {
+				t.Fatalf("persisted metadata model = %q, want empty", stored.Metadata.Model)
+			}
+		})
+	}
+}
+
 func TestSpawnRecordsDiffBaseForSingleRepoSessions(t *testing.T) {
 	m, st, _, ws := newManager()
 	repo := newManagerGitRepo(t)

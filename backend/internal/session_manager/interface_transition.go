@@ -677,7 +677,7 @@ func (m *Manager) preflightInterfaceTarget(
 		if err != nil {
 			return err
 		}
-		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
+		permissions := effectiveAgentConfig(rec.Harness, rec.Kind, project.Config).Permissions
 		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -692,7 +692,7 @@ func (m *Manager) preflightInterfaceTarget(
 	if err != nil {
 		return err
 	}
-	config := effectiveAgentConfig(rec.Kind, project.Config)
+	config := effectiveAgentConfig(rec.Harness, rec.Kind, project.Config)
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
