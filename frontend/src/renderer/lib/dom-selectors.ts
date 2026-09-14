@@ -13,6 +13,27 @@ export const OPEN_DIALOG_OR_MENU_SELECTOR =
 export const OPEN_BROWSER_OVERLAY_SELECTOR =
 	'[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [data-browser-native-overlay="true"][data-state="open"], [data-browser-native-overlay="true"][data-state="delayed-open"], [data-browser-native-overlay="true"][data-state="instant-open"]';
 
+const BROWSER_OVERLAY_CANDIDATE_SELECTOR =
+	'[role="dialog"], [role="alertdialog"], [data-browser-native-overlay="true"]';
+
+function containsBrowserOverlayCandidate(node: Node): boolean {
+	if (!(node instanceof Element)) return false;
+	return node.matches(BROWSER_OVERLAY_CANDIDATE_SELECTOR) || node.querySelector(BROWSER_OVERLAY_CANDIDATE_SELECTOR) !== null;
+}
+
+/**
+ * MutationObserver is still needed for portaled Radix content whose open state
+ * is owned inside the primitive. Filter its records before doing the one global
+ * open-overlay lookup: unrelated accordions, switches, menus, and other
+ * data-state churn must not make the browser compositor do work.
+ */
+export function hasRelevantBrowserOverlayMutation(records: MutationRecord[]): boolean {
+	return records.some((record) => {
+		if (record.type === "attributes") return containsBrowserOverlayCandidate(record.target);
+		return [...record.addedNodes, ...record.removedNodes].some(containsBrowserOverlayCandidate);
+	});
+}
+
 export function isDialogOrMenuOpen(): boolean {
 	if (typeof document === "undefined") return false;
 	return document.querySelector(OPEN_DIALOG_OR_MENU_SELECTOR) !== null;

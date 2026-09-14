@@ -3,7 +3,6 @@ import type {
 	IpcMain,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
-	Rectangle,
 	Session,
 	View,
 	WebContents,
@@ -37,6 +36,12 @@ import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import type { BrowserDownloadManager } from "./browser-download-manager";
 import type { BrowserDownloadActionInput } from "../shared/browser-downloads";
+import {
+	browserSurfaceRectsEqual,
+	type BrowserSurfaceLayoutInput,
+	type BrowserSurfaceLayoutResult,
+	type BrowserSurfaceRect,
+} from "../shared/browser-surface";
 import { matchInstruction } from "./browser-act-matcher";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
@@ -76,7 +81,7 @@ function isValidAnnotationSelection(value: unknown): value is BrowserAnnotationS
 	return false;
 }
 
-export type BrowserRect = Pick<Rectangle, "x" | "y" | "width" | "height">;
+export type BrowserRect = BrowserSurfaceRect;
 
 export type BrowserNavState = {
 	viewId: string;
@@ -381,6 +386,9 @@ type BrowserSessionEntry = {
 	rendererBounds: BrowserRect;
 	zoomFactor: number;
 	visible: boolean;
+	layoutSourceId?: string;
+	layoutRevision: number;
+	surfaceRefreshRevision: number;
 	networkTabId?: string;
 	agentBrowserCommands: number;
 	browserOperations: number;
@@ -813,6 +821,8 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				rendererBounds: OFFSCREEN_BOUNDS,
 				zoomFactor: 1,
 				visible: false,
+				layoutRevision: 0,
+				surfaceRefreshRevision: 0,
 				agentBrowserCommands: 0,
 				browserOperations: 0,
 				profileSwitching: false,
@@ -1412,26 +1422,37 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		}
 	}
 
-	const setBounds = ({ viewId, rect, visible }: BrowserBoundsInput, zoomFactor = 1): void => {
+	const setBounds = ({ viewId, rect, visible }: BrowserBoundsInput, zoomFactor = 1): BrowserRect | null => {
 		const session = entries.get(viewId);
-		if (!session) return;
+		if (!session) return null;
 		const effectiveZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
-		session.zoomFactor = effectiveZoomFactor;
 		if (!visible) {
+			forgetIfFocused(viewId);
+			if (!session.visible && session.zoomFactor === effectiveZoomFactor) return session.bounds;
+			session.zoomFactor = effectiveZoomFactor;
 			session.bounds = OFFSCREEN_BOUNDS;
 			session.visible = false;
 			if (!session.profileSwitching && session.tabs.size > 0) applySessionBounds(session, activeEntry(session));
-			forgetIfFocused(viewId);
-			return;
+			return session.bounds;
 		}
 		// The renderer measures the slot in page-zoomed CSS pixels, while
 		// WebContentsView bounds are window coordinates. Convert before clamping so
 		// Cmd+/Cmd- page zoom does not detach the native view from its React slot.
-		session.rendererBounds = { ...rect };
-		session.bounds = clampBoundsToWindow(
+		const nextBounds = clampBoundsToWindow(
 			scaleBoundsForZoom(rect, effectiveZoomFactor),
 			options.mainWindow.getContentBounds(),
 		);
+		if (
+			session.visible &&
+			session.zoomFactor === effectiveZoomFactor &&
+			browserSurfaceRectsEqual(session.rendererBounds, rect) &&
+			browserSurfaceRectsEqual(session.bounds, nextBounds)
+		) {
+			return session.bounds;
+		}
+		session.zoomFactor = effectiveZoomFactor;
+		session.rendererBounds = { ...rect };
+		session.bounds = nextBounds;
 		session.visible = true;
 		// A profile replacement may temporarily have no active tab. Keep accepting
 		// renderer geometry during that interval; rebuilt tabs receive the latest
@@ -1441,6 +1462,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		// becomes visible. Remember that active panel too, so the DevTools shortcut
 		// still targets the browser even when the native page itself is not focused.
 		lastFocusedViewId = viewId;
+		return session.bounds;
 	};
 
 	const navigate = async ({ viewId, url }: BrowserNavigateInput): Promise<BrowserNavState> => {
@@ -1890,14 +1912,72 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		ipcDisposers.push(() => options.ipcMain.off(channel, fn));
 	};
 
-	handle("browser:ensure", async (event, sessionId: string) => {
+	handle("browser:ensure", async (event, sessionId: string, layoutSourceId?: string) => {
 		const session = await ensureSessionReady(sessionId, event.sender.id, () => event.sender.isDestroyed?.() ?? false);
+		if (
+			typeof layoutSourceId === "string" &&
+			layoutSourceId.length > 0 &&
+			layoutSourceId.length <= 128 &&
+			session.layoutSourceId !== layoutSourceId
+		) {
+			// A shell reload keeps the native session alive. Make the new preload
+			// lifetime authoritative before it starts measuring so delayed messages
+			// from the departed renderer cannot move the retained view afterward.
+			session.layoutSourceId = layoutSourceId;
+			session.layoutRevision = 0;
+		}
 		pushDevToolsState(session);
 		pushProfileState(session);
 		return pushNavState(options, activeEntry(session));
 	});
+	handle("browser:applyBounds", (event, input: BrowserSurfaceLayoutInput): BrowserSurfaceLayoutResult => {
+		if (
+			!input ||
+			typeof input.viewId !== "string" ||
+			typeof input.sourceId !== "string" ||
+			input.sourceId.length === 0 ||
+			input.sourceId.length > 128 ||
+			!Number.isSafeInteger(input.revision) ||
+			input.revision <= 0 ||
+			typeof input.visible !== "boolean" ||
+			!input.rect ||
+			![input.rect.x, input.rect.y, input.rect.width, input.rect.height].every(Number.isFinite)
+		) {
+			throw browserError("INVALID_ARGUMENT", "Invalid browser surface layout");
+		}
+		const session = entries.get(input.viewId);
+		if (!session || !isRendererOwned(event, input.viewId)) {
+			return { ...input, applied: false };
+		}
+		if (session.layoutSourceId !== input.sourceId || input.revision <= session.layoutRevision) {
+			return {
+				viewId: session.viewId,
+				sourceId: session.layoutSourceId ?? input.sourceId,
+				revision: session.layoutRevision,
+				rect: session.bounds,
+				visible: session.visible,
+				applied: false,
+			};
+		}
+		session.layoutRevision = input.revision;
+		const rect = setBounds(input, event.sender.getZoomFactor());
+		return {
+			viewId: session.viewId,
+			sourceId: input.sourceId,
+			revision: input.revision,
+			rect: rect ?? session.bounds,
+			visible: session.visible,
+			applied: true,
+		};
+	});
+	// Kept as a narrow compatibility path for an older shell during a desktop
+	// auto-update handoff. Current preloads use the acknowledged, revisioned
+	// browser:applyBounds channel above.
 	on("browser:setBounds", (event, input: BrowserBoundsInput) => {
-		if (isRendererOwned(event, input.viewId)) setBounds(input, event.sender.getZoomFactor());
+		const session = entries.get(input.viewId);
+		if (session && session.layoutSourceId === undefined && isRendererOwned(event, input.viewId)) {
+			setBounds(input, event.sender.getZoomFactor());
+		}
 	});
 	handle("browser:navigate", (event, input: BrowserNavigateInput) =>
 		isRendererOwned(event, input.viewId) ? navigate(input) : emptyNavState(input.viewId),
@@ -2383,16 +2463,18 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		// a 1px bounds change alone, so do both.
 		refreshLastFocusedPanelSurface: () => {
 			if (lastFocusedViewId === null) return;
-			const session = entries.get(lastFocusedViewId);
+			const viewId = lastFocusedViewId;
+			const session = entries.get(viewId);
 			if (!session || !session.visible) return;
 			const entry = activeEntry(session);
 			const bounds = session.bounds;
 			if (bounds.width <= 0 || bounds.height <= 0) return;
+			const refreshRevision = ++session.surfaceRefreshRevision;
 			entry.view.setVisible?.(false);
 			applyBrowserViewBounds(entry.view, { ...bounds, height: Math.max(1, bounds.height - 1) });
 			setTimeout(() => {
-				const current = lastFocusedViewId !== null ? entries.get(lastFocusedViewId) : undefined;
-				if (!current || !current.visible) return;
+				const current = entries.get(viewId);
+				if (!current || !current.visible || current.surfaceRefreshRevision !== refreshRevision) return;
 				applyBrowserViewBounds(activeEntry(current).view, current.bounds, true);
 			}, 0);
 		},

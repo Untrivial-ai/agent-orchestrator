@@ -90,6 +90,23 @@ describe("createWindowComposition", () => {
 		}
 	});
 
+	it("does not let a stale macOS refresh timer override a newer overlay transition", () => {
+		vi.useFakeTimers();
+		try {
+			const { composition, view } = setup("darwin");
+			(view.setBounds as ReturnType<typeof vi.fn>).mockClear();
+
+			composition.setOverlayOpen(true);
+			composition.setOverlayOpen(false);
+			composition.setOverlayOpen(true);
+			vi.runAllTimers();
+
+			expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 640 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("resizes and disposes the explicit shell without recreating it", () => {
 		const { bounds, close, composition, emitBoundsChanged, removeChildView, removeListener, setBounds, view } = setup();
 

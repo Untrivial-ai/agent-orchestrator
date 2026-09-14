@@ -287,7 +287,9 @@ export const BrowserTabsRail = forwardRef<BrowserTabsRailHandle, BrowserTabsRail
 							<PinOff aria-hidden="true" className="size-icon-base" />
 						</button>
 					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.unpinTabs")}</TooltipContent>
+					{/* Keep passive hover UI inside the shell-owned toolbar band. A tooltip
+					    must not restack the native page just to become visible. */}
+					<TooltipContent avoidCollisions={false} side="top" sideOffset={2}>{t("browser.unpinTabs")}</TooltipContent>
 				</Tooltip>
 			) : null}
 			<nav
