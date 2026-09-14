@@ -115,6 +115,24 @@ describe("telemetry sanitizers", () => {
 		expect(safe).toEqual({ destination: "discord", outcome: "succeeded" });
 	});
 
+	it("keeps cloud diff usage telemetry free of session and file identifiers", async () => {
+		expect(
+			await sanitizeRendererProperties("ao.renderer.cloud_workspace_diff_viewed", {
+				session_id: "session-private",
+				provider: "coder",
+			}),
+		).toEqual({});
+		expect(
+			await sanitizeRendererProperties("ao.renderer.cloud_diff_file_opened", {
+				category: "unpushed",
+				path: "src/private.ts",
+			}),
+		).toEqual({ category: "unpushed" });
+		expect(
+			await sanitizeRendererProperties("ao.renderer.cloud_diff_file_opened", { category: "other" }),
+		).toEqual({});
+	});
+
 	it("drops an unrecognised support destination rather than forwarding it", async () => {
 		const safe = await sanitizeRendererProperties("ao.renderer.support_submitted", {
 			destination: "mailto:founder@example.com",

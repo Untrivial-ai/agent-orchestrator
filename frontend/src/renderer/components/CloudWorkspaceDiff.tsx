@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { parsePatchFiles } from "@pierre/diffs";
@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { useCloudCp } from "../hooks/useCloudCp";
 import type { CloudCpWorkspaceDiffFile, CloudCpWorkspaceDiffFileDetail } from "../lib/cloud-cp";
 import { cn } from "../lib/utils";
+import { captureRendererEvent } from "../lib/telemetry";
 import type { WorkspaceSession } from "../types/workspace";
 import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
 import { AO_PIERRE_SURFACE_CSS } from "./diffs/pierreTheme";
@@ -48,6 +49,7 @@ export function CloudWorkspaceDiff({ session }: CloudWorkspaceDiffProps) {
 	const cloud = session.cloud;
 	const supportsWorkspaceDiff = cloud?.sandboxProvider === "docker" || cloud?.sandboxProvider === "nodeops" || cloud?.sandboxProvider === "coder";
 	const orgId = cloud?.orgId;
+	const viewedRef = useRef(false);
 	const [selectedPath, setSelectedPath] = useState<string | undefined>();
 	const [view, setView] = useState<"files" | "diff">("files");
 	const [category, setCategory] = useState<"uncommitted" | "unpushed" | "pushed">("uncommitted");
@@ -80,6 +82,12 @@ export function CloudWorkspaceDiff({ session }: CloudWorkspaceDiffProps) {
 			setView("files");
 		}
 	}, [files, selectedPath]);
+
+	useEffect(() => {
+		if (viewedRef.current || !supportsWorkspaceDiff) return;
+		viewedRef.current = true;
+		void captureRendererEvent("ao.renderer.cloud_workspace_diff_viewed");
+	}, [supportsWorkspaceDiff]);
 
 	if (!supportsWorkspaceDiff) {
 		return <PanelMessage>{t("files.noneChanged")}</PanelMessage>;
@@ -139,6 +147,7 @@ export function CloudWorkspaceDiff({ session }: CloudWorkspaceDiffProps) {
 								)}
 								key={file.path}
 								onClick={() => {
+									void captureRendererEvent("ao.renderer.cloud_diff_file_opened", { category });
 									setSelectedPath(file.path);
 									setView("diff");
 								}}
