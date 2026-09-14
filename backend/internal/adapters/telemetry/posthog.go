@@ -230,6 +230,8 @@ type PostHogSink struct {
 	ch         chan ports.TelemetryEvent
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
+	queueMu    sync.RWMutex
+	closed     bool
 	// ctx bounds every in-flight send and its retry backoff. Close cancels it
 	// when the caller's shutdown context is done, so pending retry work stops
 	// promptly instead of outliving shutdown on an uncancellable sleep or a
@@ -274,16 +276,31 @@ func NewPostHogSink(dataDir, apiKey, host, appVersion, defaultAgent string, clie
 
 // Emit enqueues an event for best-effort export.
 func (s *PostHogSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
+	s.queueMu.RLock()
+	if s.closed {
+		s.queueMu.RUnlock()
+		return
+	}
+	queued := false
 	select {
 	case s.ch <- ev:
+		queued = true
 	default:
+	}
+	s.queueMu.RUnlock()
+	if !queued {
 		s.log.Warn("telemetry posthog sink buffer full; dropping event", "name", ev.Name, "source", ev.Source)
 	}
 }
 
 // Close drains the exporter until completion or context cancellation.
 func (s *PostHogSink) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() { close(s.ch) })
+	s.closeOnce.Do(func() {
+		s.queueMu.Lock()
+		s.closed = true
+		close(s.ch)
+		s.queueMu.Unlock()
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
