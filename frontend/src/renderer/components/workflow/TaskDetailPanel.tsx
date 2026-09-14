@@ -7,6 +7,7 @@ import { Skeleton } from "../ui/skeleton";
 import { useWorkflowTask } from "../../hooks/useWorkflowTasks";
 import { StatusBadge } from "./StatusBadge";
 import { RunEntry } from "./RunEntry";
+import { ReviewTab } from "./ReviewTab";
 import { useWorkflowRuns, useCreateRun, useStartRun, useCancelRun } from "../../hooks/useWorkflowRuns";
 
 type TaskDetailPanelProps = {
@@ -59,6 +60,7 @@ export function TaskDetailPanel({ taskId, projectId, onClose, onNavigateSession 
 					<TabsList className="mx-4 mt-2">
 						<TabsTrigger value="info">{t("workflow.task.info")}</TabsTrigger>
 						<TabsTrigger value="runs">{t("workflow.task.runHistory")}</TabsTrigger>
+						<TabsTrigger value="review">{t("workflow.task.review")}</TabsTrigger>
 					</TabsList>
 
 					<TabsContent value="info" className="flex-1 overflow-auto p-4">
@@ -150,6 +152,10 @@ export function TaskDetailPanel({ taskId, projectId, onClose, onNavigateSession 
 								)}
 							</div>
 						)}
+					</TabsContent>
+
+					<TabsContent value="review" className="flex-1 overflow-auto p-4">
+						<ReviewTab task={task} latestRun={latestRun} taskId={taskId} />
 					</TabsContent>
 				</Tabs>
 			)}

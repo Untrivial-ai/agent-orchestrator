@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Badge } from "../ui/badge";
 
-type EntityType = "plan" | "stage" | "task" | "run";
+type EntityType = "plan" | "stage" | "task" | "run" | "review";
 
 type StatusBadgeProps = {
 	status: string;
