@@ -3726,6 +3726,105 @@ func TestServiceStopAllRetainsControllerUntilItsEventStreamActuallyEnds(t *testi
 	t.Fatal("controller registry did not release the stopped stream")
 }
 
+func TestServiceStopAllClosesHealthyControllerAfterStuckStreamExhaustsShutdownContext(t *testing.T) {
+	st := openStore(t)
+	now := time.Date(2026, 9, 14, 15, 0, 0, 0, time.UTC)
+	healthyRecord, err := st.CreateSession(context.Background(), domain.SessionRecord{
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	stuckSession := testSession
+	healthySession := healthyRecord.ID
+	if stuckSession >= healthySession {
+		t.Fatalf("stuck session %s must sort before healthy session %s so StopAll hits the stuck stream first", stuckSession, healthySession)
+	}
+
+	stuckBase := newFakeConversation()
+	stuckBase.providerConversationID = "stuck-thread"
+	stuck := &stuckConversation{fakeConversation: stuckBase, closeErr: errors.New("provider close failed")}
+	healthy := newFakeConversation()
+	healthy.providerConversationID = "healthy-thread"
+	var healthyClosed atomic.Bool
+	healthy.onClose = func() { healthyClosed.Store(true) }
+
+	var nextID atomic.Int32
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{
+			start: func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+				switch cfg.SessionID {
+				case stuckSession:
+					return stuck, nil
+				case healthySession:
+					return healthy, nil
+				default:
+					return nil, fmt.Errorf("unexpected session %s", cfg.SessionID)
+				}
+			},
+		}},
+		Log: slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			return fmt.Sprintf("stopall-close-%d", nextID.Add(1))
+		},
+	})
+	workspace := t.TempDir()
+	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: stuckSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("Start stuck: %v", err)
+	}
+	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: healthySession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("Start healthy: %v", err)
+	}
+	t.Cleanup(func() {
+		stuckBase.closeOnce.Do(func() { close(stuckBase.events) })
+		_ = svc.Stop(context.Background(), stuckSession)
+		_ = svc.Stop(context.Background(), healthySession)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	svc.StopAll(ctx)
+
+	if !healthyClosed.Load() {
+		t.Fatal("healthy controller was not closed after a stuck stream exhausted the shared shutdown context")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		_, err := svc.Controller(healthySession)
+		if errors.Is(err, chatsvc.ErrNoController) {
+			if svc.HasLiveChatController(healthySession) {
+				t.Fatal("healthy live-controller guard remained set after detach")
+			}
+			if _, stuckErr := svc.Controller(stuckSession); stuckErr != nil {
+				t.Fatalf("stuck controller was forgotten while its stream was still live: %v", stuckErr)
+			}
+			if !svc.HasLiveChatController(stuckSession) {
+				t.Fatal("stuck live-controller guard cleared before the provider stream ended")
+			}
+			stuckBase.closeOnce.Do(func() { close(stuckBase.events) })
+			releaseDeadline := time.Now().Add(time.Second)
+			for time.Now().Before(releaseDeadline) {
+				if _, err := svc.Controller(stuckSession); errors.Is(err, chatsvc.ErrNoController) {
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			t.Fatal("stuck controller registry did not release the stopped stream")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("healthy controller remained registered after StopAll initiated detach")
+}
+
 func TestServiceStopAllOnlyDetachesPersistentConversation(t *testing.T) {
 	provider := &terminatingConversation{fakeConversation: newFakeConversation()}
 	h := newHarnessWithConversation(t, provider)

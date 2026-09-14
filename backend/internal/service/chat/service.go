@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -945,10 +946,16 @@ func (s *Service) StopAll(ctx context.Context) {
 		targets = append(targets, shutdownTarget{id: id, controller: controller})
 	}
 	s.mu.Unlock()
+	slices.SortFunc(targets, func(a, b shutdownTarget) int {
+		return strings.Compare(string(a.id), string(b.id))
+	})
 
 	for _, target := range targets {
 		gate := s.controllerGate(target.id)
-		if err := gate.lock(ctx); err != nil {
+		// Close waits on the shared shutdown context, so a stuck earlier stream
+		// can expire it. Locking with that same ctx would take the cancellation
+		// branch and skip Close for every remaining controller.
+		if err := gate.lock(context.WithoutCancel(ctx)); err != nil {
 			s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
 			continue
 		}
