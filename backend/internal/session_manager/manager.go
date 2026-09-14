@@ -1433,6 +1433,19 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	return merged
 }
 
+// restoredAgentConfig resolves project settings while preserving a Claude
+// session's recorded model selection.
+func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
+	merged := effectiveAgentConfig(rec.Kind, cfg)
+	if rec.Harness == domain.HarnessClaudeCode {
+		// A blank snapshot means either agent default or an older session whose
+		// selection was not recorded. Leave it unset so native resume can keep
+		// its own model instead of overriding it with today's project defaults.
+		merged.Model = rec.Metadata.Model
+	}
+	return merged
+}
+
 func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	if override.Model != "" {
 		base.Model = override.Model
@@ -2250,9 +2263,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt file: %w", operation, rec.ID, err)
 	}
 
-	// Restore resolves the project model while retaining this session's pinned
-	// permission policy independently of future project defaults.
-	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	agentConfig := restoredAgentConfig(rec, project.Config)
 	if rec.Metadata.Permissions != "" {
 		agentConfig.Permissions = rec.Metadata.Permissions
 	}
@@ -2560,10 +2571,19 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 			}
 		}
 	}
-	if projectKind == domain.ProjectKindScratch {
+	if projectKind == domain.ProjectKindScratch && !isChat {
 		return m.lcm.MarkTerminated(ctx, rec.ID)
 	}
-	ws, restoreErr := m.restoreSessionWorkspace(ctx, project, rec)
+	var ws ports.WorkspaceInfo
+	var restoreErr error
+	if projectKind == domain.ProjectKindScratch {
+		// Scratch workspaces are durable directories, not disposable git
+		// worktrees. A persistent Chat provider can therefore be reattached in
+		// place without asking the workspace adapter to restore anything.
+		ws = workspaceInfo(rec)
+	} else {
+		ws, restoreErr = m.restoreSessionWorkspace(ctx, project, rec)
+	}
 	if restoreErr == nil {
 		_, relaunchErr := m.relaunchRestoredSession(ctx, rec, project, ws)
 		if relaunchErr == nil {

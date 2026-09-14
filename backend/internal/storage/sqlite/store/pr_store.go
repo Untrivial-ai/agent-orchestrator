@@ -589,25 +589,28 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		ObservedAt:               nullTime(r.ObservedAt),
 		CIObservedAt:             nullTime(r.CIObservedAt),
 		ReviewObservedAt:         nullTime(r.ReviewObservedAt),
+		ReviewPartial:            r.ReviewPartial,
 		ID:                       r.SessionID,
 	}
 }
 
 func genLegacyPRParams(r domain.PullRequest) gen.UpsertLegacyPRParams {
 	return gen.UpsertLegacyPRParams{
-		URL:            r.URL,
-		SessionID:      r.SessionID,
-		Number:         int64(r.Number),
-		PRState:        prState(r),
-		ReviewDecision: reviewOrDefault(r.Review),
-		CIState:        ciOrDefault(r.CI),
-		Mergeability:   mergeabilityOrDefault(r.Mergeability),
-		UpdatedAt:      r.UpdatedAt,
-		StateChangedAt: nullTime(initialPRStateChangedAt(r)),
-		IsDraft:        boolInt(r.Draft),
-		IsMerged:       boolInt(r.Merged),
-		IsClosed:       boolInt(r.Closed),
-		ID:             r.SessionID,
+		URL:              r.URL,
+		SessionID:        r.SessionID,
+		Number:           int64(r.Number),
+		PRState:          prState(r),
+		ReviewDecision:   reviewOrDefault(r.Review),
+		CIState:          ciOrDefault(r.CI),
+		Mergeability:     mergeabilityOrDefault(r.Mergeability),
+		UpdatedAt:        r.UpdatedAt,
+		StateChangedAt:   nullTime(initialPRStateChangedAt(r)),
+		IsDraft:          boolInt(r.Draft),
+		IsMerged:         boolInt(r.Merged),
+		IsClosed:         boolInt(r.Closed),
+		ReviewObservedAt: nullTime(r.ReviewObservedAt),
+		ReviewPartial:    r.ReviewPartial,
+		ID:               r.SessionID,
 	}
 }
 
@@ -690,6 +693,7 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		ObservedAt:               timeFromNull(p.ObservedAt),
 		CIObservedAt:             timeFromNull(p.CIObservedAt),
 		ReviewObservedAt:         timeFromNull(p.ReviewObservedAt),
+		ReviewPartial:            p.ReviewPartial,
 		AutoInjectCI:             p.AutoInjectCI,
 	}
 }

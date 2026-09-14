@@ -19,6 +19,10 @@ import (
 type Control interface {
 	ClaimTransport(context.Context) (*worker.TransportRequest, error)
 	ClaimTurn(context.Context) (*worker.Turn, error)
+	// WaitForWork blocks until the control plane signals a new turn/transport
+	// enqueue for this session (or a short server-side timeout), replacing the
+	// old busy-poll. It returns no work; the caller re-runs the claim RPCs.
+	WaitForWork(context.Context) error
 	CompleteTurn(context.Context, string, int, bool) error
 	FailTurn(context.Context, string, int, string) error
 	CompleteTransport(context.Context, string, int, any) error
@@ -26,6 +30,11 @@ type Control interface {
 	PublishTerminalOutput(context.Context, string, []byte) error
 	PublishTerminalExit(context.Context, string, int) error
 }
+
+// workWaitFallback bounds the loop's back-off when WaitForWork is unavailable
+// (an older control plane without the endpoint) or errors transiently, so the
+// worker degrades to a slow poll rather than a tight spin.
+const workWaitFallback = 2 * time.Second
 
 type Supervisor struct {
 	Control         Control
@@ -41,8 +50,41 @@ type Supervisor struct {
 	// authoritative whenever a stream is absent or unhealthy.
 	Streams StreamDialer
 
-	mu        sync.Mutex
-	terminals map[string]*terminalProcess
+	mu                       sync.Mutex
+	terminals                map[string]*terminalProcess
+	holdAgentInput           bool
+	workspaceReady           bool
+	pendingAgentTerminalData [][]byte
+}
+
+// HoldAgentInputUntilWorkspaceReady permits the agent PTY to start while the
+// checkout runs, but preserves user input and durable turns until the checkout
+// has completed. Call this before Run.
+func (s *Supervisor) HoldAgentInputUntilWorkspaceReady() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holdAgentInput = true
+	s.workspaceReady = false
+}
+
+// MarkWorkspaceReady releases prompts collected while the agent was booting
+// against an empty workspace.
+func (s *Supervisor) MarkWorkspaceReady() {
+	s.mu.Lock()
+	s.workspaceReady = true
+	pending := s.pendingAgentTerminalData
+	s.pendingAgentTerminalData = nil
+	terminal := s.terminals[s.AgentTerminalID]
+	s.mu.Unlock()
+	if terminal == nil {
+		return
+	}
+	for _, data := range pending {
+		if _, err := terminal.pty.Write(data); err != nil {
+			s.Logger.Warn("flush queued agent terminal input", "error", err)
+			return
+		}
+	}
 }
 
 type terminalProcess struct {
@@ -58,9 +100,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	if s.Workspace == "" {
 		return errors.New("worker transport workspace is required")
-	}
-	if s.PollInterval <= 0 {
-		s.PollInterval = 100 * time.Millisecond
 	}
 	if s.Shell == "" {
 		s.Shell = "/bin/sh"
@@ -90,8 +129,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.Started <- nil
 	}
 
-	ticker := time.NewTicker(s.PollInterval)
-	defer ticker.Stop()
 	for {
 		request, err := s.Control.ClaimTransport(ctx)
 		if err != nil {
@@ -119,15 +156,63 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		} else if handled {
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
+		// No work right now. Block until the control plane wakes us on a new
+		// turn/transport enqueue (NOTIFY), or a short server-side timeout,
+		// instead of busy-polling the claim routes. The claims above remain the
+		// source of truth; WaitForWork is only an accelerant.
+		if err := s.Control.WaitForWork(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			s.Logger.Warn("wait for worker work", "error", err)
+			// An older control plane without the wait endpoint, or a transient
+			// error: back off briefly so the loop never spins.
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(workWaitFallback):
+			}
 		}
 	}
 }
 
+// StartAgent adds the coding-agent PTY after the workspace transport is already
+// serving. This lets a browser attach to a usable workspace shell while a
+// repository checkout and agent credential setup continue in the background.
+func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command, terminalID string) error {
+	if terminalID == "" {
+		return errors.New("agent terminal id is required")
+	}
+	s.mu.Lock()
+	if s.AgentTerminalID != "" {
+		s.mu.Unlock()
+		return errors.New("interactive agent terminal is already configured")
+	}
+	s.AgentCommand = command
+	s.mu.Unlock()
+	if err := s.openTerminal(ctx, worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"}); err != nil {
+		s.mu.Lock()
+		s.AgentCommand = workerexec.Command{}
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Lock()
+	s.AgentTerminalID = terminalID
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
+	// Do not claim a queued user turn until the agent PTY is actually live. The
+	// workspace transport starts first, so claiming here would otherwise mark
+	// the initial task failed while the coding agent is still booting.
+	s.mu.Lock()
+	agentTerminalID := s.AgentTerminalID
+	workspaceReady := !s.holdAgentInput || s.workspaceReady
+	s.mu.Unlock()
+	if agentTerminalID == "" || !workspaceReady {
+		return false, nil
+	}
 	turn, err := s.Control.ClaimTurn(ctx)
 	if err != nil || turn == nil {
 		return false, err
@@ -135,13 +220,8 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	if turn.CancelRequested {
 		return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, true)
 	}
-	if s.AgentTerminalID == "" {
-		return true, s.Control.FailTurn(
-			ctx, turn.ID, turn.Attempt, "interactive agent terminal is unavailable",
-		)
-	}
 	if err := s.writeTerminal(worker.TerminalCommand{
-		TerminalID: s.AgentTerminalID,
+		TerminalID: agentTerminalID,
 		Data:       []byte(turn.Prompt + "\r"),
 	}); err != nil {
 		if failErr := s.Control.FailTurn(
@@ -199,7 +279,11 @@ func (s *Supervisor) handle(
 		var input worker.TerminalCommand
 		err = decodePayload(request.Payload, &input)
 		if err == nil {
-			err = s.writeTerminal(input)
+			if input.TerminalID == s.AgentTerminalID {
+				err = s.writeAgentPrompt(input.TerminalID, input.Data)
+			} else {
+				err = s.writeTerminal(input)
+			}
 			response = map[string]bool{"accepted": err == nil}
 		}
 	case "terminal.resize":
@@ -360,11 +444,41 @@ func (s *Supervisor) copyTerminalOutput(
 	}
 }
 
+// promptEnterDelay mirrors the desktop runtimes' paste-then-Enter pause (tmux
+// defaultEnterDelay, conpty ptyInputEnterDelay): a harness TUI that receives
+// message text and the trailing carriage return in one write treats the whole
+// burst as a paste and leaves the prompt unsubmitted (issue #2342). Splitting
+// the Enter off and pausing makes it a distinct submit keypress.
+const promptEnterDelay = 300 * time.Millisecond
+
+// writeAgentPrompt delivers an injected message to the agent terminal: body
+// first, a beat, then the submitting carriage return. Single keystrokes and
+// data without a trailing return pass through unchanged.
+func (s *Supervisor) writeAgentPrompt(terminalID string, data []byte) error {
+	if len(data) < 2 || data[len(data)-1] != '\r' {
+		return s.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: data})
+	}
+	if err := s.writeTerminal(worker.TerminalCommand{
+		TerminalID: terminalID, Data: data[:len(data)-1],
+	}); err != nil {
+		return err
+	}
+	time.Sleep(promptEnterDelay)
+	return s.writeTerminal(worker.TerminalCommand{
+		TerminalID: terminalID, Data: []byte("\r"),
+	})
+}
+
 func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
 	if input.TerminalID == "" || len(input.Data) == 0 || len(input.Data) > 16<<10 {
 		return errors.New("invalid terminal input request")
 	}
 	s.mu.Lock()
+	if s.holdAgentInput && !s.workspaceReady && input.TerminalID == s.AgentTerminalID {
+		s.pendingAgentTerminalData = append(s.pendingAgentTerminalData, append([]byte(nil), input.Data...))
+		s.mu.Unlock()
+		return nil
+	}
 	terminal := s.terminals[input.TerminalID]
 	s.mu.Unlock()
 	if terminal == nil {

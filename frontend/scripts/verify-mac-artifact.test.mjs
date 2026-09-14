@@ -124,6 +124,37 @@ describe("verify-mac-artifact.sh", () => {
 		expect(stderr).toContain("no such file");
 	});
 
+	it("rejects a directory masquerading as a package", async () => {
+		const fake = join(dir, "bundle.pkg");
+		mkdirSync(fake);
+		const { code, stderr } = await run([fake]);
+		expect(code).toBe(2);
+		expect(stderr).toContain("expected a .pkg file");
+	});
+
+	it.each(["signature", "gatekeeper", "staple", "none"])("checks package trust without installing its payload (%s failure)", async (failure) => {
+		const mockBin = join(dir, `pkg-tools-${failure}`);
+		mkdirSync(mockBin);
+		const artifact = join(dir, `repair-${failure}.pkg`);
+		const calls = join(dir, `pkg-calls-${failure}`);
+		writeFileSync(artifact, "fixture; no actual signed package");
+		writeExecutable(join(mockBin, "uname"), "echo Darwin\n");
+		for (const tool of ["codesign", "ditto", "lipo", "plutil", "installer"]) {
+			writeExecutable(join(mockBin, tool), `echo unexpected-${tool} >> "$PKG_CALLS"; exit 1\n`);
+		}
+		for (const [tool, stage] of [["pkgutil", "signature"], ["spctl", "gatekeeper"], ["xcrun", "staple"]]) {
+			writeExecutable(join(mockBin, tool), `echo "${tool} $*" >> "$PKG_CALLS"\nexit ${failure === stage ? 1 : 0}\n`);
+		}
+		const { code } = await run([artifact], { PATH: `${mockBin}:${process.env.PATH}`, PKG_CALLS: calls });
+		expect(code).toBe(failure === "none" ? 0 : 1);
+		const { readFileSync } = await import("node:fs");
+		const commands = readFileSync(calls, "utf8");
+		expect(commands).toContain("pkgutil --check-signature");
+		expect(commands).toContain("spctl -a -vv -t install");
+		expect(commands).toContain("xcrun stapler validate");
+		expect(commands).not.toContain("unexpected-");
+	});
+
 	it("never executes nested code when an artifact fails a trust check", async () => {
 		const mockBin = join(dir, "mock-bin");
 		const app = join(dir, "Untrusted.app");

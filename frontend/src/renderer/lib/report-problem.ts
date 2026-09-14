@@ -23,7 +23,8 @@ const REDACTED_LOCAL_URL = "[redacted-local-url]";
 const REDACTED_SECRET = "[redacted-secret]";
 const DISCORD_INVITE_URL = "https://discord.com/invite/UZv7JjxbwG";
 const GITHUB_NEW_ISSUE_URL = "https://github.com/Untrivial-ai/agent-orchestrator/issues/new";
-const SUPPORT_EMAIL = "prateek@untrivial.ai";
+const SUPPORT_EMAIL = "prasad@untrivial.ai";
+const SUPPORT_CC_EMAIL = "prateek@untrivial.ai";
 
 const LOCAL_URL_PATTERN =
 	/(?:\bfile:\/\/\/\S+|\bapp:\/\/renderer\/\S+|\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*)/gi;
@@ -93,6 +94,7 @@ export function formatReportProblemDraft(
 	if (output === "email") {
 		return [
 			`To: ${SUPPORT_EMAIL}`,
+			`Cc: ${SUPPORT_CC_EMAIL}`,
 			`Subject: AO feedback: ${fields.summary}`,
 			"",
 			formatEmailBody(fields, diagnosticsBlock),
@@ -121,6 +123,7 @@ export function reportProblemDestinationUrl(
 	if (output === "discord") return DISCORD_INVITE_URL;
 	if (output === "email") {
 		const url = new URL(`mailto:${SUPPORT_EMAIL}`);
+		url.searchParams.set("cc", SUPPORT_CC_EMAIL);
 		url.searchParams.set("subject", `AO feedback: ${reportTitle(input)}`);
 		url.searchParams.set("body", formatEmailBody(normalizeInput(input), formatDiagnostics(diagnostics)));
 		return url.toString();

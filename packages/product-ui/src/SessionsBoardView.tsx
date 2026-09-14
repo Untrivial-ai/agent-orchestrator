@@ -260,6 +260,12 @@ export function SessionCardView({
 	const needsAttention = boardSessionNeedsAttention(session);
 	const needsAttentionChip = needsAttention;
 	const column = getKanbanColumnView(toKanbanColumn(session.kanbanColumn, session.status), translate);
+	const statusClassName =
+		session.displayStatus === "Closed without merge"
+			? "text-status-exited"
+			: session.status === "mergeable" || session.displayStatus === "Mergeable"
+				? "text-success"
+				: (session.statusPresentation?.className ?? column.titleClassName);
 	const branch = session.branch ?? "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const renderedStatusLabel =
@@ -366,9 +372,7 @@ export function SessionCardView({
 							"inline-flex min-w-0 max-w-full items-center text-2xs font-medium",
 							needsAttentionChip
 								? "text-status-needs-you"
-								: session.status === "mergeable" || session.displayStatus === "Mergeable"
-									? "text-success"
-									: (statusPresentation?.className ?? column.titleClassName),
+								: statusClassName,
 						)}
 						data-kanban-column={statusPresentation ? undefined : column.column}
 						data-testid="session-status"

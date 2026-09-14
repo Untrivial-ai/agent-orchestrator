@@ -306,8 +306,9 @@ func workerMultiPRPrompt() string {
 AO attributes PRs to this session when the source branch is this session branch or lives under this session namespace.
 
 - If your current branch ends in ` + "`/root`" + `, create independent PR branches as siblings under the same namespace, for example ` + "`<namespace>/<topic>`" + ` from ` + "`<namespace>/root`" + `. Do not create ` + "`<namespace>/root/<topic>`" + `.
+- For a workspace project whose recorded session branch is ` + "`ao/<session-id>`" + ` or a collision variant such as ` + "`ao/<session-id>-2`" + `, use hyphen siblings such as ` + "`<session-branch>-<topic>`" + ` in each registered repository. The bare session ref prevents Git from creating slash children. Keep the full collision suffix. Claim a child-repository PR explicitly with ` + "`ao session claim-pr <full-pr-url>`" + ` when needed.
 - Otherwise, create each source branch as a child of this session branch, for example ` + "`<current-branch>/<topic>`" + `.
-- To stack a PR on top of another, create the child branch from the parent branch and name it ` + "`<parent-branch>/<topic>`" + `, then target the parent branch in the PR.
+- To stack a PR on top of another, create the new branch from the parent branch and target the parent branch in the PR. Use ` + "`<parent-branch>/<topic>`" + ` when Git permits slash children, or another ` + "`<session-branch>-<topic>`" + ` for bare workspace refs.
 
 Keep branch names inside this session namespace so AO can track every PR you open.`
 }

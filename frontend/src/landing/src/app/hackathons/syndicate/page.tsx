@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 const eventUrl = "https://luma.com/embed/event/evt-gkxbXap1DCJThsE/simple";
 const pageUrl = `${COMPANY.MARKETING_URL}/hackathons/syndicate/`;
 const lumaUrl = "https://luma.com/event/evt-gkxbXap1DCJThsE";
-const participantPassUrl = "https://aoagents.dev/hackathons/syndicate/pass/";
+const participantPassUrl = `${COMPANY.MARKETING_URL}/hackathons/syndicate/pass/`;
 
 const highlights = [
   {
@@ -45,7 +45,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `Syndicate Hackathon | ${COMPANY.NAME}`,
     description: "Register for the AO Syndicate hackathon.",
     images: [`${COMPANY.MARKETING_URL}/og-image.png`],

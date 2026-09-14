@@ -78,6 +78,7 @@ test("@P0 live update flow stays synchronized without reopening Settings", async
 		window.ao!.updates.getStatus = async () => ({ state: "downloaded", version: "2.0.0" });
 	});
 	await expect(page.getByTestId("sidebar-update-ready")).toContainText("Install Update");
-	await expect(page.getByTestId("sidebar-update-ready")).toHaveClass(/text-success/);
+	await expect(page.getByTestId("sidebar-update-ready")).toHaveClass(/bg-muted/);
+	await expect(page.getByTestId("sidebar-update-ready")).not.toHaveClass(/text-success/);
 	await expect(page.getByRole("button", { name: "Install Update", exact: true })).toBeEnabled();
 });

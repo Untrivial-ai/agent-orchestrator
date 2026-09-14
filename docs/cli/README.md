@@ -46,7 +46,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao agent ls`                       | `POST /api/v1/agents/readiness/ensure` (`display`) |
 | `ao agent ls --refresh`             | `POST /api/v1/agents/refresh` (forced checks) |
 | `ao spawn`                          | Targeted launch ensure, then `POST /api/v1/sessions` |
-| `ao session ls`                     | `GET /api/v1/sessions`                         |
+| `ao session ls`                     | `GET /api/v1/sessions` plus per-session PR summaries; shows branch, PR, CI, review, unresolved threads, activity, and age. |
 | `ao session get <id>`               | `GET /api/v1/sessions/{id}`                    |
 | `ao session kill <id>`              | `POST /api/v1/sessions/{id}/kill`              |
 | `ao session restore <id>`           | `POST /api/v1/sessions/{id}/restore`           |
@@ -226,6 +226,24 @@ actions.
 
 Do not port old in-process TypeScript CLI behavior that mixed command handling
 with storage and runtime implementation details.
+
+### Claiming workspace PRs
+
+Workspace projects can claim a PR/MR on their root origin or any registered
+child repository origin. Use the child's full PR/MR URL: numbers still resolve
+against the root's canonical repository or origin, and a root without a remote
+cannot resolve numbers. Check registered children with `ao project get <id> --json`.
+Unregistered repositories are rejected even if a checkout has an additional Git
+remote for them. `canonicalRepoURL` requires a valid root origin; it is not a
+workspace child allowlist. Scratch projects cannot claim PRs.
+
+For automatic attribution, workspace sessions recorded on a bare branch such as
+`ao/ws-1` or `ao/ws-1-2` can use hyphen siblings (`ao/ws-1-fix` or
+`ao/ws-1-2-fix`) in registered repositories. Keep the entire recorded branch,
+including collision suffixes. Exact and stacked branches and `/root` slash
+siblings remain supported. Matching prefers the most specific owner and leaves
+ambiguous ownership for explicit claiming. Custom branches and single-repository
+projects do not gain hyphen-sibling ownership.
 
 ### Claiming upstream PRs from a fork
 

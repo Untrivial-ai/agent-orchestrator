@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { WorkspaceSummary } from "../types/workspace";
 
-const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, setQueryHealthyMock } = vi.hoisted(
+const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
 		captureRendererEventMock: vi.fn().mockResolvedValue(undefined),
 		cloudState: { ready: false, org: undefined as { id: string } | undefined },
 		getMock: vi.fn(),
 		hasTrustedApiBaseUrlMock: vi.fn(() => true),
 		listProjectsMock: vi.fn(),
+		listSessionsMock: vi.fn(),
 		setQueryHealthyMock: vi.fn(),
 	}),
 );
@@ -25,7 +26,7 @@ vi.mock("../lib/agent-switch-visibility", () => ({ agentSwitchVisibility: { setQ
 
 vi.mock("./useCloudCp", () => ({
 	useCloudCp: () => ({
-		client: { listProjects: listProjectsMock },
+		client: { listProjects: listProjectsMock, listSessions: listSessionsMock },
 		ready: cloudState.ready,
 		baseUrl: "https://cp.example.com",
 	}),
@@ -35,7 +36,7 @@ vi.mock("./useCloudOrg", () => ({
 	useCloudOrg: () => ({ org: cloudState.org, isLoading: false, error: undefined, ready: cloudState.ready }),
 }));
 
-import { useWorkspaceQuery, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey } from "./useWorkspaceQuery";
+import { useWorkspaceQuery, useWorkspaceScope, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey } from "./useWorkspaceQuery";
 
 function wrapper({ children }: { children: ReactNode }) {
 	// The hook pins its own retry policy; retryDelay 0 keeps the error tests fast.
@@ -61,6 +62,7 @@ beforeEach(() => {
 	cloudState.ready = false;
 	cloudState.org = undefined;
 	listProjectsMock.mockReset();
+	listSessionsMock.mockReset().mockResolvedValue({ items: [] });
 	setQueryHealthyMock.mockReset();
 });
 
@@ -101,7 +103,7 @@ describe("useWorkspaceQuery", () => {
 							displayName: "fix-bug",
 							issueId: "github:acme/project-one#42",
 							harness: "claude-code",
-							reviewerHarness: "qwen",
+							reviewerHarness: "agy",
 							branch: "qa/modal-worker",
 							status: "mergeable",
 							scmStatus: "review_pending",
@@ -166,7 +168,7 @@ describe("useWorkspaceQuery", () => {
 			title: "fix-bug",
 			issueId: "github:acme/project-one#42",
 			provider: "claude-code",
-			reviewerHarness: "qwen",
+			reviewerHarness: "agy",
 			branch: "qa/modal-worker",
 			status: "mergeable",
 			scmStatus: "review_pending",
@@ -540,5 +542,35 @@ describe("useWorkspaceQuery", () => {
 			{ projectId: "proj-1", projectName: "my-app", sessionId: "needs-input", title: "Needs input", zone: "action" },
 			{ projectId: "proj-1", projectName: "my-app", sessionId: "mergeable", title: "Mergeable", zone: "merge" },
 		]);
+	});
+});
+
+describe("useWorkspaceScope board presentation", () => {
+	it.each([
+		{ kind: "orchestrator", isTerminated: false, expected: false },
+		{ kind: "orchestrator", isTerminated: true, expected: false },
+		{ kind: "worker", isTerminated: false, expected: true },
+		{ kind: "worker", isTerminated: true, expected: true },
+		{ kind: undefined, isTerminated: false, expected: true },
+	])("projects worker presence for $kind, terminated=$isTerminated", async ({ kind, isTerminated, expected }) => {
+		respondWith({
+			projects: { data: { projects: [{ id: "p", name: "project", path: "/repo" }] } },
+			sessions: { data: { sessions: [{ id: "s", projectId: "p", kind, isTerminated, status: "working" }] } },
+		});
+		const { result } = renderHook(() => useWorkspaceScope("p"), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(result.current.data?.hasWorkerSessions).toBe(expected);
+		expect(result.current.data?.project).not.toHaveProperty("sessions");
+	});
+
+	it("resolves a cloud board after the local query succeeds without a matching project", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		respondWith({});
+		listProjectsMock.mockResolvedValue({ items: [{ id: "cloud-1", displayName: "Cloud project" }] });
+		listSessionsMock.mockResolvedValue({ items: [{ id: "cloud-worker", projectId: "cloud-1", kind: "worker", status: "working" }] });
+		const { result } = renderHook(() => useWorkspaceScope("cloud-1"), { wrapper });
+		await waitFor(() => expect(result.current.data?.hasWorkerSessions).toBe(true));
+		expect(result.current.data?.project).toMatchObject({ id: "cloud-1", kind: "cloud", name: "Cloud project" });
 	});
 });

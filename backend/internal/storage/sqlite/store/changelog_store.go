@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -29,6 +30,36 @@ func (s *Store) LatestSeq(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("max change_log seq: %w", err)
 	}
 	return seq, nil
+}
+
+// PruneChangeLogBefore removes at most limit events older than before. CDC
+// consumers own their cursors, so retention is deliberately best-effort and
+// bounded; a slow reader may miss events older than the replay window but live
+// subscribers continue to receive new events from the broadcaster.
+func (s *Store) PruneChangeLogBefore(ctx context.Context, before time.Time, limit int64) (int64, error) {
+	n, err := s.qw.PruneChangeLogBefore(ctx, gen.PruneChangeLogBeforeParams{
+		CreatedAt: before.UTC(),
+		Limit:     limit,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("prune change_log before %s: %w", before.UTC().Format(time.RFC3339), err)
+	}
+	return n, nil
+}
+
+// PruneChangeLogToMaxRows removes the oldest events necessary to bring the
+// change_log down to maxRows, deleting at most limit rows in one transaction.
+// The row cap complements age retention for high-volume installations where a
+// large burst can fill the database before the age window expires.
+func (s *Store) PruneChangeLogToMaxRows(ctx context.Context, maxRows, limit int64) (int64, error) {
+	n, err := s.qw.PruneChangeLogToMaxRows(ctx, gen.PruneChangeLogToMaxRowsParams{
+		BatchLimit: limit,
+		MaxRows:    maxRows,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("prune change_log to %d rows: %w", maxRows, err)
+	}
+	return n, nil
 }
 
 func changeLogEventFromGen(r gen.ChangeLog) cdc.Event {

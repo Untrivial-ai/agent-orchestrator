@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -11,6 +13,7 @@ import (
 func (s *Store) ListOrchestratorChildren(
 	ctx context.Context,
 	orgID, orchestratorSessionID string,
+	includeTerminated bool,
 	cursor *domain.Cursor,
 	limit int,
 ) ([]domain.Session, bool, error) {
@@ -24,10 +27,12 @@ func (s *Store) ListOrchestratorChildren(
 			sessionSelect+`
 			WHERE session.org_id = $1
 			  AND session.parent_session_id = $2
-			  AND ($3::timestamptz IS NULL OR (session.updated_at, session.id) < ($3, $4::uuid))
+			  AND ($3 OR session.is_terminated = false)
+			  AND ($4::timestamptz IS NULL OR (session.updated_at, session.id) < ($4, $5::uuid))
 			ORDER BY session.updated_at DESC, session.id DESC
-			LIMIT $5`,
-			orgID, orchestratorSessionID, cursorTime(cursor), cursorID(cursor), limit+1,
+			LIMIT $6`,
+			orgID, orchestratorSessionID, includeTerminated,
+			cursorTime(cursor), cursorID(cursor), limit+1,
 		)
 		if err != nil {
 			return err
@@ -50,6 +55,32 @@ func (s *Store) ListOrchestratorChildren(
 		sessions = sessions[:limit]
 	}
 	return sessions, hasMore, nil
+}
+
+// OrchestratorSandboxProvider returns the sandbox provider a live orchestrator
+// session runs on, so a child it spawns inherits the same provider instead of
+// the control plane default. A NodeOps orchestrator therefore spawns NodeOps
+// workers and a Coder orchestrator spawns Coder workers, even on a control
+// plane that offers both. It returns ErrForbidden when the session is not an
+// active orchestrator in the organization. Every session has exactly one
+// sandbox row (ao_sandboxes.session_id is the primary key) whose provider is
+// immutable for the session's life.
+func (s *Store) OrchestratorSandboxProvider(
+	ctx context.Context,
+	orgID, orchestratorSessionID string,
+) (string, error) {
+	var provider string
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if _, err := requireActiveOrchestrator(ctx, tx, orgID, orchestratorSessionID); err != nil {
+			return err
+		}
+		return tx.QueryRow(
+			ctx,
+			`SELECT provider FROM ao_sandboxes WHERE org_id = $1 AND session_id = $2`,
+			orgID, orchestratorSessionID,
+		).Scan(&provider)
+	})
+	return provider, err
 }
 
 func (s *Store) CreateOrchestratorChild(
@@ -125,6 +156,57 @@ func (s *Store) SendOrchestratorChildMessage(
 		return err
 	})
 	return event, err
+}
+
+// ReportToOrchestrator delivers a child worker's message into the conversation
+// of the orchestrator that spawned it. The child can reach exactly one
+// destination — its own parent — and only while that parent is a live
+// orchestrator; everything else is ErrForbidden.
+func (s *Store) ReportToOrchestrator(
+	ctx context.Context,
+	orgID, childSessionID, idempotencyKey, text string,
+) (domain.ClientEvent, error) {
+	var event domain.ClientEvent
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var parentID, childName string
+		err := tx.QueryRow(
+			ctx,
+			`SELECT child.parent_session_id::text, child.display_name
+			FROM ao_sessions child
+			JOIN ao_sessions parent
+				ON parent.org_id = child.org_id AND parent.id = child.parent_session_id
+			WHERE child.org_id = $1 AND child.id = $2
+			  AND child.parent_session_id IS NOT NULL
+			  AND parent.kind = 'orchestrator' AND parent.is_terminated = false`,
+			orgID, childSessionID,
+		).Scan(&parentID, &childName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrForbidden
+		}
+		if err != nil {
+			return err
+		}
+		// Provenance rides in the text (matching the local `ao send` convention)
+		// so the orchestrator's agent can tell workers apart without any client
+		// change; the audit row still records the child as actor.
+		prefixed := fmt.Sprintf(
+			"[from worker %s %q] %s", shortSessionID(childSessionID), childName, text,
+		)
+		event, err = sendMessageTx(
+			ctx, tx, orgID, parentID, idempotencyKey, prefixed, "", childSessionID,
+			"", nil,
+		)
+		return err
+	})
+	return event, err
+}
+
+func shortSessionID(id string) string {
+	compact := strings.ReplaceAll(id, "-", "")
+	if len(compact) > 8 {
+		return compact[:8]
+	}
+	return compact
 }
 
 func (s *Store) DeleteOrchestratorChild(

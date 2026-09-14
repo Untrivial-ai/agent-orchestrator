@@ -296,11 +296,45 @@ func (s *Store) CreateSession(
 	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
 		var err error
 		session, err = createSessionTx(
-			ctx, tx, orgID, idempotencyKey, maxActiveSandboxes, input, "", principal.UserID,
+			ctx, tx, orgID, idempotencyKey, maxActiveSandboxes, input, input.ParentSessionID, principal.UserID,
 		)
 		return err
 	})
 	return session, err
+}
+
+// ProjectActiveOrchestrator returns the id and sandbox provider of a project's
+// single active orchestrator, if one exists. A top-level worker is auto-linked
+// to it (parent_session_id) and inherits its provider so a project's whole
+// worker tree stays on one provider, matching ao spawn'ed children. found is
+// false when the project has no live orchestrator, in which case the worker
+// stays standalone. Every session has exactly one sandbox row, so the join is
+// total; the one-active-orchestrator-per-project unique index makes the match
+// unambiguous.
+func (s *Store) ProjectActiveOrchestrator(
+	ctx context.Context,
+	orgID, projectID string,
+) (string, string, bool, error) {
+	var orchestratorID, provider string
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		return tx.QueryRow(
+			ctx,
+			`SELECT se.id::text, sb.provider
+			FROM ao_sessions se
+			JOIN ao_sandboxes sb ON sb.session_id = se.id AND sb.org_id = se.org_id
+			WHERE se.org_id = $1 AND se.project_id = $2
+			  AND se.kind = 'orchestrator' AND se.is_terminated = false
+			LIMIT 1`,
+			orgID, projectID,
+		).Scan(&orchestratorID, &provider)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return orchestratorID, provider, true, nil
 }
 
 func (s *Store) CreateGitHubScratchProject(
@@ -629,7 +663,7 @@ func createSessionTx(
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
 			mode, denied_commands, activity_state, is_terminated,
-			false, '', '', created_at, updated_at`,
+			false, '', '', '', '', '', created_at, updated_at`,
 		orgID,
 		input.ProjectID,
 		input.Kind,
@@ -815,6 +849,59 @@ func (s *Store) ListSessions(
 	return sessions, hasMore, nil
 }
 
+// ListSessionChildren lists the sessions an orchestrator spawned, for the
+// human-facing Workers view. Unlike the worker-auth ListOrchestratorChildren
+// it includes terminated children (history is the point of the view) and does
+// not require the parent to still be alive or an orchestrator — a
+// non-orchestrator or unknown parent simply owns no children, which returns an
+// empty page rather than an error.
+func (s *Store) ListSessionChildren(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID string,
+	parentSessionID string,
+	cursor *domain.Cursor,
+	limit int,
+) ([]domain.Session, bool, error) {
+	var sessions []domain.Session
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(
+			ctx,
+			sessionSelect+`
+			WHERE session.org_id = $1
+			  AND session.parent_session_id = $2::uuid
+			  AND ($3::timestamptz IS NULL OR (session.updated_at, session.id) < ($3, $4::uuid))
+			ORDER BY session.updated_at DESC, session.id DESC
+			LIMIT $5`,
+			orgID,
+			parentSessionID,
+			cursorTime(cursor),
+			cursorID(cursor),
+			limit+1,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var session domain.Session
+			if err := scanSession(rows, &session); err != nil {
+				return err
+			}
+			sessions = append(sessions, session)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(sessions) > limit
+	if hasMore {
+		sessions = sessions[:limit]
+	}
+	return sessions, hasMore, nil
+}
+
 func (s *Store) GetSession(
 	ctx context.Context,
 	principal domain.Principal,
@@ -845,6 +932,9 @@ const sessionSelect = `
 			SELECT 1 FROM ao_worker_connections worker
 			WHERE worker.session_id = session.id AND worker.disconnected_at IS NULL
 		),
+		COALESCE(sandbox.provider, ''),
+		COALESCE(sandbox.desired_state, ''),
+		COALESCE(sandbox.observed_state, ''),
 		COALESCE(sandbox.observed_state, ''),
 		COALESCE(sandbox.last_error, ''),
 		session.created_at, session.updated_at
@@ -905,6 +995,9 @@ func scanSession(row scanner, session *domain.Session) error {
 		&activity,
 		&session.IsTerminated,
 		&session.RuntimeConnected,
+		&session.SandboxProvider,
+		&session.DesiredState,
+		&session.ObservedState,
 		&session.RuntimeState,
 		&session.RuntimeError,
 		&session.CreatedAt,

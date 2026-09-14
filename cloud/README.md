@@ -198,10 +198,12 @@ If a production migration fails, promotion stops and the existing production
 API keeps running. Application rollback does not reverse an applied migration,
 so migrations must remain compatible with the previous API release.
 
-Only migration code and the tested application artifacts are promoted. NodeOps
-and worker settings come from the target environment's `nodeops` and `worker`
-Secrets Manager JSON entries; deployment validates every required field before
-registering ECS tasks. No provider auto-pause value is set by deployment.
+Only migration code and the tested application artifacts are promoted. Sandbox
+provider and worker settings come from the target environment's `nodeops` or
+`coder` document and its `worker` Secrets Manager JSON entry; deployment
+validates every required field before registering ECS tasks. Production uses
+the provider verified in staging. No provider auto-pause value is set by
+deployment.
 Staging database rows are never copied to production: users, organizations,
 projects, sessions, events, credentials, and all other data remain isolated in
 their respective databases. The AWS instances are named
@@ -241,6 +243,7 @@ All resource routes use `/api/cloud/v1`. Project and session creation require an
 | `POST` | `/orgs/{orgId}/projects/scratch` | Idempotently create a private repository, project, and orchestrator session |
 | `GET/POST` | `/orgs/{orgId}/sessions` | List or create sessions |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}` | Read a session |
+| `POST` | `/orgs/{orgId}/sessions/{sessionId}/resume` | Record explicit per-session resume intent |
 | `POST` | `/orgs/{orgId}/sessions/{sessionId}/messages` | Durably queue a message |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/chat-events` | Replay committed client events |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/events` | Replay and stream client events over SSE |

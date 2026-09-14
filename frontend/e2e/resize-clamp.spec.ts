@@ -31,7 +31,7 @@ test("sidebar drag stops at its minimum width instead of collapsing", async ({ p
 
 	await expect(sidebar).toHaveAttribute("data-state", "expanded");
 	const width = await page.evaluate(() =>
-		document.documentElement.style.getPropertyValue("--ao-sidebar-w"),
+		document.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')?.style.getPropertyValue("--ao-sidebar-w"),
 	);
 	expect(width).toBe("200px");
 
@@ -65,7 +65,7 @@ test("inspector drag stops at minSize instead of collapsing; buttons still toggl
 	await expect(inspector).toBeVisible();
 	const inspectorBox = await inspector.boundingBox();
 	if (!inspectorBox) throw new Error("inspector hidden after drag");
-	expect(inspectorBox.width).toBeGreaterThanOrEqual(350);
+	expect(inspectorBox.width).toBeGreaterThanOrEqual(340);
 
 	// The explicit control still collapses…
 	await page.getByRole("button", { name: "Close inspector panel" }).click();

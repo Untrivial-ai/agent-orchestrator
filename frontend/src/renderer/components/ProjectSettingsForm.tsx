@@ -249,7 +249,7 @@ function SettingsBody({
 									},
 								]
 							: undefined,
-						trackerIntake: buildIntake(intakeForm),
+						trackerIntake: buildIntake(intakeForm, config.trackerIntake),
 						autoReview: form.autoReview,
 					};
 			const { error } = await apiClient.PUT("/api/v1/projects/{id}", {

@@ -601,6 +601,31 @@ describe("SessionsBoard", () => {
 		expect(status.querySelector(".animate-spin")).not.toBeNull();
 	});
 
+	it("paints Closed without merge red while keeping merged status purple", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-closed-without-merge",
+						title: "closed-without-merge-task",
+						status: "idle",
+						displayStatus: "Closed without merge",
+						kanbanColumn: "ready",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("closed-without-merge-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Closed without merge");
+		expect(status).toHaveClass("text-status-exited");
+		expect(status).not.toHaveClass("text-status-ready", "text-status-merged");
+	});
+
 	it("keeps a spawning card labeled Working when raw activity has not become active", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
