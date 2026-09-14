@@ -14,6 +14,7 @@
 
 import { createContext, useContext, useState, type ReactNode } from "react";
 import type { ExtraProps } from "react-markdown";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 
@@ -38,8 +39,9 @@ export function isImageOnlyParagraph(node: ExtraProps["node"]): boolean {
 }
 
 export function ChatImageGallery({ children }: { children: ReactNode }) {
+	const { t } = useTranslation();
 	return (
-		<div role="group" aria-label="Images" className="my-2 flex flex-wrap gap-2 first:mt-0 last:mb-0">
+		<div role="group" aria-label={t("chat.image.gallery")} className="my-2 flex flex-wrap gap-2 first:mt-0 last:mb-0">
 			<InGallery.Provider value={true}>{children}</InGallery.Provider>
 		</div>
 	);
@@ -56,6 +58,7 @@ export function ChatImageLinkScope({ children }: { children: ReactNode }) {
  * matching `MarkdownImage` in the file viewer.
  */
 export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
+	const { t } = useTranslation();
 	const inGallery = useContext(InGallery);
 	const inLink = useContext(InLink);
 	const [open, setOpen] = useState(false);
@@ -85,7 +88,7 @@ export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 			<button
 				type="button"
 				onClick={() => setOpen(true)}
-				aria-label={label ? `Open image: ${label}` : "Open image"}
+				aria-label={label ? t("chat.image.open", { name: label }) : t("chat.image.openUnnamed")}
 				className="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-md border border-border bg-background align-top transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
 			>
 				<img
@@ -104,7 +107,7 @@ export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 					aria-describedby={undefined}
 					className="z-overlay w-auto max-w-[calc(100vw-4rem)] gap-0 bg-popover p-2 pt-10"
 				>
-					<DialogTitle className="sr-only">{label || "Image"}</DialogTitle>
+					<DialogTitle className="sr-only">{label || t("chat.image.untitled")}</DialogTitle>
 					<img
 						src={url}
 						alt={label}
