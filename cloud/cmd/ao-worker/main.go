@@ -214,41 +214,51 @@ func run(logger *slog.Logger) error {
 	}); err != nil {
 		logger.Warn("publish worker.ready failed", "error", err)
 	}
-	// rehydrateDone gates the coding agent on delete/restore rehydration: the
-	// preserved uncommitted work must be applied and the transcript written
-	// before the agent is built, so --resume finds the conversation and the
-	// workspace holds the restored files. It is closed once (checkout success or
-	// failure) so the agent never hangs.
-	rehydrateDone := make(chan struct{})
+	// prepareWorkspace and startInteractiveAgent used to run in fully
+	// independent goroutines with no ordering between them. That let the
+	// interactive agent build and launch its command — which embeds the
+	// session's initial prompt directly in argv (see startInteractiveAgent) —
+	// before checkout ever ran, or after checkout failed outright. Because
+	// that embedded first prompt never passes through
+	// HoldAgentInputUntilWorkspaceReady's queue (that mechanism only holds
+	// terminal input for turns after the first), a failed or slow checkout
+	// left the agent starting its first turn against an empty workspace with
+	// no signal to anyone that anything was wrong. workspaceReady closes that
+	// gap: the agent's own goroutine blocks on it immediately before it would
+	// otherwise build/launch the command.
+	workspaceReady := make(chan error, 1)
 	go func() {
-		if err := prepareWorkspace(
+		err := prepareWorkspace(
 			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL,
-		); err != nil {
+		)
+		if err != nil {
 			if runCtx.Err() == nil {
 				logger.Error("background workspace startup failed", "error", err)
 			}
-			close(rehydrateDone)
+			workspaceReady <- err
 			return
 		}
 		// Restore a previously deleted session's state before the agent launches.
 		// A fresh session finds nothing captured and this returns quickly.
 		rehydrateSession(runCtx, logger, client, bootstrap, workspace, dataDir)
-		close(rehydrateDone)
 		transportSupervisor.MarkWorkspaceReady()
+		workspaceReady <- nil
 		// Serve durable-restore checkpointing now that the checkout and the git
 		// credential helper are in place. The capture is triggered by the agent's
 		// turn-completion (Stop) hook via this unix socket, not a timer. Bound to
 		// runCtx: it stops on shutdown.
-		cp := newCheckpointer(client, bootstrap, workspace, dataDir, logger)
-		if err := runCheckpointBridge(runCtx, checkpointSocketPath, cp.checkpoint, logger); err != nil &&
-			runCtx.Err() == nil {
-			logger.Warn("checkpoint bridge stopped", "error", err)
-		}
+		go func() {
+			cp := newCheckpointer(client, bootstrap, workspace, dataDir, logger)
+			if err := runCheckpointBridge(runCtx, checkpointSocketPath, cp.checkpoint, logger); err != nil &&
+				runCtx.Err() == nil {
+				logger.Warn("checkpoint bridge stopped", "error", err)
+			}
+		}()
 	}()
 	go func() {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
-			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, rehydrateDone,
+			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, workspaceReady,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -314,16 +324,8 @@ func startInteractiveAgent(
 	bootstrap worker.BootstrapResponse,
 	workspace, dataDir, pullRequestSocketPath, reviewSocketPath, checkpointSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
-	rehydrateDone <-chan struct{},
+	workspaceReady <-chan error,
 ) error {
-	// Wait until the checkout has completed and any delete/restore rehydration
-	// has run: the transcript must be on disk before the command is built, so
-	// BuildInteractive detects the restored conversation and launches --resume.
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-rehydrateDone:
-	}
 	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
 		logger.Warn("coding-agent harness unavailable", "error", err)
 		return nil
@@ -331,6 +333,19 @@ func startInteractiveAgent(
 	credential, err := client.Credential(ctx)
 	if err != nil {
 		return fmt.Errorf("load coding-agent credential: %w", err)
+	}
+	// BuildInteractive bakes the session's initial prompt directly into the
+	// launch argv (see agentruntime.BuildLaunchCommand), so it bypasses the
+	// transport supervisor's held-input queue entirely. Block here instead:
+	// never build or launch the agent command until checkout has definitively
+	// succeeded or failed.
+	select {
+	case err := <-workspaceReady:
+		if err != nil {
+			return fmt.Errorf("workspace not ready: %w", err)
+		}
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	agentCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(
 		bootstrap.Launch, credential, workspace,
