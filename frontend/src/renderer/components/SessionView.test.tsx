@@ -2821,8 +2821,10 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-orch" />);
 		expect(inspectorOpen("sess-orch")).toBe(false);
 		expect(screen.queryByTestId("inspector-collapsed-rail")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open Browser" })).toHaveAttribute("aria-pressed", "false");
 		fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true });
 		expect(inspectorOpen("sess-orch")).toBe(true);
+		expect(screen.getByRole("button", { name: "Close Browser" })).toHaveAttribute("aria-pressed", "true");
 		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
 	});
 
@@ -2842,14 +2844,23 @@ describe("SessionView", () => {
 		orchestrator.previewRevision = 1;
 		rerender(<SessionView sessionId="sess-orch" />);
 		expect(inspectorOpen("sess-orch")).toBe(true);
-		fireEvent.click(screen.getByRole("button", { name: "Close inspector panel" }));
+		fireEvent.click(screen.getByRole("button", { name: "Close Browser" }));
 		orchestrator.previewRevision = 2;
 		browserViewState.agentBrowserActive = true;
 		rerender(<SessionView sessionId="sess-orch" />);
 		expect(inspectorOpen("sess-orch")).toBe(false);
+		const indicator = screen.getByTestId("orchestrator-browser-unseen-indicator");
+		expect(indicator).not.toHaveClass("animate-ping");
+		browserViewState.agentBrowserActive = false;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(screen.getByTestId("orchestrator-browser-unseen-indicator")).toBe(indicator);
 		rerender(<SessionView sessionId="sess-1" />);
 		rerender(<SessionView sessionId="sess-orch" />);
 		expect(inspectorOpen("sess-orch")).toBe(false);
+		expect(screen.getByTestId("orchestrator-browser-unseen-indicator")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Open Browser" }));
+		expect(screen.queryByTestId("orchestrator-browser-unseen-indicator")).not.toBeInTheDocument();
+		expect(browserUnseen("sess-orch")).toBe(false);
 	});
 
 	it("reveals the orchestrator Browser when the agent first uses it", () => {

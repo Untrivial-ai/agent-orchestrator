@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { LoaderCircle, PanelRight, Plus } from "lucide-react";
+import { Globe2, LoaderCircle, PanelRight, Plus } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -576,6 +576,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
 	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
+	const browserUnseen = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.browserUnseen));
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
 	const toggleInspector = useUiStore((state) => state.toggleInspector);
 	const setInspectorViewForSession = useUiStore((state) => state.setInspectorView);
@@ -1770,7 +1771,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (!hasInspector) return;
 		const current = useUiStore.getState().inspectorSessions[sessionId];
-		if (browserOnly) return;
+		if (browserOnly) {
+			if (terminated && current?.browserUnseen) setBrowserUnseen(sessionId, false);
+			return;
+		}
 		if (!hasBrowserContent) {
 			if (current?.browserContentRevealed) setBrowserContentRevealed(sessionId, false);
 			else if (current?.browserUnseen) setBrowserUnseen(sessionId, false);
@@ -2169,17 +2173,36 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<TopbarButton
-								aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
+								aria-label={
+									browserOnly
+										? `${isInspectorOpen ? t("common.close") : t("inspector.open")} ${t("inspector.browser")}`
+										: isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")
+								}
 								aria-pressed={isInspectorOpen}
 								onClick={handleToggleInspector}
 								style={noDragStyle}
 								variant="icon"
 							>
-								<PanelRight className="size-icon-md" aria-hidden="true" />
+								{browserOnly ? (
+									<span className="relative inline-flex">
+										<Globe2 aria-hidden="true" className="size-icon-md" />
+										{!isInspectorOpen && browserUnseen ? (
+											<span
+												aria-hidden="true"
+												className="pointer-events-none absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-primary ring-2 ring-background"
+												data-testid="orchestrator-browser-unseen-indicator"
+											/>
+										) : null}
+									</span>
+								) : (
+									<PanelRight className="size-icon-md" aria-hidden="true" />
+								)}
 							</TopbarButton>
 						</TooltipTrigger>
 						<TooltipContent side="bottom">
-							{isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
+							{browserOnly
+								? `${isInspectorOpen ? t("common.close") : t("inspector.open")} ${t("inspector.browser")}`
+								: isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
 						</TooltipContent>
 					</Tooltip>
 					{/* Keep the global notification action trailing at the window edge. */}
