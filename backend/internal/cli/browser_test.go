@@ -199,6 +199,42 @@ func TestBrowserActForwardsExplicitEmptyValue(t *testing.T) {
 	}
 }
 
+func TestBrowserActForwardsOnePostcondition(t *testing.T) {
+	setBrowserIdentity(t)
+	cfg := setConfigEnv(t)
+	capture := &browserRequestCapture{}
+	srv := browserCLIServer(t, capture)
+	writeRunFileFor(t, cfg, srv)
+	deps := Deps{ProcessAlive: func(int) bool { return true }}
+
+	_, errOut, err := executeCLI(
+		t,
+		deps,
+		"browser",
+		"act",
+		"the continue button",
+		"--expect-url",
+		"/next",
+		"--postcondition-timeout",
+		"2500",
+	)
+	if err != nil {
+		t.Fatalf("act err=%v stderr=%s", err, errOut)
+	}
+	postcondition, ok := capture.body.Args["postcondition"].(map[string]any)
+	if !ok {
+		t.Fatalf("postcondition = %#v", capture.body.Args["postcondition"])
+	}
+	if postcondition["kind"] != "url" || postcondition["value"] != "/next" || postcondition["timeoutMs"] != float64(2500) {
+		t.Fatalf("postcondition = %#v", postcondition)
+	}
+
+	_, _, err = executeCLI(t, deps, "browser", "act", "continue", "--expect-dialog", "--expect-navigation")
+	if err == nil || !strings.Contains(err.Error(), "at most one action postcondition") {
+		t.Fatalf("conflicting postconditions err = %v", err)
+	}
+}
+
 func TestBrowserExpandedWaitArguments(t *testing.T) {
 	setBrowserIdentity(t)
 	cfg := setConfigEnv(t)
