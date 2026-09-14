@@ -258,14 +258,14 @@ func (s *Supervisor) handle(
 		var input worker.WorkspaceDiffFileRequest
 		err = decodePayload(request.Payload, &input)
 		if err == nil {
-			s.Logger.Info("workspace diff-file request started", "request_id", request.ID, "path", input.Path)
+			s.Logger.Debug("workspace diff-file request started", "request_id", request.ID, "path", input.Path)
 			response, err = workspace.DiffFile(ctx, input)
 			if err != nil {
 				failureCode, _ := transportError(err)
 				s.Logger.Warn("workspace diff-file request failed", "request_id", request.ID, "path", input.Path, "failure_code", failureCode)
 			} else {
 				file := response.(worker.WorkspaceDiffFile)
-				s.Logger.Info("workspace diff-file request completed", "request_id", request.ID, "path", file.Path, "size", file.Size, "binary", file.Binary, "deleted", file.Deleted, "diff_truncated", file.DiffTruncated)
+				s.Logger.Debug("workspace diff-file request completed", "request_id", request.ID, "path", file.Path, "size", file.Size, "binary", file.Binary, "deleted", file.Deleted, "diff_truncated", file.DiffTruncated)
 			}
 		}
 	case "workspace.write":

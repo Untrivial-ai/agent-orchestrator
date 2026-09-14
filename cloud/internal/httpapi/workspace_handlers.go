@@ -110,11 +110,11 @@ func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("workspace diff-file request started", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+	s.logger.Debug("workspace diff-file request started", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
 	payload, _ := json.Marshal(worker.WorkspaceDiffFileRequest{Path: path, Category: category})
 	result, ok := s.runWorkspaceRequest(w, r, orgID, sessionID, "workspace.diff-file", payload)
 	if !ok {
-		s.logger.Warn("workspace diff-file request failed", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+		s.logger.Info("workspace diff-file request failed", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
 		return
 	}
 	var file worker.WorkspaceDiffFile
@@ -179,12 +179,12 @@ func (s *Server) getWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_UNSUPPORTED", "Workspace diffs are unavailable for this cloud sandbox provider.")
 		return
 	}
-	s.logger.Info("workspace diff request started", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
+	s.logger.Debug("workspace diff request started", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 	result, ok := s.runWorkspaceRequest(
 		w, r, orgID, sessionID, "workspace.diff", json.RawMessage(`{}`),
 	)
 	if !ok {
-		s.logger.Warn("workspace diff request failed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
+		s.logger.Info("workspace diff request failed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 		return
 	}
 	var value map[string]any
