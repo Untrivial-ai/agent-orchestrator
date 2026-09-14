@@ -10581,6 +10581,7 @@ components:
     RenameSessionRequest:
       properties:
         displayName:
+          maxLength: 100
           minLength: 1
           type: string
       required:
@@ -11655,7 +11656,7 @@ components:
         branch:
           type: string
         displayName:
-          maxLength: 20
+          maxLength: 100
           type: string
         harness:
           enum:
@@ -12051,7 +12052,7 @@ components:
         config:
           $ref: '#/components/schemas/ProjectConfig'
         displayName:
-          maxLength: 20
+          maxLength: 100
           minLength: 1
           type: string
       required:

@@ -23,9 +23,12 @@ export type ProjectSettingsValues = {
 	intakeAssignee: string;
 };
 
+export const MAX_PROJECT_DISPLAY_NAME_LEN = 100;
+
 export type ProjectSettingsValidationCode =
 	| "agents_required"
 	| "name_required"
+	| "name_too_long"
 	| "intake_assignee_required";
 
 export function validateProjectSettings(
@@ -36,7 +39,9 @@ export function validateProjectSettings(
 	options: { validateIntake?: boolean } = {},
 ): ProjectSettingsValidationCode | null {
 	if (values.workerAgent === "" || values.orchestratorAgent === "") return "agents_required";
-	if (values.displayName.trim() === "") return "name_required";
+	const trimmedName = values.displayName.trim();
+	if (trimmedName === "") return "name_required";
+	if (Array.from(trimmedName).length > MAX_PROJECT_DISPLAY_NAME_LEN) return "name_too_long";
 	if (options.validateIntake !== false && values.intakeEnabled && values.intakeAssignee.trim() === "") {
 		return "intake_assignee_required";
 	}

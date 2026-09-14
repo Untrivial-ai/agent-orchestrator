@@ -267,11 +267,11 @@ func TestSpawnCommand_RequiresName(t *testing.T) {
 }
 
 // TestSpawnCommand_RejectsOverlongName asserts `ao spawn` rejects a --name
-// longer than 20 characters without contacting the daemon.
+// longer than 100 characters without contacting the daemon.
 func TestSpawnCommand_RejectsOverlongName(t *testing.T) {
-	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", strings.Repeat("x", 21))
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "20 characters or fewer") {
-		t.Fatalf("err=%v exit=%d, want 20 characters or fewer", err, ExitCode(err))
+	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", strings.Repeat("x", 101))
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "100 characters or fewer") {
+		t.Fatalf("err=%v exit=%d, want 100 characters or fewer", err, ExitCode(err))
 	}
 }
 

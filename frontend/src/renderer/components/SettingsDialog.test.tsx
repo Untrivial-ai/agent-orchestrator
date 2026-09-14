@@ -21,16 +21,29 @@ vi.mock("./ProjectSettingsForm", () => ({
 	}: {
 		onSaveState?: (state: ProjectSettingsSaveState) => void;
 	}) => (
-		<button
-			type="button"
-			onClick={() =>
-				onSaveState?.({
-					phase: "pending",
-				})
-			}
-		>
-			Start pending save
-		</button>
+		<>
+			<button
+				type="button"
+				onClick={() =>
+					onSaveState?.({
+						phase: "pending",
+					})
+				}
+			>
+				Start pending save
+			</button>
+			<button
+				type="button"
+				onClick={() =>
+					onSaveState?.({
+						phase: "failed",
+						error: "Display name must be 100 characters or fewer",
+					})
+				}
+			>
+				Trigger failed save
+			</button>
+		</>
 	),
 }));
 
@@ -65,6 +78,14 @@ describe("SettingsDialog", () => {
 
 		await userEvent.keyboard("{Escape}");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
+	});
+
+	it("renders visible error message when project settings save fails", async () => {
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderSettingsDialog();
+
+		await userEvent.click(await screen.findByRole("button", { name: "Trigger failed save" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Display name must be 100 characters or fewer");
 	});
 
 	it("opens the requested global settings page", async () => {
