@@ -1019,6 +1019,10 @@ func (r *selectableRuntime) IsAlive(context.Context, ports.RuntimeHandle) (bool,
 	return true, nil
 }
 
+func (r *selectableRuntime) IsChildAlive(context.Context, ports.RuntimeHandle) (bool, error) {
+	return true, nil
+}
+
 func (r *selectableRuntime) ProbeFencedRuntime(context.Context, ports.FencedRuntimeRef) ports.FencedProbeResult {
 	return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonProbeFailed}
 }

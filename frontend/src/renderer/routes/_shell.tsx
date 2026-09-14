@@ -1,3 +1,5 @@
+import { AppBrowserLinkContext } from "../components/AppLink";
+import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { isCancelledError, useQueryClient } from "@tanstack/react-query";
 import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +20,7 @@ import { ShellTopbar } from "../components/ShellTopbar";
 import { SessionTopbarProvider } from "../components/SessionTopbarPortal";
 import { OrchestratorReplacementDialog } from "../components/OrchestratorReplacementDialog";
 import { RestartToUpdateDialog } from "../components/RestartToUpdateDialog";
+import { TelemetryConsentRenewalDialog } from "../components/TelemetryConsentRenewalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { TitlebarNav } from "../components/TitlebarNav";
@@ -173,6 +176,7 @@ function ShellLayout() {
 	const daemonStatus = useDaemonStatus(queryClient);
 	const [workspaceStartupState, setWorkspaceStartupState] = useState<"loading" | "ready" | "error">("loading");
 	const workspaceStartupBaselineRef = useRef(0);
+	const sidebarDragStripRef = useRef<HTMLDivElement>(null);
 	const themePreference = useUiStore((state) => state.themePreference);
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
 	const themeStyle = useUiStore((state) => state.themeStyle);
@@ -218,6 +222,9 @@ function ShellLayout() {
 	const [isKeyboardShortcutsOpen, setIsKeyboardShortcutsOpen] = useState(false);
 	const [isKeyboardShortcutsSettingsOpen, setIsKeyboardShortcutsSettingsOpen] = useState(false);
 	const routeParams = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
+	const linkSession = workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === routeParams.sessionId);
+	const openBrowserLink = useSessionBrowserLink(linkSession);
+	const canOpenBrowserLink = linkSession?.kind === "worker" && sessionIsActive(linkSession);
 	useEffect(() => {
 		document.addEventListener("click", handleModifierLinkClick);
 		return () => document.removeEventListener("click", handleModifierLinkClick);
@@ -286,6 +293,9 @@ function ShellLayout() {
 		: routeParams.sessionId
 			? workspaces.find((workspace) => workspace.sessions.some((session) => session.id === routeParams.sessionId))?.id
 			: undefined;
+	const scopedSession = routeParams.sessionId
+		? workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === routeParams.sessionId)
+		: undefined;
 	// Warms the New Task composer's model-catalog cache while the user is just
 	// looking at the project, so the picker never shows a loading flash the
 	// first time they actually open the dialog.
@@ -841,7 +851,7 @@ function ShellLayout() {
 		if (handledShellNonceRef.current === newShellTerminalNonce) return;
 		handledShellNonceRef.current = newShellTerminalNonce;
 		const shell = openShellTerminal.open(
-			{ projectId: scopedProjectId, sessionId: routeParams.sessionId },
+			{ projectId: scopedProjectId, sessionId: routeParams.sessionId, cloud: scopedSession?.cloud },
 			{
 				onSuccess: (openedShell) => {
 					setActiveShellTerminal(openedShell.handleId);
@@ -857,6 +867,7 @@ function ShellLayout() {
 		newShellTerminalNonce,
 		openShellTerminal,
 		scopedProjectId,
+		scopedSession?.cloud,
 		routeParams.sessionId,
 		navigate,
 		setActiveShellTerminal,
@@ -917,6 +928,7 @@ function ShellLayout() {
 		<ShellProvider
 			value={shellContextValue}
 		>
+			<AppBrowserLinkContext.Provider value={canOpenBrowserLink ? openBrowserLink : undefined}>
 			<SessionTopbarProvider>
 				<NotificationRuntime />
 				<TrayRuntime />
@@ -940,6 +952,7 @@ function ShellLayout() {
 				<GlobalToast />
 				<SettingsDialog />
 				<RestartToUpdateDialog />
+				<TelemetryConsentRenewalDialog />
 				<KeyboardShortcutsDialog
 					open={isKeyboardShortcutsOpen}
 					onOpenChange={setIsKeyboardShortcutsOpen}
@@ -980,8 +993,8 @@ function ShellLayout() {
 				{/* App routes render their topbar inside the framed panel, matching the board chrome across platforms while leaving OS titlebars native. */}
 				{!framedAppTopbar && !hideShellTopbar && !routeParams.sessionId ? <ShellTopbar /> : null}
 				{/* Controlled by the ui-store so TitlebarNav / Topbar toggles (which
-            call the store directly) stay in sync. --sidebar-width chains to
-            the drag-resizable --ao-sidebar-w set on :root by useResizable. */}
+			    call the store directly) stay in sync. Direct dragging scopes its
+			    width override to the sidebar's layout consumers. */}
 				<SidebarProvider
 					className="min-h-0 flex-1 flex-col overflow-x-hidden"
 					keyboardShortcut={false}
@@ -991,26 +1004,27 @@ function ShellLayout() {
 					open={!isStartupLoading && isSidebarOpen}
 					style={
 						{
-							"--sidebar-width": "var(--ao-sidebar-w, var(--size-sidebar-default))",
+							"--sidebar-width": "var(--size-sidebar-default)",
 							"--sidebar-width-icon": "var(--size-sidebar-icon)",
 						} as CSSProperties
 					}
 				>
-				<div
-					className="flex min-h-0 w-full flex-1 overflow-x-hidden"
-					data-testid="shell-content-row"
-				>
-				{/* macOS + Linux reserve a titlebar band for the fixed TitlebarNav
-              cluster above a full-height sidebar; Windows hangs the sidebar
-              below its custom titlebar. */}
-				<Sidebar
-					hideEdgeBorder={isHomeRoute}
-					underTopbar={isMac || isWindows || isLinux}
+					<div
+						className="flex min-h-0 w-full flex-1 overflow-x-hidden"
+						data-testid="shell-content-row"
+					>
+						{/* macOS + Linux reserve a titlebar band for the fixed TitlebarNav
+			      cluster above a full-height sidebar; Windows hangs the sidebar
+			      below its custom titlebar. */}
+					<Sidebar
+						hideEdgeBorder={isHomeRoute}
+						underTopbar={isMac || isWindows || isLinux}
 						topbarOffset={isWindows ? "titlebar" : hideShellTopbar ? "trafficLights" : "toolbar"}
 						onCloneProject={cloneProject}
 						onCreateProject={createProject}
 						onInitializeProject={initializeProjectRepository}
 						onRemoveProject={removeProject}
+						resizeAuxiliaryTargetRef={sidebarDragStripRef}
 						workspaceError={workspaceQuery.isError ? errorMessage(workspaceQuery.error) : undefined}
 						workspaces={workspaces}
 					/>
@@ -1023,7 +1037,7 @@ function ShellLayout() {
 								selfFramedCenterPanel={selfFramedCenterPanel}
 							/>
 						</div>
-					</main>
+						</main>
 					</div>
 					<DaemonFailureBanner status={daemonStatus} />
 					{/* When ShellTopbar is hidden, keep a macOS window-drag strip over
@@ -1036,6 +1050,7 @@ function ShellLayout() {
 								"fixed top-0 left-0 z-chrome w-(--ao-sidebar-w,var(--size-sidebar-default)) transition-[height] duration-200 ease-out motion-reduce:transition-none",
 								isFullScreen ? "pointer-events-none h-0" : "h-traffic-light-clearance",
 							)}
+							ref={sidebarDragStripRef}
 							style={trafficLightDragActive ? ({ WebkitAppRegion: "drag" } as CSSProperties) : undefined}
 						/>
 					) : null}
@@ -1070,6 +1085,7 @@ function ShellLayout() {
 				</div>
 				</TerminalCacheProvider>
 			</SessionTopbarProvider>
+			</AppBrowserLinkContext.Provider>
 		</ShellProvider>
 	);
 }

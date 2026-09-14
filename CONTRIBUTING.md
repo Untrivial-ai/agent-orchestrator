@@ -25,7 +25,7 @@ Non-trivial work? Comment on the issue or ping Discord first. Get a thumbs-up, t
 ## Quick start
 
 1. **Join Discord** — say hi and get guidance
-2. **Read the contract** — [AGENTS.md](AGENTS.md) (layout, commands, hard rules, PR hygiene)
+2. **Read the contract** — [AGENTS.md](AGENTS.md) (layout, commands, hard rules, PR hygiene); [docs/documentation-map.md](docs/documentation-map.md) explains which docs are contracts and which are prose
 3. **Pick something focused** — [open issues](https://github.com/AgentWrapper/agent-orchestrator/issues); prefer `good-first-issue` / `help wanted`
 4. **Claim it** — comment `I'd like to work on this` and wait for assignment
 5. **Open a clear PR** — narrow change, link the issue, user-visible impact, tests

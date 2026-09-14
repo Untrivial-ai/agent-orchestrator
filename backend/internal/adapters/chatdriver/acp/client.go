@@ -573,6 +573,17 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 	}
 	switch {
 	case update.AgentMessageChunk != nil:
+		c.mu.Lock()
+		isCompacting := c.compactingTurnID != "" && c.compactingTurnID == turnID
+		c.mu.Unlock()
+		if isCompacting {
+			if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
+				c.mu.Lock()
+				c.compactionSummary += delta
+				c.mu.Unlock()
+			}
+			break
+		}
 		id := c.providerItemID(messageID(update.AgentMessageChunk.MessageId, "assistant", turnID))
 		if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
 			if parentID := c.providerItemID(parentToolUseID(update.AgentMessageChunk.Meta)); parentID != "" {
@@ -598,6 +609,12 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			emit(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
 		}
 	case update.AgentThoughtChunk != nil:
+		c.mu.Lock()
+		isCompacting := c.compactingTurnID != "" && c.compactingTurnID == turnID
+		c.mu.Unlock()
+		if isCompacting {
+			break
+		}
 		id := c.providerItemID(messageID(update.AgentThoughtChunk.MessageId, "thought", turnID))
 		if delta := contentText(update.AgentThoughtChunk.Content); delta != "" {
 			c.mu.Lock()
@@ -653,6 +670,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		// when its configuration changes, so retaining absent entries is wrong.
 		c.replaceAvailableCommands(update.AvailableCommandsUpdate.AvailableCommands)
 	case update.UsageUpdate != nil:
+		c.trackContext(int64(update.UsageUpdate.Used), int64(update.UsageUpdate.Size))
 		usage := &ports.ChatUsage{
 			ContextUsed: int64(update.UsageUpdate.Used), ContextWindow: int64(update.UsageUpdate.Size),
 			ContextKnown: true,

@@ -675,6 +675,40 @@ describe("interface switch readiness", () => {
 		expect(getMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("forces a durable status read when a start response is ambiguous", async () => {
+		const transition = {
+			id: "transition-after-response-loss",
+			sessionId: "session-1",
+			sourceMode: "chat" as const,
+			targetMode: "tui" as const,
+			policy: "interrupt" as const,
+			phase: "requested" as const,
+			createdAt: "2026-08-26T10:00:00Z",
+			updatedAt: "2026-08-26T10:00:00Z",
+		};
+		getMock
+			.mockResolvedValueOnce({
+				data: { supported: true, targetMode: "tui" },
+				error: undefined,
+			})
+			.mockResolvedValueOnce({
+				data: { supported: true, targetMode: "tui", transition },
+				error: undefined,
+			});
+
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-1"), {
+			wrapper,
+		});
+		await waitFor(() => expect(result.current.status?.supported).toBe(true));
+		let status: Awaited<ReturnType<typeof result.current.refreshStatus>> | undefined;
+		await act(async () => {
+			status = await result.current.refreshStatus();
+		});
+
+		expect(status?.transition?.id).toBe(transition.id);
+		expect(getMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("acknowledges the exact transition and replaces the cached notice with the durable response", async () => {
 		const transition = {
 			id: "transition-1",

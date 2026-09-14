@@ -1527,6 +1527,48 @@ describe("ProjectSettingsForm", () => {
 		});
 	});
 
+	it("preserves explicit provider and unmodeled tracker intake fields on save", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				status: "ok",
+				project: {
+					id: "proj-1",
+					name: "Project One",
+					kind: "single_repo",
+					path: "/repo/project-one",
+					repo: "git@gitlab.example.com:acme/project-one.git",
+					defaultBranch: "main",
+					config: {
+						worker: { agent: "codex" },
+						orchestrator: { agent: "claude-code" },
+						trackerIntake: {
+							enabled: true,
+							provider: "gitlab",
+							repo: "acme/project-one",
+							assignee: "octocat",
+							labels: ["agent-ready"],
+						},
+					},
+				},
+			},
+			error: undefined,
+		});
+
+		renderSettings("proj-1", undefined, "general");
+		await screen.findByRole("button", { name: "Edit Project name" });
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const body = putMock.mock.calls[0]?.[1]?.body;
+		expect(body.config.trackerIntake).toEqual({
+			enabled: true,
+			provider: "gitlab",
+			repo: "acme/project-one",
+			assignee: "octocat",
+			labels: ["agent-ready"],
+		});
+	});
+
 	it("blocks save when intake is enabled with no assignee", async () => {
 		getMock.mockResolvedValue({
 			data: {

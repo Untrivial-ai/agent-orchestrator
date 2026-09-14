@@ -85,6 +85,17 @@ import {
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
 } from "./shared/tray";
 import {
+	parseChatDraftBoundaryKinds,
+	parseChatDraftDialogCopy,
+	type ChatDraftDialogCopy,
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+} from "./shared/chat-draft-risk";
+import {
+	confirmUnsafeChatDraftLeave,
+	shouldPreventUnsafeChatDraftClose,
+} from "./main/chat-draft-unload";
+import {
 	type DaemonProbe,
 	expectedDaemonPort,
 	parseDaemonProbe,
@@ -117,6 +128,7 @@ import {
 	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
 	TELEMETRY_POLICY_CHANGED_CHANNEL,
 	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
+	telemetryPolicyRetryable,
 	type RendererTelemetryCapture,
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
@@ -293,6 +305,10 @@ let keybindingOverrides: KeybindingOverrides = {};
 let keybindingRecordingActive = false;
 let closeShellTerminalShortcutEnabled = false;
 let terminalFocused = false;
+let chatDraftRisks: ChatDraftBoundaryKind[] = [];
+let chatDraftDialog: ChatDraftDialogCopy | undefined;
+let chatDraftQuitConfirmed = false;
+let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
 // Guard: prevents stacking multiple flashFrame(true) calls when notifications arrive rapidly.
@@ -642,6 +658,33 @@ async function createWindowInternal(): Promise<void> {
 		}
 	});
 
+	shellWebContents.on("will-prevent-unload", (event) => {
+		if (chatDraftRisks.length === 0) return;
+		if (
+			chatDraftQuitConfirmed ||
+			chatDraftWindowCloseConfirmed ||
+			confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog)
+		) {
+			// Electron uses preventDefault here to ignore beforeunload and continue
+			// leaving. Doing nothing honors the renderer's request to stay.
+			event.preventDefault();
+		}
+	});
+
+	mainWindow.on("close", (event) => {
+		const preventClose = shouldPreventUnsafeChatDraftClose(
+			chatDraftRisks,
+			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		);
+		if (preventClose) {
+			event.preventDefault();
+			return;
+		}
+		if (chatDraftRisks.length > 0) chatDraftWindowCloseConfirmed = true;
+	});
+
 	// Application shortcuts are handled here so they fire no matter which web
 	// contents holds focus — the shell renderer, xterm's helper textarea, or a
 	// browser-preview view (wired per-view in the browser host).
@@ -751,6 +794,10 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		chatDraftRisks = [];
+		chatDraftDialog = undefined;
+		chatDraftQuitConfirmed = false;
+		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
 		if (windowComposition === composition) windowComposition = null;
@@ -1037,11 +1084,8 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	// re-linked, survives app quit); a normal app-owned daemon is "app";
 	// headless `ao start` sets none (stays unlinked, persistent by default).
 	//
-	// AO_APP_RUN_ID identifies THIS app launch. It is constant for the process
-	// lifetime, so a daemon the supervisor restarts inherits the same id and its
-	// standalone shell terminals survive; a later app launch gets a new id, which
-	// is how the daemon recognises the previous run's shells as orphans and
-	// destroys them (see internal/service/shellterm).
+	// AO_APP_RUN_ID scopes temporary command/auth terminals to this app launch.
+	// User-opened shells remain attachable across launches while their PTYs live.
 	const AO_OWNER = forceKeep ? "persistent" : "app";
 	const bundledTmuxBinary = stagedBundledTmuxBinary;
 	const ownerTag = {
@@ -1943,6 +1987,22 @@ ipcMain.on(SET_TERMINAL_FOCUSED_CHANNEL, (event, focused: unknown) => {
 	terminalFocused = focused;
 });
 
+ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unknown) => {
+	if (event.sender !== getShellWebContents()) return;
+	const parsed = parseChatDraftBoundaryKinds(risks);
+	const parsedCopy = parseChatDraftDialogCopy(dialogCopy);
+	if (!parsed || (parsed.length > 0 && !parsedCopy)) return;
+	if (
+		chatDraftRisks.length === parsed.length &&
+		chatDraftRisks.every((risk, index) => risk === parsed[index]) &&
+		JSON.stringify(chatDraftDialog) === JSON.stringify(parsedCopy)
+	) return;
+	chatDraftRisks = [...parsed];
+	chatDraftDialog = parsedCopy;
+	chatDraftQuitConfirmed = false;
+	chatDraftWindowCloseConfirmed = false;
+});
+
 // Backs the custom title-bar menu (WindowTitlebar). Each item maps to the same
 // action the native default menu would have performed.
 ipcMain.handle("menu:action", (_event, action: string) => {
@@ -2037,7 +2097,7 @@ ipcMain.on(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, (event, request: unknown) => {
 });
 
 function failClosedTelemetryPolicyView(): TelemetryPolicyView {
-	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
+	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
 }
 async function chooseDirectory(title: string, defaultPath?: string): Promise<string | null> {
 	if (defaultPath) await mkdir(defaultPath, { recursive: true });
@@ -2562,6 +2622,12 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	if (app.isPackaged) {
+		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
+		await checkDesktopVersionFloor().catch((err) =>
+			console.warn("desktop version floor check failed:", err),
+		);
+	}
 	void refreshGitHubOwners();
 	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
 	// The approved release gate is intentionally closed. Tests inject the
@@ -2585,7 +2651,7 @@ app.whenReady().then(async () => {
 	telemetryPolicyController = policyController;
 	try { await policyController.initialize(); }
 	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	setInterval(() => { if (policyController.snapshot().state !== "applied") void policyController.retryPendingCleanup(); }, 1_000).unref();
+	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
 	// code past a successful move never runs in this instance, so a post-move-only
@@ -2695,6 +2761,18 @@ setUpdateRestartFailureHandler(() => {
 
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
+	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
+		event.preventDefault();
+		if (confirmUnsafeChatDraftLeave(
+			chatDraftRisks,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		)) {
+			chatDraftQuitConfirmed = true;
+			app.quit();
+		}
+		return;
+	}
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	trayLifecycle.dispose();

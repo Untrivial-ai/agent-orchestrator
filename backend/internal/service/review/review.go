@@ -88,7 +88,7 @@ var _ Manager = (*Service)(nil)
 // Store is the review_run persistence surface owned by the service submit path.
 type Store interface {
 	GetReviewByID(ctx context.Context, id string) (domain.Review, bool, error)
-	UpdateReviewAgentSessionID(ctx context.Context, id, agentSessionID string) (bool, error)
+	UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error)
 	GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
@@ -570,12 +570,12 @@ func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID do
 	return s.codexOperationGate.AcquireShared(ctx)
 }
 
-// ActivitySignal is reviewer-owned hook metadata. It deliberately does not
-// model activity state for session/Kanban display; for now hooks only keep the
-// reviewer native conversation id up to date for restore.
+// ActivitySignal is reviewer-owned hook metadata.
 type ActivitySignal struct {
 	Event          string
+	State          domain.ActivityState
 	AgentSessionID string
+	LaunchID       string
 }
 
 // ApplyReviewActivitySignal records reviewer-owned hook facts without touching
@@ -584,19 +584,26 @@ func (s *Service) ApplyReviewActivitySignal(ctx context.Context, reviewSessionID
 	if reviewSessionID == "" {
 		return fmt.Errorf("%w: review session id is required", ErrInvalid)
 	}
-	if _, ok, err := s.store.GetReviewByID(ctx, reviewSessionID); err != nil {
+	review, ok, err := s.store.GetReviewByID(ctx, reviewSessionID)
+	if err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("%w: review session %q", ErrNotFound, reviewSessionID)
 	}
-	if signal.AgentSessionID == "" {
+	if signal.AgentSessionID == "" && signal.State == "" {
 		return nil
 	}
-	updated, err := s.store.UpdateReviewAgentSessionID(ctx, reviewSessionID, signal.AgentSessionID)
+	updated, err := s.store.UpdateReviewActivity(ctx, reviewSessionID, signal.State, signal.AgentSessionID, signal.LaunchID)
 	if err != nil {
 		return err
 	}
 	if !updated {
+		// A live reviewer row is reused across launches. Once it carries a launch
+		// generation, a delayed hook from an older reviewer must not clobber the
+		// replacement's activity state. Treat that as a successful no-op.
+		if review.ReviewerLaunchID != "" && signal.LaunchID != review.ReviewerLaunchID {
+			return nil
+		}
 		return fmt.Errorf("%w: review session %q", ErrNotFound, reviewSessionID)
 	}
 	return nil

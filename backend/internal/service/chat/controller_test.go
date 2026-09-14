@@ -82,6 +82,7 @@ type fakeConversation struct {
 	sent               []ports.ChatUserMessage
 	caps               ports.ChatCapabilities
 	resolved           map[string]ports.ChatDecision
+	sendCalls          int
 	turnSeq            int
 	sendErr            error
 	onSend             func(providerTurnID string)
@@ -234,6 +235,7 @@ func (f *fakeConversation) Events() <-chan ports.ChatEvent { return f.events }
 
 func (f *fakeConversation) SendTurn(_ context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	f.mu.Lock()
+	f.sendCalls++
 	if f.sendErr != nil {
 		f.mu.Unlock()
 		return ports.ChatTurnRef{}, f.sendErr
@@ -265,6 +267,12 @@ func (f *fakeConversation) sentMessages() []ports.ChatUserMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]ports.ChatUserMessage(nil), f.sent...)
+}
+
+func (f *fakeConversation) sendCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sendCalls
 }
 
 func (f *fakeConversation) Interrupt(context.Context, string) error { return nil }
@@ -4910,7 +4918,11 @@ type compactingConversation struct {
 }
 
 func newCompactingConversation() *compactingConversation {
-	return &compactingConversation{fakeConversation: newFakeConversation()}
+	conv := &compactingConversation{fakeConversation: newFakeConversation()}
+	caps := productionCaps()
+	caps[ports.ChatCapabilityCompaction] = true
+	conv.setCapabilities(caps)
+	return conv
 }
 
 func (c *compactingConversation) Compact(context.Context) (ports.ChatCompactionResult, error) {
@@ -5048,6 +5060,21 @@ func TestCompactReportsWhatIsAboutToBeReclaimed(t *testing.T) {
 // cannot act on. The plain fake conversation does not implement ChatCompactor.
 func TestCompactOnAProviderThatCannotIsTyped(t *testing.T) {
 	h := newHarness(t)
+
+	_, err := h.svc.Compact(context.Background(), testSession)
+	if !errors.Is(err, chatsvc.ErrCompactionUnsupported) {
+		t.Fatalf("err = %v, want ErrCompactionUnsupported", err)
+	}
+}
+
+// An agent might implement ChatCompactor statically (e.g. ACP conversation),
+// but if the agent has not advertised the capability, Compact must return ErrCompactionUnsupported.
+func TestCompactRefusesWhenProviderImplementsCompactorWithoutCapability(t *testing.T) {
+	conv := newCompactingConversation()
+	caps := productionCaps()
+	delete(caps, ports.ChatCapabilityCompaction)
+	conv.setCapabilities(caps)
+	h := newHarnessWithConversation(t, conv)
 
 	_, err := h.svc.Compact(context.Background(), testSession)
 	if !errors.Is(err, chatsvc.ErrCompactionUnsupported) {

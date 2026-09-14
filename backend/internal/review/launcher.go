@@ -65,6 +65,7 @@ type LaunchSpec struct {
 	RunID                string
 	BatchID              string
 	ReviewSessionID      string
+	LaunchID             string
 	WorkerID             domain.SessionID
 	ProjectID            domain.ProjectID
 	Harness              domain.ReviewerHarness
@@ -82,6 +83,7 @@ type LaunchSpec struct {
 // LaunchResult is the terminal/runtime state created by a reviewer launch.
 type LaunchResult struct {
 	HandleID       string
+	LaunchID       string
 	AgentSessionID string
 	// NativeResumed reports whether the launch resumed the provider-native
 	// conversation instead of falling back to a fresh reviewer process.
@@ -467,7 +469,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if agentSessionID == "" {
 		agentSessionID = strings.TrimSpace(spec.AgentSessionID)
 	}
-	return LaunchResult{HandleID: handle.ID, AgentSessionID: agentSessionID, NativeResumed: nativeResumed}, nil
+	return LaunchResult{HandleID: handle.ID, LaunchID: strings.TrimSpace(spec.LaunchID), AgentSessionID: agentSessionID, NativeResumed: nativeResumed}, nil
 }
 
 func (l *agentLauncher) waitForPromptReadiness(ctx context.Context, reviewer ports.Reviewer, handle ports.RuntimeHandle) error {
@@ -539,6 +541,9 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 	env["AO_REVIEW_SESSION_ID"] = spec.ReviewSessionID
 	env["AO_REVIEW_WORKER_SESSION_ID"] = string(spec.WorkerID)
 	env["AO_REVIEW_HARNESS"] = string(spec.Harness)
+	if strings.TrimSpace(spec.LaunchID) != "" {
+		env[sessionmanager.EnvRuntimeLaunchID] = spec.LaunchID
+	}
 	env[sessionmanager.EnvProjectID] = string(spec.ProjectID)
 	env[sessionmanager.EnvDataDir] = l.dataDir
 	if strings.TrimSpace(l.runFile) != "" {

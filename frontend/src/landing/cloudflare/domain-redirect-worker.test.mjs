@@ -2,7 +2,15 @@
 import { expect, test } from "vitest";
 import worker from "./domain-redirect-worker.mjs";
 
-test.each(["aoagents.dev", "www.aoagents.dev", "www.useao.dev"])(
+test.each([
+  "ao-agents.com",
+  "www.ao-agents.com",
+  "aoagents.dev",
+  "www.aoagents.dev",
+  "useao.dev",
+  "www.useao.dev",
+  "www.orchestrator.inc",
+])(
   "%s redirects HTTP and HTTPS while preserving encoded paths and query parameters",
   (host) => {
     for (const protocol of ["http:", "https:"]) {
@@ -12,14 +20,20 @@ test.each(["aoagents.dev", "www.aoagents.dev", "www.useao.dev"])(
         ));
         expect(response.status).toBe(308);
         expect(response.headers.get("location")).toBe(
-          "https://useao.dev/docs/a%20b/?a=1&a=2&to=%2Fpath",
+          "https://orchestrator.inc/docs/a%20b/?a=1&a=2&to=%2Fpath",
         );
       }
     }
   },
 );
 
-test.each(["useao.dev", "api.aoagents.dev", "aoagents.dev.evil.test"])(
+test.each([
+  "orchestrator.inc",
+  "api.ao-agents.com",
+  "api.aoagents.dev",
+  "ao-agents.com.evil.test",
+  "aoagents.dev.evil.test",
+])(
   "%s is not redirected",
   (host) => {
     expect(worker.fetch(new Request(`https://${host}/`)).status).toBe(404);

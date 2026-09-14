@@ -101,6 +101,10 @@ surface (`npm run sqlc`, `npm run api`).
   ([#75](https://github.com/aoagents/agent-orchestrator/issues/75),
   [#108](https://github.com/aoagents/agent-orchestrator/issues/108),
   [#109](https://github.com/aoagents/agent-orchestrator/issues/109)).
+- User-opened standalone and session side shells reconnect across daemon and
+  desktop restarts while their runtimes live. Explicit close, confirmed exit,
+  and session/worktree teardown remain cleanup boundaries; new trusted command
+  and authentication terminals remain scoped to their originating app launch.
 - Terminal mux over WebSocket (`/mux`): detached native PTY host for new macOS
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.

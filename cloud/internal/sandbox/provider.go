@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 )
@@ -20,15 +21,18 @@ type ID string
 
 // Spec describes a sandbox to create.
 type Spec struct {
-	Name              string
-	SessionID         string
-	OrgID             string
-	ResourceProfile   domain.ResourceProfile
-	Shape             string
-	RootFS            string
-	Ingress           string
-	Environment       map[string]string
-	Labels            map[string]string
+	Name            string
+	SessionID       string
+	OrgID           string
+	ResourceProfile domain.ResourceProfile
+	Shape           string
+	RootFS          string
+	Ingress         string
+	Environment     map[string]string
+	Labels          map[string]string
+	// DurableRoot is provider-specific persisted workspace storage. It remains
+	// empty for providers whose established contract already owns persistence.
+	DurableRoot       string
 	AutoDeleteMinutes int
 	// AutoPauseSeconds is disabled when zero.
 	AutoPauseSeconds int
@@ -37,11 +41,20 @@ type Spec struct {
 // Environment is the provider-neutral view of a sandbox. State is always one of
 // the AO vocabulary values the reconciler switches on, never a provider string.
 type Environment struct {
-	ID       ID
-	Name     string
-	State    string
-	Target   string
-	Resource domain.ResourceProfile
+	ID        ID
+	Name      string
+	State     string
+	Target    string
+	Resource  domain.ResourceProfile
+	Deadline  *time.Time
+	StopCause string
+}
+
+// DeadlineExtender is an optional provider capability. The reconciler uses it
+// only while durable AO work or a recent interactive gesture says the sandbox
+// is active. Providers without native deadlines keep their existing behavior.
+type DeadlineExtender interface {
+	ExtendDeadline(context.Context, ID, time.Time) error
 }
 
 // WorkerBootstrap contains the worker executable and launch environment.
@@ -52,6 +65,13 @@ type WorkerBootstrap struct {
 	HelperDestination string
 	User              string
 	Environment       map[string]string
+	// DurableRoot and DurableIdentity are used by providers whose compute is
+	// replaced on stop/start while a template-backed filesystem is retained.
+	// RequireDurableIdentity makes a restore fail closed if the original volume
+	// marker is missing or belongs to another session.
+	DurableRoot            string
+	DurableIdentity        string
+	RequireDurableIdentity bool
 }
 
 // Bootstrapper installs and starts an AO worker in an existing sandbox.
@@ -90,3 +110,8 @@ const (
 	StateDeleting     = "deleting"
 	StateDeleted      = "deleted"
 )
+
+// Provider-neutral stop causes. An empty cause is deliberately ambiguous and
+// preserves the existing restore behavior. StopCauseExternalIdle is positive
+// evidence that the provider applied its own idle/autostop policy.
+const StopCauseExternalIdle = "external_idle"

@@ -17,6 +17,9 @@ export type DiffSelectionPayload = {
 	instruction: string;
 	filePath: string;
 	lines: DiffSelectionLine[];
+	scope?: string;
+	workspaceVersion?: string;
+	fileFingerprint?: string;
 };
 
 export function formatDiffSelectionMessage(payload: DiffSelectionPayload): string {
@@ -40,12 +43,15 @@ export function formatDiffSelectionMessage(payload: DiffSelectionPayload): strin
 		instruction,
 		"",
 		`File: ${filePath}`,
+		payload.scope ? `Comparison scope: ${compactText(payload.scope, 40)}` : null,
+		payload.workspaceVersion ? `Workspace version: ${compactText(payload.workspaceVersion, 160)}` : null,
+		payload.fileFingerprint ? `File fingerprint: ${compactText(payload.fileFingerprint, 160)}` : null,
 		`Selected ${lineRange}:`,
 		"",
 		...formattedLines,
 	];
 
-	return limitMessage(lines.join("\n"), MAX_DIFF_SELECTION_MESSAGE_LENGTH);
+	return limitMessage(lines.filter((line): line is string => line !== null).join("\n"), MAX_DIFF_SELECTION_MESSAGE_LENGTH);
 }
 
 function deriveLineRange(lines: DiffSelectionLine[]): string {

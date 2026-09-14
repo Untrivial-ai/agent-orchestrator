@@ -1,5 +1,7 @@
 import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { FocusScope } from "@radix-ui/react-focus-scope";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
@@ -9,12 +11,7 @@ import {
 	type ProjectSettingsSection,
 } from "./ProjectSettingsForm";
 import {
-	Dialog,
-	DialogClose,
-	DialogContent,
-	DialogDescription,
 	DialogHeader,
-	DialogTitle,
 	settingsDialogBodyClass,
 	settingsDialogContentClass,
 	settingsDialogHeaderClass,
@@ -35,15 +32,17 @@ export function SettingsDialog() {
 	// Reads the daemon settings the dialog tree already queries; no extra fetch.
 	const { cloudEnabled } = useCloudGate();
 
-	// Keep the last non-null settings so the content stays rendered during the
-	// exit animation (when settingsModal is already null but the dialog hasn't
-	// finished animating out). Using a ref updated inline avoids the one-frame
-	// gap that would occur with a useEffect-based approach: if DialogContent is
-	// not rendered on the same frame that Dialog becomes open={true}, Radix's
-	// DismissableLayer never registers and outside-click detection breaks.
-	const lastSettingsRef = useRef<SettingsModal | null>(settingsModal);
-	if (settingsModal !== null) lastSettingsRef.current = settingsModal;
-	const displaySettings = lastSettingsRef.current;
+	const displaySettings = settingsModal;
+	// The selected page includes several store/query subscribers. Mount it one
+	// frame after the lightweight dialog chrome so the opening interaction can
+	// paint first.
+	const [bodySettings, setBodySettings] = useState<SettingsModal | null>(null);
+	useEffect(() => {
+		if (settingsModal === null) return;
+		const frame = requestAnimationFrame(() => setBodySettings(settingsModal));
+		return () => cancelAnimationFrame(frame);
+	}, [settingsModal]);
+	const isBodyReady = bodySettings === displaySettings;
 
 	const globalSections = visibleGlobalSettings({ cloudEnabled });
 
@@ -67,6 +66,23 @@ export function SettingsDialog() {
 		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) return;
 		closeSettings();
 	};
+	const requestCloseRef = useRef(closeSettingsDialog);
+	requestCloseRef.current = closeSettingsDialog;
+	const closeButtonRef = useRef<HTMLButtonElement>(null);
+	const open = settingsModal !== null;
+	useEffect(() => {
+		if (!open) return;
+		// FocusScope contains focus immediately. Move visible focus after the
+		// first paint because focus() forces style resolution.
+		let focusTimer = 0;
+		const focusFrame = requestAnimationFrame(() => {
+			focusTimer = window.setTimeout(() => closeButtonRef.current?.focus({ preventScroll: true }), 0);
+		});
+		return () => {
+			cancelAnimationFrame(focusFrame);
+			window.clearTimeout(focusTimer);
+		};
+	}, [open]);
 
 	useEffect(() => {
 		if (settingsModal?.scope === "global") {
@@ -78,16 +94,34 @@ export function SettingsDialog() {
 		}
 	}, [cloudEnabled, settingsModal]);
 
-	return (
-		<Dialog open={settingsModal !== null} onOpenChange={(open) => !open && closeSettingsDialog()}>
-			<DialogContent
-				className={cn(
-					settingsDialogContentClass,
-					"h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none origin-center overflow-hidden p-0",
-				)}
-				showCloseButton={false}
-			>
-				{displaySettings && (
+	if (!open || !displaySettings) return null;
+
+	return createPortal(
+		<>
+			<div
+				aria-hidden="true"
+				className="dialog-overlay animate-overlay-in motion-reduce:animate-none"
+				data-testid="settings-dialog-overlay"
+				onPointerDown={closeSettingsDialog}
+				onWheel={(event) => event.preventDefault()}
+			/>
+			<FocusScope loop trapped onMountAutoFocus={(event) => event.preventDefault()}>
+				<div
+					aria-describedby="settings-dialog-description"
+					aria-labelledby="settings-dialog-title"
+					aria-modal="true"
+					className={cn(
+						settingsDialogContentClass,
+						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
+					)}
+					onKeyDown={(event) => {
+						if (event.key !== "Escape") return;
+						event.preventDefault();
+						requestCloseRef.current();
+					}}
+					role="dialog"
+					tabIndex={-1}
+				>
 					<div className="flex h-full min-h-0">
 						<aside className="flex w-48 shrink-0 flex-col border-r border-(--color-border-settings-dialog-header) bg-card">
 						<p className="px-3 pb-1 pt-3 text-2xs font-semibold tracking-wider text-muted-foreground/60">{t("settings.title")}</p>
@@ -155,37 +189,48 @@ export function SettingsDialog() {
 					{/* Main area — same bg as the app page */}
 					<div className="flex min-w-0 flex-1 flex-col bg-card">
 						<DialogHeader className={cn(settingsDialogHeaderClass, "flex h-auto shrink-0 flex-row items-center justify-between border-b-0 pb-3")}>
-							<DialogTitle className="text-2xl font-bold text-foreground">{activeLabel}</DialogTitle>
-							<DialogDescription className="sr-only">
+							<h2 className="text-2xl font-bold text-foreground" id="settings-dialog-title">{activeLabel}</h2>
+							<p className="sr-only" id="settings-dialog-description">
 								{isProjectSettings ? t("settings.project.dialogDescription") : t("settings.dialogDescription", { section: activeLabel.toLowerCase() })}
-							</DialogDescription>
-							<DialogClose
+							</p>
+							<button
 								aria-label={t("settings.close")}
 								className="settings-close-button"
 								disabled={isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")}
+								onClick={closeSettingsDialog}
+								ref={closeButtonRef}
+								type="button"
 							>
 								<X aria-hidden="true" className="size-4" />
-							</DialogClose>
+							</button>
 						</DialogHeader>
-						<div className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}>
-							{displaySettings?.scope === "project" ? (
-								<ProjectSettingsForm
-									projectId={displaySettings.projectId}
-									section={activeProjectSection}
-									onSaveState={setProjectSaveState}
-								/>
+						<div
+							aria-busy={!isBodyReady}
+							className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}
+						>
+							{isBodyReady ? (
+								displaySettings?.scope === "project" ? (
+									<ProjectSettingsForm
+										projectId={displaySettings.projectId}
+										section={activeProjectSection}
+										onSaveState={setProjectSaveState}
+									/>
+								) : (
+									<GlobalSettingsForm
+										cloudEnabled={cloudEnabled}
+										section={activeSection}
+									/>
+								)
 							) : (
-								<GlobalSettingsForm
-									cloudEnabled={cloudEnabled}
-									section={activeSection}
-								/>
+								<div aria-hidden="true" className="h-full" data-testid="settings-dialog-body-pending" />
 							)}
 						</div>
 					</div>
-					</div>
-				)}
-		</DialogContent>
-			</Dialog>
+				</div>
+				</div>
+			</FocusScope>
+		</>,
+		document.body,
 	);
 }
 
