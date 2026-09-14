@@ -367,6 +367,92 @@ func TestDestroyDefersRemovalFailureWhenTheDirectoryStillExists(t *testing.T) {
 	}
 }
 
+func TestDestroyDoesNotDeferPermanentRemovalFailure(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+	if err := mkdirFile(path, "stray.txt"); err != nil {
+		t.Fatalf("seed stray path: %v", err)
+	}
+	shrinkRemoveAllRetry(t, 2)
+	removeAllRetryable = func(error) bool { return false }
+	permanent := errors.New("permission denied")
+	stubRemoveAll(t, func(string) error { return permanent })
+	listCalls := 0
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "worktree list --porcelain") {
+			listCalls++
+			if listCalls == 1 {
+				return nil, errors.New("git worktree list could not be asked")
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	err = ws.Destroy(context.Background(), ports.WorkspaceInfo{Path: path, ProjectID: "proj", SessionID: "sess", Branch: "feature/one"})
+	if !errors.Is(err, permanent) {
+		t.Fatalf("destroy error = %v, want the permanent removal failure", err)
+	}
+	if errors.Is(err, ports.ErrWorkspaceDeferred) {
+		t.Fatalf("destroy error = %v, permanent failure must not be deferred", err)
+	}
+}
+
+func TestForceRemovalDoesNotPromiseDeferredCleanup(t *testing.T) {
+	tests := []struct {
+		name    string
+		destroy func(*Workspace, string, string) error
+	}{
+		{
+			name: "ForceDestroy",
+			destroy: func(ws *Workspace, _, path string) error {
+				return ws.ForceDestroy(context.Background(), ports.WorkspaceInfo{Path: path, ProjectID: "proj", SessionID: "sess", Branch: "feature/one"})
+			},
+		},
+		{
+			name: "forceDestroyPath",
+			destroy: func(ws *Workspace, repo, path string) error {
+				return ws.forceDestroyPath(context.Background(), repo, path)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			repo := t.TempDir()
+			ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+			if err != nil {
+				t.Fatalf("new: %v", err)
+			}
+			path := filepath.Join(ws.managedRoot, "proj", "sess")
+			if err := mkdirFile(path, "stray.txt"); err != nil {
+				t.Fatalf("seed stray path: %v", err)
+			}
+			if err := os.WriteFile(ws.discardedRoot(), []byte("not a directory"), 0o600); err != nil {
+				t.Fatalf("block discard root: %v", err)
+			}
+			shrinkRemoveAllRetry(t, 2)
+			wedged := errors.New("sharing violation")
+			stubRemoveAll(t, func(string) error { return wedged })
+			ws.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+			err = tt.destroy(ws, repo, path)
+			if !errors.Is(err, wedged) {
+				t.Fatalf("force removal error = %v, want the underlying removal failure", err)
+			}
+			if errors.Is(err, ports.ErrWorkspaceDeferred) {
+				t.Fatalf("force removal error = %v, must not promise a later cleanup retry", err)
+			}
+		})
+	}
+}
+
 // Work that appears between the dirty probe and the delete must not be taken.
 // The probe therefore runs against the directory after it has been moved aside:
 // once the worktree path no longer resolves, nothing can add to what is about

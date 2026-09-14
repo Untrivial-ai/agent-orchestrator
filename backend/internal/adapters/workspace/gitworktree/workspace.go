@@ -669,7 +669,10 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 		return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune", path)
 	}
 	if err := removeAllWithRetry(ctx, path); err != nil {
-		return reclaim, fmt.Errorf("gitworktree: remove unregistered path %q: %w (deferred: %w)", path, ports.ErrWorkspaceDeferred, err)
+		if errors.Is(err, errRemoveRetryExhausted) {
+			return reclaim, fmt.Errorf("gitworktree: remove unregistered path %q: %w (cause: %w)", path, ports.ErrWorkspaceDeferred, err)
+		}
+		return reclaim, fmt.Errorf("gitworktree: remove unregistered path %q: %w", path, err)
 	}
 	return reclaim, nil
 }
@@ -724,7 +727,7 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	// git worktree remove --force still left the directory (e.g. files outside
 	// git tracking).
 	if err := removeAllWithRetry(ctx, path); err != nil {
-		return fmt.Errorf("gitworktree: force remove path %q: %w (deferred: %w)", path, ports.ErrWorkspaceDeferred, err)
+		return fmt.Errorf("gitworktree: force remove path %q: %w", path, err)
 	}
 	return nil
 }
@@ -1503,7 +1506,7 @@ func (w *Workspace) forceDestroyPath(ctx context.Context, repo, path string) err
 		return err
 	}
 	if err := removeAllWithRetry(ctx, path); err != nil {
-		return fmt.Errorf("gitworktree: force remove path %q: %w (deferred: %w)", path, ports.ErrWorkspaceDeferred, err)
+		return fmt.Errorf("gitworktree: force remove path %q: %w", path, err)
 	}
 	return nil
 }

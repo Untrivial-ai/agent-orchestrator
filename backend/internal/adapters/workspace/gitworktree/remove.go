@@ -4,9 +4,20 @@ import (
 	"context"
 	"errors"
 	"os"
-	"runtime"
 	"time"
 )
+
+var errRemoveRetryExhausted = errors.New("worktree removal retry exhausted")
+
+type removeRetryExhaustedError struct {
+	err error
+}
+
+func (e removeRetryExhaustedError) Error() string { return e.err.Error() }
+
+func (e removeRetryExhaustedError) Unwrap() []error {
+	return []error{errRemoveRetryExhausted, e.err}
+}
 
 // Worktree removal races process exit on Windows. A PTY (or any agent child)
 // rooted in the worktree can still hold a handle on that directory for a short
@@ -45,14 +56,10 @@ var (
 	removeAllAttempts   = 18
 	removeAllBackoff    = 50 * time.Millisecond
 	removeAllBackoffCap = 500 * time.Millisecond
-	// removeAllRetryEnabled gates the retry to the platform whose handle
-	// semantics need it. Elsewhere a failure from os.RemoveAll is real and
-	// immediate, and sleeping out the budget before returning the identical
-	// error only makes every genuine failure slower. A var, not a bare
-	// runtime.GOOS check at the call site, so tests exercise the retry loop on
-	// every platform CI runs — otherwise the coverage below would silently
-	// evaporate everywhere but Windows.
-	removeAllRetryEnabled = runtime.GOOS == "windows"
+	// removeAllRetryable classifies the narrow OS errors caused by a process
+	// handle that has not been released yet. Tests replace it so the retry loop
+	// remains covered on every platform CI runs.
+	removeAllRetryable = isRetryableRemoveError
 	// removeAll is os.RemoveAll in production; tests substitute a stub to drive
 	// the retry loop deterministically instead of depending on platform
 	// filesystem locking semantics (the real sharing violation only reproduces
@@ -62,20 +69,16 @@ var (
 
 // removeAllWithRetry is os.RemoveAll plus a bounded, backing-off retry for the
 // transient Windows sharing violation described above. A path that is already
-// gone is success (os.RemoveAll's own semantics), and the last error is
-// returned unwrapped so callers can still match on it.
+// gone is success (os.RemoveAll's own semantics). Permanent failures are
+// returned immediately; an in-use failure that survives the complete retry
+// budget carries errRemoveRetryExhausted while preserving the underlying error.
 //
 // Retries stop early when ctx is done: time.Sleep is uninterruptible, so
 // without this a caller that has already given up (client disconnected,
 // deadline passed) would still pay out the remaining budget — and with a
 // workspace project's repos torn down serially, several of them in a row.
 //
-// Within the retry the decision is deliberately unconditional on error
-// identity rather than sniffing for a Windows errno: the syscall surface
-// differs across Windows versions and filesystems (and Wine/CI shims), and
-// every error os.RemoveAll can return there is either
-// transient-and-worth-retrying or permanent-and-still-an-error after the
-// budget. The backoff starts short so the common case (handle released almost
+// The backoff starts short so the common case (handle released almost
 // immediately) costs ~50ms, and grows so a slower release does not burn the
 // attempt budget in the first half-second.
 func removeAllWithRetry(ctx context.Context, path string) error {
@@ -83,7 +86,7 @@ func removeAllWithRetry(ctx context.Context, path string) error {
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if !removeAllRetryEnabled {
+	if !removeAllRetryable(err) {
 		return err
 	}
 
@@ -108,6 +111,9 @@ func removeAllWithRetry(ctx context.Context, path string) error {
 		if err = removeAll(path); err == nil || errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
+		if !removeAllRetryable(err) {
+			return err
+		}
 	}
-	return err
+	return removeRetryExhaustedError{err: err}
 }
