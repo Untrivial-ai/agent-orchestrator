@@ -10,6 +10,7 @@ import (
 
 type agentListOptions struct {
 	refresh bool
+	launch  bool
 	json    bool
 }
 
@@ -70,6 +71,16 @@ func newAgentListCommand(ctx *commandContext) *cobra.Command {
 		Short:   "List supported agents and local auth readiness",
 		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.launch {
+				readiness, err := ctx.ensureAgentReadiness(cmd.Context(), nil, "launch")
+				if err != nil {
+					return err
+				}
+				if opts.json {
+					return writeJSON(cmd.OutOrStdout(), readiness)
+				}
+				return writeAgentLaunchList(cmd, readiness)
+			}
 			inv, err := ctx.fetchAgentInventory(cmd.Context(), opts.refresh)
 			if err != nil {
 				return err
@@ -81,8 +92,36 @@ func newAgentListCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&opts.refresh, "refresh", false, "Force fresh local install and auth checks before listing")
+	cmd.Flags().BoolVar(&opts.launch, "launch", false, "Run launch-grade readiness checks and show blocking reasons")
 	cmd.Flags().BoolVar(&opts.json, "json", false, "Output raw agent catalog JSON")
+	cmd.MarkFlagsMutuallyExclusive("launch", "refresh")
 	return cmd
+}
+
+func writeAgentLaunchList(cmd *cobra.Command, readiness agentReadinessResponse) error {
+	out := cmd.OutOrStdout()
+	if len(readiness.Agents) == 0 {
+		_, err := fmt.Fprintln(out, "No agents supported by this daemon.")
+		return err
+	}
+	sort.Slice(readiness.Agents, func(i, j int) bool { return readiness.Agents[i].ID < readiness.Agents[j].ID })
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ID\tLABEL\tINSTALL\tAUTH\tLAUNCH\tREASON"); err != nil {
+		return err
+	}
+	for _, snapshot := range readiness.Agents {
+		reason := "-"
+		if snapshot.Installation.State != "installed" && snapshot.Installation.ReasonCode != "" {
+			reason = snapshot.Installation.ReasonCode
+		} else if snapshot.Authentication.ReasonCode != "" && (snapshot.Authentication.State != "authorized" && snapshot.Authentication.State != "not_applicable" ||
+			snapshot.EffectiveReadiness != "ready" && snapshot.Authentication.ReasonCode != "authorized") {
+			reason = snapshot.Authentication.ReasonCode
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", snapshot.ID, snapshot.Label, snapshot.Installation.State, snapshot.Authentication.State, snapshot.EffectiveReadiness, reason); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 func readinessInventory(readiness agentReadinessResponse) agentInventory {

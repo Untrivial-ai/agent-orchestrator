@@ -18,6 +18,32 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 )
 
+func TestDoctorWarnsWhenSQLiteStoreIsLarge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ao.db")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(doctorLargeDatabaseBytes); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	check := checkStore(dir)
+	if check.Level != doctorWarn {
+		t.Fatalf("sqlite check = %+v, want WARN", check)
+	}
+	for _, want := range []string{"large", "backup", "retention"} {
+		if !strings.Contains(strings.ToLower(check.Message), want) {
+			t.Fatalf("sqlite warning missing %q: %+v", want, check)
+		}
+	}
+}
+
 func TestDoctorChecksGitVersion(t *testing.T) {
 	setConfigEnv(t)
 	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(_ context.Context, name string, args ...string) ([]byte, error) {
