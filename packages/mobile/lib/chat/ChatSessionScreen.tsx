@@ -38,8 +38,10 @@ import { chatSheetRoute } from "./chatSheetRegistry";
 import { centeredConversationMenu } from "./chatLayout";
 import { elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel } from "./conversationChrome";
 import { conversationActionError, conversationActionUnsupported } from "./conversationErrors";
+import { queuedTurnPresentation } from "./queuedTurnControls";
+import { confirmConversationStop } from "./stopConfirmation";
 import { conversationMarkers } from "./timelineModel";
-import { brokenMcpServers, can } from "./types";
+import { brokenMcpServers, can, type ConversationQueuedTurn } from "./types";
 import { useMobileConversation } from "./useConversation";
 
 type MobileChatSession = DashboardSession | OrchestratorLink;
@@ -245,6 +247,11 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			],
 		);
 	}, [interfaceSwitch, startInterfaceSwitch, turnActive, turnWaiting]);
+	const requestInterrupt = useCallback(() => {
+		confirmConversationStop(conversation.snapshot?.queuedTurns, (queuedTurnIds) => {
+			void conversation.interrupt(queuedTurnIds).catch(() => {});
+		});
+	}, [conversation.interrupt, conversation.snapshot?.queuedTurns]);
 
 	// The poll keeps retrying on its own at up to 8s; this is for the user who can
 	// see the network is back and does not want to wait for the tick. Nothing else
@@ -285,8 +292,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	if (contentReadySessionId !== session.id) return <Centered icon="message-square" title="Preparing conversation…" spinning />;
 
 	const snapshot = conversation.snapshot;
-	const active = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
-	const activeTurn = snapshot.turns.find((turn) => turn.state === "running") ?? snapshot.turns.find((turn) => turn.state === "queued");
+	const turnInFlight = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
+	const runningTurn = snapshot.turns.find((turn) => turn.state === "running");
 	const brokenServers = brokenMcpServers(snapshot);
 	const rolledBack = snapshot.turns.filter((turn) => turn.rolledBack).length;
 	const quota = quotaWarning(snapshot.rateLimits);
@@ -348,7 +355,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				mcpReloading={conversation.pendingActions.includes("mcp")}
 				mcpError={conversation.actionErrors.mcp}
 				mcpReloadSupported={mcpReloadSupported}
-				turnInFlight={active}
+				turnInFlight={turnInFlight}
 				onResume={() => void resume()}
 				onReload={() => void conversation.reloadMcp().catch(() => {})}
 				onOpenShell={() => void openShell()}
@@ -370,7 +377,15 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				jumpToSequence={jumpToSequence}
 				onJumpHandled={clearJumpToSequence}
 			/>
-			{activeTurn ? <LiveTurnBar snapshot={snapshot} startedAt={activeTurn.startedAt ?? activeTurn.requestedAt} stopping={conversation.pendingActions.includes("interrupt")} onInterrupt={() => void conversation.interrupt().catch(() => {})} /> : null}
+			{snapshot.queuedTurns?.length ? (
+				<QueuedTurnDock
+					turns={snapshot.queuedTurns}
+					canPromote={Boolean(runningTurn) && can(snapshot, "steer") && !steerUnsupported}
+					onCancel={conversation.cancelQueuedTurn}
+					onPromote={conversation.promoteQueuedTurn}
+				/>
+			) : null}
+			{runningTurn ? <LiveTurnBar snapshot={snapshot} startedAt={runningTurn.startedAt ?? runningTurn.requestedAt} stopping={conversation.pendingActions.includes("interrupt")} onInterrupt={requestInterrupt} /> : null}
 			<ChatComposer
 				sessionId={session.id}
 				snapshot={snapshot}
@@ -385,7 +400,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				error={conversation.actionError}
 				onSend={conversation.send}
 				onSteer={conversation.steer}
-				onInterrupt={() => void conversation.interrupt().catch(() => {})}
+				onInterrupt={requestInterrupt}
 				onOpenSettings={() => void openTurnSettings()}
 			/>
 			<ConversationMenu
@@ -434,12 +449,84 @@ function ConversationBanners({ snapshot, brokenServers, resuming, terminated, mc
 	</>;
 }
 
+function QueuedTurnDock({
+	turns,
+	canPromote,
+	onCancel,
+	onPromote,
+}: {
+	turns: ConversationQueuedTurn[];
+	canPromote: boolean;
+	onCancel(turnId: string): Promise<void>;
+	onPromote(turnId: string): Promise<void>;
+}) {
+	const t = useTheme();
+	const styles = useThemedStyles(makeStyles);
+	const [pending, setPending] = useState<Record<string, "cancel" | "promote">>({});
+	const [errors, setErrors] = useState<Record<string, string>>({});
+	const act = useCallback(async (
+		turnId: string,
+		kind: "cancel" | "promote",
+		action: (turnId: string) => Promise<void>,
+	) => {
+		setPending((current) => ({ ...current, [turnId]: kind }));
+		setErrors((current) => ({ ...current, [turnId]: "" }));
+		try {
+			await action(turnId);
+		} catch (cause) {
+			setErrors((current) => ({ ...current, [turnId]: conversationActionError(cause) }));
+		} finally {
+			setPending((current) => {
+				const next = { ...current };
+				delete next[turnId];
+				return next;
+			});
+		}
+	}, []);
+
+	return <View accessibilityLabel={`${turns.length} queued ${turns.length === 1 ? "message" : "messages"}`} style={styles.queueDock}>
+		{turns.map((turn, index) => {
+			const presentation = queuedTurnPresentation(turn);
+			const action = pending[turn.turnId];
+			return <View key={turn.turnId} style={[styles.queueRow, index > 0 && styles.queueRowBorder]}>
+				<View style={styles.queueCopy}>
+					<View style={styles.queueLabelRow}>
+						{presentation.originLabel ? <Text style={styles.queueOrigin}>{presentation.originLabel}</Text> : null}
+						<Text numberOfLines={1} style={styles.queueText}>{presentation.label}</Text>
+					</View>
+					{errors[turn.turnId] ? <Text accessibilityRole="alert" style={styles.queueError}>{errors[turn.turnId]}</Text> : null}
+				</View>
+				{canPromote && presentation.canPromote ? <Pressable
+					accessibilityRole="button"
+					accessibilityLabel={presentation.promoteLabel}
+					accessibilityState={{ busy: action === "promote", disabled: Boolean(action) }}
+					disabled={Boolean(action)}
+					onPress={() => { haptics.tap(); void act(turn.turnId, "promote", onPromote); }}
+					style={({ pressed }) => [styles.queueAction, pressed && { backgroundColor: t.bgSubtle }]}
+				>
+					{action === "promote" ? <ActivityIndicator size="small" color={t.blue} /> : <><Feather name="corner-down-right" size={13} color={t.blue} /><Text style={styles.queuePromoteText}>Next</Text></>}
+				</Pressable> : null}
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel={presentation.cancelLabel}
+					accessibilityState={{ busy: action === "cancel", disabled: Boolean(action) }}
+					disabled={Boolean(action)}
+					onPress={() => { haptics.tap(); void act(turn.turnId, "cancel", onCancel); }}
+					style={({ pressed }) => [styles.queueAction, pressed && { backgroundColor: t.tintRed }]}
+				>
+					{action === "cancel" ? <ActivityIndicator size="small" color={t.red} /> : <><Feather name="x" size={13} color={t.red} /><Text style={[styles.queueActionText, { color: t.red }]}>Cancel</Text></>}
+				</Pressable>
+			</View>;
+		})}
+	</View>;
+}
+
 function LiveTurnBar({ snapshot, startedAt, stopping, onInterrupt }: { snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; startedAt?: string; stopping: boolean; onInterrupt(): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const [now, setNow] = useState(() => Date.now());
 	useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1_000); return () => clearInterval(timer); }, []);
-	const queued = snapshot.turns.filter((turn) => turn.state === "queued").length;
+	const queued = snapshot.queuedTurns?.length ?? 0;
 	const blocked = snapshot.items.some((item) => item.kind === "activity" && (item.activityKind === "approval" || item.activityKind === "user_input") && item.status === "pending");
 	const elapsed = elapsedLabel(startedAt, now);
 	const stopLabel = queued ? "Stop and clear queue" : "Stop turn";
@@ -516,6 +603,17 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	bannerText: { flex: 1, color: t.textSecondary, fontSize: 11, lineHeight: 15 },
 	bannerAction: { fontSize: 11, fontWeight: "700" },
 	bannerSecondary: { color: t.textTertiary, fontSize: 11, fontWeight: "600" },
+	queueDock: { backgroundColor: t.bgSurface, borderTopWidth: 1, borderTopColor: t.borderSubtle },
+	queueRow: { minHeight: 50, flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 13, paddingRight: 7, paddingVertical: 3 },
+	queueRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
+	queueCopy: { flex: 1, minWidth: 0 },
+	queueLabelRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+	queueOrigin: { color: t.textFaint, fontSize: 8, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase" },
+	queueText: { flex: 1, color: t.textSecondary, fontSize: 11 },
+	queueError: { color: t.red, fontSize: 9, lineHeight: 12, marginTop: 2 },
+	queueAction: { minHeight: 44, minWidth: 58, borderRadius: 7, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 6 },
+	queueActionText: { fontSize: 9, fontWeight: "700" },
+	queuePromoteText: { color: t.blue, fontSize: 9, fontWeight: "700" },
 	live: { minHeight: 35, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 13, backgroundColor: t.bgSurface, borderTopWidth: 1, borderTopColor: t.borderSubtle },
 	liveText: { color: t.textSecondary, fontSize: 11 },
 	stopTurn: { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 7, borderWidth: 1, borderColor: t.borderDefault, paddingHorizontal: 8, paddingVertical: 5 },

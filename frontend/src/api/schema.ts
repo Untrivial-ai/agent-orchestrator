@@ -1399,7 +1399,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel the in-flight turn in a chat session */
+        /** Stop the in-flight turn and cancel the exact confirmed queued work */
         post: operations["interruptSessionConversationTurn"];
         delete?: never;
         options?: never;
@@ -3090,6 +3090,12 @@ export interface components {
             status: "pending" | "in_progress" | "completed";
             text: string;
         };
+        ConversationQueuedTurnResponse: {
+            /** @enum {string} */
+            origin?: "human" | "automation" | "daemon" | "provider";
+            text: string;
+            turnId: string;
+        };
         ConversationRateLimitsPayload: {
             planLabel?: string;
             /** Format: int64 */
@@ -3143,6 +3149,7 @@ export interface components {
             nativeForkAvailableAfterSequence: number;
             /** Format: int64 */
             oldestSequence?: number;
+            queuedTurns: components["schemas"]["ConversationQueuedTurnResponse"][];
             rateLimits?: components["schemas"]["ConversationRateLimitsPayload"];
             sessionId: string;
             settings: components["schemas"]["ConversationTurnSettingsPayload"];
@@ -3420,6 +3427,9 @@ export interface components {
             target: "tmux" | "gh" | "claude" | "claude-code" | "codex" | "cursor" | "opencode" | "aider" | "copilot" | "grok" | "kimi" | "pi" | "amp" | "auggie" | "droid" | "crush" | "cline" | "goose" | "qwen" | "continue" | "devin" | "kiro" | "kilocode" | "vibe" | "muse" | "agy" | "autohand" | "kimchi" | "prime-agent" | "omp" | "cloudflared";
             /** Format: date-time */
             updatedAt?: null | string;
+        };
+        InterruptConversationRequest: {
+            queuedTurnIds: string[];
         };
         KillReviewResponse: {
             reviewerHandleId: string;
@@ -9090,7 +9100,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterruptConversationRequest"];
+            };
+        };
         responses: {
             /** @description No Content */
             204: {
@@ -9098,6 +9112,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Not Found */
             404: {

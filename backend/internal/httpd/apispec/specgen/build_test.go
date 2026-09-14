@@ -123,6 +123,45 @@ func TestBuild_DelegateAgentEnumIncludesPrimeAgent(t *testing.T) {
 	}
 }
 
+func TestBuild_InterruptDocumentsInvalidConfirmationScope(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]any `yaml:"responses"`
+		} `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+	operation := doc.Paths["/api/v1/sessions/{sessionId}/conversation/interrupt"]["post"]
+	if _, ok := operation.Responses["400"]; !ok {
+		t.Fatalf("interrupt responses = %v, want documented 400 for omitted/null queuedTurns", operation.Responses)
+	}
+}
+
+func TestBuild_InterruptDocumentsConfirmedQueueCancellation(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Paths map[string]map[string]struct {
+			Summary string `yaml:"summary"`
+		} `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+	operation := doc.Paths["/api/v1/sessions/{sessionId}/conversation/interrupt"]["post"]
+	const want = "Stop the in-flight turn and cancel the exact confirmed queued work"
+	if operation.Summary != want {
+		t.Fatalf("interrupt summary = %q, want %q", operation.Summary, want)
+	}
+}
+
 func TestBuild_UsageEstimatedCostIsNamedReusableAndNullable(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {

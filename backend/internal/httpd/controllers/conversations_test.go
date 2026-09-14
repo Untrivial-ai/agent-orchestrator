@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +50,9 @@ type fakeConversationService struct {
 	approvalDecision  ports.ChatDecision
 	inputRequestID    string
 	inputResponse     ports.ChatInputResponse
+	interruptScope    []string
+	interruptErr      error
+	interruptCalls    int
 }
 
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {
@@ -79,7 +84,37 @@ func (f *fakeConversationService) ResolveInput(_ context.Context, _ domain.Sessi
 	return nil
 }
 
-func (f *fakeConversationService) Interrupt(context.Context, domain.SessionID) error { return nil }
+func (f *fakeConversationService) Interrupt(_ context.Context, _ domain.SessionID, queuedTurnIDs []string) error {
+	f.interruptCalls++
+	f.interruptScope = append([]string(nil), queuedTurnIDs...)
+	return f.interruptErr
+}
+
+func TestInterruptConversationRejectsOmittedLegacyScope(t *testing.T) {
+	for _, body := range []string{"", `{}`, `{"queuedTurnIds":null}`} {
+		t.Run(fmt.Sprintf("body_%q", body), func(t *testing.T) {
+			service := &fakeConversationService{}
+			server := conversationTestServer(t, service)
+			request, err := http.NewRequest(http.MethodPost,
+				server.URL+"/api/v1/sessions/p1-1/conversation/interrupt", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatalf("POST interrupt: %v", err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusBadRequest {
+				responseBody, _ := io.ReadAll(response.Body)
+				t.Fatalf("status = %d, body = %s", response.StatusCode, responseBody)
+			}
+			if service.interruptCalls != 0 {
+				t.Fatalf("service interrupt calls = %d, want 0", service.interruptCalls)
+			}
+		})
+	}
+}
 
 func (f *fakeConversationService) Models(context.Context, domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
 	return nil, domain.ConversationSettings{}, nil
@@ -268,6 +303,114 @@ func TestConversationSnapshotScopesEditAvailabilityToActiveProviderBinding(t *te
 	}
 	if messages[1].(map[string]any)["editAvailable"] != true {
 		t.Fatalf("active-provider editAvailable = %#v, want true", messages[1])
+	}
+}
+
+func TestConversationSnapshotExposesCompleteQueuedTurnProjection(t *testing.T) {
+	body := conversationSnapshotBody(t, chatsvc.Snapshot{
+		Conversation: domain.ConversationRecord{ID: "conversation-1"},
+		SessionID:    domain.SessionID("p1-1"),
+		QueuedTurns: []domain.QueuedTurn{
+			{TurnID: "queued-human", Text: "review this", Origin: domain.MessageOriginHuman},
+			{TurnID: "queued-automation", Text: "relay follow-up", Origin: domain.MessageOriginAutomation},
+			{TurnID: "queued-fallback"},
+		},
+	})
+
+	queued := body["queuedTurns"].([]any)
+	if len(queued) != 3 {
+		t.Fatalf("queuedTurns = %#v, want three", queued)
+	}
+	automation := queued[1].(map[string]any)
+	if automation["turnId"] != "queued-automation" || automation["origin"] != "automation" || automation["text"] != "relay follow-up" {
+		t.Fatalf("automation queued turn = %#v", automation)
+	}
+	fallback := queued[2].(map[string]any)
+	if fallback["turnId"] != "queued-fallback" {
+		t.Fatalf("fallback queued turn = %#v", fallback)
+	}
+}
+
+func TestInterruptConversationBindsExactQueuedTurnScope(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	request, err := http.NewRequest(http.MethodPost,
+		server.URL+"/api/v1/sessions/p1-1/conversation/interrupt",
+		bytes.NewBufferString(`{"queuedTurnIds":["queued-1","queued-2"]}`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST interrupt: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status = %d, body = %s", response.StatusCode, body)
+	}
+	if got := service.interruptScope; len(got) != 2 || got[0] != "queued-1" || got[1] != "queued-2" {
+		t.Fatalf("interrupt scope = %v, want ordered queued ids", got)
+	}
+}
+
+func TestInterruptConversationReportsQueueScopeConflict(t *testing.T) {
+	service := &fakeConversationService{interruptErr: chatsvc.ErrQueueScopeChanged}
+	server := conversationTestServer(t, service)
+	request, err := http.NewRequest(http.MethodPost,
+		server.URL+"/api/v1/sessions/p1-1/conversation/interrupt",
+		bytes.NewBufferString(`{"queuedTurnIds":["stale"]}`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST interrupt: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status = %d, body = %s", response.StatusCode, body)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if body.Code != "CHAT_QUEUE_SCOPE_CHANGED" {
+		t.Fatalf("error code = %q", body.Code)
+	}
+}
+
+func TestInterruptConversationReportsUncertainDeliveryConflict(t *testing.T) {
+	service := &fakeConversationService{
+		interruptErr: fmt.Errorf("provider Stop result unknown: %w", ports.ErrChatInterruptDeliveryUncertain),
+	}
+	server := conversationTestServer(t, service)
+	request, err := http.NewRequest(http.MethodPost,
+		server.URL+"/api/v1/sessions/p1-1/conversation/interrupt",
+		bytes.NewBufferString(`{"queuedTurnIds":[]}`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST interrupt: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status = %d, body = %s", response.StatusCode, body)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if body.Code != "CHAT_INTERRUPT_DELIVERY_UNCERTAIN" {
+		t.Fatalf("error code = %q", body.Code)
 	}
 }
 

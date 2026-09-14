@@ -641,6 +641,49 @@ func TestNestedThreadDoesNotReplaceRootActiveTurn(t *testing.T) {
 	}
 }
 
+func TestInterruptCancellationAfterRequestWriteIsDeliveryUncertain(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.mu.Lock()
+	delete(srv.responses, "turn/interrupt")
+	srv.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- conv.Interrupt(ctx, "turn-in-flight") }()
+	srv.awaitFrame(func(f frame) bool { return f.Method == "turn/interrupt" })
+	cancel()
+
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Interrupt error = %v, want context.Canceled", err)
+	}
+	if !errors.Is(err, ports.ErrChatInterruptDeliveryUncertain) {
+		t.Fatalf("Interrupt error = %v, want delivery-uncertain classification after write", err)
+	}
+}
+
+func TestInterruptProcessExitAfterRequestWriteIsDeliveryUncertain(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.mu.Lock()
+	delete(srv.responses, "turn/interrupt")
+	srv.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- conv.Interrupt(context.Background(), "turn-in-flight") }()
+	srv.awaitFrame(func(f frame) bool { return f.Method == "turn/interrupt" })
+	if err := srv.toClient.Close(); err != nil {
+		t.Fatalf("exit app-server after reading interrupt: %v", err)
+	}
+
+	err := <-done
+	if !errors.Is(err, ports.ErrChatInterruptDeliveryUncertain) {
+		t.Fatalf("Interrupt error = %v, want delivery-uncertain classification after write", err)
+	}
+	if !errors.Is(err, ErrConnClosed) {
+		t.Fatalf("Interrupt error = %v, want underlying connection-closed cause", err)
+	}
+}
+
 // Resume must not quietly become a fresh thread: that would present unrelated
 // history as continuous.
 func TestResumeFailureDoesNotFallBackToStart(t *testing.T) {

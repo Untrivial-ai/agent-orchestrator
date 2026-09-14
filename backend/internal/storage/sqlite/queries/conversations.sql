@@ -550,10 +550,27 @@ WHERE status = 'running'
 -- completed.
 -- name: SettleOrphanedConversationTurns :exec
 UPDATE conversation_turns
-SET state = 'failed',
-    error_message = 'controller ended before the turn completed',
-    completed_at = ?
+SET state = CASE
+        WHEN interrupt_reservation_id IS NOT NULL THEN 'interrupted'
+        ELSE 'failed'
+    END,
+    error_message = CASE
+        WHEN interrupt_reservation_id IS NOT NULL THEN ''
+        ELSE 'controller ended before the turn completed'
+    END,
+    completed_at = ?,
+    interrupt_reservation_id = NULL
 WHERE handled_by_session_id = ? AND state IN ('queued', 'running');
+
+-- A confirmed Stop survives the controller that created it. Recovery settles
+-- that controller's dead-generation turns first, then removes its global fence
+-- so a replacement controller is not permanently blocked.
+-- name: ReleaseOrphanedConversationInterruptReservations :exec
+UPDATE conversations
+SET interrupt_reservation_id = NULL,
+    interrupt_reservation_session_id = NULL,
+    interrupt_provider_turn_id = NULL
+WHERE interrupt_reservation_session_id = sqlc.arg(handled_by_session_id);
 
 -- The running turns visible on the active branch, in the same order as the
 -- snapshot. Interrupt uses this exact projection when in-memory turn tracking
@@ -801,9 +818,51 @@ JOIN conversation_messages
     AND conversation_messages.role = 'user'
 WHERE conversation_turns.conversation_id = ?
   AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
   AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversations AS stop_fence
+      WHERE stop_fence.id = conversation_turns.conversation_id
+        AND stop_fence.interrupt_reservation_id IS NOT NULL
+  )
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid
 LIMIT 1;
+
+-- The complete durable queue, independent of the bounded timeline page the UI
+-- happens to have loaded. LEFT JOIN keeps a damaged/missing message row from
+-- silently disappearing out of a destructive confirmation scope.
+-- name: SelectQueuedConversationTurns :many
+SELECT conversation_turns.id,
+       COALESCE(conversation_messages.text, '') AS text,
+       COALESCE(conversation_messages.client_message_id, '') AS client_message_id,
+       COALESCE(conversation_messages.origin, '') AS origin,
+       COALESCE(conversation_messages.delivery_content_json, '') AS delivery_content_json
+FROM conversation_turns
+LEFT JOIN conversation_messages
+    ON conversation_messages.rowid = (
+        SELECT queued_message.rowid
+        FROM conversation_messages AS queued_message
+        WHERE queued_message.turn_id = conversation_turns.id
+          AND queued_message.role = 'user'
+        ORDER BY queued_message.sequence, queued_message.rowid
+        LIMIT 1
+    )
+WHERE conversation_turns.conversation_id = ?
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+ORDER BY conversation_turns.requested_at, conversation_turns.rowid;
 
 -- Claim one selected queue item before contacting the provider. execrows is the
 -- compare-and-set result: zero means the turn is absent, settled, or already being
@@ -811,10 +870,23 @@ LIMIT 1;
 -- name: ReserveQueuedConversationTurnForPromotion :execrows
 UPDATE conversation_turns
 SET promotion_started_at = sqlc.arg(promotion_started_at)
-WHERE id = sqlc.arg(id)
-  AND conversation_id = sqlc.arg(conversation_id)
-  AND state = 'queued'
-  AND promotion_started_at IS NULL;
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversations AS stop_fence
+      WHERE stop_fence.id = sqlc.arg(conversation_id)
+        AND stop_fence.interrupt_reservation_id IS NOT NULL
+  );
 
 -- The content is loaded after the compare-and-set, from AO's durable message
 -- rather than from a client request that could be stale or substituted.
@@ -831,6 +903,12 @@ JOIN conversation_messages
 WHERE conversation_turns.id = sqlc.arg(id)
   AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
   AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
   AND conversation_turns.promotion_started_at IS NOT NULL
 LIMIT 1;
 
@@ -839,10 +917,16 @@ LIMIT 1;
 -- name: ReleaseQueuedConversationTurnPromotion :execrows
 UPDATE conversation_turns
 SET promotion_started_at = NULL
-WHERE id = sqlc.arg(id)
-  AND conversation_id = sqlc.arg(conversation_id)
-  AND state = 'queued'
-  AND promotion_started_at IS NOT NULL;
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.promotion_started_at IS NOT NULL;
 
 -- The provider has accepted the guidance. Link the durable source to the AO turn
 -- that absorbed it and take it out of the queue in the same transaction that
@@ -853,19 +937,107 @@ SET state = 'completed',
     completed_at = sqlc.arg(completed_at),
     promotion_started_at = NULL,
     promoted_to_turn_id = sqlc.arg(promoted_to_turn_id)
-WHERE id = sqlc.arg(id)
-  AND conversation_id = sqlc.arg(conversation_id)
-  AND state = 'queued'
-  AND promotion_started_at IS NOT NULL;
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.promotion_started_at IS NOT NULL;
 
--- Stopping the agent stops the queue with it: a brake that starts new work
--- instead of ending it would be the wrong shape for the button the user pressed.
--- The cutoff is the moment the user pressed stop, so a message typed after that
--- is still delivered rather than swept up by a cancellation it predates.
--- name: CancelQueuedConversationTurns :exec
+-- Cancel exactly one queue item. The promotion reservation is part of the state
+-- check: once delivery to the provider may have started, cancellation must lose
+-- the compare-and-set instead of claiming the prompt was never delivered.
+-- name: CancelQueuedConversationTurn :execrows
 UPDATE conversation_turns
-SET state = 'interrupted', completed_at = ?
-WHERE conversation_id = ? AND state = 'queued' AND requested_at <= ?;
+SET state = 'cancelled', completed_at = sqlc.arg(completed_at)
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversations AS stop_fence
+      WHERE stop_fence.id = sqlc.arg(conversation_id)
+        AND stop_fence.interrupt_reservation_id IS NOT NULL
+  );
+
+-- Reserve the conversation before reserving the exact member rows. This global
+-- marker is required even for an empty confirmed scope: later work must not be
+-- dispatched while the provider outcome is unknown.
+-- name: ReserveConversationForInterrupt :execrows
+UPDATE conversations
+SET interrupt_reservation_id = sqlc.arg(interrupt_reservation_id),
+    interrupt_reservation_session_id = current_session_id,
+    interrupt_provider_turn_id = sqlc.arg(interrupt_provider_turn_id)
+WHERE id = sqlc.arg(conversation_id)
+  AND current_session_id IS NOT NULL
+  AND interrupt_reservation_id IS NULL;
+
+-- name: ReleaseConversationInterruptReservation :execrows
+UPDATE conversations
+SET interrupt_reservation_id = NULL,
+    interrupt_reservation_session_id = NULL,
+    interrupt_provider_turn_id = NULL
+WHERE id = sqlc.arg(conversation_id)
+  AND interrupt_reservation_id = sqlc.arg(interrupt_reservation_id);
+
+-- Reserve one member of an already compared Stop scope. The store performs the
+-- ordered comparison and every reservation inside one write transaction.
+-- name: ReserveQueuedConversationTurnForInterrupt :execrows
+UPDATE conversation_turns
+SET interrupt_reservation_id = sqlc.arg(interrupt_reservation_id)
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL;
+
+-- name: ReleaseQueuedConversationTurnInterruptReservation :execrows
+UPDATE conversation_turns
+SET interrupt_reservation_id = NULL
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.interrupt_reservation_id = sqlc.arg(interrupt_reservation_id);
+
+-- name: CancelQueuedConversationTurnForInterrupt :execrows
+UPDATE conversation_turns
+SET state = 'interrupted',
+    completed_at = sqlc.arg(completed_at),
+    interrupt_reservation_id = NULL
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  )
+  AND conversation_turns.interrupt_reservation_id = sqlc.arg(interrupt_reservation_id);
 
 -- An interrupt interface handoff closes intake under the controller's dispatch
 -- lock before this runs. There can be no later accepted row to preserve, so the
@@ -874,16 +1046,30 @@ WHERE conversation_id = ? AND state = 'queued' AND requested_at <= ?;
 -- name: CancelAllQueuedConversationTurns :exec
 UPDATE conversation_turns
 SET state = 'interrupted', completed_at = ?
-WHERE conversation_id = ? AND state = 'queued';
+WHERE conversation_turns.conversation_id = ?
+  AND conversation_turns.state = 'queued'
+  AND EXISTS (
+      SELECT 1
+      FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+  );
 
 -- Remove one queued turn without disturbing the running turn or later queue items.
 -- name: CancelQueuedConversationTurnByID :execrows
 UPDATE conversation_turns
 SET state = 'cancelled', completed_at = ?
-WHERE id = ?
-  AND conversation_id = ?
-  AND state = 'queued'
-  AND promotion_started_at IS NULL;
+WHERE conversation_turns.id = ?
+  AND conversation_turns.conversation_id = ?
+  AND conversation_turns.state = 'queued'
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND EXISTS (
+      SELECT 1 FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+        AND queue_owner.interrupt_reservation_id IS NULL
+  );
 
 -- Read only an undispatched human prompt for editing.
 -- name: SelectQueuedConversationMessage :one
@@ -895,7 +1081,14 @@ WHERE conversation_messages.conversation_id = ?
   AND conversation_messages.role = 'user'
   AND conversation_messages.origin = 'human'
   AND conversation_turns.state = 'queued'
-  AND conversation_turns.promotion_started_at IS NULL;
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND EXISTS (
+      SELECT 1 FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+        AND queue_owner.interrupt_reservation_id IS NULL
+  );
 
 -- Rewrite text and content together, only if the edited revision is current.
 -- name: UpdateQueuedConversationMessageText :execrows
@@ -915,25 +1108,46 @@ WHERE conversation_messages.conversation_id = ?
         AND conversation_turns.conversation_id = conversation_messages.conversation_id
         AND conversation_turns.state = 'queued'
         AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND EXISTS (
+      SELECT 1 FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+        AND queue_owner.interrupt_reservation_id IS NULL
+  )
   );
 
 -- Current queue order for reorder validation and timestamp permutation.
 -- name: SelectQueuedConversationTurnOrder :many
-SELECT id, requested_at
+SELECT conversation_turns.id, conversation_turns.requested_at
 FROM conversation_turns
-WHERE conversation_id = ?
-  AND state = 'queued'
-  AND promotion_started_at IS NULL
+WHERE conversation_turns.conversation_id = ?
+  AND conversation_turns.state = 'queued'
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND EXISTS (
+      SELECT 1 FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+        AND queue_owner.interrupt_reservation_id IS NULL
+  )
 ORDER BY requested_at, rowid;
 
 -- Reassign one queued turn's dispatch position without changing its state.
 -- name: UpdateQueuedConversationTurnRequestedAt :execrows
 UPDATE conversation_turns
 SET requested_at = ?
-WHERE id = ?
-  AND conversation_id = ?
-  AND state = 'queued'
-  AND promotion_started_at IS NULL;
+WHERE conversation_turns.id = ?
+  AND conversation_turns.conversation_id = ?
+  AND conversation_turns.state = 'queued'
+  AND conversation_turns.promotion_started_at IS NULL
+  AND conversation_turns.interrupt_reservation_id IS NULL
+  AND EXISTS (
+      SELECT 1 FROM conversations AS queue_owner
+      WHERE queue_owner.id = conversation_turns.conversation_id
+        AND queue_owner.current_session_id = conversation_turns.handled_by_session_id
+        AND queue_owner.interrupt_reservation_id IS NULL
+  );
 
 -- name: InsertConversationMessage :exec
 INSERT INTO conversation_messages (
@@ -1491,3 +1705,15 @@ SET state = 'rejected',
 WHERE conversation_id = ?
   AND client_message_id = ?
   AND state = 'reserved';
+
+-- Recover only members of the durable Stop scope owned by the reconnecting session.
+-- name: SelectInterruptedQueueReservationMembers :many
+SELECT conversation_turns.id
+FROM conversation_turns
+JOIN conversations ON conversations.id = conversation_turns.conversation_id
+WHERE conversations.id = sqlc.arg(conversation_id)
+  AND conversations.current_session_id = sqlc.arg(session_id)
+  AND conversations.interrupt_reservation_session_id = sqlc.arg(session_id)
+  AND conversation_turns.interrupt_reservation_id = conversations.interrupt_reservation_id
+  AND conversation_turns.state = 'queued'
+ORDER BY conversation_turns.requested_at, conversation_turns.rowid;

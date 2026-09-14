@@ -24,6 +24,7 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 	const cancel = vi.fn().mockResolvedValue(undefined);
 	const snapshot: ConversationSnapshot = {
 		...chatFixture,
+		queuedTurns: [{ turnId: "q1", text, origin: "human" }],
 		turns: [{ id: "q1", state: "queued" as const, requestedAt: "2026-09-06T10:00:00Z" }],
 		items: [
 			{
@@ -295,7 +296,7 @@ describe("queued message attachments", () => {
 		edit.mockRejectedValueOnce(new Error("that message is no longer queued"));
 		await beginEdit();
 		await pasteImage(screen.getByRole("combobox"));
-		rerenderSnapshot({ ...snapshot, turns: snapshot.turns.map((turn) => ({ ...turn, state: "running" })) });
+		rerenderSnapshot({ ...snapshot, queuedTurns: [], turns: snapshot.turns.map((turn) => ({ ...turn, state: "running" })) });
 		await waitFor(() => expect(screen.queryByTestId("queued-message-q1")).not.toBeInTheDocument());
 		expect(screen.getByText("Editing queued message")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -406,7 +407,7 @@ describe("queued message attachments", () => {
 		first.unmount();
 		purgeFileAttachmentsForSession(chatFixture.sessionId);
 		const second = setup("inspect this", [], false);
-		second.rerenderSnapshot({ ...second.snapshot, controller: { ...second.snapshot.controller, state: "stopped" }, turns: [] });
+		second.rerenderSnapshot({ ...second.snapshot, controller: { ...second.snapshot.controller, state: "stopped" }, queuedTurns: [], turns: [] });
 		const response = new Response();
 		vi.spyOn(response, "blob").mockResolvedValue(new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }));
 		const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
@@ -438,6 +439,7 @@ describe("queued message attachments", () => {
 			...second.snapshot,
 			controller: dispatched ? { ...second.snapshot.controller, state: "stopped" } : second.snapshot.controller,
 			turns: dispatched ? [] : second.snapshot.turns,
+			queuedTurns: dispatched ? [] : second.snapshot.queuedTurns,
 			items: second.snapshot.items.map((item) => item.kind === "message" ? { ...item, revision: serverRevision } : item),
 		});
 		second.edit.mockImplementation(async (...request) => {

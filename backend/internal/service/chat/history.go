@@ -149,6 +149,11 @@ func (s *Service) ForkConversation(ctx context.Context, id domain.SessionID) (st
 	if !ok {
 		return "", ErrForkUnsupported
 	}
+	releaseOwnership, err := controller.acquireProjectOwnership(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer releaseOwnership()
 	forked, err := forker.Fork(ctx, nil)
 	if err != nil {
 		return "", classify(fmt.Errorf("fork conversation for %s: %w", id, err))
@@ -204,6 +209,11 @@ func (s *Service) EditMessage(
 	if err != nil {
 		return EditMessageResult{}, err
 	}
+	releaseOwnership, err := source.acquireProjectOwnership(ctx)
+	if err != nil {
+		return EditMessageResult{}, err
+	}
+	defer releaseOwnership()
 	if msg.ClientMessageID != "" {
 		delivery, created, reserveErr := s.store.ReserveEditDelivery(
 			ctx, source.conversation.ID, msg.ClientMessageID, requestJSON, s.now())
@@ -606,7 +616,7 @@ func (s *Service) sendEditedMessage(
 	msg ports.ChatUserMessage,
 	restoreConclusiveFailure bool,
 ) (EditMessageResult, error) {
-	turn, sendErr := controller.Send(ctx, msg)
+	turn, sendErr := controller.sendOwned(ctx, msg)
 	result := EditMessageResult{
 		SourceBranchID: sourceBranchID,
 		ActiveBranchID: activeBranchID,
@@ -620,7 +630,7 @@ func (s *Service) sendEditedMessage(
 			sendErr = errors.New("edited message was not dispatched")
 		}
 		if restoreConclusiveFailure {
-			if _, err := s.activateBranchLocked(ctx, controller.sessionID, sourceBranchID); err != nil {
+			if _, err := s.activateBranchOwned(ctx, controller.sessionID, controller, sourceBranchID); err != nil {
 				sendErr = errors.Join(sendErr, fmt.Errorf("restore source after undispatched edit: %w", err))
 			}
 		}
@@ -633,7 +643,7 @@ func (s *Service) sendEditedMessage(
 		}
 		var refusal providerRefusal
 		if restoreConclusiveFailure && errors.As(sendErr, &refusal) && refusal.ChatRefusal() {
-			if _, err := s.activateBranchLocked(ctx, controller.sessionID, sourceBranchID); err != nil {
+			if _, err := s.activateBranchOwned(ctx, controller.sessionID, controller, sourceBranchID); err != nil {
 				sendErr = errors.Join(sendErr, fmt.Errorf("restore source after refused edit: %w", err))
 			}
 		}
@@ -840,6 +850,24 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 	if err != nil {
 		return "", err
 	}
+	releaseOwnership, err := source.acquireProjectOwnership(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer releaseOwnership()
+	return s.activateBranchOwned(ctx, id, source, branchID)
+}
+
+// activateBranchOwned resumes a branch while the caller holds the project
+// conversation lease. Edit recovery already owns that lease for the complete
+// replacement attempt, so routing through the public method would recursively
+// acquire its writer-preferring RLock and can deadlock behind a queued rebind.
+func (s *Service) activateBranchOwned(
+	ctx context.Context,
+	id domain.SessionID,
+	source *Controller,
+	branchID string,
+) (string, error) {
 	branch, err := s.store.ConversationBranch(ctx, source.conversation.ID, branchID)
 	if err != nil {
 		return "", err
@@ -1078,12 +1106,33 @@ func (s *Service) installStartedBranchController(
 	return nil
 }
 
+// setTitle serializes a provider thread rename with every other command that can
+// mutate the live conversation.
+func (c *Controller) setTitle(ctx context.Context, title string) error {
+	renamer, ok := c.conv.(ports.ChatRenamer)
+	if !ok {
+		return ErrRenameUnsupported
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.handoffActive() {
+		return ErrControllerHandoff
+	}
+	if err := c.requireNoInterruptPendingLocked(); err != nil {
+		return err
+	}
+	releaseOwnership, err := c.acquireProjectOwnership(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseOwnership()
+	return renamer.SetTitle(ctx, title)
+}
+
 // SetTitle names the provider's thread and returns the normalized title.
-//
 // Nothing is written to AO's rows here. The provider answers, then emits its own
 // rename notification, and the projection applies it — so the title AO stores is
-// always one the provider confirmed. Writing it optimistically as well would give
-// one fact two authors and no way to tell which lost.
+// always one the provider confirmed.
 func (s *Service) SetTitle(ctx context.Context, id domain.SessionID, title string) (string, error) {
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return "", err
@@ -1096,11 +1145,7 @@ func (s *Service) SetTitle(ctx context.Context, id domain.SessionID, title strin
 	if err != nil {
 		return "", err
 	}
-	renamer, ok := controller.conv.(ports.ChatRenamer)
-	if !ok {
-		return "", ErrRenameUnsupported
-	}
-	if err := renamer.SetTitle(ctx, normalized); err != nil {
+	if err := controller.setTitle(ctx, normalized); err != nil {
 		return "", classify(fmt.Errorf("set title for %s: %w", id, err))
 	}
 	return normalized, nil

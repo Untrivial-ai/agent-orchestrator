@@ -144,6 +144,7 @@ var shippedMigrations = map[int64]string{
 	137: "0137_conversation_edit_delivery.sql",
 	138: "0138_conversation_edit_dispatch_boundary.sql",
 	139: "0139_conversation_steer_delivery.sql",
+	141: "0141_conversation_turn_interrupt_reservation.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

@@ -111,6 +111,14 @@ export function canRollbackTurn(snapshot: ConversationSnapshot, turn: Conversati
 		!turn.rolledBack;
 }
 
+/** Keep an undispatched cancellation distinct from interrupting a live agent. */
+export function turnOutcomeLabel(turn: ConversationTurn): string {
+	if (turn.state === "interrupted" && !turn.startedAt) {
+		return "This queued message was cancelled";
+	}
+	return turn.state.toUpperCase();
+}
+
 export function activityStartsExpanded(activity: ConversationActivity): boolean {
 	const detail = activity.detail;
 	const liveBody = activity.status === "running" && Boolean(

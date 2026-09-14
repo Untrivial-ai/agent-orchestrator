@@ -115,7 +115,28 @@ func (c *Controller) CancelQueuedTurn(ctx context.Context, turnID string) error 
 	if c.handoffActive() {
 		return ErrControllerHandoff
 	}
-	return c.store.CancelQueuedTurnByID(ctx, c.conversation.ID, turnID, c.now())
+	if err := c.requireNoInterruptPendingLocked(); err != nil {
+		return err
+	}
+	releaseOwnership, err := c.acquireProjectOwnership(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseOwnership()
+	turn, err := c.store.TurnByID(ctx, turnID)
+	if err != nil {
+		return err
+	}
+	if turn.ConversationID != c.conversation.ID {
+		return domain.ErrNoConversationTurn
+	}
+	if err := c.store.CancelQueuedTurnByID(ctx, c.conversation.ID, turnID, c.now()); err != nil {
+		if errors.Is(err, store.ErrQueuedTurnNotAvailable) {
+			return ErrTurnNotQueued
+		}
+		return err
+	}
+	return nil
 }
 
 // EditQueuedTurn rewrites the durable human prompt for a queued turn.
@@ -141,6 +162,14 @@ func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit Que
 	if c.handoffActive() {
 		return ErrControllerHandoff
 	}
+	if err := c.requireNoInterruptPendingLocked(); err != nil {
+		return err
+	}
+	releaseOwnership, err := c.acquireProjectOwnership(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseOwnership()
 	message, err := c.store.QueuedTurnMessage(ctx, c.conversation.ID, turnID)
 	if err != nil {
 		return err
@@ -232,6 +261,14 @@ func (c *Controller) ReorderQueuedTurns(ctx context.Context, turnIDs []string) e
 	if c.handoffActive() {
 		return ErrControllerHandoff
 	}
+	if err := c.requireNoInterruptPendingLocked(); err != nil {
+		return err
+	}
+	releaseOwnership, err := c.acquireProjectOwnership(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseOwnership()
 	if err := c.store.ReorderQueuedTurns(ctx, c.conversation.ID, turnIDs); err != nil {
 		if errors.Is(err, store.ErrInvalidQueuedTurnOrder) {
 			return ErrInvalidQueuedTurnOrder

@@ -28,6 +28,7 @@ import type {
 	ConversationActivity,
 	ConversationItem,
 	ConversationMessage,
+	ConversationQueuedTurn,
 	ConversationSnapshot,
 	ControllerState,
 	DecisionOption,
@@ -556,10 +557,10 @@ export function useConversationCommands(sessionId: string | undefined) {
 	});
 
 	const interrupt = useMutation({
-		mutationFn: async ({ targetSessionId }: ConversationSessionMutationInput) => {
+		mutationFn: async ({ targetSessionId, queuedTurnIds }: ConversationSessionMutationInput & { queuedTurnIds: string[] }) => {
 			const { error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/interrupt",
-				{ params: { path: { sessionId: targetSessionId } } },
+				{ params: { path: { sessionId: targetSessionId } }, body: { queuedTurnIds } },
 			);
 			if (error) throw error;
 		},
@@ -937,7 +938,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 			action: "accept" | "decline" | "cancel",
 			content?: Record<string, unknown>,
 		) => resolveInput.mutateAsync({ requestId, action, content }),
-		interrupt: () => interrupt.mutate({ targetSessionId: sessionId as string }),
+		interrupt: (queuedTurnIds: string[]) => {
+			interrupt.reset();
+			return interrupt.mutateAsync({ targetSessionId: sessionId as string, queuedTurnIds });
+		},
+		interruptScopeChanged:
+			apiErrorCode(interrupt.error) === "CHAT_QUEUE_SCOPE_CHANGED",
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent: resume.isPending,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
@@ -1507,6 +1513,13 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 				: undefined,
 			rolledBack: turn.rolledBack ?? undefined,
 		})),
+		queuedTurns: wire.queuedTurns?.map(
+			(queued): ConversationQueuedTurn => ({
+				turnId: queued.turnId,
+				text: queued.text,
+				origin: (queued.origin as MessageOrigin | undefined) || undefined,
+			}),
+		),
 		items,
 	};
 }

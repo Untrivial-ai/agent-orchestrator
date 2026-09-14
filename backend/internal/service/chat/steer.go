@@ -160,6 +160,9 @@ func (c *Controller) PromoteQueuedTurn(
 	if c.handoffActive() {
 		return PromoteQueuedTurnResult{}, ErrControllerHandoff
 	}
+	if c.interruptPendingLocked() {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", ErrTurnNotQueued, turnID)
+	}
 
 	source, err := c.store.TurnByID(ctx, turnID)
 	if err != nil {
@@ -176,6 +179,11 @@ func (c *Controller) PromoteQueuedTurn(
 	if !ok {
 		return PromoteQueuedTurnResult{}, ErrNoActiveTurn
 	}
+	releaseOwnership, err := c.acquireProjectOwnership(ctx)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	defer releaseOwnership()
 	queued, err := c.store.ReserveQueuedTurnForPromotion(ctx, c.conversation.ID, turnID, c.now())
 	if err != nil {
 		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s: %w", ErrTurnNotQueued, turnID, err)
@@ -339,6 +347,14 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 				persistContext: "persist unsupported result",
 			})
 	}
+	if err := c.requireNoInterruptPendingLocked(); err != nil {
+		return SteerResult{}, err
+	}
+	releaseOwnership, err := c.acquireProjectOwnership(ctx)
+	if err != nil {
+		return SteerResult{}, err
+	}
+	defer releaseOwnership()
 
 	turn, ok := c.awaitAcknowledgedTurn(ctx)
 	if !ok {

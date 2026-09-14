@@ -202,39 +202,42 @@ type CodexActiveAccount struct {
 }
 
 type Conversation struct {
-	ID                         string
-	Scope                      domain.ConversationScope
-	ProjectID                  domain.ProjectID
-	SessionID                  *domain.SessionID
-	CurrentSessionID           *domain.SessionID
-	LatestSequence             int64
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
-	Model                      sql.NullString
-	ReasoningEffort            sql.NullString
-	ApprovalMode               sql.NullString
-	CompactedAt                sql.NullTime
-	ContextUsed                sql.NullInt64
-	ContextWindow              sql.NullInt64
-	UsageInputTokens           sql.NullInt64
-	UsageOutputTokens          sql.NullInt64
-	UsageCachedTokens          sql.NullInt64
-	UsageTotalTokens           sql.NullInt64
-	RateLimitPrimaryPercent    sql.NullFloat64
-	RateLimitSecondaryPercent  sql.NullFloat64
-	RateLimitPrimaryResetsIn   sql.NullInt64
-	RateLimitSecondaryResetsIn sql.NullInt64
-	RateLimitPlan              sql.NullString
-	ProviderTitle              string
-	AppliedTitle               string
-	ModelRerouteJson           sql.NullString
-	AccountJson                sql.NullString
-	ThreadStateJson            sql.NullString
-	McpServersJson             sql.NullString
-	UsageCost                  sql.NullFloat64
-	UsageCurrency              sql.NullString
-	ActiveBranchID             string
-	OpencodeMode               string
+	ID                            string
+	Scope                         domain.ConversationScope
+	ProjectID                     domain.ProjectID
+	SessionID                     *domain.SessionID
+	CurrentSessionID              *domain.SessionID
+	LatestSequence                int64
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+	Model                         sql.NullString
+	ReasoningEffort               sql.NullString
+	ApprovalMode                  sql.NullString
+	CompactedAt                   sql.NullTime
+	ContextUsed                   sql.NullInt64
+	ContextWindow                 sql.NullInt64
+	UsageInputTokens              sql.NullInt64
+	UsageOutputTokens             sql.NullInt64
+	UsageCachedTokens             sql.NullInt64
+	UsageTotalTokens              sql.NullInt64
+	RateLimitPrimaryPercent       sql.NullFloat64
+	RateLimitSecondaryPercent     sql.NullFloat64
+	RateLimitPrimaryResetsIn      sql.NullInt64
+	RateLimitSecondaryResetsIn    sql.NullInt64
+	RateLimitPlan                 sql.NullString
+	ProviderTitle                 string
+	AppliedTitle                  string
+	ModelRerouteJson              sql.NullString
+	AccountJson                   sql.NullString
+	ThreadStateJson               sql.NullString
+	McpServersJson                sql.NullString
+	UsageCost                     sql.NullFloat64
+	UsageCurrency                 sql.NullString
+	ActiveBranchID                string
+	OpencodeMode                  string
+	InterruptReservationID        sql.NullString
+	InterruptReservationSessionID sql.NullString
+	InterruptProviderTurnID       sql.NullString
 }
 
 type ConversationActivity struct {
@@ -344,23 +347,24 @@ type ConversationSteerDelivery struct {
 }
 
 type ConversationTurn struct {
-	ID                   string
-	ConversationID       string
-	HandledBySessionID   domain.SessionID
-	ProviderTurnID       string
-	ControllerGeneration string
-	State                domain.TurnState
-	ErrorMessage         string
-	RequestedAt          time.Time
-	StartedAt            sql.NullTime
-	CompletedAt          sql.NullTime
-	DiffJson             string
-	RolledBackAt         sql.NullTime
-	PlanJson             string
-	BranchID             string
-	PromotionStartedAt   sql.NullTime
-	PromotedToTurnID     sql.NullString
-	RetryOfTurnID        sql.NullString
+	ID                     string
+	ConversationID         string
+	HandledBySessionID     domain.SessionID
+	ProviderTurnID         string
+	ControllerGeneration   string
+	State                  domain.TurnState
+	ErrorMessage           string
+	RequestedAt            time.Time
+	StartedAt              sql.NullTime
+	CompletedAt            sql.NullTime
+	DiffJson               string
+	RolledBackAt           sql.NullTime
+	PlanJson               string
+	BranchID               string
+	PromotionStartedAt     sql.NullTime
+	PromotedToTurnID       sql.NullString
+	RetryOfTurnID          sql.NullString
+	InterruptReservationID sql.NullString
 }
 
 type ModelUsageEvent struct {

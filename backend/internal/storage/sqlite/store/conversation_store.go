@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -38,6 +39,8 @@ var ErrNoQueuedTurn = domain.ErrNoQueuedTurn
 // absent from this conversation, no longer queued, or another promotion already
 // owns it. The caller must not contact the provider after this outcome.
 var ErrQueuedTurnNotAvailable = errors.New("queued turn is not available for promotion")
+
+var errInterruptQueueScopeUnavailable = errors.New("interrupt queue scope is unavailable")
 
 type conversationCreateOptions struct {
 	id           string
@@ -95,6 +98,11 @@ func (s *Store) createConversation(
 	ctx context.Context,
 	options conversationCreateOptions,
 ) (domain.ConversationRecord, error) {
+	if options.scope == domain.ConversationScopeProject {
+		ownership := s.projectConversationLock(options.project)
+		ownership.Lock()
+		defer ownership.Unlock()
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -106,6 +114,22 @@ func (s *Store) createConversation(
 				transactionName += " with reset"
 			}
 			err = s.inTx(ctx, transactionName, func(q *gen.Queries) error {
+				// Rebinding is a durable controller replacement boundary. Settle every
+				// queued or running turn owned by the previous orchestrator before
+				// current_session_id changes, whether or not Stop had already fenced it.
+				// Otherwise its accepted work can appear in the replacement's queue and
+				// a later Stop would reserve rows recovery cannot settle under the new
+				// owner. Reserved rows settle interrupted; all other abandoned work fails.
+				if existing.CurrentSessionID != nil &&
+					*existing.CurrentSessionID != "" &&
+					*existing.CurrentSessionID != options.session {
+					owner := *existing.CurrentSessionID
+					if settleErr := settleOrphanedTurnsWithQueries(
+						ctx, q, owner, options.now,
+					); settleErr != nil {
+						return fmt.Errorf("settle replaced conversation owner %s: %w", owner, settleErr)
+					}
+				}
 				if err := q.BindProjectConversationSession(ctx, gen.BindProjectConversationSessionParams{
 					CurrentSessionID: &options.session,
 					UpdatedAt:        options.now,
@@ -224,6 +248,34 @@ func (s *Store) createConversation(
 		CreatedAt:      options.now,
 		UpdatedAt:      options.now,
 	}, nil
+}
+
+// AcquireProjectConversationDispatch pins the authoritative project owner from
+// the final durable check through provider admission. Rebinding takes the write
+// side of this project's lock: whichever side wins is fully ordered before the
+// other, so a retired controller can never contact its provider after ownership
+// has moved. The caller must invoke the returned release function.
+func (s *Store) AcquireProjectConversationDispatch(
+	ctx context.Context,
+	conversationID string,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+) (func(), error) {
+	ownership := s.projectConversationLock(projectID)
+	ownership.RLock()
+	conversation, err := s.qr.SelectConversationByID(ctx, conversationID)
+	if err != nil {
+		ownership.RUnlock()
+		return nil, fmt.Errorf("select conversation owner before dispatch: %w", err)
+	}
+	if conversation.Scope != domain.ConversationScopeProject ||
+		conversation.ProjectID != projectID ||
+		conversation.CurrentSessionID == nil ||
+		*conversation.CurrentSessionID != sessionID {
+		ownership.RUnlock()
+		return nil, domain.ErrConversationOwnerChanged
+	}
+	return ownership.RUnlock, nil
 }
 
 // CreateConversationBranch records a provider-thread child without changing the
@@ -826,6 +878,14 @@ func (s *Store) appendUserMessage(
 	}
 
 	err = s.inTx(ctx, "append user message", func(q *gen.Queries) error {
+		conversation, err := q.SelectConversationByID(ctx, conversationID)
+		if err != nil {
+			return fmt.Errorf("select conversation owner: %w", err)
+		}
+		if conversation.Scope == domain.ConversationScopeProject &&
+			(conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != session) {
+			return domain.ErrConversationOwnerChanged
+		}
 		sequence, err := q.NextConversationSequence(ctx, gen.NextConversationSequenceParams{
 			UpdatedAt: now,
 			ID:        conversationID,
@@ -1128,10 +1188,28 @@ func terminalActivityStatus(state domain.TurnState) domain.ActivityStatus {
 
 // SettleOrphanedTurns marks anything a dead controller left in flight. A turn the
 // controller was running is not evidence the work finished, so it settles as
-// failed rather than silently completing.
+// failed rather than silently completing. Queued work durably reserved by a
+// confirmed Stop settles as interrupted: restart must honor that destructive
+// boundary instead of making the same prompt dispatchable again.
 func (s *Store) SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error {
-	q, unlock := s.conversationWriter(ctx)
+	_, unlock := s.conversationWriter(ctx)
 	defer unlock()
+	return s.inTx(ctx, "settle orphaned conversation work", func(q *gen.Queries) error {
+		return settleOrphanedTurnsWithQueries(ctx, q, session, now)
+	})
+}
+
+// settleOrphanedTurnsWithQueries is the transaction-local recovery primitive for
+// controller death, project-conversation replacement, and seed-owner deletion.
+// The reservation owner must be used before it is rebound or deleted: confirmed
+// rows become interrupted, other abandoned work fails, then the global fence is
+// cleared. Reversing that order could make confirmed work dispatchable again.
+func settleOrphanedTurnsWithQueries(
+	ctx context.Context,
+	q *gen.Queries,
+	session domain.SessionID,
+	now time.Time,
+) error {
 	if err := q.FailOrphanedConversationActivities(ctx,
 		gen.FailOrphanedConversationActivitiesParams{
 			UpdatedAt:          now,
@@ -1145,6 +1223,10 @@ func (s *Store) SettleOrphanedTurns(ctx context.Context, session domain.SessionI
 			HandledBySessionID: session,
 		}); err != nil {
 		return fmt.Errorf("settle orphaned turns for %s: %w", session, err)
+	}
+	if err := q.ReleaseOrphanedConversationInterruptReservations(ctx,
+		sql.NullString{String: string(session), Valid: true}); err != nil {
+		return fmt.Errorf("release orphaned interrupt reservation for %s: %w", session, err)
 	}
 	return nil
 }
@@ -1196,18 +1278,8 @@ func cleanupOwnedControllerWork(
 	if owner.ControllerGeneration != generation {
 		return false, nil
 	}
-	if err := q.FailOrphanedConversationActivities(ctx,
-		gen.FailOrphanedConversationActivitiesParams{
-			UpdatedAt: now, HandledBySessionID: session,
-		}); err != nil {
-		return false, fmt.Errorf("settle orphaned activities for %s: %w", session, err)
-	}
-	if err := q.SettleOrphanedConversationTurns(ctx,
-		gen.SettleOrphanedConversationTurnsParams{
-			CompletedAt:        sql.NullTime{Time: now, Valid: true},
-			HandledBySessionID: session,
-		}); err != nil {
-		return false, fmt.Errorf("settle orphaned turns for %s: %w", session, err)
+	if err := settleOrphanedTurnsWithQueries(ctx, q, session, now); err != nil {
+		return false, err
 	}
 	if err := q.FailPendingConversationRequestsForSession(ctx,
 		gen.FailPendingConversationRequestsForSessionParams{
@@ -1614,6 +1686,179 @@ func (s *Store) NextQueuedTurn(ctx context.Context, conversationID string) (doma
 	}, nil
 }
 
+// ListQueuedTurns returns the complete durable queue in dispatch order. It is
+// deliberately separate from the paginated conversation snapshot: Stop binds
+// its confirmation to this exact set, and queue controls must include work that
+// is not present in the currently loaded timeline page.
+func (s *Store) ListQueuedTurns(ctx context.Context, conversationID string) ([]domain.QueuedTurn, error) {
+	rows, err := s.qr.SelectQueuedConversationTurns(ctx, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("select queued turns for %s: %w", conversationID, err)
+	}
+	queued := make([]domain.QueuedTurn, 0, len(rows))
+	for _, row := range rows {
+		queued = append(queued, domain.QueuedTurn{
+			TurnID:              row.ID,
+			Text:                row.Text,
+			ClientMessageID:     row.ClientMessageID,
+			Origin:              row.Origin,
+			DeliveryContentJSON: row.DeliveryContentJson,
+		})
+	}
+	return queued, nil
+}
+
+// ReserveQueuedTurnsForInterrupt atomically compares the complete durable queue
+// in dispatch order and fences exactly that scope. A mismatch or an item already
+// owned by another queue command returns false without changing any row.
+func (s *Store) ReserveQueuedTurnsForInterrupt(
+	ctx context.Context,
+	conversationID string,
+	expectedTurnIDs []string,
+	reservationID, providerTurnID string,
+) (bool, error) {
+	if reservationID == "" {
+		return false, errors.New("interrupt reservation id is required")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	err := s.inTx(ctx, "reserve queued turns for interrupt", func(q *gen.Queries) error {
+		rows, err := q.SelectQueuedConversationTurns(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		actual := make([]string, 0, len(rows))
+		for _, row := range rows {
+			actual = append(actual, row.ID)
+		}
+		if !slices.Equal(actual, expectedTurnIDs) {
+			return errInterruptQueueScopeUnavailable
+		}
+		updated, err := q.ReserveConversationForInterrupt(ctx,
+			gen.ReserveConversationForInterruptParams{
+				InterruptReservationID:  sql.NullString{String: reservationID, Valid: true},
+				InterruptProviderTurnID: sql.NullString{String: providerTurnID, Valid: providerTurnID != ""},
+				ConversationID:          conversationID,
+			})
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return errInterruptQueueScopeUnavailable
+		}
+		for _, turnID := range expectedTurnIDs {
+			updated, err = q.ReserveQueuedConversationTurnForInterrupt(ctx,
+				gen.ReserveQueuedConversationTurnForInterruptParams{
+					InterruptReservationID: sql.NullString{String: reservationID, Valid: true},
+					ID:                     turnID,
+					ConversationID:         conversationID,
+				})
+			if err != nil {
+				return err
+			}
+			if updated != 1 {
+				return errInterruptQueueScopeUnavailable
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, errInterruptQueueScopeUnavailable) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reserve interrupt queue for %s: %w", conversationID, err)
+	}
+	return true, nil
+}
+
+// ReleaseQueuedTurnsForInterrupt restores the exact fenced queue after the
+// provider rejects Stop. All rows change together or none do.
+func (s *Store) ReleaseQueuedTurnsForInterrupt(
+	ctx context.Context,
+	conversationID string,
+	turnIDs []string,
+	reservationID string,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "release queued turns after interrupt failure", func(q *gen.Queries) error {
+		for _, turnID := range turnIDs {
+			updated, err := q.ReleaseQueuedConversationTurnInterruptReservation(ctx,
+				gen.ReleaseQueuedConversationTurnInterruptReservationParams{
+					ID:                     turnID,
+					ConversationID:         conversationID,
+					InterruptReservationID: sql.NullString{String: reservationID, Valid: true},
+				})
+			if err != nil {
+				return err
+			}
+			if updated != 1 {
+				return fmt.Errorf("turn %s lost interrupt reservation", turnID)
+			}
+		}
+		updated, err := q.ReleaseConversationInterruptReservation(ctx,
+			gen.ReleaseConversationInterruptReservationParams{
+				ConversationID:         conversationID,
+				InterruptReservationID: sql.NullString{String: reservationID, Valid: true},
+			})
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return errors.New("conversation lost interrupt reservation")
+		}
+		return nil
+	})
+}
+
+// CancelQueuedTurnsForInterrupt settles exactly the confirmed, fenced scope.
+// Newly queued work has no reservation and cannot be swept into this mutation.
+// keepReservation retains the dispatch fence until an accepted Stop receives its
+// primary terminal event, including after a controller reconnect.
+func (s *Store) CancelQueuedTurnsForInterrupt(
+	ctx context.Context,
+	conversationID string,
+	turnIDs []string,
+	reservationID string,
+	now time.Time,
+	keepReservation bool,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "cancel queued turns after interrupt", func(q *gen.Queries) error {
+		for _, turnID := range turnIDs {
+			updated, err := q.CancelQueuedConversationTurnForInterrupt(ctx,
+				gen.CancelQueuedConversationTurnForInterruptParams{
+					CompletedAt:            sql.NullTime{Time: now, Valid: true},
+					ID:                     turnID,
+					ConversationID:         conversationID,
+					InterruptReservationID: sql.NullString{String: reservationID, Valid: true},
+				})
+			if err != nil {
+				return err
+			}
+			if updated != 1 {
+				return fmt.Errorf("turn %s lost interrupt reservation", turnID)
+			}
+		}
+		if keepReservation {
+			return nil
+		}
+		updated, err := q.ReleaseConversationInterruptReservation(ctx,
+			gen.ReleaseConversationInterruptReservationParams{
+				ConversationID:         conversationID,
+				InterruptReservationID: sql.NullString{String: reservationID, Valid: true},
+			})
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return errors.New("conversation lost interrupt reservation")
+		}
+		return nil
+	})
+}
+
 // ReserveQueuedTurnForPromotion atomically removes one selected queued turn from
 // automatic drain and returns the durable content that must be steered.
 func (s *Store) ReserveQueuedTurnForPromotion(
@@ -1706,26 +1951,26 @@ func (s *Store) CompleteQueuedTurnPromotion(
 	})
 }
 
-// CancelQueuedTurns closes out everything queued at or before cutoff.
-//
-// They settle as interrupted rather than failed: nothing went wrong, the user
-// stopped the agent, and a message that was never dispatched did not fail. The
-// cutoff keeps a message typed after the stop out of a cancellation it predates.
-func (s *Store) CancelQueuedTurns(
+// CancelQueuedTurn closes exactly one durable queue item. The compare-and-set
+// keeps a concurrent promotion authoritative: after provider delivery may have
+// begun, this operation reports the item unavailable rather than mislabelling it
+// interrupted.
+func (s *Store) CancelQueuedTurn(
 	ctx context.Context,
-	conversationID string,
-	cutoff, now time.Time,
-) error {
+	conversationID, turnID string,
+	now time.Time,
+) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.qw.CancelQueuedConversationTurns(ctx, gen.CancelQueuedConversationTurnsParams{
+	rows, err := s.qw.CancelQueuedConversationTurn(ctx, gen.CancelQueuedConversationTurnParams{
 		CompletedAt:    sql.NullTime{Time: now, Valid: true},
+		ID:             turnID,
 		ConversationID: conversationID,
-		RequestedAt:    cutoff,
-	}); err != nil {
-		return fmt.Errorf("cancel queued turns for %s: %w", conversationID, err)
+	})
+	if err != nil {
+		return false, fmt.Errorf("cancel queued turn %s: %w", turnID, err)
 	}
-	return nil
+	return rows > 0, nil
 }
 
 // CancelAllQueuedTurns closes the whole durable queue after an interface
@@ -2315,6 +2560,14 @@ func projectProviderEventTx(
 	if owner.ControllerGeneration != generation {
 		return false, nil
 	}
+	conversation, err := q.SelectConversationByID(ctx, conversationID)
+	if err != nil {
+		return false, fmt.Errorf("read conversation owner for provider event: %w", err)
+	}
+	if conversation.Scope == domain.ConversationScopeProject &&
+		(conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != session) {
+		return false, nil
+	}
 	inserted, err := q.InsertConversationProviderEvent(ctx, gen.InsertConversationProviderEventParams{
 		ConversationID:  conversationID,
 		SessionID:       session,
@@ -2528,6 +2781,7 @@ type ConversationSnapshot struct {
 	EditFloorSequence                int64
 	NativeForkAvailableAfterSequence int64
 	Turns                            []domain.ConversationTurn
+	QueuedTurns                      []domain.QueuedTurn
 	Messages                         []domain.ConversationMessage
 	Activities                       []domain.ConversationActivity
 	BranchPoints                     []domain.ConversationBranchPoint
@@ -2556,6 +2810,10 @@ func (s *Store) LoadConversationSnapshotPage(
 	if err != nil {
 		return ConversationSnapshot{}, fmt.Errorf("select conversation %s: %w", conversationID, err)
 	}
+	queuedTurns, err := s.ListQueuedTurns(ctx, conversationID)
+	if err != nil {
+		return ConversationSnapshot{}, err
+	}
 	if limit <= 0 {
 		limit = DefaultConversationPageSize
 	}
@@ -2576,6 +2834,7 @@ func (s *Store) LoadConversationSnapshotPage(
 			ActiveBranch:                     presentation.activeBranch,
 			EditFloorSequence:                presentation.editFloorSequence,
 			NativeForkAvailableAfterSequence: presentation.nativeForkAvailableAfterSequence,
+			QueuedTurns:                      queuedTurns,
 			BranchPoints:                     presentation.branchPoints,
 			BranchedFromEarlierMessage:       presentation.branchedFromEarlierMessage,
 			OldestSequence:                   visibleAfterSequence,
@@ -2647,6 +2906,7 @@ func (s *Store) LoadConversationSnapshotPage(
 		ActiveBranch:                     presentation.activeBranch,
 		EditFloorSequence:                presentation.editFloorSequence,
 		NativeForkAvailableAfterSequence: presentation.nativeForkAvailableAfterSequence,
+		QueuedTurns:                      queuedTurns,
 		BranchPoints:                     presentation.branchPoints,
 		BranchedFromEarlierMessage:       presentation.branchedFromEarlierMessage,
 		OldestSequence:                   oldest,
@@ -2752,6 +3012,10 @@ func (s *Store) LoadConversationSnapshot(
 	if err != nil {
 		return ConversationSnapshot{}, fmt.Errorf("select conversation %s: %w", conversationID, err)
 	}
+	queuedTurns, err := s.ListQueuedTurns(ctx, conversationID)
+	if err != nil {
+		return ConversationSnapshot{}, err
+	}
 
 	turnRows, err := s.qr.SelectConversationTurns(ctx, conversationID)
 	if err != nil {
@@ -2779,6 +3043,7 @@ func (s *Store) LoadConversationSnapshot(
 		ActiveBranch:                     presentation.activeBranch,
 		EditFloorSequence:                presentation.editFloorSequence,
 		NativeForkAvailableAfterSequence: presentation.nativeForkAvailableAfterSequence,
+		QueuedTurns:                      queuedTurns,
 		BranchPoints:                     presentation.branchPoints,
 		BranchedFromEarlierMessage:       presentation.branchedFromEarlierMessage,
 	}
@@ -3565,4 +3830,31 @@ func steerDeliveryToDomain(row gen.ConversationSteerDelivery) domain.Conversatio
 		delivery.SettledAt = &settled
 	}
 	return delivery
+}
+
+// PendingInterrupt restores an existing Stop fence without retrying a provider action.
+func (s *Store) PendingInterrupt(ctx context.Context, conversationID string, sessionID domain.SessionID) (string, string, []string, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var reservationID, providerTurnID string
+	var turnIDs []string
+	err := s.inTx(ctx, "read pending Stop reservation", func(q *gen.Queries) error {
+		conversation, err := q.SelectConversationByID(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		if !conversation.InterruptReservationID.Valid {
+			return nil
+		}
+		if (conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != sessionID) || conversation.InterruptReservationSessionID.String != string(sessionID) {
+			return domain.ErrConversationOwnerChanged
+		}
+		reservationID = conversation.InterruptReservationID.String
+		providerTurnID = conversation.InterruptProviderTurnID.String
+		turnIDs, err = q.SelectInterruptedQueueReservationMembers(ctx, gen.SelectInterruptedQueueReservationMembersParams{
+			ConversationID: conversationID, SessionID: &sessionID,
+		})
+		return err
+	})
+	return reservationID, providerTurnID, turnIDs, err
 }

@@ -128,6 +128,16 @@ export interface ConversationTurn {
 	plan?: ConversationPlan;
 }
 
+/** One item in the complete durable send queue. Unlike timeline messages this
+ * list is never history-paginated, so destructive confirmation can bind to its
+ * exact ordered turn IDs. */
+export interface ConversationQueuedTurn {
+	turnId: string;
+	text: string;
+	/** Empty only when a damaged legacy row has no readable message metadata. */
+	origin?: MessageOrigin;
+}
+
 /** How a file changed. The daemon's neutral names, not a provider's. */
 export type DiffStatus = "added" | "modified" | "deleted" | "renamed";
 
@@ -729,6 +739,9 @@ export interface ConversationSnapshot {
 	mode: SessionMode;
 	controller: { state: ControllerState; error?: string };
 	turns: ConversationTurn[];
+	/** Complete durable queue in dispatch order. Missing from older daemon
+	 * snapshots; destructive queue-wide actions must fail closed when absent. */
+	queuedTurns?: ConversationQueuedTurn[];
 	/** Already ordered by sequence. The renderer does not re-sort. */
 	items: ConversationItem[];
 	latestSequence: number;

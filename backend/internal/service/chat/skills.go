@@ -32,5 +32,10 @@ func (s *Service) Skills(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	if !ok {
 		return nil, ErrSkillsUnsupported
 	}
+	releaseOwnership, err := controller.acquireProjectOwnership(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseOwnership()
 	return lister.ListSkills(ctx)
 }

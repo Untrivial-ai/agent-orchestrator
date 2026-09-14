@@ -49,6 +49,10 @@ var (
 	// letting a protocol error escape: pressing stop a moment too late is an
 	// ordinary thing for a person to do, not an internal failure.
 	ErrChatNoActiveTurn = errors.New("no active turn to interrupt")
+	// ErrChatInterruptDeliveryUncertain means the interrupt request crossed the
+	// provider transport but its response was not observed. Callers must not treat
+	// it as either rejection or success: the provider may still complete the Stop.
+	ErrChatInterruptDeliveryUncertain = errors.New("chat interrupt delivery outcome is uncertain")
 	// ErrChatRequestNotPending means the request a decision names is not waiting
 	// for one: already answered, superseded, or from a controller that has been
 	// replaced. Two clients looking at the same approval is normal, so one of them

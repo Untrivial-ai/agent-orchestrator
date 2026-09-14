@@ -3,6 +3,8 @@ package chat_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -215,5 +217,105 @@ func TestProviderPreservationReportRequiresLiveController(t *testing.T) {
 	ordinary := newHarness(t)
 	if ordinary.svc.PreservesProviderOnRestart(testSession) {
 		t.Fatal("ordinary conversation advertised persistent ownership")
+	}
+}
+
+func TestLiveReconnectReconcilesConfirmedStopScopeWithoutRedispatch(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("accepted-before-reconnect=%t", accepted), func(t *testing.T) {
+			st := openStore(t)
+			reader := fullSnapshotReader(st)
+			var ids atomic.Int32
+			newID := func() string { return fmt.Sprintf("stop-reconnect-%d", ids.Add(1)) }
+			firstProvider := &terminatingConversation{fakeConversation: newFakeConversation()}
+			first := chatsvc.New(chatsvc.Options{
+				Store: st, Reader: reader, Sessions: st,
+				Drivers: fakeRegistry{driver: fakeDriver{conv: firstProvider}},
+				Log:     slog.New(slog.DiscardHandler), NewID: newID,
+			})
+			firstController, err := first.Start(context.Background(), chatsvc.StartConfig{
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			running, err := firstController.Send(context.Background(), ports.ChatUserMessage{Text: "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			confirmed, err := firstController.Send(context.Background(), ports.ChatUserMessage{Text: "confirmed for Stop"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if accepted {
+				firstProvider.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: running.ProviderTurnID})
+				if err := firstController.Interrupt(context.Background(), []string{confirmed.ID}); err != nil {
+					t.Fatalf("accept Stop: %v", err)
+				}
+				reservation, target, members, err := st.PendingInterrupt(context.Background(), firstController.ConversationID(), testSession)
+				if err != nil || reservation == "" || target != running.ProviderTurnID || len(members) != 0 {
+					t.Fatalf("accepted Stop continuation: reservation=%q members=%v err=%v", reservation, members, err)
+				}
+			} else {
+				matched, err := st.ReserveQueuedTurnsForInterrupt(context.Background(), firstController.ConversationID(), []string{confirmed.ID}, "crashed-stop", running.ProviderTurnID)
+				if err != nil || !matched {
+					t.Fatalf("reserve Stop: %v %v", matched, err)
+				}
+			}
+			// A newer child must never replace the original primary Stop target.
+			if err := st.AdoptProviderTurn(context.Background(), firstController.ConversationID(), testSession,
+				firstController.Generation(), "nested-turn", "provider-nested", time.Now().Add(time.Hour)); err != nil {
+				t.Fatalf("adopt nested turn: %v", err)
+			}
+			first.StopAll(context.Background())
+
+			secondProvider := &liveReconnectedConversation{nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()}}
+			secondProvider.turnSeq = 100
+			second := chatsvc.New(chatsvc.Options{
+				Store: st, Reader: reader, Sessions: st,
+				Drivers: fakeRegistry{driver: fakeDriver{conv: secondProvider}},
+				Log:     slog.New(slog.DiscardHandler), NewID: newID,
+			})
+			t.Cleanup(func() { second.StopAll(context.Background()) })
+			controller, err := second.Start(context.Background(), chatsvc.StartConfig{
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				WorkspacePath: t.TempDir(), ProviderConversationID: firstProvider.ProviderConversationID(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			later, err := controller.Send(context.Background(), ports.ChatUserMessage{Text: "after restart"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := secondProvider.sentTexts(); len(got) != 0 {
+				t.Fatalf("dispatched before original turn ended: %v", got)
+			}
+			h := &harness{st: st, ctrl: controller}
+			secondProvider.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted,
+				ProviderTurnID: "provider-nested", ProviderConversationID: "nested-conversation", TurnState: domain.TurnStateInterrupted})
+			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				for _, turn := range s.Turns {
+					if turn.ProviderTurnID == "provider-nested" {
+						return turn.State == domain.TurnStateInterrupted
+					}
+				}
+				return false
+			})
+			if got := secondProvider.sentTexts(); len(got) != 0 {
+				t.Fatalf("nested completion released primary Stop fence: %v", got)
+			}
+			secondProvider.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: running.ProviderTurnID, TurnState: domain.TurnStateInterrupted})
+			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				states := map[string]domain.TurnState{}
+				for _, turn := range s.Turns {
+					states[turn.ID] = turn.State
+				}
+				return states[confirmed.ID] == domain.TurnStateInterrupted && states[later.ID] == domain.TurnStateRunning
+			})
+			if got := secondProvider.sentTexts(); len(got) != 1 || got[0] != "after restart" {
+				t.Fatalf("replayed cancelled queue or lost new work: %v", got)
+			}
+		})
 	}
 }

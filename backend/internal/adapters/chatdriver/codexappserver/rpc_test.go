@@ -24,6 +24,11 @@ type fakeAppServer struct {
 	toClient io.WriteCloser
 }
 
+type errorWriteCloser struct{ err error }
+
+func (w errorWriteCloser) Write([]byte) (int, error) { return 0, w.err }
+func (errorWriteCloser) Close() error                { return nil }
+
 func newFakeAppServer(t *testing.T, onReq serverRequestHandler) (*conn, *fakeAppServer) {
 	t.Helper()
 
@@ -161,6 +166,83 @@ func TestRequestHonorsContextAndToleratesLateResponse(t *testing.T) {
 	fake.push(`{"id":` + string(*next.ID) + `,"result":{}}`)
 	if err := <-done; err != nil {
 		t.Fatalf("follow-up request failed: %v", err)
+	}
+}
+
+// The reader owns a request when it removes it from pending. Cancellation after
+// that boundary must wait for the terminal response or closure instead of
+// overwriting the reader's definitive result with caller cancellation.
+func TestRequestCancellationWaitsForTerminalResultAlreadyOwnedByReader(t *testing.T) {
+	tests := []struct {
+		name        string
+		finish      func(chan frame, *json.RawMessage)
+		assertError func(*testing.T, error)
+	}{
+		{
+			name: "provider rejection",
+			finish: func(ch chan frame, id *json.RawMessage) {
+				ch <- frame{ID: id, Error: &rpcError{Code: -32600, Message: "provider rejected interrupt"}}
+			},
+			assertError: func(t *testing.T, err error) {
+				var providerErr *rpcError
+				if !errors.As(err, &providerErr) || providerErr.Message != "provider rejected interrupt" {
+					t.Fatalf("err = %v, want definitive provider rejection", err)
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, errRequestDeliveryUncertain) {
+					t.Fatalf("err = %v, provider response must beat later cancellation", err)
+				}
+			},
+		},
+		{
+			name: "connection closure",
+			finish: func(ch chan frame, _ *json.RawMessage) {
+				close(ch)
+			},
+			assertError: func(t *testing.T, err error) {
+				if !errors.Is(err, ErrConnClosed) || !errors.Is(err, errRequestDeliveryUncertain) {
+					t.Fatalf("err = %v, want delivery-uncertain connection closure", err)
+				}
+				if errors.Is(err, context.Canceled) {
+					t.Fatalf("err = %v, connection closure must beat later cancellation", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, fake := newFakeAppServer(t, rejectAllServerRequests)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- c.request(ctx, "turn/interrupt", nil, nil) }()
+
+			req := fake.nextRequest()
+			var id int64
+			if err := json.Unmarshal(*req.ID, &id); err != nil {
+				t.Fatalf("decode request id: %v", err)
+			}
+			// Reproduce deliver/readLoop's ownership boundary, but hold its channel
+			// result until request has observed cancellation. This pins the ordering
+			// that used to misclassify a definitive response as uncertain.
+			c.mu.Lock()
+			terminal, ok := c.pending[id]
+			if ok {
+				delete(c.pending, id)
+			}
+			c.mu.Unlock()
+			if !ok {
+				t.Fatalf("request %d was not pending", id)
+			}
+
+			cancel()
+			select {
+			case err := <-done:
+				t.Fatalf("request returned before its owned terminal result arrived: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			tt.finish(terminal, req.ID)
+			tt.assertError(t, <-done)
+		})
 	}
 }
 
@@ -310,7 +392,8 @@ func TestServerRequestHandlerErrorBecomesRPCError(t *testing.T) {
 	_ = c
 }
 
-// When the process dies, an in-flight request must fail fast instead of hanging.
+// When the process dies after consuming a request, the caller must know both
+// that the response connection closed and that delivery may already have happened.
 func TestProcessExitUnblocksPendingRequest(t *testing.T) {
 	c, fake := newFakeAppServer(t, rejectAllServerRequests)
 
@@ -327,6 +410,9 @@ func TestProcessExitUnblocksPendingRequest(t *testing.T) {
 		if !errors.Is(err, ErrConnClosed) {
 			t.Fatalf("err = %v, want ErrConnClosed", err)
 		}
+		if !errors.Is(err, errRequestDeliveryUncertain) {
+			t.Fatalf("err = %v, want delivery-uncertain classification after write", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("pending request did not unblock when the process exited")
 	}
@@ -335,6 +421,42 @@ func TestProcessExitUnblocksPendingRequest(t *testing.T) {
 	case <-c.wait():
 	case <-time.After(2 * time.Second):
 		t.Fatal("connection never reported done")
+	}
+}
+
+func TestRequestOnAlreadyClosedConnectionIsNotDeliveryUncertain(t *testing.T) {
+	c, fake := newFakeAppServer(t, rejectAllServerRequests)
+	if err := fake.toClient.Close(); err != nil {
+		t.Fatalf("close server side: %v", err)
+	}
+	select {
+	case <-c.wait():
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection never reported done")
+	}
+
+	err := c.request(context.Background(), "turn/interrupt", nil, nil)
+	if !errors.Is(err, ErrConnClosed) {
+		t.Fatalf("err = %v, want ErrConnClosed", err)
+	}
+	if errors.Is(err, errRequestDeliveryUncertain) {
+		t.Fatalf("err = %v, did not want delivery-uncertain before write", err)
+	}
+}
+
+func TestRequestWriteFailureIsNotDeliveryUncertain(t *testing.T) {
+	readSide, keepOpen := io.Pipe()
+	t.Cleanup(func() { _ = keepOpen.Close() })
+	writeErr := errors.New("injected write failure")
+	c := newConn(errorWriteCloser{err: writeErr}, readSide,
+		slog.New(slog.DiscardHandler), rejectAllServerRequests)
+
+	err := c.request(context.Background(), "turn/interrupt", nil, nil)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("err = %v, want write failure", err)
+	}
+	if errors.Is(err, errRequestDeliveryUncertain) {
+		t.Fatalf("err = %v, did not want delivery-uncertain before a complete write", err)
 	}
 }
 

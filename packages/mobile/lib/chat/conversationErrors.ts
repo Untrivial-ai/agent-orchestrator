@@ -20,6 +20,7 @@ export function conversationActionError(error: unknown): string {
 		case "CHAT_ROLLBACK_UNSUPPORTED": return "This agent cannot roll back conversation history.";
 		case "CHAT_TURN_NOT_FOUND": return "That turn is no longer in this conversation. Refresh and choose another turn.";
 		case "CHAT_REQUEST_NOT_PENDING": return "This request was already answered or is no longer waiting. Refresh the conversation.";
+		case "CHAT_QUEUE_SCOPE_CHANGED": return "Queued work changed while Stop was awaiting confirmation. Review the refreshed queue and press Stop again.";
 		case "CHAT_DECISION_NOT_OFFERED": return "That choice is no longer available. Refresh the conversation and choose an offered answer.";
 		case "CHAT_CONFIG_OPTION_INVALID": return "The provider no longer accepts that setting. Refresh its controls and choose again.";
 		case "CHAT_CONFIG_OPTION_VALUE_REQUIRED": return "Choose a value for that provider setting.";

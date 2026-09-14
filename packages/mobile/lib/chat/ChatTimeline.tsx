@@ -44,6 +44,7 @@ import {
 	conversationTimelineRenderPlan,
 	countActivityNodes,
 	readableConversationItems,
+	turnOutcomeLabel,
 	type ActivityNode,
 	type ConversationGroup,
 } from "./timelineModel";
@@ -527,7 +528,7 @@ function TurnSummary({ turn, onRollback }: { turn: ConversationTurn; onRollback?
 			{turn.diff?.files.length ? <ChangedFiles turn={turn} /> : null}
 			<View style={styles.turnLine}>
 				<View style={styles.ruleHalf} />
-				<Text style={[styles.turnState, turn.state === "failed" && { color: t.red }]}>{turn.rolledBack ? "ROLLED BACK" : turn.state.toUpperCase()}</Text>
+				<Text style={[styles.turnState, turn.state === "failed" && { color: t.red }]}>{turn.rolledBack ? "ROLLED BACK" : turnOutcomeLabel(turn)}</Text>
 				{duration ? <Text style={styles.turnDuration}>{duration}</Text> : null}
 				{onRollback && settled && turn.providerTurnId && !turn.rolledBack ? (
 					<Pressable accessibilityLabel="Roll back to before this turn" hitSlop={8} onPress={() => { haptics.warning(); setConfirming(true); }}>

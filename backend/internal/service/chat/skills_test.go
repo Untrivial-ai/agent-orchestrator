@@ -2,8 +2,12 @@ package chat_test
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 )
@@ -67,5 +71,56 @@ func TestSkillsRequiresALiveController(t *testing.T) {
 	_, err := h.svc.Skills(context.Background(), testSession)
 	if !errorsIs(err, chatsvc.ErrNoController) {
 		t.Fatalf("err = %v, want ErrNoController", err)
+	}
+}
+
+func TestSkillsRejectsRetiredProjectControllerBeforeProviderCall(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	conv := &skillfulConversation{
+		fakeConversation: newFakeConversation(),
+		skills:           []ports.ChatSkill{{Name: "must-not-be-read"}},
+	}
+	nextID := 0
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			nextID++
+			return fmt.Sprintf("retired-skills-%d", nextID)
+		},
+	})
+	t.Cleanup(func() {
+		_ = svc.Stop(context.Background(), testSession)
+		_ = conv.Close()
+	})
+
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start project controller: %v", err)
+	}
+	replacement, err := st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("create replacement orchestrator: %v", err)
+	}
+	if _, err := st.CreateConversation(
+		ctx, "unused-skills-replacement", domain.ConversationScopeProject,
+		testProject, replacement.ID, time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("rebind project conversation: %v", err)
+	}
+
+	_, err = svc.Skills(ctx, testSession)
+	if !errorsIs(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("Skills through retired project controller = %v, want ErrControllerHandoff", err)
+	}
+	if conv.calls != 0 {
+		t.Fatalf("retired provider skill calls = %d, want 0", conv.calls)
 	}
 }

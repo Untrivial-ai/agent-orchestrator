@@ -108,7 +108,7 @@ func writeQueuedTurnMutationError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, chatsvc.ErrQueuedTurnTextRequired):
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_QUEUED_TEXT_REQUIRED", "queued message text is required", nil)
-	case errors.Is(err, store.ErrQueuedTurnNotAvailable):
+	case errors.Is(err, store.ErrQueuedTurnNotAvailable), errors.Is(err, chatsvc.ErrTurnNotQueued):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_TURN_NOT_QUEUED", "that message is no longer queued", nil)
 	case errors.Is(err, chatsvc.ErrInvalidQueuedTurnOrder):

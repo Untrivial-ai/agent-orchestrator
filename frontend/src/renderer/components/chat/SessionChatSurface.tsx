@@ -421,7 +421,11 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				busy={commands.busy}
 				onSend={(text, attachments, clientMessageId) =>
 					commands.send({ text, attachments, clientMessageId })}
-				commandError={commands.error}
+				commandError={
+					commands.interruptScopeChanged
+						? "Queued work changed while Stop was awaiting confirmation. Review the refreshed queue and press Stop again."
+						: commands.error
+				}
 				onDecide={commands.resolve}
 				onResolveInput={commands.resolveInput}
 				onInterrupt={commands.interrupt}

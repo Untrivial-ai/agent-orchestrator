@@ -41,6 +41,7 @@ export const chatFixture: ConversationSnapshot = {
 	hasMoreBefore: false,
 	activeBranchId: "branch-root",
 	branchPoints: [],
+	queuedTurns: [],
 	settings: { model: "gpt-5.6-terra", reasoningEffort: "high" },
 	// Healthy servers as the baseline, so the failed-server fixture is visibly the
 	// exception rather than the only time this field is populated.
@@ -599,6 +600,7 @@ export function chatFixtureLongHistory(turns: number): ConversationSnapshot {
 		latestSequence: sequence,
 		oldestSequence: 1,
 		hasMoreBefore: false,
+		queuedTurns: [],
 		settings: { model: "gpt-5.6-terra", reasoningEffort: "medium" },
 		turns: conversationTurns,
 		items,
@@ -776,6 +778,7 @@ export const chatFixtureEmpty: ConversationSnapshot = {
 	latestSequence: 0,
 	oldestSequence: 1,
 	hasMoreBefore: false,
+	queuedTurns: [],
 	settings: {},
 	turns: [],
 	items: [],

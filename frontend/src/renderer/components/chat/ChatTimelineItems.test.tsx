@@ -64,6 +64,12 @@ describe("TurnOutcome", () => {
 		expect(screen.queryByText("Done")).not.toBeInTheDocument();
 	});
 
+	it("does not claim an undispatched queued message interrupted an agent", () => {
+		render(<TurnOutcome state="queue_cancelled" />);
+		expect(screen.getByText("This queued message was cancelled")).toBeInTheDocument();
+		expect(screen.queryByText("The agent was interrupted by you")).not.toBeInTheDocument();
+	});
+
 	it("shows the message above a full-width rule", () => {
 		const { container } = render(<TurnOutcome state="failed" error="Provider error" />);
 

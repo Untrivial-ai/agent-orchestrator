@@ -43,6 +43,12 @@ export type ConversationTurn = {
 	plan?: ConversationPlan;
 };
 
+export type ConversationQueuedTurn = {
+	turnId: string;
+	text: string;
+	origin?: "human" | "automation" | "daemon" | "provider";
+};
+
 export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "failed";
 export type ConversationMessage = {
 	kind: "message";
@@ -212,6 +218,9 @@ export type ConversationSnapshot = {
 	oldestSequence: number;
 	hasMoreBefore: boolean;
 	turns: ConversationTurn[];
+	/** Complete durable queue in dispatch order. Undefined only for an older
+	 * daemon, where Stop must remain unavailable because the scope is unknown. */
+	queuedTurns?: ConversationQueuedTurn[];
 	items: ConversationItem[];
 	settings: TurnSettings;
 	title?: string;

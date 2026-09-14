@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityHierarchy, activityNodesRunning, activityStartsExpanded, canRollbackTurn, conversationMarkers, countActivityNodes, groupConversationByTurn, latestFirstConversationGroups, readableConversationItems } from "./timelineModel";
+import { activityHierarchy, activityNodesRunning, activityStartsExpanded, canRollbackTurn, conversationMarkers, countActivityNodes, groupConversationByTurn, latestFirstConversationGroups, readableConversationItems, turnOutcomeLabel } from "./timelineModel";
 import * as timelineModel from "./timelineModel";
 import type { ConversationActivity, ConversationSnapshot } from "./types";
 
@@ -79,6 +79,12 @@ describe("mobile Chat timeline model", () => {
 		value.turns[1].state = "completed";
 		value.capabilities = [];
 		expect(canRollbackTurn(value, value.turns[0])).toBe(false);
+	});
+
+	it("describes an interrupted turn that never started as a cancelled queued message", () => {
+		expect(turnOutcomeLabel({
+			id: "queued", state: "interrupted", requestedAt: "2026-08-05T00:00:00Z",
+		})).toBe("This queued message was cancelled");
 	});
 
 	it("opens failed and live-output activities but keeps settled mechanics collapsed", () => {

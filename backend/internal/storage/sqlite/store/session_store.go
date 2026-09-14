@@ -343,6 +343,15 @@ func (s *Store) DeleteSession(ctx context.Context, id domain.SessionID) (bool, e
 		return false, nil
 	}
 
+	// A seed can own a project conversation before runtime launch finishes. If
+	// launch rollback deletes it while Stop is awaiting an uncertain provider
+	// outcome, settle the owner's exact confirmed queue before either FK changes
+	// or cascades remove the only durable evidence. The reservation FK deliberately
+	// rejects deletion without this cleanup.
+	if err := settleOrphanedTurnsWithQueries(ctx, q, id, time.Now().UTC()); err != nil {
+		return false, fmt.Errorf("delete seed session: settle interrupt owner %s: %w", id, err)
+	}
+
 	// Drop change_log rows for this session id first so the FK doesn't reject
 	// the session DELETE. We do not touch project-level events (session_id IS
 	// NULL) — those belong to the project, not this session. Both this DELETE

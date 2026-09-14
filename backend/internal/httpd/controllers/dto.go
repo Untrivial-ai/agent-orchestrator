@@ -1841,6 +1841,12 @@ type SendConversationMessageRequest struct {
 	Resources       []ConversationResourceContentRequest `json:"resources,omitempty"`
 }
 
+// InterruptConversationRequest binds Stop to the complete ordered durable queue
+// the user reviewed. A mismatch is a conflict and has no side effects.
+type InterruptConversationRequest struct {
+	QueuedTurnIDs []string `json:"queuedTurnIds"`
+}
+
 // ConversationImageContentRequest is a native raster image prompt block.
 type ConversationImageContentRequest struct {
 	MIMEType string `json:"mimeType"`
@@ -2229,6 +2235,7 @@ type ConversationSnapshotResponse struct {
 	// in the active provider scope. It keeps edit gating exact across bounded pages.
 	NativeForkAvailableAfterSequence int64                             `json:"nativeForkAvailableAfterSequence"`
 	Turns                            []ConversationTurnResponse        `json:"turns"`
+	QueuedTurns                      []ConversationQueuedTurnResponse  `json:"queuedTurns"`
 	Messages                         []ConversationMessageResponse     `json:"messages"`
 	Activities                       []ConversationActivityResponse    `json:"activities"`
 	BranchPoints                     []ConversationBranchPointResponse `json:"branchPoints,omitempty"`
@@ -2287,6 +2294,15 @@ type ConversationSnapshotResponse struct {
 type ConversationBranchMaterializationResponse struct {
 	Strategy        string `json:"strategy" enum:"native,approximate_context"`
 	ReplayTruncated bool   `json:"replayTruncated"`
+}
+
+// ConversationQueuedTurnResponse is one complete durable queue item. It is not
+// timeline pagination: every queued turn is present, including automation and a
+// row whose readable message is unavailable.
+type ConversationQueuedTurnResponse struct {
+	TurnID string `json:"turnId"`
+	Text   string `json:"text"`
+	Origin string `json:"origin,omitempty" enum:"human,automation,daemon,provider"`
 }
 
 // ConversationBranchPointResponse describes sibling continuations at one prompt.

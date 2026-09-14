@@ -68,7 +68,7 @@ func (f *fakeChatService) ResolveInput(context.Context, domain.SessionID, string
 	return nil
 }
 
-func (f *fakeChatService) Interrupt(context.Context, domain.SessionID) error { return nil }
+func (f *fakeChatService) Interrupt(context.Context, domain.SessionID, []string) error { return nil }
 
 func (f *fakeChatService) Models(context.Context, domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
 	return nil, domain.ConversationSettings{}, nil

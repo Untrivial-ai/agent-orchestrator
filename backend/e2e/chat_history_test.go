@@ -151,7 +151,8 @@ func TestChatRollbackIsRefusedWhileATurnIsRunning(t *testing.T) {
 		}
 	}
 
-	d.mustCall("POST", "/sessions/"+session+"/conversation/interrupt", http.StatusNoContent, nil, nil)
+	d.mustCall("POST", "/sessions/"+session+"/conversation/interrupt", http.StatusNoContent,
+		map[string]any{"queuedTurnIds": []string{}}, nil)
 }
 
 // A turn id from nowhere is a 404, and a turn the provider never accepted is a

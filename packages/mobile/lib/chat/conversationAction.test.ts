@@ -15,6 +15,8 @@ describe("mobile conversation action errors", () => {
 			.toContain("Stop the current turn");
 		expect(conversationActionError(Object.assign(new Error("conflict"), { code: "CHAT_REQUEST_NOT_PENDING" })))
 			.toContain("already answered");
+		expect(conversationActionError(Object.assign(new Error("conflict"), { code: "CHAT_QUEUE_SCOPE_CHANGED" })))
+			.toBe("Queued work changed while Stop was awaiting confirmation. Review the refreshed queue and press Stop again.");
 	});
 
 	it("preserves typed refusal identities so unsupported controls can withdraw", () => {

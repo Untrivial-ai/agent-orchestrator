@@ -2042,6 +2042,321 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 	}
 }
 
+type pauseAfterProjectBindStore struct {
+	*sqlite.Store
+	session domain.SessionID
+	bound   chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *pauseAfterProjectBindStore) CreateProjectConversationWithContextReset(
+	ctx context.Context,
+	id string,
+	project domain.ProjectID,
+	session domain.SessionID,
+	reset domain.ConversationActivity,
+	now time.Time,
+) (domain.ConversationRecord, error) {
+	conversation, err := s.Store.CreateProjectConversationWithContextReset(
+		ctx, id, project, session, reset, now,
+	)
+	if err == nil && session == s.session {
+		s.once.Do(func() { close(s.bound) })
+		<-s.release
+	}
+	return conversation, err
+}
+
+func TestOverlappingProjectStartsCannotPublishRetiredOwner(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC)
+	original, err := st.CreateConversation(
+		ctx, "overlap-project-conversation", domain.ConversationScopeProject,
+		testProject, testSession, now,
+	)
+	if err != nil {
+		t.Fatalf("seed project conversation: %v", err)
+	}
+	var owners []domain.SessionID
+	for _, requestedID := range []domain.SessionID{"overlap-start-b", "overlap-start-c"} {
+		record, err := st.CreateSession(ctx, domain.SessionRecord{
+			ID: requestedID, ProjectID: testProject, Kind: domain.KindOrchestrator,
+			Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+			CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("seed session %s: %v", requestedID, err)
+		}
+		owners = append(owners, record.ID)
+	}
+	retired, current := owners[0], owners[1]
+
+	paused := &pauseAfterProjectBindStore{
+		Store: st, session: retired, bound: make(chan struct{}), release: make(chan struct{}),
+	}
+	var (
+		providerStarts atomic.Int32
+		providersMu    sync.Mutex
+		providers      []*fakeConversation
+		nextID         atomic.Int32
+	)
+	driver := fakeDriver{start: func(ports.ChatStartConfig) (ports.ChatConversation, error) {
+		providerStarts.Add(1)
+		conversation := newFakeConversation()
+		providersMu.Lock()
+		providers = append(providers, conversation)
+		providersMu.Unlock()
+		return conversation, nil
+	}}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: paused, Sessions: st,
+		Drivers: fakeRegistry{driver: driver},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			return fmt.Sprintf("overlap-start-%d", nextID.Add(1))
+		},
+		Now: func() time.Time { return now.Add(time.Minute) },
+	})
+	t.Cleanup(func() {
+		select {
+		case <-paused.release:
+		default:
+			close(paused.release)
+		}
+		_ = svc.Stop(context.Background(), retired)
+		_ = svc.Stop(context.Background(), current)
+		providersMu.Lock()
+		defer providersMu.Unlock()
+		for _, conversation := range providers {
+			_ = conversation.Close()
+		}
+	})
+	retiredWorkspace := t.TempDir()
+	currentWorkspace := t.TempDir()
+
+	retiredDone := make(chan error, 1)
+	go func() {
+		_, startErr := svc.Start(ctx, chatsvc.StartConfig{
+			SessionID: retired, ProjectID: testProject, Kind: domain.KindOrchestrator,
+			Harness: domain.HarnessCodex, WorkspacePath: retiredWorkspace, Model: "retired-b",
+		})
+		retiredDone <- startErr
+	}()
+	select {
+	case <-paused.bound:
+	case err := <-retiredDone:
+		t.Fatalf("retired Start returned before post-bind pause: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("retired Start did not pause after binding project ownership")
+	}
+
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: current, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: currentWorkspace, Model: "current-c",
+	}); err != nil {
+		t.Fatalf("Start current owner: %v", err)
+	}
+	conversation, err := st.ConversationForSession(ctx, current)
+	if err != nil {
+		t.Fatalf("ConversationForSession(current): %v", err)
+	}
+	if conversation.ID != original.ID {
+		t.Fatalf("current conversation = %q, want shared project narrative %q", conversation.ID, original.ID)
+	}
+	for _, activity := range []domain.ConversationActivity{
+		{ID: "current-approval", Kind: domain.ActivityKindApproval, Status: domain.ActivityStatusPending,
+			Summary: "Approve current work", RequestID: "current-approval", ProviderItemID: "current-approval"},
+		{ID: "current-input", Kind: domain.ActivityKindUserInput, Status: domain.ActivityStatusPending,
+			Summary: "Answer current question", RequestID: "current-input", ProviderItemID: "current-input"},
+	} {
+		if err := st.UpsertActivity(ctx, conversation.ID, "", activity, now.Add(2*time.Minute)); err != nil {
+			t.Fatalf("seed %s: %v", activity.Kind, err)
+		}
+	}
+
+	close(paused.release)
+	select {
+	case err := <-retiredDone:
+		if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+			t.Fatalf("retired Start = %v, want ErrControllerHandoff", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("retired Start did not abort after losing project ownership")
+	}
+
+	snapshot, err := st.LoadConversationSnapshot(ctx, conversation.ID)
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	if snapshot.Conversation.Settings.Model != "current-c" {
+		t.Fatalf("conversation model = %q, want current-c", snapshot.Conversation.Settings.Model)
+	}
+	states := make(map[string]domain.ActivityStatus, len(snapshot.Activities))
+	for _, activity := range snapshot.Activities {
+		states[activity.ID] = activity.Status
+	}
+	if states["current-approval"] != domain.ActivityStatusPending ||
+		states["current-input"] != domain.ActivityStatusPending {
+		t.Fatalf("current pending interactions = %#v, want both pending", states)
+	}
+	if got := providerStarts.Load(); got != 1 {
+		t.Fatalf("provider starts = %d, want only current owner", got)
+	}
+}
+
+func TestRetiredProjectControllerRejectsSendAfterConversationRebind(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	provider := newFakeConversation()
+	var nextID atomic.Int32
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			return fmt.Sprintf("retired-send-%d", nextID.Add(1))
+		},
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start first project controller: %v", err)
+	}
+	replacement, err := st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("create replacement orchestrator: %v", err)
+	}
+	if _, err := st.CreateConversation(
+		ctx, "unused-replacement-conversation", domain.ConversationScopeProject,
+		testProject, replacement.ID, time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("rebind project conversation: %v", err)
+	}
+
+	_, err = svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "must not reach the retired agent", ClientMessageID: "retired-send",
+		Origin: domain.MessageOriginHuman,
+	})
+	if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("Send through retired project controller = %v, want ErrControllerHandoff", err)
+	}
+	if got := provider.sentTexts(); len(got) != 0 {
+		t.Fatalf("retired provider received work after rebind: %v", got)
+	}
+}
+
+type pauseAfterAppendStore struct {
+	*sqlite.Store
+	appended chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (s *pauseAfterAppendStore) AppendUserMessage(
+	ctx context.Context,
+	conversationID string,
+	session domain.SessionID,
+	generation string,
+	message domain.ConversationMessage,
+	turnID string,
+	now time.Time,
+) (bool, error) {
+	created, err := s.Store.AppendUserMessage(
+		ctx, conversationID, session, generation, message, turnID, now,
+	)
+	if err == nil && created {
+		s.once.Do(func() { close(s.appended) })
+		<-s.release
+	}
+	return created, err
+}
+
+func TestProjectRebindAfterAppendPreventsRetiredProviderDispatch(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	provider := newFakeConversation()
+	pausedStore := &pauseAfterAppendStore{
+		Store: st, appended: make(chan struct{}), release: make(chan struct{}),
+	}
+	var nextID atomic.Int32
+	svc := chatsvc.New(chatsvc.Options{
+		Store: pausedStore, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			return fmt.Sprintf("rebind-after-append-%d", nextID.Add(1))
+		},
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	// Release the seam before stopping the service if an earlier assertion fails.
+	// Cleanups run in reverse registration order, and Stop also needs sendMu.
+	t.Cleanup(func() {
+		select {
+		case <-pausedStore.release:
+		default:
+			close(pausedStore.release)
+		}
+	})
+	controller, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start first project controller: %v", err)
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, sendErr := svc.Send(ctx, testSession, ports.ChatUserMessage{
+			Text: "admitted before project rebind", ClientMessageID: "rebind-after-append",
+			Origin: domain.MessageOriginHuman,
+		})
+		sendDone <- sendErr
+	}()
+	select {
+	case <-pausedStore.appended:
+	case <-time.After(4 * time.Second):
+		t.Fatal("Send did not durably append before the rebind")
+	}
+
+	replacement, err := st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("create replacement orchestrator: %v", err)
+	}
+	if _, err := st.CreateConversation(
+		ctx, "unused-racing-replacement", domain.ConversationScopeProject,
+		testProject, replacement.ID, time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("rebind project conversation after append: %v", err)
+	}
+	close(pausedStore.release)
+
+	if err := <-sendDone; !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("Send after losing project ownership = %v, want ErrControllerHandoff", err)
+	}
+	if got := provider.sentTexts(); len(got) != 0 {
+		t.Fatalf("retired provider received work after rebind: %v", got)
+	}
+	snapshot, err := st.LoadConversationSnapshot(ctx, controller.ConversationID())
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	if got := turnStateByText(t, snapshot)["admitted before project rebind"]; got != domain.TurnStateFailed {
+		t.Fatalf("admitted turn after project rebind = %q, want failed", got)
+	}
+}
+
 func TestFreshProjectControllerStartFailureKeepsPreviousHistoryHidden(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -2151,23 +2466,34 @@ func newHarnessWithConversation(t *testing.T, conv ports.ChatConversation) *harn
 	return newHarnessWithConversationAndStore(t, conv, func(st *sqlite.Store) chatsvc.Store { return st })
 }
 
+func newProjectHarnessWithConversation(t *testing.T, conv ports.ChatConversation) *harness {
+	t.Helper()
+	return newHarnessWithConversationAndStoreKind(
+		t, conv, func(st *sqlite.Store) chatsvc.Store { return st }, domain.KindOrchestrator,
+	)
+}
+
 func newHarnessWithConversationAndStore(
 	t *testing.T,
 	conv ports.ChatConversation,
 	wrapStore func(*sqlite.Store) chatsvc.Store,
 ) *harness {
-	return newHarnessWithConversationAndStoreForHarness(t, conv, wrapStore, domain.HarnessCodex)
+	return newHarnessWithConversationAndStoreOptions(t, conv, wrapStore, "", domain.HarnessCodex)
+}
+
+func newHarnessWithConversationAndStoreKind(t *testing.T, conv ports.ChatConversation, wrapStore func(*sqlite.Store) chatsvc.Store, kind domain.SessionKind) *harness {
+	return newHarnessWithConversationAndStoreOptions(t, conv, wrapStore, kind, domain.HarnessCodex)
 }
 
 func newHarnessForHarness(t *testing.T, agentHarness domain.AgentHarness) *harness {
-	t.Helper()
-	return newHarnessWithConversationAndStoreForHarness(t, nil, func(st *sqlite.Store) chatsvc.Store { return st }, agentHarness)
+	return newHarnessWithConversationAndStoreOptions(t, nil, func(st *sqlite.Store) chatsvc.Store { return st }, "", agentHarness)
 }
 
-func newHarnessWithConversationAndStoreForHarness(
+func newHarnessWithConversationAndStoreOptions(
 	t *testing.T,
 	conv ports.ChatConversation,
 	wrapStore func(*sqlite.Store) chatsvc.Store,
+	kind domain.SessionKind,
 	agentHarness domain.AgentHarness,
 ) *harness {
 	t.Helper()
@@ -2217,6 +2543,7 @@ func newHarnessWithConversationAndStoreForHarness(
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID:     testSession,
 		ProjectID:     testProject,
+		Kind:          kind,
 		Harness:       agentHarness,
 		WorkspacePath: t.TempDir(),
 	})
@@ -2227,6 +2554,56 @@ func newHarnessWithConversationAndStoreForHarness(
 
 	h.svc, h.ctrl = svc, ctrl
 	return h
+}
+
+func rebindProjectConversationAndQueue(
+	t *testing.T,
+	h *harness,
+	turnID string,
+	text string,
+) domain.SessionID {
+	t.Helper()
+	ctx := context.Background()
+	now := h.now().Add(time.Minute)
+	replacement, err := h.st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: testProject,
+		Kind:      domain.KindOrchestrator,
+		Harness:   domain.HarnessCodex,
+		Mode:      domain.SessionModeChat,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create replacement project owner: %v", err)
+	}
+	if _, err := h.st.CreateConversation(
+		ctx, "unused-replacement-conversation", domain.ConversationScopeProject,
+		testProject, replacement.ID, now,
+	); err != nil {
+		t.Fatalf("rebind project conversation: %v", err)
+	}
+	const generation = "replacement-generation"
+	if err := h.st.ClaimChatControllerGeneration(ctx, replacement.ID, generation, now); err != nil {
+		t.Fatalf("claim replacement controller generation: %v", err)
+	}
+	created, err := h.st.AppendUserMessage(
+		ctx, h.ctrl.ConversationID(), replacement.ID, generation,
+		domain.ConversationMessage{
+			ID:              turnID + "-message",
+			Text:            text,
+			Origin:          domain.MessageOriginHuman,
+			ClientMessageID: turnID + "-client",
+		},
+		turnID,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("queue replacement work: %v", err)
+	}
+	if !created {
+		t.Fatal("replacement queue item was not created")
+	}
+	return replacement.ID
 }
 
 // awaitSnapshot polls until pred holds, so a test does not race the projector.
@@ -2274,6 +2651,83 @@ func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 	for _, message := range snapshot.Messages {
 		if message.Text == "must not survive" {
 			t.Fatalf("stale controller message was projected: %+v", message)
+		}
+	}
+}
+
+func TestRetiredProjectControllerCannotInterruptReplacementQueue(t *testing.T) {
+	provider := newInterruptRecorder()
+	h := newProjectHarnessWithConversation(t, provider)
+	ctx := context.Background()
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "old owner running", ClientMessageID: "old-owner-running-interrupt",
+		Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("start old owner turn: %v", err)
+	}
+	provider.markActive("provider-turn-1")
+	provider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1",
+	})
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		return turnStateByText(t, snapshot)["old owner running"] == domain.TurnStateRunning
+	})
+
+	const replacementTurnID = "replacement-queued-interrupt"
+	rebindProjectConversationAndQueue(t, h, replacementTurnID, "replacement-owned work")
+	err := h.svc.Interrupt(ctx, testSession, []string{replacementTurnID})
+	if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("retired Interrupt = %v, want ErrControllerHandoff", err)
+	}
+	if attempts := provider.attemptCount(); attempts != 0 {
+		t.Fatalf("retired provider interrupt attempts = %d, want 0", attempts)
+	}
+	turn, err := h.st.TurnByID(ctx, replacementTurnID)
+	if err != nil {
+		t.Fatalf("load replacement turn: %v", err)
+	}
+	if turn.State != domain.TurnStateQueued {
+		t.Fatalf("replacement turn state = %q, want queued", turn.State)
+	}
+}
+
+func TestRetiredProjectControllerEventsDoNotReachReplacementNarrative(t *testing.T) {
+	h := newProjectHarnessWithConversation(t, nil)
+	ctx := context.Background()
+	rebindProjectConversationAndQueue(t, h, "replacement-queued-event", "replacement-owned work")
+	if err := h.st.UpsertActivity(ctx, h.ctrl.ConversationID(), "", domain.ConversationActivity{
+		ID:             "replacement-approval",
+		Kind:           domain.ActivityKindApproval,
+		Status:         domain.ActivityStatusPending,
+		Summary:        "Replacement needs approval",
+		RequestID:      "replacement-request",
+		ProviderItemID: "replacement-approval-item",
+	}, h.now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("seed replacement approval: %v", err)
+	}
+
+	h.conv.emit(ports.ChatEvent{
+		Kind:           ports.ChatEventMessageCompleted,
+		ProviderTurnID: "provider-turn-late",
+		ProviderItemID: "provider-item-late",
+		Text:           "late answer from retired provider",
+	})
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatalf("stop retired controller after late event: %v", err)
+	}
+
+	snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("load replacement narrative: %v", err)
+	}
+	for _, message := range snapshot.Messages {
+		if message.Text == "late answer from retired provider" {
+			t.Fatalf("retired provider event reached replacement narrative: %+v", message)
+		}
+	}
+	for _, activity := range snapshot.Activities {
+		if activity.RequestID == "replacement-request" && activity.Status != domain.ActivityStatusPending {
+			t.Fatalf("retired controller cleanup settled replacement approval: %+v", activity)
 		}
 	}
 }
@@ -2697,6 +3151,47 @@ func TestControllerStreamClosureReportsSessionExited(t *testing.T) {
 		}
 	}
 	t.Fatalf("controller stream ended without an exited lifecycle signal: %+v", h.activity.snapshot())
+}
+
+type failOrphanSettlementStore struct {
+	*sqlite.Store
+	err error
+}
+
+func (s *failOrphanSettlementStore) SettleOrphanedTurns(
+	context.Context,
+	domain.SessionID,
+	time.Time,
+) error {
+	return s.err
+}
+
+func TestStartFailsClosedWhenOrphanedStopSettlementFails(t *testing.T) {
+	st := openStore(t)
+	conv := newFakeConversation()
+	settleErr := errors.New("injected orphaned Stop settlement failure")
+	svc := chatsvc.New(chatsvc.Options{
+		Store: &failOrphanSettlementStore{Store: st, err: settleErr}, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "fail-closed-start-id" },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+
+	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(),
+	})
+	if !errors.Is(err, settleErr) {
+		t.Fatalf("Start error = %v, want orphaned Stop settlement failure", err)
+	}
+
+	if _, err := svc.StartChatTurn(context.Background(), testSession, "must stay fenced"); !errors.Is(err, chatsvc.ErrNoController) {
+		t.Fatalf("StartChatTurn error = %v, want ErrNoController", err)
+	}
+	if sent := conv.sentTexts(); len(sent) != 0 {
+		t.Fatalf("provider received work after failed Stop settlement: %v", sent)
+	}
 }
 
 func TestControllerReadyRunsBeforeStreamProjection(t *testing.T) {
@@ -3252,13 +3747,14 @@ func TestInterruptCancelsWhatIsQueuedBehindTheTurn(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
-	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
-		Text: "queued", ClientMessageID: "c2",
-	}); err != nil {
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "queued", ClientMessageID: "c2", Origin: domain.MessageOriginAutomation,
+	})
+	if err != nil {
 		t.Fatalf("mid-turn Send: %v", err)
 	}
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, []string{queued.ID}); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 	h.conv.emit(ports.ChatEvent{
@@ -3989,13 +4485,14 @@ func TestMessageTypedAfterStopIsStillDelivered(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
-	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+	beforeStop, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "before stop", ClientMessageID: "c2",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Send before stop: %v", err)
 	}
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, []string{beforeStop.ID}); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 
@@ -4144,13 +4641,19 @@ type blockingInterruptRefusalConversation struct {
 	release     chan struct{}
 	startedOnce sync.Once
 	releaseOnce sync.Once
+	result      error
 }
 
-func newBlockingInterruptRefusalConversation() *blockingInterruptRefusalConversation {
+func newBlockingInterruptRefusalConversation(result ...error) *blockingInterruptRefusalConversation {
+	interruptResult := ports.ErrChatNoActiveTurn
+	if len(result) > 0 {
+		interruptResult = result[0]
+	}
 	return &blockingInterruptRefusalConversation{
 		fakeConversation: newFakeConversation(),
 		started:          make(chan struct{}),
 		release:          make(chan struct{}),
+		result:           interruptResult,
 	}
 }
 
@@ -4158,9 +4661,9 @@ func (c *blockingInterruptRefusalConversation) Interrupt(ctx context.Context, _ 
 	c.startedOnce.Do(func() { close(c.started) })
 	select {
 	case <-c.release:
-		return ports.ErrChatNoActiveTurn
+		return c.result
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(ports.ErrChatInterruptDeliveryUncertain, ctx.Err())
 	}
 }
 
@@ -4252,11 +4755,74 @@ func TestInterruptWaitsForTheProviderToAcknowledgeTheTurn(t *testing.T) {
 		conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
 	}()
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, nil); err != nil {
 		t.Fatalf("Interrupt raced the provider's acknowledgement: %v", err)
 	}
 	if got := conv.attemptCount(); got != 1 {
 		t.Errorf("interrupt attempts = %d, want 1", got)
+	}
+}
+
+// Cancelling the HTTP request while Stop is waiting for turn-started is not a
+// provider acknowledgement. AO must release the frozen queue and report the
+// cancellation, not infer that the provider turn disappeared and claim Stop
+// succeeded without ever contacting the provider.
+func TestInterruptRequestCancellationWhileAwaitingAcknowledgementReleasesQueue(t *testing.T) {
+	conv := newInterruptRecorder() // never acknowledges provider-turn-1
+	h := newHarnessWithConversation(t, conv)
+	ctx := context.Background()
+
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "running", ClientMessageID: "cancelled-stop-running",
+	}); err != nil {
+		t.Fatalf("Send running: %v", err)
+	}
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "queued", ClientMessageID: "cancelled-stop-queued",
+	})
+	if err != nil || queued.State != domain.TurnStateQueued {
+		t.Fatalf("Send queued = %+v, %v; want queued", queued, err)
+	}
+
+	interruptCtx, cancel := context.WithCancel(ctx)
+	interruptDone := make(chan error, 1)
+	go func() {
+		interruptDone <- h.svc.Interrupt(interruptCtx, testSession, []string{queued.ID})
+	}()
+
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		_, nextErr := h.st.NextQueuedTurn(ctx, h.ctrl.ConversationID())
+		if errors.Is(nextErr, domain.ErrNoQueuedTurn) {
+			break
+		}
+		if nextErr != nil {
+			t.Fatalf("inspect pending Stop fence: %v", nextErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Interrupt never installed its durable queue fence")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	if err := <-interruptDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Interrupt error = %v, want context.Canceled", err)
+	}
+	if got := conv.attemptCount(); got != 0 {
+		t.Fatalf("provider interrupt attempts = %d, want 0 after caller cancellation", got)
+	}
+	next, err := h.st.NextQueuedTurn(ctx, h.ctrl.ConversationID())
+	if err != nil || next.TurnID != queued.ID {
+		t.Fatalf("queue after cancelled Stop = %+v, %v; want %s", next, err, queued.ID)
+	}
+	snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	states := turnStateByText(t, snapshot)
+	if states["running"] != domain.TurnStateRunning || states["queued"] != domain.TurnStateQueued {
+		t.Fatalf("states after cancelled Stop = %#v, want running/queued unchanged", states)
 	}
 }
 
@@ -4282,7 +4848,7 @@ func TestInterruptWaitsForAcknowledgementAfterRacingDispatch(t *testing.T) {
 	}
 
 	interruptDone := make(chan error, 1)
-	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession) }()
+	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession, nil) }()
 	close(conv.releaseSend)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("Send: %v", err)
@@ -4316,7 +4882,7 @@ func TestProviderRefusalReconcilesTheDurableTurnAsInterrupted(t *testing.T) {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, nil); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 
@@ -4349,14 +4915,15 @@ func TestProviderRefusalPreservesMessageQueuedAfterStop(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
-	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+	beforeStop, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "before stop", ClientMessageID: "c2",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Send before stop: %v", err)
 	}
 
 	interruptDone := make(chan error, 1)
-	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession) }()
+	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession, []string{beforeStop.ID}) }()
 	select {
 	case <-conv.started:
 	case <-time.After(4 * time.Second):
@@ -4388,6 +4955,114 @@ func TestProviderRefusalPreservesMessageQueuedAfterStop(t *testing.T) {
 	}
 }
 
+// A provider can report shutdown or close its stream while Stop is waiting on the
+// provider RPC. Neither cleanup path may settle the reserved queue or release its
+// global fence before Stop commits the provider outcome; doing so makes Stop's
+// reservation CAS fail and strands both the durable fence and its in-memory mirror.
+func TestProviderShutdownWaitsForPendingInterruptQueueReconciliation(t *testing.T) {
+	tests := []struct {
+		name           string
+		reportShutdown func(*testing.T, *blockingInterruptRefusalConversation)
+		streamClosed   bool
+	}{
+		{
+			name: "controller stopped event",
+			reportShutdown: func(_ *testing.T, conv *blockingInterruptRefusalConversation) {
+				conv.emit(ports.ChatEvent{
+					Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped,
+				})
+			},
+		},
+		{
+			name: "event stream closed",
+			reportShutdown: func(t *testing.T, conv *blockingInterruptRefusalConversation) {
+				t.Helper()
+				if err := conv.Close(); err != nil {
+					t.Fatalf("close provider stream: %v", err)
+				}
+			},
+			streamClosed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conv := newBlockingInterruptRefusalConversation()
+			t.Cleanup(conv.unblock)
+			var recordingStore *recordingCleanupStore
+			h := newHarnessWithConversationAndStore(t, conv, func(st *sqlite.Store) chatsvc.Store {
+				recordingStore = &recordingCleanupStore{Store: st, called: make(chan struct{}, 2)}
+				return recordingStore
+			})
+			ctx := context.Background()
+
+			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+				Text: "running", ClientMessageID: "shutdown-stop-running",
+			}); err != nil {
+				t.Fatalf("Send running: %v", err)
+			}
+			conv.emit(ports.ChatEvent{
+				Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1",
+			})
+			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
+			})
+			queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+				Text: "queued", ClientMessageID: "shutdown-stop-queued",
+			})
+			if err != nil || queued.State != domain.TurnStateQueued {
+				t.Fatalf("Send queued = %+v, %v; want queued", queued, err)
+			}
+
+			interruptDone := make(chan error, 1)
+			go func() {
+				interruptDone <- h.svc.Interrupt(ctx, testSession, []string{queued.ID})
+			}()
+			select {
+			case <-conv.started:
+			case <-time.After(4 * time.Second):
+				t.Fatal("provider interrupt did not start")
+			}
+			tt.reportShutdown(t, conv)
+			select {
+			case <-recordingStore.called:
+				t.Fatal("controller cleanup ran before Stop reconciled its durable queue reservation")
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			conv.unblock()
+			if err := <-interruptDone; err != nil {
+				t.Fatalf("Interrupt after provider shutdown: %v", err)
+			}
+			select {
+			case <-recordingStore.called:
+			case <-time.After(4 * time.Second):
+				t.Fatal("controller cleanup did not run after Stop reconciliation")
+			}
+			if tt.streamClosed {
+				h.ctrl.Wait()
+			} else {
+				deadline := time.Now().Add(4 * time.Second)
+				for h.ctrl.State() != ports.ChatControllerStopped && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			if got := h.ctrl.State(); got != ports.ChatControllerStopped {
+				t.Fatalf("controller state = %q, want stopped after provider shutdown", got)
+			}
+			snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+			if err != nil {
+				t.Fatalf("load snapshot: %v", err)
+			}
+			states := turnStateByText(t, snapshot)
+			if states["running"] != domain.TurnStateInterrupted ||
+				states["queued"] != domain.TurnStateInterrupted {
+				t.Fatalf("states after shutdown during Stop = %#v, want both interrupted", states)
+			}
+		})
+	}
+}
+
 // A provider can publish completion just before its interrupt call reports that
 // no active turn remains. If that completion commits first, reconciliation must
 // not overwrite it or the queue transition it already performed.
@@ -4406,14 +5081,15 @@ func TestProviderRefusalDoesNotOverwriteCommittedCompletion(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
-	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+	beforeStop, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "before stop", ClientMessageID: "c2",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Send before stop: %v", err)
 	}
 
 	interruptDone := make(chan error, 1)
-	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession) }()
+	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession, []string{beforeStop.ID}) }()
 	select {
 	case <-conv.emitted:
 	case <-time.After(4 * time.Second):
@@ -4422,15 +5098,19 @@ func TestProviderRefusalDoesNotOverwriteCommittedCompletion(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		states := turnStateByText(t, s)
 		return states["running"] == domain.TurnStateCompleted &&
-			states["before stop"] == domain.TurnStateInterrupted
+			states["before stop"] == domain.TurnStateQueued
 	})
+	if got := conv.sentTexts(); len(got) != 1 {
+		t.Fatalf("provider received %v before the interrupt outcome was known", got)
+	}
 
 	conv.unblock()
 	if err := <-interruptDone; err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["running"].Terminal()
+		states := turnStateByText(t, s)
+		return states["running"].Terminal() && states["before stop"] == domain.TurnStateInterrupted
 	})
 	if got := turnStateByText(t, snapshot)["running"]; got != domain.TurnStateCompleted {
 		t.Fatalf("turn after committed completion = %q, want completed", got)
@@ -4475,7 +5155,7 @@ func TestInterruptReconcilesStaleRunningTurnOnDisk(t *testing.T) {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, nil); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 
@@ -4510,7 +5190,7 @@ func TestInterruptReconcilesAllVisibleRunningTurns(t *testing.T) {
 			s.Turns[1].State == domain.TurnStateRunning
 	})
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, nil); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
@@ -4529,9 +5209,10 @@ func TestInterruptReconcilesAllVisibleRunningTurns(t *testing.T) {
 	}
 }
 
-// In the no-memory recovery path, provider cancellation happens under sendMu.
-// A prompt submitted after Stop therefore waits for stale settlement and then
-// starts as new work instead of replacing the recovery target.
+// In the no-memory recovery path, provider cancellation cannot hold sendMu: a
+// provider response may depend on a completion projection that needs the same
+// lock. A prompt submitted after Stop is accepted into the fenced queue and only
+// starts after stale settlement commits.
 func TestInterruptDurableFallbackPreservesPostStopSend(t *testing.T) {
 	conv := newBlockingInterruptRefusalConversation()
 	t.Cleanup(conv.unblock)
@@ -4547,7 +5228,7 @@ func TestInterruptDurableFallbackPreservesPostStopSend(t *testing.T) {
 	})
 
 	interruptDone := make(chan error, 1)
-	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession) }()
+	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession, nil) }()
 	select {
 	case <-conv.started:
 	case <-time.After(4 * time.Second):
@@ -4555,25 +5236,19 @@ func TestInterruptDurableFallbackPreservesPostStopSend(t *testing.T) {
 	}
 
 	h.advance(time.Second)
-	sendDone := make(chan error, 1)
-	go func() {
-		_, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
-			Text: "after stop", ClientMessageID: "post-stop-fallback",
-		})
-		sendDone <- err
-	}()
-	select {
-	case err := <-sendDone:
-		t.Fatalf("post-Stop Send crossed reconciliation lock early: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	postStop, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "after stop", ClientMessageID: "post-stop-fallback",
+	})
+	if err != nil {
+		t.Fatalf("post-Stop Send: %v", err)
+	}
+	if postStop.State != domain.TurnStateQueued {
+		t.Fatalf("post-Stop Send = %q, want queued until reconciliation", postStop.State)
 	}
 
 	conv.unblock()
 	if err := <-interruptDone; err != nil {
 		t.Fatalf("Interrupt: %v", err)
-	}
-	if err := <-sendDone; err != nil {
-		t.Fatalf("post-Stop Send: %v", err)
 	}
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 2 && s.Turns[0].State == domain.TurnStateInterrupted &&
@@ -4587,12 +5262,146 @@ func TestInterruptDurableFallbackPreservesPostStopSend(t *testing.T) {
 	}
 }
 
+func TestInterruptDurableFallbackFailureReleasesFenceWithoutDispatchingIntoStaleTurn(t *testing.T) {
+	providerFailure := errors.New("provider unavailable")
+	conv := newBlockingInterruptRefusalConversation(providerFailure)
+	t.Cleanup(conv.unblock)
+	h := newHarnessWithConversation(t, conv)
+	ctx := context.Background()
+
+	if err := h.st.AdoptProviderTurn(ctx, h.ctrl.ConversationID(), testSession,
+		h.ctrl.Generation(), "stale-turn", "provider-stale", h.now()); err != nil {
+		t.Fatalf("AdoptProviderTurn: %v", err)
+	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
+	})
+
+	interruptDone := make(chan error, 1)
+	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession, nil) }()
+	select {
+	case <-conv.started:
+	case <-time.After(4 * time.Second):
+		t.Fatal("durable fallback did not reach provider interrupt")
+	}
+	postStop, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "after failed stop", ClientMessageID: "after-failed-stop",
+	})
+	if err != nil || postStop.State != domain.TurnStateQueued {
+		t.Fatalf("post-Stop Send = %+v, %v; want queued", postStop, err)
+	}
+
+	conv.unblock()
+	if err := <-interruptDone; !errors.Is(err, providerFailure) {
+		t.Fatalf("Interrupt error = %v, want provider failure", err)
+	}
+	snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	states := turnStateByText(t, snapshot)
+	if states["after failed stop"] != domain.TurnStateQueued {
+		t.Fatalf("post-Stop work = %q, want queued after provider failure", states["after failed stop"])
+	}
+	if snapshot.Turns[0].State != domain.TurnStateRunning {
+		t.Fatalf("stale provider turn = %q, want running after refused Stop", snapshot.Turns[0].State)
+	}
+	if got := conv.sentTexts(); len(got) != 0 {
+		t.Fatalf("provider received %v after refusing Stop", got)
+	}
+}
+
+func TestInterruptDurableFallbackReconcilesAfterDispatchedRequestCancellation(t *testing.T) {
+	conv := newBlockingInterruptRefusalConversation()
+	t.Cleanup(conv.unblock)
+	h := newHarnessWithConversation(t, conv)
+	ctx := context.Background()
+
+	if err := h.st.AdoptProviderTurn(ctx, h.ctrl.ConversationID(), testSession,
+		h.ctrl.Generation(), "stale-turn", "provider-stale", h.now()); err != nil {
+		t.Fatalf("AdoptProviderTurn: %v", err)
+	}
+	created, err := h.st.AppendUserMessage(ctx, h.ctrl.ConversationID(), testSession,
+		h.ctrl.Generation(), domain.ConversationMessage{
+			ID: "confirmed-message", Text: "confirmed for Stop", Origin: domain.MessageOriginHuman,
+		}, "confirmed-turn", h.now())
+	if err != nil || !created {
+		t.Fatalf("append confirmed queue: created=%v err=%v", created, err)
+	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		states := turnStateByText(t, s)
+		return len(s.Turns) == 2 && s.Turns[0].ProviderTurnID == "provider-stale" &&
+			s.Turns[0].State == domain.TurnStateRunning &&
+			states["confirmed for Stop"] == domain.TurnStateQueued
+	})
+
+	interruptCtx, cancel := context.WithCancel(ctx)
+	interruptDone := make(chan error, 1)
+	go func() {
+		interruptDone <- h.svc.Interrupt(interruptCtx, testSession, []string{"confirmed-turn"})
+	}()
+	select {
+	case <-conv.started:
+	case <-time.After(4 * time.Second):
+		t.Fatal("durable fallback did not dispatch provider interrupt")
+	}
+
+	survivor, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "after uncertain Stop", ClientMessageID: "after-uncertain",
+	})
+	if err != nil || survivor.State != domain.TurnStateQueued {
+		t.Fatalf("post-Stop survivor = %+v, %v; want queued", survivor, err)
+	}
+	cancelProbe, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "cancel after reconciliation", ClientMessageID: "cancel-probe",
+	})
+	if err != nil || cancelProbe.State != domain.TurnStateQueued {
+		t.Fatalf("post-Stop cancel probe = %+v, %v; want queued", cancelProbe, err)
+	}
+
+	cancel()
+	interruptErr := <-interruptDone
+	if !errors.Is(interruptErr, context.Canceled) ||
+		!errors.Is(interruptErr, ports.ErrChatInterruptDeliveryUncertain) {
+		t.Fatalf("Interrupt error = %v, want cancelled delivery-uncertain result", interruptErr)
+	}
+	if err := h.svc.CancelQueuedTurn(ctx, testSession, cancelProbe.ID); !errors.Is(err, chatsvc.ErrInterruptPending) {
+		t.Fatalf("queue command before the provider outcome settled = %v, want pending Stop", err)
+	}
+
+	conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-stale",
+		TurnState: domain.TurnStateCompleted,
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["after uncertain Stop"] == domain.TurnStateRunning
+	})
+	if err := h.svc.CancelQueuedTurn(ctx, testSession, cancelProbe.ID); err != nil {
+		t.Fatalf("queue command remained blocked after the provider outcome settled: %v", err)
+	}
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		states := turnStateByText(t, s)
+		return len(s.Turns) == 4 && s.Turns[0].ProviderTurnID == "provider-stale" &&
+			s.Turns[0].State == domain.TurnStateCompleted &&
+			states["confirmed for Stop"] == domain.TurnStateInterrupted &&
+			states["after uncertain Stop"] == domain.TurnStateRunning &&
+			states["cancel after reconciliation"] == ""
+	})
+	states := turnStateByText(t, snapshot)
+	if states["confirmed for Stop"] != domain.TurnStateInterrupted {
+		t.Fatalf("confirmed queue = %q, want interrupted", states["confirmed for Stop"])
+	}
+	if got := conv.sentTexts(); len(got) != 1 || got[0] != "after uncertain Stop" {
+		t.Fatalf("provider received %v, want only surviving post-Stop work", got)
+	}
+}
+
 // When memory and disk agree there is nothing running, Interrupt must still
 // answer ErrNoActiveTurn — the disk fallback must not invent work to stop.
 func TestInterruptReturnsNoActiveTurnWhenNoRunningTurnAnywhere(t *testing.T) {
 	h := newHarness(t)
 
-	err := h.svc.Interrupt(context.Background(), testSession)
+	err := h.svc.Interrupt(context.Background(), testSession, nil)
 	if !errorsIs(err, chatsvc.ErrNoActiveTurn) {
 		t.Fatalf("err = %v, want ErrNoActiveTurn", err)
 	}
@@ -4613,13 +5422,14 @@ func TestInterruptReconciliationCancelsQueuedTurns(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
-	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "queued", ClientMessageID: "c2",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Send queued: %v", err)
 	}
 
-	if err := h.svc.Interrupt(ctx, testSession); err != nil {
+	if err := h.svc.Interrupt(ctx, testSession, []string{queued.ID}); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 
@@ -5256,9 +6066,10 @@ func TestProjectionFailureThenStopStillStopsTheTurn(t *testing.T) {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
 	})
 
-	if _, err := svc.Send(ctx, testSession, ports.ChatUserMessage{
+	queued, err := svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "queued", ClientMessageID: "c2",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Send queued: %v", err)
 	}
 
@@ -5275,7 +6086,7 @@ func TestProjectionFailureThenStopStillStopsTheTurn(t *testing.T) {
 		t.Fatal("completion projection did not reach the injected rollback")
 	}
 
-	if err := svc.Interrupt(ctx, testSession); err != nil {
+	if err := svc.Interrupt(ctx, testSession, []string{queued.ID}); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 

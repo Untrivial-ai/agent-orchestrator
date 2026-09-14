@@ -663,6 +663,11 @@ type ConversationActivity struct {
 // starts, and a reader should show an empty conversation rather than an error.
 var ErrNoConversation = errors.New("session has no conversation")
 
+// ErrConversationOwnerChanged reports that a project-scoped conversation moved
+// to another orchestrator before the caller could admit work. Session-scoped
+// conversations have immutable ownership and never return this error.
+var ErrConversationOwnerChanged = errors.New("project conversation owner changed")
+
 // ErrNoQueuedTurn reports that nothing is waiting to be sent. Draining an empty
 // queue is the normal case, not an error.
 var ErrNoQueuedTurn = errors.New("no queued turn")

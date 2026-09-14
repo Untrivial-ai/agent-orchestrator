@@ -68,6 +68,11 @@ type serverRequestHandler func(context.Context, serverRequest) (any, error)
 // ErrConnClosed reports use of a connection whose process has exited.
 var ErrConnClosed = errors.New("app-server connection closed")
 
+// errRequestDeliveryUncertain marks a request whose complete frame was written
+// but no response was observed before cancellation or connection loss. The method
+// adapter translates it into the provider-neutral operation-specific contract.
+var errRequestDeliveryUncertain = errors.New("app-server request delivery outcome is uncertain")
+
 // conn is one live stdio connection to an app-server process.
 //
 // It is transport only: framing, request/response correlation, and fan-out. It
@@ -350,27 +355,40 @@ func (c *conn) request(ctx context.Context, method string, params, out any) erro
 		return fmt.Errorf("%s: %w", method, err)
 	}
 
+	var f frame
+	var ok bool
 	select {
 	case <-ctx.Done():
 		c.mu.Lock()
-		delete(c.pending, id)
+		_, cancellationOwnsRequest := c.pending[id]
+		if cancellationOwnsRequest {
+			delete(c.pending, id)
+		}
 		c.mu.Unlock()
-		return fmt.Errorf("%s: %w", method, ctx.Err())
+		if cancellationOwnsRequest {
+			return fmt.Errorf("%s: %w: %w", method, errRequestDeliveryUncertain, ctx.Err())
+		}
+		// deliver or readLoop already removed the request from pending and owns
+		// its terminal result. Consume that result even though the caller's
+		// context is now done, so a definitive response cannot be reclassified
+		// as an uncertain delivery outcome.
+		f, ok = <-ch
 
-	case f, ok := <-ch:
-		if !ok {
-			return fmt.Errorf("%s: %w", method, ErrConnClosed)
-		}
-		if f.Error != nil {
-			return fmt.Errorf("%s: %w", method, f.Error)
-		}
-		if out != nil && len(f.Result) > 0 {
-			if err := json.Unmarshal(f.Result, out); err != nil {
-				return fmt.Errorf("%s: decode result: %w", method, err)
-			}
-		}
-		return nil
+	case f, ok = <-ch:
 	}
+
+	if !ok {
+		return fmt.Errorf("%s: %w: %w", method, errRequestDeliveryUncertain, ErrConnClosed)
+	}
+	if f.Error != nil {
+		return fmt.Errorf("%s: %w", method, f.Error)
+	}
+	if out != nil && len(f.Result) > 0 {
+		if err := json.Unmarshal(f.Result, out); err != nil {
+			return fmt.Errorf("%s: decode result: %w", method, err)
+		}
+	}
+	return nil
 }
 
 // notify sends a client->server notification, which expects no reply.

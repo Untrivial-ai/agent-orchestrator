@@ -98,8 +98,8 @@ function QueuedMessageRowContent({
 	dragHandleProps?: Record<string, unknown>;
 }) {
 	const showHoverSteerButton =
-		showHoverSteer ||
-		Boolean(onPromoteQueuedTurn && canSteer && !showPersistentSteer && !suppressHoverSteer);
+		(showHoverSteer && message.origin === "human" && !message.id.startsWith("queued:")) ||
+		Boolean(onPromoteQueuedTurn && canSteer && message.origin === "human" && !message.id.startsWith("queued:") && !showPersistentSteer && !suppressHoverSteer);
 
 	return (
 		<div className="queue-dock-row-content flex h-10 w-full min-w-0 items-center gap-2.5 overflow-hidden px-3">
@@ -136,7 +136,7 @@ function QueuedMessageRowContent({
 						Steer
 					</button>
 				) : null}
-				{showPersistentSteer && onPromoteQueuedTurn ? (
+				{showPersistentSteer && onPromoteQueuedTurn && message.origin === "human" && !message.id.startsWith("queued:") ? (
 					<button
 						type="button"
 						disabled={busy}
@@ -153,7 +153,7 @@ function QueuedMessageRowContent({
 						Steer
 					</button>
 				) : null}
-				{onBeginQueuedEdit ? (
+				{onBeginQueuedEdit && message.origin === "human" && !message.id.startsWith("queued:") ? (
 					<button
 						type="button"
 						disabled={busy}

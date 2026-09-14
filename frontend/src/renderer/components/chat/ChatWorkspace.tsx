@@ -222,16 +222,24 @@ function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 					(item): item is ConversationMessage =>
 						item.kind === "message" &&
 						item.role === "user" &&
-						item.origin === "human" &&
 						Boolean(item.turnId),
 				)
 				.map((message) => [message.turnId as string, message]),
 		);
-		const next = snapshot.turns.flatMap((queuedTurn) => {
-			if (queuedTurn.state !== "queued") return [];
-			const message = messagesByTurn.get(queuedTurn.id);
-			return message ? [{ turnId: queuedTurn.id, message }] : [];
-		});
+		const next: QueuedMessage[] = snapshot.queuedTurns !== undefined
+			? snapshot.queuedTurns.map((queued) => ({
+				turnId: queued.turnId,
+				message: messagesByTurn.get(queued.turnId) ?? {
+					kind: "message", id: `queued:${queued.turnId}`, turnId: queued.turnId,
+					role: "user", origin: queued.origin ?? "daemon", text: queued.text || "Queued work",
+					streaming: false, sequence: 0, revision: 0, createdAt: "",
+				},
+			}))
+			: snapshot.turns.flatMap((queuedTurn) => {
+				if (queuedTurn.state !== "queued") return [];
+				const message = messagesByTurn.get(queuedTurn.id);
+				return message ? [{ turnId: queuedTurn.id, message }] : [];
+			});
 		const current = previous.current;
 		if (
 			current.length === next.length &&
@@ -244,7 +252,7 @@ function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 		}
 		previous.current = next;
 		return next;
-	}, [snapshot.items, snapshot.turns]);
+	}, [snapshot.items, snapshot.turns, snapshot.queuedTurns]);
 }
 
 export interface ChatWorkspaceProps {
@@ -291,7 +299,7 @@ export interface ChatWorkspaceProps {
 		action: "accept" | "decline" | "cancel",
 		content?: Record<string, unknown>,
 	) => Promise<unknown> | void;
-	onInterrupt?: () => void;
+	onInterrupt?: (queuedTurnIds: string[]) => void | Promise<unknown>;
 	commandError?: string;
 	onResumeAgent?: () => void;
 	resumingAgent?: boolean;
@@ -590,6 +598,7 @@ function ChatWorkspaceContent({
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
 	const turn = activeTurn(snapshot);
+	const runningTurn = snapshot.turns.find((candidate) => candidate.state === "running");
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
 			item.kind === "activity" &&
@@ -597,6 +606,21 @@ function ChatWorkspaceContent({
 			item.status === "pending" &&
 			(!item.turnId || item.turnId === turn?.id),
 	);
+	const queuedTurns = snapshot.queuedTurns;
+	const visibleQueuedTurns = queuedTurns ?? [];
+	const stopUnavailable = Boolean(runningTurn && onInterrupt && queuedTurns === undefined);
+	const [confirmingStopQueueIDs, setConfirmingStopQueueIDs] = useState<string[]>();
+	const requestInterrupt = useCallback(() => {
+		if (newWorkDisabled || !onInterrupt || queuedTurns === undefined) return;
+		if (queuedTurns.length > 0) {
+			// Freeze the destructive scope shown to the user. Snapshot polling can
+			// update the queue while this dialog is open, but the confirmation must
+			// continue to describe the action the user originally requested.
+			setConfirmingStopQueueIDs(queuedTurns.map((queuedTurn) => queuedTurn.turnId));
+			return;
+		}
+		void Promise.resolve(onInterrupt([])).catch(() => {});
+	}, [newWorkDisabled, onInterrupt, queuedTurns]);
 	const handleChatKeyDown = useCallback(
 		(event: ReactKeyboardEvent<HTMLElement>) => {
 			if (
@@ -609,13 +633,14 @@ function ChatWorkspaceContent({
 				event.metaKey ||
 				turn?.state !== "running" ||
 				hasPendingInteraction ||
-				!onInterrupt
+				!onInterrupt ||
+				queuedTurns === undefined
 			)
 				return;
 			event.preventDefault();
-			onInterrupt();
+			requestInterrupt();
 		},
-		[hasPendingInteraction, newWorkDisabled, onInterrupt, turn],
+		[hasPendingInteraction, newWorkDisabled, onInterrupt, queuedTurns, requestInterrupt, turn],
 	);
 	const handleChatSurfaceClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
 		const target = event.target;
@@ -829,13 +854,12 @@ function ChatWorkspaceContent({
 		},
 		[draftScope, onEditQueuedTurn, onSend, nativeImages, queueEdit, queuedMessages, updateQueueDraft],
 	);
-	const stableInterrupt = useStableCallback(onInterrupt);
 	const stableSteer = useStableCallback(onSteer);
 	const beginQueuedEdit = useCallback(
 		(turnId: string, text: string) => {
 			if (newWorkDisabled || queueEditRef.current?.clientMessageId) return;
 			const message = queuedMessages.find((queued) => queued.turnId === turnId)?.message;
-			if (!message) return;
+			if (!message || message.id.startsWith("queued:") || message.origin !== "human") return;
 			const parts = stagedAttachmentParts(text);
 			// Paths and native blocks have no shared persisted identity.
 			const attachments: StoredComposerAttachment[] = parts.attachments.map((path) => ({
@@ -1418,9 +1442,19 @@ function ChatWorkspaceContent({
 									queuedDraftScope={queueEdit ? draftScope : undefined}
 									onQueuedAttachmentsChange={changeQueuedStagedAttachments}
 									onQueuedRetainedAttachmentsChange={changeQueuedRetainedAttachments}
-									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
-									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
+									onInterrupt={runningTurn && queuedTurns !== undefined && !newWorkDisabled ? requestInterrupt : undefined}
+									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError ?? (stopUnavailable ? "Stop is unavailable because the daemon does not report the complete queue." : undefined))}
 									settings={composerSettings}
+									interruptLabel={
+										visibleQueuedTurns.length > 0
+											? `Stop turn and cancel ${visibleQueuedTurns.length} queued ${visibleQueuedTurns.length === 1 ? "message" : "messages"}`
+											: undefined
+									}
+									interruptDescription={
+										visibleQueuedTurns.length > 0
+											? `Also cancels ${visibleQueuedTurns.length} queued ${visibleQueuedTurns.length === 1 ? "message" : "messages"}.`
+											: undefined
+									}
 									busy={busy}
 									willQueue={Boolean(turn)}
 									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
@@ -1455,6 +1489,29 @@ function ChatWorkspaceContent({
 					</div>
 				</div>
 			</div>
+
+			<ConfirmDialog
+				open={confirmingStopQueueIDs !== undefined && !reviewerActive && !shellActive}
+				onOpenChange={(open) => {
+					if (!open) setConfirmingStopQueueIDs(undefined);
+				}}
+				title={`Stop turn and cancel ${confirmingStopQueueIDs?.length ?? 0} queued ${(confirmingStopQueueIDs?.length ?? 0) === 1 ? "message" : "messages"}?`}
+				description={
+					<p className="text-sm text-foreground">
+						{confirmingStopQueueIDs?.length === 2
+							? "The active turn and both queued messages will be stopped. This cannot be undone."
+							: `The active turn and ${confirmingStopQueueIDs?.length === 1 ? "the queued message" : `all ${confirmingStopQueueIDs?.length ?? 0} queued messages`} will be stopped. This cannot be undone.`}
+					</p>
+				}
+				confirmLabel="Stop all"
+				destructive
+				busy={busy}
+				onConfirm={() => {
+					const queuedTurnIDs = confirmingStopQueueIDs ?? [];
+					setConfirmingStopQueueIDs(undefined);
+					void Promise.resolve(onInterrupt?.(queuedTurnIDs)).catch(() => {});
+				}}
+			/>
 
 			{/* The copy has to be honest about the cost: this is not "hide these
 			    messages", it is "the agent forgets them". Nothing in the worktree is
@@ -2509,8 +2566,7 @@ function Timeline({
 						(item) =>
 							item.kind === "message" &&
 							item.role === "user" &&
-							item.origin === "human" &&
-							((echo.turnId && item.turnId === echo.turnId) ||
+								((echo.turnId && item.turnId === echo.turnId) ||
 								(!echo.turnId && item.text === echo.text && item.createdAt >= echo.createdAt)),
 					),
 			)
@@ -3517,7 +3573,7 @@ type TimelineGroup = {
 	anchor: number;
 	items: ConversationItem[];
 	outcome?: {
-		state: "completed" | "recovered" | "interrupted" | "failed";
+		state: "completed" | "recovered" | "interrupted" | "queue_cancelled" | "failed";
 		durationMs?: number;
 		error?: string;
 	};
@@ -3706,7 +3762,7 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 		if (turn.state === "running" || turn.state === "queued" || turn.state === "cancelled") continue;
 		group.rollbackable = Boolean(turn.providerTurnId);
 		group.outcome = {
-			state: turn.state,
+			state: turn.state === "interrupted" && !turn.startedAt ? "queue_cancelled" : turn.state,
 			durationMs:
 				turn.completedAt && turn.startedAt
 					? new Date(turn.completedAt).getTime() - new Date(turn.startedAt).getTime()

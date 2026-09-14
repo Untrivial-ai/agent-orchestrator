@@ -213,9 +213,10 @@ func TestChatInterruptCancelsTheQueueWithTheTurn(t *testing.T) {
 	d.awaitConversation(session, 90*time.Second, "the slow turn to start running", func(s snapshot) bool {
 		return s.Turns[len(s.Turns)-1].State == "running"
 	})
-	send(t, d, session, "Reply with exactly: ALSO-NEVER", "i-queued")
+	queuedTurnID, _ := send(t, d, session, "Reply with exactly: ALSO-NEVER", "i-queued")
 
-	d.mustCall("POST", "/sessions/"+session+"/conversation/interrupt", http.StatusNoContent, nil, nil)
+	d.mustCall("POST", "/sessions/"+session+"/conversation/interrupt", http.StatusNoContent,
+		map[string]any{"queuedTurnIds": []string{queuedTurnID}}, nil)
 
 	snap := d.awaitConversation(session, 2*time.Minute, "the turn and its queue to settle",
 		func(s snapshot) bool {
@@ -244,7 +245,8 @@ func TestChatInterruptWithNoActiveTurnIsRefusedNotAnError(t *testing.T) {
 	project := seedProject(t, d, "nointerrupt")
 	session := chatSession(t, d, project, "Reply with exactly: READY")
 
-	status, body := d.callExpectingError("POST", "/sessions/"+session+"/conversation/interrupt", nil)
+	status, body := d.callExpectingError("POST", "/sessions/"+session+"/conversation/interrupt",
+		map[string]any{"queuedTurnIds": []string{}})
 	if status >= 500 {
 		t.Fatalf("interrupting an idle session returned %d (%+v); a client mistake is not a server fault", status, body)
 	}

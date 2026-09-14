@@ -3359,6 +3359,7 @@ describe("durable queued edits", () => {
 		return {
 			...chatFixtureEmpty,
 			sessionId: "queued-draft-session",
+			queuedTurns: [{ turnId: "queued", text: "queued text", origin: "human" }],
 			turns: [
 				{ id: "running", state: "running", requestedAt: "2026-09-07T00:00:00Z" },
 				{ id: "queued", state: "queued", requestedAt: "2026-09-07T00:00:00Z" },
@@ -3447,7 +3448,7 @@ describe("durable queued edits", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() => expect(save).toHaveBeenCalledOnce());
 		first.unmount();
-		render(<ChatWorkspace snapshot={{ ...snapshot, turns: [] }} onSend={send} onEditQueuedTurn={save} />);
+		render(<ChatWorkspace snapshot={{ ...snapshot, turns: [], queuedTurns: [] }} onSend={send} onEditQueuedTurn={save} />);
 		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("queued text uncertain");
 		expect(screen.getByLabelText("Message the agent")).toHaveAttribute("contenteditable", "false");
 		await userEvent.click(screen.getByRole("button", { name: "Retry edit safely" }));

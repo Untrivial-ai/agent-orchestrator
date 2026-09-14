@@ -155,8 +155,37 @@ export async function steerConversation(cfg: ServerConfig, sessionId: string, te
 	return res.json();
 }
 
-export async function interruptConversation(cfg: ServerConfig, sessionId: string): Promise<void> {
-	await apiRequest(cfg, conversationPath(sessionId, "/interrupt"), { method: "POST" });
+export async function interruptConversation(
+	cfg: ServerConfig,
+	sessionId: string,
+	queuedTurnIds: string[],
+): Promise<void> {
+	await apiRequest(cfg, conversationPath(sessionId, "/interrupt"), {
+		method: "POST",
+		body: JSON.stringify({ queuedTurnIds }),
+	});
+}
+
+export async function cancelQueuedConversationTurn(
+	cfg: ServerConfig,
+	sessionId: string,
+	turnId: string,
+): Promise<void> {
+	await apiRequest(cfg, conversationPath(
+		sessionId,
+		`/turns/${encodeURIComponent(turnId)}/cancel`,
+	), { method: "POST" });
+}
+
+export async function promoteQueuedConversationTurn(
+	cfg: ServerConfig,
+	sessionId: string,
+	turnId: string,
+): Promise<void> {
+	await apiRequest(cfg, conversationPath(
+		sessionId,
+		`/turns/${encodeURIComponent(turnId)}/steer`,
+	), { method: "POST" });
 }
 
 export async function compactConversation(cfg: ServerConfig, sessionId: string): Promise<void> {

@@ -18,6 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -586,6 +587,19 @@ func newEditHarnessWithOptions(
 ) (*harness, *historyRecorder, *editDriverState) {
 	t.Helper()
 	st := openStore(t)
+	return newEditHarnessWithOwnedStore(t, st, wrapStore(st), domain.KindWorker, supportsPromptReplay, wrapReader, prepare)
+}
+
+func newEditHarnessWithOwnedStore(
+	t *testing.T,
+	st *sqlite.Store,
+	serviceStore chatsvc.Store,
+	kind domain.SessionKind,
+	supportsPromptReplay bool,
+	wrapReader func(chatsvc.SnapshotReader) chatsvc.SnapshotReader,
+	prepare func(context.Context, domain.SessionControllerOwner) (map[string]string, error),
+) (*harness, *historyRecorder, *editDriverState) {
+	t.Helper()
 	source := newHistoryRecorder()
 	if supportsPromptReplay {
 		sourceCapabilities := productionCaps()
@@ -680,7 +694,7 @@ func newEditHarnessWithOptions(
 		}, nil
 	})
 	svc := chatsvc.New(chatsvc.Options{
-		Store: wrapStore(st), Sessions: st,
+		Store: serviceStore, Sessions: st,
 		Reader:   wrapReader(reader),
 		Drivers:  fakeRegistry{driver: driver},
 		Log:      slog.New(slog.DiscardHandler),
@@ -695,7 +709,7 @@ func newEditHarnessWithOptions(
 	})
 	workspace := t.TempDir()
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		SessionID: testSession, ProjectID: testProject, Kind: kind,
 		Harness: domain.HarnessCodex, WorkspacePath: workspace,
 		Env:          map[string]string{"AO_EDIT_TEST": "yes", "AO_BROWSER_CAPABILITY": "stale"},
 		SystemPrompt: "preserved prompt", PrepareControllerEnv: prepare,

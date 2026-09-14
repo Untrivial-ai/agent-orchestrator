@@ -263,10 +263,13 @@ describe("ChatComposer steering", () => {
 	});
 });
 
-describe("ChatWorkspace steering", () => {
 	function withQueuedMessages() {
 		return {
 			...chatFixture,
+			queuedTurns: [
+				{ turnId: "queued-1", text: "first queued", origin: "human" as const },
+				{ turnId: "queued-2", text: "second queued", origin: "human" as const },
+			],
 			turns: [
 				...chatFixture.turns,
 				{ id: "queued-1", state: "queued" as const, requestedAt: "2026-08-11T10:01:00Z" },
@@ -301,6 +304,9 @@ describe("ChatWorkspace steering", () => {
 			],
 		};
 	}
+
+
+describe("ChatWorkspace steering", () => {
 
 	it("docks queued messages above the composer", () => {
 		render(
@@ -478,6 +484,7 @@ describe("ChatWorkspace steering", () => {
 		const base = withQueuedMessages();
 		const snapshot = {
 			...base,
+			queuedTurns: base.queuedTurns.filter((turn) => turn.turnId !== "queued-1"),
 			turns: base.turns.map((turn) =>
 				turn.id === "queued-1"
 					? {
@@ -690,5 +697,161 @@ describe("ChatWorkspace steering", () => {
 		const attachments = screen.getByRole("list", { name: "Steered attachments" });
 		expect(within(attachments).getByTitle("file:///reference.md")).toHaveTextContent("reference.md");
 		expect(within(attachments).getByTitle("file:///notes.md")).toHaveTextContent("notes.md");
+	});
+});
+
+
+describe("scoped queue safety", () => {
+	it("renders automation and unpaged durable queue items with cancel-only controls", async () => {
+		const snapshot = {
+			...withQueuedMessages(),
+			queuedTurns: [
+				{ turnId: "queued-automation", text: "relay follow-up", origin: "automation" as const },
+				{ turnId: "queued-unpaged", text: "not in this history page", origin: "human" as const },
+				{ turnId: "queued-fallback", text: "" },
+			],
+		};
+		const onCancelQueuedTurn = vi.fn().mockResolvedValue(undefined);
+		render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				onCancelQueuedTurn={onCancelQueuedTurn}
+				onPromoteQueuedTurn={vi.fn()}
+			/>,
+		);
+
+		const dock = screen.getByTestId("queued-message-dock");
+		expect(within(dock).getByText("relay follow-up")).toBeVisible();
+		expect(within(dock).getByText("not in this history page")).toBeVisible();
+		expect(within(dock).getByText("Queued work")).toBeVisible();
+		expect(
+			within(screen.getByTestId("queued-message-queued-fallback")).getByRole("button", { name: "Delete queued message" }),
+		).toBeVisible();
+		expect(
+			within(screen.getByTestId("queued-message-queued-automation")).queryByRole("button", { name: "Steer this queued message into the running turn" }),
+		).not.toBeInTheDocument();
+		await userEvent.click(
+			within(screen.getByTestId("queued-message-queued-automation")).getByRole("button", { name: "Delete queued message" }),
+		);
+		expect(onCancelQueuedTurn).toHaveBeenCalledWith("queued-automation");
+	});
+	it("keeps cancel controls visible in a queued-only recovery snapshot", () => {
+		const queued = withQueuedMessages();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...queued,
+					controller: { state: "recovering" as const },
+					turns: queued.turns.filter((turn) => turn.state === "queued"),
+				}}
+				onCancelQueuedTurn={vi.fn().mockResolvedValue(undefined)}
+				onPromoteQueuedTurn={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		expect(screen.getByTestId("queued-message-dock")).toBeVisible();
+		expect(
+			within(screen.getByTestId("queued-message-queued-1")).getByRole("button", { name: "Delete queued message" }),
+		).toBeVisible();
+		expect(
+			within(screen.getByTestId("queued-message-queued-1")).queryByRole("button", { name: "Steer this queued message into the running turn" }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
+	});
+	it("refuses Stop when the daemon does not report the authoritative queue", () => {
+		const onInterrupt = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...chatFixture,
+					queuedTurns: undefined,
+					items: chatFixture.items.filter(
+						(item) =>
+							!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+					),
+				}}
+				onInterrupt={onInterrupt}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			/stop is unavailable because the daemon does not report the complete queue/i,
+		);
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
+		expect(onInterrupt).not.toHaveBeenCalled();
+	});
+	it("controls one queued message at a time and confirms Stop's queue consequence", async () => {
+		const queued = withQueuedMessages();
+		const snapshot = {
+			...queued,
+			items: queued.items.filter(
+				(item) =>
+					!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			),
+		};
+		const onCancelQueuedTurn = vi.fn().mockResolvedValue(undefined);
+		const onPromoteQueuedTurn = vi.fn().mockResolvedValue(undefined);
+		const onInterrupt = vi.fn().mockResolvedValue(undefined);
+		const { rerender } = render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				onInterrupt={onInterrupt}
+				onCancelQueuedTurn={onCancelQueuedTurn}
+				onPromoteQueuedTurn={onPromoteQueuedTurn}
+				onSteer={vi.fn()}
+			/>,
+		);
+
+		await userEvent.click(
+			within(screen.getByTestId("queued-message-queued-1")).getByRole("button", { name: "Delete queued message" }),
+		);
+		expect(onCancelQueuedTurn).toHaveBeenCalledWith("queued-1");
+		expect(onPromoteQueuedTurn).not.toHaveBeenCalled();
+		expect(onInterrupt).not.toHaveBeenCalled();
+
+		await userEvent.click(
+			within(screen.getByTestId("queued-message-queued-2")).getByRole("button", { name: "Steer this queued message into the running turn" }),
+		);
+		expect(onPromoteQueuedTurn).toHaveBeenCalledWith("queued-2");
+		expect(onCancelQueuedTurn).toHaveBeenCalledTimes(1);
+		expect(onInterrupt).not.toHaveBeenCalled();
+
+		const stop = screen.getByRole("button", {
+			name: "Stop turn and cancel 2 queued messages",
+		});
+		expect(stop).toHaveAccessibleDescription(/also cancels 2 queued messages/i);
+		await userEvent.click(stop);
+		const stopDialog = screen.getByRole("dialog", {
+			name: "Stop turn and cancel 2 queued messages?",
+		});
+		expect(stopDialog).toHaveTextContent(
+			"The active turn and both queued messages will be stopped",
+		);
+		expect(onInterrupt).not.toHaveBeenCalled();
+
+		// Polling may settle one queue item while the destructive confirmation is
+		// open. Its copy must keep describing the scope the user chose to confirm.
+		rerender(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					queuedTurns: snapshot.queuedTurns.filter((turn) => turn.turnId !== "queued-2"),
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "queued-2" ? { ...turn, state: "interrupted" as const } : turn,
+					),
+				}}
+				onInterrupt={onInterrupt}
+				onCancelQueuedTurn={onCancelQueuedTurn}
+				onPromoteQueuedTurn={onPromoteQueuedTurn}
+				onSteer={vi.fn()}
+			/>,
+		);
+		const stableDialog = screen.getByRole("dialog", {
+			name: "Stop turn and cancel 2 queued messages?",
+		});
+		expect(screen.queryByTestId("queued-message-queued-2")).not.toBeInTheDocument();
+		await userEvent.click(within(stableDialog).getByRole("button", { name: "Stop all" }));
+		expect(onInterrupt).toHaveBeenCalledWith(["queued-1", "queued-2"]);
 	});
 });

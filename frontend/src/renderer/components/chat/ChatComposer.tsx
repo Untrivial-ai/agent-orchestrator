@@ -152,6 +152,8 @@ export const ChatComposer = memo(function ChatComposer({
 	nativeImages,
 	onSteer,
 	onInterrupt,
+	interruptLabel,
+	interruptDescription,
 	canSteer,
 	sendPending,
 	steerPending,
@@ -214,7 +216,11 @@ export const ChatComposer = memo(function ChatComposer({
 	 */
 	onSteer?: (text: string, attachments?: FileAttachmentPayload[], clientMessageId?: string, recoverOnly?: boolean) => Promise<ChatSteerOutcome | void>;
 	/** Stop the turn already running when there is no draft to send. */
-	onInterrupt?: () => void;
+	onInterrupt?: () => void | Promise<unknown>;
+	/** Exact destructive scope used as the Stop control's accessible name. */
+	interruptLabel?: string;
+	/** Additional destructive detail exposed as the Stop control's description. */
+	interruptDescription?: string;
 	/** A turn is actually running, so there is something to steer into. */
 	canSteer?: boolean;
 	/** A send mutation is in flight for this session. */
@@ -1592,7 +1598,8 @@ export const ChatComposer = memo(function ChatComposer({
 										size="icon-sm"
 										disabled={canStopTurn ? false : !sendActionEnabled}
 										onClick={canStopTurn ? onInterrupt : undefined}
-										aria-label={canStopTurn ? "Stop turn" : sendActionLabel}
+										aria-description={canStopTurn ? interruptDescription : undefined}
+										aria-label={canStopTurn ? (interruptLabel ?? "Stop turn") : sendActionLabel}
 										className={cn(
 											"size-7 rounded-full border-transparent focus-visible:ring-ring/40",
 											canStopTurn || sendActionEnabled
@@ -1610,7 +1617,7 @@ export const ChatComposer = memo(function ChatComposer({
 									</Button>
 								</span>
 							</TooltipTrigger>
-							<TooltipContent side="bottom">{canStopTurn ? "Stop turn" : durableDelivery ? sendActionLabel : sendHint}</TooltipContent>
+							<TooltipContent side="bottom">{canStopTurn ? (interruptLabel ?? "Stop turn") : durableDelivery ? sendActionLabel : sendHint}</TooltipContent>
 						</Tooltip>
 					</div>
 				</div>

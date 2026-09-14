@@ -11,8 +11,11 @@ import type { ServerConfig } from "./config";
 
 const {
 	acknowledgeSessionInterfaceTransitionNotice,
+	cancelQueuedConversationTurn,
 	getConversationPage,
 	getWorkspacePaths,
+	interruptConversation,
+	promoteQueuedConversationTurn,
 } = chatApi;
 
 const cfg: ServerConfig = { host: "ao.test", httpPort: "3011", muxPort: "3011", secure: false, password: "secret12" };
@@ -186,13 +189,74 @@ describe("mobile Chat API boundaries", () => {
 		vi.mocked(fetch).mockResolvedValue(response({
 			conversationId: "c-1", sessionId: "w-1", harness: "claude-code", mode: "chat", controller: "busy",
 			latestSequence: 2, oldestSequence: 1, hasMoreBefore: false, settings: {}, turns: [], messages: [],
+			queuedTurns: [
+				{ turnId: "queued-automation", text: "nightly relay", origin: "automation" },
+				{ turnId: "queued-human", text: "then explain", origin: "human" },
+			],
 			capabilities: ["config_options", "steer"],
 			activities: [{ kind: "activity", id: "a-1", sequence: 2, revision: 1, activityKind: "approval", status: "pending", summary: "Run command", requestId: "req-1", detail: { output: { text: "legacy" }, decisions: [{ id: "accept" }] }, createdAt: "2026-08-05T00:00:00Z" }],
 		}));
 		const page = await getConversationPage(cfg, "w-1");
 		expect(page.controller).toEqual({ state: "busy" });
+		expect(page.queuedTurns).toEqual([
+			{ turnId: "queued-automation", text: "nightly relay", origin: "automation" },
+			{ turnId: "queued-human", text: "then explain", origin: "human" },
+		]);
 		expect(page.capabilities).toEqual(["config_options", "steer"]);
 		expect(page.items[0]).toMatchObject({ activityKind: "approval", requestId: "req-1", decisions: [{ id: "accept", label: "accept" }], detail: { output: { text: "legacy" } } });
+	});
+
+	it("posts the exact ordered queue scope for Stop, including an empty queue", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response(undefined, 204))
+			.mockResolvedValueOnce(response(undefined, 204));
+
+		await interruptConversation(cfg, "w/1", ["queued-automation", "queued-human"]);
+		await interruptConversation(cfg, "w/1", []);
+
+		expect(vi.mocked(fetch).mock.calls.map(([url, init]) => ({
+			url,
+			method: init?.method,
+			body: JSON.parse(String(init?.body)),
+		}))).toEqual([
+			{
+				url: "http://ao.test:3011/api/v1/sessions/w%2F1/conversation/interrupt",
+				method: "POST",
+				body: { queuedTurnIds: ["queued-automation", "queued-human"] },
+			},
+			{
+				url: "http://ao.test:3011/api/v1/sessions/w%2F1/conversation/interrupt",
+				method: "POST",
+				body: { queuedTurnIds: [] },
+			},
+		]);
+	});
+
+	it("targets one queued turn for cancel and promote independently", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response(undefined, 204))
+			.mockResolvedValueOnce(response({
+				sourceTurnId: "queued/two",
+				providerTurnId: "running-1",
+				activityId: "steer-1",
+			}, 202));
+
+		await cancelQueuedConversationTurn(cfg, "w/1", "queued/one");
+		await promoteQueuedConversationTurn(cfg, "w/1", "queued/two");
+
+		expect(vi.mocked(fetch).mock.calls.map(([url, init]) => ({
+			url,
+			method: init?.method,
+		}))).toEqual([
+			{
+				url: "http://ao.test:3011/api/v1/sessions/w%2F1/conversation/turns/queued%2Fone/cancel",
+				method: "POST",
+			},
+			{
+				url: "http://ao.test:3011/api/v1/sessions/w%2F1/conversation/turns/queued%2Ftwo/steer",
+				method: "POST",
+			},
+		]);
 	});
 
 	it("keeps the first Chat payload small while allowing larger history pages", async () => {

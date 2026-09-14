@@ -539,6 +539,10 @@ func (c *conversation) Interrupt(ctx context.Context, providerTurnID string) err
 		"threadId": c.threadID,
 		"turnId":   providerTurnID,
 	}, nil); err != nil {
+		if errors.Is(err, errRequestDeliveryUncertain) {
+			return fmt.Errorf("%w: turn/interrupt: %w",
+				ports.ErrChatInterruptDeliveryUncertain, err)
+		}
 		// The provider refuses an interrupt for a turn it does not consider
 		// active — which happens either side of the turn: pressed before it has
 		// acknowledged the start, or after it already finished. Neither is an

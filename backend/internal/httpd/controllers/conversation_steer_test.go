@@ -102,6 +102,22 @@ type promoteQueuedStub struct {
 	turnID  string
 }
 
+type scopedCancelQueuedStub struct {
+	*fakeConversationService
+	err     error
+	session domain.SessionID
+	turnID  string
+}
+
+func (s *scopedCancelQueuedStub) CancelQueuedTurn(
+	_ context.Context,
+	session domain.SessionID,
+	turnID string,
+) error {
+	s.session, s.turnID = session, turnID
+	return s.err
+}
+
 func (s *promoteQueuedStub) PromoteQueuedTurn(
 	_ context.Context,
 	session domain.SessionID,
@@ -323,6 +339,11 @@ func TestSteerRouteRefusalsAreTypedAndCoded(t *testing.T) {
 			wantStatus: http.StatusConflict, wantCode: "CHAT_CONTROLLER_NOT_READY",
 		},
 		{
+			name:       "Stop outcome pending",
+			err:        chatsvc.ErrInterruptPending,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_INTERRUPT_PENDING",
+		},
+		{
 			name:       "unknown session",
 			err:        ports.ErrSessionNotFound,
 			wantStatus: http.StatusNotFound, wantCode: "SESSION_NOT_FOUND",
@@ -430,5 +451,67 @@ func TestQueuedTurnSteerRoutePromotesTheSelectedTurn(t *testing.T) {
 	}
 	if body["sourceTurnId"] != "queued-2" || body["providerTurnId"] != "provider-running" || body["activityId"] != "activity-steer" {
 		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestQueuedTurnCancelRouteCancelsOnlyTheNamedDurableTurn(t *testing.T) {
+	svc := &scopedCancelQueuedStub{fakeConversationService: &fakeConversationService{}}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: newFakeSessionService(), Conversations: svc,
+	}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(
+		srv.URL+"/api/v1/sessions/p1-1/conversation/turns/queued-2/cancel",
+		"application/json", nil)
+	if err != nil {
+		t.Fatalf("POST queued cancel: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204: %s", resp.StatusCode, body)
+	}
+	if svc.session != "p1-1" || svc.turnID != "queued-2" {
+		t.Fatalf("service target = (%s, %s), want (p1-1, queued-2)", svc.session, svc.turnID)
+	}
+}
+
+func TestQueuedTurnCancelRouteRefusesWrongTurnAndStateWithStableCodes(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"missing turn", domain.ErrNoConversationTurn, http.StatusNotFound, "CHAT_TURN_NOT_FOUND"},
+		{"turn no longer queued", chatsvc.ErrTurnNotQueued, http.StatusConflict, "CHAT_TURN_NOT_QUEUED"},
+		{"interface handoff", chatsvc.ErrControllerHandoff, http.StatusConflict, "CHAT_INTERFACE_TRANSITION"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &scopedCancelQueuedStub{fakeConversationService: &fakeConversationService{}, err: tc.err}
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+				Sessions: newFakeSessionService(), Conversations: svc,
+			}, httpd.ControlDeps{}))
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Post(
+				srv.URL+"/api/v1/sessions/p1-1/conversation/turns/queued-2/cancel",
+				"application/json", nil)
+			if err != nil {
+				t.Fatalf("POST queued cancel: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			var failure steerErrorBody
+			if err := json.NewDecoder(resp.Body).Decode(&failure); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if resp.StatusCode != tc.wantStatus || failure.Code != tc.wantCode {
+				t.Fatalf("status/code = %d/%q, want %d/%q", resp.StatusCode, failure.Code, tc.wantStatus, tc.wantCode)
+			}
+		})
 	}
 }
