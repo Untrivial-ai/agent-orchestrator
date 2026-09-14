@@ -38,6 +38,13 @@ func (terminalReadyAgent) DetectTerminalActivity(output string) (domain.Activity
 	return "", false
 }
 
+// A harness can both interpret its terminal and require its first hook as the
+// proof that native startup dialogs have cleared. Terminal idleness alone is
+// not sufficient evidence that pane input reaches the agent composer.
+type startupReadyTerminalAgent struct{ terminalReadyAgent }
+
+func (startupReadyTerminalAgent) FirstSignalProvesInputReady() bool { return true }
+
 type emptyComposerReadyAgent struct{ fakeAgent }
 
 func (emptyComposerReadyAgent) DetectTerminalActivity(string) (domain.ActivityState, bool) {
@@ -71,6 +78,33 @@ func TestWaitForMessageDeliveryReadyWaitsForTerminalIdleMarker(t *testing.T) {
 	}
 	if runtime.outputCalls < 2 {
 		t.Fatalf("terminal output calls = %d, want readiness polling", runtime.outputCalls)
+	}
+}
+
+func TestWaitForMessageDeliveryReadyRequiresFirstHookEvenWhenTerminalIsIdle(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["orch"] = domain.SessionRecord{
+		ID:        "orch",
+		ProjectID: "ao",
+		Kind:      domain.KindOrchestrator,
+		Harness:   domain.HarnessClaudeCode,
+		Mode:      domain.SessionModeTUI,
+		Activity:  domain.Activity{State: domain.ActivityIdle},
+		Metadata:  domain.SessionMetadata{RuntimeHandleID: "orch"},
+	}
+	m := New(Deps{
+		Runtime: &fakeRuntime{outputs: []string{"ready"}},
+		Agents:  singleAgent{agent: startupReadyTerminalAgent{}},
+		Store:   st,
+	})
+	// Longer than the ordinary 750 ms idle settle: a terminal-idle-only waiter
+	// would return success here. The first hook is intentionally absent.
+	ctx, cancel := context.WithTimeout(context.Background(), 1100*time.Millisecond)
+	defer cancel()
+
+	err := m.WaitForMessageDeliveryReady(ctx, "orch")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitForMessageDeliveryReady error = %v, want deadline before first hook", err)
 	}
 }
 
