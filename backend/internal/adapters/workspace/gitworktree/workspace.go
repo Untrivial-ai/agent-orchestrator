@@ -41,18 +41,23 @@ var (
 	teardownLocks = map[string]*sync.Mutex{}
 )
 
-// repoTeardownLock returns the release for the per-repository teardown lock a
-// single git worktree teardown sequence must hold while it mutates the repo.
-func repoTeardownLock(repo string) func() {
+// repoTeardownLock canonicalizes repo and returns the release for the
+// per-repository teardown lock a single git worktree teardown sequence must
+// hold while it mutates the repo.
+func repoTeardownLock(repo string) (func(), error) {
+	key, err := physicalAbs(repo)
+	if err != nil {
+		return nil, err
+	}
 	teardownMu.Lock()
-	m := teardownLocks[repo]
+	m := teardownLocks[key]
 	if m == nil {
 		m = &sync.Mutex{}
-		teardownLocks[repo] = m
+		teardownLocks[key] = m
 	}
 	teardownMu.Unlock()
 	m.Lock()
-	return m.Unlock
+	return m.Unlock, nil
 }
 
 // ErrPreservedConflict is an adapter-local alias of ports.ErrPreservedConflict.
@@ -648,7 +653,10 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 	}
 	// Serialize this repo's teardown against other sessions of the same project
 	// being killed concurrently; git worktree metadata is shared per repo.
-	unlock := repoTeardownLock(repo)
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return ports.WorkspaceReclaimAlreadyAbsent, fmt.Errorf("gitworktree: repo path: %w", err)
+	}
 	defer unlock()
 	// Sampled before any teardown step runs, so it reflects the state this call
 	// found rather than the state it left behind. Only a definite absence counts
@@ -723,7 +731,10 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	if err != nil {
 		return err
 	}
-	unlock := repoTeardownLock(repo)
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: repo path: %w", err)
+	}
 	defer unlock()
 	if err := w.requireReachableRepo(repo); err != nil {
 		return err
@@ -1515,7 +1526,10 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 }
 
 func (w *Workspace) forceDestroyPath(ctx context.Context, repo, path string) error {
-	unlock := repoTeardownLock(repo)
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: repo path: %w", err)
+	}
 	defer unlock()
 	if err := w.requireReachableRepo(repo); err != nil {
 		return err

@@ -483,3 +483,53 @@ func TestDestroySerializesGitCommandsPerRepository(t *testing.T) {
 		t.Fatal("git worktree sequences from different repos never overlapped; the lock is global, not per-repo")
 	}
 }
+
+func TestRepoTeardownLockCanonicalizesRepositoryPath(t *testing.T) {
+	repo := t.TempDir()
+	alias := repo + string(os.PathSeparator)
+
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		t.Fatalf("lock canonical repo path: %v", err)
+	}
+
+	started := make(chan struct{})
+	acquired := make(chan struct{})
+	errCh := make(chan error, 1)
+	releaseAlias := make(chan struct{})
+	go func() {
+		close(started)
+		aliasUnlock, err := repoTeardownLock(alias)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		close(acquired)
+		<-releaseAlias
+		aliasUnlock()
+	}()
+	<-started
+
+	select {
+	case err := <-errCh:
+		unlock()
+		t.Fatalf("lock equivalent repo path: %v", err)
+	case <-acquired:
+		close(releaseAlias)
+		unlock()
+		t.Fatal("equivalent repository paths acquired different teardown locks")
+	case <-time.After(100 * time.Millisecond):
+		// The equivalent spelling is blocked on the canonical repository lock.
+	}
+
+	unlock()
+	select {
+	case err := <-errCh:
+		t.Fatalf("lock equivalent repo path: %v", err)
+	case <-acquired:
+		close(releaseAlias)
+	case <-time.After(5 * time.Second):
+		close(releaseAlias)
+		t.Fatal("equivalent repository path did not acquire the released teardown lock")
+	}
+}
