@@ -295,7 +295,7 @@ func TestBrowserCapabilityRotationIsNarrowAndControllerOwnerFenced(t *testing.T)
 		t.Fatalf("UpdateSession concurrent facts: %v", err)
 	}
 	applied, err := s.UpdateBrowserCapabilityVerifier(
-		ctx, created.ID, expected, "verifier-2", created.UpdatedAt.Add(time.Second),
+		ctx, created.ID, expected, "verifier-2",
 	)
 	if err != nil || !applied {
 		t.Fatalf("UpdateBrowserCapabilityVerifier: applied=%v err=%v", applied, err)
@@ -311,11 +311,11 @@ func TestBrowserCapabilityRotationIsNarrowAndControllerOwnerFenced(t *testing.T)
 	}
 
 	if err := s.ClaimChatControllerGeneration(
-		ctx, created.ID, "generation-2", concurrent.UpdatedAt.Add(time.Second)); err != nil {
+		ctx, created.ID, "generation-2"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration: %v", err)
 	}
 	applied, err = s.UpdateBrowserCapabilityVerifier(
-		ctx, created.ID, expected, "stale-verifier", concurrent.UpdatedAt.Add(2*time.Second),
+		ctx, created.ID, expected, "stale-verifier",
 	)
 	if err != nil || applied {
 		t.Fatalf("stale owner verifier update: applied=%v err=%v", applied, err)
@@ -511,6 +511,118 @@ func TestSessionCreateAssignsPerProjectID(t *testing.T) {
 	}
 	if all, _ := s.ListAllSessions(ctx); len(all) != 3 {
 		t.Fatalf("list all = %d, want 3", len(all))
+	}
+}
+
+func TestSessionCreateAssignsStandaloneIDsWithoutProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	first, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != "standalone-1" || second.ID != "standalone-2" {
+		t.Fatalf("standalone ids = %q, %q", first.ID, second.ID)
+	}
+	if first.ProjectID != "" || !first.IsStandalone() {
+		t.Fatalf("standalone project = %q", first.ProjectID)
+	}
+	conversation, err := s.CreateConversation(
+		ctx,
+		"conversation-standalone-1",
+		domain.ConversationScopeSession,
+		"",
+		first.ID,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("create standalone conversation: %v", err)
+	}
+	if conversation.ProjectID != "" {
+		t.Fatalf("standalone conversation project = %q", conversation.ProjectID)
+	}
+	notification, inserted, err := s.CreateNotification(ctx, domain.NotificationRecord{
+		ID:        "notification-standalone-1",
+		SessionID: first.ID,
+		Type:      domain.NotificationNeedsInput,
+		Title:     "Input needed",
+		Status:    domain.NotificationUnread,
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil || !inserted {
+		t.Fatalf("create standalone notification: inserted=%v err=%v", inserted, err)
+	}
+	if notification.ProjectID != "" {
+		t.Fatalf("standalone notification project = %q", notification.ProjectID)
+	}
+	events, err := s.EventsAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("read standalone change log: %v", err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("standalone change log has %d events, want session creates", len(events))
+	}
+	for _, event := range events {
+		if event.ProjectID != "" {
+			t.Fatalf("standalone change event project = %q", event.ProjectID)
+		}
+	}
+	rows, err := s.ListSessions(ctx, "")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ListSessions(empty) = %d rows, err=%v", len(rows), err)
+	}
+}
+
+func TestSessionCreateAvoidsStandaloneProjectCollisionAfterProjectSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "standalone")
+
+	projectSession, err := s.CreateSession(ctx, sampleRecord("standalone"))
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	standaloneSession, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatalf("create standalone session: %v", err)
+	}
+	if projectSession.ID != "standalone-1" {
+		t.Fatalf("project session id = %q, want standalone-1", projectSession.ID)
+	}
+	if standaloneSession.ID != "standalone-2" {
+		t.Fatalf("standalone session id = %q, want standalone-2", standaloneSession.ID)
+	}
+	if standaloneSession.ProjectID != "" || !standaloneSession.IsStandalone() {
+		t.Fatalf("standalone project = %q", standaloneSession.ProjectID)
+	}
+}
+
+func TestSessionCreateAvoidsStandaloneProjectCollisionAfterStandaloneSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "standalone")
+
+	standaloneSession, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatalf("create standalone session: %v", err)
+	}
+	projectSession, err := s.CreateSession(ctx, sampleRecord("standalone"))
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	if standaloneSession.ID != "standalone-1" {
+		t.Fatalf("standalone session id = %q, want standalone-1", standaloneSession.ID)
+	}
+	if projectSession.ID != "standalone-2" {
+		t.Fatalf("project session id = %q, want standalone-2", projectSession.ID)
+	}
+	if projectSession.ProjectID != "standalone" || projectSession.IsStandalone() {
+		t.Fatalf("project session project = %q", projectSession.ProjectID)
 	}
 }
 
@@ -1704,5 +1816,27 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 		if got.Metadata.Permissions != want.Metadata.Permissions {
 			t.Fatalf("repinned existing session: %q", got.Metadata.Permissions)
 		}
+	}
+}
+
+func TestClaimChatControllerGenerationPreservesRecency(t *testing.T) {
+	st := newTestStore(t)
+	seedProject(t, st, "restart")
+	rec := sampleRecord("restart")
+	rec.Mode = domain.SessionModeChat
+	rec.Metadata.ControllerGeneration = "before"
+	before, err := st.CreateSession(context.Background(), rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClaimChatControllerGeneration(context.Background(), before.ID, "after"); err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := st.GetSession(context.Background(), before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Metadata.ControllerGeneration != "after" || !after.UpdatedAt.Equal(before.UpdatedAt) || after.Activity != before.Activity {
+		t.Fatalf("claim changed user-visible facts: before=%+v after=%+v", before, after)
 	}
 }

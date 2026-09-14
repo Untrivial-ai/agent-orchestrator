@@ -1,3 +1,4 @@
+import { AppLink } from "./AppLink";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
@@ -7,13 +8,16 @@ import {
 	CircleDashed,
 	ChevronRight,
 	Cloud,
+	Bot,
 	Folder,
 	FolderClosed,
 	Folders,
 	GitBranch,
 	GitFork,
+	Globe,
 	Link2,
 	LoaderCircle,
+	Lock,
 	X,
 	XCircle,
 } from "lucide-react";
@@ -95,7 +99,7 @@ function initialCloneDetails(): CloneRepositoryDetails {
 	return {
 		remoteUrl: "",
 		destinationParent:
-			typeof window === "undefined" ? "" : (window.localStorage.getItem(LAST_CLONE_DESTINATION_KEY) ?? ""),
+			typeof window === "undefined" ? "~/ao/projects" : (window.localStorage.getItem(LAST_CLONE_DESTINATION_KEY) || "~/ao/projects"),
 	};
 }
 
@@ -129,6 +133,7 @@ export function CreateProjectFlow({
 	mode = "single_repo",
 	onCreateProject,
 	onInitializeProject,
+	onCreateStandaloneAgent,
 	onOpenExistingProject,
 	openSignal,
 	sourceSignal,
@@ -148,6 +153,7 @@ export function CreateProjectFlow({
 	onCloneProject: (input: CloneProjectInput) => Promise<void>;
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
+	onCreateStandaloneAgent?: () => void;
 	onOpenExistingProject?: (path: string) => void | Promise<void>;
 	// Monotonic counter: each new value opens the flow programmatically (the ⌘N
 	// "no project in scope" fallback). Lets the shortcut reuse the sidebar's own
@@ -485,15 +491,19 @@ export function CreateProjectFlow({
 				setIsInitializing(false);
 				setIsCreating(true);
 			}
-			// Workspace imports can adopt an existing local Git root too. Preserve
-			// its branch just as for a single repository; child defaults stay separate.
-			const defaultBranch = await aoBridge.app.getRepositoryBranch(selectedPath);
-			await onCreateProject({
-				path: selectedPath,
-				asWorkspace: selectedKind === "workspace",
-				...(defaultBranch ? { defaultBranch } : {}),
-				...selection,
-			});
+		// Workspace imports can adopt an existing local Git root. Preserve its
+		// checked-out branch as the workspace default (child defaults stay
+		// separate); the daemon resolves it at spawn time. Single-repo imports
+		// skip this lookup entirely — the daemon resolves their base branch
+		// itself, saving a blocking IPC round-trip on the critical path.
+		const defaultBranch =
+			selectedKind === "workspace" ? await aoBridge.app.getRepositoryBranch(selectedPath) : undefined;
+		await onCreateProject({
+			path: selectedPath,
+			asWorkspace: selectedKind === "workspace",
+			...(defaultBranch ? { defaultBranch } : {}),
+			...selection,
+		});
 			if (showProgress) {
 				setCreateProgress({ open: true, stage: "complete", value: 100 });
 				await new Promise((resolve) => window.setTimeout(resolve, 180));
@@ -727,7 +737,7 @@ export function CreateProjectFlow({
 							<CloudSignInPanel disabled={isBusy} onSignIn={cloudSignIn} />
 						)
 					) : (
-						<ImportSourcePicker disabled={isBusy} onSelect={selectSource} />
+						<ImportSourcePicker disabled={isBusy} onSelect={selectSource} onCreateStandaloneAgent={onCreateStandaloneAgent} />
 					)}
 					{error && !folderPickerOpen && selectedPath === null && (
 						<p className="text-caption leading-body text-error" role="status">
@@ -747,6 +757,7 @@ export function CreateProjectFlow({
 						onCloudCreated={onCloudProjectCreated}
 						onOfferingChange={setOffering}
 						onSignIn={cloudSignIn}
+						onCreateStandaloneAgent={onCreateStandaloneAgent}
 						open={modePickerOpen}
 					onOpenChange={(open) => {
 							if (isBusy) return;
@@ -1093,6 +1104,7 @@ function CreateProjectSourceDialog({
 	onOfferingChange,
 	onSignIn,
 	onOpenChange,
+	onCreateStandaloneAgent,
 	onSelect,
 	open,
 }: {
@@ -1105,6 +1117,7 @@ function CreateProjectSourceDialog({
 	onOfferingChange: (offering: ProjectOffering) => void;
 	onSignIn: () => void;
 	onOpenChange: (open: boolean) => void;
+	onCreateStandaloneAgent?: () => void;
 	onSelect: (source: ProjectSource) => void;
 	open: boolean;
 }) {
@@ -1134,7 +1147,7 @@ function CreateProjectSourceDialog({
 								<CloudSignInPanel dialog disabled={disabled} onSignIn={onSignIn} />
 							)
 						) : (
-							<ImportSourcePicker disabled={disabled} onClose={() => onOpenChange(false)} onSelect={onSelect} dialog />
+							<ImportSourcePicker disabled={disabled} onClose={() => onOpenChange(false)} onSelect={onSelect} onCreateStandaloneAgent={onCreateStandaloneAgent} dialog />
 						)}
 					</div>
 				</Dialog.Content>
@@ -1422,14 +1435,20 @@ function ImportSourcePicker({
 	dialog = false,
 	disabled,
 	onClose,
+	onCreateStandaloneAgent,
 	onSelect,
 }: {
 	dialog?: boolean;
 	disabled: boolean;
 	onClose?: () => void;
+	onCreateStandaloneAgent?: () => void;
 	onSelect: (source: ProjectSource) => void;
 }) {
 	const { t } = useTranslation();
+	const createStandaloneAgent = () => {
+		onClose?.();
+		onCreateStandaloneAgent?.();
+	};
 	const sources: Array<{ source: ProjectSource; icon: ReactNode; label: string; description: string }> = [
 		{
 			source: "clone",
@@ -1486,6 +1505,12 @@ function ImportSourcePicker({
 						</span>
 					</button>
 				))}
+				{onCreateStandaloneAgent ? (
+					<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
+						<Bot className="size-5" aria-hidden="true" />
+						<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
+					</button>
+				) : null}
 				</div>
 			</div>
 			{dialog && onClose ? (
@@ -1549,6 +1574,17 @@ function ProjectImportDialog({
 	const needsRemote = importNeedsRemoteSetup(requiredActions);
 	const githubOwner = githubRepository?.owner.trim() ?? "";
 	const githubName = githubRepository?.name.trim() ?? "";
+	const isPrivate = githubRepository?.private ?? true;
+	const visibilityLabel = isPrivate
+		? t("createProject.privateRepository", { defaultValue: "Private repository" })
+		: t("createProject.publicRepository", { defaultValue: "Public repository" });
+	const visibilityHelper = isPrivate
+		? t("createProject.privateRepositoryHelper", {
+				defaultValue: "Only you and people you invite can see this repo",
+		  })
+		: t("createProject.publicRepositoryHelper", {
+				defaultValue: "Anyone on the internet can see this repo",
+		  });
 	const [githubOwners, setGitHubOwners] = useState<GitHubOwner[]>([]);
 	const [customGitHubOwner, setCustomGitHubOwner] = useState(false);
 	const selectedGitHubOwner = githubOwners.find((owner) => owner.login === githubOwner);
@@ -1648,7 +1684,7 @@ function ProjectImportDialog({
 						</div>
 						{mustImportAsWorkspace ? (
 							<p className="text-[14px] leading-6 text-[var(--color-text-import-muted)]">
-								{t("createProject.projectMustBeWorkspace", { defaultValue: "This folder contains projects and needs to be imported as a workspace." })}
+								{t("createProject.projectMustBeWorkspace", { defaultValue: "This folder contains child Git repositories. Import it as a workspace instead." })}
 							</p>
 						) : null}
 						{validation.warning ? (
@@ -1786,16 +1822,35 @@ function ProjectImportDialog({
 													</AnimatePresence>
 												</div>
 											</div>
-											<div className="flex items-center justify-between py-0.5">
-												<Label htmlFor="githubRepoPrivate" className="text-[12px] font-medium text-[var(--color-text-import-title)]">
-													{t("createProject.privateRepository")}
+											<div className="flex items-center justify-between gap-3 py-1">
+												<Label htmlFor="githubRepoPrivate" className="flex cursor-pointer items-center gap-2.5 min-w-0">
+													{isPrivate ? (
+														<Lock className="size-4 shrink-0 text-[var(--color-text-import-muted)]" aria-hidden="true" />
+													) : (
+														<Globe className="size-4 shrink-0 text-[var(--color-text-import-muted)]" aria-hidden="true" />
+													)}
+													<div className="min-w-0 space-y-0.5">
+														<span className="block text-[12px] font-medium leading-4 text-[var(--color-text-import-title)]">
+															{visibilityLabel}
+														</span>
+														<span id="githubRepoVisibilityHelp" className="block text-[11px] leading-4 text-[var(--color-text-import-muted)]">
+															{visibilityHelper}
+														</span>
+													</div>
 												</Label>
 												<Switch
 													id="githubRepoPrivate"
-													aria-label={t("createProject.privateRepository")}
-													checked={githubRepository?.private ?? true}
+													aria-label={visibilityLabel}
+													aria-describedby="githubRepoVisibilityHelp"
+													checked={isPrivate}
 													disabled={disabled}
-													onCheckedChange={(privateRepository) => onChangeGitHubRepository({ owner: githubRepository?.owner ?? "", name: githubRepository?.name ?? "", private: privateRepository })}
+													onCheckedChange={(privateRepository) =>
+														onChangeGitHubRepository({
+															owner: githubRepository?.owner ?? "",
+															name: githubRepository?.name ?? "",
+															private: privateRepository,
+														})
+													}
 												/>
 											</div>
 									</div>
@@ -2032,7 +2087,7 @@ function ImportRepoRow({ failed = false, onSetup, repo, setupExpanded = false }:
 			</div>
 			<div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--color-text-import-title)]">{repo.name}</div>
 			<div className="flex max-w-[220px] shrink-0 items-center gap-1 truncate text-right text-[11px] text-[var(--color-text-import-muted)]">
-				{needsSetup ? onSetup ? <button type="button" aria-expanded={setupExpanded} className="rounded-sm border border-orange-400/40 bg-orange-500/15 px-2 py-0.5 text-orange-300 hover:bg-orange-500/25" onClick={onSetup}>{setupExpanded ? "Hide setup" : `${workspaceSetupLabel(repo)} · Set up`}</button> : <span className="rounded-sm border border-orange-400/40 bg-orange-500/15 px-2 py-0.5 text-orange-300">{t("createProject.setupRequired")}</span> : repositoryUrl ? <><GitBranch className="size-3.5 shrink-0" aria-hidden="true" /><a className="truncate underline decoration-border underline-offset-2 hover:text-foreground" href={repositoryUrl} rel="noreferrer" target="_blank">{repo.branch}</a></> : <><span className={cn("truncate", isPlainFolder && "rounded-sm bg-orange-500/15 px-2 py-0.5 text-orange-300")}>{isPlainFolder ? "Needs git init" : failed ? (repo.reason ?? t("createProject.repoCannotImport")) : repo.branch}</span></>}
+				{needsSetup ? onSetup ? <button type="button" aria-expanded={setupExpanded} className="rounded-sm border border-orange-400/40 bg-orange-500/15 px-2 py-0.5 text-orange-300 hover:bg-orange-500/25" onClick={onSetup}>{setupExpanded ? "Hide setup" : `${workspaceSetupLabel(repo)} · Set up`}</button> : <span className="rounded-sm border border-orange-400/40 bg-orange-500/15 px-2 py-0.5 text-orange-300">{t("createProject.setupRequired")}</span> : repositoryUrl ? <><GitBranch className="size-3.5 shrink-0" aria-hidden="true" /><AppLink className="truncate underline decoration-border underline-offset-2 hover:text-foreground" href={repositoryUrl} rel="noreferrer" target="_blank">{repo.branch}</AppLink></> : <><span className={cn("truncate", isPlainFolder && "rounded-sm bg-orange-500/15 px-2 py-0.5 text-orange-300")}>{isPlainFolder ? "Needs git init" : failed ? (repo.reason ?? t("createProject.repoCannotImport")) : repo.branch}</span></>}
 			</div>
 		</div>
 	);

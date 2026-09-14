@@ -22,6 +22,7 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+	AlertTriangle,
 	ChevronRight,
 	Download,
 	Folder,
@@ -55,6 +56,7 @@ import {
 	type MouseEvent,
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
+	type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -67,6 +69,8 @@ import {
 	type WorkspaceSummary,
 	sortedWorkerSessions,
 	workerSessions,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 import { getSessionStatusDotView } from "../lib/session-presentation";
 import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
@@ -84,8 +88,7 @@ import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
 import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { useShellMaybe } from "../lib/shell-context";
 import { useSidebarUpdateDismissal } from "../hooks/useSidebarUpdateDismissal";
-import { useRequestUpdateInstall } from "../hooks/useRequestUpdateInstall";
-import { useUpdateStatus, requestUpdateDownload } from "../hooks/useUpdateStatus";
+import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
 import { effectiveShortcutBindings, shortcutBindingKeys } from "../../shared/shortcuts";
 import {
@@ -340,6 +343,8 @@ type SidebarProps = {
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
 	onRemoveProject: (projectId: string) => Promise<void>;
+	/** Fixed shell chrome that also consumes the live sidebar width. */
+	resizeAuxiliaryTargetRef?: RefObject<HTMLElement | null>;
 };
 
 // Selection state comes from the URL: which project/session is active is the
@@ -364,11 +369,16 @@ function useSelection() {
 		[navigate],
 	);
 	const goSession = useCallback(
-		(projectId: string, sessionId: string) =>
+		(projectId: string, sessionId: string) => {
+			if (projectId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+				return;
+			}
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
 				params: { projectId, sessionId },
-			}),
+			});
+		},
 		[navigate],
 	);
 	return useMemo(() => ({
@@ -416,6 +426,7 @@ export function Sidebar({
 	onCreateProject,
 	onInitializeProject,
 	onRemoveProject,
+	resizeAuxiliaryTargetRef,
 }: SidebarProps) {
 	const { t } = useTranslation();
 	const selection = useSelection();
@@ -426,12 +437,28 @@ export function Sidebar({
 	const updateStatus = useUpdateStatus();
 	const availableUpdateVersion = updateStatus.state === "available" ? updateStatus.version : undefined;
 	const updateDismissal = useSidebarUpdateDismissal(availableUpdateVersion);
-	const requestUpdateInstall = useRequestUpdateInstall();
+	const openUpdateInstallPrompt = useUiStore((state) => state.openUpdateInstallPrompt);
 	// Daemon status for the smoke suite's sr-only mirror in the footer. Null when
 	// rendered outside the shell (unit tests) — the mirror simply doesn't render.
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
+	const existingProjectPaths = useMemo(
+		() => workspaces
+			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
+			.map((workspace) => workspace.path)
+			.filter((path): path is string => Boolean(path)),
+		[workspaces],
+	);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find(
+				(candidate) => candidate.kind !== STANDALONE_PROJECT_KIND && candidate.path === path,
+			);
+			if (workspace) selection.goProject(workspace.id);
+		},
+		[selection, workspaces],
+	);
 	const initialActiveSessionProjectId = useRef(
 		selection.activeSessionId ? selection.activeProjectId : undefined,
 	).current;
@@ -482,15 +509,26 @@ export function Sidebar({
 
 	// agent-orchestrator's sidebar resize: drag the right edge (200-420px,
 	// persisted), double-click to reset to 240px. Drives --ao-sidebar-w on :root,
-	// which the provider forwards into shadcn's --sidebar-width. Dragging clamps
+	// only to the two layout consumers and fixed titlebar strip, rather than
+	// :root. Dragging clamps
 	// at SIDEBAR_MIN_WIDTH — collapsing stays on the explicit toggle (⌘B /
 	// titlebar button), never on a drag.
+	const resizeScopeRef = useRef<HTMLDivElement>(null);
+	const getResizeTargets = useCallback(() => {
+		const scope = resizeScopeRef.current;
+		return [
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-gap"]') ?? null,
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null,
+			resizeAuxiliaryTargetRef?.current ?? null,
+		];
+	}, [resizeAuxiliaryTargetRef]);
 	const {
 		onPointerDown: onResizePointerDown,
 		onCollapsedPointerDown: onCollapsedResizePointerDown,
 		onDoubleClick: onResizeDoubleClick,
 	} = useResizable({
 		cssVar: "--ao-sidebar-w",
+		getCssTargets: getResizeTargets,
 		storageKey: "ao-sidebar-w",
 		defaultWidth: SIDEBAR_DEFAULT_WIDTH,
 		min: SIDEBAR_MIN_WIDTH,
@@ -505,14 +543,12 @@ export function Sidebar({
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
 	);
-	const openExistingProject = useCallback(
-		(path: string) => {
-			const workspace = workspaces.find((candidate) => candidate.path === path);
-			if (workspace) selection.goProject(workspace.id);
-		},
-		[selection, workspaces],
+	const projectIds = useMemo(
+		() => orderedWorkspaces
+			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
+			.map((workspace) => workspace.id),
+		[orderedWorkspaces],
 	);
-	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
 	const reorderSensors = useReorderSensors();
 	const projectDragClickGuard = usePostDragClickGuard();
 	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
@@ -584,9 +620,12 @@ export function Sidebar({
 	);
 	const onProjectDragStart = useCallback(({ active }: DragStartEvent) => {
 		const projectId = String(active.id);
+		if (!projectIds.includes(projectId)) return;
 		projectDragBoundsRef.current = null;
 		projectDropTargetRef.current = null;
-		const blocks = Array.from(document.querySelectorAll<HTMLElement>("[data-project-drop-target]"));
+		const blocks = Array.from(
+			document.querySelectorAll<HTMLElement>("[data-project-drop-target]"),
+		).filter((block) => block.dataset.projectId && projectIds.includes(block.dataset.projectId));
 		projectDropNodesRef.current = new Map(blocks.map((block) => [block.dataset.projectId ?? "", block]));
 		const activeRow = blocks.find((block) => block.dataset.projectId === projectId)
 			?.querySelector<HTMLElement>("[data-project-drag-row]");
@@ -598,7 +637,7 @@ export function Sidebar({
 			};
 		}
 		setDraggingProjectId(projectId);
-	}, []);
+	}, [projectIds]);
 	const updateProjectDropTarget = useCallback(({ active, activatorEvent, delta, over }: DragMoveEvent | DragOverEvent) => {
 		const activeId = String(active.id);
 		const overId = over ? String(over.id) : null;
@@ -641,6 +680,7 @@ export function Sidebar({
 		// Pinned sidebars start below shell chrome.
 		<SidebarRoot
 			collapsible="offcanvas"
+			resizeScopeRef={resizeScopeRef}
 			data-expanded-chrome={expandedChromeVisible ? "visible" : "hidden"}
 			data-topbar-offset={underTopbar ? topbarOffset : undefined}
 			className={cn(
@@ -750,13 +790,12 @@ export function Sidebar({
 						collapsible={false}
 						trailing={
 							<CreateProjectButton
+								existingProjectPaths={existingProjectPaths}
 								hideTrigger={workspaces.length === 0}
 								onCloneProject={onCloneProject}
 								onCreateProject={onCreateProject}
 								onInitializeProject={onInitializeProject}
 								onOpenExistingProject={openExistingProject}
-								existingProjectPaths={workspaces.map((workspace) => workspace.path)}
-								existingProjectNames={workspaces.map((workspace) => workspace.name)}
 							/>
 						}
 					/>
@@ -843,7 +882,7 @@ export function Sidebar({
 					<UpdateStatusRow
 						availableDismissed={updateDismissal.dismissed}
 						onDismissAvailable={updateDismissal.dismiss}
-						onRequestInstall={requestUpdateInstall}
+						onRequestInstall={openUpdateInstallPrompt}
 						status={updateStatus}
 						tabIndex={isCollapsed ? -1 : 0}
 					/>
@@ -882,7 +921,7 @@ export function Sidebar({
 				>
 					<UpdateStatusRail
 						availableDismissed={updateDismissal.dismissed}
-						onRequestInstall={requestUpdateInstall}
+						onRequestInstall={openUpdateInstallPrompt}
 						status={updateStatus}
 						tabIndex={isCollapsed ? 0 : -1}
 					/>
@@ -960,11 +999,14 @@ type ProjectItemDndProps = Pick<ProjectDraggable, "listeners" | "setActivatorNod
 // project/session subtree. The content only rerenders when its visible props
 // change (drag start/end or a different drop boundary), not for every transform.
 const ProjectItem = memo(function ProjectItem(props: ProjectItemProps) {
+	const isStandaloneWorkspace = props.workspace.kind === STANDALONE_PROJECT_KIND;
 	const draggable = useDraggable({
 		id: props.workspace.id,
+		disabled: isStandaloneWorkspace,
 	});
 	const droppable = useDroppable({
 		id: props.workspace.id,
+		disabled: isStandaloneWorkspace,
 	});
 	// dnd-kit refreshes the objects returned by these hooks as the pointer moves.
 	// Keep that high-frequency churn in this thin wrapper: the project content
@@ -1044,6 +1086,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		const id = requestAnimationFrame(() => setAnimReady(true));
 		return () => cancelAnimationFrame(id);
 	}, []);
+	const isProjectProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const projectIsDragging = draggingProjectId === workspace.id;
@@ -1121,7 +1164,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting) return;
+		if (isProjectProvisioning || isProjectRestarting) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1165,6 +1208,11 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
 		if (consumeDragClick(workspace.id)) return;
+		if (workspace.kind === STANDALONE_PROJECT_KIND) {
+			toggleDisclosure();
+			if (!expanded) selection.goHome();
+			return;
+		}
 		if (!expanded) {
 			toggleDisclosure();
 			selection.goProject(workspace.id);
@@ -1351,7 +1399,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
-								<Tooltip>
+								{workspace.kind !== STANDALONE_PROJECT_KIND && <Tooltip>
 									<TooltipTrigger asChild>
 										<span className="inline-flex">
 											<button
@@ -1365,8 +1413,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																name: workspace.name,
 															})
 												}
-												className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-												disabled={isSpawning || isProjectRestarting}
+													className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
+													disabled={isSpawning || isProjectProvisioning || isProjectRestarting}
 												onClick={() => void openOrchestrator()}
 												type="button"
 											>
@@ -1374,58 +1422,76 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											</button>
 										</span>
 									</TooltipTrigger>
-									<TooltipContent>
-										{isProjectRestarting
-											? t("shell.restarting")
-											: isSpawning
+										<TooltipContent>
+											{isProjectProvisioning || isProjectRestarting
+												? t("shell.restarting")
+												: isSpawning
 												? t("shell.spawning")
 												: orchestrator
 													? t("shell.orchestrator")
 													: t("shell.spawnOrchestratorLower")}
 									</TooltipContent>
-								</Tooltip>
-								<DropdownMenu>
+								</Tooltip>}
+								{workspace.kind === STANDALONE_PROJECT_KIND ? (
 									<Tooltip>
 										<TooltipTrigger asChild>
-											<DropdownMenuTrigger asChild>
-												<button
-													aria-label={t("shell.projectActions", {
-														name: workspace.name,
-													})}
-													className={HOVER_ACTION_CLASS}
-													type="button"
-												>
-													<MoreVertical aria-hidden="true" />
-												</button>
-											</DropdownMenuTrigger>
+											<button
+												aria-label={t("shell.openNewAgent", { defaultValue: "Open a new agent" })}
+												className={HOVER_ACTION_CLASS}
+												onClick={() => requestNewTask(workspace.id)}
+												type="button"
+											>
+												<Plus aria-hidden="true" />
+											</button>
 										</TooltipTrigger>
 										<TooltipContent>
-											{t("shell.projectActions", {
-												name: workspace.name,
-											})}
+											{t("shell.openNewAgent")}
 										</TooltipContent>
 									</Tooltip>
-									<DropdownMenuContent side="right" align="start" className="min-w-44">
-										<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
-											<Plus aria-hidden="true" />
-											{t("shell.newSession")}
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
-											<Settings aria-hidden="true" />
-											{t("shell.projectSettings")}
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
+								) : (
+									<DropdownMenu>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<DropdownMenuTrigger asChild>
+													<button
+														aria-label={t("shell.projectActions", {
+															name: workspace.name,
+														})}
+														className={HOVER_ACTION_CLASS}
+														type="button"
+													>
+														<MoreVertical aria-hidden="true" />
+													</button>
+												</DropdownMenuTrigger>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("shell.projectActions", {
+													name: workspace.name,
+												})}
+											</TooltipContent>
+										</Tooltip>
+										<DropdownMenuContent side="right" align="start" className="min-w-44">
+											<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+												<Plus aria-hidden="true" />
+												{t("shell.newSession")}
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+												<Settings aria-hidden="true" />
+												{t("shell.projectSettings")}
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem
 											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
 											disabled={isRemoving}
 											onSelect={() => void removeProject()}
 										>
 											<Trash2 aria-hidden="true" />
 											{t("shell.removeProjectTitle")}
-										</DropdownMenuItem>
-									</DropdownMenuContent>
-								</DropdownMenu>
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								)}
 							</div>
 						</div>
 						{/* end outer relative */}
@@ -1535,6 +1601,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					<Plus aria-hidden="true" />
 					{t("shell.newSession")}
 				</ContextMenuItem>
+				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
 				<ContextMenuSeparator />
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
@@ -1549,6 +1616,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					<Trash2 aria-hidden="true" />
 					{t("shell.removeProjectTitle")}
 				</ContextMenuItem>
+				</>}
 			</ContextMenuContent>
 		</ContextMenu>
 	);
@@ -1707,9 +1775,17 @@ function SessionRow({
 	const [sessionPressed, setSessionPressed] = useState(false);
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
+	const pendingOpenRef = useRef<number | null>(null);
+	const cancelPendingOpen = useCallback(() => {
+		if (pendingOpenRef.current === null) return;
+		window.clearTimeout(pendingOpenRef.current);
+		pendingOpenRef.current = null;
+	}, []);
+	useEffect(() => cancelPendingOpen, [cancelPendingOpen]);
 	const beginRename = useCallback(() => {
+		cancelPendingOpen();
 		rename.begin();
-	}, [rename.begin]);
+	}, [cancelPendingOpen, rename.begin]);
 
 	if (rename.isEditing) {
 		return (
@@ -1797,12 +1873,26 @@ function SessionRow({
 							)}
 							{...(reorder?.listeners ?? {})}
 							onClick={(event) => {
-								if (event.detail > 1) return;
+								if (event.detail === 0) {
+									cancelPendingOpen();
+									onOpen();
+									return;
+								}
+								if (event.detail > 1) {
+									cancelPendingOpen();
+									return;
+								}
 								if (suppressTouchOpenRef.current) {
 									suppressTouchOpenRef.current = false;
 									return;
 								}
-								onOpen();
+								// Wait for the native double-click window before navigating. A
+								// second click cancels this so inline rename has no route side effect.
+								cancelPendingOpen();
+								pendingOpenRef.current = window.setTimeout(() => {
+									pendingOpenRef.current = null;
+									onOpen();
+								}, 500);
 							}}
 							onKeyDown={(event) => {
 								if (event.key !== "F2") return;
@@ -2074,17 +2164,15 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
  * this reason, so the staged build is read from there rather than from `state`.
  */
 type SidebarUpdateAction =
-	| { kind: "downloading"; percent?: number; preparing: boolean }
+	| { kind: "downloading"; percent: number }
 	| { kind: "download"; version?: string }
 	| { kind: "install"; version?: string; escalated: boolean }
+	| { kind: "retry" }
 	| null;
 
 function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean): SidebarUpdateAction {
-	// Update failures belong in Settings, where the full message and recovery
-	// action have room. The sidebar stays focused on update progress and actions.
-	if (status.state === "error" && (status.staged === undefined || status.staged.ready === false)) return null;
-	if (status.state === "downloading" || status.state === "preparing" || status.staged?.ready === false) {
-		return { kind: "downloading", percent: status.percent, preparing: status.state === "preparing" || status.staged?.ready === false };
+	if (status.state === "downloading") {
+		return { kind: "downloading", percent: Math.min(100, Math.max(0, status.percent ?? 0)) };
 	}
 	// `staged` is the stamp the main process puts on every status; the
 	// `downloaded` fallback keeps this correct for any status that predates it
@@ -2105,6 +2193,11 @@ function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean):
 		return { kind: "download", version: status.version };
 	}
 	if (staged) return { kind: "install", version: staged.version, escalated: staged.escalated };
+	// Ranked below a staged build on purpose: an update ready to install is more
+	// actionable than "checks are failing". Only when there is nothing better to
+	// show does the failure take the row — it used to render nothing at all,
+	// which reads as "up to date" rather than "checks are not getting through".
+	if (status.checksFailing === true) return { kind: "retry" };
 	return null;
 }
 
@@ -2166,13 +2259,13 @@ function UpdateStatusRow({
 							: t("shell.downloadUpdate")
 					}
 					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-					onClick={() => void requestUpdateDownload()}
+					onClick={() => void aoBridge.updates.download()}
 					tabIndex={tabIndex}
 					type="button"
 				>
 					<Download aria-hidden="true" className="size-icon-lg shrink-0" />
 					<span className="min-w-0 flex-1">
-						<span className="block truncate tracking-tight">{t("shell.downloadUpdate")}</span>
+						<span className="block truncate tracking-tight">{t("shell.updateAvailable")}</span>
 						{versionLabel && (
 							<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
 						)}
@@ -2203,10 +2296,30 @@ function UpdateStatusRow({
 			>
 				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
 				<span className="min-w-0 flex-1 truncate tabular-nums">
-					{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
-					{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
+					{t("settings.updates.downloading", { percent: action.percent })}
 				</span>
 			</div>
+		);
+	}
+
+	if (action.kind === "retry") {
+		return (
+			<button
+				aria-label={t("shell.retryUpdateCheck")}
+				className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning transition-colors hover:bg-warning/18 [&_svg]:text-warning"
+				data-testid="sidebar-update-failed"
+				onClick={() => void aoBridge.updates.check()}
+				tabIndex={tabIndex}
+				type="button"
+			>
+				<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
+				<span className="min-w-0 flex-1">
+					<span className="block truncate tracking-tight">{t("shell.updateCheckFailed")}</span>
+					<span className="block truncate text-caption font-normal text-warning">
+						{t("shell.retryUpdateCheck")}
+					</span>
+				</span>
+			</button>
 		);
 	}
 
@@ -2219,7 +2332,9 @@ function UpdateStatusRow({
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				"flex w-full items-center gap-2.5 rounded-lg border border-success/35 bg-success/12 p-2.5 text-left text-control font-medium text-success transition-colors hover:bg-success/18 [&_svg]:text-success",
+				"flex w-full items-center gap-2.5 rounded-lg border border-primary/35 bg-primary/12 p-2.5 text-left text-control font-medium text-primary transition-colors hover:bg-primary/18 [&_svg]:text-primary",
+				action.escalated &&
+					"border-working/35 bg-working/12 text-working hover:bg-working/18 [&_svg]:text-working",
 			)}
 			data-testid="sidebar-update-ready"
 			onClick={onRequestInstall}
@@ -2266,7 +2381,7 @@ function UpdateStatusRail({
 								: t("shell.downloadUpdate")
 						}
 						className="grid size-9 place-items-center rounded-lg text-passive transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
-						onClick={() => void requestUpdateDownload()}
+						onClick={() => void aoBridge.updates.download()}
 						tabIndex={tabIndex}
 						type="button"
 					>
@@ -2279,7 +2394,7 @@ function UpdateStatusRail({
 	}
 
 	if (action.kind === "downloading") {
-		const label = action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent });
+		const label = t("settings.updates.downloading", { percent: action.percent });
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -2297,6 +2412,27 @@ function UpdateStatusRail({
 		);
 	}
 
+	if (action.kind === "retry") {
+		return (
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<button
+						aria-label={t("shell.retryUpdateCheck")}
+						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning transition-colors hover:bg-warning/18 [&_svg]:size-4"
+						onClick={() => void aoBridge.updates.check()}
+						tabIndex={tabIndex}
+						type="button"
+					>
+						<AlertTriangle aria-hidden="true" />
+					</button>
+				</TooltipTrigger>
+				<TooltipContent side="right">
+					{t("shell.updateCheckFailed")} · {t("shell.retryUpdateCheck")}
+				</TooltipContent>
+			</Tooltip>
+		);
+	}
+
 	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<Tooltip>
@@ -2309,7 +2445,9 @@ function UpdateStatusRail({
 					}
 					className={cn(
 						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						"bg-success/12 text-success hover:bg-success/18",
+						action.escalated
+							? "bg-working/12 text-working hover:bg-working/18"
+							: "text-passive hover:bg-interactive-hover hover:text-foreground",
 					)}
 					onClick={onRequestInstall}
 					tabIndex={tabIndex}
@@ -2442,7 +2580,6 @@ function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
 
 function CreateProjectButton({
 	existingProjectPaths,
-	existingProjectNames,
 	hideTrigger = false,
 	onCloneProject,
 	onCreateProject,
@@ -2450,9 +2587,8 @@ function CreateProjectButton({
 	onOpenExistingProject,
 }: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & {
 	existingProjectPaths: readonly string[];
-	existingProjectNames: readonly string[];
 	hideTrigger?: boolean;
-	onOpenExistingProject: (path: string) => void;
+	onOpenExistingProject: (path: string) => void | Promise<void>;
 }) {
 	const { t } = useTranslation();
 	// Single CreateProjectFlow owner for the sidebar: the header "+" stays mounted
@@ -2461,17 +2597,18 @@ function CreateProjectButton({
 	// reuses this flow via requestCreateProject().
 	const createProjectNonce = useUiStore((state) => state.createProjectNonce);
 	const folderDropRequest = useUiStore((state) => state.folderDropRequest);
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<CreateProjectFlow
 			droppedPath={folderDropRequest}
+			existingProjectPaths={existingProjectPaths}
 			mode="choose"
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
+			onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 			onInitializeProject={onInitializeProject}
 			onOpenExistingProject={onOpenExistingProject}
 			openSignal={createProjectNonce}
-			existingProjectPaths={existingProjectPaths}
-			existingProjectNames={existingProjectNames}
 		>
 			{({ disabled, choosePath, label }) => (
 				<Tooltip>

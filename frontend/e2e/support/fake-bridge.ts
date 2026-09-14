@@ -53,7 +53,13 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 	await page.addInitScript(
 		({ version, daemonState, daemonPort, updateStatus, updateSettings }) => {
 			const unsubscribe = () => () => undefined;
+			const updateListeners = new Set<(status: UpdateStatus) => void>();
 			let currentUpdateSettings = updateSettings;
+			let currentUpdateStatus = updateStatus;
+			const emitUpdateStatus = (next: UpdateStatus) => {
+				currentUpdateStatus = next;
+				for (const listener of updateListeners) listener(next);
+			};
 			const status: DaemonStatus =
 				daemonState === "ready" ? { state: "ready", port: daemonPort } : { state: daemonState };
 			const navState = (viewId: string) => ({
@@ -88,6 +94,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onNewShellTerminalShortcut: unsubscribe,
 					onCloseShellTerminalShortcut: unsubscribe,
 					setCloseShellTerminalShortcutEnabled: () => undefined,
+					setChatDraftRisk: () => undefined,
 					onOpenSettingsShortcut: unsubscribe,
 					onPreviousSessionShortcut: unsubscribe,
 					onNextSessionShortcut: unsubscribe,
@@ -139,8 +146,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				telemetry: {
 					getBootstrap: async () => null,
-					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
 					onPolicy: () => () => false,
 					onClearQueues: () => () => false,
 					capture: async () => false,
@@ -254,12 +261,17 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setRecording: async () => undefined,
 				},
 				updates: {
-					getStatus: async () => updateStatus,
+					getStatus: async () => currentUpdateStatus,
 					check: async () => undefined,
 					returnHome: async () => undefined,
 					download: async () => undefined,
 					install: async () => undefined,
-					onStatus: unsubscribe,
+					onStatus: (listener: (status: UpdateStatus) => void) => {
+						updateListeners.add(listener);
+						return () => {
+							updateListeners.delete(listener);
+						};
+					},
 					onTelemetry: unsubscribe,
 				},
 				// UpdatesSection calls featureBuilds.getActive() immediately on mount; an
@@ -288,6 +300,9 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onStreamEvent: unsubscribe,
 				},
 			} satisfies AoBridge;
+			(window as unknown as { __aoFakeUpdates: { setStatus: (status: UpdateStatus) => void } }).__aoFakeUpdates = {
+				setStatus: emitUpdateStatus,
+			};
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
 		{ version, daemonState, daemonPort, updateStatus, updateSettings },
@@ -356,9 +371,14 @@ export type FakeAgentController = {
 	notify: (n: { id: string; type: string; title: string; body?: string; sessionId?: string }) => void;
 };
 
+export type FakeUpdateController = {
+	setStatus: (status: UpdateStatus) => void;
+};
+
 declare global {
 	interface Window {
 		__aoFakeAgent?: FakeAgentController;
+		__aoFakeUpdates?: FakeUpdateController;
 	}
 }
 
@@ -374,9 +394,11 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 	const projectName = opts.projectName ?? "fake-proj";
 	const platform = opts.platform ?? null;
 	const workers = opts.workers ?? [];
+	// Renderer reload does not create a new daemon session incarnation.
+	const nowIso = new Date().toISOString();
 
 	await page.addInitScript(
-		({ version, daemonPort, projectId, projectName, platform, workers }) => {
+		({ version, daemonPort, projectId, projectName, platform, workers, nowIso }) => {
 			if (platform) {
 				try {
 					Object.defineProperty(navigator, "platform", { get: () => platform, configurable: true });
@@ -385,7 +407,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				}
 			}
 
-			const nowIso = new Date().toISOString();
 			type Session = Record<string, unknown>;
 			// The daemon derives the board lane; the fake stands in for it so
 			// driving a spec's status through setStatus still moves the card.
@@ -626,6 +647,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					onNewShellTerminalShortcut: unsubscribe,
 					onCloseShellTerminalShortcut: unsubscribe,
 					setCloseShellTerminalShortcutEnabled: () => undefined,
+					setChatDraftRisk: () => undefined,
 					onOpenSettingsShortcut: unsubscribe,
 					onPreviousSessionShortcut: unsubscribe,
 					onNextSessionShortcut: unsubscribe,
@@ -674,8 +696,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				},
 				telemetry: {
 					getBootstrap: async () => null,
-					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
+					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
 					onPolicy: () => () => false,
 					onClearQueues: () => () => false,
 					capture: async () => false,
@@ -818,6 +840,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
-		{ version, daemonPort, projectId, projectName, platform, workers },
+		{ version, daemonPort, projectId, projectName, platform, workers, nowIso },
 	);
 }

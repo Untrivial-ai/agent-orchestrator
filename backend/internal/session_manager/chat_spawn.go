@@ -102,6 +102,7 @@ type ChatStart struct {
 
 // ChatStarted is the durable result of a launch.
 type ChatStarted struct {
+	LiveReconnect          bool
 	ProviderConversationID string
 	ControllerGeneration   string
 	Conversation           domain.ConversationRecord
@@ -228,7 +229,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			}
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, id, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, started.LiveReconnect,
 			)
 			completionErr = commitErr
 			controllerCommitted = completionErr == nil
@@ -381,7 +382,7 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, fmt.Errorf("%s %s: switched continuation: %w", operation, rec.ID, err)
 	}
 
-	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	agentConfig := restoredAgentConfig(rec, project.Config)
 	if rec.Metadata.Permissions != "" {
 		agentConfig.Permissions = rec.Metadata.Permissions
 	}
@@ -451,7 +452,7 @@ func (m *Manager) resumeChatController(
 
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, rec.ID, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, started.LiveReconnect,
 			)
 			completionErr = commitErr
 			return ChatControllerCommit{
@@ -545,7 +546,14 @@ func (m *Manager) markChatControllerSpawned(
 	conversation domain.ConversationRecord,
 	providerBoundary *domain.ConversationBranch,
 	commitProviderHistory func(context.Context) error,
+	liveReconnect bool,
 ) (domain.ConversationRecord, error) {
+	if liveReconnect {
+		if providerBoundary != nil {
+			return domain.ConversationRecord{}, errors.New("live Chat reconnect cannot replace the provider boundary")
+		}
+		return conversation, m.lcm.MarkChatReconnected(ctx, id, metadata)
+	}
 	if providerBoundary == nil {
 		return conversation, m.lcm.MarkSpawned(ctx, id, metadata)
 	}

@@ -69,7 +69,11 @@ func (f *fakeStore) ListWorkspaceRepos(_ context.Context, projectID string) ([]d
 }
 func (f *fakeStore) CreateSession(_ context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	f.num++
-	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", rec.ProjectID, f.num))
+	prefix := string(rec.ProjectID)
+	if prefix == "" {
+		prefix = "standalone"
+	}
+	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, f.num))
 	f.sessions[rec.ID] = rec
 	return rec, nil
 }
@@ -80,7 +84,7 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	f.sessions[rec.ID] = rec
 	return nil
 }
-func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string, updatedAt time.Time) (bool, error) {
+func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error) {
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr
 	}
@@ -89,9 +93,6 @@ func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain
 		return false, nil
 	}
 	rec.Metadata.BrowserCapabilityVerifier = verifier
-	if rec.UpdatedAt.Before(updatedAt) {
-		rec.UpdatedAt = updatedAt
-	}
 	f.sessions[id] = rec
 	return true, nil
 }
@@ -209,6 +210,13 @@ func (l *fakeLCM) MarkSpawned(_ context.Context, id domain.SessionID, metadata d
 	rec.IsTerminated = false
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()}
 	rec.FirstSignalAt = time.Now()
+	rec.Metadata = metadata
+	l.store.sessions[id] = rec
+	return nil
+}
+
+func (l *fakeLCM) MarkChatReconnected(_ context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	rec := l.store.sessions[id]
 	rec.Metadata = metadata
 	l.store.sessions[id] = rec
 	return nil
@@ -5943,6 +5951,27 @@ func TestSpawn_ScratchUsesBranchlessWorkspace(t *testing.T) {
 	}
 }
 
+func TestSpawn_StandaloneUsesBranchlessWorkspaceWithoutProjectLookup(t *testing.T) {
+	m, st, _, ws := newManager()
+
+	s, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		Kind:    domain.KindWorker,
+		Harness: domain.HarnessCodex,
+	})
+	if err != nil {
+		t.Fatalf("Spawn standalone: %v", err)
+	}
+	if s.ID != "standalone-1" || s.ProjectID != "" {
+		t.Fatalf("standalone identity = %q project %q", s.ID, s.ProjectID)
+	}
+	if s.Metadata.Branch != "" || ws.lastCfg.Branch != "" || ws.lastCfg.BaseBranch != "" {
+		t.Fatalf("standalone branch/session workspace = %q/%q/%q, want empty", s.Metadata.Branch, ws.lastCfg.Branch, ws.lastCfg.BaseBranch)
+	}
+	if rows := st.worktrees[s.ID]; len(rows) != 0 {
+		t.Fatalf("standalone spawn must not write session_worktrees rows, got %#v", rows)
+	}
+}
+
 func TestSpawn_ScratchRejectsExplicitBranchBeforeSessionRow(t *testing.T) {
 	m, st, _, _ := newManager()
 	st.projects["scratch"] = domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch, Config: testRoleAgents()}
@@ -7866,7 +7895,7 @@ func TestReconcileLive_RelaunchFailureLeavesSessionExitedAndRecoverable(t *testi
 	}
 }
 
-func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResumable(t *testing.T) {
+func TestReconcileLive_RuntimeFailureAfterCapabilityUpdateLeavesSessionResumable(t *testing.T) {
 	st := newFakeStore()
 	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
 	rt := &fakeRuntime{
@@ -7906,15 +7935,15 @@ func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResum
 	if failed.Metadata.BrowserCapabilityVerifier != "verifier-1" {
 		t.Fatalf("browser capability verifier = %q, want launch metadata persisted", failed.Metadata.BrowserCapabilityVerifier)
 	}
-	if !failed.UpdatedAt.Equal(launchUpdatedAt) {
-		t.Fatalf("UpdatedAt = %v, want launch metadata timestamp %v", failed.UpdatedAt, launchUpdatedAt)
+	if !failed.UpdatedAt.Equal(bootUpdatedAt) {
+		t.Fatalf("UpdatedAt = %v, want preserved recency %v", failed.UpdatedAt, bootUpdatedAt)
 	}
 	if failed.Metadata.AgentSessionID != "native-conversation-1" || failed.Metadata.WorkspacePath != "/wt/s1" {
 		t.Fatalf("native identity/worktree changed after failed relaunch: %+v", failed.Metadata)
 	}
 
-	// The failed startup attempt must land in the ordinary Resume Agent state,
-	// even though launch preparation advanced UpdatedAt before runtime.Create.
+	// The failed startup attempt must land in the ordinary Resume Agent state
+	// without treating capability rotation as user-visible session activity.
 	rt.createErr = nil
 	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
 		t.Fatalf("ResumeAgentWithMode after dependency recovery: %v", err)
@@ -8306,6 +8335,50 @@ func TestReconcileLive_ScratchDeadRuntimeTerminatesWithoutWorkspaceTeardown(t *t
 	}
 	if rows := st.worktrees["scratch-1"]; len(rows) != 0 {
 		t.Fatalf("scratch reconcile must not write restore markers, got %#v", rows)
+	}
+}
+
+func TestReconcileLive_ScratchChatReattachesPersistentController(t *testing.T) {
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{
+		ID: "scratch", Kind: domain.ProjectKindScratch, Config: testRoleAgents(),
+	}
+	launcher := &recordingLauncher{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    fakeAgents{},
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		Chat:      launcher,
+		DataDir:   "/ao-test-data",
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "scratch-chat", ProjectID: "scratch", Kind: domain.KindWorker,
+		Harness: domain.HarnessCursor, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/scratch-chat", ProviderConversationID: "cursor-thread",
+			ControllerGeneration: "generation-old",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(ctx, rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("MarkTerminated = %d, want 0", lcm.terminated[rec.ID])
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("StartChat calls = %d, want 1", len(launcher.started))
+	}
+	started := launcher.started[0]
+	if started.ProviderConversationID != "cursor-thread" || started.WorkspacePath != "/ws/scratch-chat" {
+		t.Fatalf("StartChat = %#v, want durable Cursor conversation and scratch workspace", started)
 	}
 }
 

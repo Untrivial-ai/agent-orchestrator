@@ -20,6 +20,7 @@ import {
 } from "./icons";
 import {
 	attentionZone,
+	defaultProductUITranslator,
 	getDisplayStatusLabel,
 	getKanbanColumnView,
 	getSessionStatusView,
@@ -53,6 +54,7 @@ export type BoardSessionPresentation = {
 	 * send one falls back to the translated {@link status} label.
 	 */
 	displayStatus?: string;
+	statusReadiness?: "checking" | "ready" | "unavailable";
 	/**
 	 * Daemon-confirmed termination fact. `status` can already read "merged"
 	 * while the session is still live (the SCM merged before the session
@@ -255,16 +257,27 @@ export function SessionCardView({
 	translate,
 	usage,
 }: SessionCardViewProps) {
+	const translateStatus = translate ?? defaultProductUITranslator;
 	const badge = getSessionStatusView(session.status, translate);
 	const statusPresentation = session.statusPresentation;
 	const needsAttention = boardSessionNeedsAttention(session);
 	const needsAttentionChip = needsAttention;
 	const column = getKanbanColumnView(toKanbanColumn(session.kanbanColumn, session.status), translate);
+	const statusClassName =
+		session.displayStatus === "Closed without merge"
+			? "text-status-exited"
+			: session.status === "mergeable" || session.displayStatus === "Mergeable"
+				? "text-success"
+				: (session.statusPresentation?.className ?? column.titleClassName);
 	const branch = session.branch ?? "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const renderedStatusLabel =
-		statusPresentation?.label ??
-		(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label);
+		session.statusReadiness === "checking"
+			? translateStatus("session.statusChecking")
+			: session.statusReadiness === "unavailable"
+				? translateStatus("session.statusUnavailable")
+				: (statusPresentation?.label ??
+					(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label));
 	// Additive summary footer, not a replacement for renderedStatusLabel: it
 	// only appears once the daemon confirms the session is actually finished
 	// ("terminated", or "merged" with isTerminated true -- a live session can
@@ -277,6 +290,7 @@ export function SessionCardView({
 			? labels.pr.progress?.(countBoardPullRequests(prs))
 			: undefined;
 	const showStatusLoader =
+		session.statusReadiness === "checking" || (session.statusReadiness !== "unavailable" &&
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
 		(session.status === "working" ||
@@ -288,7 +302,7 @@ export function SessionCardView({
 			// `displayStatus`.
 			(session.displayStatus
 				? IN_PROGRESS_DISPLAY_STATUSES.has(session.displayStatus)
-				: session.status === "review_pending"));
+				: session.status === "review_pending")));
 
 	return (
 		<div
@@ -366,9 +380,7 @@ export function SessionCardView({
 							"inline-flex min-w-0 max-w-full items-center text-2xs font-medium",
 							needsAttentionChip
 								? "text-status-needs-you"
-								: session.status === "mergeable" || session.displayStatus === "Mergeable"
-									? "text-success"
-									: (statusPresentation?.className ?? column.titleClassName),
+								: statusClassName,
 						)}
 						data-kanban-column={statusPresentation ? undefined : column.column}
 						data-testid="session-status"
@@ -405,6 +417,7 @@ export function SessionCardView({
 }
 
 function boardSessionNeedsAttention(session: BoardSessionPresentation): boolean {
+	if (session.statusReadiness && session.statusReadiness !== "ready") return false;
 	if (session.statusPresentation) return false;
 	switch (session.displayStatus) {
 		case "Blocked":

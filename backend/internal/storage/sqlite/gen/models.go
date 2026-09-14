@@ -151,7 +151,7 @@ type AppSetting struct {
 
 type ChangeLog struct {
 	Seq       int64
-	ProjectID domain.ProjectID
+	ProjectID *domain.ProjectID
 	SessionID *domain.SessionID
 	EventType cdc.EventType
 	Payload   string
@@ -204,7 +204,7 @@ type CodexActiveAccount struct {
 type Conversation struct {
 	ID                         string
 	Scope                      domain.ConversationScope
-	ProjectID                  domain.ProjectID
+	ProjectID                  *domain.ProjectID
 	SessionID                  *domain.SessionID
 	CurrentSessionID           *domain.SessionID
 	LatestSequence             int64
@@ -234,6 +234,7 @@ type Conversation struct {
 	UsageCost                  sql.NullFloat64
 	UsageCurrency              sql.NullString
 	ActiveBranchID             string
+	OpencodeMode               string
 }
 
 type ConversationActivity struct {
@@ -274,6 +275,25 @@ type ConversationBranch struct {
 	ProviderScopeID        string
 }
 
+type ConversationEditDelivery struct {
+	ConversationID      string
+	ClientMessageID     string
+	RequestJson         string
+	State               string
+	SourceBranchID      string
+	ActiveBranchID      string
+	TurnID              string
+	HandledBySessionID  string
+	ProviderTurnID      string
+	TurnState           string
+	TurnRequestedAt     sql.NullTime
+	RejectionKind       string
+	RejectionMessage    string
+	CreatedAt           time.Time
+	SettledAt           sql.NullTime
+	ProviderWorkStarted int64
+}
+
 type ConversationMessage struct {
 	ID                  string
 	ConversationID      string
@@ -301,6 +321,26 @@ type ConversationProviderEvent struct {
 	PayloadJson     string
 	ReceivedAt      time.Time
 	BranchID        string
+}
+
+type ConversationQueuedEditDelivery struct {
+	ConversationID  string
+	ClientMessageID string
+	RequestHash     string
+	CreatedAt       time.Time
+}
+
+type ConversationSteerDelivery struct {
+	ConversationID   string
+	ClientMessageID  string
+	RequestJson      string
+	State            string
+	ProviderTurnID   string
+	ActivityID       string
+	RejectionKind    string
+	RejectionMessage string
+	CreatedAt        time.Time
+	SettledAt        sql.NullTime
 }
 
 type ConversationTurn struct {
@@ -349,7 +389,7 @@ type ModelUsageEvent struct {
 type Notification struct {
 	ID         string
 	SessionID  domain.SessionID
-	ProjectID  domain.ProjectID
+	ProjectID  *domain.ProjectID
 	PRURL      string
 	Type       domain.NotificationType
 	Title      string
@@ -403,6 +443,7 @@ type PR struct {
 	AutoInjectCI             bool
 	ProviderID               string
 	AuthorAvatarURL          string
+	ReviewPartial            bool
 }
 
 type PRCheck struct {
@@ -474,15 +515,17 @@ type Project struct {
 }
 
 type Review struct {
-	ID               string
-	SessionID        domain.SessionID
-	ProjectID        domain.ProjectID
-	Harness          domain.ReviewerHarness
-	PRURL            string
-	ReviewerHandleID string
-	AgentSessionID   string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    string
+	SessionID             domain.SessionID
+	ProjectID             domain.ProjectID
+	Harness               domain.ReviewerHarness
+	PRURL                 string
+	ReviewerHandleID      string
+	AgentSessionID        string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	ReviewerActivityState string
+	ReviewerLaunchID      string
 }
 
 type ReviewRun struct {
@@ -505,7 +548,7 @@ type ReviewRun struct {
 
 type Session struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -605,6 +648,7 @@ type ShellTerminal struct {
 	AppRunID   string
 	CreatedAt  time.Time
 	SessionID  sql.NullString
+	Transient  bool
 }
 
 type TelemetryEvent struct {

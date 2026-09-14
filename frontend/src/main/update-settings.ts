@@ -1,6 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+/** A refreshed target must be shown and explicitly confirmed before installation. */
+export type UpdateInstallResult = void | {
+	state: "confirmation-required";
+	version: string;
+	releaseNotes?: string;
+};
+
 export type UpdateChannel = "latest" | "nightly";
 
 /** A pinned PR feature build. `channel` stays as the home channel; this is a separate overlay. */

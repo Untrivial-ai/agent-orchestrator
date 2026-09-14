@@ -82,6 +82,7 @@ type fakeConversation struct {
 	sent               []ports.ChatUserMessage
 	caps               ports.ChatCapabilities
 	resolved           map[string]ports.ChatDecision
+	sendCalls          int
 	turnSeq            int
 	sendErr            error
 	onSend             func(providerTurnID string)
@@ -234,6 +235,7 @@ func (f *fakeConversation) Events() <-chan ports.ChatEvent { return f.events }
 
 func (f *fakeConversation) SendTurn(_ context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	f.mu.Lock()
+	f.sendCalls++
 	if f.sendErr != nil {
 		f.mu.Unlock()
 		return ports.ChatTurnRef{}, f.sendErr
@@ -265,6 +267,12 @@ func (f *fakeConversation) sentMessages() []ports.ChatUserMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]ports.ChatUserMessage(nil), f.sent...)
+}
+
+func (f *fakeConversation) sendCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sendCalls
 }
 
 func (f *fakeConversation) Interrupt(context.Context, string) error { return nil }
@@ -366,7 +374,14 @@ func (d fakeDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	}
 	return productionCaps(), nil
 }
-func (d fakeDriver) Start(_ context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+func (d fakeDriver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+	if cfg.PrepareEnv != nil && !conversationReconnectedLive(d.conv) {
+		env, err := cfg.PrepareEnv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Env = env
+	}
 	if d.startCfg != nil {
 		*d.startCfg = cfg
 	}
@@ -375,7 +390,14 @@ func (d fakeDriver) Start(_ context.Context, cfg ports.ChatStartConfig) (ports.C
 	}
 	return d.conv, nil
 }
-func (d fakeDriver) Resume(_ context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+func (d fakeDriver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+	if cfg.PrepareEnv != nil && !conversationReconnectedLive(d.conv) {
+		env, err := cfg.PrepareEnv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Env = env
+	}
 	if d.resumeCfg != nil {
 		*d.resumeCfg = cfg
 	}
@@ -383,6 +405,11 @@ func (d fakeDriver) Resume(_ context.Context, cfg ports.ChatResumeConfig) (ports
 		return d.resume(cfg)
 	}
 	return d.conv, nil
+}
+
+func conversationReconnectedLive(conversation ports.ChatConversation) bool {
+	reconnected, ok := conversation.(ports.ChatLiveReconnector)
+	return ok && reconnected.ReconnectedLive()
 }
 
 type fakeRegistry struct{ driver ports.ChatDriver }
@@ -1040,7 +1067,7 @@ func TestResumeImportsNativeHistoryBeforeTheChatControllerStarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation", now); err != nil {
+	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration: %v", err)
 	}
 	created, err := st.AppendUserMessage(context.Background(), existing.ID, testSession, "old-generation",
@@ -1566,7 +1593,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayCheckpointOnFailedTurn(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation", now); err != nil {
+	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration: %v", err)
 	}
 	// An older completed Chat round trip that the provider will replay.
@@ -1718,7 +1745,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayBeforeProviderCoordinationBoundary(t
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation", now); err != nil {
+	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration: %v", err)
 	}
 
@@ -2087,11 +2114,12 @@ func TestFreshProjectControllerStartFailureKeepsPreviousHistoryHidden(t *testing
 /* ---- harness ----------------------------------------------------------- */
 
 type harness struct {
-	svc      *chatsvc.Service
-	st       *sqlite.Store
-	conv     *fakeConversation
-	ctrl     *chatsvc.Controller
-	activity *recordingActivity
+	svc       *chatsvc.Service
+	st        *sqlite.Store
+	conv      *fakeConversation
+	ctrl      *chatsvc.Controller
+	activity  *recordingActivity
+	hostStops atomic.Int32
 
 	clockMu sync.Mutex
 	clock   time.Time
@@ -2170,6 +2198,10 @@ func newHarnessWithConversationAndStoreForHarness(
 	svc := chatsvc.New(chatsvc.Options{
 		Store:    chatStore,
 		Sessions: st,
+		StopProviderHost: func(context.Context, domain.SessionID) error {
+			h.hostStops.Add(1)
+			return nil
+		},
 		Drivers:  fakeRegistry{driver: fakeDriver{conv: conv}},
 		Activity: h.activity,
 		Log:      slog.New(slog.DiscardHandler),
@@ -2221,7 +2253,7 @@ func (h *harness) awaitSnapshot(t *testing.T, pred func(store.ConversationSnapsh
 func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	if err := h.st.ClaimChatControllerGeneration(ctx, testSession, "replacement-generation", h.now()); err != nil {
+	if err := h.st.ClaimChatControllerGeneration(ctx, testSession, "replacement-generation"); err != nil {
 		t.Fatalf("replace controller generation: %v", err)
 	}
 
@@ -3708,19 +3740,30 @@ func TestServiceLiveReconnectSkipsSettledHistoryBarrier(t *testing.T) {
 	st := openStore(t)
 	native := &nativeHistoryConversation{fakeConversation: newFakeConversation(), err: ports.ErrChatHistoryUnsettled}
 	provider := &liveReconnectedConversation{nativeHistoryConversation: native}
+	var prepareCalls atomic.Int32
 	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{
+			conv:  provider,
+			probe: func() error { return ports.ErrChatDriverUnavailable },
+		}},
 		Log: slog.New(slog.DiscardHandler), NewID: func() string { return "live-reconnect-id" },
 	})
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+		PrepareControllerEnv: func(context.Context, domain.SessionControllerOwner) (map[string]string, error) {
+			prepareCalls.Add(1)
+			return map[string]string{"AO_BROWSER_CAPABILITY": "rotated"}, nil
+		},
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer svc.StopAll(context.Background())
 	if reads := native.historyReads(); reads != 0 {
 		t.Fatalf("native history reads = %d, live reconnect must not wait for active turn to settle", reads)
+	}
+	if got := prepareCalls.Load(); got != 0 {
+		t.Fatalf("live reconnect rotated launch-only credentials %d times, want 0", got)
 	}
 }
 
@@ -3761,6 +3804,16 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	})
 	first.StopAll(context.Background())
 
+	before, found, err := st.GetSession(context.Background(), testSession)
+	if err != nil || !found {
+		t.Fatalf("read before restart: found=%v err=%v", found, err)
+	}
+	before.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Unix(100, 0).UTC()}
+	before.Metadata.ProviderConversationID = firstProvider.ProviderConversationID()
+	if err := st.UpdateSession(context.Background(), before); err != nil {
+		t.Fatal(err)
+	}
+	lcm := lifecycle.New(st, nil)
 	secondProvider := &liveReconnectedConversation{nativeHistoryConversation: &nativeHistoryConversation{
 		fakeConversation: newFakeConversation(),
 	}}
@@ -3773,9 +3826,27 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	secondController, err := second.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: t.TempDir(), ProviderConversationID: firstProvider.ProviderConversationID(),
+		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			if !result.LiveReconnect {
+				t.Fatal("same live provider was reported as a fresh spawn")
+			}
+			return chatsvc.ControllerCommit{}, lcm.MarkChatReconnected(context.Background(), testSession, domain.SessionMetadata{
+				ProviderConversationID: result.ProviderConversationID, ControllerGeneration: result.ControllerGeneration,
+			})
+		},
 	})
 	if err != nil {
 		t.Fatalf("reconnect Start: %v", err)
+	}
+	after, _, err := st.GetSession(context.Background(), testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Activity != before.Activity || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("reconnect changed activity/recency: before=%+v after=%+v", before, after)
+	}
+	if after.Metadata.ControllerGeneration == before.Metadata.ControllerGeneration {
+		t.Fatal("generation did not rotate")
 	}
 	queued, err := secondController.Send(context.Background(), ports.ChatUserMessage{Text: "after restart"})
 	if err != nil {
@@ -4875,7 +4946,11 @@ type compactingConversation struct {
 }
 
 func newCompactingConversation() *compactingConversation {
-	return &compactingConversation{fakeConversation: newFakeConversation()}
+	conv := &compactingConversation{fakeConversation: newFakeConversation()}
+	caps := productionCaps()
+	caps[ports.ChatCapabilityCompaction] = true
+	conv.setCapabilities(caps)
+	return conv
 }
 
 func (c *compactingConversation) Compact(context.Context) (ports.ChatCompactionResult, error) {
@@ -5013,6 +5088,21 @@ func TestCompactReportsWhatIsAboutToBeReclaimed(t *testing.T) {
 // cannot act on. The plain fake conversation does not implement ChatCompactor.
 func TestCompactOnAProviderThatCannotIsTyped(t *testing.T) {
 	h := newHarness(t)
+
+	_, err := h.svc.Compact(context.Background(), testSession)
+	if !errors.Is(err, chatsvc.ErrCompactionUnsupported) {
+		t.Fatalf("err = %v, want ErrCompactionUnsupported", err)
+	}
+}
+
+// An agent might implement ChatCompactor statically (e.g. ACP conversation),
+// but if the agent has not advertised the capability, Compact must return ErrCompactionUnsupported.
+func TestCompactRefusesWhenProviderImplementsCompactorWithoutCapability(t *testing.T) {
+	conv := newCompactingConversation()
+	caps := productionCaps()
+	delete(caps, ports.ChatCapabilityCompaction)
+	conv.setCapabilities(caps)
+	h := newHarnessWithConversation(t, conv)
 
 	_, err := h.svc.Compact(context.Background(), testSession)
 	if !errors.Is(err, chatsvc.ErrCompactionUnsupported) {

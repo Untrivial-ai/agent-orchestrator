@@ -47,6 +47,10 @@ func TestBuildSystemPrompt_WorkerIncludesRulesAndOrchestrator(t *testing.T) {
 		"## Orchestrator Coordination",
 		`ao send --session mer-orchestrator --message "<your message>"`,
 		"## Pull Requests for This Session",
+		"For a workspace project whose recorded session branch",
+		"`<session-branch>-<topic>`",
+		"Keep the full collision suffix",
+		"ao session claim-pr <full-pr-url>",
 		"## Docker Containers Started By This Session",
 		"## Project Rules",
 		"Always run focused tests.",
@@ -205,6 +209,33 @@ func TestBuildTaskPromptPreservesExplicitPublishingScope(t *testing.T) {
 		got := BuildTaskPrompt(TaskConfig{Role: RoleWorker, Prompt: prompt, IssueID: "42"})
 		if got != prompt {
 			t.Fatalf("explicit user scope changed: %q", got)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_StandaloneWorkerUsesStandalonePrompt(t *testing.T) {
+	got := BuildSystemPromptText(SystemConfig{
+		Role:       RoleWorker,
+		Standalone: true,
+	})
+	for _, want := range []string{
+		"## AO Standalone Agent",
+		"You are a standalone Agent Orchestrator worker.",
+		"This session is not attached to a project, repository, branch, issue tracker",
+		"## Docker Containers Started By This Session",
+		"## Standing-instruction confidentiality",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("standalone system prompt missing %q:\n%s", want, got)
+		}
+	}
+	for _, notWant := range []string{
+		"## AO Worker Role",
+		"## Orchestrator Coordination",
+		"## Pull Requests for This Session",
+	} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("standalone system prompt unexpectedly contains %q:\n%s", notWant, got)
 		}
 	}
 }

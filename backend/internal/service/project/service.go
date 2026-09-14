@@ -300,16 +300,40 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		p.WorkspaceRepos = workspaceReposFromRecords(row.Path, repos)
 		return p, nil
 	}
-	if !isGitRepo(path) {
+	// The three repository probes are independent git subprocesses; run them
+	// concurrently so registration pays one wave instead of three serial
+	// spawns. Error precedence stays sequential below (not-a-repo wins over
+	// unborn), preserving the existing error contract.
+	var (
+		isRepo    bool
+		hasCommit bool
+		originURL string
+	)
+	var probes sync.WaitGroup
+	probes.Add(3)
+	go func() {
+		defer probes.Done()
+		isRepo = isGitRepo(path)
+	}()
+	go func() {
+		defer probes.Done()
+		hasCommit = repoHasCommit(ctx, path)
+	}()
+	go func() {
+		defer probes.Done()
+		originURL = resolveGitOriginURL(path)
+	}()
+	probes.Wait()
+	if !isRepo {
 		return Project{}, apierr.Invalid("NOT_A_GIT_REPO", "AO needs a Git repository with an initial commit before it can create agent workspaces.", nil)
 	}
-	if !repoHasCommit(ctx, path) {
+	if !hasCommit {
 		return Project{}, apierr.Invalid("PROJECT_UNBORN", "AO needs a Git repository with an initial commit before it can create agent workspaces.", map[string]any{
 			"path":         path,
 			"suggestedFix": "Run `git commit --allow-empty -m \"initial commit\"` in this folder, then try again.",
 		})
 	}
-	row.RepoOriginURL = resolveGitOriginURL(path)
+	row.RepoOriginURL = originURL
 	if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
@@ -366,19 +390,7 @@ func (m *Service) InitializeRepository(ctx context.Context, in InitializeReposit
 			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not initialize a Git repository in this folder.", map[string]any{"error": err.Error()})
 		}
 	}
-	managedBranch := domain.DefaultBranchName
-	if target == repositorySetupUnbornRepo {
-		out, err := gitOutput(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD")
-		if err != nil || strings.TrimSpace(out) == "" {
-			detail := "empty symbolic HEAD"
-			if err != nil {
-				detail = err.Error()
-			}
-			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not determine the initial branch for this repository.", map[string]any{"error": detail})
-		}
-		managedBranch = strings.TrimSpace(out)
-	}
-	if _, err := gitOutput(ctx, path, "config", "--local", gitdefault.ManagedDefaultConfigKey, managedBranch); err != nil {
+	if err := gitdefault.New("git", nil).RecordInitialBranch(ctx, path); err != nil {
 		return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not record the default branch for this repository.", map[string]any{"error": err.Error()})
 	}
 
@@ -647,57 +659,6 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	}
 	row.DisplayName = displayName
 	row.Config = in.Config
-	return m.projectFromRow(ctx, row), nil
-}
-
-// EnsureDefaultScratchProject seeds the built-in first-run scratch project when
-// the registry has no active projects. Archived rows do not suppress reseeding:
-// otherwise deleting Scratch can leave first-run users with no non-git path
-// back into AO.
-func (m *Service) EnsureDefaultScratchProject(ctx context.Context, scratchPath string) (Project, error) {
-	scratchPath = strings.TrimSpace(scratchPath)
-	if scratchPath == "" {
-		return Project{}, apierr.Invalid("INVALID_SCRATCH_PATH", "Scratch project path is required", nil)
-	}
-	abs, err := filepath.Abs(scratchPath)
-	if err != nil {
-		return Project{}, apierr.Invalid("INVALID_SCRATCH_PATH", "Scratch project path is invalid", nil)
-	}
-	path := filepath.Clean(abs)
-
-	m.addMu.Lock()
-	defer m.addMu.Unlock()
-
-	projects, err := m.store.ListProjects(ctx)
-	if err != nil {
-		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load projects")
-	}
-	if len(projects) != 0 {
-		return Project{}, nil
-	}
-
-	if err := os.MkdirAll(path, 0o750); err != nil {
-		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Failed to create scratch project directory")
-	}
-
-	cfg := domain.ProjectConfig{
-		Worker:       domain.RoleOverride{Harness: m.defaultHarness},
-		Orchestrator: domain.RoleOverride{Harness: m.defaultHarness},
-	}
-	if err := cfg.Validate(); err != nil {
-		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Default scratch project config is invalid")
-	}
-	row := domain.ProjectRecord{
-		ID:           "scratch",
-		Path:         path,
-		DisplayName:  "Scratch",
-		RegisteredAt: m.clock().UTC(),
-		Kind:         domain.ProjectKindScratch,
-		Config:       cfg,
-	}
-	if err := m.store.UpsertProject(ctx, row); err != nil {
-		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Failed to create scratch project")
-	}
 	return m.projectFromRow(ctx, row), nil
 }
 

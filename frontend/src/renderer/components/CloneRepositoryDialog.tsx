@@ -5,7 +5,6 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next";
 import { aoBridge } from "../lib/bridge";
 import { isMacPlatform, isWindowsPlatform } from "../lib/platform";
-import { PathRow } from "./PathRow";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -64,7 +63,7 @@ export default function CloneRepositoryDialog({
 	const hasRemoteUrl = value.remoteUrl.trim().length > 0;
 	const hasDestination = value.destinationParent.trim().length > 0;
 	const targetPath = repositoryName && hasDestination
-		? joinCloneDestination(value.destinationParent, repositoryName)
+		? joinCloneDestination(value.destinationParent.trim(), repositoryName)
 		: "";
 	const projectExists = Boolean(
 		targetPath && existingProjectPaths.some((path) => sameProjectPath(path, targetPath)),
@@ -167,7 +166,10 @@ export default function CloneRepositoryDialog({
 		setDestinationPickerError(null);
 		setChoosingDestination(true);
 		try {
-			const selected = await aoBridge.app.chooseDirectory(t("createProject.cloneChooseDestination"));
+			const selected = await aoBridge.app.chooseDirectory({
+				title: t("createProject.cloneChooseDestination"),
+				defaultPath: "~/ao/projects",
+			});
 			if (requestId !== destinationPickerRequest.current) return;
 			if (!selected) return;
 			try {
@@ -199,9 +201,15 @@ export default function CloneRepositoryDialog({
 			}
 			return;
 		}
+		try {
+			window.localStorage.setItem(LAST_CLONE_DESTINATION_KEY, value.destinationParent.trim());
+		} catch {
+			// Remembering the folder is optional.
+		}
 		onContinue({
 			...value,
 			remoteUrl: value.remoteUrl.trim(),
+			destinationParent: value.destinationParent.trim(),
 			targetPath,
 		});
 	};
@@ -300,18 +308,33 @@ export default function CloneRepositoryDialog({
 								<Label htmlFor="cloneDestination" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
 									{t("createProject.cloneDestination")}
 								</Label>
-								<PathRow
-									action={t("createProject.cloneChoose")}
-									ariaDescribedBy={`cloneDestinationHelp${destinationError ? " cloneDestinationError" : ""}`}
-									ariaInvalid={Boolean(destinationError)}
-									ariaLabel={t("createProject.cloneChoose")}
-									disabled={disabled || choosingDestination}
-									icon={<Folder className="size-4 shrink-0 text-[var(--color-text-import-muted)]" aria-hidden="true" />}
-									id="cloneDestination"
-									onClick={() => void chooseDestination()}
-								>
-									{value.destinationParent || t("createProject.cloneDestinationPlaceholder")}
-								</PathRow>
+								<div className="flex h-control-form items-center overflow-hidden rounded-md border border-transparent bg-[var(--color-bg-import-card)] text-[13px] text-foreground">
+									<div className="relative min-w-0 flex-1">
+										<Folder className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--color-text-import-muted)]" aria-hidden="true" />
+										<Input
+											id="cloneDestination"
+											className="border-transparent bg-transparent pl-10 font-mono text-[13px]"
+											aria-describedby={`cloneDestinationHelp${destinationError ? " cloneDestinationError" : ""}`}
+											aria-invalid={Boolean(destinationError)}
+											disabled={disabled || choosingDestination}
+											autoCapitalize="none"
+											autoComplete="off"
+											spellCheck={false}
+											placeholder={t("createProject.cloneDestinationPlaceholder")}
+											value={value.destinationParent}
+											onChange={(event) => onChange({ ...value, destinationParent: event.target.value })}
+										/>
+									</div>
+									<button
+										aria-label={t("createProject.cloneChooseDestination")}
+										className="flex h-full shrink-0 items-center border-l border-border/60 px-4 text-foreground outline-none transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 disabled:pointer-events-none disabled:opacity-50"
+										disabled={disabled || choosingDestination}
+										type="button"
+										onClick={() => void chooseDestination()}
+									>
+										{t("createProject.cloneChoose")}
+									</button>
+								</div>
 								<p id="cloneDestinationHelp" className="text-pretty text-[12px] leading-5 text-[var(--color-text-import-muted)]">
 									{targetPath
 										? t("createProject.cloneDestinationTarget", { path: targetPath })

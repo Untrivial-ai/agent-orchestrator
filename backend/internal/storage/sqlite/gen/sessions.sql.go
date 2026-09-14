@@ -41,21 +41,21 @@ func (q *Queries) ActivateConversationBranchSession(ctx context.Context, arg Act
 
 const claimChatControllerGeneration = `-- name: ClaimChatControllerGeneration :execrows
 UPDATE sessions
-SET controller_generation = ?, updated_at = ?
+SET controller_generation = ?
 WHERE id = ? AND session_mode = 'chat'
 `
 
 type ClaimChatControllerGenerationParams struct {
 	ControllerGeneration string
-	UpdatedAt            time.Time
 	ID                   domain.SessionID
 }
 
 // A Chat controller claims ownership before its event goroutine starts. Provider
 // projections compare against this value in the same transaction as their write,
 // so an older controller cannot mutate a session after a replacement takes over.
+// Ownership changes are not activity and must not advance the board's recency.
 func (q *Queries) ClaimChatControllerGeneration(ctx context.Context, arg ClaimChatControllerGenerationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, claimChatControllerGeneration, arg.ControllerGeneration, arg.UpdatedAt, arg.ID)
+	result, err := q.db.ExecContext(ctx, claimChatControllerGeneration, arg.ControllerGeneration, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -122,7 +122,7 @@ FROM sessions WHERE id = ?
 
 type GetSessionRow struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -239,7 +239,7 @@ INSERT INTO sessions (
 
 type InsertSessionParams struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -349,7 +349,7 @@ FROM sessions ORDER BY project_id, num
 
 type ListAllSessionsRow struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -472,12 +472,12 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
-FROM sessions WHERE project_id = ? ORDER BY num
+FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
 type ListSessionsByProjectRow struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -522,7 +522,7 @@ type ListSessionsByProjectRow struct {
 	SessionPermissions        string
 }
 
-func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
+func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionsByProject, projectID)
 	if err != nil {
 		return nil, err
@@ -594,8 +594,19 @@ const nextSessionNum = `-- name: NextSessionNum :one
 SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?
 `
 
-func (q *Queries) NextSessionNum(ctx context.Context, projectID domain.ProjectID) (int64, error) {
+func (q *Queries) NextSessionNum(ctx context.Context, projectID *domain.ProjectID) (int64, error) {
 	row := q.db.QueryRowContext(ctx, nextSessionNum, projectID)
+	var next int64
+	err := row.Scan(&next)
+	return next, err
+}
+
+const nextStandaloneSessionNum = `-- name: NextStandaloneSessionNum :one
+SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id IS NULL
+`
+
+func (q *Queries) NextStandaloneSessionNum(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextStandaloneSessionNum)
 	var next int64
 	err := row.Scan(&next)
 	return next, err
@@ -668,6 +679,17 @@ func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) (i
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const sessionIDExists = `-- name: SessionIDExists :one
+SELECT COUNT(*) > 0 FROM sessions WHERE id = ?
+`
+
+func (q *Queries) SessionIDExists(ctx context.Context, id domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, sessionIDExists, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const sessionIsSeed = `-- name: SessionIsSeed :one
@@ -840,22 +862,20 @@ func (q *Queries) SetSessionTerminateOnPRMerge(ctx context.Context, arg SetSessi
 
 const updateBrowserCapabilityVerifier = `-- name: UpdateBrowserCapabilityVerifier :execrows
 UPDATE sessions SET
-    browser_capability_verifier = ?1,
-    updated_at = MAX(updated_at, ?2)
-WHERE id = ?3
-  AND harness = ?4
-  AND session_mode = ?5
-  AND is_terminated = ?6
-  AND runtime_launch_id = ?7
-  AND agent_session_id = ?8
-  AND agent_session_id_launch_id = ?9
-  AND provider_conversation_id = ?10
-  AND controller_generation = ?11
+    browser_capability_verifier = ?1
+WHERE id = ?2
+  AND harness = ?3
+  AND session_mode = ?4
+  AND is_terminated = ?5
+  AND runtime_launch_id = ?6
+  AND agent_session_id = ?7
+  AND agent_session_id_launch_id = ?8
+  AND provider_conversation_id = ?9
+  AND controller_generation = ?10
 `
 
 type UpdateBrowserCapabilityVerifierParams struct {
 	BrowserCapabilityVerifier      string
-	UpdatedAt                      interface{}
 	ID                             domain.SessionID
 	ExpectedHarness                domain.AgentHarness
 	ExpectedSessionMode            domain.SessionMode
@@ -869,11 +889,10 @@ type UpdateBrowserCapabilityVerifierParams struct {
 
 // Rotate only the browser credential for the exact controller owner observed by
 // the launcher. This must not replay a stale SessionRecord over newer lifecycle,
-// activity, termination, or provider ownership facts.
+// activity, termination, provider ownership, or user-visible recency facts.
 func (q *Queries) UpdateBrowserCapabilityVerifier(ctx context.Context, arg UpdateBrowserCapabilityVerifierParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateBrowserCapabilityVerifier,
 		arg.BrowserCapabilityVerifier,
-		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedHarness,
 		arg.ExpectedSessionMode,

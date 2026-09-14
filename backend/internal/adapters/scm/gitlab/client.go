@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -166,7 +167,10 @@ func (c *Client) doRESTWithETag(ctx context.Context, path string, q url.Values, 
 		return RESTResponse{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp, path)
+	if err != nil {
+		return RESTResponse{StatusCode: resp.StatusCode}, err
+	}
 	if resp.StatusCode == http.StatusNotModified {
 		return RESTResponse{StatusCode: 304, NotModified: true, ETag: etag}, nil
 	}
@@ -212,7 +216,10 @@ func (c *Client) doMERGE(ctx context.Context, path string, q url.Values, body an
 		return RESTResponse{}, fmt.Errorf("gitlab scm: PUT %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := readResponseBody(resp, path)
+	if err != nil {
+		return RESTResponse{StatusCode: resp.StatusCode}, err
+	}
 	if resp.StatusCode >= 400 {
 		return RESTResponse{StatusCode: resp.StatusCode, Body: b}, classifyError(resp, b)
 	}
@@ -233,23 +240,34 @@ func (c *Client) doGET(ctx context.Context, path string, q url.Values) (RESTResp
 	req.Header.Set("User-Agent", c.userAgent)
 
 	c.mu.Lock()
-	if etag, ok := c.etagOut[cacheKey]; ok {
-		req.Header.Set("If-None-Match", etag)
-	}
+	prevETag := c.etagOut[cacheKey]
+	prevBody := c.bodyOut[cacheKey]
 	c.mu.Unlock()
+	if prevETag != "" && prevBody != nil {
+		req.Header.Set("If-None-Match", prevETag)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return RESTResponse{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp, path)
+	if err != nil {
+		return RESTResponse{StatusCode: resp.StatusCode}, err
+	}
 
 	if resp.StatusCode == http.StatusNotModified {
-		c.mu.Lock()
-		cached := c.bodyOut[cacheKey]
-		c.mu.Unlock()
-		return RESTResponse{StatusCode: 200, NotModified: true, ETag: resp.Header.Get("ETag"), Body: cached}, nil
+		if prevETag == "" || prevBody == nil {
+			return RESTResponse{StatusCode: resp.StatusCode}, fmt.Errorf("gitlab scm: GET %s returned 304 without a cached body", path)
+		}
+		// Another request may have replaced or evicted the cache entry while
+		// this request was in flight. Replay only the body we revalidated.
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			etag = prevETag
+		}
+		return RESTResponse{StatusCode: 200, NotModified: true, ETag: etag, Body: bytes.Clone(prevBody)}, nil
 	}
 	if resp.StatusCode >= 400 {
 		return RESTResponse{StatusCode: resp.StatusCode}, classifyError(resp, body)
@@ -357,8 +375,11 @@ func (c *Client) doGETPaginated(ctx context.Context, path string, q url.Values, 
 		if err != nil {
 			return false, err
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp, path)
 		_ = resp.Body.Close()
+		if err != nil {
+			return false, err
+		}
 		if resp.StatusCode == http.StatusNotModified {
 			// 304 on the first page means nothing changed; stop.
 			return false, nil
@@ -474,7 +495,8 @@ func (c *Client) storeCacheEntry(cacheKey, etag string, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.etagOut[cacheKey] = etag
-	c.bodyOut[cacheKey] = body
+	// Cached bytes remain immutable even if a caller modifies its response.
+	c.bodyOut[cacheKey] = bytes.Clone(body)
 	c.cacheLRU = append(c.cacheLRU, cacheKey)
 	for len(c.cacheLRU) > cacheMaxEntries {
 		evict := c.cacheLRU[0]
@@ -482,6 +504,21 @@ func (c *Client) storeCacheEntry(cacheKey, etag string, body []byte) {
 		delete(c.etagOut, evict)
 		delete(c.bodyOut, evict)
 	}
+}
+
+// readResponseBody rejects incomplete reads before callers can publish validators
+// or consume a page. Callers own closing the body. Preserve status-derived errors
+// as well, including rate-limit retry hints from the response headers.
+func readResponseBody(resp *http.Response, path string) ([]byte, error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		err = fmt.Errorf("gitlab scm: read %s body: %w", path, err)
+		if resp.StatusCode >= 400 {
+			err = errors.Join(err, classifyError(resp, body))
+		}
+		return nil, err
+	}
+	return body, nil
 }
 
 func (c *Client) authorize(ctx context.Context, req *http.Request) error {

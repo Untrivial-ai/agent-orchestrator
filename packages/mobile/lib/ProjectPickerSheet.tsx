@@ -5,6 +5,7 @@ import type { Theme } from "./theme";
 import { haptics } from "./haptics";
 import { SHEET_SCROLL_CONTENT, SheetHeader } from "./ui";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { ALL_PROJECTS } from "./projectFilter";
 
 // Picks the active project — the filter behind `useVisibleSessions()` (Agents +
 // PRs) and the default project in the spawn screen.
@@ -12,7 +13,6 @@ import { useTheme, useThemedStyles } from "./ThemeProvider";
 // The sheet only reports the choice; what happens next is the caller's call.
 // Settings follows a selection through to the Agents tab, so choosing a project
 // and seeing it applied are one step rather than two.
-export const ALL_PROJECTS = "all";
 
 export function ProjectPickerSheet({
 	onClose,

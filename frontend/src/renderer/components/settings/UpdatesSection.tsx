@@ -581,7 +581,11 @@ function UpdateActions({
 				</div>
 			) : null}
 
-			{status.checkError && <UpdateNotice tone="error" text={status.checkError} />}
+			{/* The primary error already explains the failed check. Keep a separate
+			    notice only when it adds information (for example beside a staged build). */}
+			{status.checkError && !(displayState === "error" && status.message === status.checkError) && (
+				<UpdateNotice tone="error" text={status.checkError} />
+			)}
 
 			{!status.checkError && !status.staleCheckNudge && status.checksFailing && (
 				<UpdateNotice tone="warning" text={t("settings.updates.checksFailing")} />

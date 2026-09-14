@@ -95,8 +95,13 @@ export function createWindowComposition(options: {
 		setOverlayOpen,
 		resize,
 		dispose: () => {
-			options.mainWindow.contentView.removeListener("bounds-changed", resize);
 			try {
+				// Reading `contentView` on an already-destroyed BaseWindow throws
+				// "Object has been destroyed". On window close the `closed` event
+				// fires after the native window is gone, so both calls here can
+				// throw — keep them together and out of the way of the shell
+				// WebContents teardown below, which must always run.
+				options.mainWindow.contentView.removeListener("bounds-changed", resize);
 				options.mainWindow.contentView.removeChildView(shellView);
 			} catch {
 				// The BaseWindow may already have destroyed its content hierarchy.

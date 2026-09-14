@@ -40,7 +40,7 @@ func conversationFixture(t *testing.T) (*sqlite.Store, domain.SessionID, string)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "gen-1", histClock); err != nil {
+	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "gen-1"); err != nil {
 		t.Fatalf("claim controller generation: %v", err)
 	}
 	return s, session.ID, conversation.ID
@@ -640,7 +640,7 @@ func TestUpdateQueuedTurnMessage(t *testing.T) {
 		t.Fatalf("append queued turn: created=%v err=%v", created, err)
 	}
 
-	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "queued-1", "edited draft", "", 0, histClock.Add(time.Minute)); err != nil {
+	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "queued-1", "edited draft", "", 0, histClock.Add(time.Minute), domain.ConversationQueuedEditDelivery{}); err != nil {
 		t.Fatalf("update queued turn message: %v", err)
 	}
 
@@ -651,7 +651,7 @@ func TestUpdateQueuedTurnMessage(t *testing.T) {
 	if got := texts(page.Messages); len(got) != 1 || got[0] != "edited draft" {
 		t.Fatalf("messages after edit = %#v, want [edited draft]", got)
 	}
-	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "missing", "nope", "", 0, histClock.Add(2*time.Minute)); !errors.Is(err, store.ErrQueuedTurnNotAvailable) {
+	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "missing", "nope", "", 0, histClock.Add(2*time.Minute), domain.ConversationQueuedEditDelivery{}); !errors.Is(err, store.ErrQueuedTurnNotAvailable) {
 		t.Fatalf("missing turn error = %v, want ErrQueuedTurnNotAvailable", err)
 	}
 }
@@ -1231,7 +1231,7 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation(old): %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, oldSession, "old-generation", histClock); err != nil {
+	if err := s.ClaimChatControllerGeneration(ctx, oldSession, "old-generation"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration(old): %v", err)
 	}
 
@@ -1274,7 +1274,7 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 		"cleanup-rebind", newSession, histClock.Add(time.Minute)); err != nil {
 		t.Fatalf("CreateConversation(new): %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, newSession, "new-generation", histClock.Add(time.Minute)); err != nil {
+	if err := s.ClaimChatControllerGeneration(ctx, newSession, "new-generation"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration(new): %v", err)
 	}
 	seedWork(newSession, "new-generation", "new", histClock.Add(time.Minute))

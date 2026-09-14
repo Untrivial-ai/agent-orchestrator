@@ -183,6 +183,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":          toUserResponse(principal),
 		"organizations": toOrganizations(memberships),
+		// sandboxProviders lets the client render a provider selector limited to
+		// what this control plane offers, defaulting to the deployment default.
+		"sandboxProviders": map[string]any{
+			"available": s.availableSandboxProviders,
+			"default":   s.sandboxProvider,
+		},
 	})
 }
 

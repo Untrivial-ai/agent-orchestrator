@@ -4016,6 +4016,24 @@ func TestMarkTerminated_ReapsContainers(t *testing.T) {
 	}
 }
 
+func TestMarkTerminated_ReapsStandaloneSessionContainers(t *testing.T) {
+	cr := &fakeLifecycleContainerReaper{}
+	// A standalone session has no project config to load. Make any accidental
+	// lookup fail so the test proves the default reap-enabled policy bypasses it.
+	pl := &fakeProjectConfigLoader{err: errors.New("standalone has no project")}
+	m, st, _ := newManagerWithContainerReaper(cr, pl)
+	rec := working("standalone-1")
+	rec.ProjectID = ""
+	st.sessions[rec.ID] = rec
+
+	if err := m.MarkTerminated(ctx, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(cr.sessions) != 1 || cr.sessions[0] != rec.ID {
+		t.Fatalf("expected container reap for standalone session %q, got %v", rec.ID, cr.sessions)
+	}
+}
+
 func TestMarkTerminated_ReapsContainersAgainWhenAlreadyTerminated(t *testing.T) {
 	cr := &fakeLifecycleContainerReaper{}
 	pl := &fakeProjectConfigLoader{projects: map[string]domain.ProjectRecord{

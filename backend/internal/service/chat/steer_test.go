@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -91,8 +93,16 @@ func (s *steerRecorder) failWith(err error) {
 // flight — the only state steering is meaningful in.
 func steerHarness(t *testing.T) (*harness, *steerRecorder) {
 	t.Helper()
+	return steerHarnessWithStore(t, func(st *store.Store) chatsvc.Store { return st })
+}
+
+func steerHarnessWithStore(
+	t *testing.T,
+	wrapStore func(*store.Store) chatsvc.Store,
+) (*harness, *steerRecorder) {
+	t.Helper()
 	provider := newSteerRecorder()
-	h := newHarnessWithConversation(t, provider)
+	h := newHarnessWithConversationAndStore(t, provider, wrapStore)
 
 	if _, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
 		Text:            "do the long thing",
@@ -107,6 +117,56 @@ func steerHarness(t *testing.T) (*harness, *steerRecorder) {
 		Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1",
 	})
 	return h, provider
+}
+
+func restartSteerService(
+	t *testing.T,
+	h *harness,
+	provider *steerRecorder,
+) *chatsvc.Service {
+	t.Helper()
+	if err := h.svc.Stop(context.Background(), testSession); err != nil {
+		t.Fatalf("stop original service: %v", err)
+	}
+	var (
+		idMu sync.Mutex
+		id   int
+	)
+	svc := chatsvc.New(chatsvc.Options{
+		Store: h.st, Sessions: h.st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			idMu.Lock()
+			defer idMu.Unlock()
+			id++
+			return fmt.Sprintf("restart-steer-%d", id)
+		},
+		Now: h.now,
+	})
+	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+	}); err != nil {
+		t.Fatalf("restart service: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	return svc
+}
+
+type failSteerCompletionStore struct {
+	chatsvc.Store
+}
+
+func (s *failSteerCompletionStore) CompleteSteerDelivery(
+	context.Context,
+	string,
+	string,
+	string,
+	domain.ConversationActivity,
+	time.Time,
+) error {
+	return errors.New("injected steer completion failure")
 }
 
 // steerMarkers reads the steer entries out of a timeline the way a renderer must: by
@@ -228,15 +288,23 @@ func TestSteerReachesTheRunningTurnAndLandsOnTheTimeline(t *testing.T) {
 
 // A retry with the same handle is the same guidance, not a second piece of it.
 func TestSteerIsIdempotentOnTheClientHandle(t *testing.T) {
-	h, _ := steerHarness(t)
+	h, provider := steerHarness(t)
 	ctx := context.Background()
 
 	msg := ports.ChatUserMessage{Text: "narrow the search", ClientMessageID: "steer-retry"}
-	if _, err := h.svc.Steer(ctx, testSession, msg); err != nil {
+	first, err := h.svc.Steer(ctx, testSession, msg)
+	if err != nil {
 		t.Fatalf("first Steer: %v", err)
 	}
-	if _, err := h.svc.Steer(ctx, testSession, msg); err != nil {
+	replayed, err := h.svc.Steer(ctx, testSession, msg)
+	if err != nil {
 		t.Fatalf("retried Steer: %v", err)
+	}
+	if replayed != first {
+		t.Fatalf("replayed result = %+v, want original %+v", replayed, first)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("provider received %d steer attempts, want one", len(calls))
 	}
 
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
@@ -247,19 +315,156 @@ func TestSteerIsIdempotentOnTheClientHandle(t *testing.T) {
 	}
 }
 
+func TestAcceptedSteerReplaysAfterControllerRestartWithoutProviderRedispatch(t *testing.T) {
+	h, provider := steerHarness(t)
+	msg := ports.ChatUserMessage{Text: "narrow the search", ClientMessageID: "steer-restart"}
+
+	first, err := h.svc.Steer(context.Background(), testSession, msg)
+	if err != nil {
+		t.Fatalf("first Steer: %v", err)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("original provider received %d steer attempts, want one", len(calls))
+	}
+
+	restartedProvider := newSteerRecorder()
+	restarted := restartSteerService(t, h, restartedProvider)
+	replayed, err := restarted.Steer(context.Background(), testSession, msg)
+	if err != nil {
+		t.Fatalf("Steer after restart: %v", err)
+	}
+	if replayed != first {
+		t.Fatalf("replayed result = %+v, want original %+v", replayed, first)
+	}
+	if calls := restartedProvider.steers(); len(calls) != 0 {
+		t.Fatalf("restarted provider received %d steer attempts, want none", len(calls))
+	}
+}
+
+func TestReservedSteerStaysUncertainAcrossRetryAndRestart(t *testing.T) {
+	var flaky *failSteerCompletionStore
+	h, provider := steerHarnessWithStore(t, func(st *store.Store) chatsvc.Store {
+		flaky = &failSteerCompletionStore{Store: st}
+		return flaky
+	})
+	msg := ports.ChatUserMessage{Text: "narrow the search", ClientMessageID: "steer-unknown"}
+
+	_, err := h.svc.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrSteerDeliveryUncertain) {
+		t.Fatalf("first Steer error = %v, want ErrSteerDeliveryUncertain", err)
+	}
+	_, err = h.svc.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrSteerDeliveryUncertain) {
+		t.Fatalf("same-process retry error = %v, want ErrSteerDeliveryUncertain", err)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("provider received %d steer attempts after retry, want one", len(calls))
+	}
+
+	restartedProvider := newSteerRecorder()
+	restarted := restartSteerService(t, h, restartedProvider)
+	_, err = restarted.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrSteerDeliveryUncertain) {
+		t.Fatalf("restart retry error = %v, want ErrSteerDeliveryUncertain", err)
+	}
+	if calls := restartedProvider.steers(); len(calls) != 0 {
+		t.Fatalf("restarted provider received %d steer attempts, want none", len(calls))
+	}
+}
+
+func TestSteerClientHandleCannotBeReusedForDifferentGuidance(t *testing.T) {
+	h, provider := steerHarness(t)
+	if _, err := h.svc.Steer(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "narrow the search", ClientMessageID: "steer-collision",
+	}); err != nil {
+		t.Fatalf("first Steer: %v", err)
+	}
+	_, err := h.svc.Steer(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "search everything", ClientMessageID: "steer-collision",
+	})
+	if !errors.Is(err, chatsvc.ErrSteerIdempotencyConflict) {
+		t.Fatalf("changed retry error = %v, want ErrSteerIdempotencyConflict", err)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("provider received %d steer attempts, want one", len(calls))
+	}
+}
+
+// A handoff refusal belongs to the original delivery handle. If the 409 response
+// is lost, retrying after the source controller reopens or a new controller starts
+// must replay that refusal rather than steering whichever turn happens to be live.
+func TestSteerDuringInterfaceTransitionDurablyReplaysWithoutProviderDispatch(t *testing.T) {
+	h, provider := steerHarness(t)
+	msg := ports.ChatUserMessage{
+		Text: "guidance typed during the switch", ClientMessageID: "steer-handoff",
+		Origin: domain.MessageOriginHuman,
+	}
+	if err := h.ctrl.ArmHandoff(
+		context.Background(), domain.SessionInterfaceTransitionDrain); err != nil {
+		t.Fatalf("ArmHandoff: %v", err)
+	}
+
+	_, err := h.svc.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("Steer during handoff error = %v, want ErrControllerHandoff", err)
+	}
+	if calls := provider.steers(); len(calls) != 0 {
+		t.Fatalf("provider received %d steers during handoff, want none", len(calls))
+	}
+
+	// Model a lost 409: the caller did not observe it and retries only after the
+	// transition was abandoned. The durable result still wins over current state.
+	h.svc.AbortChatHandoff(testSession)
+	_, err = h.svc.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("same-controller replay error = %v, want durable ErrControllerHandoff", err)
+	}
+	if calls := provider.steers(); len(calls) != 0 {
+		t.Fatalf("provider received %d steers after handoff reopened, want none", len(calls))
+	}
+
+	restartedProvider := newSteerRecorder()
+	restarted := restartSteerService(t, h, restartedProvider)
+	_, err = restarted.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("new-controller replay error = %v, want durable ErrControllerHandoff", err)
+	}
+	if calls := restartedProvider.steers(); len(calls) != 0 {
+		t.Fatalf("new provider received %d steers for prior handoff refusal, want none", len(calls))
+	}
+}
+
 // Nothing in flight is an ordinary outcome — the turn finished while the user was
 // typing — and the provider must not be asked.
 func TestSteerWithNothingInFlightIsTypedAndNeverReachesTheProvider(t *testing.T) {
 	provider := newSteerRecorder()
 	h := newHarnessWithConversation(t, provider)
+	msg := ports.ChatUserMessage{Text: "too late", ClientMessageID: "steer-no-active"}
 
-	_, err := h.svc.Steer(context.Background(), testSession,
-		ports.ChatUserMessage{Text: "too late"})
+	_, err := h.svc.Steer(context.Background(), testSession, msg)
 	if !errors.Is(err, chatsvc.ErrNoActiveTurn) {
 		t.Fatalf("err = %v, want ErrNoActiveTurn", err)
 	}
 	if len(provider.steers()) != 0 {
 		t.Error("asked the provider to steer with no turn in flight")
+	}
+
+	// Even if a different turn starts before recovery, the original handle owns the
+	// durable refusal. A lost 409 must not turn into guidance for later work.
+	if _, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "later work", ClientMessageID: "later-turn",
+	}); err != nil {
+		t.Fatalf("start later turn: %v", err)
+	}
+	provider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1",
+	})
+	_, err = h.svc.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrNoActiveTurn) {
+		t.Fatalf("retry after later turn error = %v, want durable ErrNoActiveTurn", err)
+	}
+	if len(provider.steers()) != 0 {
+		t.Error("a recovered refusal was delivered into a later turn")
 	}
 }
 
@@ -268,11 +473,18 @@ func TestSteerWithNothingInFlightIsTypedAndNeverReachesTheProvider(t *testing.T)
 func TestSteerRaceLostToTheProviderIsReportedAsNoActiveTurn(t *testing.T) {
 	h, provider := steerHarness(t)
 	provider.failWith(ports.ErrChatNoSteerableTurn)
+	msg := ports.ChatUserMessage{Text: "guidance", ClientMessageID: "steer-refused"}
 
-	_, err := h.svc.Steer(context.Background(), testSession,
-		ports.ChatUserMessage{Text: "guidance"})
+	_, err := h.svc.Steer(context.Background(), testSession, msg)
 	if !errors.Is(err, chatsvc.ErrNoActiveTurn) {
 		t.Fatalf("err = %v, want ErrNoActiveTurn", err)
+	}
+	_, err = h.svc.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrNoActiveTurn) {
+		t.Fatalf("retried err = %v, want ErrNoActiveTurn", err)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("provider received %d refused steer attempts, want one", len(calls))
 	}
 
 	// Nothing recorded: a timeline claiming guidance the agent never received would
@@ -283,6 +495,16 @@ func TestSteerRaceLostToTheProviderIsReportedAsNoActiveTurn(t *testing.T) {
 	}
 	if got := len(steerMarkers(snapshot)); got != 0 {
 		t.Errorf("recorded %d steers for a refused one", got)
+	}
+
+	restartedProvider := newSteerRecorder()
+	restarted := restartSteerService(t, h, restartedProvider)
+	_, err = restarted.Steer(context.Background(), testSession, msg)
+	if !errors.Is(err, chatsvc.ErrNoActiveTurn) {
+		t.Fatalf("restart retry error = %v, want ErrNoActiveTurn", err)
+	}
+	if calls := restartedProvider.steers(); len(calls) != 0 {
+		t.Fatalf("restarted provider received %d refused steer attempts, want none", len(calls))
 	}
 }
 
@@ -307,6 +529,7 @@ func TestSteerOfAnUnsteerableTurnKeepsItsOwnOutcome(t *testing.T) {
 func TestSteerIsRefusedWhenTheDriverCannotDoIt(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
+	msg := ports.ChatUserMessage{Text: "guidance", ClientMessageID: "steer-unsupported"}
 
 	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "do the long thing", ClientMessageID: "turn-1",
@@ -315,9 +538,19 @@ func TestSteerIsRefusedWhenTheDriverCannotDoIt(t *testing.T) {
 	}
 	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
 
-	_, err := h.svc.Steer(ctx, testSession, ports.ChatUserMessage{Text: "guidance"})
+	_, err := h.svc.Steer(ctx, testSession, msg)
 	if !errors.Is(err, chatsvc.ErrSteerUnsupported) {
 		t.Fatalf("err = %v, want ErrSteerUnsupported", err)
+	}
+
+	restartedProvider := newSteerRecorder()
+	restarted := restartSteerService(t, h, restartedProvider)
+	_, err = restarted.Steer(ctx, testSession, msg)
+	if !errors.Is(err, chatsvc.ErrSteerUnsupported) {
+		t.Fatalf("restart retry error = %v, want durable ErrSteerUnsupported", err)
+	}
+	if calls := restartedProvider.steers(); len(calls) != 0 {
+		t.Fatalf("restarted capable provider received %d attempts for a prior refusal, want none", len(calls))
 	}
 }
 
@@ -567,5 +800,47 @@ func TestPromoteQueuedTurnAmbiguousProviderFailureSettlesUncertainWithoutRedeliv
 	}
 	if calls := provider.steers(); len(calls) != 1 {
 		t.Fatalf("provider received %d steer attempts, want one", len(calls))
+	}
+}
+
+func TestRecoverImageSteerWithoutControllerNeverRedispatches(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		providerError error
+		wantError     error
+	}{
+		{name: "accepted"},
+		{name: "rejected", providerError: ports.ErrChatNoSteerableTurn, wantError: chatsvc.ErrNoActiveTurn},
+		{name: "uncertain", providerError: errors.New("response lost"), wantError: chatsvc.ErrSteerDeliveryUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, provider := steerHarness(t)
+			provider.failWith(tc.providerError)
+			ctx := context.Background()
+			original, err := h.svc.Steer(ctx, testSession, ports.ChatUserMessage{
+				Text: "use this image", ClientMessageID: "image-steer",
+				Content: []ports.ChatContent{{Type: "image", MIMEType: "image/png", Data: "aW1hZ2U="}},
+			})
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("steer error = %v, want %v", err, tc.wantError)
+			}
+			if err := h.svc.Stop(ctx, testSession); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				recovered, err := h.svc.RecoverSteer(ctx, testSession, "image-steer")
+				if !errors.Is(err, tc.wantError) || recovered != original {
+					t.Fatalf("recovery = %+v, %v; want %+v, %v", recovered, err, original, tc.wantError)
+				}
+			}
+			for _, id := range []string{"", "never-reserved"} {
+				if _, err := h.svc.RecoverSteer(ctx, testSession, id); !errors.Is(err, chatsvc.ErrSteerDeliveryUncertain) {
+					t.Fatalf("missing receipt: %v", err)
+				}
+			}
+			if len(provider.steers()) != 1 {
+				t.Fatal("recovery redispatched guidance")
+			}
+		})
 	}
 }

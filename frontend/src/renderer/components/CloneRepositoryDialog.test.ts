@@ -28,14 +28,49 @@ function renderCloneDialog(
 }
 
 afterEach(() => {
+	window.localStorage.removeItem("ao.clone.lastDestinationParent");
 	vi.restoreAllMocks();
 });
 
 describe("clone repository input", () => {
+	it("edits the destination without opening the picker and submits the updated path", async () => {
+		window.ao!.app.checkGitRepository = vi.fn().mockResolvedValue(true);
+		window.ao!.app.chooseDirectory = vi.fn();
+		const { props, view } = renderCloneDialog();
+		const input = screen.getByRole("textbox", { name: "Clone into" });
+		fireEvent.click(input);
+		fireEvent.change(input, { target: { value: "/Projects/new folder" } });
+		expect(window.ao!.app.chooseDirectory).not.toHaveBeenCalled();
+		expect(props.onChange).toHaveBeenCalledWith({ ...props.value, destinationParent: "/Projects/new folder" });
+		view.rerender(React.createElement(CloneRepositoryDialog, { ...props, value: { ...props.value, destinationParent: "/Projects/new folder" } }));
+		expect(screen.getByText("Repository will be created at /Projects/new folder/web-app.")).toBeInTheDocument();
+		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+		expect(props.onContinue).toHaveBeenCalledWith({ ...props.value, destinationParent: "/Projects/new folder", targetPath: "/Projects/new folder/web-app" });
+		expect(window.localStorage.getItem("ao.clone.lastDestinationParent")).toBe("/Projects/new folder");
+	});
+
+	it("opens the destination picker at the default folder and submits its selection", async () => {
+		window.ao!.app.checkGitRepository = vi.fn().mockResolvedValue(true);
+		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/Projects/new folder");
+		const { props, view } = renderCloneDialog();
+		fireEvent.click(screen.getByRole("button", { name: "Choose where to clone the repository" }));
+		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith({
+			title: "Choose where to clone the repository", defaultPath: "~/ao/projects",
+		});
+		await waitFor(() => expect(props.onChange).toHaveBeenCalledWith({ ...props.value, destinationParent: "/Projects/new folder" }));
+		view.rerender(React.createElement(CloneRepositoryDialog, { ...props, value: { ...props.value, destinationParent: "/Projects/new folder" } }));
+		expect(screen.getByText("Repository will be created at /Projects/new folder/web-app.")).toBeInTheDocument();
+		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+		expect(props.onContinue).toHaveBeenCalledWith({ ...props.value, destinationParent: "/Projects/new folder", targetPath: "/Projects/new folder/web-app" });
+		expect(window.localStorage.getItem("ao.clone.lastDestinationParent")).toBe("/Projects/new folder");
+	});
+
 	it("describes the destination consistently and shows the exact checkout path", () => {
 		renderCloneDialog();
 
-		expect(screen.getByText("Destination folder")).toBeInTheDocument();
+		expect(screen.getByText("Clone into")).toBeInTheDocument();
 		expect(screen.getByText("Repository will be created at /code/web-app.")).toBeInTheDocument();
 		expect(screen.queryByText(/parent folder/i)).not.toBeInTheDocument();
 	});
@@ -102,7 +137,7 @@ describe("clone repository input", () => {
 			onError,
 		});
 
-		const duplicateMessage = "A project already exists at this location";
+		const duplicateMessage = "A repository already exists at this location";
 		expect(onError).not.toHaveBeenCalled();
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		fireEvent.blur(screen.getByRole("textbox", { name: "Repository URL" }));
@@ -228,7 +263,7 @@ describe("clone repository input", () => {
 		const onChange = vi.fn();
 		const { props, view } = renderCloneDialog({ onChange });
 
-		fireEvent.click(screen.getByRole("button", { name: "Choose" }));
+		fireEvent.click(screen.getByRole("button", { name: "Choose where to clone the repository" }));
 		await waitFor(() => expect(window.ao!.app.chooseDirectory).toHaveBeenCalledOnce());
 		view.rerender(React.createElement(CloneRepositoryDialog, { ...props, open: false }));
 		await act(async () => resolvePicker?.("/stale/path"));

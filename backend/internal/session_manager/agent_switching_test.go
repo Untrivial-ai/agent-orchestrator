@@ -4338,11 +4338,6 @@ func TestReconcileChatAgentSwitchesUsesControllerBoundaries(t *testing.T) {
 			if tt.state == domain.AgentSwitchSourceStopped || tt.state == domain.AgentSwitchStartingTarget {
 				rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: now}
 			}
-			if tt.state == domain.AgentSwitchStartingTarget {
-				// Chat Service claims the reserved generation before ControllerReady;
-				// ownership still belongs to the source until activation commits.
-				rec.Metadata.ControllerGeneration = "target-chat-generation"
-			}
 			if tt.state == domain.AgentSwitchTargetReady || tt.state == domain.AgentSwitchDelivering {
 				rec.Harness = domain.HarnessCodex
 				rec.Metadata.AgentSessionID = "target-chat-native"

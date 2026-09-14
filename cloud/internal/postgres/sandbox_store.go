@@ -31,6 +31,7 @@ const sandboxColumns = `sandbox.session_id, sandbox.org_id, sandbox.provider,
 	sandbox.desired_state, sandbox.observed_state,
 	sandbox.resource_profile, sandbox.bootstrap_context,
 	sandbox.worker_last_seen_at, sandbox.startup_started_at,
+	sandbox.startup_attempts,
 	sandbox.deletion_requested_at,
 	sandbox.last_error, sandbox.updated_at`
 
@@ -51,11 +52,26 @@ func (s *Store) ClaimSandboxes(
 		rows, err := tx.Query(
 			ctx,
 			`WITH candidates AS (
-				SELECT session_id
-				FROM ao_sandboxes
-				WHERE reconcile_after <= now()
-					AND (reconcile_lease_until IS NULL OR reconcile_lease_until < now())
-					AND (observed_state <> 'deleted' OR desired_state <> 'deleted')
+				SELECT sandbox.session_id,
+					(
+						coalesce(sandbox.interactive_until > now(), false)
+						OR EXISTS (
+							SELECT 1 FROM ao_turns turn
+							WHERE turn.org_id = sandbox.org_id
+								AND turn.session_id = sandbox.session_id
+								AND turn.state IN ('queued', 'provisioning', 'running', 'cancel_requested')
+						)
+						OR EXISTS (
+							SELECT 1 FROM ao_sessions session
+							WHERE session.org_id = sandbox.org_id
+								AND session.id = sandbox.session_id
+								AND session.activity_state = 'active'
+						)
+					) AS keep_alive
+				FROM ao_sandboxes sandbox
+				WHERE sandbox.reconcile_after <= now()
+					AND (sandbox.reconcile_lease_until IS NULL OR sandbox.reconcile_lease_until < now())
+					AND (sandbox.observed_state <> 'deleted' OR sandbox.desired_state <> 'deleted')
 				ORDER BY reconcile_after, created_at
 				FOR UPDATE SKIP LOCKED
 				LIMIT $1
@@ -65,7 +81,7 @@ func (s *Store) ClaimSandboxes(
 				reconcile_lease_until = now() + $3::interval
 			FROM candidates
 			WHERE sandbox.session_id = candidates.session_id
-			RETURNING `+sandboxColumns,
+			RETURNING `+sandboxColumns+`, candidates.keep_alive`,
 			limit,
 			owner,
 			intervalString(lease),
@@ -192,6 +208,89 @@ func (s *Store) UpdateSandboxObservation(
 	})
 }
 
+// AcceptSandboxProviderPause atomically accepts a provider-native idle stop as
+// AO's current paused intent. The fresh activity predicates fence a user
+// resume or queued turn that raced the earlier provider observation.
+func (s *Store) AcceptSandboxProviderPause(
+	ctx context.Context,
+	owner, orgID, sessionID, providerEnvironmentID string,
+	reconcileAfter time.Time,
+) (bool, error) {
+	var accepted bool
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sandboxes sandbox
+			SET desired_state = 'paused',
+				observed_state = 'stopped',
+				provider_environment_id = NULLIF($3, ''),
+				startup_started_at = NULL,
+				interactive_until = NULL,
+				last_error = '',
+				reconcile_after = $4,
+				reconcile_lease_owner = '',
+				reconcile_lease_until = NULL,
+				updated_at = now()
+			WHERE sandbox.session_id = $1
+				AND sandbox.org_id = $5
+				AND sandbox.reconcile_lease_owner = $2
+				AND sandbox.reconcile_lease_until > now()
+				AND sandbox.desired_state = 'running'
+				AND (sandbox.interactive_until IS NULL OR sandbox.interactive_until <= now())
+				AND NOT EXISTS (
+					SELECT 1 FROM ao_turns turn
+					WHERE turn.org_id = sandbox.org_id
+						AND turn.session_id = sandbox.session_id
+						AND turn.state IN ('queued', 'provisioning', 'running', 'cancel_requested')
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM ao_sessions session
+					WHERE session.org_id = sandbox.org_id
+						AND session.id = sandbox.session_id
+						AND session.activity_state = 'active'
+				)`,
+			sessionID, owner, providerEnvironmentID, reconcileAfter, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("accept provider pause: %w", err)
+		}
+		accepted = tag.RowsAffected() > 0
+		if accepted {
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ao_worker_connections
+				SET disconnected_at = now()
+				WHERE org_id = $1 AND session_id = $2 AND disconnected_at IS NULL`,
+				orgID, sessionID,
+			); err != nil {
+				return fmt.Errorf("disconnect provider-paused workers: %w", err)
+			}
+			return nil
+		}
+		// Activity changed after this claim was read. Release it immediately so
+		// the next pass can restore from the fresh intent instead of waiting for
+		// the old lease to expire.
+		tag, err = tx.Exec(
+			ctx,
+			`UPDATE ao_sandboxes
+			SET reconcile_after = now(), reconcile_lease_owner = '',
+				reconcile_lease_until = NULL
+			WHERE session_id = $1 AND org_id = $3
+				AND reconcile_lease_owner = $2
+				AND reconcile_lease_until > now()`,
+			sessionID, owner, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("release raced provider pause: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrSandboxLeaseLost
+		}
+		return nil
+	})
+	return accepted, err
+}
+
 const (
 	failureBackoffBaseSeconds = 15
 	failureBackoffMaxShift    = 5
@@ -305,11 +404,49 @@ func (s *Store) SetSandboxDesiredState(
 	})
 }
 
-// WakePausedSessions records resume intent for sessions created by principal.
-// It also reserves a short interaction lease so the idle scanner cannot pause
-// the sandbox again while the worker and browser reconnect. The reconciler
-// owns provider calls and the worker heartbeat remains the authoritative ready
-// signal.
+// ResumeSession records an explicit per-session user intent. It reserves a
+// short interaction lease so provider resume and worker restoration cannot be
+// immediately undone by the idle scanner.
+func (s *Store) ResumeSession(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+) (domain.SandboxLifecycle, error) {
+	var lifecycle domain.SandboxLifecycle
+	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
+		err := tx.QueryRow(
+			ctx,
+			`UPDATE ao_sandboxes
+			SET desired_state = 'running',
+				reconcile_after = now(),
+				startup_started_at = CASE
+					WHEN desired_state <> 'running' THEN now()
+					ELSE startup_started_at
+				END,
+				interactive_until = CASE
+					WHEN interactive_until IS NULL
+						OR interactive_until < now() + $3::interval
+						THEN now() + $3::interval
+					ELSE interactive_until
+				END,
+				updated_at = now()
+			WHERE org_id = $1 AND session_id = $2
+				AND desired_state IN ('running', 'paused')
+			RETURNING session_id, provider, desired_state, observed_state`,
+			orgID, sessionID,
+			intervalString(interactiveSessionLease),
+		).Scan(
+			&lifecycle.SessionID, &lifecycle.Provider,
+			&lifecycle.DesiredState, &lifecycle.ObservedState,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrConflict
+		}
+		return err
+	})
+	return lifecycle, err
+}
+
 func (s *Store) WakePausedSessions(
 	ctx context.Context,
 	principal domain.Principal,
@@ -406,6 +543,7 @@ func (s *Store) PauseIfIdle(
 						-- sandboxes too, instead of leaving them running forever
 						-- and billing compute for a session no one is using.
 						AND coalesce(ao_sessions.last_user_message_at, ao_sessions.created_at) <= now() - $3::interval
+						AND ao_sessions.activity_state <> 'active'
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM ao_turns
@@ -693,6 +831,7 @@ func (s *Store) WorkerLaunchSpec(
 			`SELECT session.id, session.project_id, session.kind, session.harness,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
+				COALESCE(session.parent_session_id::text, ''),
 				project.repository_url, project.default_branch
 			FROM ao_sessions session
 			JOIN ao_projects project ON project.id = session.project_id
@@ -710,6 +849,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.AgentSessionID,
 			&launch.Mode,
 			&launch.DeniedCommands,
+			&launch.ParentSessionID,
 			&launch.RepositoryURL,
 			&launch.DefaultBranch,
 		)
@@ -812,6 +952,7 @@ func (s *Store) MarkWorkerSeen(
 			`UPDATE ao_sandboxes
 			SET worker_last_seen_at = now(),
 				startup_started_at = NULL,
+				startup_attempts = 0,
 				observed_state = CASE
 					WHEN observed_state IN ('requested', 'provisioning', 'restoring', 'bootstrapping', 'disconnected')
 						THEN 'running'
@@ -903,6 +1044,17 @@ func (s *Store) SetWorkerActivity(
 		}
 		if tag.RowsAffected() == 0 {
 			return ErrNotFound
+		}
+		if activity.State == "active" {
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ao_sandboxes
+				SET reconcile_after = now(), updated_at = now()
+				WHERE org_id = $1 AND session_id = $2 AND desired_state = 'running'`,
+				orgID, sessionID,
+			); err != nil {
+				return fmt.Errorf("schedule active sandbox deadline: %w", err)
+			}
 		}
 		return nil
 	})
@@ -1000,6 +1152,34 @@ func encodeCapabilities(capabilities []string) ([]byte, error) {
 	return encoded, nil
 }
 
+// RecordSandboxStartupRepair opens a fresh startup window for a worker the
+// reconciler is about to reinstall and counts the attempt. Resetting
+// startup_started_at is what keeps the next reconcile ticks from re-triggering
+// the repair before the new worker had any chance to check in; the returned
+// attempt count lets the caller stop repairing past a cap.
+func (s *Store) RecordSandboxStartupRepair(
+	ctx context.Context,
+	owner, orgID, sessionID string,
+) (int, error) {
+	var attempts int
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		return tx.QueryRow(
+			ctx,
+			`UPDATE ao_sandboxes
+			SET startup_attempts = startup_attempts + 1,
+				startup_started_at = now(),
+				updated_at = now()
+			WHERE session_id = $1 AND org_id = $2 AND reconcile_lease_owner = $3
+			RETURNING startup_attempts`,
+			sessionID, orgID, owner,
+		).Scan(&attempts)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("record sandbox startup repair: %w", err)
+	}
+	return attempts, nil
+}
+
 func scanSandbox(row rowScanner) (domain.Sandbox, error) {
 	var record domain.Sandbox
 	var resourceProfile, bootstrapContext []byte
@@ -1015,9 +1195,11 @@ func scanSandbox(row rowScanner) (domain.Sandbox, error) {
 		&bootstrapContext,
 		&record.WorkerLastSeenAt,
 		&record.StartupStartedAt,
+		&record.StartupAttempts,
 		&record.DeletionRequestedAt,
 		&record.LastError,
 		&record.UpdatedAt,
+		&record.KeepAlive,
 	); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("scan sandbox: %w", err)
 	}
