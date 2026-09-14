@@ -72,6 +72,8 @@ func Base(agentID string) ports.AgentModelCatalog {
 			model("muse-spark", "Muse Spark", true),
 			model("muse-spark-1.1", "Muse Spark 1.1", false),
 			model("muse-spark-1.2", "Muse Spark 1.2", false),
+			model("muse-spark-1.3", "Muse Spark 1.3", false),
+			model("muse-spark-1.3-contributor", "Muse Spark 1.3 (Contributor)", false),
 		)
 	case "amp":
 		c := catalog(agentID, "official-modes", entryMode, now,
