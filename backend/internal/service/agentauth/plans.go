@@ -10,8 +10,8 @@ import "strings"
 const qwenAuthInput = "i\x7f/auth\r"
 
 var plans = []Plan{
-	plan("claude-code", ActionLogin, "Log in to Claude Code", []string{"claude", "auth", "login"}, "Native browser/device flow", "https://code.claude.com/docs/en/installation"),
-	plan("codex", ActionLogin, "Log in to Codex", []string{"codex", "login"}, "Native browser/device-code flow", "https://github.com/openai/codex"),
+	loginMenuPlan("claude-code", "claude-login", nil, "Log in to Claude Code", []string{"claude", "auth", "login"}, "Choose Claude subscription, Anthropic Console, or SSO", "https://code.claude.com/docs/en/installation"),
+	loginMenuPlan("codex", "codex-login", []string{"--use-default-credential-store"}, "Log in to Codex", []string{"codex", "login"}, "Choose ChatGPT, device code, API key, or access token", "https://github.com/openai/codex"),
 	plan("cursor", ActionLogin, "Log in to Cursor", []string{"cursor-agent", "login"}, "Native browser flow", "https://docs.cursor.com/en/cli/installation"),
 	plan("opencode", ActionLogin, "Log in to OpenCode", []string{"opencode", "auth", "login"}, "Native provider chooser", "https://github.com/anomalyco/opencode"),
 	documentationPlan("aider", ActionSetup, "Set up Aider", "Configure provider credentials using Aider's documented environment or configuration-file options", "https://aider.chat/docs/config/api-keys.html"),
@@ -48,6 +48,13 @@ func terminalInputPlan(agentID string, action Action, title string, command []st
 func documentationPlan(agentID string, action Action, title, guidance, docs string) Plan {
 	p := plan(agentID, action, title, nil, guidance, docs)
 	p.LaunchMode = LaunchDocumentation
+	return p
+}
+
+func loginMenuPlan(agentID, launcher string, launcherArgs []string, title string, command []string, guidance, docs string) Plan {
+	p := plan(agentID, ActionLogin, title, command, guidance, docs)
+	p.launcher = launcher
+	p.launcherArgs = launcherArgs
 	return p
 }
 
