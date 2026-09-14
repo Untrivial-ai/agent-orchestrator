@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -544,6 +547,254 @@ func TestResolveGooseBinaryFallback(t *testing.T) {
 	}
 	if bin == "" {
 		t.Fatal("ResolveGooseBinary returned empty path with no error")
+	}
+}
+
+func TestResolveGooseBinaryRejectsPresslyGoose(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "goose")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'goose version: 3.27.1\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	_, err := resolveGooseBinary(context.Background(), binaryutil.BinarySpec{
+		Label: "goose",
+		Names: []string{"goose"},
+	})
+	if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
+		t.Fatalf("err = %v, want ErrAgentBinaryNotFound", err)
+	}
+}
+
+func TestResolveGooseBinaryAcceptsBlockGoose(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "goose")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'goose 1.46.0\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := resolveGooseBinary(context.Background(), binaryutil.BinarySpec{
+		Label: "goose",
+		Names: []string{"goose"},
+	})
+	if err != nil {
+		t.Fatalf("resolveGooseBinary = (%q, %v), want (%q, nil)", got, err, path)
+	}
+	if got != path {
+		t.Fatalf("resolveGooseBinary = %q, want %q", got, path)
+	}
+}
+
+func TestResolveGooseBinaryFallsBackPastForeignPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	foreign := filepath.Join(pathDir, "goose")
+	if err := os.WriteFile(foreign, []byte("#!/bin/sh\nprintf 'goose version: 3.27.1\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		unixPaths []string
+	}{
+		{
+			name:      "unix path",
+			path:      filepath.Join(home, "installed", "goose"),
+			unixPaths: []string{filepath.Join(home, "installed", "goose")},
+		},
+		{
+			name: "package manager",
+			path: filepath.Join(home, ".bun", "bin", "goose"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.MkdirAll(filepath.Dir(tt.path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(tt.path, []byte("#!/bin/sh\nprintf 'goose 1.46.0\\n'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := resolveGooseBinary(context.Background(), binaryutil.BinarySpec{
+				Label:     "goose",
+				Names:     []string{"goose"},
+				UnixPaths: tt.unixPaths,
+			})
+			if err != nil {
+				t.Fatalf("resolveGooseBinary = (%q, %v), want (%q, nil)", got, err, tt.path)
+			}
+			if got != tt.path {
+				t.Fatalf("resolveGooseBinary = %q, want %q", got, tt.path)
+			}
+		})
+	}
+}
+
+func TestResolveGooseBinaryRejectsMalformedAndNonZeroProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture")
+	}
+	for _, tt := range []struct {
+		name   string
+		script string
+	}{
+		{name: "malformed output", script: "#!/bin/sh\nprintf 'not goose\\n'\n"},
+		{name: "non-zero exit", script: "#!/bin/sh\nprintf 'goose 1.46.0\\n'\nexit 7\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "goose")
+			if err := os.WriteFile(path, []byte(tt.script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+
+			_, err := resolveGooseBinary(context.Background(), binaryutil.BinarySpec{
+				Label: "goose",
+				Names: []string{"goose"},
+			})
+			if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
+				t.Fatalf("err = %v, want ErrAgentBinaryNotFound", err)
+			}
+		})
+	}
+}
+
+func TestResolveGooseBinaryContinuesAfterProbeTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	timedOut := filepath.Join(pathDir, "goose")
+	if err := os.WriteFile(timedOut, []byte("#!/bin/sh\nexec /bin/sleep 5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	valid := filepath.Join(home, ".bun", "bin", "goose")
+	if err := os.MkdirAll(filepath.Dir(valid), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(valid, []byte("#!/bin/sh\nprintf 'goose 1.46.0\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveGooseBinary(context.Background(), binaryutil.BinarySpec{
+		Label: "goose",
+		Names: []string{"goose"},
+	})
+	if err != nil {
+		t.Fatalf("resolveGooseBinary = (%q, %v), want (%q, nil)", got, err, valid)
+	}
+	if got != valid {
+		t.Fatalf("resolveGooseBinary = %q, want %q", got, valid)
+	}
+}
+
+func TestResolveGooseBinaryFallsBackPastForeignPathOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows fixture")
+	}
+	home := t.TempDir()
+	appData := filepath.Join(home, "AppData", "Roaming")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", appData)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	foreign := filepath.Join(pathDir, "goose.cmd")
+	if err := os.WriteFile(foreign, []byte("@echo goose version: 3.27.1\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	valid := filepath.Join(appData, "npm", "goose.cmd")
+	if err := os.MkdirAll(filepath.Dir(valid), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(valid, []byte("@echo goose 1.46.0\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveGooseBinary(context.Background(), binaryutil.BinarySpec{
+		Label:    "goose",
+		WinNames: []string{"goose.cmd", "goose.exe", "goose"},
+		WinPaths: []binaryutil.WinPath{{Base: binaryutil.WinAppData, Parts: []string{"npm", "goose.cmd"}}},
+	})
+	if err != nil {
+		t.Fatalf("resolveGooseBinary = (%q, %v), want (%q, nil)", got, err, valid)
+	}
+	if got != valid {
+		t.Fatalf("resolveGooseBinary = %q, want %q", got, valid)
+	}
+}
+
+func TestResolveGooseBinaryPresenceDoesNotExecute(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "goose")
+	marker := filepath.Join(dir, "executed")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf x > "+marker+"\nprintf 'goose 1.46.0\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := (&Plugin{}).ResolveBinaryPresence(context.Background())
+	if err != nil {
+		t.Fatalf("ResolveBinaryPresence = (%q, %v), want (%q, nil)", got, err, path)
+	}
+	if got != path {
+		t.Fatalf("ResolveBinaryPresence = %q, want %q", got, path)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("presence resolver executed Goose: stat marker = %v", err)
+	}
+}
+
+func TestGooseBinaryHonorsParentCancellationDuringProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture")
+	}
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	path := filepath.Join(dir, "goose")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec /bin/sleep 5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&Plugin{}).gooseBinary(ctx)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("gooseBinary error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gooseBinary did not stop after parent cancellation")
 	}
 }
 

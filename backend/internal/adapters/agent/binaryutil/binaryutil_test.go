@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -28,6 +29,92 @@ func TestResolveBinaryPrefersPath(t *testing.T) {
 	}
 	if got != bin {
 		t.Fatalf("got %q, want %q", got, bin)
+	}
+}
+
+func TestResolveBinaryReturnsPATHCandidateBeforeFallbackDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookup shape differs on windows")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "widget")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("HOME", t.TempDir())
+
+	ctx := &deadlineAfterErrsContext{
+		Context:   context.Background(),
+		remaining: 2,
+		done:      make(chan struct{}),
+	}
+	got, err := ResolveBinary(ctx, BinarySpec{
+		Label:       "widget",
+		Names:       []string{"widget"},
+		NodeManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("got %q, want %q", got, bin)
+	}
+}
+
+type deadlineAfterErrsContext struct {
+	context.Context
+	remaining int
+	done      chan struct{}
+	once      sync.Once
+}
+
+func (c *deadlineAfterErrsContext) Err() error {
+	if c.remaining > 0 {
+		c.remaining--
+		return nil
+	}
+	c.once.Do(func() { close(c.done) })
+	return context.DeadlineExceeded
+}
+
+func (c *deadlineAfterErrsContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func TestResolveBinaryCandidatesPreservesOrderAndDeduplicates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix candidate shape")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	pathBin := filepath.Join(pathDir, "widget")
+	if err := os.WriteFile(pathBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, err := ResolveBinaryCandidates(context.Background(), BinarySpec{
+		Label:         "widget",
+		Names:         []string{"widget"},
+		UnixPaths:     []string{pathBin, pathBin},
+		UnixHomePaths: [][]string{{".local", "bin", "widget"}},
+	})
+	if err != nil {
+		t.Fatalf("ResolveBinaryCandidates: %v", err)
+	}
+	if len(candidates) == 0 || candidates[0] != pathBin {
+		t.Fatalf("first candidates = %#v, want PATH candidate %q", candidates, pathBin)
+	}
+	count := 0
+	for _, candidate := range candidates {
+		if candidate == pathBin {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("PATH candidate count = %d, want 1: %#v", count, candidates)
 	}
 }
 
