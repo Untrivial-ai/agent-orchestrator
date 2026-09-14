@@ -393,7 +393,7 @@ func TestRestoreTerminatedChatOrchestratorAfterCompatibilityRecoveryKeepsIdentit
 	}
 }
 
-func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *testing.T) {
+func TestHistoricalChatHandoffRequiresLatestCompletedMatchingTransition(t *testing.T) {
 	const (
 		sessionID = domain.SessionID("mer-248")
 		provider  = "native-248"
@@ -428,12 +428,12 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 			CreatedAt: now, CompletedAt: now,
 		}
 		m := New(Deps{Store: st})
-		got, err := m.historicalChatProviderScopeID(context.Background(), record)
+		got, err := m.prepareChatProviderHandoff(context.Background(), record, false)
 		if err != nil {
-			t.Fatalf("historicalChatProviderScopeID: %v", err)
+			t.Fatalf("prepareChatProviderHandoff: %v", err)
 		}
-		if got != "handoff-248:provider" {
-			t.Fatalf("provider scope = %q, want deterministic handoff boundary", got)
+		if got == nil || got.BoundaryID != "handoff-248:provider" {
+			t.Fatalf("provider handoff = %+v, want deterministic handoff boundary", got)
 		}
 	})
 
@@ -452,12 +452,12 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 			CreatedAt: now.Add(time.Minute),
 		}
 		m := New(Deps{Store: st})
-		got, err := m.historicalChatProviderScopeID(context.Background(), record)
+		got, err := m.prepareChatProviderHandoff(context.Background(), record, false)
 		if err != nil {
-			t.Fatalf("historicalChatProviderScopeID: %v", err)
+			t.Fatalf("prepareChatProviderHandoff: %v", err)
 		}
-		if got != "" {
-			t.Fatalf("provider scope = %q, want no repair from stale transition proof", got)
+		if got != nil {
+			t.Fatalf("provider handoff = %+v, want no repair from stale transition proof", got)
 		}
 	})
 
@@ -472,12 +472,12 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 		st.activeBranch.SessionID = sessionID
 		st.activeBranch.ProviderConversationID = provider
 		m := New(Deps{Store: st})
-		got, err := m.historicalChatProviderScopeID(context.Background(), record)
+		got, err := m.prepareChatProviderHandoff(context.Background(), record, false)
 		if err != nil {
-			t.Fatalf("historicalChatProviderScopeID: %v", err)
+			t.Fatalf("prepareChatProviderHandoff: %v", err)
 		}
-		if got != "" {
-			t.Fatalf("provider scope = %q, want ordinary idempotent resume", got)
+		if got != nil {
+			t.Fatalf("provider handoff = %+v, want ordinary idempotent resume", got)
 		}
 	})
 
@@ -491,8 +491,8 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 		}
 		st.conversationErr = domain.ErrNoConversation
 		m := New(Deps{Store: st})
-		if _, err := m.historicalChatProviderScopeID(context.Background(), record); !errors.Is(err, domain.ErrNoConversation) {
-			t.Fatalf("historicalChatProviderScopeID error = %v, want current-owner proof failure", err)
+		if _, err := m.prepareChatProviderHandoff(context.Background(), record, false); !errors.Is(err, domain.ErrNoConversation) {
+			t.Fatalf("prepareChatProviderHandoff error = %v, want current-owner proof failure", err)
 		}
 	})
 }
@@ -543,9 +543,9 @@ func TestRestoreTerminatedChatOrchestratorPassesProvenProviderBoundary(t *testin
 		t.Fatalf("Chat starts = %d, want 1", len(launcher.started))
 	}
 	start := launcher.started[0]
-	if start.ProviderConversationID != "native-248" || start.ProviderScopeID != "handoff-248:provider" {
-		t.Fatalf("historical restore start = provider %q scope %q",
-			start.ProviderConversationID, start.ProviderScopeID)
+	if start.ProviderConversationID != "native-248" || start.ProviderHandoff == nil || start.ProviderHandoff.BoundaryID != "handoff-248:provider" {
+		t.Fatalf("historical restore start = provider %q handoff %+v",
+			start.ProviderConversationID, start.ProviderHandoff)
 	}
 	if got := st.sessions[sessionID]; !got.IsTerminated || got.Metadata.ProviderConversationID != "native-248" {
 		t.Fatalf("failed provider resume changed terminated target: %+v", got)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -303,11 +304,11 @@ func TestSessionsAPI_ActivityThreadsAgentSessionIDWithState(t *testing.T) {
 	srv := newActivityTestServer(t, rec)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
-		`{"state":"idle","event":"stop","agentSessionId":"native-session-1"}`)
+		`{"state":"idle","event":"stop","agentSessionId":"native-session-1","observedAt":"2026-09-13T00:00:00Z"}`)
 	if status != http.StatusOK {
 		t.Fatalf("activity = %d, want 200; body=%s", status, body)
 	}
-	want := ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop", AgentSessionID: "native-session-1"}
+	want := ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop", AgentSessionID: "native-session-1", Timestamp: time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)}
 	if rec.gotSignal != want {
 		t.Fatalf("recorder signal = %#v, want %#v", rec.gotSignal, want)
 	}

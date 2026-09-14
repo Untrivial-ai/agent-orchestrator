@@ -4208,9 +4208,11 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	m := New(st, nil)
 
 	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{
-		WorkspacePath:          "/ws",
-		ProviderConversationID: "thread-abc",
-		ControllerGeneration:   "gen-1",
+		WorkspacePath:            "/ws",
+		ProviderConversationID:   "thread-abc",
+		ControllerGeneration:     "gen-1",
+		LatestAssistantUpdateAt:  time.Unix(100, 0),
+		NativeIdentityObservedAt: time.Unix(101, 0),
 	}); err != nil {
 		t.Fatalf("MarkSpawned: %v", err)
 	}
@@ -4225,6 +4227,9 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	}
 	if got.Metadata.ControllerGeneration != "gen-1" {
 		t.Fatalf("controller generation = %q", got.Metadata.ControllerGeneration)
+	}
+	if !got.Metadata.LatestAssistantUpdateAt.Equal(time.Unix(100, 0)) || !got.Metadata.NativeIdentityObservedAt.Equal(time.Unix(101, 0)) {
+		t.Fatalf("spawn dropped native history provenance: %+v", got.Metadata)
 	}
 	if got.Metadata.RuntimeHandleID != "" || got.Metadata.RuntimeLaunchID != "" {
 		t.Fatalf("Chat spawn retained terminal ownership metadata: %+v", got.Metadata)

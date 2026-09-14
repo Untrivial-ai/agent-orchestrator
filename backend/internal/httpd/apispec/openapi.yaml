@@ -11349,6 +11349,11 @@ components:
         launchId:
           description: AO process generation that produced the signal.
           type: string
+        observedAt:
+          description: Time the local hook process observed the event, before delivery
+            to the daemon.
+          format: date-time
+          type: string
         state:
           description: Agent activity state reported by an agent hook. Optional for
             metadata-only hooks.

@@ -273,6 +273,7 @@ type ConversationBranch struct {
 	ReplayCutoffSequence   int64
 	ReplayTruncated        int64
 	ProviderScopeID        string
+	ProviderIdsScoped      int64
 }
 
 type ConversationEditDelivery struct {
@@ -591,6 +592,8 @@ type Session struct {
 	LatestUserPromptAt        sql.NullTime
 	ReviewerAgentConfig       string
 	SessionPermissions        string
+	LatestAssistantUpdateAt   sql.NullTime
+	NativeIdentityObservedAt  sql.NullTime
 }
 
 type SessionCleanupFact struct {

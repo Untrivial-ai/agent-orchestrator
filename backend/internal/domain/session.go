@@ -40,8 +40,9 @@ type SessionMetadata struct {
 	// own AgentSessionID. Usually that proof comes from a provider hook. A
 	// coordinated Chat-to-TUI handoff may also establish it by launching the
 	// target with the exact structured provider id transferred from Chat.
-	AgentSessionIDLaunchID string `json:"-"`
-	Prompt                 string `json:"prompt,omitempty"`
+	AgentSessionIDLaunchID   string    `json:"-"`
+	NativeIdentityObservedAt time.Time `json:"-"`
+	Prompt                   string    `json:"prompt,omitempty"`
 	// LatestUserPrompt is the latest real user-authored task direction observed
 	// for this AO session. Internal AO coordination messages (for example an
 	// agent-switch handoff request) must not replace it.
@@ -52,7 +53,8 @@ type SessionMetadata struct {
 	LatestUserPromptAt time.Time `json:"-"`
 	// LatestAssistantUpdate is the latest user-facing assistant update observed
 	// before any internal agent-switch coordination turn.
-	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`
+	LatestAssistantUpdate   string    `json:"latestAssistantUpdate,omitempty"`
+	LatestAssistantUpdateAt time.Time `json:"-"`
 	// NativeTranscriptPath is the read-only transcript path for the currently
 	// active native agent session when its provider exposes one. Retained
 	// provider-specific paths also live on AgentNativeSession records.

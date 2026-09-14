@@ -326,6 +326,38 @@ protocol id are proven to name the same native conversation. Claude Code and
 Codex currently satisfy that contract. Merely having a Chat/ACP driver is not
 enough to enable switching for another harness.
 
+The native ID handed over is the current Terminal conversation, which can differ
+from the last Chat provider (for example after replacing an orchestrator). This
+does not prove that the new provider inherited the old context. Session Manager
+reserves a `ChatProviderHandoff` only from a matching durable TUI→Chat transition;
+ordinary resumes retain the exact-handle check. Chat resumes the verified target,
+reconciles only its provider scope, and prepares a visible context boundary.
+Lifecycle and SQLite atomically publish that boundary, native history, controller
+generation, and any project-narrative ownership transfer, checking the observed
+owner, head, sequence, and controller fence again after provider I/O. Prior rows
+remain intact, but are not represented as context inherited by the new provider.
+Ordinary Terminal restore retains its fresh-start fallback when native history is
+unavailable, including rollback and crash recovery. Prior Chat rows remain intact;
+returning with a new native identity publishes a separate context boundary rather
+than claiming continuity. A Terminal→Chat handoff still requires native replay and
+never silently substitutes a fresh Chat provider.
+
+The native-history barrier combines Terminal hook facts with the latest completed
+AO turn in the active provider scope. A newer completed turn can supersede a
+hook fact tied to an older settled turn; otherwise a Chat answer followed by an
+immediate round trip would keep waiting for the older Terminal answer to be last.
+Hook timestamps must prove the fact predates the superseding turn; repeated text
+alone is not evidence. A hook newer than the durable completion requires settled
+replay after that high-water turn. Unknown hook facts still gate replay. Hook
+observation time also orders native identities within a launch, so delayed hooks
+cannot replace the current identity's facts.
+
+Independent handoff publication settles the retired predecessor's work and fails
+pending requests in the same transaction as history and ownership. Codex scopes
+projection IDs at the adapter boundary and decodes them for native RPCs. A durable
+branch flag preserves legacy unscoped Codex IDs on upgrade; native forks inherit
+that flag, while new provider boundaries use scoped IDs.
+
 ```mermaid
 sequenceDiagram
     participant Client

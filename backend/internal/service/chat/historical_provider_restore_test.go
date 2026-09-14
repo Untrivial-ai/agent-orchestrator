@@ -147,7 +147,7 @@ func historicalControllerReady(
 		} else {
 			err = lcm.MarkChatSpawnedPrepared(
 				context.Background(), target.ID, metadata, *started.ProviderBoundary,
-				started.CommitProviderHistory,
+				nil, started.CommitProviderHistory,
 			)
 		}
 		if err != nil {
@@ -435,12 +435,13 @@ func (s *rollbackChatSpawnStore) CommitChatSpawnPrepared(
 	ctx context.Context,
 	rec domain.SessionRecord,
 	branch domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	// Exercise rollback after branch activation and native-history projection by
 	// invalidating only the final lifecycle record write.
 	rec.Activity.State = domain.ActivityState("invalid-state")
-	return s.Store.CommitChatSpawnPrepared(ctx, rec, branch, prepare)
+	return s.Store.CommitChatSpawnPrepared(ctx, rec, branch, handoff, prepare)
 }
 
 func TestHistoricalProjectProviderRestoreCommitFailureRollsBack(t *testing.T) {

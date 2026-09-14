@@ -130,6 +130,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	rec.Metadata.LatestUserPrompt = "Please finish the duplicate-listener test."
 	rec.Metadata.LatestUserPromptAt = rec.CreatedAt.Add(time.Minute)
 	rec.Metadata.LatestAssistantUpdate = "The generation fence is implemented; the test is unfinished."
+	rec.Metadata.LatestAssistantUpdateAt = rec.CreatedAt.Add(2 * time.Minute)
+	rec.Metadata.NativeIdentityObservedAt = rec.CreatedAt.Add(3 * time.Minute)
 	rec.Metadata.NativeTranscriptPath = "/ao/transcripts/claude/session.jsonl"
 	rec.Metadata.AgentSessionID = "native-session-1"
 	rec.Metadata.AgentSessionIDLaunchID = "launch-1"
@@ -145,6 +147,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	if got.Metadata.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
 		!got.Metadata.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
 		got.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
+		!got.Metadata.LatestAssistantUpdateAt.Equal(rec.Metadata.LatestAssistantUpdateAt) ||
+		!got.Metadata.NativeIdentityObservedAt.Equal(rec.Metadata.NativeIdentityObservedAt) ||
 		got.Metadata.NativeTranscriptPath != rec.Metadata.NativeTranscriptPath ||
 		got.Metadata.AgentSessionIDLaunchID != rec.Metadata.AgentSessionIDLaunchID {
 		t.Fatalf("handoff inputs after create = %+v", got.Metadata)
@@ -153,6 +157,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	got.Metadata.LatestUserPrompt = "Now run the focused tests."
 	got.Metadata.LatestUserPromptAt = got.Metadata.LatestUserPromptAt.Add(time.Minute)
 	got.Metadata.LatestAssistantUpdate = "The regression test has been added."
+	got.Metadata.LatestAssistantUpdateAt = got.Metadata.LatestAssistantUpdateAt.Add(time.Minute)
+	got.Metadata.NativeIdentityObservedAt = got.Metadata.NativeIdentityObservedAt.Add(time.Minute)
 	got.Metadata.NativeTranscriptPath = "/ao/transcripts/codex/session.jsonl"
 	got.Metadata.AgentSessionIDLaunchID = "launch-2"
 	got.UpdatedAt = got.UpdatedAt.Add(time.Second)
@@ -166,6 +172,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	if updated.Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
 		!updated.Metadata.LatestUserPromptAt.Equal(got.Metadata.LatestUserPromptAt) ||
 		updated.Metadata.LatestAssistantUpdate != got.Metadata.LatestAssistantUpdate ||
+		!updated.Metadata.LatestAssistantUpdateAt.Equal(got.Metadata.LatestAssistantUpdateAt) ||
+		!updated.Metadata.NativeIdentityObservedAt.Equal(got.Metadata.NativeIdentityObservedAt) ||
 		updated.Metadata.NativeTranscriptPath != got.Metadata.NativeTranscriptPath ||
 		updated.Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID {
 		t.Fatalf("handoff inputs after update = %+v", updated.Metadata)
@@ -173,6 +181,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	listed, err := s.ListSessions(ctx, created.ProjectID)
 	if err != nil || len(listed) != 1 || listed[0].Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
 		!listed[0].Metadata.LatestUserPromptAt.Equal(got.Metadata.LatestUserPromptAt) ||
+		!listed[0].Metadata.LatestAssistantUpdateAt.Equal(got.Metadata.LatestAssistantUpdateAt) ||
+		!listed[0].Metadata.NativeIdentityObservedAt.Equal(got.Metadata.NativeIdentityObservedAt) ||
 		listed[0].Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID {
 		t.Fatalf("listed handoff inputs = %+v err=%v", listed, err)
 	}

@@ -4029,6 +4029,11 @@ export interface components {
             /** @description AO process generation that produced the signal. */
             launchId?: string;
             /**
+             * Format: date-time
+             * @description Time the local hook process observed the event, before delivery to the daemon.
+             */
+            observedAt?: string;
+            /**
              * @description Agent activity state reported by an agent hook. Optional for metadata-only hooks.
              * @enum {string}
              */

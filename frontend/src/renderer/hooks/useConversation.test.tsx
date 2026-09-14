@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,8 @@ const { getMock, patchMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = 
 	apiErrorMessageMock: vi.fn(),
 }));
 
-vi.mock("../lib/api-client", () => ({
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/api-client")>(),
 	apiClient: { GET: getMock, POST: postMock, PATCH: patchMock },
 	apiErrorCode: apiErrorCodeMock,
 	apiErrorMessage: apiErrorMessageMock,
@@ -26,6 +27,8 @@ import {
 	useConversationConfigOptions,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { TooltipProvider } from "../components/ui/tooltip";
 
 function wrapper({ children }: { children: ReactNode }) {
 	const queryClient = new QueryClient({
@@ -100,6 +103,31 @@ beforeEach(() => {
 	postMock.mockReset();
 	apiErrorCodeMock.mockReset().mockReturnValue(undefined);
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
+});
+
+it("renders a retained-history boundary between exchanges from the daemon snapshot", async () => {
+	getMock.mockResolvedValue({ data: {
+		...WIRE, controller: "ready", turns: [], modelReroute: undefined, account: undefined,
+		latestSequence: 3,
+		messages: [
+			{ id: "old", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Earlier context answer", streaming: false, createdAt: "2026-09-13T00:00:00Z" },
+			{ id: "new", sequence: 3, revision: 1, role: "assistant", origin: "provider", text: "Independent context answer", streaming: false, createdAt: "2026-09-13T00:02:00Z" },
+		],
+		activities: [{ id: "boundary", sequence: 2, revision: 1, kind: "system", status: "completed",
+			summary: "Native conversation changed. Earlier messages are retained; continuity with this agent's context is not verified.",
+			detail: { event: "context.boundary", reason: "native_terminal_handoff" }, createdAt: "2026-09-13T00:01:00Z" }],
+	}, error: undefined });
+	function LiveConversation() {
+		const { snapshot } = useConversation("ao-1");
+		return snapshot ? <TooltipProvider><ChatWorkspace snapshot={snapshot} /></TooltipProvider> : null;
+	}
+	render(<LiveConversation />, { wrapper });
+	const boundary = await screen.findByText(/continuity with this agent's context is not verified/);
+	const old = screen.getByText("Earlier context answer");
+	const current = screen.getByText("Independent context answer");
+	expect(old.compareDocumentPosition(boundary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+	expect(boundary.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+	expect(screen.getAllByText(/Native conversation changed/)).toHaveLength(1);
 });
 
 describe("accepted conversation sends", () => {

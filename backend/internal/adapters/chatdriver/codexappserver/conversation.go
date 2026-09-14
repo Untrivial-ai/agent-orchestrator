@@ -46,8 +46,9 @@ type conversation struct {
 	proc *process
 	log  *slog.Logger
 
-	threadID string
-	events   chan ports.ChatEvent
+	threadID        string
+	providerScopeID string
+	events          chan ports.ChatEvent
 	// Effective defaults returned when Codex opened or resumed this thread.
 	threadModel, threadEffort string
 
@@ -78,9 +79,11 @@ type conversation struct {
 	// once.
 	compactedTurn string
 
-	pumpDone  chan struct{}
-	closeOnce sync.Once
-	closeErr  error
+	pumpDone     chan struct{}
+	eventsMu     sync.RWMutex
+	eventsClosed bool
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
@@ -103,13 +106,14 @@ var _ ports.ChatCompactor = (*conversation)(nil)
 // leaves a session with a dead tool server no way back.
 var _ ports.ChatMCPReloader = (*conversation)(nil)
 
-func newConversation(proc *process, log *slog.Logger) *conversation {
+func newConversation(proc *process, log *slog.Logger, providerScopeID string) *conversation {
 	c := &conversation{
-		proc:     proc,
-		log:      log,
-		events:   make(chan ports.ChatEvent, eventBuffer),
-		pending:  make(map[string]*parkedRequest),
-		pumpDone: make(chan struct{}),
+		proc:            proc,
+		log:             log,
+		events:          make(chan ports.ChatEvent, eventBuffer),
+		pending:         make(map[string]*parkedRequest),
+		pumpDone:        make(chan struct{}),
+		providerScopeID: providerScopeID,
 	}
 	c.conn = newConnAt(proc.stdin, proc.stdout, log, c.handleServerRequest, proc.nextRequestID)
 	return c
@@ -146,7 +150,12 @@ func (c *conversation) Events() <-chan ports.ChatEvent { return c.events }
 // connection ends, then reports why and closes the stream.
 func (c *conversation) pump() {
 	defer close(c.pumpDone)
-	defer close(c.events)
+	defer func() {
+		c.eventsMu.Lock()
+		defer c.eventsMu.Unlock()
+		c.eventsClosed = true
+		close(c.events)
+	}()
 
 	for n := range c.conn.notifs() {
 		// Before normalizing, because a token-usage report is the only place the
@@ -203,6 +212,12 @@ func (c *conversation) pump() {
 // emit delivers an event, preferring to drop a delta over blocking the reader. A
 // lifecycle event is never dropped silently.
 func (c *conversation) emit(ev ports.ChatEvent) {
+	c.eventsMu.RLock()
+	defer c.eventsMu.RUnlock()
+	if c.eventsClosed {
+		return
+	}
+	ev = c.scopedEvent(ev)
 	select {
 	case c.events <- ev:
 		return
@@ -265,7 +280,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	c.activeTurn = resp.Turn.ID
 	c.mu.Unlock()
 
-	return ports.ChatTurnRef{ProviderTurnID: resp.Turn.ID}, nil
+	return ports.ChatTurnRef{ProviderTurnID: c.scopedID(resp.Turn.ID)}, nil
 }
 
 // applyTurnSettings folds the caller's per-turn choices into a turn/start payload.
@@ -527,6 +542,7 @@ func formatTokens(tokens int64) string {
 
 // Interrupt cancels a turn. An empty turn id targets the active one.
 func (c *conversation) Interrupt(ctx context.Context, providerTurnID string) error {
+	providerTurnID = c.nativeID(providerTurnID)
 	if providerTurnID == "" {
 		c.mu.Lock()
 		providerTurnID = c.activeTurn
@@ -574,6 +590,7 @@ func isNoActiveTurn(err error) bool {
 // consuming the request on a bad one would leave the user's real answer with
 // nothing left to answer while the provider waits out its timeout.
 func (c *conversation) ResolveRequest(ctx context.Context, requestID string, decision ports.ChatDecision) error {
+	requestID = c.nativeID(requestID)
 	c.mu.Lock()
 	parked, ok := c.pending[requestID]
 	closed := c.closed

@@ -57,8 +57,11 @@ func (l integrationChatLauncher) StartChat(ctx context.Context, cfg ChatStart) (
 		Permissions:             cfg.Permissions,
 		SystemPrompt:            cfg.SystemPrompt,
 		AdditionalDirectories:   cfg.AdditionalDirectories,
+		ExpectedControllerOwner: cfg.ExpectedControllerOwner,
+		PrepareControllerEnv:    cfg.PrepareControllerEnv,
 		ProviderConversationID:  cfg.ProviderConversationID,
 		ProviderScopeID:         cfg.ProviderScopeID,
+		ProviderHandoff:         cfg.ProviderHandoff,
 		ControllerGeneration:    cfg.ControllerGeneration,
 		RequireNativeHistory:    cfg.RequireNativeHistory,
 		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
@@ -71,8 +74,9 @@ func (l integrationChatLauncher) StartChat(ctx context.Context, cfg ChatStart) (
 				ControllerGeneration:   result.ControllerGeneration,
 				Conversation:           result.Conversation,
 				ProviderBoundary:       result.ProviderBoundary,
+				CommitProviderHistory:  result.CommitProviderHistory,
 			})
-			return chatsvc.ControllerCommit{Conversation: commit.Conversation}, readyErr
+			return chatsvc.ControllerCommit{Conversation: commit.Conversation, ControllerOwner: commit.ControllerOwner}, readyErr
 		},
 	})
 	if err != nil {

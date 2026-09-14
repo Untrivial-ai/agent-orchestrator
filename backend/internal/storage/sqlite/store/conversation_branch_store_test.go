@@ -335,6 +335,49 @@ func TestActivateConversationBranchMovesProviderAndGenerationTogether(t *testing
 	}
 }
 
+func TestBranchActivationScopesNativeHistoryFacts(t *testing.T) {
+	for _, nativeID := range []string{"thread-root", "thread-child"} {
+		t.Run(nativeID, func(t *testing.T) {
+			ctx := context.Background()
+			s, session, conversation := seededChatConversation(t)
+			session.Metadata.AgentSessionID = "thread-root"
+			session.Metadata.LatestUserPrompt = "continue"
+			session.Metadata.LatestUserPromptAt = testNow
+			session.Metadata.LatestAssistantUpdate = "old answer"
+			session.Metadata.LatestAssistantUpdateAt = testNow
+			session.Metadata.NativeTranscriptPath = "/old/transcript.jsonl"
+			if err := s.UpdateSession(ctx, session); err != nil {
+				t.Fatal(err)
+			}
+			branch := domain.ConversationBranch{
+				ID: "child", ConversationID: conversation.ID, ParentBranchID: conversation.ActiveBranchID,
+				ProviderConversationID: nativeID,
+			}
+			if err := s.CreateAndActivateConversationBranch(ctx, session.ID, branch, "child-generation", testNow.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := s.GetSession(ctx, session.ID)
+			if err != nil || !found {
+				t.Fatalf("GetSession: found=%v err=%v", found, err)
+			}
+			meta := got.Metadata
+			if meta.AgentSessionID != nativeID || meta.ProviderConversationID != nativeID || meta.ControllerGeneration != "child-generation" {
+				t.Fatalf("native owner not moved with branch: %+v", meta)
+			}
+			if nativeID == "thread-root" {
+				if meta.LatestUserPrompt != "continue" || !meta.LatestUserPromptAt.Equal(testNow) ||
+					meta.LatestAssistantUpdate != "old answer" || !meta.LatestAssistantUpdateAt.Equal(testNow) ||
+					meta.NativeTranscriptPath != "/old/transcript.jsonl" {
+					t.Fatalf("same native owner lost checkpoint: %+v", meta)
+				}
+			} else if meta.LatestUserPrompt != "" || !meta.LatestUserPromptAt.IsZero() ||
+				meta.LatestAssistantUpdate != "" || !meta.LatestAssistantUpdateAt.IsZero() || meta.NativeTranscriptPath != "" {
+				t.Fatalf("new native owner inherited checkpoint: %+v", meta)
+			}
+		})
+	}
+}
+
 func TestActivateConversationBranchRollsBackWhenSessionCannotMove(t *testing.T) {
 	ctx := context.Background()
 	s, session, conversation := seededChatConversation(t)
