@@ -38,6 +38,84 @@ func TestAgentListEnsuresDisplayReadinessByDefault(t *testing.T) {
 	}
 }
 
+func TestAgentListLaunchUsesLaunchReadinessAndShowsReason(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var gotPurpose string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure" {
+			var req ensureAgentReadinessRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode readiness request: %v", err)
+			}
+			gotPurpose = req.Purpose
+			_, _ = io.WriteString(w, `{"agents":[`+
+				`{"id":"codex","label":"Codex","installation":{"state":"installed","freshness":"fresh","reasonCode":"installed","reason":"installed"},"authentication":{"state":"unknown","freshness":"fresh","reasonCode":"auth_check_failed","reason":"Codex account setup did not complete."},"effectiveReadiness":"unknown","usageCount":0},`+
+				`{"id":"opencode","label":"OpenCode","installation":{"state":"installed","freshness":"fresh","reasonCode":"installed","reason":"installed"},"authentication":{"state":"authorized","freshness":"fresh","reasonCode":"authorized","reason":"authorized"},"effectiveReadiness":"ready","usageCount":0}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "agent", "ls", "--launch")
+	if err != nil {
+		t.Fatalf("agent ls --launch failed: %v stderr=%s", err, errOut)
+	}
+	if gotPurpose != "launch" {
+		t.Fatalf("readiness purpose = %q, want launch", gotPurpose)
+	}
+	for _, want := range []string{"LAUNCH", "codex", "unknown", "auth_check_failed", "opencode", "ready"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAgentListLaunchShowsFailureReasonWhenAuthStateIsStillAuthorized(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure" {
+			_, _ = io.WriteString(w, `{"agents":[{"id":"codex","label":"Codex","installation":{"state":"installed","freshness":"fresh","reasonCode":"installed","reason":"installed"},"authentication":{"state":"authorized","freshness":"stale","reasonCode":"auth_check_failed","reason":"Codex account setup did not complete."},"effectiveReadiness":"unknown","usageCount":0}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "agent", "ls", "--launch")
+	if err != nil {
+		t.Fatalf("agent ls --launch failed: %v stderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "auth_check_failed") {
+		t.Fatalf("launch output hid blocking reason:\n%s", out)
+	}
+}
+
+func TestAgentListRejectsLaunchWithRefresh(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var readinessRequests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/agents/readiness/") || r.URL.Path == "/api/v1/agents/refresh" {
+			readinessRequests++
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "agent", "ls", "--launch", "--refresh")
+	if err == nil {
+		t.Fatal("agent ls --launch --refresh unexpectedly succeeded")
+	}
+	if readinessRequests != 0 {
+		t.Fatalf("readiness requests = %d, want 0", readinessRequests)
+	}
+}
+
 func TestAgentListRefreshAndStatuses(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string

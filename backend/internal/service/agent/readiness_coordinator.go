@@ -49,6 +49,7 @@ type readinessCoordinatorConfig struct {
 
 type readinessEntry struct {
 	snapshot        domain.AgentReadinessSnapshot
+	authPurpose     domain.AgentReadinessPurpose
 	invalidated     readinessInvalidation
 	checking        readinessInvalidation
 	installVersion  uint64
@@ -326,7 +327,8 @@ func (c *readinessCoordinator) ensureOne(ctx context.Context, id string, purpose
 			c.logDecision(id, purpose, "join", c.now().Sub(joinedAt), snapshot, readinessFailureCategory(snapshot), nextRetry)
 			installMissed := remaining&readinessInvalidateInstallation != 0 && (joinedChecks&readinessInvalidateInstallation == 0 || joinedInstallVersion < wantedInstallVersion)
 			authMissed := remaining&readinessInvalidateAuthentication != 0 && (joinedChecks&readinessInvalidateAuthentication == 0 || joinedAuthVersion < wantedAuthVersion)
-			if installMissed || authMissed {
+			launchGradeMissing := purpose == domain.AgentReadinessPurposeLaunch && remaining&readinessInvalidateAuthentication != 0 && entry.authPurpose != domain.AgentReadinessPurposeLaunch
+			if installMissed || authMissed || launchGradeMissing {
 				return c.ensureOne(ctx, id, purpose, requested, presenceOnly)
 			}
 			return snapshot, nil
@@ -438,6 +440,7 @@ func (c *readinessCoordinator) runCheck(id string, purpose domain.AgentReadiness
 	if installFailed {
 		entry.snapshot.Authentication.Freshness = domain.AgentReadinessStale
 	} else if auth.ReasonCode != "" {
+		entry.authPurpose = purpose
 		if authFailed {
 			preserveAuthenticationFailure(&entry.snapshot.Authentication, auth)
 		} else {
@@ -606,6 +609,9 @@ func (c *readinessCoordinator) neededChecksLocked(entry *readinessEntry, purpose
 	if entry.snapshot.Authentication.CheckedAt == nil || now.Sub(*entry.snapshot.Authentication.CheckedAt) >= ttl {
 		needed |= readinessInvalidateAuthentication
 	}
+	if purpose == domain.AgentReadinessPurposeLaunch && entry.authPurpose != domain.AgentReadinessPurposeLaunch {
+		needed |= readinessInvalidateAuthentication
+	}
 	return needed
 }
 
@@ -629,6 +635,10 @@ func (c *readinessCoordinator) snapshotLocked(entry *readinessEntry, purpose dom
 		snapshot.Authentication.Reason = "Authentication is being checked."
 	}
 	snapshot.EffectiveReadiness = domain.EffectiveAgentReadiness(snapshot.Installation.State, snapshot.Authentication.State)
+	if purpose == domain.AgentReadinessPurposeLaunch && snapshot.EffectiveReadiness == domain.AgentReadinessReady &&
+		(snapshot.Installation.Freshness != domain.AgentReadinessFresh || snapshot.Authentication.Freshness != domain.AgentReadinessFresh || entry.authPurpose != domain.AgentReadinessPurposeLaunch) {
+		snapshot.EffectiveReadiness = domain.AgentReadinessUnknown
+	}
 	return snapshot
 }
 
