@@ -106,6 +106,7 @@ import {
 } from "./ChatTimelineItems";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider } from "./ChatMarkdown";
+import { ChatImageSourceProvider } from "./chat-image-source";
 import { ChatComposer, type StoredComposerAttachment } from "./ChatComposer";
 import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
@@ -1368,30 +1369,32 @@ function ChatWorkspaceContent({
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
 						<ChatLinkProvider onLinkOpen={onLinkOpen} workspacePaths={filePaths}>
-							<Timeline
-								key={draftScopeKey}
-								snapshot={snapshot}
-								draftScope={draftScope}
-								hasOlder={hasOlder}
-								loadingOlder={loadingOlder}
-								onLoadOlder={onLoadOlder}
-								onDecide={onDecide}
-								onResolveInput={onResolveInput}
-								busy={busy}
-								onRollback={rollbackTarget}
-								onOpenFiles={onOpenFiles}
-								onOpenFile={onOpenFile}
-								retryControl={retryControl}
-								onEditHumanMessage={editHumanMessage}
-								editPending={editMessagePending}
-								editBusy={Boolean(turn)}
-								editError={editMessageError}
-								onActivateBranch={onActivateBranch}
-								activateBranchPending={activateBranchPending}
-								activateBranchError={activateBranchError}
-								newWorkDisabled={newWorkDisabled}
-								localEchos={localEchos}
-							/>
+							<ChatImageSourceProvider sessionId={snapshot.sessionId}>
+								<Timeline
+									key={draftScopeKey}
+									snapshot={snapshot}
+									draftScope={draftScope}
+									hasOlder={hasOlder}
+									loadingOlder={loadingOlder}
+									onLoadOlder={onLoadOlder}
+									onDecide={onDecide}
+									onResolveInput={onResolveInput}
+									busy={busy}
+									onRollback={rollbackTarget}
+									onOpenFiles={onOpenFiles}
+									onOpenFile={onOpenFile}
+									retryControl={retryControl}
+									onEditHumanMessage={editHumanMessage}
+									editPending={editMessagePending}
+									editBusy={Boolean(turn)}
+									editError={editMessageError}
+									onActivateBranch={onActivateBranch}
+									activateBranchPending={activateBranchPending}
+									activateBranchError={activateBranchError}
+									newWorkDisabled={newWorkDisabled}
+									localEchos={localEchos}
+								/>
+							</ChatImageSourceProvider>
 						</ChatLinkProvider>
 
 						<div ref={composerDockRef} className="cursor-chat-composer-dock shrink-0 px-4 pb-3">
