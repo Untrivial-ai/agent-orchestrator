@@ -31,6 +31,7 @@ const (
 	ReviewerAuggie     ReviewerHarness = "auggie"
 	ReviewerCline      ReviewerHarness = "cline"
 	ReviewerAutohand   ReviewerHarness = "autohand"
+	ReviewerQodercli   ReviewerHarness = "qodercli"
 )
 
 // AllReviewerHarnesses is the canonical set used to validate a configured
@@ -57,6 +58,7 @@ var AllReviewerHarnesses = []ReviewerHarness{
 	ReviewerAuggie,
 	ReviewerCline,
 	ReviewerAutohand,
+	ReviewerQodercli,
 }
 
 // IsKnown reports whether h is one of the supported reviewer harnesses.

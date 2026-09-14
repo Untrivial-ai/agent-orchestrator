@@ -35,6 +35,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetKimchi:     "https://docs.kimchi.dev/docs/coding-getting-started",
 	TargetPrimeAgent: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
+	TargetQodercli:   "https://qoder.com/cli",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -138,6 +139,9 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 		default:
 			plans = []Plan{manualPlan(target, "Devin for Terminal publishes this installer for macOS and Linux only.", agentDocumentationURLs[target])}
 		}
+	case TargetQodercli:
+		official := s.officialByOS(target, "https://qoder.com/install", "bash", "https://qoder.com/install.ps1", agentDocumentationURLs[target])
+		plans = []Plan{s.planNPM(target, "@qoder-ai/qodercli@latest"), official}
 	case TargetAutohand:
 		official := s.officialByOS(target, "https://autohand.ai/install.sh", "sh", "https://autohand.ai/install.ps1", agentDocumentationURLs[target])
 		if s.goos == "darwin" {

@@ -27,6 +27,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/muse"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/pi"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/qodercli"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -62,6 +63,7 @@ func Constructors() []Adapter {
 		muse.New(),
 		opencode.New(),
 		pi.New(),
+		qodercli.New(),
 	}
 }
 
