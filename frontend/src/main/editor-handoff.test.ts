@@ -167,6 +167,51 @@ describe("editor handoff", () => {
 			"Could not open VS Code. Check that it is installed and try again.",
 		);
 	});
+
+	it.each(["Antigravity IDE", "Antigravity"])(
+		"finds Antigravity IDE on macOS via %s.app bundle and launches with open -a",
+		async (bundleName) => {
+			const input = deps({
+				platform: "darwin",
+				isExecutable: () => false,
+				isDirectory: (candidatePath) => candidatePath === `/Applications/${bundleName}.app`,
+			});
+			const handoff = createEditorHandoff(input);
+			const state = await handoff.getState("ao-1");
+			const antigravity = state.targets.find(({ id }) => id === "antigravity");
+			expect(antigravity).toEqual({ id: "antigravity", name: "Antigravity IDE", kind: "editor" });
+
+			await handoff.open({ sessionId: "ao-1", targetId: "antigravity" });
+			expect(input.launch).toHaveBeenCalledWith(
+				"/usr/bin/open",
+				["-a", bundleName, "/worktrees/ao-1"],
+				"/worktrees/ao-1",
+			);
+		},
+	);
+
+	it.each(["antigravity-ide", "antigravity"])(
+		"finds Antigravity IDE on Linux via %s on PATH",
+		async (command) => {
+			const input = deps({
+				platform: "linux",
+				env: { PATH: "/usr/bin" },
+				isExecutable: (candidatePath) => candidatePath === `/usr/bin/${command}`,
+				isDirectory: () => false,
+			});
+			const handoff = createEditorHandoff(input);
+			const state = await handoff.getState("ao-1");
+			const antigravity = state.targets.find(({ id }) => id === "antigravity");
+			expect(antigravity).toEqual({ id: "antigravity", name: "Antigravity IDE", kind: "editor" });
+
+			await handoff.open({ sessionId: "ao-1", targetId: "antigravity" });
+			expect(input.launch).toHaveBeenCalledWith(
+				`/usr/bin/${command}`,
+				["/worktrees/ao-1"],
+				"/worktrees/ao-1",
+			);
+		},
+	);
 });
 
 describe("editor handoff (win32 fallback discovery)", () => {
