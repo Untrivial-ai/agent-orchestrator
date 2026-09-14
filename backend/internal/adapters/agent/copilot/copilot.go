@@ -331,15 +331,25 @@ var copilotAgentNameReplacer = strings.NewReplacer(
 //	auto               -> --allow-all-tools (auto-approve every tool, still scoped paths/urls)
 //	bypass-permissions -> --allow-all (full bypass: tools, paths, urls)
 func appendApprovalFlags(cmd *[]string, permissions ports.PermissionMode) {
+	*cmd = append(*cmd, ApprovalArgs(permissions)...)
+}
+
+// ApprovalArgs returns the Copilot CLI approval flags for one AO permission
+// mode. Chat's `copilot --acp` launch reuses it so both interfaces have a single
+// answer to "what does this permission mode allow"; the flags behave the same on
+// either path (an ACP `--allow-tool write` session auto-approves edit tool calls
+// and still raises session/request_permission for shell execution).
+func ApprovalArgs(permissions ports.PermissionMode) []string {
 	switch ports.NormalizePermissionMode(permissions) {
-	case ports.PermissionModeDefault:
-		// No flag: defer to the user's ~/.copilot config / interactive prompts.
 	case ports.PermissionModeAcceptEdits:
-		*cmd = append(*cmd, "--allow-tool", "write")
+		return []string{"--allow-tool", "write"}
 	case ports.PermissionModeAuto:
-		*cmd = append(*cmd, "--allow-all-tools")
+		return []string{"--allow-all-tools"}
 	case ports.PermissionModeBypassPermissions:
-		*cmd = append(*cmd, "--allow-all")
+		return []string{"--allow-all"}
+	default:
+		// Default defers to the user's ~/.copilot config / interactive prompts.
+		return nil
 	}
 }
 

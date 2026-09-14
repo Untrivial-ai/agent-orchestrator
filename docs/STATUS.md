@@ -64,7 +64,7 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, and OMP. OMP Chat uses
+  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, and GitHub Copilot. OMP Chat uses
   native `omp acp` and requires OMP 15.0.0 or newer. Pi's independently
   installed pi-acp adapter does not enforce approval modes, so AO admits Pi Chat
   only after the user explicitly chooses the per-session bypass-permissions

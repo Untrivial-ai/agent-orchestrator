@@ -152,6 +152,38 @@ func installCopilotHooks(workspacePath string) error {
 	return nil
 }
 
+// ACPAgentName returns the custom-agent profile name a Chat session selects, or
+// "" when AO has no standing instructions to carry. It is the same name the TUI
+// launch passes to --agent, so both interfaces run the identical profile.
+func ACPAgentName(sessionID, systemPrompt string) string {
+	return copilotAgentName(sessionID, systemPrompt, "")
+}
+
+// PrepareACPAgentProfile installs the per-session custom-agent profile for a
+// Chat session, reusing the TUI launch path's writer.
+//
+// Copilot CLI has no system-prompt flag, and `--agent` is silently ignored under
+// `--acp`: the flag parses, but the ACP session still reports the default
+// persona and never loads the profile. The profile still has to exist in the
+// workspace before launch, because Copilot enumerates .github/agents at process
+// start; Chat then selects it by id through session/set_config_option (see the
+// copilotacp binding).
+func PrepareACPAgentProfile(ctx context.Context, workspacePath, sessionID, systemPrompt string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ACPAgentName(sessionID, systemPrompt) == "" {
+		return nil
+	}
+	if strings.TrimSpace(workspacePath) == "" {
+		return errors.New("copilot: workspace path is required for ACP agent profile")
+	}
+	if err := installCopilotAgent(workspacePath, sessionID, systemPrompt, ""); err != nil {
+		return fmt.Errorf("copilot: install ACP agent profile: %w", err)
+	}
+	return ctx.Err()
+}
+
 func installCopilotAgent(workspacePath, sessionID, inlinePrompt, promptFile string) error {
 	systemPrompt, err := copilotSystemPromptText(inlinePrompt, promptFile)
 	if err != nil {
