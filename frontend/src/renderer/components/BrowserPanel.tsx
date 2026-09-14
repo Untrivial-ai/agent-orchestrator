@@ -56,7 +56,7 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { useBrowserView, type BrowserViewModel } from "../hooks/useBrowserView";
 import { formatBrowserAnnotationMessage, type BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
 import type { BrowserProfile } from "../../shared/browser-profiles";
-import type { WorkspaceSession } from "../types/workspace";
+import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { Button } from "./ui/button";
 import {
 	DropdownMenu,
@@ -347,8 +347,13 @@ export function BrowserPanelView({
 	onTogglePopOut,
 	browserView,
 	annotationQueue,
+	session,
 }: BrowserPanelProps & { annotationQueue: BrowserAnnotationQueueModel; browserView: BrowserViewModel }) {
 	const { t } = useTranslation();
+	// A killed/exited session has no live preview and no terminal to click
+	// links in, so the toolbar becomes a dead-end of false affordances unless
+	// it knows the session lifecycle. Both call sites pass `session` through.
+	const sessionEnded = !sessionIsActive(session);
 	const {
 		viewId,
 		navState,
@@ -776,6 +781,7 @@ export function BrowserPanelView({
 						"browser-panel__tab-new",
 						draggedTopTabId && "browser-panel__tab-new--dragging",
 					)}
+					disabled={sessionEnded}
 					onClick={() => void handleOpenTab()}
 					title={t("browser.openNewTab")}
 					type="button"
@@ -797,7 +803,7 @@ export function BrowserPanelView({
 							<Button
 								aria-label={t("browser.back")}
 								className="browser-panel__navigation-btn"
-								disabled={!navState.canGoBack}
+								disabled={!navState.canGoBack || sessionEnded}
 								onClick={() => void goBack()}
 								size="icon-sm"
 								type="button"
@@ -815,7 +821,7 @@ export function BrowserPanelView({
 							<Button
 								aria-label={t("browser.forward")}
 								className="browser-panel__navigation-btn"
-								disabled={!navState.canGoForward}
+								disabled={!navState.canGoForward || sessionEnded}
 								onClick={() => void goForward()}
 								size="icon-sm"
 								type="button"
@@ -832,6 +838,7 @@ export function BrowserPanelView({
 						<Button
 							aria-label={navState.isLoading ? t("browser.stop") : t("browser.reload")}
 							className="browser-panel__navigation-btn"
+							disabled={sessionEnded}
 							onClick={() => void (navState.isLoading ? stop() : reload())}
 							size="icon-sm"
 							type="button"
@@ -862,6 +869,7 @@ export function BrowserPanelView({
 							"browser-panel__url-input h-browser-url font-mono text-xs",
 							poppedOut ? "pr-9" : !urlEditing && "px-9 text-center",
 						)}
+						disabled={sessionEnded}
 						list={historySuggestions.length > 0 ? historyListId : undefined}
 						onBlur={endUrlEditing}
 						onChange={(event) => handleURLChange(event.target.value)}
@@ -1244,6 +1252,7 @@ export function BrowserPanelView({
 							<TooltipTrigger asChild>
 								<Button
 									aria-label={t("browser.openNewTab")}
+									disabled={sessionEnded}
 									onClick={() => void handleOpenTab()}
 									size="icon-sm"
 									type="button"
@@ -1292,7 +1301,7 @@ export function BrowserPanelView({
 					{showStaticPreview ? <StaticPreview url={navState.url} /> : null}
 					{navState.url === "" ? (
 						<div className="pointer-events-none absolute inset-0 grid place-items-center p-5 text-center font-mono text-xs text-passive">
-							<p>{t("browser.emptyUrl")}</p>
+							<p>{sessionEnded ? t("browser.sessionEnded") : t("browser.emptyUrl")}</p>
 						</div>
 					) : null}
 					{navState.error ? (
