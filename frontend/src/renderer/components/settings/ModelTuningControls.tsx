@@ -18,8 +18,7 @@ export type ModelTuningControlsProps = {
 	disabled?: boolean;
 };
 
-export function ModelTuningControls(props: ModelTuningControlsProps) {
-	const { t } = useTranslation();
+export function useModelTuning(props: Omit<ModelTuningControlsProps, "variant" | "disabled">) {
 	const {
 		models,
 		model,
@@ -27,9 +26,6 @@ export function ModelTuningControls(props: ModelTuningControlsProps) {
 		onEffortChange,
 		onEffortReset = onEffortChange,
 		onValidityChange,
-		variant,
-		roleLabel,
-		disabled,
 	} = props;
 	const previousModel = useRef(model);
 	const previousValidity = useRef<boolean | undefined>(undefined);
@@ -52,7 +48,13 @@ export function ModelTuningControls(props: ModelTuningControlsProps) {
 		previousValidity.current = valid;
 		onValidityChange?.(valid);
 	}, [invalidEffort, onValidityChange]);
+	return { selected, invalidEffort };
+}
 
+export function ModelTuningControls(props: ModelTuningControlsProps) {
+	const { t } = useTranslation();
+	const { effort, onEffortChange, variant, roleLabel, disabled } = props;
+	const { selected, invalidEffort } = useModelTuning(props);
 	const prefix = roleLabel ? `${roleLabel} ` : "";
 	const warning = invalidEffort
 		? t("settings.models.unsupportedTuning", { role: roleLabel ? `${roleLabel} ` : "" })

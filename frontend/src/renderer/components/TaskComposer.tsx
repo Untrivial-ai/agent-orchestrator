@@ -29,9 +29,8 @@ import {
 	refreshAgentModels,
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
-import { AgentModelCombobox } from "./settings/AgentModelCombobox";
+import { AgentModelCombobox, type ModelEffortSelection } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
-import { ModelTuningControls } from "./settings/ModelTuningControls";
 
 type Project = components["schemas"]["Project"];
 type DelegateAgent = components["schemas"]["DelegateTaskRequest"]["agent"];
@@ -467,19 +466,13 @@ export function TaskComposer({
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
 			renderModelControl={(control) => (
-				<div className="flex min-w-0 items-center gap-1">
-					<TaskModelPicker {...control} onRefresh={refreshSelectedModels} />
-					{selectedAgent === "codex" && !requiresTuiFallback ? (
-						<ModelTuningControls
-							models={modelCatalogQuery.data?.models}
-							model={model}
-							effort={effort}
-							onEffortChange={(value) => { setEffort(value); setEffortTouched(true); }}
-							onEffortReset={setEffort}
-							variant="composer"
-						/>
-					) : null}
-				</div>
+				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
+					tuning={selectedAgent === "codex" && !requiresTuiFallback ? {
+						effort,
+						onEffortChange: (value) => { setEffort(value); setEffortTouched(true); },
+						onEffortReset: setEffort,
+					} : undefined}
+				/>
 			)}
 		/>
 	);
@@ -507,7 +500,8 @@ function TaskModelPicker({
 	onModelChange,
 	onModeChange,
 	onRefresh,
-}: TaskComposerModelControl & { onRefresh: () => Promise<void> }) {
+	tuning,
+}: TaskComposerModelControl & { onRefresh: () => Promise<void>; tuning?: ModelEffortSelection }) {
 	const { t } = useTranslation();
 
 	// Says what happens with no override, rather than labelling it "Agent default".
@@ -572,6 +566,7 @@ function TaskModelPicker({
 	return (
 		<AgentModelCombobox
 			key={agentId}
+			tuning={tuning}
 			aria-label={t("newTask.model")}
 			value={value}
 			models={displayModels}

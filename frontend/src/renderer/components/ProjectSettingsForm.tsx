@@ -35,7 +35,6 @@ import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { SettingsRow } from "./settings/SettingsRow";
-import { ModelTuningControls } from "./settings/ModelTuningControls";
 import { Switch } from "./ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
@@ -782,19 +781,17 @@ function AgentModelField({
 						onChange={selectCatalogModel}
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"
+						compact={agentId === "codex"}
+						tuning={agentId === "codex" ? {
+							effort,
+							onEffortChange,
+							onValidityChange,
+							roleLabel: t(`settings.models.${role}Role`),
+						} : undefined}
 					/>
 				</div>
 			</SettingsRow>
 			{warning && <p className="px-1 text-xs leading-row text-warning">{warning}</p>}
-			{agentId === "codex" ? <ModelTuningControls
-				models={catalog?.models}
-				model={model}
-				effort={effort}
-				onEffortChange={onEffortChange}
-				onValidityChange={onValidityChange}
-				variant="settings"
-				roleLabel={t(`settings.models.${role}Role`)}
-			/> : null}
 		</>
 	);
 }

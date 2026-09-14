@@ -892,21 +892,24 @@ describe("TaskComposer", () => {
 		h.post.mockResolvedValue({ data: { workerId: "sess-tuned" } });
 
 		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
-		const effort = await screen.findByRole("button", { name: "Effort" });
-		expect(effort).toHaveTextContent("high");
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("GPT Test · High");
+		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
 
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
 
-		await userEvent.click(effort);
-		await userEvent.click(await screen.findByRole("menuitem", { name: "low" }));
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Low" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
 		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
 
-		await userEvent.click(screen.getByRole("button", { name: "Effort" }));
-		await userEvent.click(await screen.findByRole("menuitem", { name: "Provider default" }));
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Provider default" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
 		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));
