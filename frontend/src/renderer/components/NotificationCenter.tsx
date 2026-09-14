@@ -206,6 +206,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	// Opening marks unread as read, which would drop the highlight under the
 	// cursor. Keep the open-time unread ids highlighted until the panel closes.
 	const [highlightedIds, setHighlightedIds] = useState<Set<string>>(() => new Set());
+	const [clearingNotificationIds, setClearingNotificationIds] = useState<Set<string>>(() => new Set());
 	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
 	const unreadQuery = useNotificationsQuery("unread");
 	const allQuery = useNotificationsQuery("all", open);
@@ -316,9 +317,19 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 
 	const handleClear = useCallback((notification: NotificationDTO) => {
 		setActionError(null);
-		void clearOne.mutateAsync(notification).catch((error: unknown) => {
-			setActionError(error instanceof Error ? error.message : t("notify.couldNotClearOne"));
-		});
+		setClearingNotificationIds((current) => new Set(current).add(notification.id));
+		void clearOne
+			.mutateAsync(notification)
+			.catch((error: unknown) => {
+				setActionError(error instanceof Error ? error.message : t("notify.couldNotClearOne"));
+			})
+			.finally(() => {
+				setClearingNotificationIds((current) => {
+					const next = new Set(current);
+					next.delete(notification.id);
+					return next;
+				});
+			});
 	}, [clearOne, t]);
 
 	const loadEarlierOnScroll = (event: React.UIEvent<HTMLDivElement>) => {
@@ -435,8 +446,8 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 									onOpenSession={openSessionAndDismiss}
 									onRestore={restoreAndOpen}
 									onClear={handleClear}
-									clearing={clearOne.isPending && clearOne.variables?.id === notification.id}
-									clearDisabled={clearOne.isPending || clearAll.isPending}
+									clearing={clearingNotificationIds.has(notification.id)}
+									clearDisabled={clearingNotificationIds.has(notification.id) || clearAll.isPending}
 									restoring={restoringSessionId === sessionId}
 									restoreDisabled={restoringSessionId !== undefined}
 									projectName={meta?.projectName}

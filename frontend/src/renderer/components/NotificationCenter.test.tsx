@@ -341,6 +341,38 @@ describe("NotificationCenter", () => {
 		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
+	it("allows other notifications to clear while one delete is pending", async () => {
+		let resolveFirst: (notification: NotificationDTO) => void = () => undefined;
+		let resolveSecond: (notification: NotificationDTO) => void = () => undefined;
+		const firstDelete = new Promise<NotificationDTO>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const secondDelete = new Promise<NotificationDTO>((resolve) => {
+			resolveSecond = resolve;
+		});
+		clearOneMock.mockReturnValueOnce(firstDelete).mockReturnValueOnce(secondDelete);
+		renderNotificationCenter();
+		await clickOpen();
+
+		const first = screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" });
+		const second = screen.getByRole("button", { name: "Clear notification: Docs sweep needs input" });
+		await userEvent.click(first);
+
+		expect(first).toBeDisabled();
+		expect(second).toBeEnabled();
+		await userEvent.click(second);
+		expect(clearOneMock).toHaveBeenCalledTimes(2);
+		expect(first).toBeDisabled();
+		expect(second).toBeDisabled();
+
+		resolveSecond(allNotifications[2]);
+		await waitFor(() => expect(second).toBeEnabled());
+		expect(first).toBeDisabled();
+
+		resolveFirst(allNotifications[1]);
+		await waitFor(() => expect(first).toBeEnabled());
+	});
+
 	it("keeps the row visible and reports a failed single clear", async () => {
 		clearOneMock.mockRejectedValueOnce(new Error("single clear failed"));
 		renderNotificationCenter();
