@@ -7,7 +7,7 @@ spawned_pid_file="$temp_dir/spawned-pids"
 touch "$spawned_pid_file"
 cleanup_tests() {
   while read -r pid; do
-    kill "$pid" 2>/dev/null || true
+    kill_tree "$pid" 2>/dev/null || true
   done <"$spawned_pid_file"
   rm -rf "$temp_dir"
 }
@@ -105,6 +105,35 @@ assert_process_stopped() {
   exit 1
 }
 
+collect_descendants() {
+  local pid="$1"
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    printf '%s\n' "$child"
+    collect_descendants "$child"
+  done
+}
+
+process_test_dir="$temp_dir/process-tree"
+log_dir="$process_test_dir/logs"
+pid_dir="$process_test_dir/pids"
+mkdir -p "$log_dir" "$pid_dir"
+start_process process-tree "sh -c 'sleep 300 & wait'"
+process_tree_pid="$(cat "$pid_dir/process-tree.pid")"
+printf '%s\n' "$process_tree_pid" >>"$spawned_pid_file"
+process_tree_descendants=""
+for _ in {1..20}; do
+  process_tree_descendants="$(collect_descendants "$process_tree_pid")"
+  [[ -n "$process_tree_descendants" ]] && break
+  sleep 0.05
+done
+[[ -n "$process_tree_descendants" ]]
+stop_process process-tree
+assert_process_stopped "$process_tree_pid"
+while read -r process_pid; do
+  [[ -z "$process_pid" ]] || assert_process_stopped "$process_pid"
+done <<<"$process_tree_descendants"
+
 prepare_start_harness() {
   test_scenario="$1"
   test_case_dir="$2"
@@ -136,6 +165,13 @@ prepare_start_harness() {
   sleep() { :; }
   curl() {
     local url="${*: -1}"
+    if [[ "$test_scenario" == "web" && "$url" == "http://127.0.0.1:5174/" ]]; then
+      local attempts=0
+      if [[ -f "$test_case_dir/web-readiness-attempts" ]]; then
+        attempts="$(cat "$test_case_dir/web-readiness-attempts")"
+      fi
+      printf '%s\n' "$((attempts + 1))" >"$test_case_dir/web-readiness-attempts"
+    fi
     case "$test_scenario:$url" in
       cp:*) return 1 ;;
       tunnel:*3010/readyz) return 0 ;;
@@ -158,8 +194,10 @@ prepare_start_harness() {
   }
   start_process() {
     local name="$1"
+    local command="$2"
     local pid
     touch "$log_dir/$name.log"
+    printf '%s\n' "$command" >"$test_case_dir/$name.command"
     /bin/sleep 300 &
     pid=$!
     printf '%s\n' "$pid" >>"$spawned_pid_file"
@@ -179,6 +217,9 @@ assert_failed_start_cleaned_up() {
 
   if (
     prepare_start_harness "$scenario" "$case_dir"
+    if [[ "$scenario" == "web" ]]; then
+      printf 'stale log entry\n' >"$case_dir/data/logs/web.log"
+    fi
     start "$profile"
   ) >/dev/null 2>&1; then
     echo "$scenario startup unexpectedly succeeded" >&2
@@ -190,6 +231,11 @@ assert_failed_start_cleaned_up() {
     assert_process_stopped "$pid"
     [[ ! -e "$case_dir/data/pids/$name.pid" ]]
   done <"$case_dir/started"
+
+  if [[ "$scenario" == "web" ]]; then
+    [[ "$(cat "$case_dir/web-readiness-attempts")" == "90" ]]
+    [[ ! -s "$case_dir/data/logs/web.log" ]]
+  fi
 
   if awk '$1 == "cloudflared" { found=1 } END { exit !found }' "$case_dir/started"; then
     local tunnel_pid
@@ -216,6 +262,9 @@ mkdir -p "$success_dir"
     : >"$success_dir/stream-owned"
   }
   start local
+  web_command="$(cat "$success_dir/web.command")"
+  [[ "$web_command" == *'WORKOS_CLIENT_ID="${WORKOS_CLIENT_ID:-client_local_dummy}"'* ]]
+  [[ "$web_command" == *'WORKOS_API_KEY="${WORKOS_API_KEY:-sk_test_local_dummy}"'* ]]
   [[ -e "$success_dir/stream-owned" ]]
   [[ ! -e "$success_dir/compose-stop" ]]
   stop_stack

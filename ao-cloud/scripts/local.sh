@@ -286,15 +286,23 @@ stop_process() {
     local pid
     pid="$(cat "$pid_file")"
     if kill -0 "$pid" 2>/dev/null; then
-      local child
-      for child in $(pgrep -P "$pid" 2>/dev/null || true); do
-        kill "$child" 2>/dev/null || true
-      done
-      kill "$pid"
+      kill_tree "$pid"
+      # Reap the process started by start_process so it cannot remain as a
+      # zombie after its descendants have been terminated.
+      wait "$pid" 2>/dev/null || true
       echo "Stopped $name."
     fi
     rm -f "$pid_file"
   fi
+}
+
+kill_tree() {
+  local pid="$1"
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_tree "$child"
+  done
+  kill "$pid" 2>/dev/null || true
 }
 
 stop_local_sandboxes() {
@@ -448,6 +456,7 @@ start() {
   npm run cloud:build-image
   arm_start_failure_cleanup
   docker compose --env-file "$env_file" -f ao-cloud/docker-compose.local.yml up --build -d
+  : >"$log_dir/control-plane.log"
   start_process control-plane "docker compose --env-file '$env_file' -f ao-cloud/docker-compose.local.yml logs --no-log-prefix --follow control-plane"
   for _ in {1..30}; do
     if curl --fail --silent http://127.0.0.1:3010/readyz >/dev/null; then
@@ -463,9 +472,18 @@ start() {
   if [[ "$auth_profile" != "local" ]]; then
     start_github_webhook_tunnel
   fi
-  start_process web "set -a; . '$env_file'; set +a; export AO_CLOUD_AUTH_MODE='$AO_CLOUD_AUTH_MODE' AO_CLOUD_ALLOW_PUBLIC_SIGNUP='$AO_CLOUD_ALLOW_PUBLIC_SIGNUP' WORKOS_REDIRECT_URI='$WORKOS_REDIRECT_URI' NEXT_PUBLIC_API_URL=http://127.0.0.1:3010 NEXT_PUBLIC_WEB_URL=http://127.0.0.1:5174 NEXT_PUBLIC_AO_AUTH_MODE='$AO_CLOUD_AUTH_MODE' NEXT_PUBLIC_WORKOS_REDIRECT_URI='$NEXT_PUBLIC_WORKOS_REDIRECT_URI'; exec npm run cloud:web"
+  : >"$log_dir/web.log"
+  local web_workos_env=""
+  if [[ "$auth_profile" == "local" ]]; then
+    # The local auth profile does not need WorkOS, but App Router route
+    # modules still load the WorkOS SDK during Next.js startup. Set fallbacks
+    # inside the child shell, after .env.cloud.local has been sourced, so
+    # empty values in that file cannot overwrite them.
+    web_workos_env='export WORKOS_CLIENT_ID="${WORKOS_CLIENT_ID:-client_local_dummy}" WORKOS_API_KEY="${WORKOS_API_KEY:-sk_test_local_dummy}"'
+  fi
+  start_process web "set -a; . '$env_file'; set +a; export AO_CLOUD_AUTH_MODE='$AO_CLOUD_AUTH_MODE' AO_CLOUD_ALLOW_PUBLIC_SIGNUP='$AO_CLOUD_ALLOW_PUBLIC_SIGNUP' WORKOS_REDIRECT_URI='$WORKOS_REDIRECT_URI' NEXT_PUBLIC_API_URL=http://127.0.0.1:3010 NEXT_PUBLIC_WEB_URL=http://127.0.0.1:5174 NEXT_PUBLIC_AO_AUTH_MODE='$AO_CLOUD_AUTH_MODE' NEXT_PUBLIC_WORKOS_REDIRECT_URI='$NEXT_PUBLIC_WORKOS_REDIRECT_URI'; $web_workos_env; exec npm run cloud:web"
   start_process sandbox-events "exec docker events --filter label=ao.managed=true --format '{{.Time}} {{.Action}} {{.Actor.Attributes.name}}'"
-  for _ in {1..30}; do
+  for _ in {1..90}; do
     if curl --fail --silent http://127.0.0.1:5174/ >/dev/null; then
       break
     fi
