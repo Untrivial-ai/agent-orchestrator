@@ -398,6 +398,30 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getAllByText("Already durable")).toHaveLength(1);
 	});
 
+	it("resolves a worktree-relative image in agent prose against this session's workspace", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		snapshot.items.push({
+			kind: "message",
+			id: "assistant-image",
+			turnId: "turn-image",
+			sequence: 1,
+			revision: 0,
+			role: "assistant",
+			origin: "provider",
+			text: "![screenshot](docs/screenshot.png)",
+			streaming: false,
+			createdAt: "2026-09-09T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		expect(src.startsWith(
+			`http://127.0.0.1:3001/api/v1/sessions/${encodeURIComponent(snapshot.sessionId)}/workspace/file/blob?`,
+		)).toBe(true);
+		expect(new URL(src).searchParams.get("path")).toBe("docs/screenshot.png");
+	});
+
 	it("makes composer and history controls inert while a durable agent switch owns input", () => {
 		render(<ChatWorkspace snapshot={idleSnapshot()} agentInputDisabled />);
 
