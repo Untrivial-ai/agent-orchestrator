@@ -27,6 +27,10 @@ type SpawnConfig struct {
 	Harness      domain.AgentHarness
 	Branch       string
 	Prompt       string
+	// StartupSystemPrompt is trusted instruction text included in the system
+	// prompt for this fresh spawn only. It is not persisted or reapplied when
+	// the session is restored.
+	StartupSystemPrompt string
 	// AgentConfig overrides the resolved project/role agent config for this
 	// single spawn. Empty fields keep the project defaults.
 	AgentConfig AgentConfig
