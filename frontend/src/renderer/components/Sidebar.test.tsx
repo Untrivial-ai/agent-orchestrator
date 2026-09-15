@@ -518,12 +518,12 @@ describe("Sidebar", () => {
 		expect(collapsedButton?.closest('[aria-hidden="true"]')).toBeNull();
 	});
 
-	it("keeps sidebar scrolling functional without a painted scrollbar", () => {
+	it("keeps sidebar scrolling functional with a thin scrollbar", () => {
 		renderSidebar();
 
 		const content = document.querySelector('[data-sidebar="content"]');
-		expect(content).toHaveClass("overflow-y-auto", "scrollbar-none");
-		expect(content).not.toHaveClass("project-sidebar-scrollbar");
+		expect(content).toHaveClass("overflow-y-auto", "project-sidebar-scrollbar");
+		expect(content).not.toHaveClass("scrollbar-none");
 		expect(content).not.toContainElement(screen.getByText("Projects"));
 	});
 
@@ -1808,6 +1808,20 @@ describe("Sidebar", () => {
 		expect(screen.getByRole("button", { name: "Show 2 more projects" })).toBeVisible();
 
 		await user.click(screen.getByRole("button", { name: "Show 2 more projects" }));
+
+		expect(screen.getByText("Project 13")).toBeInTheDocument();
+		expect(screen.getByText("Project 14")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /more projects/ })).not.toBeInTheDocument();
+	});
+
+	it("shows the full project list in the collapsed icon rail without Show more", () => {
+		const manyProjects = Array.from({ length: 14 }, (_, index) => ({
+			...workspace,
+			id: `proj-${index + 1}`,
+			name: `Project ${index + 1}`,
+			path: `/repo/project-${index + 1}`,
+		}));
+		renderSidebar({ workspaces: manyProjects, initialOpen: false });
 
 		expect(screen.getByText("Project 13")).toBeInTheDocument();
 		expect(screen.getByText("Project 14")).toBeInTheDocument();

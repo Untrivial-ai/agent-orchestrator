@@ -1590,6 +1590,32 @@ textarea,
 	background-color: color-mix(in srgb, var(--color-scrollbar) 56%, transparent);
 }
 
+/* Thin project-list scrollbar: keeps a scroll affordance without the chunky
+   system thumb. Linux also suppresses the end-cap buttons below. */
+.project-sidebar-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent) transparent;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar {
+	width: 6px;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar-thumb {
+	min-height: 24px;
+	border-radius: 999px;
+	background-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent);
+}
+
+.project-sidebar-scrollbar:hover::-webkit-scrollbar-thumb,
+.project-sidebar-scrollbar:focus-within::-webkit-scrollbar-thumb {
+	background-color: color-mix(in srgb, var(--color-scrollbar) 42%, transparent);
+}
+
 .platform-linux .project-sidebar-scrollbar::-webkit-scrollbar {
 	width: 6px;
 }
@@ -2051,9 +2077,12 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 }
 
 /* Keyboard focus for the growing pill: focus-visible only (not focus-within),
-   so a mouse click on Pinned / footer rows does not leave the pill stuck on. */
+   so a mouse click on Pinned / footer rows does not leave the pill stuck on.
+   Project folder toggle + trailing actions live outside the nav-row host but
+   inside data-project-drag-row — light that project's pill from there too. */
 .group\/nav-row:focus-visible [data-nav-row-highlight-idle],
-.group\/nav-row:has(:focus-visible) [data-nav-row-highlight-idle] {
+.group\/nav-row:has(:focus-visible) [data-nav-row-highlight-idle],
+[data-project-drag-row]:has(:focus-visible) [data-nav-row-highlight-idle] {
 	width: 100%;
 	height: 100%;
 	opacity: 1;

@@ -367,7 +367,9 @@ function useGrabbingCursor(active: boolean) {
 export const SIDEBAR_DEFAULT_WIDTH = 240;
 export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 420;
-/** Cap the project list until the user expands it with Show more. */
+/** Cap the expanded project list until the user clicks Show more.
+ *  One-way for now (no Show less / no persistence) — intentional first cut.
+ *  Collapsed icon rail always shows the full list so projects stay reachable. */
 const SIDEBAR_INITIAL_PROJECT_LIMIT = 12;
 const expandedProjectsStorageKey = "ao.sidebar.expanded-projects";
 
@@ -618,10 +620,10 @@ export function Sidebar({
 	}, [activeProjectBeyondLimit]);
 	const visibleWorkspaces = useMemo(
 		() =>
-			showAllProjects || orderedWorkspaces.length <= SIDEBAR_INITIAL_PROJECT_LIMIT
+			isCollapsed || showAllProjects || orderedWorkspaces.length <= SIDEBAR_INITIAL_PROJECT_LIMIT
 				? orderedWorkspaces
 				: orderedWorkspaces.slice(0, SIDEBAR_INITIAL_PROJECT_LIMIT),
-		[orderedWorkspaces, showAllProjects],
+		[isCollapsed, orderedWorkspaces, showAllProjects],
 	);
 	const hiddenProjectCount = Math.max(0, orderedWorkspaces.length - SIDEBAR_INITIAL_PROJECT_LIMIT);
 	const projectIds = useMemo(
@@ -884,7 +886,7 @@ export function Sidebar({
 				</div>
 			</div>
 
-			<SidebarContent className="scrollbar-none gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
+			<SidebarContent className="project-sidebar-scrollbar gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
 				<SidebarGroup className="min-h-full p-0">
 					{/* Tree (project-sidebar__tree) */}
 					<SidebarGroupContent className="min-h-full">
@@ -920,13 +922,13 @@ export function Sidebar({
 											onRemoveProject={onRemoveProject}
 										/>
 									))}
-									{!showAllProjects && hiddenProjectCount > 0 ? (
+									{!isCollapsed && !showAllProjects && hiddenProjectCount > 0 ? (
 										<button
 											aria-label={t("shell.showMoreProjects", { count: hiddenProjectCount })}
 											className={cn(
 												SECTION_ROW_CLASS,
 												NAV_ROW_HIGHLIGHT_HOST_CLASS,
-												"sidebar-expanded-chrome mb-1 rounded-lg text-left text-muted-foreground group-data-[collapsible=icon]:hidden",
+												"mb-1 rounded-lg text-left text-muted-foreground",
 											)}
 											onClick={() => setShowAllProjects(true)}
 											type="button"
