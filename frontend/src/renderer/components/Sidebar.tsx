@@ -176,7 +176,9 @@ const FOOTER_RAIL_BUTTON_CLASS = cn(
 /**
  * Absolute pill behind row content. Starts 4px smaller on both axes
  * (centered); hover/focus grows width+height to fill the host. Opacity snaps.
- * Hover paint is gated in styles.css to fine pointers; focus-within always works.
+ * Hover paint is gated in styles.css to fine pointers; keyboard uses
+ * :focus-visible / :has(:focus-visible) there (not :focus-within — mouse
+ * click focus would otherwise stick the pill on after toggle).
  */
 function NavRowHighlight({
 	active = false,
@@ -194,11 +196,7 @@ function NavRowHighlight({
 				"motion-reduce:h-full motion-reduce:w-full motion-reduce:transition-none",
 				active
 					? "h-full w-full bg-interactive-active opacity-100"
-					: cn(
-							"h-[calc(100%-4px)] w-[calc(100%-4px)] opacity-0",
-							!disabled &&
-								"group-focus-within/nav-row:h-full group-focus-within/nav-row:w-full group-focus-within/nav-row:opacity-100",
-						),
+					: "h-[calc(100%-4px)] w-[calc(100%-4px)] opacity-0",
 				disabled && !active && "opacity-0!",
 			)}
 			data-nav-row-highlight=""
@@ -1483,7 +1481,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										name: workspace.name,
 									})}
 									aria-expanded={expanded}
-									className="absolute inset-y-0 left-0 z-10 w-9 cursor-pointer group-data-[collapsible=icon]:hidden"
+									className="absolute inset-y-0 left-0 z-10 w-9 cursor-pointer bg-transparent group-data-[collapsible=icon]:hidden"
 									data-project-folder=""
 									{...listeners}
 									onClick={onFolderClick}
