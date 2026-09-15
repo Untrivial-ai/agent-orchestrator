@@ -71,16 +71,16 @@ func (s *Store) FinalizeUsageBindingsForSessionLaunch(
 	ctx context.Context,
 	sessionID domain.SessionID,
 	expectedRuntimeLaunchID string,
-	expectedSessionUpdatedAt time.Time,
+	expectedSessionRevision int64,
 	at time.Time,
 ) ([]domain.UsageBindingRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.FinalizeUsageBindingsForSessionLaunch(ctx, gen.FinalizeUsageBindingsForSessionLaunchParams{
-		SessionID:                sessionID,
-		ExpectedRuntimeLaunchID:  expectedRuntimeLaunchID,
-		ExpectedSessionUpdatedAt: expectedSessionUpdatedAt,
-		FinalizedAt:              timeOrNow(at),
+		SessionID:               sessionID,
+		ExpectedRuntimeLaunchID: expectedRuntimeLaunchID,
+		ExpectedSessionRevision: expectedSessionRevision,
+		FinalizedAt:             timeOrNow(at),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("finalize usage bindings for session %s launch %q: %w", sessionID, expectedRuntimeLaunchID, err)

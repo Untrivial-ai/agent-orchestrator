@@ -74,6 +74,21 @@ func TestActionServiceMerge_GuardsAndSquashMergesExactHead(t *testing.T) {
 	}
 }
 
+func TestActionServiceMerge_MergesAPRThatNeedsNoReview(t *testing.T) {
+	pr, scm := mergeableActionFixture()
+	scm.review = ports.SCMReviewObservation{
+		Decision: string(domain.ReviewNone),
+		Reviews:  []ports.SCMReviewSummaryObservation{{ID: "r1", State: "COMMENTED"}},
+	}
+	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+	if _, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA}); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 {
+		t.Fatalf("merge calls = %d, want 1", scm.mergeCalls)
+	}
+}
+
 func TestActionServiceMerge_FailsClosedForStaleHeadOrReadiness(t *testing.T) {
 	pr, scm := mergeableActionFixture()
 	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})

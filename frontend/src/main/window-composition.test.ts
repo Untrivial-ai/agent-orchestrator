@@ -74,15 +74,17 @@ describe("createWindowComposition", () => {
 		expect(view.setBounds).not.toHaveBeenCalled();
 	});
 
-	it("refreshes the shell surface when raising overlays on macOS", () => {
+	it("nudges and restores the visible shell when raising overlays on macOS", () => {
 		vi.useFakeTimers();
 		try {
 			const { composition, view } = setup("darwin");
 			(view.setBounds as ReturnType<typeof vi.fn>).mockClear();
+			(view.setVisible as ReturnType<typeof vi.fn>).mockClear();
 
 			composition.setOverlayOpen(true);
 
 			expect(view.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 900, height: 639 });
+			expect(view.setVisible).not.toHaveBeenCalled();
 			vi.runAllTimers();
 			expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 640 });
 		} finally {

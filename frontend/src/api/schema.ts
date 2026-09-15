@@ -2493,6 +2493,7 @@ export interface components {
             state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
         };
         AgentConfig: {
+            effort?: string;
             mode?: string;
             model?: string;
             permissions?: string;
@@ -2555,6 +2556,8 @@ export interface components {
             agents: components["schemas"]["AgentInstallPlan"][];
         };
         AgentModelInfo: {
+            defaultEffort?: string;
+            efforts?: string[];
             id: string;
             isDefault?: boolean;
             label: string;
@@ -2932,7 +2935,7 @@ export interface components {
             /** Format: int64 */
             previewRevision?: number;
             previewUrl?: string;
-            projectId: string;
+            projectId?: string;
             prs: components["schemas"]["SessionPRFacts"][];
             reviewerConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
@@ -2941,6 +2944,8 @@ export interface components {
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged";
             /** @enum {string} */
             status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "terminated" | "no_signal";
+            /** @enum {string} */
+            statusReadiness: "checking" | "ready" | "unavailable";
             terminalGeneration?: string;
             terminalHandleId?: string;
             terminateOnPrMerge: boolean;
@@ -3214,6 +3219,7 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
+            effort?: null | string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;
@@ -3872,6 +3878,8 @@ export interface components {
             createdAt: string;
             errorCode?: string;
             errorDetail?: string;
+            /** @enum {string} */
+            historyPolicy: "strict" | "provider_history";
             id: string;
             /** Format: date-time */
             noticeAcknowledgedAt?: null | string;
@@ -4020,6 +4028,11 @@ export interface components {
         SetActivityRequest: {
             /** @description Native agent session identifier used to resume its transcript. */
             agentSessionId?: string;
+            /**
+             * @description Whether the main-turn boundary came from a human or AO coordination.
+             * @enum {string}
+             */
+            conversationCheckpointOrigin?: "human" | "coordination";
             /** @description AO hook sub-command that produced this state (e.g. post-tool-use). */
             event?: string;
             /** @description Latest assistant update exposed by the provider hook. */
@@ -4028,11 +4041,15 @@ export interface components {
             latestUserPrompt?: string;
             /** @description AO process generation that produced the signal. */
             launchId?: string;
+            /** @description Native main-turn identity reported by the hook, when supported. */
+            providerTurnId?: string;
             /**
              * @description Agent activity state reported by an agent hook. Optional for metadata-only hooks.
              * @enum {string}
              */
             state?: "active" | "idle" | "waiting_input" | "blocked" | "exited";
+            /** @description AO prompt-hook context correlation UUID, when supported. */
+            submissionId?: string;
             /** @description Native tool name, for tool-use hook events. */
             toolName?: string;
             /** @description Native tool-use id, for tool-use hook events. */
@@ -4161,7 +4178,7 @@ export interface components {
             /** @enum {string} */
             mode?: "chat" | "tui";
             model?: string;
-            projectId: string;
+            projectId?: string;
             prompt?: string;
             /** @enum {string} */
             trackerProvider?: "github" | "gitlab";
@@ -4205,6 +4222,8 @@ export interface components {
             configuration?: string;
         };
         StartSessionInterfaceTransitionRequest: {
+            /** @enum {string} */
+            historyPolicy?: "strict" | "provider_history";
             /** @enum {string} */
             policy: "drain" | "interrupt";
             /** @enum {string} */

@@ -384,12 +384,8 @@ func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error
 				display = id
 			}
 			models = append(models, ports.ChatModel{
-				ID:            id,
-				DisplayName:   display,
-				Description:   entry.Description,
-				Default:       entry.IsDefault,
-				Efforts:       efforts,
-				DefaultEffort: entry.DefaultEff,
+				ID: id, DisplayName: display, Description: entry.Description,
+				Default: entry.IsDefault, Efforts: efforts, DefaultEffort: entry.DefaultEff,
 			})
 		}
 		if resp.NextCursor == nil || *resp.NextCursor == "" {
