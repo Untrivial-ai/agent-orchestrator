@@ -54,8 +54,11 @@ func piConfigDir() (string, bool) {
 }
 
 type piAuthEntry struct {
-	Type string `json:"type"`
-	Key  string `json:"key"`
+	Type    string  `json:"type"`
+	Key     string  `json:"key"`
+	Access  string  `json:"access"`
+	Refresh string  `json:"refresh"`
+	Expires float64 `json:"expires"`
 }
 
 func piAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
@@ -81,11 +84,23 @@ func piAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
 		if strings.TrimSpace(provider) == "" {
 			continue
 		}
+		if piAuthEntryIsOAuth(entry) {
+			return ports.AgentAuthStatusAuthorized, true, nil
+		}
 		if piAuthKeyIsResolved(entry.Key) {
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
 	}
 	return ports.AgentAuthStatusUnknown, false, nil
+}
+
+func piAuthEntryIsOAuth(entry piAuthEntry) bool {
+	if !strings.EqualFold(strings.TrimSpace(entry.Type), "oauth") {
+		return false
+	}
+	// OAuth tokens live in auth.json after `/login` and auto-refresh when
+	// expired, so a stored access token counts as a login even past expiry.
+	return strings.TrimSpace(entry.Access) != ""
 }
 
 func piAuthKeyIsResolved(key string) bool {
