@@ -30,6 +30,7 @@ import {
 	refreshAgentModels,
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
+import { AgentEffortSelect } from "./settings/AgentEffortSelect";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
@@ -42,6 +43,7 @@ type CreateTaskInput = {
 	brief: string;
 	agent?: DelegateAgent;
 	model?: string;
+	effort?: string;
 	mode?: "tui";
 	approvalMode?: "bypass-permissions";
 	attachments?: FileAttachmentPayload[];
@@ -100,6 +102,7 @@ export function TaskComposer({
 	const [isPromptDirty, setIsPromptDirty] = useState(false);
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
+	const [effort, setEffort] = useState("");
 	const [agent, setAgent] = useState("");
 	const [agentTouched, setAgentTouched] = useState(false);
 	const [modelTouched, setModelTouched] = useState(false);
@@ -167,6 +170,7 @@ export function TaskComposer({
 						brief: input.brief,
 						agent: input.agent,
 						model: input.model,
+						...(input.effort ? { effort: input.effort } : {}),
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
@@ -214,6 +218,7 @@ export function TaskComposer({
 					prompt: input.brief,
 					displayName,
 					model: input.model,
+					...(input.effort ? { effort: input.effort } : {}),
 					...(input.mode ? { mode: input.mode } : {}),
 					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
 				},
@@ -369,10 +374,33 @@ export function TaskComposer({
 				? cleanModel || cleanMode || undefined
 				: undefined;
 
+		// Validate agent readiness before submission (local launches only)
+		if (!isCloudProject && selectedAgent) {
+			const agentReadiness = agentCatalog?.agents.find((a) => a.id === selectedAgent);
+			if (agentReadiness?.authentication.state === "unauthorized") {
+				setError(t("newTask.agentUnauthorized", { agent: agentReadiness.label || selectedAgent }));
+				return;
+			}
+		}
+
 		setIsSubmitting(true);
 		setError(undefined);
 		setFallbackAction(undefined);
 		try {
+			if (!isCloudProject && selectedAgent) {
+				try {
+					const completed = await ensureAgentReadiness([selectedAgent], "launch");
+					cacheAgentReadiness(queryClient, completed);
+					const selectedReadiness = completed.agents.find((item) => item.id === selectedAgent);
+					if (selectedReadiness?.authentication.state === "unauthorized") {
+						setError(t("newTask.agentUnauthorized", { agent: selectedReadiness.label || selectedAgent }));
+						return;
+					}
+				} catch {
+					// Readiness is advisory when the targeted check is inconclusive; the
+					// launch path remains the authoritative validator.
+				}
+			}
 			const attachmentPayloads = await toSettledPayload();
 			const sessionId = await createTask({
 				projectId,
@@ -381,6 +409,11 @@ export function TaskComposer({
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
+				// Send effort whenever the level is non-empty. The control's option list
+				// is read from the currently displayed model, so if effort is selectable,
+				// the model vouches for it. This is decoupled from whether requestedModel
+				// was set, so a default model still gets its selected effort level.
+				effort: effort,
 				mode: interfaceMode,
 				approvalMode,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
@@ -407,10 +440,13 @@ export function TaskComposer({
 		}
 	};
 
+	const selectedAgentReadiness = selectedAgent ? agentCatalog?.agents.find((a) => a.id === selectedAgent) : undefined;
+	const isAgentUnauthorized = !isCloudProject && selectedAgentReadiness?.authentication.state === "unauthorized";
+
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "")}
+			canSubmit={Boolean(projectId) && !isAgentUnauthorized && (!isStandalone || selectedAgent !== "")}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -435,6 +471,7 @@ export function TaskComposer({
 					setAgentTouched(true);
 					setModel("");
 					setMode("");
+					setEffort("");
 					setModelTouched(false);
 				},
 			}}
@@ -455,11 +492,19 @@ export function TaskComposer({
 					setModel(value);
 					setMode("");
 					setModelTouched(true);
+					// Effort levels are per-model, so a level the newly chosen model
+					// does not advertise has to be dropped rather than carried over.
+					const nextEfforts =
+						modelCatalog?.models?.find((item) => item.id === value)?.efforts ?? [];
+					setEffort((current) => (current !== "" && !nextEfforts.includes(current) ? "" : current));
 				},
 				onModeChange: (value) => {
 					setMode(value);
 					setModel("");
 					setModelTouched(true);
+					// A mode replaces the model entirely, so no model vouches for a
+					// previously chosen level any more.
+					setEffort("");
 				},
 			}}
 			attachments={{
@@ -480,7 +525,19 @@ export function TaskComposer({
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
-			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
+			renderModelControl={(control) => (
+				<div className="flex min-w-0 items-center gap-1">
+					<TaskModelPicker {...control} onRefresh={refreshSelectedModels} />
+					<AgentEffortSelect
+						aria-label={t("settings.models.effort")}
+						value={effort}
+						efforts={modelCatalog?.models?.find((item) => item.id === model)?.efforts}
+						onChange={setEffort}
+						disabled={isSubmitting || selectedAgent === ""}
+						triggerClassName="composer-chip composer-toolbar-option justify-between"
+					/>
+				</div>
+			)}
 		/>
 	);
 }

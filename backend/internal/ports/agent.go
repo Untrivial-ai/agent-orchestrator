@@ -2,7 +2,10 @@ package ports
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -29,7 +32,66 @@ const (
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"
 	// AgentAuthStatusUnknown means the daemon could not determine auth status.
 	AgentAuthStatusUnknown AgentAuthStatus = "unknown"
+	// AgentAuthStatusConfigured means a credential is present locally but no
+	// check has proven it valid. Presence is not validity: a key can be
+	// revoked, downgraded, or rate-limited with no change on disk, so only a
+	// provider round-trip may report AgentAuthStatusAuthorized. Local evidence
+	// (a config file, an env var, or a CLI that reports loggedIn) reports
+	// configured instead, and must never render as a ready state.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
+	// AgentAuthStatusUnavailable means the agent's binary is not installed, so
+	// there is nothing to authenticate. It is distinct from unauthenticated:
+	// the remedy is an install, not a login.
+	AgentAuthStatusUnavailable AgentAuthStatus = "unavailable"
 )
+
+// AuthVerdict carries an auth status plus the provenance that produced it, so
+// callers can tell a proven verdict from a guessed one. A verdict is only
+// trustworthy as a "ready" signal when Verified is true.
+type AuthVerdict struct {
+	// State is the normalized status.
+	State AgentAuthStatus
+	// Verified is true only when a provider round-trip produced this state, or
+	// when the provider explicitly rejected the credential. Local evidence
+	// never sets it.
+	Verified bool
+	// Source names the rung that decided: "probe", "cli", "local",
+	// "runtime-401", or "binary".
+	Source string
+	// Credential names which credential source won the resolution ladder, e.g.
+	// "ANTHROPIC_API_KEY" or "oauth". Empty when unresolved.
+	Credential string
+	// Fingerprint is sha256(credential)[:12] — enough to detect a credential
+	// change for cache invalidation, never enough to reconstruct the secret.
+	Fingerprint string
+	// CheckedAt is when the verdict was produced.
+	CheckedAt time.Time
+}
+
+// Auth verdict sources.
+const (
+	// AuthSourceProbe is a provider round-trip: the only verifying rung.
+	AuthSourceProbe = "probe"
+	// AuthSourceCLI is the agent CLI's own auth-status subcommand.
+	AuthSourceCLI = "cli"
+	// AuthSourceLocal is on-disk or environment evidence.
+	AuthSourceLocal = "local"
+	// AuthSourceRuntime401 is a rejection observed on a live agent turn.
+	AuthSourceRuntime401 = "runtime-401"
+	// AuthSourceBinary is binary resolution, which yields unavailable only.
+	AuthSourceBinary = "binary"
+)
+
+// CredentialFingerprint returns sha256(secret)[:12], or "" for an empty
+// secret. It is a cache key, never a credential: callers may log it.
+func CredentialFingerprint(secret string) string {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])[:12]
+}
 
 // Agent is the contract every CLI coding agent adapter (claude-code, codex, …)
 // must satisfy. It supplies the argv and process configuration the Session
@@ -63,6 +125,14 @@ type Agent interface {
 // a cheap local authentication status probe.
 type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
+}
+
+// AgentAuthVerdictChecker is the optional refinement of AgentAuthChecker for
+// adapters that can report where their verdict came from and whether it was
+// proven. Callers that only need the state keep using AgentAuthChecker.
+type AgentAuthVerdictChecker interface {
+	AgentAuthChecker
+	AuthVerdict(ctx context.Context) (AuthVerdict, error)
 }
 
 // AgentBinaryResolver is the optional capability adapters expose when their
@@ -157,6 +227,12 @@ type AgentModelInfo struct {
 	Label     string `json:"label"`
 	Provider  string `json:"provider,omitempty"`
 	IsDefault bool   `json:"isDefault,omitempty"`
+	// Efforts are the reasoning levels this specific model accepts, in the
+	// provider's own ascending order. Empty means the model takes no effort
+	// setting, which is a real answer rather than a missing one — Sonnet 4.5
+	// and Haiku 4.5 accept none while the 5 family accepts five — so a picker
+	// must render no effort control at all rather than an empty one.
+	Efforts []string `json:"efforts,omitempty"`
 }
 
 // AgentModelCatalog is AO's normalized model-picker response.

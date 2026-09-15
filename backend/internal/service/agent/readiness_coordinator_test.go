@@ -770,3 +770,64 @@ func TestReadinessCoordinatorRejectsInvalidPurposeAndUnknownAgent(t *testing.T) 
 		}
 	}
 }
+
+// A credential AO could not validate must sit between the two definite
+// answers: it is not ready, so nothing renders green, and it is not not_ready,
+// so nothing is blocked. The old behaviour collapsed it into authorized, which
+// is how a revoked key rendered as a working agent.
+func TestReadinessCoordinatorTreatsConfiguredAsUnverified(t *testing.T) {
+	t.Parallel()
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/claude", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusConfigured, nil
+		},
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("claude-code", "Claude Code", agent)},
+	})
+
+	items, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[0].Authentication.State; got != domain.AgentAuthenticationConfigured {
+		t.Fatalf("authentication state = %q, want %q", got, domain.AgentAuthenticationConfigured)
+	}
+	if got := items[0].Authentication.ReasonCode; got != domain.AgentReadinessReasonAuthConfigured {
+		t.Fatalf("reason code = %q, want %q", got, domain.AgentReadinessReasonAuthConfigured)
+	}
+	if got := items[0].EffectiveReadiness; got != domain.AgentReadinessUnknown {
+		t.Fatalf("effective readiness = %q, want %q — an unverified credential is neither ready nor blocked", got, domain.AgentReadinessUnknown)
+	}
+	// Recorded as an observation, not a failure, so it is not retried as one.
+	if items[0].Authentication.CheckedAt == nil {
+		t.Fatal("a configured verdict is a definite observation and must be marked checked")
+	}
+}
+
+// A missing binary is an install problem. Reporting it as unauthorized points
+// the user at a login they cannot complete.
+func TestReadinessCoordinatorTreatsUnavailableAsNotAnAuthFailure(t *testing.T) {
+	t.Parallel()
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/claude", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusUnavailable, nil
+		},
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("claude-code", "Claude Code", agent)},
+	})
+
+	items, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[0].Authentication.State; got != domain.AgentAuthenticationUnknown {
+		t.Fatalf("authentication state = %q, want %q", got, domain.AgentAuthenticationUnknown)
+	}
+	if got := items[0].Authentication.ReasonCode; got != domain.AgentReadinessReasonAuthSkippedNotInstalled {
+		t.Fatalf("reason code = %q, want %q", got, domain.AgentReadinessReasonAuthSkippedNotInstalled)
+	}
+}

@@ -297,6 +297,8 @@ type SpawnSessionRequest struct {
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
+	// Effort is the optional reasoning level for the selected model.
+	Effort string `json:"effort,omitempty" maxLength:"32"`
 
 	// DisplayName is the sidebar label for the session, capped at 20 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
@@ -860,6 +862,11 @@ type DelegateTaskRequest struct {
 	Brief     string              `json:"brief" maxLength:"16384"`
 	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
+	// Effort is the reasoning level, taken from the selected model's own
+	// advertised levels. It is not a fixed enum: the valid values differ per
+	// model and come from the provider's catalog, so the daemon accepts a
+	// string and lets the agent reject anything it does not honor.
+	Effort string `json:"effort,omitempty" maxLength:"32"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
 	// bypass value only after the user accepts an approval-less Chat fallback.
 	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`

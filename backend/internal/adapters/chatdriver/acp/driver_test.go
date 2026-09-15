@@ -3349,6 +3349,62 @@ func (d *Driver) useTestProcess(spawn spawnFunc) {
 	}
 }
 
+// TestPR5208FreshStartAppliesSelectedEffort verifies that the selected effort
+// level is applied through ACP before the first prompt.
+func TestPR5208FreshStartAppliesSelectedEffort(t *testing.T) {
+	effortOption := selectConfigOption("effort", "Effort", "effort", "default", "default", "low", "high")
+	effortOptionLow := selectConfigOption("effort", "Effort", "effort", "low", "default", "low", "high")
+	agent := &fakeAgent{
+		newConfig: []acpsdk.SessionConfigOption{effortOption},
+		setConfig: []acpsdk.SessionConfigOption{effortOptionLow},
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+			if settings.Effort == "" {
+				return nil
+			}
+			return []SessionOption{{ID: "effort", Value: settings.Effort}}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath: t.TempDir(),
+		Effort:        "low",
+	})
+	if err != nil {
+		t.Fatalf("Start with effort=low: %v", err)
+	}
+	defer conv.Close()
+
+	agent.mu.Lock()
+	setCalls := agent.setCalls
+	effortValue := agent.options["effort"]
+	agent.mu.Unlock()
+	if setCalls == 0 || effortValue != "low" {
+		t.Fatalf("provider setter calls = %d, effort = %q; want at least one call with low", setCalls, effortValue)
+	}
+
+	configurer := conv.(ports.ChatConfigOptionController)
+	configOptions, err := configurer.ListConfigOptions(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigOptions: %v", err)
+	}
+	for _, option := range configOptions {
+		if option.ID == "effort" {
+			if option.Current.Select != "low" {
+				t.Fatalf("live effort option = %q, want low", option.Current.Select)
+			}
+			return
+		}
+	}
+	t.Fatal("effort option not found in live config")
+}
+
 func TestACPConversationImplementsCompactor(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{

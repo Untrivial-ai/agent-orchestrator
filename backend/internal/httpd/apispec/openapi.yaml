@@ -7151,6 +7151,7 @@ components:
           - unauthorized
           - unknown
           - not_applicable
+          - configured
           type: string
       required:
       - state
@@ -7162,6 +7163,8 @@ components:
       type: object
     AgentConfig:
       properties:
+        effort:
+          type: string
         mode:
           type: string
         model:
@@ -7172,12 +7175,15 @@ components:
     AgentInfo:
       properties:
         authStatus:
-          description: Advisory local auth probe result. authorized means a recent
-            local probe passed; spawn remains the authoritative validation point.
+          description: Auth probe result. authorized means a provider round-trip accepted
+            the credential; configured means a credential exists locally but was never
+            validated, and must not be presented as ready; spawn remains the authoritative
+            validation point.
           enum:
           - authorized
           - unauthorized
           - unknown
+          - configured
           type: string
         id:
           type: string
@@ -7312,6 +7318,10 @@ components:
       type: object
     AgentModelInfo:
       properties:
+        efforts:
+          items:
+            type: string
+          type: array
         id:
           type: string
         isDefault:
@@ -9197,6 +9207,9 @@ components:
           type: array
         brief:
           maxLength: 16384
+          type: string
+        effort:
+          maxLength: 32
           type: string
         mode:
           enum:
@@ -11681,6 +11694,9 @@ components:
           type: string
         displayName:
           maxLength: 20
+          type: string
+        effort:
+          maxLength: 32
           type: string
         harness:
           enum:

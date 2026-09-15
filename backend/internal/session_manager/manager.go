@@ -1459,6 +1459,9 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	if override.Mode != "" {
 		merged.Mode = override.Mode
 	}
+	if override.Effort != "" {
+		merged.Effort = override.Effort
+	}
 	if override.Permissions != "" {
 		merged.Permissions = override.Permissions
 	}
@@ -1479,6 +1482,9 @@ func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	}
 	if override.Mode != "" {
 		base.Mode = override.Mode
+	}
+	if override.Effort != "" {
+		base.Effort = override.Effort
 	}
 	if override.Permissions != "" {
 		base.Permissions = override.Permissions

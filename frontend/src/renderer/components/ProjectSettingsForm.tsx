@@ -32,6 +32,7 @@ import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, type IntakeForm } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
+import { AgentEffortSelect } from "./settings/AgentEffortSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { SettingsRow } from "./settings/SettingsRow";
@@ -145,6 +146,8 @@ function SettingsBody({
 		orchestratorModel: config.orchestrator?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
+		workerEffort: config.worker?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
+		orchestratorEffort: config.orchestrator?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
 		permissions: config.agentConfig?.permissions ?? "",
 		reviewerHarness: config.reviewers?.[0]?.harness ?? "",
 		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? "",
@@ -200,7 +203,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerEffort),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -209,6 +212,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
+								form.orchestratorEffort,
 							),
 						},
 						agentConfig: blankToUndefined({
@@ -226,7 +230,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerEffort),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -235,6 +239,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
+								form.orchestratorEffort,
 							),
 						},
 						agentConfig: blankToUndefined({
@@ -245,7 +250,14 @@ function SettingsBody({
 							? [
 									{
 										harness: form.reviewerHarness,
-										agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode),
+										agentConfig: buildRoleAgentConfig(
+											existingReviewerAgentConfig,
+											form.reviewerModel,
+											form.reviewerMode,
+											// The reviewer row exposes no effort control, so carry the
+											// stored value through rather than deleting it on every save.
+											existingReviewerAgentConfig?.effort ?? "",
+										),
 									},
 								]
 							: undefined,
@@ -438,7 +450,7 @@ function SettingsBody({
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.workerAgent === ""}
 								onChange={(v) =>
-									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "" }))
+									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "", workerEffort: "" }))
 								}
 							/>
 						}
@@ -449,8 +461,10 @@ function SettingsBody({
 								projectId={projectId}
 								model={form.workerModel}
 								mode={form.workerMode}
+								effort={form.workerEffort}
 								onModelChange={(workerModel) => setForm((f) => ({ ...f, workerModel }))}
 								onModeChange={(workerMode) => setForm((f) => ({ ...f, workerMode }))}
+								onEffortChange={(workerEffort) => setForm((f) => ({ ...f, workerEffort }))}
 							/>
 						}
 						orchestratorArea={
@@ -480,8 +494,10 @@ function SettingsBody({
 								projectId={projectId}
 								model={form.orchestratorModel}
 								mode={form.orchestratorMode}
+								effort={form.orchestratorEffort}
 								onModelChange={(orchestratorModel) => setForm((f) => ({ ...f, orchestratorModel }))}
 								onModeChange={(orchestratorMode) => setForm((f) => ({ ...f, orchestratorMode }))}
+								onEffortChange={(orchestratorEffort) => setForm((f) => ({ ...f, orchestratorEffort }))}
 							/>
 						}
 						permissions={{
@@ -624,16 +640,20 @@ function AgentModelField({
 	projectId,
 	model,
 	mode,
+	effort,
 	onModelChange,
 	onModeChange,
+	onEffortChange,
 }: {
 	role: "worker" | "orchestrator";
 	agentId: string;
 	projectId: string;
 	model: string;
 	mode: string;
+	effort: string;
 	onModelChange: (value: string) => void;
 	onModeChange: (value: string) => void;
+	onEffortChange: (value: string) => void;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -706,11 +726,26 @@ function AgentModelField({
 	const selectCatalogModel = (value: string) => {
 		onModelChange(value);
 		onModeChange("");
+		// Effort levels are per-model, so a level the new model does not
+		// advertise has to be dropped rather than carried over. Keeping it
+		// would launch `claude --effort xhigh` against a model that rejects it.
+		const nextEfforts = catalog?.models?.find((item) => item.id === value)?.efforts ?? [];
+		if (effort !== "" && !nextEfforts.includes(effort)) {
+			onEffortChange("");
+		}
 	};
 	const selectCustomModel = (value: string) => {
 		onModelChange(value);
 		onModeChange("");
+		// A hand-typed model carries no advertised levels, so any previously
+		// chosen effort no longer has a model that vouches for it.
+		onEffortChange("");
 	};
+
+	// Effort levels belong to the selected model, so the control follows the
+	// selection rather than the agent. A model that advertises none renders no
+	// control at all.
+	const selectedEfforts = catalog?.models?.find((item) => item.id === model)?.efforts;
 	return (
 		<>
 			<SettingsRow label={label}>
@@ -727,6 +762,13 @@ function AgentModelField({
 						onChange={selectCatalogModel}
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"
+					/>
+					<AgentEffortSelect
+						aria-label={t("settings.models.effort")}
+						value={effort}
+						efforts={selectedEfforts}
+						onChange={onEffortChange}
+						disabled={query.isFetching || agentId === ""}
 					/>
 				</div>
 			</SettingsRow>
@@ -811,11 +853,16 @@ function buildRoleAgentConfig(
 	existing: components["schemas"]["AgentConfig"] | undefined,
 	model: string,
 	mode: string,
+	effort: string,
 ): components["schemas"]["AgentConfig"] | undefined {
 	const next = { ...existing };
 	if (model) next.model = model;
 	else delete next.model;
 	if (mode) next.mode = mode;
 	else delete next.mode;
+	// An empty effort is a real choice — leave the agent's own default — so it
+	// is stored as absence rather than as an empty string.
+	if (effort) next.effort = effort;
+	else delete next.effort;
 	return Object.keys(next).length > 0 ? next : undefined;
 }
