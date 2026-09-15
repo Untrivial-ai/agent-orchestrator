@@ -3,6 +3,8 @@
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
+import "./AppMockup.css";
+
 export type { ActiveDemo } from "./types";
 
 type BoardColumnId = "working" | "action" | "pending" | "merge";
@@ -711,41 +713,7 @@ const incomingCardsByTrack: Record<TrackId, StaticPreviewCard[]> = {
 
 const BASE_WIDTH = 1140;
 const BASE_HEIGHT = 615;
-const WINDOW_ASPECT = BASE_WIDTH / BASE_HEIGHT;
-const WINDOW_MARGIN = 4;
-// Shell can shrink with the hero frame; inner board stays at BASE_* and CSS-scales.
-// Keep the shell aspect-locked so the scaled board fills both axes (no letterbox gaps).
-
-interface WindowState {
-	x: number;
-	y: number;
-	width: number;
-	height: number;
-}
-
-function sizeFromWidth(width: number): Pick<WindowState, "width" | "height"> {
-	return { width, height: width / WINDOW_ASPECT };
-}
-
-function createInitialWindowState(
-	containerWidth: number,
-	containerHeight: number,
-): WindowState {
-	const availableWidth = containerWidth - WINDOW_MARGIN * 2;
-	const availableHeight = containerHeight - WINDOW_MARGIN * 2;
-	const scale = Math.min(
-		1,
-		availableWidth / BASE_WIDTH,
-		availableHeight / BASE_HEIGHT,
-	);
-	const { width, height } = sizeFromWidth(BASE_WIDTH * scale);
-	return {
-		x: (containerWidth - width) / 2,
-		y: (containerHeight - height) / 2,
-		width,
-		height,
-	};
-}
+const CSS_SCALE_SUPPORT = "scale(min(1, tan(atan2(100cqw, 1px)), tan(atan2(100cqh, 1px))))";
 
 const mockupShellStyle = {
 	...previewTokenStyle,
@@ -753,55 +721,30 @@ const mockupShellStyle = {
 	"--mockup-design-h": `${BASE_HEIGHT}px`,
 	"--mockup-shell-radius": "20px",
 	"--mockup-inner-radius": "17px",
-	left: "50%",
-	top: "50%",
-	width: `min(calc(100% - ${WINDOW_MARGIN * 2}px), ${BASE_WIDTH}px)`,
-	maxHeight: `calc(100% - ${WINDOW_MARGIN * 2}px)`,
-	aspectRatio: `${BASE_WIDTH} / ${BASE_HEIGHT}`,
-	transform: "translate(-50%, -50%)",
 } as CSSProperties;
 
-function useFloatingWindow(
-	outerRef: React.RefObject<HTMLElement | null>,
-) {
-	const stateRef = useRef<WindowState | null>(null);
-
-	const applyState = useCallback(() => {
-		const outer = outerRef.current;
-		const state = stateRef.current;
-		if (!outer || !state) return;
-		const scale = state.width / BASE_WIDTH;
-		outer.style.left = `${state.x}px`;
-		outer.style.top = `${state.y}px`;
-		outer.style.width = `${state.width}px`;
-		outer.style.height = `${state.height}px`;
-		outer.style.setProperty("--mockup-shell-radius", `${20 * scale}px`);
-		outer.style.setProperty("--mockup-inner-radius", `${17 * scale}px`);
-		outer.style.transform = "none";
-	}, [outerRef]);
-
-	const updateContainer = useCallback(() => {
-		const outer = outerRef.current;
-		const parent = outer?.offsetParent as HTMLElement | null;
-		if (!parent) return;
-		const rect = parent.getBoundingClientRect();
-		stateRef.current = createInitialWindowState(rect.width, rect.height);
-		applyState();
-	}, [applyState, outerRef]);
-
+// CSS handles first paint. Only older engines need hidden-until-measured sizing.
+function useLegacyMockupScale(rootRef: React.RefObject<HTMLDivElement | null>) {
 	useLayoutEffect(() => {
-		updateContainer();
-		const outer = outerRef.current;
-		const parent = outer?.offsetParent as HTMLElement | null;
-		if (!parent) return;
-		const observer = new ResizeObserver(updateContainer);
-		observer.observe(parent);
-		window.addEventListener("resize", updateContainer);
-		return () => {
-			observer.disconnect();
-			window.removeEventListener("resize", updateContainer);
+		if (
+			"registerProperty" in CSS &&
+			CSS.supports("container-type", "size") &&
+			CSS.supports("transform", CSS_SCALE_SUPPORT)
+		) return;
+		const root = rootRef.current;
+		const frame = root?.parentElement;
+		if (!root || !frame) return;
+		const syncScale = () => {
+			const { width, height } = frame.getBoundingClientRect();
+			if (width <= 0 || height <= 0) return;
+			root.style.setProperty("--mockup-scale", String(Math.min(1, width / BASE_WIDTH, height / BASE_HEIGHT)));
+			root.style.visibility = "visible";
 		};
-	}, [updateContainer, outerRef]);
+		syncScale();
+		const observer = new ResizeObserver(syncScale);
+		observer.observe(frame);
+		return () => observer.disconnect();
+	}, [rootRef]);
 }
 
 function createInitialCards(trackId: TrackId): PreviewCard[] {
@@ -1913,35 +1856,8 @@ export function AppMockup() {
 		footer: 0,
 	});
 	const windowRef = useRef<HTMLDivElement>(null);
-	const contentRef = useRef<HTMLDivElement>(null);
-	useFloatingWindow(windowRef);
+	useLegacyMockupScale(windowRef);
 	useDecorativeSubtree(windowRef);
-
-	// Keep the board at the design size and scale the whole chrome to the shell.
-	// Shrinking the layout box itself reflows columns and clips Mergeable / Merge.
-	// Shell resize is aspect-locked, so width/BASE_WIDTH fills both axes with no gaps.
-	// Keep the SSR canvas hidden until this scale is applied to avoid a full-size mobile flash.
-	useLayoutEffect(() => {
-		const outer = windowRef.current;
-		const content = contentRef.current;
-		if (!outer || !content) return;
-
-		const syncScale = () => {
-			const width = outer.clientWidth;
-			if (width <= 0) return;
-			content.style.transform = `scale(${width / BASE_WIDTH})`;
-			content.style.visibility = "visible";
-		};
-
-		syncScale();
-		const observer = new ResizeObserver(syncScale);
-		observer.observe(outer);
-		window.addEventListener("resize", syncScale);
-		return () => {
-			observer.disconnect();
-			window.removeEventListener("resize", syncScale);
-		};
-	}, []);
 
 	const selectedTrack =
 		projectItems.find((item) => item.id === selectedTrackId) ?? projectItems[0];
@@ -2049,53 +1965,52 @@ export function AppMockup() {
 	});
 
 	return (
-		<div
-			ref={windowRef}
-			role="img"
-			aria-label="Preview of the Agent Orchestrator board: agent tasks move across Pending Work, Iterating, In Review, and Ready to merge."
-			className="absolute z-10 select-none overflow-hidden rounded-[var(--mockup-shell-radius)] border border-[var(--preview-border)] bg-[var(--preview-sidebar)] font-sans tracking-tight text-[var(--preview-foreground)] antialiased shadow-[0_30px_80px_-24px_rgba(0,0,0,0.75)] [&_.font-mono]:tracking-normal"
-			style={mockupShellStyle}
-		>
-			<style>{`
-				@keyframes ao-attention-pulse-frames {
-					0%, 100% { box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.35); }
-					50% { box-shadow: 0 0 0 4px rgba(251, 146, 60, 0); }
-				}
-				.ao-attention-pulse {
-					animation: ao-attention-pulse-frames 1.2s ease-in-out infinite;
-				}
-				@media (prefers-reduced-motion: reduce) {
-					.ao-attention-pulse { animation: none; }
-				}
-			`}</style>
-			<div className="relative h-full w-full overflow-hidden">
-				<div
-					ref={contentRef}
-					className="invisible h-(--mockup-design-h) w-(--mockup-design-w) origin-top-left"
-				>
-					<div className="flex h-full min-h-0">
-						<Sidebar cards={cards} />
-						<div className="flex min-h-0 min-w-0 flex-1 flex-col p-[2px]">
-							<div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--mockup-inner-radius)] border border-[var(--preview-border-strong)] bg-[var(--preview-background)]">
-								<BoardChrome viewMode={viewMode} />
-								<>
-									<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-										<LayoutGroup key={selectedTrack.id}>
-											<div className="grid min-h-0 flex-1 grid-cols-4 overflow-hidden">
-												{boardColumns.map((column) => (
-													<BoardColumn
-														key={column.id}
-														cards={column.cards}
-														color={COLUMN_COLORS[column.id]}
-														count={column.count}
-														title={column.title}
-													/>
-												))}
-											</div>
-										</LayoutGroup>
-									</div>
-									<ArchiveBar count={mergedCount} />
-								</>
+		<div className="hero-mockup-viewport">
+			<div
+				ref={windowRef}
+				role="img"
+				aria-label="Preview of the Agent Orchestrator board: agent tasks move across Pending Work, Iterating, In Review, and Ready to merge."
+				className="hero-mockup-window absolute z-10 select-none overflow-hidden rounded-[var(--mockup-shell-radius)] border border-[var(--preview-border)] bg-[var(--preview-sidebar)] font-sans tracking-tight text-[var(--preview-foreground)] antialiased shadow-[0_30px_80px_-24px_rgba(0,0,0,0.75)] [&_.font-mono]:tracking-normal"
+				style={mockupShellStyle}
+			>
+				<style>{`
+					@keyframes ao-attention-pulse-frames {
+						0%, 100% { box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.35); }
+						50% { box-shadow: 0 0 0 4px rgba(251, 146, 60, 0); }
+					}
+					.ao-attention-pulse {
+						animation: ao-attention-pulse-frames 1.2s ease-in-out infinite;
+					}
+					@media (prefers-reduced-motion: reduce) {
+						.ao-attention-pulse { animation: none; }
+					}
+				`}</style>
+				<div className="relative h-full w-full overflow-hidden">
+					<div className="h-full w-full">
+						<div className="flex h-full min-h-0">
+							<Sidebar cards={cards} />
+							<div className="flex min-h-0 min-w-0 flex-1 flex-col p-[2px]">
+								<div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--mockup-inner-radius)] border border-[var(--preview-border-strong)] bg-[var(--preview-background)]">
+									<BoardChrome viewMode={viewMode} />
+									<>
+										<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+											<LayoutGroup key={selectedTrack.id}>
+												<div className="grid min-h-0 flex-1 grid-cols-4 overflow-hidden">
+													{boardColumns.map((column) => (
+														<BoardColumn
+															key={column.id}
+															cards={column.cards}
+															color={COLUMN_COLORS[column.id]}
+															count={column.count}
+															title={column.title}
+														/>
+													))}
+												</div>
+											</LayoutGroup>
+										</div>
+										<ArchiveBar count={mergedCount} />
+									</>
+								</div>
 							</div>
 						</div>
 					</div>
