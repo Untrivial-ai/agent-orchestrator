@@ -1,6 +1,7 @@
 package conpty
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -761,5 +762,126 @@ func TestShutdownViaCtxCancel(t *testing.T) {
 	f.pty.closeMu.Unlock()
 	if !closed {
 		t.Fatal("expected pty.Close() on ctx cancel")
+	}
+}
+
+// TestLateAttachReceivesNegotiatedModes is the #5039 regression: a full-screen
+// program prints its alternate-screen / mouse / bracketed-paste handshake once,
+// then produces more than MaxOutputLines lines, so the ring no longer holds the
+// handshake by the time a client attaches. The client (the phone, or a desktop
+// pane after a relaunch) must still be told the modes, ahead of the replay,
+// or it renders the replay in its normal buffer with mouse reporting off and
+// its scrolling never reaches the program.
+func TestLateAttachReceivesNegotiatedModes(t *testing.T) {
+	f := startServe(t, 300)
+	defer f.cancel()
+
+	handshake := "\x1b[?2004h\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h"
+	if _, err := f.pty.WriteOutput([]byte(handshake + "welcome\n")); err != nil {
+		t.Fatalf("write handshake: %v", err)
+	}
+	// Overflow the ring by a wide margin, in PTY-sized chunks, the way a TUI
+	// repainting on every keystroke does.
+	var frame bytes.Buffer
+	for i := 0; i < 50; i++ {
+		fmt.Fprintf(&frame, "\x1b[2K\x1b[1Aframe line %d\n", i)
+	}
+	for i := 0; i < 2*MaxOutputLines/50+2; i++ {
+		if _, err := f.pty.WriteOutput(frame.Bytes()); err != nil {
+			t.Fatalf("write frame %d: %v", i, err)
+		}
+	}
+	// Wait until pumpPTY has consumed everything: the ring is full and the
+	// handshake has scrolled out of it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := f.ring.Replay()
+		if bytes.Count(snap, []byte("\n")) == MaxOutputLines && !bytes.Contains(snap, []byte("\x1b[?1049h")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ring never overflowed: %d lines, handshake present=%v",
+				bytes.Count(snap, []byte("\n")), bytes.Contains(snap, []byte("\x1b[?1049h")))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c := newTestClient(t, f.addr)
+	defer c.close()
+
+	typ, payload := c.readFrame(t)
+	if typ != MsgTerminalData {
+		t.Fatalf("got type 0x%02x, want MsgTerminalData", typ)
+	}
+	// Alternate buffer first, then by mode number: hidden cursor, mouse
+	// protocol and encoding, bracketed paste; then the replay exactly as the
+	// ring holds it.
+	wantPrefix := "\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?2004h"
+	if !bytes.HasPrefix(payload, []byte(wantPrefix)) {
+		t.Fatalf("first frame does not start with the negotiated modes:\n got %q\nwant prefix %q", payload[:min(len(payload), 60)], wantPrefix)
+	}
+	if rest := payload[len(wantPrefix):]; !bytes.Equal(rest, f.ring.Replay()) {
+		t.Fatalf("bytes after the mode prefix are not the ring replay (len %d vs %d)", len(rest), len(f.ring.Replay()))
+	}
+}
+
+// TestAttachAfterProgramLeftAltScreen: once the program has restored the
+// normal buffer and turned reporting off, a late attacher gets the replay
+// alone, so a finished TUI does not pull a new client into an empty alternate
+// screen.
+func TestAttachAfterProgramLeftAltScreen(t *testing.T) {
+	f := startServe(t, 301)
+	defer f.cancel()
+
+	out := "\x1b[?1049h\x1b[?1003h\x1b[?1006h" + "tui frame\n" + "\x1b[?1003l\x1b[?1006l\x1b[?1049l" + "$ back at the prompt\n"
+	if _, err := f.pty.WriteOutput([]byte(out)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for bytes.Count(f.ring.Replay(), []byte("\n")) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("pump did not consume the output")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c := newTestClient(t, f.addr)
+	defer c.close()
+	typ, payload := c.readFrame(t)
+	if typ != MsgTerminalData {
+		t.Fatalf("got type 0x%02x, want MsgTerminalData", typ)
+	}
+	if !bytes.Equal(payload, f.ring.Replay()) {
+		t.Fatalf("payload = %q, want the bare ring replay %q", payload, f.ring.Replay())
+	}
+}
+
+// TestEarlyAttachGetsTheBareReplay: while the ring still holds the program's
+// own handshake, the attacher receives the ring alone, so what scrolled by
+// before the program switched buffers stays in the client's normal buffer.
+func TestEarlyAttachGetsTheBareReplay(t *testing.T) {
+	f := startServe(t, 302)
+	defer f.cancel()
+
+	out := "$ htop\n\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[?25l" + "tui frame\n"
+	if _, err := f.pty.WriteOutput([]byte(out)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for bytes.Count(f.ring.Replay(), []byte("\n")) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("pump did not consume the output")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c := newTestClient(t, f.addr)
+	defer c.close()
+	typ, payload := c.readFrame(t)
+	if typ != MsgTerminalData {
+		t.Fatalf("got type 0x%02x, want MsgTerminalData", typ)
+	}
+	if !bytes.Equal(payload, f.ring.Replay()) {
+		t.Fatalf("payload = %q, want the bare ring replay %q", payload, f.ring.Replay())
 	}
 }
