@@ -115,6 +115,7 @@ type ACPState struct {
 	SessionResult        json.RawMessage `json:"sessionResult,omitempty"`
 	SessionID            string          `json:"sessionId,omitempty"`
 	ActivePrompt         bool            `json:"activePrompt,omitempty"`
+	ActiveCompaction     bool            `json:"activeCompaction,omitempty"`
 	PendingResultEventID string          `json:"pendingResultEventId,omitempty"`
 }
 

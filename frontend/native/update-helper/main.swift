@@ -69,7 +69,8 @@ final class ProgressController: NSObject, NSApplicationDelegate, NSWindowDelegat
         // READY is what the parent waits for before letting Squirrel quit AO.
         // It is the process handshake (this stdout line), not any visible UI, so
         // the window can stay hidden here and still hand off safely. The window
-        // is shown only if the update stalls or fails (see presentWindow).
+        // is presented once the swap actually begins (the .closing/.installing
+        // stages in refresh), and immediately on the stall/failure paths.
         DispatchQueue.main.async {
             FileHandle.standardOutput.write(Data("READY\n".utf8))
         }
@@ -101,8 +102,11 @@ final class ProgressController: NSObject, NSApplicationDelegate, NSWindowDelegat
                                     finishedLaunching: app.isFinishedLaunching, visibleWindow: visible)
     }
 
-    // Bring the window on screen. Called only when the update needs attention
-    // (it stalled or failed), never on the normal close-and-reopen path.
+    // Bring the window on screen. Shown on the normal close-and-reopen path too
+    // so "Closing AO" / "Installing and reopening AO" is visible during the
+    // bundle swap, and on the stall/failure paths that need attention. This is
+    // presentation only: it does not touch the READY handshake or termination,
+    // which still key off complete.json / the parent PID (see refresh/cleanup).
     func presentWindow() {
         guard !windowPresented else { return }
         windowPresented = true
@@ -128,11 +132,13 @@ final class ProgressController: NSObject, NSApplicationDelegate, NSWindowDelegat
         recovery.arrangedSubviews.forEach { $0.isHidden = false }
         switch next {
         case .closing:
+            presentWindow()
             title.stringValue = "Closing AO"
             detail.stringValue = "Preparing to install your update. This window will stay open while AO restarts."
             recovery.isHidden = true
             spinner.startAnimation(nil)
         case .installing:
+            presentWindow()
             title.stringValue = "Installing and reopening AO"
             detail.stringValue = "macOS is installing the update. AO will reopen automatically when it is ready."
             recovery.isHidden = true

@@ -3257,7 +3257,7 @@ describe("quitAndInstallUpdate", () => {
 
       await module.checkForUpdatesNow(stateDir);
       updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-      module.quitAndInstallUpdate();
+      await module.quitAndInstallUpdate();
 
       expect(dialog.showMessageBox).not.toHaveBeenCalled();
       expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);

@@ -32,6 +32,7 @@ import {
 	type InterfaceSwitchRecheck,
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 	useInterfaceTransition,
 } from "./useInterfaceTransition";
 import { terminalInterfaceFailureRecovery } from "./terminalInterfaceRecovery";
@@ -648,6 +649,7 @@ export default function TerminalScreen() {
 	const interfaceStatusRef = useRef(interfaceSwitch.status);
 	interfaceStatusRef.current = interfaceSwitch.status;
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
+	const interfaceRecoveryMessage = mobileInterfaceTransitionRecoveryMessage(interfaceSwitch.transition);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
 		!interfaceSwitch.transition?.noticeAcknowledgedAt &&
@@ -1415,9 +1417,9 @@ export default function TerminalScreen() {
 				{interfaceTransitionActive ? (
 					<View style={styles.interfaceOverlay}>
 						<View style={styles.interfaceCard}>
-							<Feather name="repeat" size={22} color={t.blue} />
-							<Text style={styles.interfaceTitle}>Switching to Chat</Text>
-							<Text style={styles.interfaceCopy}>{terminalInterfacePhaseLabel(interfaceSwitch.transition?.phase)}</Text>
+							<Feather name={interfaceRecoveryMessage ? "alert-triangle" : "repeat"} size={22} color={t.blue} />
+							<Text style={styles.interfaceTitle}>{interfaceRecoveryMessage ? "Interface recovery blocked" : "Switching to Chat"}</Text>
+							<Text style={styles.interfaceCopy}>{interfaceRecoveryMessage || terminalInterfacePhaseLabel(interfaceSwitch.transition?.phase)}</Text>
 							{mobileInterfaceTransitionIsCancellable(interfaceSwitch.transition) ? (
 								<Pressable
 									disabled={interfaceSwitch.cancelling}
@@ -1428,7 +1430,7 @@ export default function TerminalScreen() {
 								</Pressable>
 							) : null}
 							{interfaceSwitch.error ? <Text style={styles.interfaceError}>{interfaceSwitch.error}</Text> : null}
-							{interfaceSwitch.fetchFailed ? (
+							{interfaceSwitch.fetchFailed || interfaceRecoveryMessage ? (
 								<Pressable
 									disabled={rechecking}
 									onPress={() => void retryInterfaceCheck()}
