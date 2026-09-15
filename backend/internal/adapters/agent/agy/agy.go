@@ -45,8 +45,15 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.TerminalActivityDetector = (*Plugin)(nil)
+var _ ports.ContinuousTerminalActivityDetector = (*Plugin)(nil)
 var _ ports.SubmitActivitySignaler = (*Plugin)(nil)
 var _ ports.BlockedActivitySignaler = (*Plugin)(nil)
+
+// ContinuouslyDetectTerminalActivity enables continuous polling so aborted turns
+// (which never emit a Stop hook) reconcile promptly to idle without waiting for the
+// multi-minute staleAfter threshold.
+func (p *Plugin) ContinuouslyDetectTerminalActivity() bool { return true }
 
 // EmitsSubmitActivity reports that PreInvocation proves submitted work has
 // reached AGY's execution loop.
