@@ -43,6 +43,32 @@ describe("SessionFileTabs", () => {
 		expect(onCloseFile).toHaveBeenCalledWith("src/App.tsx");
 	});
 
+	it("keeps the language icon visible after the tab is clicked and retains focus", async () => {
+		render(
+			<TooltipProvider>
+				<div role="tablist">
+					<SessionFileTabs
+						state={{ openPaths: ["src/App.tsx"], activePath: "src/App.tsx" }}
+						onAddFeedback={vi.fn()}
+						onActivateFile={vi.fn()}
+						onCloseFile={vi.fn()}
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		const tab = screen.getByRole("tab", { name: "App.tsx" });
+		const languageIcon = tab.querySelector('[aria-hidden="true"]');
+
+		await userEvent.click(tab);
+
+		// Clicking a <button> leaves it focused, so the tab frame keeps matching
+		// :focus-within even after the pointer moves away. The icon must not be
+		// tied to that sticky state, or it stays hidden indefinitely (#5398).
+		expect(tab).toHaveFocus();
+		expect(languageIcon).not.toHaveClass("group-focus-within:opacity-0");
+	});
+
 	it("replaces the file icon with a visible dirty dot until the file is saved", () => {
 		render(
 			<TooltipProvider>
