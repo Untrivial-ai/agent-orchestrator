@@ -9956,6 +9956,10 @@ components:
           - base
           - head_fallback
           type: string
+        degraded:
+          type: boolean
+        degradedCode:
+          type: string
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -9978,6 +9982,7 @@ components:
       - sections
       - commits
       - summary
+      - degraded
       type: object
     ListWorkspaceTreeResponse:
       properties:
