@@ -946,6 +946,8 @@ export function Sidebar({
 
 			<ResizeHandle
 				className="group-data-[state=collapsed]:hidden"
+				maxWidth={SIDEBAR_MAX_WIDTH}
+				minWidth={SIDEBAR_MIN_WIDTH}
 				onDoubleClick={onResizeDoubleClick}
 				onPointerDown={onResizePointerDown}
 				side="right"

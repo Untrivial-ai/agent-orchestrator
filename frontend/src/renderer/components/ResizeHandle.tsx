@@ -1,9 +1,20 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
+type WidthConstraint = number | (() => number);
+
 type ResizeHandleProps = React.HTMLAttributes<HTMLDivElement> & {
 	side: "left" | "right";
+	/** Panel width floor — grip stops here while dragging. */
+	minWidth?: WidthConstraint;
+	/** Panel width ceiling — grip stops here while dragging. */
+	maxWidth?: WidthConstraint;
 };
+
+function resolveWidth(value: WidthConstraint | undefined): number | null {
+	if (value === undefined) return null;
+	return typeof value === "function" ? value() : value;
+}
 
 function borderCenterX(el: HTMLElement, edge: "left" | "right"): number {
 	const rect = el.getBoundingClientRect();
@@ -15,9 +26,10 @@ function borderCenterX(el: HTMLElement, edge: "left" | "right"): number {
 }
 
 /** Hit strip for sidebar/inspector resize; hover grip sits on the center-pane border. */
-export function ResizeHandle({ className, side, ...props }: ResizeHandleProps) {
+export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: ResizeHandleProps) {
 	const hitRef = useRef<HTMLDivElement>(null);
 	const gripRef = useRef<HTMLSpanElement>(null);
+	const dragClampRef = useRef<{ min: number; max: number } | null>(null);
 	const [edgeX, setEdgeX] = useState<number | null>(null);
 
 	useLayoutEffect(() => {
@@ -29,21 +41,48 @@ export function ResizeHandle({ className, side, ...props }: ResizeHandleProps) {
 			if (gripRef.current && x !== null) gripRef.current.style.left = `${x}px`;
 		};
 
+		const borderEl = (): HTMLElement | null => {
+			if (side === "right") return document.querySelector<HTMLElement>(".center-panel-surface");
+			return hit.closest<HTMLElement>("[data-slot='inspector-container']");
+		};
+
+		const panelEl = (): HTMLElement | null => {
+			if (side === "right") return document.querySelector<HTMLElement>("[data-slot='sidebar-container']");
+			return hit.closest<HTMLElement>("[data-slot='inspector-container']");
+		};
+
 		const sync = () => {
 			const hitRect = hit.getBoundingClientRect();
 			if (hitRect.width < 1 || hitRect.height < 1 || getComputedStyle(hit).display === "none") {
 				place(null);
 				return;
 			}
+			const el = borderEl();
+			place(el ? borderCenterX(el, "left") : null);
+		};
 
-			if (side === "right") {
-				const surface = document.querySelector<HTMLElement>(".center-panel-surface");
-				place(surface ? borderCenterX(surface, "left") : null);
+		const beginDragClamp = () => {
+			const el = borderEl();
+			const panel = panelEl();
+			const minW = resolveWidth(minWidth);
+			const maxW = resolveWidth(maxWidth);
+			if (!el || !panel || minW === null || maxW === null) {
+				dragClampRef.current = null;
 				return;
 			}
+			const startEdge = borderCenterX(el, "left");
+			const startWidth = panel.getBoundingClientRect().width;
+			// Wider sidebar moves the center-pane left border right; wider inspector
+			// moves its left border left.
+			const sign = side === "right" ? 1 : -1;
+			const atMin = startEdge + sign * (minW - startWidth);
+			const atMax = startEdge + sign * (maxW - startWidth);
+			dragClampRef.current = { min: Math.min(atMin, atMax), max: Math.max(atMin, atMax) };
+		};
 
-			const inspector = hit.closest<HTMLElement>("[data-slot='inspector-container']");
-			place(inspector ? borderCenterX(inspector, "left") : null);
+		const endDragClamp = () => {
+			dragClampRef.current = null;
+			sync();
 		};
 
 		sync();
@@ -62,28 +101,30 @@ export function ResizeHandle({ className, side, ...props }: ResizeHandleProps) {
 		if (sidebar) mo.observe(sidebar, { attributes: true, attributeFilter: ["data-state", "data-collapsible"] });
 		if (inspector) mo.observe(inspector, { attributes: true, attributeFilter: ["data-state", "hidden", "class"] });
 
-		// Follow the pointer 1:1 while dragging (no rAF — width paint is already
-		// rAF-batched in useResizable; an extra frame would desync the grip).
+		const onPointerDown = () => beginDragClamp();
 		const onPointerMove = (event: PointerEvent) => {
 			if (!document.body.classList.contains("is-resizing-x")) return;
-			if (gripRef.current) gripRef.current.style.left = `${event.clientX}px`;
-			else setEdgeX(event.clientX);
+			const clamp = dragClampRef.current;
+			const x = clamp ? Math.min(clamp.max, Math.max(clamp.min, event.clientX)) : event.clientX;
+			if (gripRef.current) gripRef.current.style.left = `${x}px`;
+			else setEdgeX(x);
 		};
-		const onPointerUp = () => sync();
 
+		hit.addEventListener("pointerdown", onPointerDown);
 		window.addEventListener("resize", sync);
 		window.addEventListener("pointermove", onPointerMove);
-		window.addEventListener("pointerup", onPointerUp);
-		window.addEventListener("pointercancel", onPointerUp);
+		window.addEventListener("pointerup", endDragClamp);
+		window.addEventListener("pointercancel", endDragClamp);
 		return () => {
 			ro.disconnect();
 			mo.disconnect();
+			hit.removeEventListener("pointerdown", onPointerDown);
 			window.removeEventListener("resize", sync);
 			window.removeEventListener("pointermove", onPointerMove);
-			window.removeEventListener("pointerup", onPointerUp);
-			window.removeEventListener("pointercancel", onPointerUp);
+			window.removeEventListener("pointerup", endDragClamp);
+			window.removeEventListener("pointercancel", endDragClamp);
 		};
-	}, [side]);
+	}, [side, minWidth, maxWidth]);
 
 	return (
 		<div

@@ -406,6 +406,8 @@ function SessionInspectorRail({
 				<ResizeHandle
 					className={!isOpen ? "hidden" : undefined}
 					data-testid="inspector-resize-handle"
+					maxWidth={maxWidth}
+					minWidth={minWidth}
 					onDoubleClick={onDoubleClick}
 					onPointerDown={onPointerDown}
 					side="left"
