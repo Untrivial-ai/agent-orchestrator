@@ -10,6 +10,7 @@ import { TooltipProvider } from "./ui/tooltip";
 
 const {
 	clearAllMock,
+	clearOneMock,
 	connectMock,
 	fetchNextPageMock,
 	markAllMock,
@@ -20,6 +21,7 @@ const {
 	workspaceQueryMock,
 } = vi.hoisted(() => ({
 	clearAllMock: vi.fn(),
+	clearOneMock: vi.fn(),
 	connectMock: vi.fn(),
 	fetchNextPageMock: vi.fn(),
 	markAllMock: vi.fn(),
@@ -89,6 +91,7 @@ vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigateMock, useP
 
 vi.mock("../hooks/useNotificationsQuery", () => ({
 	useClearAllNotificationsMutation: () => ({ isPending: false, mutateAsync: clearAllMock }),
+	useClearNotificationMutation: () => ({ isPending: false, mutateAsync: clearOneMock, variables: undefined }),
 	useMarkAllNotificationsReadMutation: () => ({ isPending: false, mutateAsync: markAllMock }),
 	useNotificationsQuery: (status: NotificationListStatus, enabled?: boolean) => notificationQueryMock(status, enabled),
 }));
@@ -169,6 +172,7 @@ beforeEach(() => {
 	clearAllMock
 		.mockReset()
 		.mockResolvedValue({ clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1, clearedCount: 4 });
+	clearOneMock.mockReset().mockResolvedValue(allNotifications[0]);
 	connectMock.mockReset();
 	paramsMock.mockReset().mockReturnValue({});
 	useUiStore.setState({ visibleTerminalKindBySession: {} });
@@ -325,6 +329,59 @@ describe("NotificationCenter", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
 		expect(clearAllMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("clears one notification without opening its session", async () => {
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" }));
+
+		expect(clearOneMock).toHaveBeenCalledWith(expect.objectContaining({ id: "ntf_1" }));
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("allows other notifications to clear while one delete is pending", async () => {
+		let resolveFirst: (notification: NotificationDTO) => void = () => undefined;
+		let resolveSecond: (notification: NotificationDTO) => void = () => undefined;
+		const firstDelete = new Promise<NotificationDTO>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const secondDelete = new Promise<NotificationDTO>((resolve) => {
+			resolveSecond = resolve;
+		});
+		clearOneMock.mockReturnValueOnce(firstDelete).mockReturnValueOnce(secondDelete);
+		renderNotificationCenter();
+		await clickOpen();
+
+		const first = screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" });
+		const second = screen.getByRole("button", { name: "Clear notification: Docs sweep needs input" });
+		await userEvent.click(first);
+
+		expect(first).toBeDisabled();
+		expect(second).toBeEnabled();
+		await userEvent.click(second);
+		expect(clearOneMock).toHaveBeenCalledTimes(2);
+		expect(first).toBeDisabled();
+		expect(second).toBeDisabled();
+
+		resolveSecond(allNotifications[2]);
+		await waitFor(() => expect(second).toBeEnabled());
+		expect(first).toBeDisabled();
+
+		resolveFirst(allNotifications[1]);
+		await waitFor(() => expect(first).toBeEnabled());
+	});
+
+	it("keeps the row visible and reports a failed single clear", async () => {
+		clearOneMock.mockRejectedValueOnce(new Error("single clear failed"));
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" }));
+
+		expect(await screen.findByText("single clear failed")).toBeInTheDocument();
+		expect(screen.getByText("Checkout flow needs input")).toBeInTheDocument();
 	});
 
 	it("keeps the panel contents when clear-all fails", async () => {
@@ -511,6 +568,18 @@ describe("NotificationCenter", () => {
 
 		expect(await screen.findByText("No notifications yet.")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
+	});
+
+	it("keeps the confirmed empty state when a background refresh fails after clear", async () => {
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
+			...notificationQueryResult(status, { isError: status === "all" }),
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+		}));
+		renderNotificationCenter();
+		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
+
+		expect(await screen.findByText("No notifications yet.")).toBeInTheDocument();
+		expect(screen.queryByText("Could not load notifications.")).not.toBeInTheDocument();
 	});
 
 	it("navigates to the session from anywhere on the row, including the body text", async () => {

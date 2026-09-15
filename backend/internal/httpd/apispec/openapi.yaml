@@ -1687,6 +1687,44 @@ paths:
       tags:
       - notifications
   /api/v1/notifications/{id}:
+    delete:
+      operationId: deleteNotification
+      parameters:
+      - description: Notification identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Notification identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationEnvelope'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Delete a notification
+      tags:
+      - notifications
     patch:
       operationId: markNotificationRead
       parameters:

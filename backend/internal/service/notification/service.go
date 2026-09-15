@@ -152,6 +152,31 @@ func (m *Manager) MarkAllRead(ctx context.Context, ids []string) (int64, error) 
 	return m.store.MarkNotificationsRead(ctx, ids)
 }
 
+// Delete removes one notification without changing its session or PR state.
+func (m *Manager) Delete(ctx context.Context, id string) (Notification, error) {
+	if m == nil || m.store == nil {
+		return Notification{}, errors.New("notification: store is required")
+	}
+	if id == "" {
+		return Notification{}, apierr.Invalid("INVALID_NOTIFICATION_ID", "Notification id is required", nil)
+	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
+	row, ok, err := m.store.DeleteNotification(ctx, id)
+	if err != nil {
+		return Notification{}, err
+	}
+	if !ok {
+		return Notification{}, apierr.NotFound("NOTIFICATION_NOT_FOUND", "Unknown notification")
+	}
+	if m.publisher != nil {
+		if err := m.publisher.Publish(ctx, domain.NotificationEvent{Kind: domain.NotificationDeleted, Record: row}); err != nil {
+			return Notification{}, fmt.Errorf("notification: publish delete: %w", err)
+		}
+	}
+	return notificationFromRecord(row), nil
+}
+
 // ClearAll deletes notification history and publishes the same ordered clear
 // generation that the HTTP response returns. Clients use the epoch and sequence
 // to reject a stale response when concurrent clears complete out of order.

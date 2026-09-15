@@ -117,3 +117,8 @@ LIMIT 1;
 
 -- name: ClearAllNotifications :execrows
 DELETE FROM notifications;
+
+-- name: DeleteNotification :one
+DELETE FROM notifications
+WHERE id = ?
+RETURNING *;
