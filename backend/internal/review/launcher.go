@@ -48,7 +48,9 @@ type Launcher interface {
 	RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error)
 	// Notify asks an already-running reviewer pane to review a new commit.
 	Notify(ctx context.Context, handleID string, spec LaunchSpec) error
-	// Alive reports whether a reviewer pane is still running.
+	// Alive reports whether the unsupervised reviewer terminal has a workload.
+	// Retained hosts and bare shells are not workloads; probe errors remain
+	// inconclusive so installation maintenance cannot infer a stopped process.
 	Alive(ctx context.Context, handleID string) (bool, error)
 	// Reusable reports whether the harness accepts another review task in its
 	// existing TUI. Reviewers with launch-fixed context return false.
@@ -639,7 +641,16 @@ func (l *agentLauncher) Alive(ctx context.Context, handleID string) (bool, error
 	if handleID == "" {
 		return false, nil
 	}
-	return l.runtime.IsAlive(ctx, ports.RuntimeHandle{ID: handleID})
+	handle := ports.RuntimeHandle{ID: handleID}
+	if inspector, ok := l.runtime.(ports.SupervisedProcessInspector); ok {
+		// Reviewer Create launches the adapter command directly, without an AO
+		// supervisor generation. Empty ref selects the unsupervised workload
+		// contract, which distinguishes a retained shell from a manual relaunch.
+		return inspector.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{})
+	}
+	// Older/custom runtimes without workload evidence conservatively retain a
+	// live host. Never infer a stopped reviewer from an unsupported probe.
+	return l.runtime.IsAlive(ctx, handle)
 }
 
 func (l *agentLauncher) Reusable(harness domain.ReviewerHarness) bool {
@@ -729,5 +740,28 @@ func (l *agentLauncher) Destroy(ctx context.Context, handleID string) error {
 	if handleID == "" {
 		return nil
 	}
-	return l.runtime.Destroy(ctx, ports.RuntimeHandle{ID: handleID})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handle := ports.RuntimeHandle{ID: handleID}
+	if err := l.runtime.Destroy(ctx, handle); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Workload completion is insufficient: a retained shell may still consume
+	// buffered input. Do not let lifecycle clear the handle until the terminal
+	// itself is confirmed absent. Unknown teardown must retain its identity.
+	alive, err := l.runtime.IsAlive(ctx, handle)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err != nil && !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		return fmt.Errorf("verify reviewer terminal closure: %w", err)
+	}
+	if alive {
+		return fmt.Errorf("%w: reviewer terminal remains open; retry Kill review session", ports.ErrRuntimeProbeInconclusive)
+	}
+	return nil
 }

@@ -442,6 +442,11 @@ func (r *Runtime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntim
 // agent process. When a generation ref is supplied, the launch id captured at
 // Create (and persisted in the recovery registry) must match exactly.
 func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
+	if ref == (ports.SupervisedProcessRef{}) {
+		// An unsupervised launch is the host's direct child. Require confirmed
+		// exit evidence, including when the host survives only for scrollback.
+		return r.IsChildAlive(ctx, handle)
+	}
 	sess, err := r.resolveWithEvidence(ctx, handle.ID)
 	if err != nil {
 		return false, fmt.Errorf("conpty: resolve supervised runtime %q: %w", handle.ID, err)

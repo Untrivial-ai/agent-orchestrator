@@ -283,7 +283,7 @@ func (m *Manager) buildCodexAccountSwitchSnapshot(ctx context.Context) ([]domain
 		if rec.IsTerminated {
 			continue
 		}
-		reviewerRunning := false
+		reviewerPresent := false
 		reviewerHandleID := ""
 		reviewerNativeID := ""
 		if reviewers != nil {
@@ -292,16 +292,14 @@ func (m *Manager) buildCodexAccountSwitchSnapshot(ctx context.Context) ([]domain
 			if err != nil {
 				return nil, err
 			}
-			reviewerRunning = snapshot.Running
 			reviewerHandleID = snapshot.HandleID
 			reviewerNativeID = snapshot.NativeSessionID
-			if reviewerRunning {
-				if strings.TrimSpace(reviewerHandleID) == "" || strings.TrimSpace(reviewerNativeID) == "" {
-					return nil, fmt.Errorf("%w: %s reviewer", ErrCodexRunningSessionNotResumable, rec.ID)
-				}
+			reviewerPresent = strings.TrimSpace(reviewerHandleID) != ""
+			if reviewerPresent && strings.TrimSpace(reviewerNativeID) == "" {
+				return nil, fmt.Errorf("%w: %s reviewer", ErrCodexRunningSessionNotResumable, rec.ID)
 			}
 		}
-		if rec.Harness != domain.HarnessCodex && !reviewerRunning {
+		if rec.Harness != domain.HarnessCodex && !reviewerPresent {
 			continue
 		}
 		mode := domain.NormalizeSessionMode(rec.Mode)
@@ -329,20 +327,20 @@ func (m *Manager) buildCodexAccountSwitchSnapshot(ctx context.Context) ([]domain
 		if rec.Harness == domain.HarnessCodex && wasRunning && generation == "" {
 			return nil, fmt.Errorf("%w: %s controller generation", ErrCodexRunningSessionNotResumable, rec.ID)
 		}
-		if !wasRunning && !reviewerRunning {
+		if !wasRunning && !reviewerPresent {
 			continue
 		}
 		item := domain.CodexAccountSwitchSession{
 			SessionID: rec.ID, NativeSessionID: nativeID, InterfaceMode: mode,
 			SourceHandleID: strings.TrimSpace(rec.Metadata.RuntimeHandleID), SourceGeneration: generation,
 			WasRunning: wasRunning, StopState: "pending", RestartState: "pending",
-			ReviewerWasRunning: reviewerRunning, ReviewerStopState: "skipped", ReviewerRestartState: "skipped",
+			ReviewerWasRunning: reviewerPresent, ReviewerStopState: "skipped", ReviewerRestartState: "skipped",
 			ReviewerSourceHandleID: reviewerHandleID, ReviewerNativeSessionID: reviewerNativeID,
 		}
 		if !wasRunning {
 			item.RestartState = "skipped"
 		}
-		if reviewerRunning {
+		if reviewerPresent {
 			item.ReviewerStopState = "pending"
 			item.ReviewerRestartState = "pending"
 		}
@@ -772,7 +770,7 @@ func (m *Manager) stopCodexSwitchSessions(ctx context.Context, store ports.Codex
 			}
 			snapshot, snapshotErr := reviewers.SnapshotCodexReviewer(ctx, item.SessionID)
 			stopped, stopErr := false, snapshotErr
-			if snapshotErr == nil && !snapshot.Running {
+			if snapshotErr == nil && snapshot.HandleID == "" {
 				stopped = true
 			} else if snapshotErr == nil && snapshot.NativeSessionID == item.ReviewerNativeSessionID && snapshot.HandleID == item.ReviewerSourceHandleID {
 				stopped, stopErr = reviewers.SuspendCodexReviewerExact(ctx, item.SessionID, item.ReviewerSourceHandleID, item.ReviewerNativeSessionID)
@@ -1018,6 +1016,17 @@ func (m *Manager) freezeCodexSwitchTerminalInput(ctx context.Context, sessions [
 			releases[i]()
 		}
 	}
+	reviewerHandles := make([]string, 0, len(sessions))
+	for _, item := range sessions {
+		if item.ReviewerSourceHandleID != "" {
+			reviewerHandles = append(reviewerHandles, item.ReviewerSourceHandleID)
+		}
+	}
+	releaseReviewerInput, err := m.reserveTerminalInput(ctx, reviewerHandles, agentOperationCodexAccountSwitch)
+	if err != nil {
+		return func() {}, err
+	}
+	releases = append(releases, releaseReviewerInput)
 	for _, item := range sessions {
 		if !item.WasRunning || item.InterfaceMode != domain.SessionModeTUI {
 			continue

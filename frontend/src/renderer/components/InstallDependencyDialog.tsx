@@ -44,7 +44,7 @@ const AGENT_INSTALL_DESCRIPTION_KEYS: Record<AgentInstallTarget, MessageKey> = {
 const POLL_INTERVAL_MS = 1_000;
 
 export function isActiveInstallJob(job: InstallJob | undefined): boolean {
-	return job?.status === "running" || job?.status === "installing" || job?.status === "verifying";
+	return job?.status === "queued" || job?.status === "running" || job?.status === "installing" || job?.status === "verifying";
 }
 
 /** Sequential single-target install job runner: POST to start, GET on an

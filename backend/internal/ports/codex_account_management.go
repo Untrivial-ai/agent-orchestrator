@@ -38,8 +38,8 @@ type CodexOperationLease interface {
 	Release()
 }
 
-// CodexOperationGate serializes device-global Codex credential mutation with
-// controller registration and ordinary clients of the active Codex home.
+// CodexOperationGate serializes device-global Codex credential and installation
+// mutation with controller registration and ordinary clients of the active home.
 type CodexOperationGate interface {
 	AcquireShared(context.Context) (release func(), err error)
 	AcquireExclusive(context.Context) (CodexOperationLease, error)

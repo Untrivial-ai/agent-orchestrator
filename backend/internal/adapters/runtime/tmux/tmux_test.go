@@ -967,6 +967,31 @@ func TestDestroyIsIdempotentWhenSessionMissing(t *testing.T) {
 	}
 }
 
+func TestDestroyKeepsPrivateSocketForClosureVerification(t *testing.T) {
+	r := New(Options{Binary: "bundled-tmux-test", SocketName: "ao", Timeout: time.Second})
+	r.rememberSessionSocket("review-worker", "ao")
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{},
+		{},
+		{out: []byte("can't find session: review-worker"), err: &exec.ExitError{}},
+	}}
+	r.runner = fr
+	handle := ports.RuntimeHandle{ID: "review-worker"}
+
+	if err := r.Destroy(context.Background(), handle); err != nil {
+		t.Fatal(err)
+	}
+	alive, err := r.IsAlive(context.Background(), handle)
+	if err != nil || alive {
+		t.Fatalf("post-destroy private-socket verification = (%t, %v), want confirmed absence", alive, err)
+	}
+	for i, call := range fr.calls {
+		if call.name != "bundled-tmux-test" || len(call.args) < 2 || call.args[0] != "-L" || call.args[1] != "ao" {
+			t.Fatalf("call %d lost exact private socket: %+v", i, call)
+		}
+	}
+}
+
 func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{nil, []byte("no server running on /tmp/tmux-1000/default")}

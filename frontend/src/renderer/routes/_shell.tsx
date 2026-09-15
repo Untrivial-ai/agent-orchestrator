@@ -28,6 +28,7 @@ import { WindowTitlebar } from "../components/WindowTitlebar";
 import { TerminalCacheProvider } from "../components/TerminalPane";
 import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
+import { useCodexUpdateInvalidation } from "../hooks/useCodexUpdateInvalidation";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions, workspaceStatusesChecking } from "../hooks/useWorkspaceQuery";
@@ -161,6 +162,7 @@ const ShellCenter = memo(function ShellCenter({
 // the old single <App>, with selection now owned by the router (route params)
 // instead of Zustand. The daemon-status effect runs here exactly once.
 function ShellLayout() {
+	useCodexUpdateInvalidation();
 	// Reports how many agents this install has available, once per launch.
 	useAgentInventoryTelemetry();
 	const { t } = useTranslation();

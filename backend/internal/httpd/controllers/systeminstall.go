@@ -31,6 +31,8 @@ type SystemInstallController struct {
 
 // Register mounts the system install routes on the supplied router.
 func (c *SystemInstallController) Register(r chi.Router) {
+	r.Get("/agents/codex/update", c.codexUpdate)
+	r.Post("/agents/codex/update", c.startCodexUpdate)
 	r.Post("/system/install/{target}", c.start)
 	r.Get("/system/install/{target}", c.status)
 	r.Get("/agents/installers", c.agentPlans)
@@ -38,6 +40,54 @@ func (c *SystemInstallController) Register(r chi.Router) {
 	r.Post("/agents/{agent}/install", c.startAgent)
 	r.Get("/agents/{agent}/install", c.agentStatus)
 	r.Post("/agents/{agent}/verify", c.verifyAgent)
+}
+
+type codexUpdater interface {
+	CodexUpdate(context.Context, bool) (systeminstall.CodexUpdateAdvisory, error)
+	StartCodexUpdate(context.Context, string) (systeminstall.Job, error)
+}
+
+func (c *SystemInstallController) codexUpdate(w http.ResponseWriter, r *http.Request) {
+	updater, ok := c.Installer.(codexUpdater)
+	if !ok {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/codex/update")
+		return
+	}
+	advisory, err := updater.CodexUpdate(r.Context(), r.URL.Query().Get("refresh") == "true")
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, advisory)
+}
+
+func (c *SystemInstallController) startCodexUpdate(w http.ResponseWriter, r *http.Request) {
+	updater, ok := c.Installer.(codexUpdater)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/codex/update")
+		return
+	}
+	var request StartCodexUpdateRequest
+	if err := decodeJSONStrict(r, &request); err != nil || request.Token == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_UPDATE_REQUEST", "a current Codex installation token is required", nil)
+		return
+	}
+	job, err := updater.StartCodexUpdate(r.Context(), request.Token)
+	if err != nil {
+		if errors.Is(err, systeminstall.ErrInstallationChanged) {
+			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "INSTALLATION_CHANGED", err.Error(), nil)
+			return
+		}
+		if errors.Is(err, systeminstall.ErrHarnessActive) {
+			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "HARNESS_ACTIVE", err.Error(), nil)
+			return
+		}
+		if !writeAgentInstallError(w, r, err) {
+			envelope.WriteError(w, r, err)
+		}
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, job)
 }
 
 func (c *SystemInstallController) agentPlans(w http.ResponseWriter, r *http.Request) {

@@ -24,6 +24,8 @@ type CommandRunner interface {
 type InstallCommand struct {
 	Argv []string
 	Env  []string
+	// ReadOnly prevents a diagnostic probe from refreshing the daemon's PATH.
+	ReadOnly bool
 }
 
 // InstallCommandRunner executes an installer with closed stdin and controlled

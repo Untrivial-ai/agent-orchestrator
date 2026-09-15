@@ -28,6 +28,32 @@ type rollbackTrackingCredentials struct {
 	verified     []string
 }
 
+type retainedReviewerLifecycle struct {
+	snapshot     ports.CodexReviewerControllerSnapshot
+	suspendCalls int
+}
+
+func (*retainedReviewerLifecycle) TerminateReviewer(context.Context, domain.SessionID, string) error {
+	return nil
+}
+func (*retainedReviewerLifecycle) TeardownReviewerTerminal(context.Context, domain.SessionID) error {
+	return nil
+}
+func (*retainedReviewerLifecycle) RestoreReviewer(context.Context, domain.SessionID) error {
+	return nil
+}
+func (r *retainedReviewerLifecycle) SnapshotCodexReviewer(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+	return r.snapshot, nil
+}
+func (r *retainedReviewerLifecycle) SuspendCodexReviewerExact(context.Context, domain.SessionID, string, string) (bool, error) {
+	r.suspendCalls++
+	r.snapshot.HandleID = ""
+	return true, nil
+}
+func (*retainedReviewerLifecycle) RestoreCodexReviewerExact(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
 func (*rollbackTrackingCredentials) CheckpointAndActivateCodexAccount(context.Context, string, string, int64) (domain.CodexActiveAccount, error) {
 	return domain.CodexActiveAccount{}, errors.New("injected activation failure")
 }
@@ -437,6 +463,49 @@ func TestCodexAccountSwitchSkipsStoppedSessionsWithoutNativeIdentity(t *testing.
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("stopped session was included in switch: %#v", sessions)
+	}
+}
+
+func TestCodexAccountSwitchFencesRetainedReviewerTerminal(t *testing.T) {
+	store := newFakeStore()
+	store.sessions["worker"] = domain.SessionRecord{ID: "worker", Harness: domain.HarnessClaudeCode}
+	reviewer := &retainedReviewerLifecycle{snapshot: ports.CodexReviewerControllerSnapshot{
+		HandleID: "review-worker", NativeSessionID: "native-review", Running: false,
+	}}
+	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
+	manager.SetReviewerTerminator(reviewer)
+
+	sessions, err := manager.buildCodexAccountSwitchSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || !sessions[0].ReviewerWasRunning || sessions[0].ReviewerSourceHandleID != "review-worker" {
+		t.Fatalf("retained reviewer omitted from account switch: %+v", sessions)
+	}
+	release, err := manager.freezeCodexSwitchTerminalInput(context.Background(), sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputRelease, ok := manager.AcquireSessionInput("review-worker"); ok {
+		inputRelease()
+		t.Fatal("retained reviewer input remained admitted during account switch")
+	}
+	release()
+	inputRelease, ok := manager.AcquireSessionInput("review-worker")
+	if !ok {
+		t.Fatal("reviewer input did not reopen after account switch admission released")
+	}
+	inputRelease()
+
+	switchStore := &bootstrapOrderingStore{
+		fakeStore:                  store,
+		collectingCodexSwitchStore: &collectingCodexSwitchStore{},
+	}
+	if err := manager.stopCodexSwitchSessions(context.Background(), switchStore, "switch-1", sessions); err != nil {
+		t.Fatal(err)
+	}
+	if reviewer.suspendCalls != 1 {
+		t.Fatalf("retained reviewer suspend calls = %d, want 1", reviewer.suspendCalls)
 	}
 }
 

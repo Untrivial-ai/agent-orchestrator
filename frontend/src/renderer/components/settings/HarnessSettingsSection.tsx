@@ -25,6 +25,7 @@ import { Button } from "../ui/button";
 import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsSection } from "./SettingsSection";
 import { SettingsOptionMenu } from "./SettingsOptionMenu";
+import { CodexUpdatePanel } from "./CodexUpdatePanel";
 
 type AgentInstallPlan = components["schemas"]["AgentInstallPlan"];
 type InstallJob = components["schemas"]["InstallJob"];
@@ -72,7 +73,7 @@ function upsertJob(current: InstallJob[] | undefined, next: InstallJob): Install
 }
 
 function isActive(job: InstallJob | undefined): boolean {
-	return job?.status === "installing" || job?.status === "verifying";
+	return job?.status === "queued" || job?.status === "installing" || job?.status === "verifying";
 }
 
 function diagnosticsText(agentId: AgentId, job: InstallJob): string {
@@ -476,7 +477,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 							</div>
 
 			{active ? (
-				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
+				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "queued" ? t("settings.codexUpdate.queued") : job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
 							) : isInstalled ? (
 								<div className="flex shrink-0 items-center gap-2">
 								<Button
@@ -521,6 +522,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 								<Button size="sm" variant="outline" onClick={() => void copyText(agentId, plan.command!)}>{copiedAgent === agentId ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}{copiedAgent === agentId ? t("settings.harness.copied") : t("settings.harness.copyCommand")}</Button>
 							) : null}
 
+				{agentId === "codex" ? <CodexUpdatePanel job={job} onJob={updateJob} /> : null}
 				{!isInstalled && hasDiagnostics ? (
 				<div className="basis-full">
 					<div className={cn("grid transition-[grid-template-rows] duration-200 ease-out", expandedDiagnostics[agentId] ? "grid-rows-[1fr]" : "grid-rows-[0fr]")}>

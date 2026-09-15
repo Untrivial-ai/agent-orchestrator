@@ -50,17 +50,18 @@ type modelCatalogCall struct {
 // Service owns normalized harness readiness and the unchanged model catalog.
 // Consumers share coordinator checks instead of probing adapters directly.
 type Service struct {
-	agents        []agentregistry.HarnessAgent
-	readiness     *readinessCoordinator
-	cache         ports.AgentModelCatalogCache
-	discoverer    ports.AgentModelDiscoverer
-	projects      ProjectLookup
-	sessions      SessionUsageLookup
-	resolverMu    map[string]*sync.Mutex
-	modelCallMu   sync.Mutex
-	modelCalls    map[string]*modelCatalogCall
-	codexAccounts *codexAccountManager
-	codexSwitches CodexAccountSwitchCoordinator
+	agents         []agentregistry.HarnessAgent
+	readiness      *readinessCoordinator
+	cache          ports.AgentModelCatalogCache
+	discoverer     ports.AgentModelDiscoverer
+	projects       ProjectLookup
+	sessions       SessionUsageLookup
+	resolverMu     map[string]*sync.Mutex
+	modelCallMu    sync.Mutex
+	codexCatalogMu sync.RWMutex
+	modelCalls     map[string]*modelCatalogCall
+	codexAccounts  *codexAccountManager
+	codexSwitches  CodexAccountSwitchCoordinator
 }
 
 // CodexAccountSwitchCoordinator owns global switch execution and recovery.
@@ -230,6 +231,14 @@ func (s *Service) coalesceModelLoad(
 }
 
 func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mode modelLoadMode) (ports.AgentModelCatalog, error) {
+	if agentID == "codex" {
+		s.codexCatalogMu.RLock()
+		defer s.codexCatalogMu.RUnlock()
+	}
+	return s.loadModelsUnlocked(ctx, agentID, projectID, mode)
+}
+
+func (s *Service) loadModelsUnlocked(ctx context.Context, agentID, projectID string, mode modelLoadMode) (ports.AgentModelCatalog, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentModelCatalog{}, err
 	}

@@ -70,7 +70,9 @@ func (Adapter) RunInstall(ctx context.Context, command ports.InstallCommand, std
 	// Windows installers persist PATH changes outside the already-running
 	// daemon's process environment. Refresh it before adapter-backed
 	// verification tries to resolve the newly installed executable.
-	refreshExecutablePath()
+	if !command.ReadOnly {
+		refreshExecutablePath()
+	}
 	return nil
 }
 
