@@ -2383,8 +2383,8 @@ func TestSwitchAgentWithRealFXAdapterInBothDirections(t *testing.T) {
 		var source *domain.AgentNativeSession
 		for _, native := range store.native {
 			if native.Harness == domain.HarnessFX && native.NativeSessionID == "fx-real-source" {
-				copy := native
-				source = &copy
+				nativeCopy := native
+				source = &nativeCopy
 			}
 		}
 		if source == nil || source.ConfigDir != filepath.Join(fxHome, ".fx") {
@@ -2417,8 +2417,8 @@ func TestSwitchAgentFromFXToOtherTUIRetainsSourceNativeOwnership(t *testing.T) {
 	var sourceNative *domain.AgentNativeSession
 	for _, native := range store.native {
 		if native.Harness == domain.HarnessFX && native.NativeSessionID == "fx-source-native" {
-			copy := native
-			sourceNative = &copy
+			nativeCopy := native
+			sourceNative = &nativeCopy
 			break
 		}
 	}
