@@ -44,7 +44,11 @@ var _ ports.ReviewerRestorer = (*Reviewer)(nil)
 // prompting, so the reviewer can read the checkout and run the few commands it
 // needs (git diff/log/show to inspect the PR, printf to pipe review JSON into
 // the downstream commands without writing a worktree file, gh to post the
-// review, and `ao review submit` to record the verdict) without stalling.
+// review, and `ao review submit` to record the verdict). Claude Code ≥ 2.1.257
+// still prompts on Bash commands its analyzer cannot verify statically even
+// when an allow rule matches; the PermissionRequest hook AO installs answers
+// those for reviewers (see cli.reviewerPermissionDecision) so the pane never
+// stalls.
 var reviewerAllowedTools = []string{
 	"Read",
 	"Grep",
@@ -67,6 +71,17 @@ var reviewerDisallowedTools = []string{
 	"NotebookEdit",
 	"Bash(git push:*)",
 	"Bash(git commit:*)",
+	// The reviewer must never merge, close, or otherwise mutate the PR through
+	// the provider; Bash(gh:*) above would otherwise admit these. The gh api
+	// review POST in the review prompt stays allowed.
+	"Bash(gh pr merge:*)",
+	"Bash(gh pr close:*)",
+	"Bash(gh api --method PUT:*)",
+	"Bash(gh api --method PATCH:*)",
+	"Bash(gh api --method DELETE:*)",
+	"Bash(gh api -X PUT:*)",
+	"Bash(gh api -X PATCH:*)",
+	"Bash(gh api -X DELETE:*)",
 }
 
 // ReviewCommand builds a claude-code invocation that reviews the worker's

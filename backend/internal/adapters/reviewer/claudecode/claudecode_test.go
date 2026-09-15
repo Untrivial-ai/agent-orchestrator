@@ -100,7 +100,12 @@ func TestReviewCommandLaunchesReadOnlyOffBypass(t *testing.T) {
 	if !contains(agent.got.AllowedTools, "Read") || !contains(agent.got.AllowedTools, "Bash(ao review submit:*)") {
 		t.Fatalf("allowlist missing read-only review tools: %#v", agent.got.AllowedTools)
 	}
-	for _, denied := range []string{"Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)"} {
+	for _, denied := range []string{
+		"Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)",
+		"Bash(gh pr merge:*)", "Bash(gh pr close:*)",
+		"Bash(gh api --method PUT:*)", "Bash(gh api --method PATCH:*)", "Bash(gh api --method DELETE:*)",
+		"Bash(gh api -X PUT:*)", "Bash(gh api -X PATCH:*)", "Bash(gh api -X DELETE:*)",
+	} {
 		if !contains(agent.got.DisallowedTools, denied) {
 			t.Fatalf("disallow list missing %q: %#v", denied, agent.got.DisallowedTools)
 		}
@@ -238,7 +243,7 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlyPolicy(t *testing.T) 
 	if agent.gotRestore.Prompt != "read the new review task" || agent.gotRestore.SystemPromptFile != "/ao/prompts/reviewer/system.md" {
 		t.Fatalf("restore prompt configuration = %+v", agent.gotRestore)
 	}
-	if !contains(agent.gotRestore.AllowedTools, "Read") || !contains(agent.gotRestore.DisallowedTools, "Write") {
+	if !contains(agent.gotRestore.AllowedTools, "Read") || !contains(agent.gotRestore.DisallowedTools, "Write") || !contains(agent.gotRestore.DisallowedTools, "Bash(gh pr merge:*)") {
 		t.Fatalf("restore tool policy allowed=%#v disallowed=%#v", agent.gotRestore.AllowedTools, agent.gotRestore.DisallowedTools)
 	}
 }
