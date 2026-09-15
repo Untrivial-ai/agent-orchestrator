@@ -112,5 +112,8 @@
 	},
 	"allowScripts": {
 		"electron@33.4.11": true
+	},
+	"overrides": {
+		"@electron/node-gyp": "10.2.0-electron.2"
 	}
 }
