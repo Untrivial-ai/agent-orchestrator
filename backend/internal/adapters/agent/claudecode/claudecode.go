@@ -364,19 +364,19 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	localStatus, localOK, err := claudeLocalAuthStatus(ctx)
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	out, err := aoprocess.CommandContext(probeCtx, binary, "auth", "status").CombinedOutput()
+	out, _ := aoprocess.CommandContext(probeCtx, binary, "auth", "status").CombinedOutput()
 	if probeCtx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
 	if status, ok := claudeAuthStatusFromOutput(out); ok {
 		return status, nil
+	}
+	localStatus, localOK, err := claudeLocalAuthStatus(ctx)
+	if err != nil {
+		return ports.AgentAuthStatusUnknown, err
 	}
 	if localOK {
 		return localStatus, nil
@@ -384,7 +384,6 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	// An unfamiliar non-zero result is not affirmative evidence of missing
 	// credentials. Keep this advisory probe unknown and let launch report the
 	// authoritative failure.
-	_ = err
 	return ports.AgentAuthStatusUnknown, nil
 }
 
