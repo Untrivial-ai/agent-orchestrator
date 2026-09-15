@@ -406,7 +406,7 @@ func TestRequiredReauthenticationStaysSignedOutUntilLogin(t *testing.T) {
 	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT})
 	manager.requireReauthentication(record.Snapshot.ID)
 
-	authentication, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay, false)
+	authentication, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,9 +670,8 @@ func TestBootstrapImportsOpaqueDeviceCredentialWithoutMutatingDeviceHome(t *test
 	index := 0
 	manager.newID = func() string { id := ids[index]; index++; return id }
 	manager.catalog.newID = func() string { return testAccountID }
-	manager.bootstrap()
-	if manager.bootstrapErr != nil {
-		t.Fatal(manager.bootstrapErr)
+	if err := manager.waitBootstrap(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	if manager.activeAccountID() != testAccountID {
 		t.Fatalf("active account = %q", manager.activeAccountID())
@@ -1081,7 +1080,7 @@ func TestUnmanagedGlobalStatePreservesActiveSlotProjection(t *testing.T) {
 	if err := manager.reconcileGlobal(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay, false); err != nil {
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay); err != nil {
 		t.Fatal(err)
 	}
 	view := manager.cached()
@@ -1125,10 +1124,7 @@ func newAPIKeySwitchFixture(t *testing.T) apiKeySwitchFixture {
 		t.Fatal(err)
 	}
 	manager.active = state.active
-	manager.bootstrapOnce.Do(func() {
-		manager.bootstrapped = true
-		close(manager.bootstrapDone)
-	})
+	manager.bootstrapped = true
 	return apiKeySwitchFixture{manager: manager, service: &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}, state: state, source: source, target: target}
 }
 
@@ -1416,7 +1412,7 @@ func TestAuthenticationRequestCancellationDoesNotCancelSharedRead(t *testing.T) 
 	waitCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := manager.ensureAuthentication(waitCtx, record, domain.AgentReadinessPurposeDisplay, false)
+		_, err := manager.ensureAuthentication(waitCtx, record, domain.AgentReadinessPurposeDisplay)
 		done <- err
 	}()
 	<-started

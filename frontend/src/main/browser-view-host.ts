@@ -1,4 +1,5 @@
 import type {
+	Clipboard,
 	IpcMain,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
@@ -34,6 +35,8 @@ import type { AgentBrowserRuntime } from "./agent-browser-runtime";
 import type { AgentBrowserTarget, AgentBrowserTargetProvider } from "./agent-browser-cdp-bridge";
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
+import type { BrowserDownloadManager } from "./browser-download-manager";
+import type { BrowserDownloadActionInput } from "../shared/browser-downloads";
 import { matchInstruction } from "./browser-act-matcher";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
@@ -145,6 +148,11 @@ type BrowserHistorySuggestInput = {
 	query: string;
 };
 
+type BrowserHistoryFaviconInput = {
+	viewId: string;
+	url: string;
+};
+
 type BrowserTabInput = {
 	viewId: string;
 	tabId: string;
@@ -238,7 +246,7 @@ type BrowserWebContents = Pick<
 	openDevTools?: (options?: Pick<OpenDevToolsOptions, "mode" | "activate">) => void;
 	closeDevTools?: () => void;
 	close?: () => void;
-	session?: Pick<Session, "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest">;
+	session?: Pick<Session, "on" | "removeListener" | "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest">;
 };
 
 type BrowserElectronSession = NonNullable<BrowserWebContents["session"]>;
@@ -312,7 +320,9 @@ export type BrowserViewHostOptions = {
 	isCloseShellTerminalShortcutEnabled?: () => boolean;
 	browserProfileStore?: BrowserProfileStore;
 	browserHistoryStore?: BrowserHistoryStore;
+	browserDownloadManager?: BrowserDownloadManager;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
+	clipboard?: Pick<Clipboard, "writeImage">;
 };
 
 export type BrowserViewHost = {
@@ -335,11 +345,8 @@ export type BrowserViewHost = {
 	clearProfileData: (profileId: BrowserProfileId) => Promise<void>;
 	// Whether browser-owned UI was the most recently used application surface.
 	isLastUsedBrowser: () => boolean;
-	// Same "identical bounds are a no-op, so nudge and restore" trick
-	// window-composition.ts uses for the shell's own stale-surface bug, applied
-	// to the live page's own view. Call right after raising the transparent
-	// shell for an overlay (see the caller in main.ts) — see the comment above
-	// this method's implementation for why the live view needs it too.
+	// Refresh the live page after raising the transparent shell for an overlay.
+	// Its visibility reset completes synchronously so no hidden frame is presented.
 	refreshLastFocusedPanelSurface: () => void;
 };
 
@@ -472,6 +479,7 @@ const MAX_BROWSER_SIGNALS = MAX_NETWORK_REQUESTS;
 const MAX_BROWSER_SIGNAL_BYTES = 16 * 1024;
 const FAVICON_SIZE = 32;
 const MAX_FAVICON_BYTES = 256 * 1024;
+const FAVICON_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NATIVE_DEVTOOLS_PLACEMENT: BrowserDevToolsPlacement = "right";
 const MAX_EXTERNAL_TEXT_BYTES = 1 << 20;
 // Annotation submit must never feel laggy: capture is best-effort and bounded
@@ -544,6 +552,7 @@ export function scaleBoundsForZoom(rect: BrowserRect, zoomFactor: number): Brows
 
 export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserViewHost {
 	const entries = new Map<string, BrowserSessionEntry>();
+	const historyFaviconCache = new WeakMap<Session, Map<string, Promise<string | undefined>>>();
 	const signalWatchers = new Map<
 		BrowserElectronSession,
 		{ viewIds: Set<string>; webRequest: BrowserElectronSession["webRequest"] }
@@ -646,6 +655,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		view.setBorderRadius?.(BROWSER_VIEW_BORDER_RADIUS);
 		view.webContents.session?.setPermissionCheckHandler?.(() => false);
 		view.webContents.session?.setPermissionRequestHandler?.((_contents, _permission, callback) => callback(false));
+		options.browserDownloadManager?.attach(view.webContents.session);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();
 		const applyScrollbarStyle = (): void => {
@@ -1910,6 +1920,34 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!profileId || !options.browserHistoryStore) return [];
 		return options.browserHistoryStore.suggest(profileId, input.query);
 	});
+	handle("browser:history:favicon", (event, input: BrowserHistoryFaviconInput) => {
+		if (
+			!input ||
+			typeof input.viewId !== "string" ||
+			typeof input.url !== "string" ||
+			input.url.length > 4_096 ||
+			!isRendererOwned(event, input.viewId)
+		) {
+			return undefined;
+		}
+		const origin = originOf(input.url);
+		const entry = entries.get(input.viewId);
+		if (!origin || !entry) return undefined;
+		const tabSession = (activeEntry(entry).view.webContents as unknown as WebContents).session;
+		let cache = historyFaviconCache.get(tabSession);
+		if (!cache) {
+			cache = new Map();
+			historyFaviconCache.set(tabSession, cache);
+		}
+		const cached = cache.get(origin);
+		if (cached) return cached;
+		const pending = fetchFaviconFromSession(tabSession, `${origin}/favicon.ico`).then((favicon) => {
+			if (!favicon) cache?.delete(origin);
+			return favicon;
+		});
+		cache.set(origin, pending);
+		return pending;
+	});
 	handle("browser:clear", (event, viewId: string) =>
 		isRendererOwned(event, viewId) ? clear(viewId) : emptyNavState(viewId),
 	);
@@ -1927,6 +1965,42 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	handle("browser:stop", (event, viewId: string) =>
 		isRendererOwned(event, viewId) ? invokeNav(viewId, (contents) => contents.stop(), true) : emptyNavState(viewId),
 	);
+	handle("browser:captureScreenshot", async (event, viewId: string) => {
+		const session = typeof viewId === "string" ? entries.get(viewId) : undefined;
+		if (!session || !isRendererOwned(event, viewId)) {
+			throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser tab is unavailable");
+		}
+		if (!options.clipboard) {
+			throw browserError("SCREENSHOT_UNAVAILABLE", "Screenshot clipboard access is unavailable");
+		}
+		assertProfileStable(session);
+		const entry = activeEntry(session);
+		await entry.ready;
+		if (isBlankBrowserEntry(entry)) {
+			throw browserError("SCREENSHOT_UNAVAILABLE", "Open a page before taking a screenshot");
+		}
+		const image = await entry.view.webContents.capturePage();
+		if (image.isEmpty()) {
+			throw browserError("SCREENSHOT_UNAVAILABLE", "The browser page could not be captured");
+		}
+		options.clipboard.writeImage(image);
+	});
+	handle("browser:downloads:list", (event) => {
+		if (event.sender.id !== shellWebContents.id) return { downloads: [] };
+		return options.browserDownloadManager?.list() ?? { downloads: [] };
+	});
+	handle("browser:downloads:action", (event, input: BrowserDownloadActionInput) => {
+		if (event.sender.id !== shellWebContents.id || !options.browserDownloadManager) {
+			throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser downloads are unavailable");
+		}
+		return options.browserDownloadManager.action(input);
+	});
+	handle("browser:downloads:clear", (event) => {
+		if (event.sender.id !== shellWebContents.id || !options.browserDownloadManager) {
+			throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser downloads are unavailable");
+		}
+		return options.browserDownloadManager.clear();
+	});
 	handle("browser:getTabs", (event, viewId: string) => {
 		const session = entries.get(viewId);
 		return session && isRendererOwned(event, viewId) ? listTabs(session) : emptyTabsState(viewId);
@@ -2284,6 +2358,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			if (disposePromise) return disposePromise;
 			disposePromise = (async () => {
 				ipcDisposers.splice(0).forEach((dispose) => dispose());
+				options.browserDownloadManager?.dispose();
 				for (const viewId of [...entries.keys()]) {
 					destroy(viewId);
 				}
@@ -2325,19 +2400,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		isProfileLive,
 		clearProfileData,
 		isLastUsedBrowser: () => lastUsedViewId !== null && entries.has(lastUsedViewId),
-		// Reported live (macOS, maximized/popped-out panel): opening an overlay
-		// (e.g. a toolbar dropdown) over the browser panel blanks the live page
-		// to black instead of showing it behind the dropdown, and a plain bounds
-		// nudge alone was not enough to clear it (confirmed still reproducing
-		// after that first attempt). window-composition.ts documents the same
-		// class of bug for its own shell view — re-adding a WebContentsView to
-		// reorder it above others can leave its *previous* compositor surface on
-		// screen until something forces a real re-composite, and applying
-		// identical bounds is a no-op Electron ignores. That fix only refreshed
-		// the shell; the live page's own view needs an equivalent nudge whenever
-		// the shell is raised above it. A visibility toggle is a stronger,
-		// more direct signal to re-establish the view's compositor surface than
-		// a 1px bounds change alone, so do both.
+		// Reordering the transparent shell above a live page can leave either
+		// WebContentsView showing a stale compositor surface on macOS. A one-pixel
+		// bounds nudge alone is insufficient: Electron also needs a visibility reset.
+		// Complete that reset synchronously so the compositor never presents a
+		// hidden frame; only the bounds restoration waits until the next tick.
 		refreshLastFocusedPanelSurface: () => {
 			if (lastFocusedViewId === null) return;
 			const session = entries.get(lastFocusedViewId);
@@ -2347,10 +2414,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			if (bounds.width <= 0 || bounds.height <= 0) return;
 			entry.view.setVisible?.(false);
 			applyBrowserViewBounds(entry.view, { ...bounds, height: Math.max(1, bounds.height - 1) });
+			entry.view.setVisible?.(true);
 			setTimeout(() => {
 				const current = lastFocusedViewId !== null ? entries.get(lastFocusedViewId) : undefined;
 				if (!current || !current.visible) return;
-				applyBrowserViewBounds(activeEntry(current).view, current.bounds, true);
+				applyBrowserViewBounds(activeEntry(current).view, current.bounds);
 			}, 0);
 		},
 	};
@@ -2682,6 +2750,13 @@ function originOf(url: string): string | undefined {
 // it carries whatever cookies/proxy config that site's tab already has, and
 // resized/re-encoded like other browser-view thumbnail capture in this file.
 async function fetchFavicon(entry: BrowserEntry, url: string): Promise<string | undefined> {
+	const tabSession = (entry.view.webContents as unknown as WebContents).session;
+	return fetchFaviconFromSession(tabSession, url);
+}
+
+async function fetchFaviconFromSession(tabSession: Session, url: string): Promise<string | undefined> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), FAVICON_REQUEST_TIMEOUT_MS);
 	try {
 		// Some sites inline a tiny favicon as a data: URI rather than serving a
 		// file — decode it directly instead of rejecting it as an unsupported
@@ -2693,17 +2768,67 @@ async function fetchFavicon(entry: BrowserEntry, url: string): Promise<string | 
 		}
 		const parsed = new URL(url);
 		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-		const tabSession = (entry.view.webContents as unknown as WebContents).session;
-		const response = await tabSession.fetch(url);
+		const response = await tabSession.fetch(url, { signal: controller.signal });
 		if (!response.ok) return undefined;
-		const buffer = Buffer.from(await response.arrayBuffer());
-		if (buffer.byteLength === 0 || buffer.byteLength > MAX_FAVICON_BYTES) return undefined;
-		const image = nativeImage.createFromBuffer(buffer);
-		if (image.isEmpty()) return undefined;
-		return image.resize({ width: FAVICON_SIZE, height: FAVICON_SIZE, quality: "good" }).toDataURL();
+		const buffer = await readBoundedResponseBody(response, MAX_FAVICON_BYTES);
+		if (!buffer || buffer.byteLength === 0) return undefined;
+		try {
+			const image = nativeImage.createFromBuffer(buffer);
+			if (!image.isEmpty()) {
+				return image.resize({ width: FAVICON_SIZE, height: FAVICON_SIZE, quality: "good" }).toDataURL();
+			}
+		} catch {
+			// Fall through to the validated ICO path below. Test environments and
+			// some Electron platforms throw rather than returning an empty image.
+		}
+		// nativeImage does not decode ICO buffers on every platform (notably
+		// macOS), while Chromium's <img> decoder does. Preserve a bounded,
+		// structurally valid ICO as local image data rather than falling back to
+		// a direct renderer request that would escape the selected profile.
+		if (isIcoBuffer(buffer)) return `data:image/x-icon;base64,${buffer.toString("base64")}`;
+		return undefined;
 	} catch {
 		return undefined;
+	} finally {
+		clearTimeout(timeout);
 	}
+}
+
+function isIcoBuffer(buffer: Buffer): boolean {
+	return (
+		buffer.byteLength >= 6 &&
+		buffer.readUInt16LE(0) === 0 &&
+		buffer.readUInt16LE(2) === 1 &&
+		buffer.readUInt16LE(4) > 0
+	);
+}
+
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<Buffer | undefined> {
+	const declaredLength = Number(response.headers.get("content-length"));
+	if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+		await response.body?.cancel().catch(() => undefined);
+		return undefined;
+	}
+	const reader = response.body?.getReader();
+	if (!reader) return undefined;
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel().catch(() => undefined);
+				return undefined;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
 }
 
 function cancelAnnotation(

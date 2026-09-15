@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -321,6 +324,138 @@ func TestDestroyFallsBackToGitWhenTheMoveIsImpossible(t *testing.T) {
 	}
 }
 
+// The git-driven teardown can be left with a directory it cannot unlink this
+// run — on Windows a live agent process or scoped shell holds a handle on the
+// worktree directory past the removal retry budget. git has already
+// unregistered the directory by then, so nothing is being reconciled anymore;
+// the failure must be typed as deferred rather than a generic teardown error,
+// or `ao session kill` answers 500 and strands the session in the sidebar
+// forever (#3408).
+func TestDestroyDefersRemovalFailureWhenTheDirectoryStillExists(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+	if err := mkdirFile(path, "stray.txt"); err != nil {
+		t.Fatalf("seed stray path: %v", err)
+	}
+	shrinkRemoveAllRetry(t, 2)
+	wedged := errors.New("The process cannot access the file because it is being used by another process")
+	stubRemoveAll(t, func(string) error { return wedged })
+	// Registration probes fail first so the discard fast path hands back to the
+	// git-driven remove; afterwards the path is reported as unregistered but
+	// still on disk, so the final removeAllWithRetry is the only remaining
+	// teardown step — and it fails.
+	listCalls := 0
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "worktree list --porcelain") {
+			listCalls++
+			if listCalls == 1 {
+				return nil, errors.New("git worktree list could not be asked")
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	err = ws.Destroy(context.Background(), ports.WorkspaceInfo{Path: path, ProjectID: "proj", SessionID: "sess", Branch: "feature/one"})
+	if !errors.Is(err, ports.ErrWorkspaceDeferred) {
+		t.Fatalf("destroy error = %v, want ports.ErrWorkspaceDeferred", err)
+	}
+	if !errors.Is(err, wedged) {
+		t.Fatalf("destroy error = %v, want the underlying removal failure preserved", err)
+	}
+}
+
+func TestDestroyDoesNotDeferPermanentRemovalFailure(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+	if err := mkdirFile(path, "stray.txt"); err != nil {
+		t.Fatalf("seed stray path: %v", err)
+	}
+	shrinkRemoveAllRetry(t, 2)
+	removeAllRetryable = func(error) bool { return false }
+	permanent := errors.New("permission denied")
+	stubRemoveAll(t, func(string) error { return permanent })
+	listCalls := 0
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "worktree list --porcelain") {
+			listCalls++
+			if listCalls == 1 {
+				return nil, errors.New("git worktree list could not be asked")
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	err = ws.Destroy(context.Background(), ports.WorkspaceInfo{Path: path, ProjectID: "proj", SessionID: "sess", Branch: "feature/one"})
+	if !errors.Is(err, permanent) {
+		t.Fatalf("destroy error = %v, want the permanent removal failure", err)
+	}
+	if errors.Is(err, ports.ErrWorkspaceDeferred) {
+		t.Fatalf("destroy error = %v, permanent failure must not be deferred", err)
+	}
+}
+
+func TestForceRemovalDoesNotPromiseDeferredCleanup(t *testing.T) {
+	tests := []struct {
+		name    string
+		destroy func(*Workspace, string, string) error
+	}{
+		{
+			name: "ForceDestroy",
+			destroy: func(ws *Workspace, _, path string) error {
+				return ws.ForceDestroy(context.Background(), ports.WorkspaceInfo{Path: path, ProjectID: "proj", SessionID: "sess", Branch: "feature/one"})
+			},
+		},
+		{
+			name: "forceDestroyPath",
+			destroy: func(ws *Workspace, repo, path string) error {
+				return ws.forceDestroyPath(context.Background(), repo, path)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			repo := t.TempDir()
+			ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+			if err != nil {
+				t.Fatalf("new: %v", err)
+			}
+			path := filepath.Join(ws.managedRoot, "proj", "sess")
+			if err := mkdirFile(path, "stray.txt"); err != nil {
+				t.Fatalf("seed stray path: %v", err)
+			}
+			if err := os.WriteFile(ws.discardedRoot(), []byte("not a directory"), 0o600); err != nil {
+				t.Fatalf("block discard root: %v", err)
+			}
+			shrinkRemoveAllRetry(t, 2)
+			wedged := errors.New("sharing violation")
+			stubRemoveAll(t, func(string) error { return wedged })
+			ws.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+			err = tt.destroy(ws, repo, path)
+			if !errors.Is(err, wedged) {
+				t.Fatalf("force removal error = %v, want the underlying removal failure", err)
+			}
+			if errors.Is(err, ports.ErrWorkspaceDeferred) {
+				t.Fatalf("force removal error = %v, must not promise a later cleanup retry", err)
+			}
+		})
+	}
+}
+
 // Work that appears between the dirty probe and the delete must not be taken.
 // The probe therefore runs against the directory after it has been moved aside:
 // once the worktree path no longer resolves, nothing can add to what is about
@@ -397,5 +532,136 @@ func TestForceDestroyKeepsTheWorktreeWhenPruneFails(t *testing.T) {
 	ws.waitForDiscards()
 	if _, statErr := os.Stat(filepath.Join(path, "keep.txt")); statErr != nil {
 		t.Fatalf("worktree must survive a failed prune so the caller can retry: %v", statErr)
+	}
+}
+
+// Project removal now kills every live session of a project concurrently, and
+// those kills all reach `git worktree` commands against the one shared repo.
+// The per-repo teardown lock must serialize a single repo's destroy sequences
+// (interleaved prune/remove/list writes to .git/worktrees would race) while
+// leaving different repositories free to tear down in parallel.
+func TestDestroySerializesGitCommandsPerRepository(t *testing.T) {
+	root := t.TempDir()
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"projA": repoA, "projB": repoB}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	var (
+		mu           sync.Mutex
+		active       = map[string]bool{}
+		activeCount  int
+		sawSameRepo  bool
+		sawOtherRepo bool
+	)
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		repo := ""
+		for i, a := range args {
+			if a == "-C" && i+1 < len(args) {
+				repo = args[i+1]
+			}
+		}
+		mu.Lock()
+		if activeCount > 0 {
+			if active[repo] {
+				sawSameRepo = true
+			} else {
+				sawOtherRepo = true
+			}
+		}
+		active[repo] = true
+		activeCount++
+		mu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		mu.Lock()
+		delete(active, repo)
+		activeCount--
+		mu.Unlock()
+		return nil, nil
+	}
+
+	ctx := context.Background()
+	seed := func(proj, sess string) string {
+		p := filepath.Join(ws.managedRoot, proj, sess)
+		if err := mkdirFile(p, "stray.txt"); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+		return p
+	}
+	paths := []string{
+		seed("projA", "sess-1"),
+		seed("projA", "sess-2"),
+		seed("projB", "sess-1"),
+	}
+	projects := []domain.ProjectID{"projA", "projA", "projB"}
+	done := make(chan error, len(paths))
+	for i, p := range paths {
+		go func(i int, p string) {
+			done <- ws.Destroy(ctx, ports.WorkspaceInfo{Path: p, ProjectID: projects[i], SessionID: "sess", Branch: "feature/one"})
+		}(i, p)
+	}
+	for range paths {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent destroy: %v", err)
+		}
+	}
+	ws.waitForDiscards()
+
+	if sawSameRepo {
+		t.Fatal("two git worktree sequences ran concurrently against the same repo")
+	}
+	if !sawOtherRepo {
+		t.Fatal("git worktree sequences from different repos never overlapped; the lock is global, not per-repo")
+	}
+}
+
+func TestRepoTeardownLockCanonicalizesRepositoryPath(t *testing.T) {
+	repo := t.TempDir()
+	alias := repo + string(os.PathSeparator)
+
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		t.Fatalf("lock canonical repo path: %v", err)
+	}
+
+	started := make(chan struct{})
+	acquired := make(chan struct{})
+	errCh := make(chan error, 1)
+	releaseAlias := make(chan struct{})
+	go func() {
+		close(started)
+		aliasUnlock, err := repoTeardownLock(alias)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		close(acquired)
+		<-releaseAlias
+		aliasUnlock()
+	}()
+	<-started
+
+	select {
+	case err := <-errCh:
+		unlock()
+		t.Fatalf("lock equivalent repo path: %v", err)
+	case <-acquired:
+		close(releaseAlias)
+		unlock()
+		t.Fatal("equivalent repository paths acquired different teardown locks")
+	case <-time.After(100 * time.Millisecond):
+		// The equivalent spelling is blocked on the canonical repository lock.
+	}
+
+	unlock()
+	select {
+	case err := <-errCh:
+		t.Fatalf("lock equivalent repo path: %v", err)
+	case <-acquired:
+		close(releaseAlias)
+	case <-time.After(5 * time.Second):
+		close(releaseAlias)
+		t.Fatal("equivalent repository path did not acquire the released teardown lock")
 	}
 }

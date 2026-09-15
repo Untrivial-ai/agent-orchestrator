@@ -28,34 +28,60 @@ func TestRunInstallCancellationKillsProcessGroup(t *testing.T) {
 		}, &output, &output)
 	}()
 
-	var childPID int
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		value := strings.TrimSpace(output.String())
-		if value != "" {
-			childPID, _ = strconv.Atoi(strings.Fields(value)[0])
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if childPID == 0 {
-		t.Fatal("installer child PID was not reported")
-	}
+	childPID := waitForChildPID(t, &output)
 	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("RunInstall error = nil, want cancellation")
 	}
+	assertProcessExited(t, childPID, "installer descendant")
+}
 
-	deadline = time.Now().Add(time.Second)
+func TestRunCancellationKillsProcessGroup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var output lockedBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- (Adapter{}).Run(ctx, []string{"sh", "-c", "sleep 30 & echo $!; wait"}, &output, &output)
+	}()
+
+	childPID := waitForChildPID(t, &output)
+	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("Run error = nil, want cancellation")
+	}
+	assertProcessExited(t, childPID, "command descendant")
+}
+
+func waitForChildPID(t *testing.T, output *lockedBuffer) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		err := syscall.Kill(childPID, 0)
-		if errors.Is(err, syscall.ESRCH) {
+		value := strings.TrimSpace(output.String())
+		if value != "" {
+			pid, _ := strconv.Atoi(strings.Fields(value)[0])
+			if pid != 0 {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("child PID was not reported")
+	return 0
+}
+
+func assertProcessExited(t *testing.T, pid int, label string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("installer descendant %d survived cancellation", childPID)
+	t.Fatalf("%s %d survived cancellation", label, pid)
 }
 
 type lockedBuffer struct {

@@ -34,6 +34,23 @@ func codexFileMutationCommitted(err error) bool {
 	return errors.As(err, &outcome) && outcome.committed
 }
 
+// codexStorageIOError keeps a filesystem operation's opaque, path-free summary
+// for the API and log boundary while preserving the underlying cause. Bootstrap
+// unwraps the cause to tell a transient I/O fault (retryable) from an unsafe
+// storage rejection (fail closed); Error only ever exposes the summary, so a
+// credential path never crosses the boundary through these helpers.
+type codexStorageIOError struct {
+	summary string
+	cause   error
+}
+
+func (e *codexStorageIOError) Error() string { return e.summary }
+func (e *codexStorageIOError) Unwrap() error { return e.cause }
+
+func codexStorageIOFailure(summary string, cause error) error {
+	return &codexStorageIOError{summary: summary, cause: cause}
+}
+
 type codexFileState struct {
 	exists bool
 	info   os.FileInfo
@@ -132,7 +149,7 @@ func prepareCodexFileReplacementInDirectory(path string, data []byte, requirePri
 	}
 	tmp, err := os.CreateTemp(dir, codexFileStagingPrefix)
 	if err != nil {
-		return nil, errors.New("codex replacement staging could not be created")
+		return nil, codexStorageIOFailure("codex replacement staging could not be created", err)
 	}
 	tmpName := tmp.Name()
 	abort := func() {
@@ -141,15 +158,15 @@ func prepareCodexFileReplacementInDirectory(path string, data []byte, requirePri
 	}
 	if err := protectCodexPrivateFile(tmpName, tmp); err != nil {
 		abort()
-		return nil, errors.New("codex replacement staging could not be protected")
+		return nil, codexStorageIOFailure("codex replacement staging could not be protected", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		abort()
-		return nil, errors.New("codex replacement staging could not be written")
+		return nil, codexStorageIOFailure("codex replacement staging could not be written", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		abort()
-		return nil, errors.New("codex replacement staging could not be synchronized")
+		return nil, codexStorageIOFailure("codex replacement staging could not be synchronized", err)
 	}
 	stageInfo, err := tmp.Stat()
 	if closeErr := tmp.Close(); err == nil {
@@ -157,7 +174,7 @@ func prepareCodexFileReplacementInDirectory(path string, data []byte, requirePri
 	}
 	if err != nil {
 		abort()
-		return nil, errors.New("codex replacement staging could not be finalized")
+		return nil, codexStorageIOFailure("codex replacement staging could not be finalized", err)
 	}
 	return &codexFileReplacement{
 		target: path, staged: tmpName, admitted: admitted, stageInfo: stageInfo, wantHash: sha256.Sum256(data),
@@ -181,7 +198,7 @@ func (r *codexFileReplacement) Commit() error {
 		return errCodexFileChanged
 	}
 	if err := replaceCodexFile(r.staged, r.target); err != nil {
-		return errors.New("codex replacement could not be committed")
+		return codexStorageIOFailure("codex replacement could not be committed", err)
 	}
 	r.done = true
 	if err := syncCodexDirectory(filepath.Dir(r.target)); err != nil {

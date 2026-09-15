@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { CodexAccountSwitch, CodexAccountsResponse } from "./useCodexAccountsQuery";
+import type { CodexAccount, CodexAccountSwitch, CodexAccountsResponse } from "./useCodexAccountsQuery";
 
 export const codexAccountsQueryKey = ["codex-accounts"] as const;
 
@@ -32,6 +32,20 @@ export function writeCodexAccounts(
 ): void {
 	queryClient.setQueryData<CodexAccountsResponse>(codexAccountsQueryKey, (current) =>
 		mergeCodexAccounts(current, incoming, mode));
+}
+
+/**
+ * A Codex account is only shown as signed in when its authentication
+ * observation says so. The daemon establishes the active account's observation
+ * with the same refresh-capable check the launch path uses, so an authorized
+ * state here means the next Codex session can start.
+ */
+export function codexAccountAuthorized(account: Pick<CodexAccount, "authentication">): boolean {
+	return account.authentication.state === "authorized" || account.authentication.state === "not_applicable";
+}
+
+export function codexAccountSignedOut(account: Pick<CodexAccount, "authentication" | "status">): boolean {
+	return account.authentication.state === "unauthorized" || account.status === "signed_out";
 }
 
 const reasonKeys = {

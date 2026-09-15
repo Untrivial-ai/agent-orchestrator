@@ -129,6 +129,8 @@ func TestWindowsPackageManagerBinCandidates(t *testing.T) {
 	appData := filepath.Join(home, "AppData", "Roaming")
 	localAppData := filepath.Join(home, "AppData", "Local")
 	programData := filepath.Join(string(filepath.Separator), "ProgramData")
+	programFiles := filepath.Join(string(filepath.Separator), "Program Files")
+	programFilesX86 := filepath.Join(string(filepath.Separator), "Program Files (x86)")
 	voltaHome := filepath.Join(home, "Volta")
 	nvmSymlink := filepath.Join(home, "AppData", "Roaming", "nvm-current")
 	t.Setenv("HOME", home)
@@ -137,6 +139,8 @@ func TestWindowsPackageManagerBinCandidates(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", localAppData)
 	t.Setenv("ProgramData", programData)
 	t.Setenv("PROGRAMDATA", programData)
+	t.Setenv("ProgramFiles", programFiles)
+	t.Setenv("ProgramFiles(x86)", programFilesX86)
 	t.Setenv("VOLTA_HOME", voltaHome)
 	t.Setenv("NVM_SYMLINK", nvmSymlink)
 
@@ -152,6 +156,9 @@ func TestWindowsPackageManagerBinCandidates(t *testing.T) {
 		filepath.Join(programData, "chocolatey", "bin", "widget.exe"),
 		filepath.Join(programData, "chocolatey", "bin", "widget.bat"),
 		filepath.Join(programData, "chocolatey", "bin", "widget.cmd"),
+		filepath.Join(localAppData, "npm", "widget.cmd"),
+		filepath.Join(localAppData, "npm", "widget.exe"),
+		filepath.Join(localAppData, "Microsoft", "WinGet", "Links", "widget.exe"),
 		filepath.Join(localAppData, "pnpm", "widget.cmd"),
 		filepath.Join(localAppData, "pnpm", "widget.exe"),
 		filepath.Join(localAppData, "Yarn", "bin", "widget.cmd"),
@@ -160,6 +167,8 @@ func TestWindowsPackageManagerBinCandidates(t *testing.T) {
 		filepath.Join(localAppData, "Volta", "bin", "widget.exe"),
 		filepath.Join(localAppData, "mise", "shims", "widget.exe"),
 		filepath.Join(localAppData, "mise", "shims", "widget.cmd"),
+		filepath.Join(programFiles, "WinGet", "Links", "widget.exe"),
+		filepath.Join(programFilesX86, "WinGet", "Links", "widget.exe"),
 		filepath.Join(voltaHome, "bin", "widget.cmd"),
 		filepath.Join(voltaHome, "bin", "widget.exe"),
 		filepath.Join(nvmSymlink, "widget.cmd"),

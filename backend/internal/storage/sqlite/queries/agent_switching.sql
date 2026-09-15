@@ -50,9 +50,9 @@ INSERT INTO agent_switches (
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
@@ -65,9 +65,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE id = ?;
 
@@ -78,9 +78,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ? AND idempotency_key = ?;
 
@@ -91,9 +91,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
   AND state NOT IN ('completed', 'failed');
@@ -107,8 +107,8 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
        agent_handoff_path, agent_handoff_hash,
        source_generation_id, target_generation_id,
        target_runtime_handle_id, target_acknowledged_at,
-       error_code, failure_point, requested_at, updated_at,
-       final_handoff_path, final_handoff_hash
+       error_code, requested_at, updated_at,
+       final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE state NOT IN ('completed', 'failed');
 
@@ -119,9 +119,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
 ORDER BY requested_at DESC, id DESC;
@@ -273,9 +273,16 @@ UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
     latest_user_prompt_at = sqlc.arg(latest_user_prompt_at),
     latest_assistant_update = sqlc.arg(latest_assistant_update),
+    conversation_checkpoint_state = sqlc.arg(conversation_checkpoint_state),
+    conversation_checkpoint_generation = sqlc.arg(conversation_checkpoint_generation),
+    conversation_checkpoint_native_id = sqlc.arg(conversation_checkpoint_native_id),
+    conversation_checkpoint_unsettled = sqlc.arg(conversation_checkpoint_unsettled),
+    conversation_checkpoint_turn_id = sqlc.arg(conversation_checkpoint_turn_id),
+    native_checkpoint_evidence = sqlc.arg(native_checkpoint_evidence),
     native_transcript_path = sqlc.arg(native_transcript_path),
     updated_at = sqlc.arg(updated_at)
 WHERE sessions.id = sqlc.arg(id)
+  AND sessions.revision = sqlc.arg(expected_revision)
   AND sessions.is_terminated = 0
   AND sessions.harness = sqlc.arg(expected_harness)
   AND sessions.session_mode = sqlc.arg(expected_session_mode)
@@ -348,6 +355,14 @@ UPDATE sessions SET
     runtime_launch_id = sqlc.arg(target_generation_id),
     agent_session_id = sqlc.arg(target_native_session_id),
     agent_session_id_launch_id = sqlc.arg(target_generation_id),
+    conversation_checkpoint_state = 'empty',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
+    native_checkpoint_evidence = '',
+    conversation_checkpoint_unsettled = 0,
+    latest_user_prompt = '',
+    latest_assistant_update = '',
     native_transcript_path = sqlc.arg(target_native_transcript_path),
     updated_at = sqlc.arg(activated_at)
 WHERE id = sqlc.arg(session_id)
@@ -369,6 +384,14 @@ UPDATE sessions SET
     runtime_handle_id = '',
     runtime_launch_id = '',
     agent_session_id_launch_id = '',
+    conversation_checkpoint_state = 'empty',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
+    native_checkpoint_evidence = '',
+    conversation_checkpoint_unsettled = 0,
+    latest_user_prompt = '',
+    latest_assistant_update = '',
     native_transcript_path = '',
     updated_at = sqlc.arg(activated_at)
 WHERE id = sqlc.arg(session_id)

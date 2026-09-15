@@ -904,6 +904,37 @@ func TestGetRestoreCommandReappliesSystemPromptConfig(t *testing.T) {
 	}
 }
 
+// TestGetRestoreCommandAppendsResumeTimePrompt covers resuming a reviewer
+// after it was killed and re-triggered: the new task must be embedded in the
+// resume argv (mirroring GetLaunchCommand's --prompt), or the resumed session
+// would sit idle with no work to act on.
+func TestGetRestoreCommandAppendsResumeTimePrompt(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "opencode"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Permissions: ports.PermissionModeBypassPermissions,
+		Prompt:      "review the new commit",
+		Session: ports.SessionRef{
+			Metadata: map[string]string{opencodeAgentSessionIDMetadataKey: "ses_abc123"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []string{
+		"opencode",
+		"--dangerously-skip-permissions",
+		"--session", "ses_abc123",
+		"--prompt", "review the new commit",
+	}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
 func TestGetRestoreCommandFalseWithoutAgentSessionID(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "opencode"}
 

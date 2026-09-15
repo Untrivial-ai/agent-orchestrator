@@ -19,3 +19,11 @@ next-env.d.ts
 
 # Reference files from Electron app
 refs/
+
+# Compiled cmd binaries built at the module root (source lives under cmd/<name>/)
+/ao-cloud
+/ao-cloud-agent
+/ao-cloud-healthcheck
+/ao-cloud-migrate
+/ao-worker
+/terminal-echo-probe

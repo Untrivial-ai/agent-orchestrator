@@ -22,9 +22,57 @@ const (
 	KindOrchestrator SessionKind = "orchestrator"
 )
 
+// ConversationCheckpointState records which main-turn boundaries AO has
+// durably observed for the hook-derived replay checkpoint. The legacy value is
+// intentionally distinct: rows written before owner/event scoping may still be
+// enforced by an ordinary switch, but only those text dimensions may be waived
+// by explicit provider-history consent.
+type ConversationCheckpointState string
+
+// Conversation checkpoint states, from unscoped legacy data through a fully
+// observed main-turn boundary.
+const (
+	ConversationCheckpointLegacy ConversationCheckpointState = "legacy"
+	ConversationCheckpointEmpty  ConversationCheckpointState = "empty"
+	// ConversationCheckpointCoordination records an AO-authored turn boundary.
+	// It carries across a prompt-submit/Stop pair so provider coordination can
+	// never be promoted into replay evidence, even when Stop omits the prompt.
+	ConversationCheckpointCoordination ConversationCheckpointState = "coordination"
+	ConversationCheckpointPrompt       ConversationCheckpointState = "prompt"
+	ConversationCheckpointComplete     ConversationCheckpointState = "complete"
+)
+
+// Trusted reports whether the checkpoint was collected by the scoped
+// main-turn state machine rather than inherited from pre-provenance storage.
+func (s ConversationCheckpointState) Trusted() bool {
+	return s == ConversationCheckpointPrompt || s == ConversationCheckpointComplete
+}
+
+// ConversationCheckpointOrigin classifies the main-turn boundary reported by
+// a provider hook. Empty preserves compatibility with older hook clients.
+type ConversationCheckpointOrigin string
+
+// Conversation checkpoint origins distinguish compatibility traffic, real
+// human turns, and AO-authored coordination turns.
+const (
+	ConversationCheckpointOriginUnknown      ConversationCheckpointOrigin = ""
+	ConversationCheckpointOriginHuman        ConversationCheckpointOrigin = "human"
+	ConversationCheckpointOriginCoordination ConversationCheckpointOrigin = "coordination"
+)
+
+// Valid reports whether an activity request carries a supported origin.
+func (o ConversationCheckpointOrigin) Valid() bool {
+	return o == ConversationCheckpointOriginUnknown ||
+		o == ConversationCheckpointOriginHuman ||
+		o == ConversationCheckpointOriginCoordination
+}
+
 // SessionMetadata is the typed, off-status metadata for a session: operational
 // handles and seed inputs used by Session Manager and reaper.
 type SessionMetadata struct {
+	// Permissions pins the resolved launch policy independently of future project defaults.
+	Permissions PermissionMode `json:"permissions,omitempty"`
+
 	Branch            string `json:"branch,omitempty"`
 	WorkspacePath     string `json:"workspacePath,omitempty"`
 	WorkspaceRepoPath string `json:"workspaceRepoPath,omitempty"`
@@ -50,6 +98,19 @@ type SessionMetadata struct {
 	// LatestAssistantUpdate is the latest user-facing assistant update observed
 	// before any internal agent-switch coordination turn.
 	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`
+	// ConversationCheckpointState and its owner provenance are internal replay
+	// safety facts. They survive daemon restart but are not part of the session
+	// presentation model.
+	ConversationCheckpointState      ConversationCheckpointState `json:"-"`
+	ConversationCheckpointGeneration string                      `json:"-"`
+	ConversationCheckpointNativeID   string                      `json:"-"`
+	ConversationCheckpointTurnID     string                      `json:"-"`
+	NativeCheckpointEvidence         string                      `json:"-"`
+	// ConversationCheckpointUnsettled records a scoped Stop that could not be
+	// correlated with a prompt boundary. Without a provider turn identity there
+	// is no collision-safe way to prove native replay crossed that boundary, so a
+	// Chat handoff must fail closed until a newer canonical prompt supersedes it.
+	ConversationCheckpointUnsettled bool `json:"-"`
 	// NativeTranscriptPath is the read-only transcript path for the currently
 	// active native agent session when its provider exposes one. Retained
 	// provider-specific paths also live on AgentNativeSession records.
@@ -90,13 +151,13 @@ type SessionMetadata struct {
 // metadata. The user-facing Status is derived from these facts plus PR facts.
 type SessionRecord struct {
 	ID        SessionID    `json:"id"`
-	ProjectID ProjectID    `json:"projectId"`
+	ProjectID ProjectID    `json:"projectId,omitempty"`
 	IssueID   IssueID      `json:"issueId,omitempty"`
 	Kind      SessionKind  `json:"kind"`
 	Harness   AgentHarness `json:"harness,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
-	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	ReviewerConfig    AgentConfig     `json:"reviewerConfig,omitempty"`
 	AutoReviewEnabled bool            `json:"autoReviewEnabled"`
 	DisplayName       string          `json:"displayName,omitempty"`
@@ -126,11 +187,15 @@ type SessionRecord struct {
 	// finalize started under an earlier terminal episode cannot satisfy a later
 	// one. Internal fact, not part of the API read model.
 	CleanupGeneration int64      `json:"-"`
+	Revision          int64      `json:"-"` // Database-owned row revision, independent of event timestamps.
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	IsPinned          bool       `json:"isPinned"`
 	PinnedAt          *time.Time `json:"pinnedAt,omitempty"`
 }
+
+// IsStandalone reports whether the session has no registered project owner.
+func (s SessionRecord) IsStandalone() bool { return s.ProjectID == "" }
 
 // SessionControllerOwner is the durable identity of the process/controller
 // currently allowed to act for a session. Narrow lifecycle writes compare this
@@ -165,8 +230,14 @@ func (r SessionRecord) ControllerOwner() SessionControllerOwner {
 // persisted.
 type Session struct {
 	SessionRecord
-	Status    SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
-	SCMStatus SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
+	// StatusReadiness describes startup verification, never a persisted status.
+	// Clients must withhold activity labels until ready; unavailable permits retry.
+	StatusReadiness string `json:"statusReadiness" enum:"checking,ready,unavailable"`
+	// ChatProviderPreserved is a live-controller observation, never stored.
+	// False also covers recovery/unknown ownership; callers must not infer safety.
+	ChatProviderPreserved bool          `json:"chatProviderPreserved"`
+	Status                SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
+	SCMStatus             SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
 	// KanbanColumn is where the session sits in its delivery lifecycle and
 	// which loop is turning it: an AO-driven one (validating) or the
 	// review-feedback loop whose next turn is a person's (needs_review). It is

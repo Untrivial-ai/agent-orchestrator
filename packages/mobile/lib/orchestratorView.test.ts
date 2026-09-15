@@ -61,8 +61,18 @@ describe("launchIntent", () => {
 	it("uses the cheap ensure when there is nothing live to retire", () => {
 		for (const state of ["missing", "stopped"] as const) {
 			expect(launchIntent(state).clean, state).toBe(false);
-			expect(launchIntent(state).label, state).toMatch(/start/i);
 		}
+	});
+
+	// The card only ever offers a launch when the orchestrator is not running
+	// (running shows Open alone), so these two labels are the only ones a user
+	// can actually tap — and they must not both read "Start". An orchestrator
+	// that exited needs restarting; one that never existed needs starting.
+	// Asserted exactly, not with /start/i: "Restart" contains "start", so a
+	// loose match passes whichever label is wrong.
+	it("says Start only when there is no orchestrator, and Restart when one exited", () => {
+		expect(launchIntent("missing").label).toBe("Start orchestrator");
+		expect(launchIntent("stopped").label).toBe("Restart orchestrator");
 	});
 });
 

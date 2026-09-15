@@ -1,3 +1,4 @@
+import type { CloudCpSessionChild } from "./cloud-cp";
 import type { PRState, PullRequestFacts, WorkspaceSummary } from "../types/workspace";
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
@@ -5,6 +6,9 @@ import type { ShellTerminal } from "../hooks/useShellTerminals";
 const now = new Date().toISOString();
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60 * 1000).toISOString();
 const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+const previewAuthorAvatarUrl = `data:image/svg+xml,${encodeURIComponent(
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" rx="20" fill="#24292f"/><circle cx="20" cy="16" r="7" fill="#fff"/><path d="M8 36c1-8 6-12 12-12s11 4 12 12" fill="#fff"/></svg>',
+)}`;
 
 const demoPr = (
 	number: number,
@@ -244,7 +248,8 @@ const prSummary = (sessionId: string, number: number, overrides: Partial<Session
 		state: facts?.state ?? "open",
 		provider: "github",
 		repo: "Untrivial-ai/agent-orchestrator",
-		author: "preview-agent",
+		author: "octocat",
+		authorAvatarUrl: previewAuthorAvatarUrl,
 		sourceBranch: session?.branch ?? "",
 		targetBranch: "main",
 		headSha: `preview-${number}`,
@@ -312,6 +317,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 	// tab's Pull request pane has something to show in the browser preview.
 	"demo-needs-input": [
 		prSummary("demo-needs-input", 318, {
+			authorAvatarUrl: undefined,
 			changedFiles: 2,
 			additions: 68,
 			deletions: 12,
@@ -585,5 +591,71 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 				conflictFiles: [],
 			},
 		}),
+	],
+};
+
+// Children the demo orchestrator "spawned", for the inspector's Workers
+// section in browser preview mode (no control plane available there). Keyed by
+// orchestrator session id.
+const demoChild = (
+	id: string,
+	displayName: string,
+	status: string,
+	activityState: string,
+	prs: CloudCpSessionChild["prs"],
+	isTerminated = false,
+): CloudCpSessionChild => ({
+	id,
+	orgId: "demo-org",
+	projectId: "ao-demo",
+	kind: "worker",
+	harness: "claude-code",
+	displayName,
+	branch: `ao/${id.slice(0, 8)}`,
+	mode: "trusted",
+	deniedCommands: [],
+	activityState,
+	status,
+	runtimeConnected: !isTerminated,
+	isTerminated,
+	createdAt: hoursAgo(2),
+	updatedAt: minutesAgo(4),
+	prs,
+});
+
+export const mockOrchestratorChildren: Record<string, CloudCpSessionChild[]> = {
+	"ao-demo-orchestrator": [
+		demoChild("11111111-1111-4111-8111-111111111111", "Fix flaky CI", "ci_failed", "active", [
+			{
+				url: "https://github.com/me/ao-demo/pull/321",
+				number: 321,
+				state: "open",
+				ci: "failing",
+				review: "none",
+				mergeability: "unstable",
+				reviewComments: false,
+				updatedAt: minutesAgo(6),
+			},
+		]),
+		demoChild("22222222-2222-4222-8222-222222222222", "Dark mode toggle", "working", "active", []),
+		demoChild(
+			"33333333-3333-4333-8333-333333333333",
+			"Update onboarding copy",
+			"merged",
+			"idle",
+			[
+				{
+					url: "https://github.com/me/ao-demo/pull/318",
+					number: 318,
+					state: "merged",
+					ci: "passing",
+					review: "approved",
+					mergeability: "mergeable",
+					reviewComments: false,
+					updatedAt: hoursAgo(1),
+				},
+			],
+			true,
+		),
 	],
 };

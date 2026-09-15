@@ -1,30 +1,40 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import { settingsQueryKey } from "./useSettings";
 
-const { cloudState, deleteSessionMock, postMock } = vi.hoisted(() => ({
-	cloudState: { ready: false },
+const { createCloudClientMock, deleteSessionMock, postMock } = vi.hoisted(() => ({
+	createCloudClientMock: vi.fn(),
 	deleteSessionMock: vi.fn(),
 	postMock: vi.fn(),
 }));
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { POST: postMock },
-	apiErrorMessage: () => "request failed",
+	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
 }));
 
 vi.mock("./useCloudCp", () => ({
-	useCloudCp: () => ({
-		client: { deleteSession: deleteSessionMock },
-		ready: cloudState.ready,
-		baseUrl: "https://cp.example.com",
-	}),
+	createRendererCloudCpClient: createCloudClientMock,
 }));
+
+vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
 
 import { useTerminateSession } from "./useTerminateSession";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+
+const localSession: WorkspaceSession = {
+	id: "session-1",
+	workspaceId: "project-1",
+	workspaceName: "Project",
+	title: "Local worker",
+	provider: "claude-code",
+	status: "working",
+	updatedAt: "2026-09-01T00:00:00Z",
+	prs: [],
+};
 
 const session = {
 	activity: { state: "active", lastActivityAt: "2026-06-10T00:00:00Z" },
@@ -61,12 +71,50 @@ function newQueryClient() {
 }
 
 beforeEach(() => {
-	cloudState.ready = false;
-	deleteSessionMock.mockReset();
-	postMock.mockReset();
+	createCloudClientMock.mockReset();
+	deleteSessionMock.mockReset().mockResolvedValue({ session: { id: "session-1", desiredState: "deleted" } });
+	createCloudClientMock.mockReturnValue({ deleteSession: deleteSessionMock });
+	postMock.mockReset().mockResolvedValue({ data: { ok: true }, error: undefined });
 });
 
 describe("useTerminateSession", () => {
+	it("routes local sessions to the local daemon", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync(localSession));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", {
+			params: { path: { sessionId: "session-1" } },
+		});
+		expect(createCloudClientMock).not.toHaveBeenCalled();
+	});
+
+	it("routes cloud sessions to their control-plane organization", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		queryClient.setQueryData(settingsQueryKey, { cloudControlPlaneUrl: "https://cp.example.com" });
+		const cloudSession: WorkspaceSession = { ...localSession, cloud: { orgId: "org-1" } };
+		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync(cloudSession));
+
+		expect(createCloudClientMock).toHaveBeenCalledWith("https://cp.example.com");
+		expect(deleteSessionMock).toHaveBeenCalledWith("org-1", "session-1");
+		expect(postMock).not.toHaveBeenCalled();
+	});
+
+	it("fails closed when a cloud session has no configured control plane", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const cloudSession: WorkspaceSession = { ...localSession, cloud: { orgId: "org-1" } };
+		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
+
+		await expect(act(async () => result.current.mutateAsync(cloudSession))).rejects.toThrow(
+			"The cloud control plane is not configured.",
+		);
+		expect(deleteSessionMock).not.toHaveBeenCalled();
+		expect(postMock).not.toHaveBeenCalled();
+	});
+
 	// The delete control is disabled while the mutation is pending, and a
 	// mutation stays pending until its onSuccess settles. Waiting on the
 	// workspace refetch there kept the spinner up for an extra round trip after
@@ -129,28 +177,6 @@ describe("useTerminateSession", () => {
 		result.current.mutate(session);
 
 		await waitFor(() => expect(result.current.isError).toBe(true));
-		const cached = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
-		expect(cached?.[0]?.sessions[0]?.isTerminated).toBeUndefined();
-	});
-
-	it("deletes cloud worker tasks through the control plane", async () => {
-		cloudState.ready = true;
-		deleteSessionMock.mockResolvedValue({});
-		const cloudSession = {
-			...session,
-			cloud: { orgId: "org-1" },
-			workspaceId: "cloud-proj-1",
-		} satisfies WorkspaceSession;
-		const queryClient = newQueryClient();
-		queryClient.setQueryData(["cloud-sessions"], [cloudSession]);
-		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
-
-		result.current.mutate(cloudSession);
-
-		await waitFor(() => expect(result.current.isSuccess).toBe(true));
-		expect(deleteSessionMock).toHaveBeenCalledWith("org-1", "sess-1");
-		expect(postMock).not.toHaveBeenCalled();
-		expect(queryClient.getQueryState(["cloud-sessions"])?.isInvalidated).toBe(true);
 		const cached = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
 		expect(cached?.[0]?.sessions[0]?.isTerminated).toBeUndefined();
 	});

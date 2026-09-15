@@ -5,6 +5,7 @@ import {
 	type BrowserProfile,
 	type BrowserProfileListState,
 	type BrowserProfileMenuInput,
+	type BrowserProfileSelectInput,
 	type BrowserProfileViewState,
 } from "../shared/browser-profiles";
 import type { BrowserImportRequest } from "../shared/browser-profile-import";
@@ -184,6 +185,15 @@ export function registerBrowserProfileIpc(options: BrowserProfileIpcOptions): Br
 		const viewId = viewIdFromInput(rawViewId);
 		if (!options.host.isRendererOwned(event, viewId)) return { ...EMPTY_PROFILE_STATE };
 		return options.host.getProfileState(viewId) ?? { ...EMPTY_PROFILE_STATE, viewId };
+	});
+	handle("browser:profile:select", async (event, input: unknown) => {
+		if (!isRecord(input)) throw invalid("Browser profile selection is invalid.");
+		const viewId = viewIdFromInput(input.viewId);
+		if (!options.host.isRendererOwned(event, viewId)) return undefined;
+		const profileId = input.profileId === null ? null : profileIdFromInput(input.profileId);
+		const labels = labelsFromInput(input.labels) satisfies BrowserProfileSelectInput["labels"];
+		await selectFromMenu(viewId, profileId, labels, options);
+		return undefined;
 	});
 	handle("browser:profile:menu", (event, input: unknown) => {
 		if (!isRecord(input)) throw invalid("Browser profile menu input is invalid.");

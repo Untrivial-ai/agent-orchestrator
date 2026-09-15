@@ -86,6 +86,8 @@ type Deps struct {
 	CodexAccounts          ports.CodexAccountClientFactory
 	CodexAccountState      CodexAccountStateStore
 	CodexOperationGate     ports.CodexOperationGate
+	// Clock overrides time.Now for deterministic account-bootstrap retry tests.
+	Clock func() time.Time
 }
 
 // ProjectLookup resolves the registered working directory used for model
@@ -112,6 +114,9 @@ func NewWithDeps(deps Deps) *Service {
 	svc := newService(agents, deps.Cache, deps.Projects, deps.Discoverer)
 	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
 		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.CodexAccountState, deps.Logger, deps.CodexOperationGate)
+		if deps.Clock != nil {
+			svc.codexAccounts.now = deps.Clock
+		}
 	}
 	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,

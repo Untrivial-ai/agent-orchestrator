@@ -127,7 +127,21 @@ Once one PR merges, prefer rebasing the remaining PR onto current `main`; the no
 - `ao preview` controls the AO Browser panel; it does not launch the desktop shell.
 - `npm run dev:web` is useful for browser-only renderer work but does not provide Electron APIs or native chrome.
 - Renderer URLs can move from `5173` when a port is occupied. Trust Forge's printed URL rather than assuming one.
-- Multiple dev instances share `~/.ao/dev/electron`; avoid running them concurrently because Chromium profile state can collide.
+- Multiple dev instances share `~/.ao/dev/electron` by default, and Chromium's
+  singleton lock lives in the profile, so a second checkout's `npm run dev`
+  loses `requestSingleInstanceLock()` and exits immediately with code 0. To run
+  two worktrees at once, give each its own profile, run file, and data dir:
+
+  ```bash
+  env -u AO_PORT \
+    AO_DEV_ELECTRON_DIR="$HOME/.ao/dev/<name>/electron" \
+    AO_RUN_FILE="$HOME/.ao/dev/<name>/running.json" \
+    AO_DATA_DIR="$HOME/.ao/dev/<name>/data" \
+    npm run dev
+  ```
+
+  Without all three the instances still collide, on the profile lock, the run
+  file, or the daemon's SQLite data.
 - An inherited `AO_DATA_DIR` changes dev mode from isolated data to real data. Always choose and report the mode instead of inheriting it accidentally.
 - Repeated `/healthz/` 404 entries from external probes can be noisy; readiness is determined by Electron's daemon status and successful API traffic, not by log volume.
 

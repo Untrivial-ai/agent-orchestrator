@@ -15,4 +15,22 @@ describe("formatOrchestratorStartupError", () => {
 		expect(formatOrchestratorStartupError("Project added, but orchestrator did not start: branch is already checked out"))
 			.toBe("Project added, but orchestrator did not start: branch is already checked out");
 	});
+
+	it.each([
+		['resolve workspace repo "__root__" base: repository has no remote or AO-recorded default', "workspace root repository"],
+		['resolve workspace repo "api" base: remote did not advertise a symbolic HEAD', 'child repository "api"'],
+		['repository has multiple remotes and no primary remote', "project repository"],
+	])("preserves the actual default-branch failure: %s", (detail, label) => {
+		const message = `${detail} (DEFAULT_BRANCH_UNRESOLVED)`;
+		const result = formatOrchestratorStartupError(message);
+		expect(result).toContain(`default branch for the ${label}`);
+		if (label.startsWith("child")) {
+			expect(result).toContain("this child's default branch");
+			expect(result).not.toContain("Project Settings");
+		} else {
+			expect(result).toContain("Project Settings");
+		}
+		expect(result).toContain(`Details: ${message}`);
+		expect(result).not.toContain("still needs its remote repository set up");
+	});
 });

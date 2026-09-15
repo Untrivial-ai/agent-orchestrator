@@ -70,6 +70,13 @@ type spawnFunc func(ctx context.Context, bin, workdir string, env []string) (*pr
 type versionProbeFunc func(context.Context, string) (string, error)
 type persistentConnectFunc func(context.Context, persistenthost.Config) (*persistenthost.Transport, error)
 
+type fixedCodexPlugin string
+
+func (p fixedCodexPlugin) ResolveBinary(context.Context) (string, error) { return string(p), nil }
+func (fixedCodexPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusUnknown, nil
+}
+
 // Driver opens Codex conversations over `codex app-server`.
 type Driver struct {
 	plugin       codexPlugin
@@ -89,6 +96,18 @@ func New(plugin codexPlugin, log *slog.Logger) *Driver {
 		plugin: plugin, log: log, spawn: spawnAppServer,
 		versionProbe: installedCodexVersion, persistent: true, connectHost: persistenthost.ConnectOrStart,
 	}
+}
+
+// DiscoverModels performs the same bounded app-server model/list read as a live
+// conversation without creating a provider thread.
+func DiscoverModels(ctx context.Context, binary, workdir string, env map[string]string) ([]ports.ChatModel, error) {
+	driver := New(fixedCodexPlugin(binary), slog.New(slog.DiscardHandler))
+	conv, err := driver.connect(ctx, workdir, env)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conv.Close() }()
+	return conv.ListModels(ctx)
 }
 
 var _ ports.ChatDriver = (*Driver)(nil)
@@ -268,7 +287,9 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, fmt.Errorf("workspace path must be absolute, got %q", cfg.WorkspacePath)
 	}
 
-	conv, reconnected, err := d.connectSession(ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.AllowConcurrentHostReplacement)
+	conv, reconnected, err := d.connectSession(
+		ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.PrepareEnv,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +309,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
+	}
+	// thread/start has no top-level effort field either; carry the durable AO
+	// choice as a config override like thread/resume does, so a fresh thread
+	// does not silently fall back to the provider default.
+	if cfg.Effort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": cfg.Effort}
 	}
 	if cfg.SystemPrompt != "" {
 		params["developerInstructions"] = cfg.SystemPrompt
@@ -325,7 +352,9 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("workspace path must be absolute, got %q", cfg.WorkspacePath)
 	}
 
-	conv, reconnected, err := d.connectSession(ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.AllowConcurrentHostReplacement)
+	conv, reconnected, err := d.connectSession(
+		ctx, cfg.SessionID, cfg.DataDir, cfg.WorkspacePath, cfg.Env, cfg.PrepareEnv,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +362,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
-		conv.start(cfg.ProviderConversationID, cfg.Model, "")
+		conv.start(cfg.ProviderConversationID, cfg.Model, cfg.Effort)
 		return conv, nil
 	}
 
@@ -403,11 +432,18 @@ func (d *Driver) connectSession(
 	sessionID domain.SessionID,
 	dataDir, workdir string,
 	env map[string]string,
-	allowConcurrentHostReplacement bool,
+	prepareEnv func(context.Context) (map[string]string, error),
 ) (*conversation, bool, error) {
 	// Injected driver tests intentionally retain the direct pipe launcher. The
 	// shipped driver uses spawnAppServer and therefore the persistent host.
 	if !d.persistent {
+		if prepareEnv != nil {
+			var err error
+			env, err = prepareEnv(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+		}
 		conv, err := d.connect(ctx, workdir, env)
 		return conv, false, err
 	}
@@ -415,23 +451,26 @@ func (d *Driver) connectSession(
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 	}
-	transport, err := d.connectHost(ctx, persistenthost.Config{
+	hostConfig := persistenthost.Config{
 		SessionID: string(sessionID),
 		DataDir:   dataDir,
 		Workdir:   workdir,
 		Env:       envSlice(env),
 		Argv:      []string{bin, "app-server"},
-	})
-	if err != nil {
-		// Branch activation intentionally stages a replacement controller before
-		// terminating the source. The persistent host correctly refuses that second
-		// owner; retain the established safe handoff by staging this replacement in
-		// a direct app-server. On the next daemon reconciliation it is resumed into a
-		// persistent host. Other host failures fail closed and never spawn a rival.
-		if allowConcurrentHostReplacement && errors.Is(err, persistenthost.ErrAttached) {
-			conv, directErr := d.connect(ctx, workdir, env)
-			return conv, false, directErr
+	}
+	if prepareEnv != nil {
+		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
+			preparedEnv, prepareErr := prepareEnv(prepareCtx)
+			if prepareErr != nil {
+				return persistenthost.PreparedProvider{}, prepareErr
+			}
+			return persistenthost.PreparedProvider{
+				Env: envSlice(preparedEnv), Argv: []string{bin, "app-server"},
+			}, nil
 		}
+	}
+	transport, err := d.connectHost(ctx, hostConfig)
+	if err != nil {
 		if errors.Is(err, persistenthost.ErrOwnershipInconclusive) ||
 			errors.Is(err, persistenthost.ErrAttached) ||
 			errors.Is(err, persistenthost.ErrIncompatible) ||
@@ -594,6 +633,6 @@ func codexProcessEnv(ctx context.Context, bin string, env map[string]string) []s
 	if _, ok := overlay["PATH"]; !ok {
 		overlay["PATH"] = os.Getenv("PATH")
 	}
-	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath)
+	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath, agentlaunch.PinnedDir(os.Executable, overlay["AO_DATA_DIR"]))
 	return envSlice(overlay)
 }

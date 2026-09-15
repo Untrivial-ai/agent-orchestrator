@@ -5,7 +5,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { conversationQueryKey } from "./useConversation";
@@ -15,11 +15,13 @@ export type SessionInterfaceTransition = components["schemas"]["SessionInterface
 export type SessionInterfaceTransitionStatus =
 	components["schemas"]["SessionInterfaceTransitionStatusResponse"];
 export type SessionInterfaceTransitionPolicy = "drain" | "interrupt";
+export type SessionInterfaceTransitionHistoryPolicy = "strict" | "provider_history";
 export type SessionInterfaceMode = "chat" | "tui";
 
 type StartInterfaceTransitionInput = {
 	targetMode: SessionInterfaceMode;
 	policy: SessionInterfaceTransitionPolicy;
+	historyPolicy?: SessionInterfaceTransitionHistoryPolicy;
 };
 
 type StartInterfaceTransitionMutationInput = StartInterfaceTransitionInput & {
@@ -75,11 +77,10 @@ function summarizeInterfaceTransitionMutations<
 			pending = mutation;
 		}
 	}
+	const errored = !pending && latest?.status === "error" ? latest : undefined;
 	return {
-		error:
-			!pending && latest?.status === "error"
-				? apiErrorMessage(latest.error)
-				: undefined,
+		error: errored ? apiErrorMessage(errored.error) : undefined,
+		errorAt: errored?.submittedAt,
 		isPending: Boolean(pending),
 	};
 }
@@ -125,13 +126,24 @@ export function interfaceTransitionIsCancellable(transition?: SessionInterfaceTr
 	return Boolean(transition && cancellablePhases.has(transition.phase));
 }
 
+export function interfaceTransitionNeedsRestart(transition?: SessionInterfaceTransition): boolean {
+	// The daemon retains the active fence until target shutdown is proven;
+	// this is an actionable recovery state, not ongoing progress.
+	return Boolean(
+		transition &&
+			interfaceTransitionIsActive(transition) &&
+			transition.errorCode === "TARGET_STOP_UNCONFIRMED",
+	);
+}
+
 export function interfaceTransitionHasUnacknowledgedNotice(
 	transition?: SessionInterfaceTransition,
 ): boolean {
 	return Boolean(
-		transition &&
-			!transition.noticeAcknowledgedAt &&
-			(transition.phase === "failed" || transition.phase === "recovery_required"),
+		interfaceTransitionNeedsRestart(transition) ||
+			(transition &&
+				!transition.noticeAcknowledgedAt &&
+				(transition.phase === "failed" || transition.phase === "recovery_required")),
 	);
 }
 
@@ -166,6 +178,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		},
 		refetchInterval: (state) => {
 			const status = state.state.data;
+			if (interfaceTransitionNeedsRestart(status?.transition)) return false;
 			if (interfaceTransitionIsActive(status?.transition)) return 250;
 			// A missing or not-yet-current native identity is transient while the
 			// terminal's session-start hook is arriving. Recheck only those readiness
@@ -318,9 +331,37 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			);
 		});
 	}, [queryClient, sessionId, transitionActive, transitionKey]);
+	// A local start refusal records a durable-free error. If any client then opens
+	// a real transition, that newer durable row supersedes the stale refusal: the
+	// switch is running or done, so the "could not switch" notice must not linger.
+	const transitionCreatedAt = transition ? Date.parse(transition.createdAt) : NaN;
+	const startErrorSuperseded = Boolean(
+		startState.errorAt !== undefined &&
+			Number.isFinite(transitionCreatedAt) &&
+			transitionCreatedAt > startState.errorAt,
+	);
+	useEffect(() => {
+		if (!startErrorSuperseded) return;
+		clearInterfaceTransitionMutationState(
+			queryClient,
+			startInterfaceTransitionMutationKey,
+			sessionId,
+		);
+	}, [queryClient, sessionId, startErrorSuperseded]);
+
+	const refreshStatus = useCallback(
+		async (): Promise<SessionInterfaceTransitionStatus | undefined> => {
+			const refreshed = await query.refetch();
+			if (refreshed.error) throw refreshed.error;
+			return refreshed.data;
+		},
+		[query.refetch],
+	);
+
 	return {
 		status: query.data,
 		transition,
+		refreshStatus,
 		settling,
 		isLoading: query.isLoading,
 		statusError: query.error ? apiErrorMessage(query.error) : undefined,
@@ -329,7 +370,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			return start.mutateAsync({ ...input, targetSessionId: sessionId });
 		},
 		starting: startState.isPending,
-		startError: startState.error,
+		startError: startErrorSuperseded ? undefined : startState.error,
 		resetStartError: () => {
 			clearInterfaceTransitionMutationState(
 				queryClient,

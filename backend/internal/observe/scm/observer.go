@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -315,10 +316,11 @@ type subject struct {
 // origin). For same-repo PRs repo == headRepo; for a cross-fork PR (fork head,
 // upstream base) repo is the upstream base and headRepo is the fork origin.
 type sessionRepo struct {
-	session  domain.SessionRecord
-	repo     ports.SCMRepo
-	headRepo ports.SCMRepo
-	branch   string
+	session   domain.SessionRecord
+	repo      ports.SCMRepo
+	headRepo  ports.SCMRepo
+	branch    string
+	workspace bool
 }
 
 type repoGuardState struct {
@@ -768,7 +770,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
 		if origin, ok := originRepos[sess.ProjectID]; ok {
 			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch})
+				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace})
 				repos = append(repos, repo)
 			}
 		}
@@ -865,7 +867,7 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 				continue
 			}
 			seen[key] = true
-			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch})
+			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch, workspace: true})
 		}
 	}
 	return repos, nil
@@ -1198,14 +1200,6 @@ func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []session
 	return map[string]ports.SCMIdentity{fallbackIdentityKey: identity}, true
 }
 
-// matchSession picks the session that owns sourceBranch. A session owns the
-// branch when it is an exact match or a stacked descendant ("branch/..."). The
-// default worker branch is a leaf named "<namespace>/root"; for that shape the
-// session also owns sibling branches under "<namespace>/..." so Git can create
-// child PR branches without colliding with the root ref. When several session
-// branches are prefixes of the same source branch the longest (most specific)
-// one wins, so a child session claims its own stacked PRs rather than the
-// ancestor session.
 // candidatesForHeadRepo narrows the scanned repo's session candidates to those
 // whose head branch lives in headRepo (the PR's head repository full name). This
 // is the fork guard: a PR is only attributable when its head repo equals a
@@ -1224,28 +1218,58 @@ func candidatesForHeadRepo(candidates []sessionRepo, headRepo string) []sessionR
 	return out
 }
 
+// matchSession prefers exact branches, then the longest owned prefix. Root
+// leaves own slash siblings. Legacy workspace branches are bare refs, so they
+// also own hyphen siblings, but only under the validated AO session branch.
+// Equal specificity across different sessions is ambiguous: leave the PR for
+// explicit claiming rather than assigning it according to store iteration order.
 func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, bool) {
-	for _, sr := range candidates {
-		if sr.branch != "" && sr.branch == sourceBranch {
-			return sr, true
-		}
-	}
 	var best sessionRepo
 	bestLen := -1
+	ambiguous := false
+	consider := func(sr sessionRepo, length int) {
+		if length > bestLen {
+			best, bestLen, ambiguous = sr, length, false
+		} else if length == bestLen && best.session.ID != sr.session.ID {
+			ambiguous = true
+		}
+	}
 	for _, sr := range candidates {
 		if sr.branch == "" {
 			continue
 		}
+		if sr.branch == sourceBranch {
+			consider(sr, len(sourceBranch)+1)
+		}
 		for _, prefix := range sessionBranchPrefixes(sr.branch) {
 			if prefix == sourceBranch || strings.HasPrefix(sourceBranch, prefix+"/") {
-				if len(prefix) > bestLen {
-					best = sr
-					bestLen = len(prefix)
-				}
+				consider(sr, len(prefix))
 			}
 		}
+		if workspaceHyphenBranch(sr) && strings.HasPrefix(sourceBranch, sr.branch+"-") && len(sourceBranch) > len(sr.branch)+1 {
+			consider(sr, len(sr.branch))
+		}
 	}
-	return best, bestLen >= 0
+	return best, bestLen >= 0 && !ambiguous
+}
+
+func workspaceHyphenBranch(sr sessionRepo) bool {
+	if !sr.workspace || sr.session.ID == "" {
+		return false
+	}
+	base := "ao/" + string(sr.session.ID)
+	if sr.branch == base {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(sr.branch, base+"-")
+	if !ok {
+		return false
+	}
+	// workspaceProjectBranch appends -2, -3, ... when a ref already exists.
+	// Do not treat arbitrary topics, another session ID, or padded numbers as
+	// a generated branch and broaden their ownership.
+	n, err := strconv.Atoi(suffix)
+	return err == nil && n >= 2 && strconv.Itoa(n) == suffix
 }
 
 func sessionBranchPrefixes(branch string) []string {
@@ -1717,6 +1741,14 @@ func (o *Observer) prepareForPersistence(obs ports.SCMObservation, local domain.
 		CI:       ciHash != local.CIHash,
 		Review:   reviewHash != local.ReviewHash,
 	}
+	// A successful fetch that changes completeness (partial <-> full) must
+	// persist even when the provider content is unchanged: rows upgraded by the
+	// conservative review_partial default start uncertain, and without this a
+	// content-hash match would skip the write and keep the exact count hidden
+	// forever.
+	if opts.reviewFetched && obs.Review.Partial != local.ReviewPartial {
+		obs.Changed.Review = true
+	}
 	obs.PR.State = firstNonEmpty(obs.PR.State, normalizePRState(obs.PR.Draft, obs.PR.Merged, obs.PR.Closed))
 	obs.ObservedAt = firstTime(obs.ObservedAt, now)
 	return obs
@@ -1749,9 +1781,20 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	if obs.Changed.CI || ciObservedAt.IsZero() {
 		ciObservedAt = obs.ObservedAt
 	}
+	// Only a successful review-thread fetch establishes a review observation:
+	// a metadata/CI-only pass (or a failed review fetch in preserve mode) must
+	// not manufacture one, or a never-fetched review storage would look
+	// complete to the summary gate and publish a known-looking zero.
 	reviewObservedAt := local.ReviewObservedAt
-	if opts.reviewFetched || reviewObservedAt.IsZero() {
+	if opts.reviewFetched {
 		reviewObservedAt = obs.ObservedAt
+	}
+	// Partial-ness follows the last fetched review observation; when this pass
+	// did not fetch reviews, keep the local record so the summary layer can
+	// keep treating stored thread rows as a partial view.
+	reviewPartial := local.ReviewPartial
+	if opts.reviewFetched {
+		reviewPartial = obs.Review.Partial
 	}
 	pr := domain.PullRequest{
 		URL:                      firstNonEmpty(obs.PR.URL, obs.PR.HTMLURL),
@@ -1777,6 +1820,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 		Deletions:                obs.PR.Deletions,
 		ChangedFiles:             obs.PR.ChangedFiles,
 		Author:                   obs.PR.Author,
+		AuthorAvatarURL:          obs.PR.AuthorAvatarURL,
 		BaseSHA:                  obs.PR.BaseSHA,
 		MergeCommitSHA:           obs.PR.MergeCommitSHA,
 		ProviderState:            obs.PR.ProviderState,
@@ -1793,6 +1837,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 		ObservedAt:               observedAt,
 		CIObservedAt:             ciObservedAt,
 		ReviewObservedAt:         reviewObservedAt,
+		ReviewPartial:            reviewPartial,
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {
@@ -1833,7 +1878,7 @@ func observationFromLocal(repo ports.SCMRepo, pr domain.PullRequest, checks []do
 		Provider:     firstNonEmpty(pr.Provider, repo.Provider),
 		Host:         firstNonEmpty(pr.Host, repo.Host),
 		Repo:         firstNonEmpty(pr.Repo, repoFullName(repo)),
-		PR:           ports.SCMPRObservation{URL: pr.URL, Number: pr.Number, State: normalizePRState(pr.Draft, pr.Merged, pr.Closed), Draft: pr.Draft, Merged: pr.Merged, Closed: pr.Closed, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch, HeadSHA: pr.HeadSHA, Title: pr.Title, Additions: pr.Additions, Deletions: pr.Deletions, ChangedFiles: pr.ChangedFiles, Author: pr.Author, BaseSHA: pr.BaseSHA, MergeCommitSHA: pr.MergeCommitSHA, ProviderState: pr.ProviderState, ProviderMergeable: pr.ProviderMergeable, ProviderMergeStateStatus: pr.ProviderMergeStateStatus, HTMLURL: pr.HTMLURL, CreatedAtProvider: pr.CreatedAtProvider, UpdatedAtProvider: pr.UpdatedAtProvider, MergedAtProvider: pr.MergedAtProvider, ClosedAtProvider: pr.ClosedAtProvider},
+		PR:           ports.SCMPRObservation{URL: pr.URL, Number: pr.Number, State: normalizePRState(pr.Draft, pr.Merged, pr.Closed), Draft: pr.Draft, Merged: pr.Merged, Closed: pr.Closed, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch, HeadSHA: pr.HeadSHA, Title: pr.Title, Additions: pr.Additions, Deletions: pr.Deletions, ChangedFiles: pr.ChangedFiles, Author: pr.Author, AuthorAvatarURL: pr.AuthorAvatarURL, BaseSHA: pr.BaseSHA, MergeCommitSHA: pr.MergeCommitSHA, ProviderState: pr.ProviderState, ProviderMergeable: pr.ProviderMergeable, ProviderMergeStateStatus: pr.ProviderMergeStateStatus, HTMLURL: pr.HTMLURL, CreatedAtProvider: pr.CreatedAtProvider, UpdatedAtProvider: pr.UpdatedAtProvider, MergedAtProvider: pr.MergedAtProvider, ClosedAtProvider: pr.ClosedAtProvider},
 		CI:           ciObservationFromLocal(pr, checks),
 		Review:       ports.SCMReviewObservation{Decision: string(pr.Review)},
 		Mergeability: mergeabilityObservationFromLocal(pr),

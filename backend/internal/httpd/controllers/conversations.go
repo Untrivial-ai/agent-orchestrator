@@ -35,9 +35,10 @@ type ConversationService interface {
 	ResolveInput(ctx context.Context, session domain.SessionID, requestID string, response ports.ChatInputResponse) error
 	Interrupt(ctx context.Context, session domain.SessionID) error
 	Steer(ctx context.Context, session domain.SessionID, msg ports.ChatUserMessage) (chatsvc.SteerResult, error)
+	RecoverSteer(ctx context.Context, session domain.SessionID, clientMessageID string) (chatsvc.SteerResult, error)
 	PromoteQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) (chatsvc.PromoteQueuedTurnResult, error)
 	CancelQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) error
-	EditQueuedTurn(ctx context.Context, session domain.SessionID, turnID, text string) error
+	EditQueuedTurn(ctx context.Context, session domain.SessionID, turnID string, edit chatsvc.QueuedMessageEdit) error
 	ReorderQueuedTurns(ctx context.Context, session domain.SessionID, turnIDs []string) error
 	Models(ctx context.Context, session domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error)
 	ConfigOptions(ctx context.Context, session domain.SessionID) ([]ports.ChatConfigOption, error)
@@ -215,6 +216,18 @@ func (c *ConversationsController) activateBranch(w http.ResponseWriter, r *http.
 
 func writeConversationEditError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, chatsvc.ErrEditDeliveryUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_UNCERTAIN",
+			"the provider may have received this edit; retry only with the same recovery action", nil)
+	case errors.Is(err, chatsvc.ErrEditIdempotencyConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_IDEMPOTENCY_CONFLICT",
+			"this delivery handle belongs to a different edit", nil)
+	case errors.Is(err, chatsvc.ErrEditDeliveryRejected):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_REJECTED",
+			"the edit was not accepted; retry deliberately with a new delivery handle", nil)
 	case errors.Is(err, chatsvc.ErrForkUnsupported):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_EDIT_UNSUPPORTED", "this agent cannot branch an earlier prompt", nil)
@@ -474,11 +487,12 @@ func configOptionsPayload(options []ports.ChatConfigOption) ConversationConfigOp
 		}
 		for _, choice := range option.Choices {
 			item.Choices = append(item.Choices, ConversationConfigChoiceResponse{
-				Value:       choice.Value,
-				Name:        choice.Name,
-				Description: choice.Description,
-				Group:       choice.Group,
-				GroupName:   choice.GroupName,
+				PermissionMode: choice.PermissionMode,
+				Value:          choice.Value,
+				Name:           choice.Name,
+				Description:    choice.Description,
+				Group:          choice.Group,
+				GroupName:      choice.GroupName,
 			})
 		}
 		out.Options = append(out.Options, item)
@@ -640,8 +654,12 @@ func (c *ConversationsController) resolve(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	requestID, ok := conversationRequestID(w, r)
+	if !ok {
+		return
+	}
 	err := c.Svc.Resolve(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
-		chi.URLParam(r, "requestId"), ports.ChatDecision{ID: req.DecisionID})
+		requestID, ports.ChatDecision{ID: req.DecisionID})
 	if err != nil {
 		writeConversationError(w, r, err)
 		return
@@ -670,9 +688,13 @@ func (c *ConversationsController) resolveInput(w http.ResponseWriter, r *http.Re
 			"CHAT_INPUT_CONTENT_INVALID", "content is only allowed with accept", nil)
 		return
 	}
+	requestID, ok := conversationRequestID(w, r)
+	if !ok {
+		return
+	}
 	if err := c.Svc.ResolveInput(
 		r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
-		chi.URLParam(r, "requestId"),
+		requestID,
 		ports.ChatInputResponse{Action: action, Content: req.Content},
 	); err != nil {
 		writeConversationError(w, r, err)
@@ -692,6 +714,20 @@ func (c *ConversationsController) interrupt(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// conversationRequestID decodes the path id the Electron client percent-encodes.
+// ACP persistent hosts mint ids such as `acp-request:<host>:<n>`; openapi-fetch
+// turns the colons into %3A, and chi.URLParam leaves that encoding in place —
+// the same trap ActivateBranch already handles for `conversation-1:root`.
+func conversationRequestID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	requestID, err := url.PathUnescape(chi.URLParam(r, "requestId"))
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_REQUEST_INVALID", "conversation request identifier is invalid", nil)
+		return "", false
+	}
+	return requestID, true
 }
 
 func decodeConversationBody(w http.ResponseWriter, r *http.Request, into any) bool {

@@ -137,5 +137,3 @@ export function composeMenuCloseAutoFocus(handler?: (event: Event) => void) {
 		keepFocusOnOpenedSurface(event);
 	};
 }
-
-

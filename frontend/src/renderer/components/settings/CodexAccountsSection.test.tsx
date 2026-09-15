@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import { writeCodexAccounts } from "../../hooks/codex-accounts-state";
 import { useUiStore } from "../../stores/ui-store";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 
@@ -599,4 +600,54 @@ it("starts a global switch with the displayed account revision", async () => {
 		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1" },
 	}));
 	vi.unstubAllGlobals();
+});
+
+const unauthorizedAuthentication = { ...authentication, state: "unauthorized", reasonCode: "unauthorized", reason: "Codex needs authentication." };
+const launchFailureResponse = {
+	...accountResponse,
+	accounts: [{ ...activeAccount, authentication: unauthorizedAuthentication }, inactiveAccount],
+};
+
+it("shows the active account's reauthentication state and CTA as soon as a failed launch publishes it", async () => {
+	const { container, queryClient } = renderSection();
+	expect(await screen.findByText("active@example.com · Pro · 96% remaining")).toBeInTheDocument();
+	fireEvent.click(container.querySelector(`[data-account-id="${activeAccount.id}"] button`) as HTMLButtonElement);
+	expect(await screen.findByRole("button", { name: "Log out" })).toBeInTheDocument();
+	const reads = getMock.mock.calls.length;
+
+	// The daemon publishes the account event the rejected spawn produced.
+	act(() => { writeCodexAccounts(queryClient, launchFailureResponse as never, "replace"); });
+
+	expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+	expect(screen.getByText("active@example.com · Signed out")).toBeInTheDocument();
+	expect(getMock.mock.calls.length).toBe(reads);
+});
+
+it("does not let an authorized inactive account mask the active account's reauthentication", async () => {
+	getMock.mockResolvedValue({ data: launchFailureResponse });
+	postMock.mockImplementation((path: string) => path === "/api/v1/agents/codex/accounts/ensure" ? Promise.resolve({ data: launchFailureResponse }) : Promise.resolve({ data: {} }));
+	const { container } = renderSection();
+
+	expect(await screen.findByText("active@example.com · Signed out")).toBeInTheDocument();
+	const activeRow = container.querySelector(`[data-account-id="${activeAccount.id}"]`) as HTMLElement;
+	const inactiveRow = container.querySelector(`[data-account-id="${inactiveAccount.id}"]`) as HTMLElement;
+	expect(within(activeRow).getByText("Signed out")).toBeInTheDocument();
+	expect(within(inactiveRow).getByText("Signed in")).toBeInTheDocument();
+	expect(within(activeRow).queryByText("Signed in")).not.toBeInTheDocument();
+});
+
+it("restores the signed-in state after a successful reauthentication", async () => {
+	getMock.mockResolvedValue({ data: launchFailureResponse });
+	postMock.mockImplementation((path: string) => path === "/api/v1/agents/codex/accounts/ensure" ? Promise.resolve({ data: launchFailureResponse }) : Promise.resolve({ data: {} }));
+	const { container, queryClient } = renderSection();
+	expect(await screen.findByText("active@example.com · Signed out")).toBeInTheDocument();
+	fireEvent.click(container.querySelector(`[data-account-id="${activeAccount.id}"] button`) as HTMLButtonElement);
+	expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+
+	act(() => { writeCodexAccounts(queryClient, accountResponse as never, "replace"); });
+
+	expect(await screen.findByRole("button", { name: "Log out" })).toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+	expect(screen.getByText("active@example.com · Pro · 96% remaining")).toBeInTheDocument();
 });
