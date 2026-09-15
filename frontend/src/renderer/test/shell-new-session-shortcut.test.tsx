@@ -19,6 +19,9 @@ const shellMocks = vi.hoisted(() => {
 		routeParams: {} as { projectId?: string; sessionId?: string },
 		routeSearch: {} as Record<string, unknown>,
 		matchRouteTarget: null as string | null,
+		cloudReady: false,
+		cloudOrg: undefined as { id: string } | undefined,
+		removeProject: undefined as ((projectId: string) => Promise<void>) | undefined,
 		workspaces: [] as WorkspaceSummary[],
 		workspaceQuery: {
 			data: [] as WorkspaceSummary[],
@@ -100,6 +103,9 @@ const shellMocks = vi.hoisted(() => {
 			prefetchQuery: vi.fn(async () => undefined),
 			setQueryData: vi.fn(),
 		},
+		cloudClient: {
+			deleteProject: vi.fn(),
+		},
 		state,
 	};
 });
@@ -149,6 +155,8 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 vi.mock("../hooks/useWorkspaceQuery", async (importOriginal) => ({
+	cloudProjectsQueryKey: ["cloud-projects"],
+	cloudSessionsQueryKey: ["cloud-sessions"],
 	workspaceStatusesChecking: (await importOriginal<typeof import("../hooks/useWorkspaceQuery")>()).workspaceStatusesChecking,
 	useWorkspaceQuery: () => shellMocks.state.workspaceQuery,
 	useWorkspaceTraySessions: () => ({ data: [] }),
@@ -176,7 +184,20 @@ vi.mock("../lib/daemon-status", () => ({
 // These shell shortcut tests never mount a terminal, so keep that unrelated
 // settings/query path out of the provider-free harness.
 vi.mock("../hooks/useCloudCp", () => ({
-	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
+	useCloudCp: () => ({
+		client: shellMocks.cloudClient,
+		ready: shellMocks.state.cloudReady,
+		baseUrl: "https://cp.example.com",
+	}),
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({
+		org: shellMocks.state.cloudOrg,
+		isLoading: false,
+		error: undefined,
+		ready: shellMocks.state.cloudReady,
+	}),
 }));
 
 // The shell layout opens standalone terminals; this suite only covers the
@@ -266,7 +287,14 @@ vi.mock("../components/Sidebar", async () => {
 	const { useUiStore: useStore } = await vi.importActual<typeof import("../stores/ui-store")>("../stores/ui-store");
 	return {
 		SIDEBAR_DEFAULT_WIDTH: 240,
-		Sidebar: ({ topbarOffset }: { topbarOffset?: string }) => {
+		Sidebar: ({
+			topbarOffset,
+			onRemoveProject,
+		}: {
+			topbarOffset?: string;
+			onRemoveProject?: (projectId: string) => Promise<void>;
+		}) => {
+			shellMocks.state.removeProject = onRemoveProject;
 			const nonce = useStore((state) => state.createProjectNonce);
 			const folderDropRequest = useStore((state) => state.folderDropRequest);
 			return (
@@ -352,6 +380,9 @@ beforeEach(() => {
 	shellMocks.state.routeParams = {};
 	shellMocks.state.routeSearch = {};
 	shellMocks.state.matchRouteTarget = null;
+	shellMocks.state.cloudReady = false;
+	shellMocks.state.cloudOrg = undefined;
+	shellMocks.state.removeProject = undefined;
 	shellMocks.state.workspaces = workspaces;
 	shellMocks.state.workspaceQuery = {
 		data: workspaces,
@@ -361,6 +392,7 @@ beforeEach(() => {
 	};
 	shellMocks.state.daemonStatus = { state: "error", code: "not_ready" };
 	shellMocks.state.shellValue = undefined;
+	shellMocks.cloudClient.deleteProject.mockReset();
 	shellMocks.queryClient.fetchQuery.mockReset().mockResolvedValue(workspaces);
 	shellMocks.queryClient.getQueryData.mockReset().mockReturnValue(workspaces);
 	shellMocks.queryClient.getQueryState.mockReset().mockReturnValue({ dataUpdatedAt: 0 });
@@ -377,6 +409,36 @@ beforeEach(() => {
 });
 
 describe("shell workspace startup", () => {
+	it("deletes cloud projects through the control plane instead of the local daemon", async () => {
+		const cloudWorkspace = {
+			id: "cloud-proj-1",
+			name: "Cloud Project",
+			kind: "cloud",
+			path: "",
+			sessions: [],
+		} as unknown as WorkspaceSummary;
+		shellMocks.state.cloudReady = true;
+		shellMocks.state.cloudOrg = { id: "org-1" };
+		shellMocks.state.workspaceQuery = {
+			data: [cloudWorkspace],
+			dataUpdatedAt: 0,
+			isError: false,
+			isSuccess: true,
+		};
+		shellMocks.cloudClient.deleteProject.mockResolvedValue({});
+
+		await renderShell();
+		const removeProject = shellMocks.state.removeProject;
+		if (!removeProject) throw new Error("sidebar remove handler was not registered");
+
+		await removeProject(cloudWorkspace.id);
+
+		expect(shellMocks.cloudClient.deleteProject).toHaveBeenCalledWith("org-1", "cloud-proj-1");
+		expect(apiClient.DELETE).not.toHaveBeenCalled();
+		expect(shellMocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["cloud-projects"] });
+		expect(shellMocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["cloud-sessions"] });
+	});
+
 	it("routes duplicate-path project adds to the registered project and shows a toast", async () => {
 		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
 		vi.mocked(apiClient.POST).mockResolvedValueOnce({

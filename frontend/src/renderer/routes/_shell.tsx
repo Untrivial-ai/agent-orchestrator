@@ -30,7 +30,16 @@ import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
-import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions, workspaceStatusesChecking } from "../hooks/useWorkspaceQuery";
+import {
+	cloudProjectsQueryKey,
+	cloudSessionsQueryKey,
+	useWorkspaceQuery,
+	workspaceQueryKey,
+	workspaceQueryOptions,
+	workspaceStatusesChecking,
+} from "../hooks/useWorkspaceQuery";
+import { useCloudCp } from "../hooks/useCloudCp";
+import { useCloudOrg } from "../hooks/useCloudOrg";
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
@@ -52,7 +61,7 @@ import {
 } from "../lib/platform";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
+import { CLOUD_PROJECT_KIND, sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 
@@ -169,6 +178,8 @@ function ShellLayout() {
 	const queryClient = useQueryClient();
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
+	const { client: cloudClient, ready: cloudReady } = useCloudCp();
+	const { org: cloudOrg } = useCloudOrg();
 	// Global shortcut listeners need the latest workspace list, but recreating
 	// those subscriptions for every streamed activity update is avoidable.
 	const workspacesRef = useRef(workspaces);
@@ -638,37 +649,58 @@ function ShellLayout() {
 
 	const removeProject = useCallback(
 		async (projectId: string) => {
+			const workspace = workspacesRef.current.find((item) => item.id === projectId);
 			const isLastWorkspace =
-              workspaces.length === 1 && workspaces[0]?.id === projectId;
+				workspacesRef.current.length === 1 && workspacesRef.current[0]?.id === projectId;
 			void addRendererExceptionStep("Project removal requested", {
 				source: "project-remove",
 				operation: "project_remove",
 				surface: "project_board",
 				project_id: projectId,
 			});
-			const { error } = await apiClient.DELETE("/api/v1/projects/{id}", {
-				params: { path: { id: projectId } },
-			});
-			if (error) {
-				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
-				failure.code = apiErrorCode(error);
-				void captureRendererException(failure, {
-					source: "project-remove",
-					operation: "project_remove",
-					surface: "project_board",
-					project_id: projectId,
+			if (workspace?.kind === CLOUD_PROJECT_KIND) {
+				if (!cloudReady || !cloudOrg?.id) {
+					throw new Error("AO Cloud is not ready.");
+				}
+				try {
+					await cloudClient.deleteProject(cloudOrg.id, projectId);
+					await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
+					await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+				} catch (error) {
+					void captureRendererException(error, {
+						source: "project-remove",
+						operation: "project_remove",
+						surface: "project_board",
+						project_id: projectId,
+					});
+					throw error;
+				}
+			} else {
+				const { error } = await apiClient.DELETE("/api/v1/projects/{id}", {
+					params: { path: { id: projectId } },
 				});
-				throw failure;
+				if (error) {
+					const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
+					failure.code = apiErrorCode(error);
+					void captureRendererException(failure, {
+						source: "project-remove",
+						operation: "project_remove",
+						surface: "project_board",
+						project_id: projectId,
+					});
+					throw failure;
+				}
 			}
 			void captureRendererEvent("ao.renderer.project_removed", { project_id: projectId });
-			updateWorkspaces((current) => current.filter((item) => item.id !== projectId));
+			if (workspace?.kind !== CLOUD_PROJECT_KIND) {
+				updateWorkspaces((current) => current.filter((item) => item.id !== projectId));
+			}
 			if (isLastWorkspace) {
-              void navigate({ to: "/" });
-}
+				void navigate({ to: "/" });
+			}
 		},
-		[navigate, updateWorkspaces, workspaces],
+		[cloudClient, cloudOrg?.id, cloudReady, navigate, queryClient, updateWorkspaces],
 	);
-
 	const restartOrchestrator = useCallback(
 		async (projectId: string, mode?: "chat" | "tui") => {
 			await restartProjectOrchestrator({
