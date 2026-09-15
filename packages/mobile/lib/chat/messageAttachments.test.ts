@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentFilePath, isImageAttachment, stagedAttachmentParts, withAttachmentReferences } from "./messageAttachments";
+import { attachmentFilePath, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, withAttachmentReferences } from "./messageAttachments";
 
 describe("mobile Chat staged attachments", () => {
 	it("strips the desktop composer suffix so the image can render instead of the raw path list", () => {
@@ -41,6 +41,14 @@ describe("mobile Chat staged attachments", () => {
 		expect(text).toBe("Fix this\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-9.png");
 		expect(stagedAttachmentParts(text)).toEqual({ body: "Fix this", attachments: [".ao/attachments/attachment-9.png"] });
 		expect(withAttachmentReferences("unchanged", [])).toBe("unchanged");
+	});
+
+	it("treats a failed image load as stale once the URL or credential changes", () => {
+		const failed = { uri: "http://h:3011/api/v1/sessions/s/preview/files/a.png", headers: { Authorization: "Bearer old" } };
+		expect(isSameAttachmentLoad(failed, { uri: failed.uri, headers: { Authorization: "Bearer old" } })).toBe(true);
+		expect(isSameAttachmentLoad(failed, { uri: failed.uri, headers: { Authorization: "Bearer rotated" } })).toBe(false);
+		expect(isSameAttachmentLoad(failed, { uri: "http://other:3011/api/v1/sessions/s/preview/files/a.png", headers: failed.headers })).toBe(false);
+		expect(isSameAttachmentLoad(undefined, failed)).toBe(false);
 	});
 
 	it("builds the escaped preview-files route and recognises image paths", () => {

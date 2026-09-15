@@ -26,6 +26,17 @@ export function withAttachmentReferences(text: string, paths: string[]): string 
 	return `${body}${body ? "\n\n" : ""}Attached files (read these files in the workspace):\n${paths.map((path) => `- ${path}`).join("\n")}`;
 }
 
+export type AttachmentImageSource = { uri: string; headers: Record<string, string> };
+
+/**
+ * Whether two sources are the same image load. A recorded failure only sticks to
+ * the load that failed: a new address (endpoint race) or a rotated password is a
+ * fresh attempt. Compared by value so the credential never becomes a React key.
+ */
+export function isSameAttachmentLoad(a: AttachmentImageSource | undefined, b: AttachmentImageSource): boolean {
+	return a !== undefined && a.uri === b.uri && a.headers.Authorization === b.headers.Authorization;
+}
+
 export function isImageAttachment(path: string): boolean {
 	return IMAGE_ATTACHMENT_PATH.test(path);
 }

@@ -31,7 +31,7 @@ import {
 	toggleInputValue,
 	validateInput,
 } from "./elicitationModel";
-import { attachmentFilePath, attachmentName, isImageAttachment, stagedAttachmentParts } from "./messageAttachments";
+import { attachmentFilePath, attachmentName, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, type AttachmentImageSource } from "./messageAttachments";
 import type {
 	ConversationActivity,
 	ConversationItem,
@@ -270,14 +270,24 @@ function StagedAttachments({ sessionId, paths, spaced }: { sessionId: string; pa
 	</View>;
 }
 
-function StagedAttachment({ name, source }: { name: string; source?: { uri: string; headers: Record<string, string> } }) {
+function StagedAttachment({ name, source }: { name: string; source?: AttachmentImageSource }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	const [failed, setFailed] = useState(false);
-	if (source && !failed) {
-		return <Image accessibilityLabel={name} accessibilityIgnoresInvertColors source={source} resizeMode="contain" onError={() => setFailed(true)} style={styles.attachmentImage} />;
+	// The failure belongs to the load that failed, so a reconnect to another address
+	// or a rotated password retries on its own; tapping the chip retries in place.
+	const [failedLoad, setFailedLoad] = useState<AttachmentImageSource>();
+	const [attempt, setAttempt] = useState(0);
+	if (!source) {
+		return <View style={styles.attachmentChip}><Feather name="file-text" size={12} color={t.textTertiary} /><Text numberOfLines={1} style={styles.attachmentName}>{name}</Text></View>;
 	}
-	return <View style={styles.attachmentChip}><Feather name={source ? "image" : "file-text"} size={12} color={t.textTertiary} /><Text numberOfLines={1} style={styles.attachmentName}>{name}</Text></View>;
+	if (!isSameAttachmentLoad(failedLoad, source)) {
+		return <Image key={attempt} accessibilityLabel={name} accessibilityIgnoresInvertColors source={source} resizeMode="contain" onError={() => setFailedLoad(source)} style={styles.attachmentImage} />;
+	}
+	return <Pressable accessibilityRole="button" accessibilityLabel={`Retry loading ${name}`} hitSlop={6} onPress={() => { haptics.tap(); setFailedLoad(undefined); setAttempt((value) => value + 1); }} style={styles.attachmentChip}>
+		<Feather name="refresh-cw" size={12} color={t.textTertiary} />
+		<Text numberOfLines={1} style={styles.attachmentName}>{name}</Text>
+		<Text style={styles.attachmentRetry}>Tap to retry</Text>
+	</Pressable>;
 }
 
 function deliveryCopy(state?: string): string | undefined {
@@ -841,6 +851,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	attachmentImage: { width: 220, height: 220, borderRadius: 10, backgroundColor: t.bgColumn },
 	attachmentChip: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: t.borderSubtle, paddingHorizontal: 8, paddingVertical: 6 },
 	attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: 12 },
+	attachmentRetry: { color: t.blue, fontSize: 11, fontWeight: "600" },
 	originMessage: { marginVertical: 8, borderLeftWidth: 2, borderLeftColor: t.borderStrong, paddingLeft: 10, gap: 5 },
 	originHeader: { flexDirection: "row", alignItems: "center", gap: 5 },
 	originLabel: { color: t.textTertiary, fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.7 },
