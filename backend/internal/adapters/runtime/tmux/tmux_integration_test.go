@@ -266,7 +266,7 @@ func TestRuntimeIntegrationSupervisedExitKeepsInteractiveShell(t *testing.T) {
 	id := strings.ReplaceAll(t.Name(), "/", "_")
 	const launchID = "launch-1"
 	r := New(Options{Timeout: 5 * time.Second})
-	tmuxID := SessionName(id)
+	tmuxID := domain.RuntimeHandleName(id)
 	workspace := t.TempDir()
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: tmuxID})
 	t.Cleanup(func() { _ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: tmuxID}) })
