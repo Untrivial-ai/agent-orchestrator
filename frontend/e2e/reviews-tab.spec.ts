@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // dev:web (VITE_NO_ELECTRON=1) serves lib/mock-data.ts. Use stable session URLs
 // so fixture title changes do not prevent these tests from reaching Reviews.

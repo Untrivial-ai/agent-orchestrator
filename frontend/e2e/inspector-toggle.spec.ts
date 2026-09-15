@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // Regression for the dead inspector toggle. Open/close is store-driven Motion
 // (same spring as the left sidebar). The native browser view and xterm fit
