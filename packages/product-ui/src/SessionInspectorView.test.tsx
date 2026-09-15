@@ -138,6 +138,7 @@ describe("SessionInspectorShellView", () => {
       />,
     );
     const body = screen.getByRole("tablist").parentElement?.nextElementSibling;
+    expect(screen.getByRole("tablist").parentElement).toHaveClass("session-inspector__topbar--browser");
     expect(body).toHaveClass(
       "session-inspector__body--browser",
       "p-0",

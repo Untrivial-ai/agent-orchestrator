@@ -1,6 +1,7 @@
 export const EDITOR_IDS = [
 	"cursor",
 	"vscode",
+	"neovim",
 	"windsurf",
 	"zed",
 	"trae",

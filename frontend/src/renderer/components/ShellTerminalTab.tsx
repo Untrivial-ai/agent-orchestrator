@@ -154,10 +154,11 @@ export function ShellTerminalTab({
 			/>
 		) : undefined;
 		return (
-			<TerminalTabFrame
-				action={closeAction}
-				actionPosition="leading"
-				active={isActive}
+		<TerminalTabFrame
+			action={closeAction}
+			actionLayout="inline"
+			actionPosition="trailing"
+			active={isActive}
 				buttonProps={{
 					"aria-current": isActive,
 					"aria-selected": isActive,
@@ -177,7 +178,7 @@ export function ShellTerminalTab({
 			>
 				<SquareTerminal
 					aria-hidden="true"
-					className={cn("size-icon-sm shrink-0", "group-hover:opacity-0 group-focus-within:opacity-0")}
+					className="size-icon-sm shrink-0"
 				/>
 				<span className="truncate">{title}</span>
 			</TerminalTabFrame>
@@ -275,10 +276,10 @@ export function ShellTerminalTab({
 							{...closeControl}
 							className={
 								isConnected
-									? "absolute top-[calc(50%_-_1px)] left-2 z-20 grid size-icon-sm -translate-y-1/2 place-items-center text-passive opacity-0 pointer-events-none before:absolute before:-inset-1.5 before:content-[''] transition-colors duration-fast ease-out hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 motion-reduce:transition-none"
+									? "absolute inset-y-0 right-2 z-20 grid size-icon-sm place-items-center text-passive opacity-0 pointer-events-none before:absolute before:-inset-1.5 before:content-[''] transition-colors duration-fast ease-out hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 motion-reduce:transition-none"
 									: "inline-flex h-control-sm w-control-sm shrink-0 items-center justify-center overflow-hidden text-passive opacity-0 transition-colors duration-fast ease-out hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 motion-reduce:transition-none"
-							}
-						>
+								}
+							>
 							<X
 								aria-hidden="true"
 								className={isConnected ? "size-icon-sm translate-y-px" : "size-icon-sm"}

@@ -80,6 +80,7 @@ type conversation struct {
 
 	pumpDone  chan struct{}
 	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
@@ -383,12 +384,8 @@ func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error
 				display = id
 			}
 			models = append(models, ports.ChatModel{
-				ID:            id,
-				DisplayName:   display,
-				Description:   entry.Description,
-				Default:       entry.IsDefault,
-				Efforts:       efforts,
-				DefaultEffort: entry.DefaultEff,
+				ID: id, DisplayName: display, Description: entry.Description,
+				Default: entry.IsDefault, Efforts: efforts, DefaultEffort: entry.DefaultEff,
 			})
 		}
 		if resp.NextCursor == nil || *resp.NextCursor == "" {
@@ -829,10 +826,10 @@ func (c *conversation) Close() error {
 			c.failPendingApprovals()
 		}
 		if c.proc.stop != nil {
-			_ = c.proc.stop()
+			c.closeErr = c.proc.stop()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // Terminate destroys the provider host. Close only detaches and is used by
@@ -841,12 +838,12 @@ func (c *conversation) Terminate() error {
 	c.closeOnce.Do(func() {
 		c.failPendingApprovals()
 		if c.proc.terminate != nil {
-			_ = c.proc.terminate()
+			c.closeErr = c.proc.terminate()
 		} else if c.proc.stop != nil {
-			_ = c.proc.stop()
+			c.closeErr = c.proc.stop()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // approvalPayload is the subset of an approval request AO renders.

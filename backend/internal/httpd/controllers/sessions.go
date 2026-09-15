@@ -109,7 +109,13 @@ type SessionService interface {
 	WorkspaceWatchPaths(ctx context.Context, id domain.SessionID) ([]string, error)
 	ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceFiles, error)
 	GetWorkspaceFile(ctx context.Context, id domain.SessionID, path string, section sessionsvc.WorkspaceFileSection) (sessionsvc.WorkspaceFileDetail, error)
+	GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, path, commitSHA string) (sessionsvc.WorkspaceFileDetail, error)
+	UpdateWorkspaceFile(ctx context.Context, id domain.SessionID, input sessionsvc.UpdateWorkspaceFileInput) (sessionsvc.WorkspaceFileDetail, error)
 	GetWorkspaceFileBlob(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileBlob, error)
+	GetWorkspaceDiffs(ctx context.Context, id domain.SessionID, input sessionsvc.WorkspaceDiffInput) (sessionsvc.WorkspaceDiffs, error)
+	GetWorkspaceFileRevision(ctx context.Context, id domain.SessionID, path string, scope sessionsvc.WorkspaceDiffScope, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision string) (sessionsvc.WorkspaceFileRevision, error)
+	GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error)
+	SearchWorkspaceFiles(ctx context.Context, id domain.SessionID, query, cursor string, limit int) (sessionsvc.WorkspaceFileSearch, error)
 	ListWorkspaceTree(ctx context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error)
 	InvalidateWorkspaceCache(id domain.SessionID)
 	Pin(ctx context.Context, id domain.SessionID) (domain.Session, error)
@@ -172,7 +178,11 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/attachments", c.stageAttachments)
 	r.Get("/sessions/{sessionId}/workspace/files", c.listWorkspaceFiles)
 	r.Get("/sessions/{sessionId}/workspace/file", c.getWorkspaceFile)
+	r.Put("/sessions/{sessionId}/workspace/file", c.updateWorkspaceFile)
 	r.Get("/sessions/{sessionId}/workspace/file/blob", c.getWorkspaceFileBlob)
+	r.Post("/sessions/{sessionId}/workspace/diffs", c.getWorkspaceDiffs)
+	r.Get("/sessions/{sessionId}/workspace/file/revision", c.getWorkspaceFileRevision)
+	r.Get("/sessions/{sessionId}/workspace/search", c.searchWorkspaceFiles)
 	r.Get("/sessions/{sessionId}/workspace/tree", c.listWorkspaceTree)
 	r.Get("/sessions/{sessionId}/pr", c.listPRs)
 	r.Post("/sessions/{sessionId}/pr/claim", c.claimPR)
@@ -243,10 +253,6 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	var in SpawnSessionRequest
 	if err := decodeJSON(r, &in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	if in.ProjectID == "" {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROJECT_ID_REQUIRED", "projectId is required", nil)
 		return
 	}
 	mode, err := domain.ParseSessionMode(string(in.Mode))
@@ -568,12 +574,125 @@ func (c *SessionsController) getWorkspaceFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 	section := sessionsvc.WorkspaceFileSection(strings.TrimSpace(r.URL.Query().Get("section")))
-	file, err := c.Svc.GetWorkspaceFile(r.Context(), sessionID(r), relPath, section)
+	commitSHA := strings.TrimSpace(r.URL.Query().Get("commitSha"))
+	var file sessionsvc.WorkspaceFileDetail
+	var err error
+	if commitSHA != "" {
+		file, err = c.Svc.GetWorkspaceFileAtCommit(r.Context(), sessionID(r), relPath, commitSHA)
+	} else {
+		file, err = c.Svc.GetWorkspaceFile(r.Context(), sessionID(r), relPath, section)
+	}
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, workspaceFileResponse(file))
+}
+
+func (c *SessionsController) updateWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PUT", "/api/v1/sessions/{sessionId}/workspace/file")
+		return
+	}
+	var in UpdateWorkspaceFileRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	if strings.TrimSpace(in.Path) == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "WORKSPACE_PATH_REQUIRED", "path is required", nil)
+		return
+	}
+	file, err := c.Svc.UpdateWorkspaceFile(r.Context(), sessionID(r), sessionsvc.UpdateWorkspaceFileInput{
+		Path:                    in.Path,
+		Content:                 in.Content,
+		ExpectedFileFingerprint: strings.TrimSpace(in.ExpectedFileFingerprint),
+	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, workspaceFileResponse(file))
+}
+
+func (c *SessionsController) getWorkspaceDiffs(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/workspace/diffs")
+		return
+	}
+	var in WorkspaceDiffRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	diffs, err := c.Svc.GetWorkspaceDiffs(r.Context(), sessionID(r), sessionsvc.WorkspaceDiffInput{
+		Scope:            sessionsvc.WorkspaceDiffScope(in.Scope),
+		Paths:            in.Paths,
+		ContextLines:     in.ContextLines,
+		IgnoreWhitespace: in.IgnoreWhitespace,
+		WorkspaceVersion: in.WorkspaceVersion,
+		CommitSHA:        strings.TrimSpace(in.CommitSHA),
+	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, workspaceDiffsResponse(diffs))
+}
+
+func (c *SessionsController) getWorkspaceFileRevision(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/workspace/file/revision")
+		return
+	}
+	query := r.URL.Query()
+	relPath := strings.TrimSpace(query.Get("path"))
+	if relPath == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "WORKSPACE_PATH_REQUIRED", "path is required", nil)
+		return
+	}
+	side := sessionsvc.WorkspaceFileBlobSide(strings.TrimSpace(query.Get("side")))
+	if side == "" {
+		side = sessionsvc.WorkspaceBlobAfter
+	}
+	commitSHA := strings.TrimSpace(query.Get("commitSha"))
+	var revision sessionsvc.WorkspaceFileRevision
+	var err error
+	if commitSHA != "" {
+		revision, err = c.Svc.GetWorkspaceFileRevisionAtCommit(r.Context(), sessionID(r), relPath, side, strings.TrimSpace(query.Get("workspaceVersion")), strings.TrimSpace(query.Get("expectedRevision")), commitSHA)
+	} else {
+		revision, err = c.Svc.GetWorkspaceFileRevision(r.Context(), sessionID(r), relPath, sessionsvc.WorkspaceDiffScope(strings.TrimSpace(query.Get("scope"))), side, strings.TrimSpace(query.Get("workspaceVersion")), strings.TrimSpace(query.Get("expectedRevision")))
+	}
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	envelope.WriteJSON(w, http.StatusOK, workspaceFileRevisionResponse(revision))
+}
+
+func (c *SessionsController) searchWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/workspace/search")
+		return
+	}
+	query := r.URL.Query()
+	limit := 0
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_WORKSPACE_SEARCH_LIMIT", "limit is invalid", nil)
+			return
+		}
+		limit = parsed
+	}
+	result, err := c.Svc.SearchWorkspaceFiles(r.Context(), sessionID(r), query.Get("query"), query.Get("cursor"), limit)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, workspaceFileSearchResponse(result))
 }
 
 // listWorkspaceTree returns one directory level of the session workspace's
@@ -667,7 +786,15 @@ func (c *SessionsController) streamWorkspaceChanges(w http.ResponseWriter, r *ht
 				return
 			}
 			c.Svc.InvalidateWorkspaceCache(sessionID(r))
-			if _, err := fmt.Fprint(w, "event: workspace_changed\ndata: {}\n\n"); err != nil {
+			payload := struct {
+				WorkspaceVersion string `json:"workspaceVersion,omitempty"`
+				Overflow         bool   `json:"overflow"`
+			}{Overflow: true}
+			if files, listErr := c.Svc.ListWorkspaceFiles(r.Context(), sessionID(r)); listErr == nil {
+				payload.WorkspaceVersion = files.WorkspaceVersion
+			}
+			data, _ := json.Marshal(payload)
+			if _, err := fmt.Fprintf(w, "event: workspace_changed\ndata: %s\n\n", data); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -1420,6 +1547,7 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		Brief:          domain.SanitizeControlChars(in.Brief),
 		RequestedAgent: in.Agent,
 		Model:          domain.SanitizeControlChars(strings.TrimSpace(in.Model)),
+		Effort:         sanitizedOptionalString(in.Effort),
 		ApprovalMode:   in.ApprovalMode,
 		RequestedMode:  in.Mode,
 		Attachments:    attachments,
@@ -1429,6 +1557,14 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, DelegateTaskResponse{OK: true, WorkerID: out.WorkerID, OrchestratorID: out.OrchestratorID})
+}
+
+func sanitizedOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	sanitized := domain.SanitizeControlChars(strings.TrimSpace(*value))
+	return &sanitized
 }
 
 // activity records an agent activity-state signal reported by an agent hook
@@ -1455,6 +1591,11 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	agentSessionID := capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.AgentSessionID)))
+	checkpointOrigin := domain.ConversationCheckpointOrigin(strings.TrimSpace(string(in.ConversationCheckpointOrigin)))
+	if !checkpointOrigin.Valid() {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_CONVERSATION_CHECKPOINT_ORIGIN", "Conversation checkpoint origin must be human or coordination", nil)
+		return
+	}
 	if state == "" && agentSessionID == "" && in.Usage == nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "ACTIVITY_OR_SESSION_ID_REQUIRED", "Activity state or agent session ID is required", nil)
 		return
@@ -1465,19 +1606,24 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 	// never match its pre/post counterpart, so overlong values are dropped by
 	// the CLI; the cap here is defense against non-AO callers).
 	sig := ports.ActivitySignal{
-		Valid:                 state != "",
-		State:                 state,
-		Event:                 capActivityMeta(domain.SanitizeControlChars(in.Event)),
-		ToolName:              capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
-		ToolUseID:             capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
-		AgentSessionID:        agentSessionID,
-		LatestUserPrompt:      capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestUserPrompt)), 16<<10),
-		LatestAssistantUpdate: capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestAssistantUpdate)), 16<<10),
-		TranscriptPath:        capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
-		LaunchID:              capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
+		Valid:                        state != "",
+		State:                        state,
+		Event:                        capActivityMeta(domain.SanitizeControlChars(in.Event)),
+		ToolName:                     capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
+		ToolUseID:                    capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
+		AgentSessionID:               agentSessionID,
+		LatestUserPrompt:             capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestUserPrompt)), 16<<10),
+		LatestAssistantUpdate:        capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestAssistantUpdate)), 16<<10),
+		ConversationCheckpointOrigin: checkpointOrigin,
+		ProviderTurnID:               capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.ProviderTurnID))),
+		SubmissionID:                 capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.SubmissionID))),
+		TranscriptPath:               capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
+		LaunchID:                     capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
 	}
+	var activityErr error
 	if c.Activity != nil && (sig.Valid || sig.AgentSessionID != "") {
-		if err := c.Activity.ApplyActivitySignal(r.Context(), sessionID(r), sig); err != nil {
+		activityErr = c.Activity.ApplyActivitySignal(r.Context(), sessionID(r), sig)
+		if err := activityErr; err != nil && !errors.Is(err, ports.ErrActivityProjectionContention) {
 			if errors.Is(err, ports.ErrSessionNotFound) {
 				envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "SESSION_NOT_FOUND", "Unknown session", nil)
 				return
@@ -1512,6 +1658,13 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 				"err", err,
 			)
 		}
+	}
+	if activityErr != nil {
+		// The projection never committed, so the hook can retry the same payload.
+		// Usage observation is independent and must still run on contention.
+		w.Header().Set("Retry-After", "1")
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "ACTIVITY_PROJECTION_BUSY", "Concurrent session updates prevented this activity signal from committing; retry the hook", nil)
+		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, SetActivityResponse{OK: true, SessionID: sessionID(r), State: in.State})
 }
@@ -1651,7 +1804,7 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 	var claimed ports.PRClaimedByActiveSessionError
 	switch {
 	case errors.Is(err, sessionsvc.ErrInvalidPRRef):
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR_REF", "PR reference must be a PR/MR URL or a number", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR_REF", "PR reference must be a full PR/MR URL or a number resolved against the project origin or canonical repository. For a workspace child repository, pass its full PR/MR URL; a root without a remote cannot resolve numbers.", nil)
 	case errors.Is(err, sessionsvc.ErrPRNotFound):
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PR_NOT_FOUND", "Unknown PR", nil)
 	case errors.Is(err, sessionsvc.ErrPRNotOpen):
@@ -1663,7 +1816,7 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, sessionsvc.ErrSessionNoWorkspace):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "SESSION_NO_WORKSPACE", "Session has no workspace", nil)
 	case errors.Is(err, sessionsvc.ErrProjectMismatch):
-		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PROJECT_MISMATCH", "PR repository must match the project origin or its explicit canonicalRepoURL. For a fork, configure the upstream HTTPS repository URL with ao project set-config <project-id> --canonical-repo-url <url> (replaces config; preserve existing fields with --config-json). Git remotes alone do not grant trust.", nil)
+		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PROJECT_MISMATCH", "PR repository must match the project origin, its explicit canonicalRepoURL, or a registered workspace child origin. For workspace projects, check the registered repositories with ao project get <project-id> --json and pass the child's full PR/MR URL. canonicalRepoURL requires a valid root origin and is not a child-repository allowlist. For single-repo forks, configure the upstream HTTPS repository URL with ao project set-config <project-id> --canonical-repo-url <url> (replaces config; preserve existing fields with --config-json). Git remotes alone do not grant trust.", nil)
 	case errors.Is(err, sessionsvc.ErrSCMUnavailable):
 		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SCM_UNAVAILABLE", "SCM unavailable", nil)
 	default:
@@ -1910,29 +2063,32 @@ func sessionPRSummaries(prs []sessionsvc.PRSummary) []SessionPRSummary {
 
 func workspaceFilesResponse(files sessionsvc.WorkspaceFiles) ListWorkspaceFilesResponse {
 	return ListWorkspaceFilesResponse{
-		SessionID:      files.SessionID,
-		CompareBaseSHA: files.CompareBaseSHA,
-		CompareBaseRef: files.CompareBaseRef,
-		CompareMode:    files.CompareMode,
-		Files:          workspaceFileSummariesResponse(files.Files),
-		Truncated:      files.Truncated,
-		Sections:       workspaceFileSectionsResponse(files.Sections),
-		Commits:        workspaceCommitsResponse(files.Commits),
-		Summary:        WorkspaceSummary(files.Summary),
-		Ahead:          files.Ahead,
-		Behind:         files.Behind,
+		SessionID:        files.SessionID,
+		WorkspaceVersion: files.WorkspaceVersion,
+		CompareBaseSHA:   files.CompareBaseSHA,
+		CompareBaseRef:   files.CompareBaseRef,
+		CompareMode:      files.CompareMode,
+		Files:            workspaceFileSummariesResponse(files.Files),
+		Truncated:        files.Truncated,
+		Sections:         workspaceFileSectionsResponse(files.Sections),
+		Commits:          workspaceCommitsResponse(files.Commits),
+		Summary:          WorkspaceSummary(files.Summary),
+		Ahead:            files.Ahead,
+		Behind:           files.Behind,
 	}
 }
 
 func workspaceFileSummaryResponse(file sessionsvc.WorkspaceFileSummary) WorkspaceFileSummary {
 	return WorkspaceFileSummary{
-		Path:         file.Path,
-		PreviousPath: file.PreviousPath,
-		Status:       file.Status,
-		Additions:    file.Additions,
-		Deletions:    file.Deletions,
-		Size:         file.Size,
-		Binary:       file.Binary,
+		Path:            file.Path,
+		PreviousPath:    file.PreviousPath,
+		Status:          file.Status,
+		Additions:       file.Additions,
+		Deletions:       file.Deletions,
+		Size:            file.Size,
+		Binary:          file.Binary,
+		Editable:        file.Editable,
+		FileFingerprint: file.FileFingerprint,
 	}
 }
 
@@ -1961,6 +2117,7 @@ func workspaceCommitsResponse(commits []sessionsvc.CommitSummary) []WorkspaceCom
 			Subject:   commit.Subject,
 			Author:    commit.Author,
 			Timestamp: commit.Timestamp,
+			Files:     workspaceFileSummariesResponse(commit.Files),
 		})
 	}
 	return out
@@ -1977,6 +2134,7 @@ func workspaceFileResponse(file sessionsvc.WorkspaceFileDetail) WorkspaceFileRes
 		Size:             file.Size,
 		Binary:           file.Binary,
 		Deleted:          file.Deleted,
+		Editable:         file.Editable,
 		ImageMediaType:   file.ImageMediaType,
 		Content:          file.Content,
 		ContentTruncated: file.ContentTruncated,
@@ -1985,7 +2143,41 @@ func workspaceFileResponse(file sessionsvc.WorkspaceFileDetail) WorkspaceFileRes
 		CompareBaseSHA:   file.CompareBaseSHA,
 		CompareBaseRef:   file.CompareBaseRef,
 		CompareMode:      file.CompareMode,
+		WorkspaceVersion: file.WorkspaceVersion,
+		FileFingerprint:  file.FileFingerprint,
 	}
+}
+
+func workspaceDiffsResponse(diffs sessionsvc.WorkspaceDiffs) WorkspaceDiffsResponse {
+	groups := make([]WorkspaceDiffGroupResponse, 0, len(diffs.Groups))
+	for _, group := range diffs.Groups {
+		deferred := make([]WorkspaceDiffDeferredResponse, 0, len(group.Deferred))
+		for _, item := range group.Deferred {
+			deferred = append(deferred, WorkspaceDiffDeferredResponse{Path: item.Path, Reason: item.Reason})
+		}
+		groupErrors := make([]WorkspaceDiffErrorResponse, 0, len(group.Errors))
+		for _, item := range group.Errors {
+			groupErrors = append(groupErrors, WorkspaceDiffErrorResponse{Code: item.Code, Message: item.Message})
+		}
+		groups = append(groups, WorkspaceDiffGroupResponse{Repository: group.Repository, Patch: group.Patch, Truncated: group.Truncated, IncludedPaths: group.IncludedPaths, Deferred: deferred, Errors: groupErrors})
+	}
+	return WorkspaceDiffsResponse{SessionID: diffs.SessionID, WorkspaceVersion: diffs.WorkspaceVersion, Groups: groups}
+}
+
+func workspaceFileRevisionResponse(revision sessionsvc.WorkspaceFileRevision) WorkspaceFileRevisionResponse {
+	return WorkspaceFileRevisionResponse{
+		SessionID: revision.SessionID, Path: revision.Path, Side: revision.Side, Revision: revision.Revision,
+		WorkspaceVersion: revision.WorkspaceVersion, MediaType: revision.MediaType, Encoding: revision.Encoding,
+		Size: revision.Size, Exists: revision.Exists, Binary: revision.Binary, Truncated: revision.Truncated, Content: revision.Content,
+	}
+}
+
+func workspaceFileSearchResponse(result sessionsvc.WorkspaceFileSearch) WorkspaceFileSearchResponse {
+	items := make([]WorkspaceFileSearchResultResponse, 0, len(result.Results))
+	for _, item := range result.Results {
+		items = append(items, WorkspaceFileSearchResultResponse{Path: item.Path, Status: item.Status, Size: item.Size, Binary: item.Binary, FileFingerprint: item.FileFingerprint})
+	}
+	return WorkspaceFileSearchResponse{SessionID: result.SessionID, Query: result.Query, Results: items, NextCursor: result.NextCursor, Truncated: result.Truncated}
 }
 
 func workspaceTreeResponse(tree sessionsvc.WorkspaceTree) ListWorkspaceTreeResponse {

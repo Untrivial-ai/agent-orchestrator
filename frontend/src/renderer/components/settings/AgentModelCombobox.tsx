@@ -1,9 +1,11 @@
-import { ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentModelCatalog } from "../../hooks/useAgentModelsQuery";
 import { useSuppressStrayFocusRing } from "../../hooks/useSuppressStrayFocusRing";
 import { cn } from "../../lib/utils";
+import { useModelTuning, type ModelTuningControlsProps } from "./ModelTuningControls";
+import { OptionMenuItem, OptionMenuSub, OptionMenuSubContent, OptionMenuSubTrigger } from "../ui/option-menu";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -17,6 +19,15 @@ const MAX_VISIBLE_MODELS = 50;
 const MODEL_SEARCH_THRESHOLD = 10;
 const MAX_RECENT_MODELS = 3;
 const RECENT_MODELS_STORAGE_KEY = "ao.recentModels.v1";
+const ignoreEffortChange = () => {};
+
+export type ModelEffortSelection = Pick<ModelTuningControlsProps,
+	"effort" | "onEffortChange" | "onEffortReset" | "onValidityChange" | "roleLabel"
+>;
+
+function effortLabel(value: string) {
+	return value === "xhigh" ? "Extra high" : value.charAt(0).toUpperCase() + value.slice(1);
+}
 
 type AgentModel = NonNullable<AgentModelCatalog["models"]>[number];
 
@@ -60,6 +71,7 @@ export function AgentModelCombobox({
 	renderTrigger,
 	recentScope,
 	compact = false,
+	tuning,
 	disabled = false,
 	"aria-label": ariaLabel,
 }: {
@@ -85,10 +97,22 @@ export function AgentModelCombobox({
 	 *  contexts where the menu should read like a simple choice, not a
 	 *  model-management surface. */
 	compact?: boolean;
+	/** Codex callers opt into a combined model and reasoning-effort menu. */
+	tuning?: ModelEffortSelection;
 	disabled?: boolean;
 	"aria-label": string;
 }) {
 	const { t } = useTranslation();
+	const { selected: effortModel, invalidEffort } = useModelTuning({
+		models,
+		model: value,
+		effort: tuning?.effort ?? "",
+		onEffortChange: tuning?.onEffortChange ?? ignoreEffortChange,
+		onEffortReset: tuning?.onEffortReset,
+		onValidityChange: tuning?.onValidityChange,
+	});
+	const showEffort = Boolean(tuning && (effortModel?.efforts?.length || tuning.effort));
+	const currentEffortLabel = tuning?.effort ? effortLabel(tuning.effort) : t("settings.models.providerDefault");
 	const entryMode = customModelEntry ?? (allowCustom ? "direct" : "none");
 	const allowDirectCustom = entryMode === "direct";
 	const [search, setSearch] = useState("");
@@ -187,6 +211,7 @@ export function AgentModelCombobox({
 					) : (
 						<span className="min-w-0 truncate">{currentLabel}</span>
 					)}
+					{showEffort && <span className="shrink-0 text-settings-muted"> · {currentEffortLabel}</span>}
 					<ChevronDown
 						className="size-icon-sm shrink-0 opacity-70 transition-transform duration-300 ease-out group-data-[state=open]/agent-model-trigger:rotate-180"
 						aria-hidden="true"
@@ -226,8 +251,9 @@ export function AgentModelCombobox({
 						onScroll={updateScrollCue}
 					>
 						{normalizedSearch === "" && (
-							<DropdownMenuItem onSelect={() => onChange("")} className={modelItemClass(value === "")}>
+							<DropdownMenuItem onSelect={() => onChange("")} className={modelItemClass(value === "")} aria-current={tuning && value === "" ? true : undefined}>
 								{noOverrideLabel}
+								{tuning && value === "" && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 							</DropdownMenuItem>
 						)}
 
@@ -241,8 +267,10 @@ export function AgentModelCombobox({
 											key={item.id}
 											onSelect={() => selectModel(item.id)}
 											className={modelItemClass(item.id === value)}
+											aria-current={tuning && item.id === value ? true : undefined}
 										>
 											<span className="truncate text-settings-label">{item.label}</span>
+											{tuning && item.id === value && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 										</DropdownMenuItem>
 									) : (
 										<DropdownMenuItem
@@ -328,7 +356,27 @@ export function AgentModelCombobox({
 						aria-hidden="true"
 					/>
 				</div>
+				{showEffort && tuning && (
+					<div className="shrink-0">
+						<DropdownMenuSeparator />
+						<OptionMenuSub>
+							<OptionMenuSubTrigger label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
+							<OptionMenuSubContent>
+								{["", ...(effortModel?.efforts ?? [])].map((effort) => (
+									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === tuning.effort}
+										active={effort === tuning.effort} onSelect={() => tuning.onEffortChange(effort)} className="gap-3 text-xs">
+										{effort ? effortLabel(effort) : t("settings.models.providerDefault")}
+										{effort === tuning.effort && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
+									</OptionMenuItem>
+								))}
+							</OptionMenuSubContent>
+						</OptionMenuSub>
+					</div>
+				)}
 			</DropdownMenuContent>
+			{tuning && invalidEffort && <p role="alert" className="px-1 text-xs leading-row text-warning">
+				{t("settings.models.unsupportedTuning", { role: tuning.roleLabel ? `${tuning.roleLabel} ` : "" })}
+			</p>}
 		</DropdownMenu>
 	);
 }

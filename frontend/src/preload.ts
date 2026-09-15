@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, SET_TERMINAL_FOCUSED_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, type KeybindingOverrides } from "./shared/shortcuts";
+import {
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+	type ChatDraftDialogCopy,
+} from "./shared/chat-draft-risk";
 import type {
 	BrowserAgentActivityState,
 	BrowserDevToolsInput,
@@ -239,6 +244,9 @@ const api = {
 		setCloseShellTerminalShortcutEnabled: (enabled: boolean) => {
 			ipcRenderer.send(SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, enabled);
 		},
+		setChatDraftRisk: (risks: readonly ChatDraftBoundaryKind[], copy?: ChatDraftDialogCopy) => {
+			ipcRenderer.send(SET_CHAT_DRAFT_RISK_CHANNEL, risks, copy);
+		},
 		onOpenSettingsShortcut: (listener: () => void) => {
 			const wrapped = () => listener();
 			ipcRenderer.on(OPEN_SETTINGS_SHORTCUT_CHANNEL, wrapped);
@@ -386,11 +394,13 @@ const api = {
 		resetSitePermissions: (input: BrowserSiteTarget) => ipcRenderer.invoke("browser:site:reset", input) as Promise<BrowserSiteSettings>,
 		clearSiteData: (input: BrowserSiteTarget) => ipcRenderer.invoke("browser:site:clearData", input) as Promise<void>,
 		respondToPermissionRequest: (input: BrowserSitePermissionDecision) => ipcRenderer.send("browser:site:permissionDecision", input),
-		onPermissionRequest: (listener: (request: BrowserSitePermissionRequest) => void) => {
+			onPermissionRequest: (listener: (request: BrowserSitePermissionRequest) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, request: BrowserSitePermissionRequest) => listener(request);
 			ipcRenderer.on("browser:site:permissionRequest", wrapped);
 			return () => { ipcRenderer.off("browser:site:permissionRequest", wrapped); };
 		},
+		historyFavicon: (input: { viewId: string; url: string }) =>
+			ipcRenderer.invoke("browser:history:favicon", input) as Promise<string | undefined>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,
@@ -578,6 +588,9 @@ const api = {
 		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
 		install: (confirmedVersion?: string) => ipcRenderer.invoke("updates:install", confirmedVersion) as Promise<UpdateInstallResult>,
+		// True only when this boot is a genuine post-update relaunch; lets the
+		// startup loader swap "Connecting" copy for "Updating / Restarting".
+		isPostUpdateRelaunch: () => ipcRenderer.invoke("updates:isPostUpdateRelaunch") as Promise<boolean>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);

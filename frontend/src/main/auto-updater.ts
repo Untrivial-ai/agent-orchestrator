@@ -2,6 +2,7 @@ import { autoUpdater } from "electron-updater";
 import { CancellationToken } from "builder-util-runtime";
 import { app, dialog, autoUpdater as nativeAutoUpdater } from "electron";
 import { startMacUpdateProgress } from "./mac-update-progress";
+import { markUpdateRelaunch } from "./update-relaunch-flag";
 import { accessSync, constants as fsConstants, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -1091,7 +1092,32 @@ function automaticChecksAreFailing(): boolean {
 function publishFailingChecks(): void {
   if (!automaticChecksAreFailing() || failingChecksPublished) return;
   failingChecksPublished = true;
+  clearUnrecoverableRememberedBuild();
   broadcast(lastStatus);
+}
+
+// A build remembered from staged-update.json but never re-established in the
+// current process leaves the sidebar showing "Restart to update" for a build
+// that may not be installable: on macOS the native updater has no handoff, and
+// on Windows/Linux the cached installer exe may be missing or stale. If
+// automatic checks keep failing (network down, rate limited, feed 404), the
+// self-healing re-download never happens and the button is a permanent no-op.
+// Clear the stale metadata so the UI stops advertising an uninstallable build.
+function clearUnrecoverableRememberedBuild(): void {
+  if (stagedInCurrentProcess) return;
+  if (!hasStagedBuild()) return;
+  console.warn(
+    "clearing remembered staged build %s: automatic checks have failed %d times without re-establishing native readiness",
+    stagedVersion,
+    consecutiveAutomaticCheckFailures,
+  );
+  forgetPersistedStagedBuild(escalationStateDir);
+  stagedVersion = undefined;
+  stagedAtMs = undefined;
+  stagedChannel = undefined;
+  stagedEscalated = false;
+  stagedRequestId = undefined;
+  stopEscalationTimer();
 }
 
 // errorMessage extracts the user-facing message for an update error status,
@@ -2249,9 +2275,27 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
     if (!hasStagedBuild() || lastStatus.state === "downloading" || lastStatus.state === "preparing") {
       throw new Error("The update is not ready to install. Check for updates again.");
     }
+    if (!stagedInCurrentProcess) {
+      await runSerializedUpdaterOperation("manual-install", async () => {
+        await prepareRememberedNonDarwinUpdate();
+      });
+    }
     if (confirmedVersion !== undefined && stagedVersion && confirmedVersion !== stagedVersion) {
       return { state: "confirmation-required", version: stagedVersion,
         releaseNotes: lastStatus.state === "downloaded" && lastStatus.version === stagedVersion ? lastStatus.releaseNotes : undefined };
+    }
+    // Signal the next boot that it is a post-update relaunch so the startup loader
+    // shows "Updating / Restarting" copy. macOS gets this via the same marker on
+    // its own path below; here it is the only such signal (no native helper).
+    if (escalationStateDir && stagedVersion) {
+      // Best-effort and time-bounded: a hung state-dir write must never delay the
+      // install. The marker only drives startup-loader copy.
+      await Promise.race([
+        markUpdateRelaunch({ stateDir: escalationStateDir, version: stagedVersion }).catch((err) => {
+          console.warn("failed to write post-update relaunch marker:", err);
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 750)),
+      ]);
     }
     autoUpdater.quitAndInstall(false, true);
     return;
@@ -2288,6 +2332,17 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
       progress.assertAlive();
       macRestartProgress = progress;
       macRestartRequested = true;
+      // Same cross-platform post-update signal the renderer reads at boot. This
+      // is separate from the helper's active.json handshake above and only drives
+      // the startup loader copy; failing to write it must not abort the install.
+      // Best-effort and time-bounded: a hung state-dir write must never delay the
+      // install. The marker only drives startup-loader copy.
+      await Promise.race([
+        markUpdateRelaunch({ stateDir: escalationStateDir, version }).catch((err) => {
+          console.warn("failed to write post-update relaunch marker:", err);
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 750)),
+      ]);
       autoUpdater.quitAndInstall(false, true);
       if (!macRestartRequested) throw nativePreparationError ?? new Error("The installer could not restart AO.");
     } catch (err) {
@@ -2341,6 +2396,32 @@ async function prepareRememberedMacUpdate(confirmedVersion?: string): Promise<Up
     activeDownloadCancellation = token;
     // A cache hit re-establishes the native feed. The download promise is not
     // native readiness: waitForNativePreparation separately gates the quit.
+    await autoUpdater.downloadUpdate(token);
+  } finally {
+    restoreFeed?.();
+  }
+}
+
+// On Windows and Linux, a remembered staged build has no installer file in
+// electron-updater's in-memory state (downloadedUpdateHelper is null). Calling
+// quitAndInstall against that throws "No update filepath provided." Re-download
+// the build so the installer exe/AppImage is present before requesting install.
+async function prepareRememberedNonDarwinUpdate(): Promise<void> {
+  if (!escalationStateDir) throw new Error("Check for updates before restarting to install.");
+  const settings = await reconcileAndPersist(escalationStateDir, await readUpdateSettings(escalationStateDir));
+  configureFeed(settings);
+  autoUpdater.autoDownload = false;
+  broadcastUpdaterStatus({ state: "checking" });
+  const restoreFeed = await configureDirectPrereleaseFeed(settings);
+  try {
+    const result = await checkForUpdatesWithDeadline();
+    if (result?.isUpdateAvailable !== true) {
+      throw new Error("The remembered update is no longer available. Check for updates and try again.");
+    }
+    activeUpdaterPhase = "download";
+    pendingUpdateVersion = result.updateInfo.version;
+    const token = new CancellationToken();
+    activeDownloadCancellation = token;
     await autoUpdater.downloadUpdate(token);
   } finally {
     restoreFeed?.();

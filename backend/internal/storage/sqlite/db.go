@@ -1603,6 +1603,17 @@ func reconcileSchema(db *sql.DB) error {
 	if err := reconcileHarnessConstraint(db); err != nil {
 		return err
 	}
+	// A missing column fails reads loudly; a missing revision trigger silently
+	// disables every session CAS. Do not admit that database as healthy.
+	var revisionColumn, revisionTrigger int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'revision'),
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'sessions' AND name = 'sessions_revision_update')`).Scan(&revisionColumn, &revisionTrigger); err != nil {
+		return fmt.Errorf("schema verification: inspect session revision fence: %w", err)
+	}
+	if revisionColumn > 0 && revisionTrigger != 1 {
+		return errors.New("schema verification: sessions_revision_update trigger is missing; restore the session revision trigger before starting AO")
+	}
 	return nil
 }
 

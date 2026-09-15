@@ -32,7 +32,7 @@ describe("BrowserProfileButton", () => {
 		};
 
 		render(<BrowserProfileButton profileState={profileState} viewId="1:worker-1" />);
-		const button = screen.getByRole("button", { name: "Browser profile: Work" });
+		const button = screen.getByRole("button", { name: "Profile: Work" });
 		expect(button).toHaveClass("browser-profile-button");
 		expect(button).toHaveAttribute("title", "Work");
 		expect(screen.getByText("Work")).toHaveClass("browser-profile-button__label");
