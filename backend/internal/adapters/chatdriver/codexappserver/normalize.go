@@ -152,9 +152,7 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			ProviderTurnID:         firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
 			ProviderConversationID: p.ThreadID,
 			TurnState:              turnStateFrom(string(p.Turn.Status)),
-		}
-		if p.Turn.Error != nil && p.Turn.Error.Message != "" {
-			ev.Err = fmt.Errorf("%s", p.Turn.Error.Message)
+			Err:                    nativeTurnError(p.Turn),
 		}
 		return []ports.ChatEvent{ev}
 

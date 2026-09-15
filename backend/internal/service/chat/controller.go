@@ -815,6 +815,7 @@ func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.Ch
 type nativeHistoryTurn struct {
 	providerTurnID string
 	state          domain.TurnState
+	errorMessage   string
 	clientMessage  string
 	providerItem   string
 	text           string
@@ -884,6 +885,7 @@ func indexNativeHistoryTurns(
 		candidate := &nativeHistoryTurn{
 			providerTurnID: turn.ProviderTurnID,
 			state:          turn.State,
+			errorMessage:   turn.ErrorMessage,
 			messages:       make(map[string]int),
 			activities:     make(map[string]int),
 		}
@@ -1135,6 +1137,17 @@ func reconcileNativeHistory(
 		if event.Kind == ports.ChatEventTurnCompleted &&
 			event.TurnState == domain.TurnStateRecovered && knownTurnOutcome(candidate.state) {
 			event.TurnState = candidate.state
+		}
+		// SettleTurn replaces error_message. Both explicit failures and recovered
+		// outcomes must retain a stronger stored explanation over absent details
+		// or an adapter's fallback. Never carry failure text to another outcome.
+		if event.Kind == ports.ChatEventTurnCompleted && event.TurnState == domain.TurnStateFailed &&
+			candidate.state == domain.TurnStateFailed && strings.TrimSpace(candidate.errorMessage) != "" {
+			var fallback interface{ ChatFailureFallback() bool }
+			if event.Err == nil || strings.TrimSpace(event.Err.Error()) == "" ||
+				(errors.As(event.Err, &fallback) && fallback.ChatFailureFallback()) {
+				event.Err = errors.New(candidate.errorMessage)
+			}
 		}
 		reconciled = append(reconciled, event)
 	}

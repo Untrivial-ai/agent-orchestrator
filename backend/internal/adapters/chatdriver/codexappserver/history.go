@@ -185,9 +185,7 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 			ProviderEventID: historyEventID(c.threadID, turn.ID, "completed"),
 			ProviderTurnID:  turn.ID,
 			TurnState:       state,
-		}
-		if turn.Error != nil && turn.Error.Message != "" {
-			completed.Err = errors.New(turn.Error.Message)
+			Err:             nativeTurnError(turn),
 		}
 		events = append(events, completed)
 	}
