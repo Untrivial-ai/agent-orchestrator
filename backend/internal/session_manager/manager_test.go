@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -6630,6 +6631,118 @@ func TestSaveAndTeardownAll_SkipsScratchSessions(t *testing.T) {
 	}
 	if rows := st.worktrees["scratch-1"]; len(rows) != 0 {
 		t.Fatalf("scratch shutdown must not write restore markers, got %#v", rows)
+	}
+}
+
+// TestSaveAndTeardownOne_StopsChatController covers the quit-leak where a
+// chat-mode session (e.g. opencode) owns an app-server child process instead
+// of a runtime handle: the save path must stop the chat controller, not just
+// skip the runtime destroy, or the agent keeps running after quit.
+func TestSaveAndTeardownOne_StopsChatController(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	chat := &recordingLauncher{}
+	m.chat = chat
+	ws.stashRef = "refs/ao/preserved/chat-1"
+	rec := domain.SessionRecord{
+		ID: "chat-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/chat-1", Branch: "ao/chat-1/root"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.saveAndTeardownOne(ctx, rec); err != nil {
+		t.Fatalf("saveAndTeardownOne err = %v", err)
+	}
+	if len(chat.stopped) != 1 || chat.stopped[0] != rec.ID {
+		t.Fatalf("chat stopped = %v, want [chat-1]", chat.stopped)
+	}
+	if rt.destroyed != 0 {
+		t.Fatalf("runtime Destroy calls = %d, want 0 (chat has no handle)", rt.destroyed)
+	}
+	if !st.sessions[rec.ID].IsTerminated {
+		t.Fatal("session must be terminated after saveAndTeardownOne")
+	}
+	if rows := st.worktrees[rec.ID]; len(rows) == 0 {
+		t.Fatal("save path must write a restore marker for the chat session")
+	}
+}
+
+// TestTeardownForAppQuit_StopsSkippedBranchlessSessions verifies the second
+// pass of app-quit teardown: sessions without a workspace/branch (which the
+// save path skips) get their worker processes stopped while their rows stay
+// live and their worktrees stay on disk for the next boot to reconcile.
+func TestTeardownForAppQuit_StopsSkippedBranchlessSessions(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	chat := &recordingLauncher{}
+	m.chat = chat
+	shellCloser := &fakeShellTerminalCloser{}
+	m.shellTerminals = shellCloser
+	ws.stashRef = "refs/ao/preserved/mer-1"
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", RuntimeHandleID: "h1"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions["scratch-1"] = domain.SessionRecord{
+		ID: "scratch-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/scratch-1", RuntimeHandleID: "h2"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions["scratch-chat"] = domain.SessionRecord{
+		ID: "scratch-chat", ProjectID: "mer", Kind: domain.KindWorker,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/scratch-chat"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.TeardownForAppQuit(ctx); err != nil {
+		t.Fatalf("TeardownForAppQuit err = %v", err)
+	}
+
+	// Save-path session: terminated with a restore marker, runtime destroyed.
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Error("mer-1 must be terminated after TeardownForAppQuit")
+	}
+	if rows := st.worktrees["mer-1"]; len(rows) == 0 {
+		t.Error("mer-1 must have a restore marker")
+	}
+	// Branchless TUI session: worker stopped, row stays live, no marker, no
+	// worktree calls (nothing preserved because nothing was removed).
+	if st.sessions["scratch-1"].IsTerminated {
+		t.Error("scratch-1 must stay live for next-boot reconcile")
+	}
+	if rows := st.worktrees["scratch-1"]; len(rows) != 0 {
+		t.Errorf("scratch-1 must not have restore markers, got %#v", rows)
+	}
+	// Branchless chat session: controller stopped, row stays live.
+	if st.sessions["scratch-chat"].IsTerminated {
+		t.Error("scratch-chat must stay live for next-boot reconcile")
+	}
+	if len(chat.stopped) != 1 || chat.stopped[0] != "scratch-chat" {
+		t.Errorf("chat stopped = %v, want [scratch-chat]", chat.stopped)
+	}
+	// Both TUI runtimes destroyed (h1 via save path, h2 via second pass).
+	if rt.destroyed != 2 {
+		t.Errorf("runtime Destroy calls = %d, want 2 (h1, h2)", rt.destroyed)
+	}
+	// Scoped shell terminals drained for every session (save path and second
+	// pass); the second pass releases its gate immediately since no worktree
+	// is removed.
+	for _, id := range []domain.SessionID{"mer-1", "scratch-1", "scratch-chat"} {
+		if !slices.Contains(shellCloser.began, id) {
+			t.Errorf("shell teardown began = %v, want it to contain %s", shellCloser.began, id)
+		}
+	}
+	for _, id := range []domain.SessionID{"scratch-1", "scratch-chat"} {
+		if !slices.Contains(shellCloser.ended, id) {
+			t.Errorf("shell teardown ended = %v, want it to contain %s", shellCloser.ended, id)
+		}
+	}
+	for _, call := range ws.calls {
+		if call == "ForceDestroy:scratch-1" || call == "ForceDestroy:scratch-chat" {
+			t.Errorf("quit must not remove skipped sessions' worktrees: calls=%v", ws.calls)
+		}
 	}
 }
 

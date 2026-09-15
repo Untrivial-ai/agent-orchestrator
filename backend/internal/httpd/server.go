@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -27,6 +28,10 @@ type Server struct {
 
 	shutdownRequested chan struct{}
 	shutdownOnce      sync.Once
+	// teardownSessions records whether the shutdown was requested with
+	// session teardown (desktop app quit). Read after Run returns via
+	// TeardownSessionsRequested; plain shutdowns leave it false.
+	teardownSessions atomic.Bool
 }
 
 // NewWithDeps constructs a Server with API dependencies supplied by the daemon
@@ -66,7 +71,7 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 	}
 	srv.http = &http.Server{
 		Handler: NewRouterWithControl(cfg, log, termMgr, deps, ControlDeps{
-			RequestShutdown:   srv.requestShutdown,
+			RequestShutdown:   srv.requestShutdownWithMode,
 			AgentSwitchPolicy: deps.AgentSwitchPolicy,
 		}),
 		// ReadHeaderTimeout guards against slow-loris even on loopback;
@@ -167,9 +172,27 @@ func (s *Server) boundPort() int {
 }
 
 func (s *Server) requestShutdown() {
+	s.requestShutdownWithMode(ShutdownRequest{})
+}
+
+func (s *Server) requestShutdownWithMode(req ShutdownRequest) {
+	// First request wins, matching shutdownOnce below: a racing second POST
+	// cannot upgrade a plain shutdown to a teardown (or vice versa) after
+	// the shutdown is already committed.
 	s.shutdownOnce.Do(func() {
+		if req.TeardownSessions {
+			s.teardownSessions.Store(true)
+		}
 		close(s.shutdownRequested)
 	})
+}
+
+// TeardownSessionsRequested reports whether the shutdown in progress was
+// requested with session teardown. The daemon reads it after Run returns to
+// decide whether to put sessions away (app quit) or leave them for adoption
+// (restarts, `ao stop`, watchdog shutdowns).
+func (s *Server) TeardownSessionsRequested() bool {
+	return s.teardownSessions.Load()
 }
 
 // RequestShutdown triggers the same clean shutdown as POST /shutdown: it makes
