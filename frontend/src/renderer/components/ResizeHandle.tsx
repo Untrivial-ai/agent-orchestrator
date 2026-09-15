@@ -16,7 +16,10 @@
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
+import {
+	resolveSessionInspectorMaxWidthPx,
+	resolveUsedMaxWidthPx,
+} from "../lib/resolve-used-max-width";
 
 type WidthConstraint = number | (() => number);
 
@@ -60,11 +63,11 @@ function borderCenterX(el: HTMLElement, edge: "left" | "right"): number {
  * Inspector painted width is also capped by CSS max-width. Ignoring it — or
  * parseFloat'ing an unresolved `min()` string as NaN — lets the grip travel
  * past the leftmost (max-width) limit while the rightmost (min) still works.
+ * Prefer the session-split CSS-variable formula (same as inspectorMaxWidthPx).
  */
 function effectiveMaxWidth(panel: HTMLElement, propMax: number): number {
 	const used = resolveUsedMaxWidthPx(panel);
 	if (used !== null) return Math.min(propMax, used);
-	// Last resort: never wider than the session split itself.
 	const split = panel.closest("#session-workspace");
 	if (split instanceof HTMLElement && split.clientWidth > 0) {
 		return Math.min(propMax, split.clientWidth);
@@ -151,11 +154,16 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 
 			// Same width math as useResizable, then map clamped width → border X.
 			// DO NOT set left to event.clientX (offset hit strip ≠ edge; also skips clamp).
-			// Re-read prop max each move in case rangeRef tightened; CSS-resolved
-			// ceiling was captured at pointerdown in drag.maxW.
+			// Re-read prop max each move in case rangeRef tightened; also re-apply
+			// the session-split CSS-variable ceiling so leftmost cannot drift past paint.
 			const liveMin = resolveWidth(minWidth);
 			const liveMaxProp = resolveWidth(maxWidth);
-			const maxW = liveMaxProp !== null ? Math.min(drag.maxW, liveMaxProp) : drag.maxW;
+			let maxW = liveMaxProp !== null ? Math.min(drag.maxW, liveMaxProp) : drag.maxW;
+			if (drag.widthSign < 0) {
+				const panel = panelEl();
+				const splitMax = panel ? resolveSessionInspectorMaxWidthPx(panel) : null;
+				if (splitMax !== null) maxW = Math.min(maxW, splitMax);
+			}
 			const minW = liveMin !== null ? Math.min(liveMin, maxW) : Math.min(drag.minW, maxW);
 			const rawWidth = drag.startWidth + drag.widthSign * (event.clientX - drag.startClientX);
 			const width = Math.min(maxW, Math.max(minW, rawWidth));

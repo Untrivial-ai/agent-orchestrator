@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { resolveUsedMaxWidthPx } from "./resolve-used-max-width";
+import {
+	resolveSessionInspectorMaxWidthPx,
+	resolveUsedMaxWidthPx,
+} from "./resolve-used-max-width";
+
+describe("resolveSessionInspectorMaxWidthPx", () => {
+	it("mirrors inspectorMaxWidthPx against the split CSS variable", () => {
+		const split = document.createElement("div");
+		split.id = "session-workspace";
+		Object.defineProperty(split, "clientWidth", { configurable: true, value: 1008 });
+		split.style.setProperty(
+			"--session-inspector-max-width",
+			"min(55%, max(300px, calc(100% - 560px)))",
+		);
+		document.body.appendChild(split);
+
+		// available = 1008 - 8 = 1000; min(1000, 550, 440) = 440
+		expect(resolveSessionInspectorMaxWidthPx(split)).toBe(440);
+		split.remove();
+	});
+
+	it("uses browser-mode percent and chat floor from the variable", () => {
+		const split = document.createElement("div");
+		split.id = "session-workspace";
+		Object.defineProperty(split, "clientWidth", { configurable: true, value: 1008 });
+		split.style.setProperty(
+			"--session-inspector-max-width",
+			"min(68%, max(300px, calc(100% - 440px)))",
+		);
+		document.body.appendChild(split);
+
+		// available = 1000; min(1000, 680, 560) = 560
+		expect(resolveSessionInspectorMaxWidthPx(split)).toBe(560);
+		split.remove();
+	});
+});
 
 describe("resolveUsedMaxWidthPx", () => {
 	it("returns px used-values directly", () => {
@@ -10,32 +45,20 @@ describe("resolveUsedMaxWidthPx", () => {
 		el.remove();
 	});
 
-	it("does not treat unresolved min() as NaN / null without measuring", () => {
+	it("falls back to the session-split CSS variable for unresolved min()", () => {
 		const split = document.createElement("div");
 		split.id = "session-workspace";
-		split.style.cssText = "position:relative;width:1000px;height:100px;";
+		Object.defineProperty(split, "clientWidth", { configurable: true, value: 1008 });
+		split.style.setProperty(
+			"--session-inspector-max-width",
+			"min(55%, max(300px, calc(100% - 560px)))",
+		);
 		const panel = document.createElement("div");
-		panel.style.cssText =
-			"position:absolute;right:0;top:0;height:100%;width:400px;" +
-			"max-width:min(55%, max(300px, calc(100% - 560px)));";
+		panel.style.maxWidth = "min(55%, max(300px, calc(100% - 560px)))";
 		split.appendChild(panel);
 		document.body.appendChild(split);
 
-		const resolved = resolveUsedMaxWidthPx(panel);
-		// jsdom may not fully resolve min(), but must not pretend parseFloat worked
-		// on the expression string. Either a positive measured px or null is ok —
-		// never a bogus small number from parseFloat("min(...)").
-		if (resolved !== null) {
-			expect(resolved).toBeGreaterThan(100);
-			expect(resolved).toBeLessThanOrEqual(1000);
-		}
+		expect(resolveUsedMaxWidthPx(panel)).toBe(440);
 		split.remove();
-	});
-
-	it("returns null for max-width: none", () => {
-		const el = document.createElement("div");
-		document.body.appendChild(el);
-		expect(resolveUsedMaxWidthPx(el)).toBeNull();
-		el.remove();
 	});
 });

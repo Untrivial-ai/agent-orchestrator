@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
-import { resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
+import { resolveSessionInspectorMaxWidthPx, resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
 
 type ResizableConstraint = number | (() => number);
 
@@ -144,11 +144,12 @@ export function useResizable({
 			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
 				apply(visualWidth);
 			}
-			// Resolve used max-width once per drag (probe is not free). Unresolved
-			// min() expressions are why leftmost overshot while rightmost (min) worked.
+			// Resolve used max-width once per drag. Prefer the session-split CSS
+			// variable formula — unresolved min() is why leftmost overshot.
 			let usedMax: number | null = null;
 			for (const target of targets) {
-				const resolved = resolveUsedMaxWidthPx(target);
+				const resolved =
+					resolveSessionInspectorMaxWidthPx(target) ?? resolveUsedMaxWidthPx(target);
 				if (resolved !== null) {
 					usedMax = usedMax === null ? resolved : Math.min(usedMax, resolved);
 				}
