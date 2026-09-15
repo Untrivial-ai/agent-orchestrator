@@ -49,7 +49,7 @@ describe("project permission persistence", () => {
 });
 
 
-it("sends source harness context so the daemon can preserve Full access across providers", async () => {
+it("sends Codex Default unchanged with source harness context", async () => {
 	patch.mockResolvedValue({});
 	const { result } = setup("codex");
 	await act(async () => { await result.current.remember("default"); });

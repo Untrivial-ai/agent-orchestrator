@@ -973,13 +973,7 @@ func (m *Service) SetPermissions(ctx context.Context, id domain.ProjectID, in Se
 	if in.SourceHarness != "" && !in.SourceHarness.IsKnown() {
 		return Project{}, apierr.Invalid("INVALID_HARNESS", "Unknown source harness", nil)
 	}
-	// Codex default grants full access; remember its portable equivalent so
-	// another harness does not interpret it as its own manual baseline.
-	permissions := in.Permissions
-	if in.SourceHarness == domain.HarnessCodex && permissions == domain.PermissionModeDefault {
-		permissions = domain.PermissionModeBypassPermissions
-	}
-	row, ok, err := m.store.SetProjectPermissions(ctx, string(id), permissions)
+	row, ok, err := m.store.SetProjectPermissions(ctx, string(id), in.Permissions)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_PERMISSIONS_UPDATE_FAILED", "Failed to update project permissions")
 	}

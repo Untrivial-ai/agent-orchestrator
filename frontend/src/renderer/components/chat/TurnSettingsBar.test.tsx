@@ -326,16 +326,16 @@ describe("ACP session config options", () => {
 		);
 
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Full access",
+			"Default approvals",
 		);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
 		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
-		expect(screen.queryByRole("menuitemradio", { name: "Default approvals" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Full access" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Accept edits" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Auto-approve" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitemradio", { name: "Full access" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Default approvals" })).toBeInTheDocument();
 
 		await user.click(screen.getByRole("menuitemradio", { name: "Approve for me" }));
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "auto" });
@@ -357,7 +357,7 @@ describe("ACP session config options", () => {
 			screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }),
 		).toHaveTextContent("gpt-5.6-terra High");
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Full access",
+			"Default approvals",
 		);
 	});
 
@@ -374,7 +374,7 @@ describe("ACP session config options", () => {
 			"Bypass permissions",
 		);
 	});
-	it("distinguishes Codex bypass permissions from its default full-access posture", () => {
+	it("distinguishes Codex bypass permissions from its native default posture", () => {
 		render(
 			<TurnSettingsBar
 				harness="codex"
@@ -413,7 +413,7 @@ describe("remember project permissions", () => {
 		const { rerender } = render(<TurnSettingsBar models={[]} harness="codex"
 			settings={{ approvalMode: "auto" }} onChange={onChange} onRememberPermissions={remember} />);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
-		await user.click(screen.getByRole("menuitemradio", { name: "Full access" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Default approvals" }));
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "default" });
 		expect(remember).not.toHaveBeenCalled();
 		rerender(<TurnSettingsBar models={[]} harness="codex"

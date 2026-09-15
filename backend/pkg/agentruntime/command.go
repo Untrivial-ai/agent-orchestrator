@@ -187,12 +187,16 @@ func ClaudePermissionArgs(policy PermissionPolicy) []string {
 // CodexPermissionArgs maps AO policy onto Codex approval flags.
 func CodexPermissionArgs(policy PermissionPolicy) []string {
 	switch NormalizePermissionPolicy(policy) {
+	case PermissionDefault:
+		return nil
 	case PermissionAcceptEdits:
 		return []string{"--ask-for-approval", "on-request"}
 	case PermissionAuto:
 		return []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}
-	default:
+	case PermissionBypassPermissions:
 		return []string{"--dangerously-bypass-approvals-and-sandbox"}
+	default:
+		return nil
 	}
 }
 

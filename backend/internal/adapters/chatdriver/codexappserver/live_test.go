@@ -90,9 +90,9 @@ collect:
 			case ports.ChatEventMessageDelta:
 				sawDelta = true
 			case ports.ChatEventApprovalRequested:
-				// Default posture is never-ask, so an approval here means the
-				// permission mapping regressed.
-				t.Errorf("unexpected approval request under default permissions: %s", ev.Summary)
+				// This reply-only prompt should not need tools. Default inherits
+				// native configuration and does not promise to suppress approvals.
+				t.Errorf("unexpected approval request for reply-only prompt: %s", ev.Summary)
 				_ = conv.ResolveRequest(ctx, ev.RequestID, ports.ChatDecision{ID: "accept"})
 			case ports.ChatEventTurnCompleted:
 				state = ev.TurnState

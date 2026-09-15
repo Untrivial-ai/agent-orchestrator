@@ -78,10 +78,33 @@ type conversation struct {
 	// once.
 	compactedTurn string
 
+	// posture tracks the last permission override accepted by the provider.
+	// Updates during turn dispatch are guarded by sendMu.
+	posture threadPosture
+
 	pumpDone  chan struct{}
 	closeOnce sync.Once
 	closeErr  error
 }
+
+// threadPosture is what AO knows about the sandbox the provider thread is
+// currently running under.
+type threadPosture int
+
+const (
+	// postureUnknown means AO did not set the posture on this thread: it was
+	// rejoined, or resumed under a deferring mode that sent no keys. The thread
+	// is running under whatever it had, which AO cannot observe.
+	postureUnknown threadPosture = iota
+	// postureDeferred means AO deliberately sent no override on a fresh thread,
+	// so the user's native Codex config decides.
+	postureDeferred
+	// postureBypassed means AO explicitly started or resumed the thread with
+	// approvals and the sandbox disabled.
+	postureBypassed
+	// postureNotBypassed means AO set an explicit sandboxed posture.
+	postureNotBypassed
+)
 
 var _ ports.ChatConversation = (*conversation)(nil)
 
@@ -118,10 +141,11 @@ func newConversation(proc *process, log *slog.Logger) *conversation {
 // start records the opened thread and begins translating notifications. It is
 // called once, after the thread is open, so no event is emitted for a
 // conversation the caller does not yet have a handle to.
-func (c *conversation) start(threadID, model, effort string) {
+func (c *conversation) start(threadID, model, effort string, posture threadPosture) {
 	c.threadID = threadID
 	c.threadModel = model
 	c.threadEffort = effort
+	c.posture = posture
 	go c.pump()
 }
 
@@ -250,7 +274,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		// must not produce a second turn.
 		params["clientUserMessageId"] = msg.ClientMessageID
 	}
-	applyTurnSettings(params, msg.Settings)
+	posture := applyTurnSettings(params, msg.Settings, c.posture)
 
 	var resp struct {
 		Turn struct {
@@ -260,6 +284,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	if err := c.conn.request(ctx, "turn/start", params, &resp); err != nil {
 		return ports.ChatTurnRef{}, fmt.Errorf("turn/start: %w", err)
 	}
+	c.posture = posture
 
 	c.mu.Lock()
 	c.activeTurn = resp.Turn.ID
@@ -273,7 +298,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 // Only fields the caller actually chose are sent. An omitted field lets the
 // provider fall back to what the thread was started with, which is why a caller
 // that chooses nothing behaves exactly as it did before per-turn settings existed.
-func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
+func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, posture threadPosture) threadPosture {
 	if settings.Model != "" {
 		params["model"] = settings.Model
 	}
@@ -288,10 +313,28 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
 		// turn is rejected as a missing `type`, so the two are mapped separately
 		// rather than assumed to be interchangeable.
 		policy, sandbox := approvalSettings(settings.Approval)
+		if policy == "" || sandbox == "" {
+			// The mode defers, so the turn normally sends no override and inherits
+			// the thread's posture. That inheritance is only safe when the thread is
+			// not known to be bypassed: a session started on Bypass Permissions and
+			// later switched to Default would otherwise keep running under
+			// never/danger-full-access, the one path where choosing Default still
+			// yields a bypassed sandbox. Downgrade that case explicitly.
+			//
+			// postureUnknown is deliberately left to inherit. AO cannot see what a
+			// rejoined thread is running under, and pinning a posture on every
+			// reattach would override the native config this mode exists to honor.
+			if posture != postureBypassed {
+				return posture
+			}
+			policy, sandbox = approvalSettings(ports.PermissionModeAcceptEdits)
+		}
 		params["approvalPolicy"] = policy
 		params["approvalsReviewer"] = approvalReviewer(settings.Approval)
 		params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
+		return launchPosture(settings.Approval, postureNotBypassed)
 	}
+	return posture
 }
 
 // turnSandboxPolicy converts a thread-level sandbox name into the tagged object
@@ -302,8 +345,10 @@ func turnSandboxPolicy(sandbox string) map[string]any {
 		return map[string]any{"type": "workspaceWrite"}
 	case "read-only":
 		return map[string]any{"type": "readOnly"}
-	default:
+	case "danger-full-access":
 		return map[string]any{"type": "dangerFullAccess"}
+	default:
+		return nil
 	}
 }
 
