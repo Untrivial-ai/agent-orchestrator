@@ -639,13 +639,13 @@ describe("Sidebar", () => {
 		expect(request?.nonce ?? 0).toBeGreaterThan(before);
 	});
 
-	it("opens a new ad hoc agent directly from the ad hoc row action", async () => {
+	it("requests a new task from the Agents section header action", async () => {
 		const user = userEvent.setup();
 		renderSidebar({
 			workspaces: [
 				{
 					id: STANDALONE_WORKSPACE_ID,
-					name: "Ad hoc agents",
+					name: "Agents",
 					kind: STANDALONE_PROJECT_KIND,
 					path: "",
 					sessions: [],
@@ -654,15 +654,81 @@ describe("Sidebar", () => {
 		});
 		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
 
-		expect(screen.queryByLabelText("Project actions for Ad hoc agents")).not.toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: "Open a new agent" }));
+		expect(screen.queryByLabelText("Project actions for Agents")).not.toBeInTheDocument();
+		expect(screen.getByText("No agents yet")).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "New agent" }));
 
 		const request = useUiStore.getState().newTaskRequest;
 		expect(request?.projectId).toBe(STANDALONE_WORKSPACE_ID);
 		expect(request?.nonce ?? 0).toBeGreaterThan(before);
 	});
 
-	it("offers ad hoc agent creation from the project add flow before the ad hoc row exists", async () => {
+	it("renders the Agents section as a first-class peer of Projects", async () => {
+		const agentSession: WorkspaceSession = {
+			...session,
+			id: "standalone-1",
+			workspaceId: STANDALONE_WORKSPACE_ID,
+			workspaceName: "Agents",
+			title: "Research",
+			branch: undefined,
+		};
+		renderSidebar({
+			workspaces: [
+				{ ...workspace, id: "alpha", name: "Alpha", sessions: [] },
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Agents",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [agentSession],
+				},
+			],
+		});
+
+		// Peer section headings, Projects first (issue #5365).
+		expect(screen.getByText("Projects")).toBeInTheDocument();
+		expect(screen.getByText("Agents")).toBeInTheDocument();
+
+		// The standalone workspace no longer renders as a trailing project row.
+		expect(screen.queryByText("Ad hoc agents")).not.toBeInTheDocument();
+
+		// Agent rows live in their own list with the same row surface as
+		// project sessions, and the workspace renders no project actions.
+		expect(screen.getByTestId("agents-session-list")).toBeInTheDocument();
+		expect(screen.getByLabelText("Open Research")).toBeInTheDocument();
+		expect(screen.queryByLabelText("Project actions for Agents")).not.toBeInTheDocument();
+
+		// Rows navigate straight to the agent session. The row defers the open
+		// through the native double-click window, so pump the 500ms timer.
+		vi.useFakeTimers();
+		fireEvent.click(screen.getByLabelText("Open Research"), { detail: 1 });
+		await act(async () => {
+			vi.advanceTimersByTime(500);
+		});
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/sessions/$sessionId",
+			params: { sessionId: "standalone-1" },
+		});
+		vi.useRealTimers();
+	});
+
+	it("shows the Agents empty state only when the section has no agents", () => {
+		renderSidebar({
+			workspaces: [
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Agents",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [],
+				},
+			],
+		});
+
+		expect(screen.getByTestId("agents-empty-hint")).toHaveTextContent("No agents yet");
+	});
+
+	it("still offers standalone agent creation from the project add flow", async () => {
 		const user = userEvent.setup();
 		renderSidebar();
 		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
@@ -2356,14 +2422,14 @@ describe("Sidebar", () => {
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
 	});
 
-	it("keeps the ad hoc group out of project drag and drop ordering", () => {
+	it("keeps the standalone Agents section out of project drag and drop ordering", () => {
 		renderSidebar({
 			workspaces: [
 				{ ...workspace, id: "alpha", name: "Alpha" },
 				{ ...workspace, id: "bravo", name: "Bravo" },
 				{
 					id: STANDALONE_WORKSPACE_ID,
-					name: "Ad hoc agents",
+					name: "Agents",
 					kind: STANDALONE_PROJECT_KIND,
 					path: "",
 					sessions: [],
@@ -2371,6 +2437,10 @@ describe("Sidebar", () => {
 			],
 		});
 		const labels = () => Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent);
+
+		// The Agents section is a peer of Projects, not a reorderable project row:
+		// no [data-project-label] node is rendered for it at all.
+		expect(labels()).toEqual(["Alpha", "Bravo"]);
 
 		act(() => {
 			dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } });
@@ -2382,13 +2452,13 @@ describe("Sidebar", () => {
 			});
 			dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: { id: STANDALONE_WORKSPACE_ID } });
 		});
-		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+		expect(labels()).toEqual(["Alpha", "Bravo"]);
 
 		act(() => {
 			dragStarts.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID } });
 			dragEnds.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID }, over: { id: "alpha" } });
 		});
-		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+		expect(labels()).toEqual(["Alpha", "Bravo"]);
 
 		act(() => {
 			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
@@ -2400,7 +2470,7 @@ describe("Sidebar", () => {
 			});
 			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
 		});
-		expect(labels()).toEqual(["Bravo", "Alpha", "Ad hoc agents"]);
+		expect(labels()).toEqual(["Bravo", "Alpha"]);
 	});
 
 	it("commits a session drop within its project", () => {

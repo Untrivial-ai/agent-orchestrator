@@ -1197,12 +1197,12 @@ describe("SessionInspector completion controls", () => {
     });
   });
 
-  it("shows only direct termination controls for ad hoc sessions", async () => {
+  it("shows only direct termination controls for standalone agent sessions", async () => {
     renderWithQuery(
       <SessionInspector
         session={session([], {
           workspaceId: STANDALONE_WORKSPACE_ID,
-          workspaceName: "Ad hoc agents",
+          workspaceName: "Agents",
           status: "idle",
         })}
       />,
@@ -3814,5 +3814,97 @@ describe("SessionInspector summary reviews", () => {
     expect(screen.queryByRole("tab", { name: "Reviews" })).not.toBeInTheDocument();
     expect(screen.getByText("Session controls")).toBeInTheDocument();
     await waitFor(() => expect(onViewChange).toHaveBeenCalledWith("summary"));
+  });
+});
+
+describe("SessionInspector capability-driven Summary", () => {
+  const activitySection = () =>
+    within(
+      screen
+        .getByText("Activity")
+        .closest("[data-testid='inspector-section']") as HTMLElement,
+    );
+
+  it("hides PR controls and shows standalone creation for standalone sessions", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          workspaceId: STANDALONE_WORKSPACE_ID,
+          workspaceName: "Agents",
+          status: "working",
+          activity: { state: "idle", lastActivityAt: "2026-06-15T10:00:00Z" },
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
+    expect(screen.queryByText("No pull request opened yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
+    expect(activitySection().getByText("Created standalone session")).toBeInTheDocument();
+    expect(activitySection().queryByText("Created workspace")).not.toBeInTheDocument();
+  });
+
+  it("shows PR empty state and workspace creation for project workers", () => {
+    renderWithQuery(<SessionInspector session={session([])} />);
+
+    expect(screen.getByText("Pull request")).toBeInTheDocument();
+    expect(screen.getByText("No pull request opened yet.")).toBeInTheDocument();
+    expect(activitySection().getByText(/Created workspace/)).toBeInTheDocument();
+  });
+
+  it("hides PR controls for orchestrator sessions", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          kind: "orchestrator",
+          status: "working",
+          activity: { state: "idle", lastActivityAt: "2026-06-15T10:00:00Z" },
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
+    expect(screen.queryByText("No pull request opened yet.")).not.toBeInTheDocument();
+  });
+
+  it("shows PR controls for workspace workers", () => {
+    // Workspace workers are project workers inside a multi-repo workspace; they
+    // still have SCM capability, so the PR section remains visible.
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          workspaceId: "ws-workspace-1",
+          workspaceName: "my-workspace",
+          status: "working",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Pull request")).toBeInTheDocument();
+    expect(screen.getByText("No pull request opened yet.")).toBeInTheDocument();
+    expect(activitySection().getByText(/Created workspace/)).toBeInTheDocument();
+  });
+
+  it("hides SCM pills and PR timeline events for standalone even with failing status", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([pr(7, "open", { ci: "failing", mergeability: "conflicting" })], {
+          workspaceId: STANDALONE_WORKSPACE_ID,
+          workspaceName: "Agents",
+          status: "ci_failed",
+          activity: { state: "idle", lastActivityAt: "2026-06-15T10:00:00Z" },
+        })}
+      />,
+    );
+
+    // Standalone has no SCM concept, so CI/Conflict pills are suppressed.
+    const activityRow = activitySection()
+      .getByText("Idle")
+      .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+    expect(within(activityRow).queryByText("CI Failed")).not.toBeInTheDocument();
+    expect(within(activityRow).queryByText("Conflict")).not.toBeInTheDocument();
+    // PR timeline rows are also suppressed for standalone.
+    expect(activitySection().queryByText("Opened")).not.toBeInTheDocument();
+    expect(activitySection().queryByText("PR #7")).not.toBeInTheDocument();
   });
 });

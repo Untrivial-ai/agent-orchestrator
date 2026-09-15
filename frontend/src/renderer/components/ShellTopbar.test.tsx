@@ -446,12 +446,12 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
-	it("hides project-only orchestrator actions for ad hoc sessions", () => {
+	it("hides project-only orchestrator actions for standalone agent sessions", () => {
 		renderTopbarSessions(
 			[
 				sessionWith({
 					workspaceId: STANDALONE_WORKSPACE_ID,
-					workspaceName: "Ad hoc agents",
+					workspaceName: "Agents",
 					branch: undefined,
 				}),
 			],

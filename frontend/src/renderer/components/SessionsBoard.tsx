@@ -12,6 +12,7 @@ import {
 	type WorkspaceSession,
 	newestActiveOrchestrator,
 	orchestratorHealth,
+	STANDALONE_PROJECT_KIND,
 	workerSessions,
 } from "../types/workspace";
 import {
@@ -89,7 +90,10 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	// Board chrome stays route-oriented; project context remains in the sidebar.
 	const boardLabel = t("shell.board");
 	const liveSessions = workspaces.flatMap((workspace) => workerSessions(workspace.sessions));
-	const demoWorkspaceId = projectId ?? workspaces[0]?.id;
+	// Only real (non-standalone) workspaces host board preview workers. The
+	// durable, empty Agents workspace must not masquerade as a demo project on
+	// first launch.
+	const demoWorkspaceId = projectId ?? workspaces.find((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)?.id;
 	const sessions = usesPreviewWorkspaceData && demoWorkspaceId && liveSessions.length === 0
 		? demoBoardSessions(demoWorkspaceId)
 		: liveSessions;
@@ -119,11 +123,15 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 	const activeSessions = sessions.filter((candidate) => !isArchivedSession(candidate));
 	const boardLabels = sessionsBoardLabels(t);
+	// Only real (non-standalone) workspaces count as board projects. The
+	// durable, empty Agents workspace anchors the sidebar peer section but must
+	// never make an empty board look populated (first-launch welcome gating).
+	const hasProjectWorkspaces = workspaces.some((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND);
 	const { showStartup, showWelcome, showProjectEmpty, workspaceStartupState } = useBoardPresentation({
 		projectId,
 		isSuccess: workspaceQuery.isSuccess,
 		isError: workspaceQuery.isError,
-		hasProjects: workspaces.length > 0,
+		hasProjects: hasProjectWorkspaces,
 		hasWorkerSessions: liveSessions.length > 0,
 	});
 	const hasArchive = archived.length > 0;

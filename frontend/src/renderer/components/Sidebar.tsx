@@ -158,6 +158,9 @@ const NAV_ROW_CLASS =
 // Search + Pinned/Projects section chrome: same type, icon, and row size.
 const SECTION_ROW_CLASS =
 	"flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-passive [&_svg]:size-icon-md [&_svg]:shrink-0";
+// Header action for the Agents section (mirrors the Projects "+" footprint).
+const SECTION_ROW_ACTION_CLASS =
+	"grid size-5 shrink-0 place-items-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 [&_svg]:size-icon-md";
 // Hover fill only for collapsible section headers (Pinned). Projects is a static label.
 const SECTION_ROW_INTERACTIVE_CLASS = "transition-colors hover:bg-interactive-hover hover:text-foreground";
 const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
@@ -443,6 +446,9 @@ export function Sidebar({
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
+	// Row action on the Agents section header: opens the new-task flow scoped to
+	// the standalone agents workspace (same store request the row action used).
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const existingProjectPaths = useMemo(
 		() => workspaces
 			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
@@ -539,15 +545,35 @@ export function Sidebar({
 
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
+	// The standalone agents workspace renders as its own "Agents" section — a
+	// first-class peer of "Projects" — so it never participates in project
+	// reorder drag & drop and is excluded from the ordered project list.
+	const standaloneWorkspace = useMemo(
+		() => workspaces.find((workspace) => workspace.kind === STANDALONE_PROJECT_KIND) ?? null,
+		[workspaces],
+	);
+	const projectWorkspaces = useMemo(
+		() => workspaces.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND),
+		[workspaces],
+	);
 	const orderedWorkspaces = useMemo(
-		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
-		[projectOrder, workspaces],
+		() => applyOrder(projectWorkspaces, (workspace) => workspace.id, projectOrder, "end"),
+		[projectOrder, projectWorkspaces],
 	);
 	const projectIds = useMemo(
 		() => orderedWorkspaces
 			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
 			.map((workspace) => workspace.id),
 		[orderedWorkspaces],
+	);
+	// Rows for the Agents section body: the standalone workspace's non-terminated
+	// sessions, sorted like every other session list. The Agents section is a
+	// peer of Projects, so its rows keep the project-session look (no extra indent).
+	const agentsSessions = useMemo(
+		() => standaloneWorkspace
+			? sortedWorkerSessions(standaloneWorkspace.sessions).filter((session) => session.isTerminated !== true)
+			: [],
+		[standaloneWorkspace],
 	);
 	const reorderSensors = useReorderSensors();
 	const projectDragClickGuard = usePostDragClickGuard();
@@ -800,6 +826,33 @@ export function Sidebar({
 						}
 					/>
 				</div>
+				{/* Agents — the standalone agents workspace as a first-class peer of Projects. */}
+				{standaloneWorkspace ? (
+					<div className="sidebar-expanded-chrome flex shrink-0 pb-1.5 group-data-[collapsible=icon]:hidden">
+						<SectionDisclosure
+							label={t("shell.agents")}
+							collapsible={false}
+							trailing={
+								<button
+									aria-label={t("shell.newAgent")}
+									className={SECTION_ROW_ACTION_CLASS}
+									onClick={() => requestNewTask(standaloneWorkspace.id)}
+									type="button"
+								>
+									<Plus aria-hidden="true" />
+								</button>
+							}
+						/>
+						{agentsSessions.length === 0 ? (
+							<p
+								className="sidebar-expanded-chrome px-2.5 pb-1.5 text-2xs text-passive group-data-[collapsible=icon]:hidden"
+								data-testid="agents-empty-hint"
+							>
+								{t("shell.agentsEmpty")}
+							</p>
+						) : null}
+					</div>
+				) : null}
 			</div>
 
 			<SidebarContent className="project-sidebar-scrollbar gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
@@ -839,6 +892,22 @@ export function Sidebar({
 									))}
 									{isCollapsed && <CreateProjectListItem />}
 								</SidebarMenu>
+								{/* Agents section body: standalone-agent rows, unordered (no DnD). */}
+								{standaloneWorkspace ? (
+									<SidebarMenuSub
+										className="mx-0 ml-0 translate-x-0 gap-0.5 border-l-0 px-0 py-0.5 mb-2 group-data-[collapsible=icon]:hidden"
+										data-testid="agents-session-list"
+									>
+										{agentsSessions.map((agentSession) => (
+											<AgentsSessionRow
+												key={agentSession.id}
+												session={agentSession}
+												active={selection.activeSessionId === agentSession.id}
+												onOpen={(sessionId) => selection.goSession(standaloneWorkspace.id, sessionId)}
+											/>
+										))}
+									</SidebarMenuSub>
+								) : null}
 								<DragOverlay adjustScale={false} dropAnimation={null} modifiers={[restrictProjectOverlayToRows]} style={PROJECT_DRAG_OVERLAY_STYLE} zIndex={60}>
 									{activeDragWorkspace ? (
 										<ProjectDragPreview
@@ -1683,6 +1752,20 @@ const PinnedSessionRow = memo(function PinnedSessionRow({
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
 	return <SessionRow session={session} active={active} indented={false} onOpen={onOpen} />;
+});
+
+// One row in the Agents section: same visual/behavioral surface as project
+// session rows, without session reorder DnD (the section is an unordered list).
+const AgentsSessionRow = memo(function AgentsSessionRow({
+	session,
+	active,
+	onOpen,
+}: {
+	session: WorkspaceSession;
+	active: boolean;
+	onOpen: (sessionId: string) => void;
+}) {
+	return <SessionRow session={session} active={active} indented={false} onOpen={() => onOpen(session.id)} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders

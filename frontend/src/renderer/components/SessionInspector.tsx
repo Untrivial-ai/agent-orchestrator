@@ -296,6 +296,7 @@ const SummaryView = memo(function SummaryView({
 		hasMeaningfulSessionUsage(usageQuery.data);
 	const showUsageError = developerMode && usageQuery.isError;
 	const prSummaries = sessionPRDisplaySummaries(session, query.data);
+	const canHavePRs = sessionCanHavePullRequests(session);
 	const prSectionTitle = prSummaries.length > 1 ? t("inspector.pullRequests", { count: prSummaries.length }) : t("inspector.pullRequest");
 	const hasPRs = prSummaries.length > 0;
 	// Cloud orchestrators list the workers they spawned; local orchestrators
@@ -313,23 +314,25 @@ const SummaryView = memo(function SummaryView({
 			activityTitle={t("inspector.activity")}
 			completion={<SessionControls session={session} />}
 			pullRequestCards={
-				<div className="flex flex-col gap-1.5">
-					{hasPRs ? (
-						prSummaries.map((pr) => (
-							<PRSummaryCard
-								canOpenReviews={canOpenReviews}
-								key={pr.url || pr.htmlUrl || pr.number}
-								onOpenReviews={onOpenReviews}
-								pr={pr}
-								sessionId={session.id}
-							/>
-						))
-					) : (
-						<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
-					)}
-				</div>
+				canHavePRs ? (
+					<div className="flex flex-col gap-1.5">
+						{hasPRs ? (
+							prSummaries.map((pr) => (
+								<PRSummaryCard
+									canOpenReviews={canOpenReviews}
+									key={pr.url || pr.htmlUrl || pr.number}
+									onOpenReviews={onOpenReviews}
+									pr={pr}
+									sessionId={session.id}
+								/>
+							))
+						) : (
+							<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
+						)}
+					</div>
+				) : undefined
 			}
-			pullRequestTitle={prSectionTitle}
+			pullRequestTitle={canHavePRs ? prSectionTitle : undefined}
 			workers={showWorkers ? <OrchestratorChildrenSection session={session} /> : undefined}
 			usage={
 				showUsageError ? (
@@ -1289,59 +1292,63 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 		events.push({ ...event, sortTime: timelineSortTime(timestamp) });
 	};
 	const createdAt = session.createdAt ?? session.updatedAt;
+	const isStandalone = session.workspaceId === STANDALONE_WORKSPACE_ID;
+	const canHavePRs = sessionCanHavePullRequests(session);
 
 	pushEvent(
 		{
 			tone: "neutral",
-			content: <>{appI18n.t("inspector.timeline.createdWorkspace")}</>,
+			content: <>{isStandalone ? appI18n.t("inspector.timeline.createdStandaloneSession") : appI18n.t("inspector.timeline.createdWorkspace")}</>,
 			timestamp: formatTimeCompact(createdAt),
 		},
 		createdAt,
 	);
 
-	for (const pr of prs.filter((pr) => pr.state === "draft")) {
-		pushEvent(
-			{
-				tone: "neutral",
-				content: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.draft")} />,
-				timestamp: prStateTime(pr),
-			},
-			pr.stateChangedAt,
-		);
-	}
+	if (canHavePRs) {
+		for (const pr of prs.filter((pr) => pr.state === "draft")) {
+			pushEvent(
+				{
+					tone: "neutral",
+					content: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.draft")} />,
+					timestamp: prStateTime(pr),
+				},
+				pr.stateChangedAt,
+			);
+		}
 
-	for (const pr of prs.filter((pr) => pr.state !== "draft")) {
-		pushEvent(
-			{
-				tone: "neutral",
-				content: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.opened")} />,
-				timestamp: prCreatedTime(pr),
-			},
-			pr.createdAt,
-		);
-	}
+		for (const pr of prs.filter((pr) => pr.state !== "draft")) {
+			pushEvent(
+				{
+					tone: "neutral",
+					content: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.opened")} />,
+					timestamp: prCreatedTime(pr),
+				},
+				pr.createdAt,
+			);
+		}
 
-	for (const pr of prs.filter((pr) => pr.state === "merged")) {
-		pushEvent(
-			{
-				tone: "good",
-				content: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.merged")} />,
-				timestamp: prStateTime(pr),
-			},
-			pr.stateChangedAt,
-		);
-	}
+		for (const pr of prs.filter((pr) => pr.state === "merged")) {
+			pushEvent(
+				{
+					tone: "good",
+					content: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.merged")} />,
+					timestamp: prStateTime(pr),
+				},
+				pr.stateChangedAt,
+			);
+		}
 
-	if (session.status === "merged") {
-		const mergedAt = latestMergedTimestamp(prs);
-		pushEvent(
-			{
-				tone: "good",
-				content: <>{appI18n.t("inspector.timeline.done")}</>,
-				timestamp: mergedAt ? formatTimeCompact(mergedAt) : null,
-			},
-			mergedAt,
-		);
+		if (session.status === "merged") {
+			const mergedAt = latestMergedTimestamp(prs);
+			pushEvent(
+				{
+					tone: "good",
+					content: <>{appI18n.t("inspector.timeline.done")}</>,
+					timestamp: mergedAt ? formatTimeCompact(mergedAt) : null,
+				},
+				mergedAt,
+			);
+		}
 	}
 
 	const activityView = getAgentActivityView(session.activity);
@@ -1442,7 +1449,22 @@ function TimelinePill({ label, tone }: { label: string; tone: string; breathe: b
 	);
 }
 
+function isStandaloneSession(session: Pick<WorkspaceSession, "workspaceId">): boolean {
+	return session.workspaceId === STANDALONE_WORKSPACE_ID;
+}
+
+function sessionCanHavePullRequests(session: WorkspaceSession): boolean {
+	// Standalone sessions have no project repository or workspace, and
+	// orchestrators manage workers rather than code changes, so neither
+	// should expose PR/CI/review/merge UI. Workers (project or workspace)
+	// are the only sessions that can own pull requests.
+	if (isStandaloneSession(session)) return false;
+	if (session.kind === "orchestrator") return false;
+	return true;
+}
+
 function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
+	if (!sessionCanHavePullRequests(session)) return [];
 	const states: ScmTimelineState[] = [];
 	const seen = new Set<ScmTimelineState>();
 	const add = (state: ScmTimelineState) => {

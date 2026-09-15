@@ -29,7 +29,7 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 
-const AD_HOC_AGENTS_WORKSPACE_NAME = "Ad hoc agents";
+const STANDALONE_AGENTS_WORKSPACE_NAME = "Agents";
 
 function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): WorkspaceSummary[] {
 	const standalone = workspaces.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
@@ -239,14 +239,17 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	});
 	const standalone: WorkspaceSummary = {
 		id: STANDALONE_WORKSPACE_ID,
-		name: AD_HOC_AGENTS_WORKSPACE_NAME,
+		name: STANDALONE_AGENTS_WORKSPACE_NAME,
 		kind: STANDALONE_PROJECT_KIND,
 		path: "Not attached to a project",
 		sessions: sessions
 			.filter((session) => !session.projectId)
-			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, AD_HOC_AGENTS_WORKSPACE_NAME)),
+			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, STANDALONE_AGENTS_WORKSPACE_NAME)),
 	};
-	return standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
+	// The Agents section is a first-class peer of Projects in the sidebar, so
+	// the standalone workspace is always part of the model — even when empty
+	// (issue #5365). The sidebar renders its own empty state for it.
+	return placeStandaloneWorkspaceLast([...projects, standalone]);
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired
@@ -420,7 +423,7 @@ export function useWorkspaceSession(sessionId: string) {
 			const project = session.projectId
 				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
 					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
-				: ({ id: STANDALONE_WORKSPACE_ID, name: AD_HOC_AGENTS_WORKSPACE_NAME } satisfies Pick<WorkspaceSummary, "id" | "name">);
+				: ({ id: STANDALONE_WORKSPACE_ID, name: STANDALONE_AGENTS_WORKSPACE_NAME } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});

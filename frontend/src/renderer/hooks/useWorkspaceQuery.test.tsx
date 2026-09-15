@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { WorkspaceSummary } from "../types/workspace";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
@@ -334,7 +335,7 @@ describe("useWorkspaceQuery", () => {
 		});
 	});
 
-	it("groups projectless sessions as ad hoc agents after projects", async () => {
+	it("groups projectless sessions as the standalone Agents workspace", async () => {
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
 			sessions: {
@@ -360,16 +361,45 @@ describe("useWorkspaceQuery", () => {
 		expect(result.current.data?.map((workspace) => workspace.id)).toEqual(["proj-1", "__standalone__"]);
 		expect(result.current.data?.[1]).toMatchObject({
 			id: "__standalone__",
-			name: "Ad hoc agents",
+			name: "Agents",
 			kind: "standalone",
 		});
 		expect(result.current.data?.[1].sessions[0]).toMatchObject({
 			id: "standalone-1",
 			workspaceId: "__standalone__",
-			workspaceName: "Ad hoc agents",
+			workspaceName: "Agents",
 			title: "Research",
 			branch: undefined,
 		});
+	});
+
+	it("always includes the standalone Agents workspace, even when it has no sessions", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "sess-1",
+							projectId: "proj-1",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+		// The sidebar renders the Agents section as a first-class peer of Projects,
+		// so the standalone workspace is a durable part of the model — not a row
+		// that appears only when a projectless session exists (issue #5365).
+		expect(result.current.data?.map((workspace) => workspace.id)).toEqual(["proj-1", "__standalone__"]);
+		expect(result.current.data?.[1]).toMatchObject({ id: "__standalone__", name: "Agents", sessions: [] });
 	});
 
 	it("maps each session's prs straight from the session list", async () => {
@@ -554,7 +584,7 @@ describe("useWorkspaceQuery", () => {
 			path: "",
 			sessions: [],
 		});
-		expect(result.current.data?.[2]).toMatchObject({ id: "__standalone__", name: "Ad hoc agents" });
+		expect(result.current.data?.[2]).toMatchObject({ id: "__standalone__", name: "Agents" });
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
 	});
 
@@ -570,8 +600,9 @@ describe("useWorkspaceQuery", () => {
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
 		await waitFor(() => expect(listProjectsMock).toHaveBeenCalled());
 
-		expect(result.current.data).toHaveLength(1);
+		expect(result.current.data).toHaveLength(2);
 		expect(result.current.data?.[0]).toMatchObject({ id: "proj-1" });
+		expect(result.current.data?.[1]).toMatchObject({ id: STANDALONE_WORKSPACE_ID, name: "Agents", sessions: [] });
 		expect(result.current.isError).toBe(false);
 	});
 

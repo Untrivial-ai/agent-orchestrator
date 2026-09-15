@@ -69,7 +69,7 @@ import { HomePage } from "../components/HomePage";
 const standaloneSession = (overrides: Partial<WorkspaceSession>): WorkspaceSession => ({
 	id: "standalone-1",
 	workspaceId: STANDALONE_WORKSPACE_ID,
-	workspaceName: "Ad hoc agents",
+	workspaceName: "Agents",
 	title: "Ad hoc task",
 	provider: "codex",
 	kind: "worker",
@@ -151,13 +151,13 @@ describe("shell index route", () => {
 		});
 	});
 
-	it("opens the most recent active ad hoc session from the recent-project list", async () => {
+	it("opens the most recent active agent session from the recent-project list", async () => {
 		routeMocks.workspaces = [
 			{
 				id: STANDALONE_WORKSPACE_ID,
-				name: "Ad hoc agents",
+				name: "Agents",
 				kind: STANDALONE_PROJECT_KIND,
-				path: "Ad hoc agents",
+				path: STANDALONE_WORKSPACE_ID,
 				sessions: [
 					standaloneSession({
 						id: "standalone-oldest",
@@ -184,7 +184,7 @@ describe("shell index route", () => {
 
 		render(<HomePage />);
 
-		fireEvent.click(screen.getByRole("button", { name: /Ad hoc agents/ }));
+		fireEvent.click(screen.getByRole("button", { name: /Agents/ }));
 		expect(routeMocks.navigate).toHaveBeenCalledWith({
 			to: "/sessions/$sessionId",
 			params: { sessionId: "standalone-newest-active" },
