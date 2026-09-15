@@ -3324,6 +3324,8 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"provider history recovery unavailable", fmt.Errorf("recover interface: %w", sessionmanager.ErrInterfaceProviderHistoryRecoveryUnavailable), apierr.KindConflict, "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"},
 		{"native conversation missing", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationMissing), apierr.KindConflict, "NATIVE_SESSION_MISSING"},
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
+		{"unsupported effort", fmt.Errorf("spawn: %w", ports.ErrUnsupportedEffort), apierr.KindInvalid, "UNSUPPORTED_EFFORT"},
+		{"model capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrModelCapabilitiesUnavailable), apierr.KindInvalid, "MODEL_CAPABILITIES_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

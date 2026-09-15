@@ -504,6 +504,13 @@ func Run() error {
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
+	if tunable, ok := sessMgr.(interface {
+		SetModelCatalog(interface {
+			Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
+		})
+	}); ok {
+		tunable.SetModelCatalog(agentSvc)
+	}
 
 	// servers isn't clobbered. See preview_wiring.go (issue #4500).
 	wireManagedPreviewExit(managedPreview, sessionSvc, log)

@@ -2493,6 +2493,7 @@ export interface components {
             state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
         };
         AgentConfig: {
+            effort?: string;
             mode?: string;
             model?: string;
             permissions?: string;
@@ -2555,6 +2556,8 @@ export interface components {
             agents: components["schemas"]["AgentInstallPlan"][];
         };
         AgentModelInfo: {
+            defaultEffort?: string;
+            efforts?: string[];
             id: string;
             isDefault?: boolean;
             label: string;
@@ -3216,6 +3219,7 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
+            effort?: null | string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;

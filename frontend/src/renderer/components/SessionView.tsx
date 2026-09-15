@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { LoaderCircle, PanelRight, Plus } from "lucide-react";
+import { Globe2, LoaderCircle, PanelRight, Plus } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -301,6 +301,7 @@ type SessionViewProps = {
 // panel slides on `x` with SHELL_PANEL_SPRING. Dragging uses useResizable
 // (clamped at min, never auto-collapse). Collapse is the explicit toggle only.
 function SessionInspectorRail({
+	showCollapsedHandle = true,
 	children,
 	isOpen,
 	onExpand,
@@ -310,6 +311,7 @@ function SessionInspectorRail({
 	settledClosed,
 	splitRef,
 }: {
+	showCollapsedHandle?: boolean;
 	children: ReactNode;
 	isOpen: boolean;
 	onExpand: () => void;
@@ -411,7 +413,7 @@ function SessionInspectorRail({
 				/>
 				<div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">{children}</div>
 			</motion.div>
-			{isOpen ? null : (
+			{isOpen || !showCollapsedHandle ? null : (
 				<div
 					className="absolute inset-y-0 right-0 z-chrome w-2 cursor-e-resize touch-none"
 					data-slot="inspector-collapsed-rail"
@@ -565,8 +567,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const workspaceQuery = useWorkspaceSession(sessionId);
 	const { client: cloudCpClient } = useCloudCp();
 	const theme = useResolvedTheme();
-	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? true);
-	const inspectorView = useUiStore((state) => state.inspectorSessions[sessionId]?.view ?? "summary");
+	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
+	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
+	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
+	const browserUnseen = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.browserUnseen));
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
 	const toggleInspector = useUiStore((state) => state.toggleInspector);
 	const setInspectorViewForSession = useUiStore((state) => state.setInspectorView);
@@ -1182,8 +1186,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		);
 	}, [availableReviewerTerminal, reviewerQuery.isFetched]);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
-	// Orchestrators get the full workspace width; only workers need the inspector rail.
-	const hasInspector = Boolean(session && !isOrchestrator);
+	const hasInspector = Boolean(session);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
 	const browserEntryWidthFloorRef = useRef<number | null>(null);
 
@@ -1503,8 +1506,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// only preview work arriving afterward may reveal Browser automatically.
 	useLayoutEffect(() => {
 		if (!session) return;
+		if (browserOnly) {
+			const current = useUiStore.getState().inspectorSessions[sessionId];
+			if (!current) setInspectorOpenForSession(sessionId, false);
+			if (current?.view !== "browser") setInspectorViewForSession(sessionId, "browser");
+			return;
+		}
 		initializeInspectorSession(sessionId, hasBrowserContent, hasInspector);
-	}, [hasBrowserContent, hasInspector, session, sessionId, initializeInspectorSession]);
+	}, [browserOnly, hasBrowserContent, hasInspector, session, sessionId, initializeInspectorSession, setInspectorOpenForSession, setInspectorViewForSession]);
 
 	useLayoutEffect(() => {
 		setTerminalTarget({ kind: "worker" });
@@ -1644,12 +1653,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	}, [clearVisibleTerminalKind, routedTerminalTarget.kind, sessionId, setVisibleTerminalKind]);
 
 	const prepareFilesInspector = useCallback(() => {
+		if (browserOnly) return;
 		setBrowserPopOutState({ sessionId, phase: "docked" });
 		setFilesPoppedOut(false);
 		setFilesChangedOnly(sessionId, true);
 		transitionInspectorView("files");
 		setInspectorOpenForSession(sessionId, true);
-	}, [sessionId, setFilesChangedOnly, setInspectorOpenForSession, transitionInspectorView]);
+	}, [browserOnly, sessionId, setFilesChangedOnly, setInspectorOpenForSession, transitionInspectorView]);
 
 	const fetchWorkspaceFiles = useCallback(async () => {
 		return queryClient.fetchQuery(
@@ -1661,12 +1671,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		async (rawPath: string) => {
 			const data = await fetchWorkspaceFiles();
 			const path = matchWorkspaceFilePath(rawPath, data.files ?? []);
+			if (browserOnly) {
+				openCenterFile(path);
+				return;
+			}
 			setFilePreviewRequestsBySession((current) => ({
 				...current,
 				[sessionId]: { path, key: (current[sessionId]?.key ?? 0) + 1 },
 			}));
 		},
-		[fetchWorkspaceFiles, sessionId],
+		[browserOnly, openCenterFile, fetchWorkspaceFiles, sessionId],
 	);
 
 	const handleOpenFiles = useCallback(() => {
@@ -1718,6 +1732,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (!hasInspector) return;
 		const current = useUiStore.getState().inspectorSessions[sessionId];
+		if (browserOnly) {
+			if (terminated && current?.browserUnseen) setBrowserUnseen(sessionId, false);
+			return;
+		}
 		if (!hasBrowserContent) {
 			if (current?.browserContentRevealed) setBrowserContentRevealed(sessionId, false);
 			else if (current?.browserUnseen) setBrowserUnseen(sessionId, false);
@@ -1727,6 +1745,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		setBrowserContentRevealed(sessionId, true);
 	}, [
 		hasBrowserContent,
+		browserOnly,
 		hasInspector,
 		previewRevision,
 		sessionId,
@@ -1746,11 +1765,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		if (baseline.key === previewKey) return;
 		previewBaselineRef.current = { sessionId, key: previewKey };
 		if (!previewKey) return;
+		if (browserOnly && !terminated && !useUiStore.getState().inspectorSessions[sessionId]?.browserContentRevealed) {
+			setInspectorOpenForSession(sessionId, true);
+		}
 		setBrowserContentRevealed(sessionId, true);
 		if (browserIsVisible(sessionId, browserPoppedOut)) {
 			setBrowserUnseen(sessionId, false);
 			return;
 		}
+		// Workers and already-revealed orchestrators badge new browser work.
 		// A new preview target used to force-switch the inspector to the Browser
 		// tab and pop it open, even if the user was looking at something else
 		// entirely (Reviews, a different session's Files tab, mid-typing in
@@ -1766,6 +1789,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		sessionId,
 		setBrowserContentRevealed,
 		setBrowserUnseen,
+		browserOnly,
+		terminated,
+		setInspectorOpenForSession,
 	]);
 
 	// Agent browser commands are genuine browser activity even when they do not
@@ -1775,6 +1801,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// on hasBrowserContent/browserContentRevealed missed exactly that case.
 	useEffect(() => {
 		if (!hasInspector || terminated || !browserView.agentBrowserActive) return;
+		if (browserOnly && !useUiStore.getState().inspectorSessions[sessionId]?.browserContentRevealed) {
+			setBrowserContentRevealed(sessionId, true);
+			setInspectorOpenForSession(sessionId, true);
+			return;
+		}
 		if (!browserIsVisible(sessionId, browserPoppedOut)) setBrowserUnseen(sessionId, true);
 	}, [
 		browserPoppedOut,
@@ -1785,6 +1816,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		sessionId,
 		setBrowserUnseen,
 		terminated,
+		browserOnly,
+		setBrowserContentRevealed,
+		setInspectorOpenForSession,
 	]);
 
 	// Opening Browser consumes the pending activity indicator, including the
@@ -1796,8 +1830,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	}, [browserPoppedOut, hasInspector, inspectorView, isInspectorOpen, sessionId, setBrowserUnseen]);
 
 	const handleToggleInspector = useCallback(() => {
+		if (browserOnly) setBrowserContentRevealed(sessionId, true);
 		toggleInspector(sessionId);
-	}, [sessionId, toggleInspector]);
+	}, [browserOnly, sessionId, toggleInspector, setBrowserContentRevealed]);
 
 	useEffect(() => {
 		if (!hasInspector) return;
@@ -1973,7 +2008,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									shellError={
 										openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined
 									}
-									onOpenFiles={handleOpenFiles}
+									onOpenFiles={browserOnly ? undefined : handleOpenFiles}
 									onOpenFile={handleOpenFile}
 									onOpenLinkInBrowser={browserView.openLink}
 								/>
@@ -2062,6 +2097,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				</div>
 				{hasInspector ? (
 					<SessionInspectorRail
+						showCollapsedHandle={!browserOnly}
 						isOpen={isInspectorOpen}
 						onCloseAnimationComplete={handleInspectorCloseAnimationComplete}
 						onExpand={() => setInspectorOpenForSession(sessionId, true)}
@@ -2072,12 +2108,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						settledClosed={!isInspectorOpen && inspectorSettledClosed}
 						splitRef={sessionSplitRef}
 					>
-							<SessionInspector
-								browserAnnotationQueue={inspectorView === "browser" ? browserAnnotationQueue : undefined}
-								browserPoppedOut={browserPoppedOut}
-								filesView={
-									inspectorView === "files" && session ? (
-										<SessionFileExplorer
+						<SessionInspector
+							browserOnly={browserOnly}
+							browserAnnotationQueue={inspectorView === "browser" ? browserAnnotationQueue : undefined}
+							browserPoppedOut={browserPoppedOut}
+							filesView={
+								inspectorView === "files" && session ? (
+									<SessionFileExplorer
 										onOpenFile={openCenterFile}
 										onSplitChange={setFilesSplit}
 										onToggleMaximized={handleToggleFilesPopOut}
@@ -2088,13 +2125,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								) : null
 							}
 							isInspectorVisible={inspectorPanelVisible}
-								onOpenFiles={handleOpenFiles}
-								onOpenReviewFile={handleOpenReviewFile}
-								onOpenReviewerTerminal={selectReviewerTerminal}
-								onToggleBrowserPopOut={handleToggleBrowserPopOut}
-								onViewChange={transitionInspectorView}
-								view={inspectorView}
-								browserView={inspectorView === "browser" ? browserView : undefined}
+							onOpenFiles={browserOnly ? undefined : handleOpenFiles}
+							onOpenReviewFile={handleOpenReviewFile}
+							onOpenReviewerTerminal={selectReviewerTerminal}
+							onToggleBrowserPopOut={handleToggleBrowserPopOut}
+							onViewChange={transitionInspectorView}
+							view={inspectorView}
+							browserView={inspectorView === "browser" ? browserView : undefined}
 							session={session}
 						/>
 					</SessionInspectorRail>
@@ -2105,17 +2142,36 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<TopbarButton
-								aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
+								aria-label={
+									browserOnly
+										? `${isInspectorOpen ? t("common.close") : t("inspector.open")} ${t("inspector.browser")}`
+										: isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")
+								}
 								aria-pressed={isInspectorOpen}
 								onClick={handleToggleInspector}
 								style={noDragStyle}
 								variant="icon"
 							>
-								<PanelRight className="size-icon-md" aria-hidden="true" />
+								{browserOnly ? (
+									<span className="relative inline-flex">
+										<Globe2 aria-hidden="true" className="size-icon-md" />
+										{!isInspectorOpen && browserUnseen ? (
+											<span
+												aria-hidden="true"
+												className="pointer-events-none absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-primary ring-2 ring-background"
+												data-testid="orchestrator-browser-unseen-indicator"
+											/>
+										) : null}
+									</span>
+								) : (
+									<PanelRight className="size-icon-md" aria-hidden="true" />
+								)}
 							</TopbarButton>
 						</TooltipTrigger>
 						<TooltipContent side="bottom">
-							{isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
+							{browserOnly
+								? `${isInspectorOpen ? t("common.close") : t("inspector.open")} ${t("inspector.browser")}`
+								: isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
 						</TooltipContent>
 					</Tooltip>
 					{/* Keep the global notification action trailing at the window edge. */}

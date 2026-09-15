@@ -127,6 +127,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		return nil, err
 	}
 	appendTerminalCompatibilityFlags(&providerArgs)
+	appendReasoningEffortFlag(&providerArgs, cfg.Config.Effort)
 	return agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
 		Harness:          agentruntime.HarnessCodex,
 		Binary:           binary,
@@ -165,6 +166,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 	appendTerminalCompatibilityFlags(&providerArgs)
+	appendReasoningEffortFlag(&providerArgs, cfg.Config.Effort)
 	return agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
 		Harness:          agentruntime.HarnessCodex,
 		Binary:           binary,
@@ -178,6 +180,12 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		Permission:       agentruntime.PermissionPolicy(cfg.Permissions),
 		ProviderArgs:     providerArgs,
 	})
+}
+
+func appendReasoningEffortFlag(args *[]string, effort string) {
+	if effort = strings.TrimSpace(effort); effort != "" {
+		*args = append(*args, "-c", "model_reasoning_effort="+codexTOMLConfigString(effort))
+	}
 }
 
 // SessionInfo surfaces Codex hook-derived metadata. Metadata is intentionally

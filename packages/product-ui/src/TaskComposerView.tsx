@@ -55,6 +55,8 @@ export type TaskComposerModelOption = {
 	isDefault?: boolean;
 	label: string;
 	provider?: string;
+	efforts?: string[];
+	defaultEffort?: string;
 };
 
 export type TaskComposerModelCatalog = {

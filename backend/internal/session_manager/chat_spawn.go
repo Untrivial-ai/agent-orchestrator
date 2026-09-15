@@ -69,6 +69,7 @@ type ChatStart struct {
 	// without this a chat orchestrator could talk but not work.
 	Env                     map[string]string
 	Model                   string
+	Effort                  string
 	Permissions             ports.PermissionMode
 	SystemPrompt            string
 	AdditionalDirectories   []string
@@ -166,10 +167,10 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 	}
 	defer releaseCodexAdmission()
-	agentConfig := applySpawnAgentConfig(
-		effectiveAgentConfig(in.cfg.Kind, in.project.Config),
-		in.cfg.AgentConfig,
-	)
+	agentConfig := in.cfg.AgentConfig
+	if !in.cfg.AgentConfigResolved {
+		agentConfig = applySpawnAgentConfig(effectiveAgentConfig(in.cfg.Kind, in.project.Config), in.cfg.AgentConfig)
+	}
 
 	var diffBaseSHA, diffBaseRef string
 	if in.projectKind == domain.ProjectKindSingleRepo {
@@ -196,6 +197,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		WorkspacePath:           in.workspace.Path,
 		Env:                     env,
 		Model:                   agentConfig.Model,
+		Effort:                  agentConfig.Effort,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            in.systemPrompt,
 		AdditionalDirectories:   workspaceProjectDirectories(in.workspace.Path, in.workspaceProject),
@@ -412,6 +414,7 @@ func (m *Manager) resumeChatController(
 		WorkspacePath:           ws.Path,
 		Env:                     env,
 		Model:                   agentConfig.Model,
+		Effort:                  agentConfig.Effort,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            systemPrompt,
 		AdditionalDirectories:   additionalDirectories,

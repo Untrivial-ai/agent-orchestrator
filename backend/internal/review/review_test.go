@@ -1592,7 +1592,7 @@ func TestTriggerSameHarnessOverrideMergesResolvedConfig(t *testing.T) {
 
 func TestReviewerSelectionMergesSessionConfigWithProjectReviewerConfig(t *testing.T) {
 	worker := liveWorker()
-	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
+	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5", Effort: "high"}
 	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{
 		Harness:     domain.ReviewerClaudeCode,
 		AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions},
@@ -1605,7 +1605,7 @@ func TestReviewerSelectionMergesSessionConfigWithProjectReviewerConfig(t *testin
 	if harness != domain.ReviewerClaudeCode {
 		t.Fatalf("harness = %q, want claude-code", harness)
 	}
-	if config.Model != "gpt-5" || config.Permissions != domain.PermissionModeBypassPermissions {
+	if config.Model != "gpt-5" || config.Effort != "high" || config.Permissions != domain.PermissionModeBypassPermissions {
 		t.Fatalf("config = %+v, want merged session override + project permissions", config)
 	}
 }

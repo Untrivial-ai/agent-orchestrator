@@ -206,8 +206,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					// to these whenever SessionView mounts with window.ao.browser present, so
 					// an incomplete browser shape would crash the session-detail/preview specs.
 					setAnnotationMode: async () => undefined,
+					completeAnnotation: async () => undefined,
+					discardAnnotations: async () => undefined,
+					annotationAction: async () => undefined,
 					onAnnotationSubmit: unsubscribe,
 					onAnnotationCancel: unsubscribe,
+					onAnnotationState: unsubscribe,
 					onNavState: unsubscribe,
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
@@ -759,8 +763,12 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					// to these whenever SessionView mounts with window.ao.browser present, so
 					// an incomplete browser shape would crash the session-detail/preview specs.
 					setAnnotationMode: async () => undefined,
+					completeAnnotation: async () => undefined,
+					discardAnnotations: async () => undefined,
+					annotationAction: async () => undefined,
 					onAnnotationSubmit: unsubscribe,
 					onAnnotationCancel: unsubscribe,
+					onAnnotationState: unsubscribe,
 					onNavState: unsubscribe,
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,

@@ -181,6 +181,9 @@ export const aoBridge: AoBridge =
 			}),
 			destroy: () => undefined,
 			setAnnotationMode: async () => undefined,
+			completeAnnotation: async () => undefined,
+			discardAnnotations: async () => undefined,
+			annotationAction: async () => undefined,
 			onNavState: () => () => undefined,
 			onPageFocus: () => () => undefined,
 			onTabsState: () => () => undefined,
@@ -190,6 +193,7 @@ export const aoBridge: AoBridge =
 			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+			onAnnotationState: () => () => undefined,
 		},
 		browserProfiles: {
 			list: async () => ({ profiles: [] }),

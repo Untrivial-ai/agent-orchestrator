@@ -1238,6 +1238,10 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
+	case errors.Is(err, ports.ErrUnsupportedEffort):
+		return apierr.Invalid("UNSUPPORTED_EFFORT", err.Error(), nil)
+	case errors.Is(err, ports.ErrModelCapabilitiesUnavailable):
+		return apierr.Invalid("MODEL_CAPABILITIES_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimeWorkspaceCwdMismatch):
 		return apierr.Conflict("WORKSPACE_CWD_MISMATCH", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceLocked):

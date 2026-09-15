@@ -2988,7 +2988,7 @@ describe("SessionView", () => {
 
 	it("mounts the inspector in sync when navigating from an orchestrator session", () => {
 		const { rerender } = render(<SessionView sessionId="sess-orch" />);
-		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
 
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		rerender(<SessionView sessionId="sess-1" />);
@@ -3003,7 +3003,7 @@ describe("SessionView", () => {
 
 		act(() => useUiStore.getState().setInspectorOpen("sess-2", false));
 		rerender(<SessionView sessionId="sess-orch" />);
-		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
 
 		act(() => useUiStore.getState().setInspectorOpen("sess-2", false));
 		rerender(<SessionView sessionId="sess-2" />);
@@ -3015,16 +3015,57 @@ describe("SessionView", () => {
 		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("data-state", "expanded");
 	});
 
-	it("renders no inspector panel or handle for orchestrator sessions", () => {
+	it("starts the orchestrator Browser closed and opens it with the inspector shortcut", () => {
 		render(<SessionView sessionId="sess-orch" />);
-
-		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
-		expect(screen.queryByTestId("inspector-resize-handle")).not.toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
 		expect(screen.queryByTestId("inspector-collapsed-rail")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open Browser" })).toHaveAttribute("aria-pressed", "false");
+		fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true });
+		expect(inspectorOpen("sess-orch")).toBe(true);
+		expect(screen.getByRole("button", { name: "Close Browser" })).toHaveAttribute("aria-pressed", "true");
+		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
+	});
 
-		// The shortcut is inactive without an inspector.
-		fireEvent.keyDown(window, { key: "B", metaKey: true, shiftKey: true });
-		expect(useUiStore.getState().inspectorSessions["sess-orch"]).toBeUndefined();
+	it("opens orchestrator chat files in the center without revealing Browser", async () => {
+		workerSession("sess-orch").mode = "chat";
+		render(<SessionView sessionId="sess-orch" />);
+		fireEvent.click(screen.getByRole("button", { name: "open chat basename" }));
+		await waitFor(() => expect(screen.getByTestId("session-file-workspace")).toBeInTheDocument());
+		expect(inspectorOpen("sess-orch")).toBe(false);
+		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
+	});
+
+	it("reveals the orchestrator Browser on new preview work and respects closing it", () => {
+		const orchestrator = workerSession("sess-orch");
+		const { rerender } = render(<SessionView sessionId="sess-orch" />);
+		orchestrator.previewUrl = "https://example.com";
+		orchestrator.previewRevision = 1;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(true);
+		fireEvent.click(screen.getByRole("button", { name: "Close Browser" }));
+		orchestrator.previewRevision = 2;
+		browserViewState.agentBrowserActive = true;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(false);
+		const indicator = screen.getByTestId("orchestrator-browser-unseen-indicator");
+		expect(indicator).not.toHaveClass("animate-ping");
+		browserViewState.agentBrowserActive = false;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(screen.getByTestId("orchestrator-browser-unseen-indicator")).toBe(indicator);
+		rerender(<SessionView sessionId="sess-1" />);
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(false);
+		expect(screen.getByTestId("orchestrator-browser-unseen-indicator")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Open Browser" }));
+		expect(screen.queryByTestId("orchestrator-browser-unseen-indicator")).not.toBeInTheDocument();
+		expect(browserUnseen("sess-orch")).toBe(false);
+	});
+
+	it("reveals the orchestrator Browser when the agent first uses it", () => {
+		const { rerender } = render(<SessionView sessionId="sess-orch" />);
+		browserViewState.agentBrowserActive = true;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(true);
 	});
 
 	it("switches the browser between its dock and the whole app window immediately", () => {

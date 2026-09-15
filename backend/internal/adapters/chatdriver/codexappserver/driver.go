@@ -70,6 +70,13 @@ type spawnFunc func(ctx context.Context, bin, workdir string, env []string) (*pr
 type versionProbeFunc func(context.Context, string) (string, error)
 type persistentConnectFunc func(context.Context, persistenthost.Config) (*persistenthost.Transport, error)
 
+type fixedCodexPlugin string
+
+func (p fixedCodexPlugin) ResolveBinary(context.Context) (string, error) { return string(p), nil }
+func (fixedCodexPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusUnknown, nil
+}
+
 // Driver opens Codex conversations over `codex app-server`.
 type Driver struct {
 	plugin       codexPlugin
@@ -89,6 +96,18 @@ func New(plugin codexPlugin, log *slog.Logger) *Driver {
 		plugin: plugin, log: log, spawn: spawnAppServer,
 		versionProbe: installedCodexVersion, persistent: true, connectHost: persistenthost.ConnectOrStart,
 	}
+}
+
+// DiscoverModels performs the same bounded app-server model/list read as a live
+// conversation without creating a provider thread.
+func DiscoverModels(ctx context.Context, binary, workdir string, env map[string]string) ([]ports.ChatModel, error) {
+	driver := New(fixedCodexPlugin(binary), slog.New(slog.DiscardHandler))
+	conv, err := driver.connect(ctx, workdir, env)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conv.Close() }()
+	return conv.ListModels(ctx)
 }
 
 var _ ports.ChatDriver = (*Driver)(nil)
@@ -343,7 +362,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
-		conv.start(cfg.ProviderConversationID, cfg.Model, "")
+		conv.start(cfg.ProviderConversationID, cfg.Model, cfg.Effort)
 		return conv, nil
 	}
 

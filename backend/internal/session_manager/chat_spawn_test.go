@@ -927,6 +927,34 @@ func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestDefaultChatSpawnFallbackSkipsChatTuningResolution(t *testing.T) {
+	launcher := &recordingLauncher{preflightErr: ports.ErrChatDriverUnavailable}
+	mgr, store, runtime := newChatManager(launcher)
+	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
+	mgr.modelCatalog = tuningCatalog{err: errors.New("model discovery unavailable")}
+	project := store.projects[string(chatTestProject)]
+	project.Config.Worker.AgentConfig.Effort = "high"
+	store.projects[string(chatTestProject)] = project
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject,
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if rec.Mode != domain.SessionModeTUI {
+		t.Fatalf("mode = %q, want TUI fallback", rec.Mode)
+	}
+	if runtime.created == 0 {
+		t.Fatal("TUI fallback created no terminal runtime")
+	}
+	if len(launcher.started) != 0 {
+		t.Fatalf("fallback started %d Chat controllers, want 0", len(launcher.started))
+	}
+}
+
 func TestDefaultChatSpawnReturnsUnexpectedPreflightError(t *testing.T) {
 	preflightErr := errors.New("probe state corrupted")
 	launcher := &recordingLauncher{preflightErr: preflightErr}
