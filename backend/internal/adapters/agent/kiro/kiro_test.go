@@ -411,6 +411,49 @@ func TestAuthStatusUnauthorizedFromKiroWhoami(t *testing.T) {
 	}
 }
 
+// TestAuthStatusHandlesJSONFormatTrailer covers kiro-cli's actual
+// `whoami --format json` output: a JSON object followed by a plain-text
+// "Profile:" trailer, which makes the full stdout invalid JSON. The probe
+// must still report the session as authorized.
+func TestAuthStatusHandlesJSONFormatTrailer(t *testing.T) {
+	restore := stubKiroAuthRunner(t, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte(`{"accountType":"IamIdentityCenter","email":"<redacted>","region":"eu-west-1","startUrl":"https://d-<redacted>.awsapps.com/start"}
+
+Profile:
+KiroProfile-us-east-1
+arn:aws:codewhisperer:us-east-1:<redacted>:profile/<redacted>
+`), nil
+	})
+	defer restore()
+
+	plugin := &Plugin{resolvedBinary: "kiro-cli"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	}
+}
+
+// TestAuthStatusUnknownForEmptyJSONIdentity guards against treating an empty
+// or malformed JSON object as a signed-in identity.
+func TestAuthStatusUnknownForEmptyJSONIdentity(t *testing.T) {
+	restore := stubKiroAuthRunner(t, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte("{}\n"), nil
+	})
+	defer restore()
+
+	plugin := &Plugin{resolvedBinary: "kiro-cli"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestGetAgentHooksInstallsKiroHooks(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "kiro-cli"}
 	workspace := t.TempDir()
