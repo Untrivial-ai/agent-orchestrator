@@ -518,12 +518,12 @@ describe("Sidebar", () => {
 		expect(collapsedButton?.closest('[aria-hidden="true"]')).toBeNull();
 	});
 
-	it("keeps sidebar scrolling functional with a thin scrollbar", () => {
+	it("keeps sidebar scrolling functional without a layout gutter", () => {
 		renderSidebar();
 
 		const content = document.querySelector('[data-sidebar="content"]');
-		expect(content).toHaveClass("overflow-y-auto", "project-sidebar-scrollbar");
-		expect(content).not.toHaveClass("scrollbar-none");
+		expect(content).toHaveClass("overflow-y-auto", "scrollbar-none");
+		expect(content).not.toHaveClass("project-sidebar-scrollbar");
 		expect(content).not.toContainElement(screen.getByText("Projects"));
 	});
 
