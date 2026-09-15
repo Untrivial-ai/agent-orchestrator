@@ -19,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/amp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
@@ -3632,6 +3633,92 @@ func TestCleanup_ReclaimsUnsharedWhileSkippingShared(t *testing.T) {
 	}
 	if ws.destroyed != 1 {
 		t.Fatalf("destroyed = %d, want 1 (only the unshared worker workspace)", ws.destroyed)
+	}
+}
+
+// TestCleanup_InterleavedSpawnInOnDestroyPreservesSuccessorWorkspace proves that
+// when an orchestrator successor spawns during Cleanup (for example via an
+// onDestroy runtime teardown callback) and acquires the persistent worktree,
+// Cleanup's final ownership check coordinates with Spawn under the workspace gate
+// so the live successor's working directory is never deleted.
+func TestCleanup_InterleavedSpawnInOnDestroyPreservesSuccessorWorkspace(t *testing.T) {
+	repo := newManagerGitRepo(t)
+	gw, err := gitworktree.New(gitworktree.Options{
+		ManagedRoot:  t.TempDir(),
+		RepoResolver: gitworktree.StaticRepoResolver{"mer": repo},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	cfg := testRoleAgents()
+	cfg.DefaultBranch = "main"
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: repo, Config: cfg}
+	rt := &fakeRuntime{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: gw,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: &fakeLCM{store: st},
+		LookPath:  lookPath,
+	})
+
+	// Spawn the initial orchestrator session and confirm its persistent worktree exists.
+	pred, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator})
+	if err != nil {
+		t.Fatalf("spawn predecessor: %v", err)
+	}
+	wsPath := pred.Metadata.WorkspacePath
+	if wsPath == "" {
+		t.Fatal("predecessor workspace path is empty")
+	}
+	readmePath := filepath.Join(wsPath, "README.md")
+	if _, err := os.Stat(readmePath); err != nil {
+		t.Fatalf("predecessor README does not exist before cleanup: %v", err)
+	}
+
+	// Mark predecessor terminated so Cleanup targets it.
+	predRec := st.sessions[pred.ID]
+	predRec.IsTerminated = true
+	predRec.Activity = domain.Activity{State: domain.ActivityExited}
+	st.sessions[pred.ID] = predRec
+
+	// Configure onDestroy callback to spawn the successor during predecessor runtime teardown.
+	var successorID domain.SessionID
+	rt.onDestroy = func(call int, handle ports.RuntimeHandle) {
+		succ, _, _, spawnErr := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator})
+		if spawnErr != nil {
+			t.Errorf("spawn successor in onDestroy: %v", spawnErr)
+			return
+		}
+		successorID = succ.ID
+	}
+
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if len(res.Cleaned) != 0 {
+		t.Fatalf("cleaned = %v, want none (shared workspace acquired by live successor)", res.Cleaned)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != pred.ID {
+		t.Fatalf("skipped = %v, want [%s]", res.Skipped, pred.ID)
+	}
+	if res.Skipped[0].Reason != "workspace in use by a live session" {
+		t.Fatalf("skip reason = %q, want %q", res.Skipped[0].Reason, "workspace in use by a live session")
+	}
+	if successorID == "" {
+		t.Fatal("successor was not spawned")
+	}
+	succRec, ok := st.sessions[successorID]
+	if !ok || succRec.IsTerminated {
+		t.Fatalf("successor session %s is not live", successorID)
+	}
+	if _, err := os.Stat(readmePath); err != nil {
+		t.Fatalf("successor README.md was removed from disk: %v", err)
 	}
 }
 

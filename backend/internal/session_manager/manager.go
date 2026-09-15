@@ -500,6 +500,30 @@ type Manager struct {
 
 	reviewersMu sync.Mutex
 	reviewers   ReviewerTerminator
+
+	// workspaceGateMu guards workspaceGates: per-project mutexes that coordinate
+	// workspace lifecycle operations (spawn, restore, cleanup) so live sessions
+	// and shared worktrees are not torn down concurrently.
+	workspaceGateMu sync.Mutex
+	workspaceGates  map[domain.ProjectID]*sync.Mutex
+}
+
+// acquireWorkspaceGate acquires the per-project workspace gate, returning a
+// release function that must be deferred or called when the operation finishes.
+func (m *Manager) acquireWorkspaceGate(projectID domain.ProjectID) func() {
+	m.workspaceGateMu.Lock()
+	if m.workspaceGates == nil {
+		m.workspaceGates = make(map[domain.ProjectID]*sync.Mutex)
+	}
+	mu := m.workspaceGates[projectID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		m.workspaceGates[projectID] = mu
+	}
+	m.workspaceGateMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // SetHarnessUseGate late-binds the installer interlock after daemon wiring.
@@ -815,7 +839,8 @@ func New(d Deps) *Manager {
 			idleSettle:     interfaceTransitionIdleSettle,
 			staleIdleLimit: interfaceTransitionStaleIdleLimit,
 		},
-		logger: d.Logger,
+		logger:         d.Logger,
+		workspaceGates: make(map[domain.ProjectID]*sync.Mutex),
 	}
 	if m.clock == nil {
 		// UTC so spawn-stamped CreatedAt/UpdatedAt match every other session
@@ -882,6 +907,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 	}
 	defer releaseHarness()
+	releaseWorkspaceGate := m.acquireWorkspaceGate(cfg.ProjectID)
+	defer releaseWorkspaceGate()
 	// Reject an unknown harness before any durable state is created. Doing this
 	// after CreateSession would leave a terminated orphan row and waste a
 	// worktree on a spawn that can never launch.
@@ -2141,6 +2168,9 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 	// unresumable non-orchestrator (a worker with no task and no native id to resume).
 	// Orchestrators always relaunch fresh with the system prompt only.
 
+	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
+	defer releaseWorkspaceGate()
+
 	ws, err := m.restoreSessionWorkspace(ctx, project, rec)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("restore %s: workspace: %w", id, err)
@@ -3048,129 +3078,139 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 		if !rec.IsTerminated {
 			continue
 		}
-		// Check the shutdown-saved marker: is there a session_worktrees row?
-		rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
-		if err != nil {
-			m.logger.Error("restore-all: list worktrees failed", "sessionID", rec.ID, "error", err)
-			continue
-		}
-		if len(rows) == 0 {
-			// No marker: this session was killed by the user before shutdown.
-			continue
-		}
-		rows = restorableWorktreeRows(rows)
-		if len(rows) == 0 {
-			continue
-		}
+		m.restoreAllSession(ctx, rec)
+	}
+	return nil
+}
 
-		// Step 1: ensure the worktree exists. workspace.Restore re-creates it
-		// if it was removed by SaveAndTeardownAll.
-		project, err := m.loadProject(ctx, rec.ProjectID)
-		if err != nil {
-			m.logger.Error("restore-all: load project failed", "sessionID", rec.ID, "error", err)
-			continue
-		}
-		var ws ports.WorkspaceInfo
-		restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace
-		var projectRows []ports.WorkspaceRepoInfo
-		if restoredWorkspaceProject {
-			var rowErr error
-			projectRows, rowErr = m.workspaceProjectRestoreRowsFromMarkers(ctx, project, rec, rows)
-			if rowErr != nil {
-				m.logger.Error("restore-all: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
-				continue
-			}
-			root, restoreErr := m.restoreWorkspaceProjectRows(ctx, projectRows)
-			if restoreErr != nil {
-				m.logger.Error("restore-all: workspace project restore failed", "sessionID", rec.ID, "error", restoreErr)
-				continue
-			}
-			ws = workspaceInfoFromRepoInfo(root)
-		} else {
-			var restoreErr error
-			ws, restoreErr = m.workspace.Restore(ctx, ports.WorkspaceConfig{
-				ProjectID:     rec.ProjectID,
-				SessionID:     rec.ID,
-				Kind:          rec.Kind,
-				SessionPrefix: sessionPrefix(project),
-				Branch:        rec.Metadata.Branch,
-				BaseBranch:    project.Config.WorktreeBaseBranch(),
-				BaseRef:       rec.Metadata.DiffBaseRef,
-				Path:          rec.Metadata.WorkspacePath,
-			})
-			if restoreErr != nil {
-				m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", restoreErr)
-				continue
-			}
-		}
-		if ws.Path == "" {
-			m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", "empty restored root path")
-			continue
-		}
-		if err := m.restoreAttachments(ctx, rec.ID, ws); err != nil {
-			m.logger.Error("restore-all: restore attachments failed", "sessionID", rec.ID, "error", err)
-			continue
-		}
+// restoreAllSession restores one terminated session marked for restore at
+// shutdown, acquiring the project workspace gate so cleanup does not tear down
+// its workspace while restore is in progress.
+func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecord) {
+	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
+	defer releaseWorkspaceGate()
 
-		// Step 2: replay preserve ref when one was recorded.
-		if restoredWorkspaceProject {
-			m.applyWorkspaceProjectPreserved(ctx, projectRows)
-		} else {
-			var preserveRef string
-			for _, r := range rows {
-				if r.PreservedRef != "" {
-					preserveRef = r.PreservedRef
-					break
+	// Check the shutdown-saved marker: is there a session_worktrees row?
+	rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
+	if err != nil {
+		m.logger.Error("restore-all: list worktrees failed", "sessionID", rec.ID, "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		// No marker: this session was killed by the user before shutdown.
+		return
+	}
+	rows = restorableWorktreeRows(rows)
+	if len(rows) == 0 {
+		return
+	}
+
+	// Step 1: ensure the worktree exists. workspace.Restore re-creates it
+	// if it was removed by SaveAndTeardownAll.
+	project, err := m.loadProject(ctx, rec.ProjectID)
+	if err != nil {
+		m.logger.Error("restore-all: load project failed", "sessionID", rec.ID, "error", err)
+		return
+	}
+	var ws ports.WorkspaceInfo
+	restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace
+	var projectRows []ports.WorkspaceRepoInfo
+	if restoredWorkspaceProject {
+		var rowErr error
+		projectRows, rowErr = m.workspaceProjectRestoreRowsFromMarkers(ctx, project, rec, rows)
+		if rowErr != nil {
+			m.logger.Error("restore-all: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
+			return
+		}
+		root, restoreErr := m.restoreWorkspaceProjectRows(ctx, projectRows)
+		if restoreErr != nil {
+			m.logger.Error("restore-all: workspace project restore failed", "sessionID", rec.ID, "error", restoreErr)
+			return
+		}
+		ws = workspaceInfoFromRepoInfo(root)
+	} else {
+		var restoreErr error
+		ws, restoreErr = m.workspace.Restore(ctx, ports.WorkspaceConfig{
+			ProjectID:     rec.ProjectID,
+			SessionID:     rec.ID,
+			Kind:          rec.Kind,
+			SessionPrefix: sessionPrefix(project),
+			Branch:        rec.Metadata.Branch,
+			BaseBranch:    project.Config.WorktreeBaseBranch(),
+			BaseRef:       rec.Metadata.DiffBaseRef,
+			Path:          rec.Metadata.WorkspacePath,
+		})
+		if restoreErr != nil {
+			m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", restoreErr)
+			return
+		}
+	}
+	if ws.Path == "" {
+		m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", "empty restored root path")
+		return
+	}
+	if err := m.restoreAttachments(ctx, rec.ID, ws); err != nil {
+		m.logger.Error("restore-all: restore attachments failed", "sessionID", rec.ID, "error", err)
+		return
+	}
+
+	// Step 2: replay preserve ref when one was recorded.
+	if restoredWorkspaceProject {
+		m.applyWorkspaceProjectPreserved(ctx, projectRows)
+	} else {
+		var preserveRef string
+		for _, r := range rows {
+			if r.PreservedRef != "" {
+				preserveRef = r.PreservedRef
+				break
+			}
+		}
+		if preserveRef != "" {
+			if applyErr := m.workspace.ApplyPreserved(ctx, ws, preserveRef); applyErr != nil {
+				if errors.Is(applyErr, ports.ErrPreservedConflict) {
+					m.logger.Warn("restore-all: apply preserved produced conflicts; agent relaunched with conflict markers in place",
+						"sessionID", rec.ID, "ref", preserveRef, "error", applyErr)
+				} else {
+					m.logger.Error("restore-all: apply preserved failed", "sessionID", rec.ID, "error", applyErr)
 				}
-			}
-			if preserveRef != "" {
-				if applyErr := m.workspace.ApplyPreserved(ctx, ws, preserveRef); applyErr != nil {
-					if errors.Is(applyErr, ports.ErrPreservedConflict) {
-						m.logger.Warn("restore-all: apply preserved produced conflicts; agent relaunched with conflict markers in place",
-							"sessionID", rec.ID, "ref", preserveRef, "error", applyErr)
-					} else {
-						m.logger.Error("restore-all: apply preserved failed", "sessionID", rec.ID, "error", applyErr)
-					}
-					// Continue: always relaunch even on conflict (never delete the ref here).
-				}
-			}
-		}
-
-		// Step 3: relaunch the agent in the restored workspace.
-		if _, err := m.relaunchRestoredSession(ctx, rec, project, ws); err != nil {
-			switch {
-			case errors.Is(err, ErrNotResumable):
-				// A promptless, unresumable worker is intentionally left terminated:
-				// expected, not an operational failure, so log it quietly.
-				m.logger.Warn("restore-all: session left terminated (nothing to resume)", "sessionID", rec.ID)
-			case errors.Is(err, ErrNotFound):
-				// The row was reaped between listing and relaunch (a stale id during
-				// reconciliation): skip it and keep restoring the rest.
-				m.logger.Warn("restore-all: session vanished before relaunch, skipping", "sessionID", rec.ID)
-			default:
-				m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
-			}
-			continue
-		}
-
-		// One-shot: drop the consumed marker so it never outlives one restart
-		// (#2319). A still-live session re-acquires it at the next quit.
-		if restoredWorkspaceProject {
-			for _, row := range projectRows {
-				if err := m.upsertWorkspaceProjectRowState(ctx, row, "active"); err != nil {
-					m.logger.Warn("restore-all: marking workspace repo active failed", "sessionID", rec.ID, "repo", row.RepoName, "error", err)
-				}
-			}
-		} else {
-			if err := m.markSessionWorktreesActive(ctx, rows); err != nil {
-				m.logger.Warn("restore-all: marking worktrees active failed", "sessionID", rec.ID, "error", err)
-			}
-			if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
-				m.logger.Warn("restore-all: delete restore marker failed", "sessionID", rec.ID, "error", err)
+				// Continue: always relaunch even on conflict (never delete the ref here).
 			}
 		}
 	}
-	return nil
+
+	// Step 3: relaunch the agent in the restored workspace.
+	if _, err := m.relaunchRestoredSession(ctx, rec, project, ws); err != nil {
+		switch {
+		case errors.Is(err, ErrNotResumable):
+			// A promptless, unresumable worker is intentionally left terminated:
+			// expected, not an operational failure, so log it quietly.
+			m.logger.Warn("restore-all: session left terminated (nothing to resume)", "sessionID", rec.ID)
+		case errors.Is(err, ErrNotFound):
+			// The row was reaped between listing and relaunch (a stale id during
+			// reconciliation): skip it and keep restoring the rest.
+			m.logger.Warn("restore-all: session vanished before relaunch, skipping", "sessionID", rec.ID)
+		default:
+			m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
+		}
+		return
+	}
+
+	// One-shot: drop the consumed marker so it never outlives one restart
+	// (#2319). A still-live session re-acquires it at the next quit.
+	if restoredWorkspaceProject {
+		for _, row := range projectRows {
+			if err := m.upsertWorkspaceProjectRowState(ctx, row, "active"); err != nil {
+				m.logger.Warn("restore-all: marking workspace repo active failed", "sessionID", rec.ID, "repo", row.RepoName, "error", err)
+			}
+		}
+	} else {
+		if err := m.markSessionWorktreesActive(ctx, rows); err != nil {
+			m.logger.Warn("restore-all: marking worktrees active failed", "sessionID", rec.ID, "error", err)
+		}
+		if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
+			m.logger.Warn("restore-all: delete restore marker failed", "sessionID", rec.ID, "error", err)
+		}
+	}
 }
 
 func restorableWorktreeRows(rows []domain.SessionWorktreeRecord) []domain.SessionWorktreeRecord {
@@ -3841,12 +3881,6 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	if err != nil {
 		return CleanupResult{}, fmt.Errorf("cleanup %s: %w", project, err)
 	}
-	// Workspace paths a live (non-terminated) session still occupies. A
-	// terminated predecessor and a live successor can share one persistent
-	// worktree (the orchestrator's is reused across respawn), so eligibility
-	// keys on the workspace path, not just the session's terminated state —
-	// reclaiming a path still in use would delete a live session's cwd.
-	liveWorkspaces := liveWorkspacePaths(recs)
 	result := CleanupResult{
 		Cleaned:     make([]domain.SessionID, 0, len(recs)),
 		AlreadyGone: []domain.SessionID{},
@@ -3866,14 +3900,14 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		// the workspace path, so it runs even when the workspace is shared with a
 		// live successor — otherwise a skipped session would leak its runtime
 		// (the lingering keep-alive shell) until cleanup reruns.
+		// Deliberately run before acquiring the workspace gate so that any code
+		// path Destroy invokes synchronously (for example, a test fake or a future
+		// runtime adapter that spawns a successor during teardown) can itself call
+		// Spawn or Restore without deadlocking on the gate.
 		if h := runtimeHandle(rec.Metadata); h.ID != "" {
 			_ = m.runtime.Destroy(ctx, h) // best effort; usually already gone
 		}
-		if liveWorkspaces[normalizeWorkspacePath(ws.Path)] {
-			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "workspace in use by a live session"})
-			continue
-		}
-		reclaim, reason := m.cleanupOne(ctx, rec, ws)
+		reclaim, reason := m.cleanupWorkspaceUnderGate(ctx, rec, ws)
 		if reason != "" {
 			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: reason})
 			continue
@@ -3886,6 +3920,43 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		result.Cleaned = append(result.Cleaned, rec.ID)
 	}
 	return result, nil
+}
+
+// cleanupWorkspaceUnderGate acquires the per-project workspace gate and then
+// decides whether to tear the workspace down. The gate is what makes the
+// check timely: Spawn and Restore hold the same gate while they allocate a
+// workspace and commit metadata, so isWorkspaceInUse cannot race with an
+// in-progress spawn that has not yet written WorkspacePath to the store.
+// Returns an empty reason when the workspace was reclaimed; a non-empty
+// reason means it was left alone this run and the reclaim value is undefined.
+func (m *Manager) cleanupWorkspaceUnderGate(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) (ports.WorkspaceReclaim, string) {
+	release := m.acquireWorkspaceGate(rec.ProjectID)
+	defer release()
+
+	inUse, err := m.isWorkspaceInUse(ctx, rec.ProjectID, ws.Path)
+	if err != nil {
+		m.logger.Warn("cleanup: workspace ownership check failed", "sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)
+		return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
+	}
+	if inUse {
+		return ports.WorkspaceReclaimRemoved, "workspace in use by a live session"
+	}
+	return m.cleanupOne(ctx, rec, ws)
+}
+
+// isWorkspaceInUse reports whether any non-terminated session in the project
+// references the given workspace path. Must be called under the project's
+// workspace gate; see cleanupWorkspaceUnderGate for the full invariant.
+func (m *Manager) isWorkspaceInUse(ctx context.Context, projectID domain.ProjectID, workspacePath string) (bool, error) {
+	if workspacePath == "" {
+		return false, nil
+	}
+	recs, err := m.cleanupRecords(ctx, projectID)
+	if err != nil {
+		return false, err
+	}
+	live := liveWorkspacePaths(recs)
+	return live[normalizeWorkspacePath(workspacePath)], nil
 }
 
 // cleanupOne reclaims one terminated session's workspace, gating shut any
