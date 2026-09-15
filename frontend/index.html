@@ -4,9 +4,144 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Agent Orchestrator</title>
+		<style>
+			/*
+			 * Pre-React splash. Painted the instant the document loads, before the
+			 * JS bundle mounts React. React's createRoot(...).render() replaces the
+			 * contents of #root (see src/renderer/main.tsx), so this markup lives
+			 * inside #root and is cleanly discarded once the app mounts. Inline only:
+			 * no build-time asset imports. Matches the native window background,
+			 * which switches on theme (NATIVE_WINDOW_BACKGROUND_* in main.ts): light
+			 * #fbfbfb by default, dark #0f1014 under a dark color scheme. The splash
+			 * follows prefers-color-scheme so it does not flash the wrong theme
+			 * before React resolves the app theme.
+			 */
+			html,
+			body {
+				margin: 0;
+				height: 100%;
+				background: #fbfbfb;
+			}
+			#ao-boot-splash {
+				position: absolute;
+				inset: 0;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: #fbfbfb;
+				color: #111827;
+				font-family:
+					-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+					sans-serif;
+				-webkit-font-smoothing: antialiased;
+			}
+			#ao-boot-splash .ao-boot-content {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				text-align: center;
+				transform: translateY(-3vh);
+			}
+			#ao-boot-splash .ao-boot-mark {
+				display: grid;
+				place-items: center;
+				height: 7rem;
+				width: 8rem;
+			}
+			#ao-boot-splash .ao-boot-mark svg {
+				height: 5.5rem;
+				width: 5.5rem;
+			}
+			#ao-boot-splash .ao-boot-mark svg path {
+				fill: #111827;
+			}
+			#ao-boot-splash .ao-boot-title {
+				margin-top: 1.25rem;
+				font-size: 1rem;
+				font-weight: 600;
+				letter-spacing: -0.01em;
+				color: #111827;
+			}
+			#ao-boot-splash .ao-boot-status {
+				margin-top: 0.5rem;
+				min-height: 1.25rem;
+				font-size: 0.875rem;
+				color: #9ca3af;
+			}
+			#ao-boot-splash .ao-boot-dots {
+				margin-top: 0.75rem;
+				display: flex;
+				height: 1rem;
+				align-items: center;
+				gap: 0.375rem;
+			}
+			#ao-boot-splash .ao-boot-dots span {
+				height: 0.375rem;
+				width: 0.375rem;
+				border-radius: 9999px;
+				background: #6b7280;
+				animation: ao-boot-pulse 1.2s ease-in-out infinite;
+			}
+			#ao-boot-splash .ao-boot-dots span:nth-child(2) {
+				animation-delay: 0.15s;
+			}
+			#ao-boot-splash .ao-boot-dots span:nth-child(3) {
+				animation-delay: 0.3s;
+			}
+			@keyframes ao-boot-pulse {
+				0%,
+				80%,
+				100% {
+					opacity: 0.3;
+				}
+				40% {
+					opacity: 1;
+				}
+			}
+			@media (prefers-reduced-motion: reduce) {
+				#ao-boot-splash .ao-boot-dots span {
+					animation: none;
+					opacity: 0.6;
+				}
+			}
+			@media (prefers-color-scheme: dark) {
+				html,
+				body {
+					background: #0f1014;
+				}
+				#ao-boot-splash {
+					background: #0f1014;
+					color: #f3f4f6;
+				}
+				#ao-boot-splash .ao-boot-mark svg path {
+					fill: #f3f4f6;
+				}
+				#ao-boot-splash .ao-boot-title {
+					color: #f3f4f6;
+				}
+			}
+		</style>
 	</head>
 	<body>
-		<div id="root"></div>
+		<div id="root">
+			<div id="ao-boot-splash" role="status" aria-live="polite" aria-label="Agent Orchestrator is starting">
+				<div class="ao-boot-content">
+					<div class="ao-boot-mark" aria-hidden="true">
+						<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+							<circle cx="50" cy="50" r="46" stroke="#3b82f6" stroke-width="4" opacity="0.35" />
+							<path d="M50 24 L72 74 H61.5 L50 46.5 L38.5 74 H28 Z" />
+						</svg>
+					</div>
+					<p class="ao-boot-title">Agent Orchestrator</p>
+					<p class="ao-boot-status">Starting AO&hellip;</p>
+					<div class="ao-boot-dots" aria-hidden="true">
+						<span></span>
+						<span></span>
+						<span></span>
+					</div>
+				</div>
+			</div>
+		</div>
 		<script type="module" src="/src/renderer/main.tsx"></script>
 	</body>
 </html>

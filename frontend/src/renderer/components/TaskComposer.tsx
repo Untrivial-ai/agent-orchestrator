@@ -22,6 +22,7 @@ import { type FileAttachmentPayload, useFileAttachments } from "../hooks/useFile
 import { useSettings } from "../hooks/useSettings";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -29,6 +30,7 @@ import {
 	refreshAgentModels,
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
@@ -117,13 +119,17 @@ export function TaskComposer({
 	// project keeps the existing daemon flow untouched.
 	const { client: cloudClient } = useCloudCp();
 	const { org: cloudOrg } = useCloudOrg();
+	// The user's client-side sandbox-provider preference (when the control plane
+	// offers more than one); omitted lets the control plane use its default.
+	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
 	const cloudProjects = useCloudProjectsQuery();
 	const isCloudProject =
 		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+	const isStandalone = projectId === STANDALONE_WORKSPACE_ID;
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
 	// and the model dropdown spins forever. Local projects keep their scope.
-	const modelsProjectId = isCloudProject ? "" : (projectId ?? "");
+	const modelsProjectId = isCloudProject || isStandalone ? "" : (projectId ?? "");
 
 	const createCloudTask = useCallback(
 		async (input: CreateTaskInput): Promise<string> => {
@@ -136,6 +142,7 @@ export function TaskComposer({
 					harness: input.agent ?? "claude-code",
 					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? "claude-code"),
 					prompt: input.brief,
+					...(selectedProvider ? { provider: selectedProvider } : {}),
 				});
 				// The control plane provisions the sandbox asynchronously; surface the
 				// new session on the board immediately.
@@ -147,7 +154,7 @@ export function TaskComposer({
 				throw err instanceof Error ? err : new Error(t("newTask.unableToStart"));
 			}
 		},
-		[cloudClient, cloudOrg, queryClient, t],
+		[cloudClient, cloudOrg, queryClient, selectedProvider, t],
 	);
 
 	const createLocalTask = useCallback(
@@ -196,17 +203,42 @@ export function TaskComposer({
 		[queryClient, t],
 	);
 
+	const createStandaloneTask = useCallback(
+		async (input: CreateTaskInput): Promise<string> => {
+			void captureRendererEvent("ao.renderer.task_create_requested", { scope: "standalone" });
+			const displayName = input.brief.trim().slice(0, 20) || input.agent || "Standalone agent";
+			const { data, error } = await apiClient.POST("/api/v1/sessions", {
+				body: {
+					kind: "worker",
+					harness: input.agent as components["schemas"]["SpawnSessionRequest"]["harness"],
+					prompt: input.brief,
+					displayName,
+					model: input.model,
+					...(input.mode ? { mode: input.mode } : {}),
+					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+				},
+			});
+			if (error) {
+				throw new TaskCreateError(apiErrorMessage(error, t("newTask.unableToStart")), apiErrorCode(error), error.details);
+			}
+			if (!data?.session.id) throw new Error(t("newTask.noSession"));
+			void captureRendererEvent("ao.renderer.task_create_succeeded", { scope: "standalone" });
+			return data.session.id;
+		},
+		[t],
+	);
+
 	const createTask = useCallback(
 		(input: CreateTaskInput): Promise<string> =>
-			isCloudProject ? createCloudTask(input) : createLocalTask(input),
-		[isCloudProject, createCloudTask, createLocalTask],
+			isStandalone ? createStandaloneTask(input) : isCloudProject ? createCloudTask(input) : createLocalTask(input),
+		[isStandalone, isCloudProject, createStandaloneTask, createCloudTask, createLocalTask],
 	);
 
 	const projectQuery = useQuery({
 		// A cloud project lives in the control plane, not the local daemon, so this
 		// local lookup would 404 (PROJECT_NOT_FOUND); skip it for cloud projects.
 		queryKey: ["project", projectId],
-		enabled: Boolean(projectId) && !isCloudProject,
+		enabled: Boolean(projectId) && !isCloudProject && !isStandalone,
 		queryFn: async () => {
 			const { data, error: apiError } = await apiClient.GET("/api/v1/projects/{id}", {
 				params: { path: { id: projectId ?? "" } },
@@ -378,7 +410,7 @@ export function TaskComposer({
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId)}
+			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "")}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -409,7 +441,7 @@ export function TaskComposer({
 			model={{
 				agentId: selectedAgent,
 				agentLabel: selectedAgentLabel,
-				projectId: projectId ?? "",
+				projectId: isStandalone ? "" : (projectId ?? ""),
 				disabled: isSubmitting,
 				value: model,
 				mode,

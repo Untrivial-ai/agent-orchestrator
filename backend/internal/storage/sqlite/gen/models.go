@@ -151,7 +151,7 @@ type AppSetting struct {
 
 type ChangeLog struct {
 	Seq       int64
-	ProjectID domain.ProjectID
+	ProjectID *domain.ProjectID
 	SessionID *domain.SessionID
 	EventType cdc.EventType
 	Payload   string
@@ -204,7 +204,7 @@ type CodexActiveAccount struct {
 type Conversation struct {
 	ID                         string
 	Scope                      domain.ConversationScope
-	ProjectID                  domain.ProjectID
+	ProjectID                  *domain.ProjectID
 	SessionID                  *domain.SessionID
 	CurrentSessionID           *domain.SessionID
 	LatestSequence             int64
@@ -401,7 +401,7 @@ type ModelUsageEvent struct {
 type Notification struct {
 	ID         string
 	SessionID  domain.SessionID
-	ProjectID  domain.ProjectID
+	ProjectID  *domain.ProjectID
 	PRURL      string
 	Type       domain.NotificationType
 	Title      string
@@ -559,50 +559,57 @@ type ReviewRun struct {
 }
 
 type Session struct {
-	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
-	Num                       int64
-	IssueID                   domain.IssueID
-	Kind                      domain.SessionKind
-	Harness                   domain.AgentHarness
-	ActivityState             domain.ActivityState
-	ActivityLastAt            time.Time
-	IsTerminated              bool
-	Branch                    string
-	WorkspacePath             string
-	RuntimeHandleID           string
-	AgentSessionID            string
-	Prompt                    string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	DisplayName               string
-	FirstSignalAt             sql.NullTime
-	PreviewURL                string
-	PreviewRevision           int64
-	CleanupGeneration         int64
-	RuntimeLaunchID           string
-	WorkspaceRepoPath         string
-	TerminateOnPRMerge        bool
-	DiffBaseSha               string
-	DiffBaseRef               string
-	ReviewerHarness           domain.ReviewerHarness
-	IsPinned                  bool
-	PinnedAt                  sql.NullTime
-	SessionMode               domain.SessionMode
-	ProviderConversationID    string
-	ControllerGeneration      string
-	BrowserCapabilityVerifier string
-	AutoInjectReview          bool
-	LatestUserPrompt          string
-	LatestAssistantUpdate     string
-	NativeTranscriptPath      string
-	AutoInjectCI              bool
-	AutoReviewEnabled         bool
-	AgentSessionIDLaunchID    string
-	Model                     string
-	LatestUserPromptAt        sql.NullTime
-	ReviewerAgentConfig       string
-	SessionPermissions        string
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	RuntimeHandleID                  string
+	AgentSessionID                   string
+	Prompt                           string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	DisplayName                      string
+	FirstSignalAt                    sql.NullTime
+	PreviewURL                       string
+	PreviewRevision                  int64
+	CleanupGeneration                int64
+	RuntimeLaunchID                  string
+	WorkspaceRepoPath                string
+	TerminateOnPRMerge               bool
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	ReviewerHarness                  domain.ReviewerHarness
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	BrowserCapabilityVerifier        string
+	AutoInjectReview                 bool
+	LatestUserPrompt                 string
+	LatestAssistantUpdate            string
+	NativeTranscriptPath             string
+	AutoInjectCI                     bool
+	AutoReviewEnabled                bool
+	AgentSessionIDLaunchID           string
+	Model                            string
+	LatestUserPromptAt               sql.NullTime
+	ReviewerAgentConfig              string
+	SessionPermissions               string
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	Revision                         int64
+	NativeCheckpointEvidence         string
 }
 
 type SessionCleanupFact struct {
@@ -630,6 +637,7 @@ type SessionInterfaceTransition struct {
 	UpdatedAt            time.Time
 	CompletedAt          sql.NullTime
 	NoticeAcknowledgedAt sql.NullTime
+	HistoryPolicy        domain.SessionInterfaceTransitionHistoryPolicy
 }
 
 type SessionInterfaceTransitionMessage struct {

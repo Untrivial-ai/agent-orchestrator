@@ -24,6 +24,7 @@ import {
 	useConversation,
 	useConversationCommands,
 	useConversationConfigOptions,
+	useConversationSkills,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
@@ -103,6 +104,43 @@ beforeEach(() => {
 });
 
 describe("accepted conversation sends", () => {
+	it("keeps a local echo through acceptance until its durable turn is observed", async () => {
+		const response = deferred<{ data: { turnId: string }; error: undefined }>();
+		postMock.mockReturnValue(response.promise);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-local-echo"), {
+			wrapper: HookWrapper,
+		});
+
+		let sending!: Promise<unknown>;
+		act(() => {
+			sending = result.current.send("show my message first");
+		});
+		await waitFor(() => {
+			expect(result.current.localEchos).toHaveLength(1);
+		});
+		expect(result.current.localEchos[0]).toMatchObject({ text: "show my message first" });
+		expect(result.current.localEchos[0]?.turnId).toBeUndefined();
+
+		response.resolve({ data: { turnId: "turn-local-echo" }, error: undefined });
+		await act(async () => {
+			await sending;
+		});
+		await waitFor(() =>
+			expect(result.current.localEchos).toMatchObject([
+				{ text: "show my message first", turnId: "turn-local-echo" },
+			]),
+		);
+
+		act(() => result.current.acknowledgeLocalEcho("turn-local-echo"));
+		await waitFor(() => expect(result.current.localEchos).toEqual([]));
+	});
+
 	it("keeps each accepted turn attached to the session that initiated it", async () => {
 		const firstResponse = deferred<{
 			data: { turnId: string };
@@ -1082,5 +1120,73 @@ describe("controller recovery", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-1"] });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
 		invalidateSpy.mockRestore();
+	});
+});
+
+describe("useConversationSkills polling", () => {
+	function skillsWrapper(queryClient: QueryClient) {
+		return function Wrapper({ children }: { children: ReactNode }) {
+			return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+		};
+	}
+
+	it("stops polling while the controller is not ready", async () => {
+		vi.useFakeTimers();
+		try {
+			// The daemon answers 409 CHAT_CONTROLLER_NOT_READY while no live controller
+			// owns the session. A fixed-interval poll would re-request the catalog every
+			// minute for as long as the surface stayed mounted, turning one readiness
+			// conflict into a steady stream of 409s.
+			apiErrorCodeMock.mockReturnValue("CHAT_CONTROLLER_NOT_READY");
+			getMock.mockResolvedValue({ error: { code: "CHAT_CONTROLLER_NOT_READY" } });
+			const queryClient = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+
+			renderHook(() => useConversationSkills("ao-skills", true), {
+				wrapper: skillsWrapper(queryClient),
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(getMock).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5 * 60_000);
+			});
+			// No further requests: the readiness conflict backs the poll off entirely.
+			expect(getMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps polling once the catalog loads", async () => {
+		vi.useFakeTimers();
+		try {
+			// An empty catalog is a real answer, not a failure: polling continues so a
+			// skill published later becomes visible without a second event channel.
+			getMock.mockResolvedValue({ data: { skills: [] } });
+			const queryClient = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+
+			renderHook(() => useConversationSkills("ao-skills-ok", true), {
+				wrapper: skillsWrapper(queryClient),
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(getMock).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+			expect(getMock).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

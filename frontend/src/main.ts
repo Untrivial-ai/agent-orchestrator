@@ -1,5 +1,6 @@
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
+import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
 	app,
 	BaseWindow,
@@ -339,7 +340,7 @@ const MAC_WINDOW_BUTTON_Y = 12;
 const RENDERER_SCHEME = "app";
 const RENDERER_HOST = "renderer";
 const RENDERER_ORIGIN = `${RENDERER_SCHEME}://${RENDERER_HOST}`;
-const NATIVE_WINDOW_BACKGROUND_DARK = "#0f1014";
+const NATIVE_WINDOW_BACKGROUND_DARK = "#0c0c0e";
 const NATIVE_WINDOW_BACKGROUND_LIGHT = "#fbfbfb";
 
 function getShellWebContents(): WebContents | null {
@@ -2324,6 +2325,25 @@ ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 });
 ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
 
+// Whether THIS boot is a post-update relaunch, so the startup loader can show
+// "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
+// marker is written on the quitAndInstall path (auto-updater.ts) on every OS and
+// consumed exactly once here; a corrupt/stale/mismatched marker reads as false
+// (see consumeUpdateRelaunchFlag). Cached so every renderer that asks during the
+// same boot gets the same answer and the marker is deleted only once.
+let postUpdateRelaunchPromise: Promise<boolean> | undefined;
+function detectPostUpdateRelaunch(): Promise<boolean> {
+	if (!postUpdateRelaunchPromise) {
+		const runFile = runFilePath();
+		postUpdateRelaunchPromise =
+			app.isPackaged && runFile
+				? consumeUpdateRelaunchFlag({ stateDir: path.dirname(runFile), version: app.getVersion() }).catch(() => false)
+				: Promise.resolve(false);
+	}
+	return postUpdateRelaunchPromise;
+}
+ipcMain.handle("updates:isPostUpdateRelaunch", () => detectPostUpdateRelaunch());
+
 function cancelDockBounce(): void {
 	if (pendingBounce === null) return;
 	const { id } = pendingBounce;
@@ -2622,6 +2642,12 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	if (app.isPackaged) {
+		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
+		await checkDesktopVersionFloor().catch((err) =>
+			console.warn("desktop version floor check failed:", err),
+		);
+	}
 	void refreshGitHubOwners();
 	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
 	// The approved release gate is intentionally closed. Tests inject the

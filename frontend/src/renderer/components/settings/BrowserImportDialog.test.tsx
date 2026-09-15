@@ -28,6 +28,16 @@ const firefoxSource = {
 	historySupport: true as const,
 };
 
+const safariSource = {
+	id: "f".repeat(32),
+	name: "Safari",
+	family: "safari" as const,
+	profiles: [{ id: "1".repeat(32), name: "Personal", default: true }],
+	cookieSupport: "supported" as const,
+	cookieSupportReason: "safari-plaintext" as const,
+	historySupport: true as const,
+};
+
 describe("BrowserImportDialog", () => {
 	const originalBridge = aoBridge.browserProfiles;
 
@@ -48,7 +58,7 @@ describe("BrowserImportDialog", () => {
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
-			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource] })),
+			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource], warnings: ["safari-access-denied" as const] })),
 			import: vi.fn(async () => ({
 				sourceName: source.name,
 				entries: [{
@@ -67,6 +77,8 @@ describe("BrowserImportDialog", () => {
 
 		render(<BrowserImportDialog onImported={onImported} onOpenChange={() => undefined} open />);
 		expect(await screen.findByText("Google Chrome")).toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("Full Disk Access");
+		expect(screen.getByRole("button", { name: "Start import" })).toBeEnabled();
 		const sourcePicker = screen.getByRole("combobox", { name: "From" });
 		expect(sourcePicker).toHaveTextContent("Google Chrome");
 		await userEvent.click(sourcePicker);
@@ -149,6 +161,28 @@ describe("BrowserImportDialog", () => {
 		expect(alert).toHaveTextContent("Fully close Brave, including background processes, then try again");
 		expect(alert).toHaveTextContent("Encrypted cookies are handled separately");
 		expect(alert).not.toHaveTextContent("Error invoking remote method");
+	});
+
+	it("points Safari users to Full Disk Access when macOS blocks its data", async () => {
+		const bridge: AoBridge["browserProfiles"] = {
+			list: vi.fn(async () => ({ profiles: [] })),
+			create: vi.fn(),
+			rename: vi.fn(),
+			clear: vi.fn(),
+			delete: vi.fn(),
+			discoverImportSources: vi.fn(async () => ({ sources: [safariSource] })),
+			import: vi.fn(async () => { throw new Error("EPERM: operation not permitted"); }),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+		aoBridge.browserProfiles = bridge;
+
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		await screen.findByText("Safari");
+		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Privacy & Security > Full Disk Access, allow AO, then restart AO",
+		);
 	});
 
 	it("keeps discovery failures visible and disables import", async () => {

@@ -50,6 +50,7 @@ export function BrowserImportDialog({
 	const [mergeName, setMergeName] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
+	const [safariAccessDenied, setSafariAccessDenied] = useState(false);
 	const [progress, setProgress] = useState<BrowserImportProgress | null>(null);
 	const [result, setResult] = useState<BrowserImportResult | null>(null);
 
@@ -62,6 +63,7 @@ export function BrowserImportDialog({
 		if (!open) return;
 		setView("form");
 		setSources([]);
+		setSafariAccessDenied(false);
 		setSourceId("");
 		setSelectedProfileIds([]);
 		setIncludeCookies(true);
@@ -80,6 +82,7 @@ export function BrowserImportDialog({
 		void bridge.discoverImportSources().then(
 			(discovery) => {
 				setSources(discovery.sources);
+				setSafariAccessDenied(discovery.warnings?.includes("safari-access-denied") ?? false);
 				const first = discovery.sources[0];
 				if (first) applySourceDefaults(first, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
 			},
@@ -177,6 +180,9 @@ export function BrowserImportDialog({
 				</div>
 
 				<div className={settingsDialogBodyClass}>
+					{view === "form" && safariAccessDenied ? (
+						<p className="text-xs text-warning" role="status">{t("settings.browserImport.safariAccessUnavailable")}</p>
+					) : null}
 					{view === "form" ? (
 						<ImportForm
 							destinationMode={destinationMode}
@@ -248,6 +254,7 @@ function importFailureMessage(reason: unknown, browser: string): string {
 		.replace(/^Error:\s*/i, "")
 		.trim();
 	if (/unable to open database file|database is locked|SQLITE_(?:BUSY|CANTOPEN|LOCKED)|\b(?:EACCES|EBUSY|EPERM)\b/i.test(message)) {
+		if (browser === "Safari") return appI18n.t("settings.browserImport.safariAccessUnavailable");
 		return appI18n.t("settings.browserImport.sourceDatabaseUnavailable", { browser });
 	}
 	return message || fallback;

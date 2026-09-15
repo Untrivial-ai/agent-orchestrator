@@ -1,0 +1,56 @@
+name: Version Floor Guard
+on:
+  pull_request:
+    paths:
+      - desktop-version-floor.json
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON structure
+        run: |
+          node -e "
+            const fs = require('fs');
+            const floor = JSON.parse(fs.readFileSync('desktop-version-floor.json', 'utf8'));
+
+            const allowed = new Set(['min', 'latest', 'downloadUrl']);
+            const extra = Object.keys(floor).filter(k => !allowed.has(k));
+            if (extra.length) {
+              console.error('ERROR: unexpected keys:', extra.join(', '));
+              process.exit(1);
+            }
+
+            for (const key of ['min', 'latest']) {
+              const v = floor[key];
+              if (v === undefined || v === '') continue;
+              if (typeof v !== 'string') {
+                console.error('ERROR:', key, 'must be a string, got', typeof v);
+                process.exit(1);
+              }
+              if (!/^\d{1,4}(\.\d{1,4}){1,3}$/.test(v)) {
+                console.error('ERROR:', key, 'is not a valid dotted version:', v);
+                process.exit(1);
+              }
+            }
+
+            if (floor.min && floor.min !== '') {
+              console.log('');
+              console.log('========================================');
+              console.log('WARNING: min is set to', floor.min);
+              console.log('This will BLOCK every desktop user below this version.');
+              console.log('They will see a forced quit dialog on next launch.');
+              console.log('Make sure this is intentional.');
+              console.log('========================================');
+              console.log('');
+            }
+
+            if (floor.latest && floor.latest !== '') {
+              console.log('NOTE: latest is set to', floor.latest);
+              console.log('Users below this will see a dismissible update nudge.');
+            }
+
+            console.log('Validation passed.');
+          "
