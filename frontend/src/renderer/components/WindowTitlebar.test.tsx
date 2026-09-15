@@ -156,6 +156,41 @@ describe("WindowTitlebar", () => {
     },
   );
 
+  it("does not report shell focus from the portaled browser address bar", async () => {
+    const { WindowTitlebar } = await loadWindowTitlebar();
+
+    const notifyShellFocus = vi.fn();
+    window.ao!.menu.notifyShellFocus = notifyShellFocus;
+
+    const { unmount } = render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
+
+    // The docked omnibox is portaled into the inspector header, outside the
+    // browser-panel div — focusing it must not clear the browser shortcut
+    // target or the next ⌘T/⌘W opens/closes a terminal instead of a tab.
+    const addressBar = document.createElement("div");
+    addressBar.setAttribute("data-testid", "browser-address-bar");
+    const input = document.createElement("input");
+    addressBar.appendChild(input);
+    document.body.appendChild(addressBar);
+
+    input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    addressBar.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    expect(notifyShellFocus).not.toHaveBeenCalled();
+
+    const shellSurface = document.createElement("div");
+    document.body.appendChild(shellSurface);
+    shellSurface.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(notifyShellFocus).toHaveBeenCalledTimes(1);
+
+    addressBar.remove();
+    shellSurface.remove();
+    unmount();
+  });
+
   it("keeps Windows spacing and overlays scoped to Windows", () => {
     const css = readFileSync("src/renderer/styles.css", "utf8");
     const tokens = readFileSync("src/styles/tokens.css", "utf8");
