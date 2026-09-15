@@ -1953,6 +1953,10 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
  * reconnect row as `role="alert"` would interrupt a screen reader once per attempt.
  */
 function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
+	const collapsed = activity.detail?.collapsedReconnectErrors;
+	if (activity.status === "resolved" && collapsed && collapsed.length > 0) {
+		return <CollapsedReconnectErrorRow summary={activity.summary} attempts={collapsed} />;
+	}
 	const { headline, detail } = providerErrorCopy(activity);
 	const actionUrl = String(activity.detail?.actionUrl ?? "").trim();
 	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
@@ -1977,6 +1981,65 @@ function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
 					</>
 				) : null}
 			</span>
+		</div>
+	);
+}
+
+/**
+ * The resolved stand-in for a run of reconnect/error rows once their turn
+ * completed. `ChatWorkspace.readableItems` folds the run before this ever
+ * renders, so by the time a row gets here it is one summary line, collapsed by
+ * default, that expands to the same headline/detail pairs the individual rows
+ * would have shown.
+ */
+function CollapsedReconnectErrorRow({
+	summary,
+	attempts,
+}: {
+	summary: string;
+	attempts: { headline: string; detail?: string }[];
+}) {
+	const [open, setOpen] = useState(false);
+	const reducedMotion = useReducedMotion();
+	return (
+		<div className="min-w-0 max-w-full py-0.5">
+			<button
+				type="button"
+				onClick={() => setOpen((prev) => !prev)}
+				aria-expanded={open}
+				className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-[11.5px] leading-snug text-muted-foreground/80 transition-colors hover:text-foreground"
+			>
+				<ChevronRight
+					aria-hidden="true"
+					className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
+				/>
+				<span className="wrap-anywhere min-w-0 truncate">{summary}</span>
+			</button>
+			<AnimatePresence initial={false}>
+				{open ? (
+					<motion.div
+						initial={{ height: 0, opacity: 0 }}
+						animate={{ height: "auto", opacity: 1 }}
+						exit={{ height: 0, opacity: 0 }}
+						transition={{ duration: reducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+						className="overflow-hidden"
+					>
+						{/* Attempts are a fixed, ordered, historical list with no id of their own,
+						    so position is the only stable key available. */}
+						<ul className="ml-[18px] flex flex-col gap-0.5 border-l border-border/60 py-1 pl-2.5">
+							{attempts.map((attempt, index) => (
+								<li
+									key={`${index}-${attempt.headline}`}
+									className="wrap-anywhere text-[11px] leading-snug text-muted-foreground/70"
+								>
+									{attempt.headline}
+									{attempt.detail ? ` — ${attempt.detail}` : ""}
+								</li>
+							))}
+						</ul>
+					</motion.div>
+				) : null}
+			</AnimatePresence>
 		</div>
 	);
 }
