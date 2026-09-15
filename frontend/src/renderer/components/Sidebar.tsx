@@ -671,7 +671,7 @@ export function Sidebar({
 				{/* Brand (project-sidebar__brand); in the icon rail it becomes the old
             36px board button wrapping the 22px accent mark. Click → home. */}
 				<button
-					aria-label="Go to home"
+					aria-label={t("shell.goHome")}
 					className={cn(
 						"group/brand flex w-full shrink-0 items-center gap-1.5 rounded-md px-0.5 text-left",
 						"focus-visible:outline-none",

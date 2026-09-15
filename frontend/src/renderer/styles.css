@@ -2059,7 +2059,7 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	background-color: transparent !important;
 }
 
-/* Brand → home: no hover/focus fill — the mark stays flat. */
+/* Brand home control: no focus fill. */
 .sidebar-focusless [data-sidebar-brand]:focus-visible {
 	background-color: transparent !important;
 }

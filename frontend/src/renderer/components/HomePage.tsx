@@ -26,8 +26,6 @@ import { Badge } from "./ui/badge";
 
 const GITHUB_REPOSITORY_URL = "https://github.com/Untrivial-ai/agent-orchestrator";
 const RECENT_PROJECT_LIMIT = 3;
-
-/** Action tiles — same fill language as the import chooser cards. */
 const HOME_BUTTON_CLASS =
 	"flex w-full items-center gap-3 rounded-lg bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-[scale] duration-fast ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transform-none";
 const HOME_ICON_SLOT_CLASS =

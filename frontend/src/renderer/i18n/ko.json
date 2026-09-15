@@ -2025,5 +2025,6 @@
 	"chat.draftDiscard.stay": "머무르기",
 	"chat.draftDiscard.leaveAnyway": "그래도 나가기",
 	"chat.edit.abandonRecovery": "편집 복구 포기",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "홈으로 이동"
 }

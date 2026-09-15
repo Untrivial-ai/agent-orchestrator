@@ -1,16 +1,9 @@
 import { cn } from "../lib/utils";
 
-/** Host for {@link NavRowHighlight}: transparent shell, text still tints on hover/active. */
 export const NAV_ROW_HIGHLIGHT_HOST_CLASS =
 	"group/nav-row relative hover:bg-transparent! focus-visible:bg-transparent! active:bg-transparent! data-[active=true]:bg-transparent! hover:text-foreground data-[active=true]:font-medium data-[active=true]:text-foreground";
 
-/**
- * Absolute pill behind row content. Starts 8px smaller on both axes
- * (centered); hover/focus grows width+height to fill the host. Opacity snaps.
- * Hover paint is gated in styles.css to fine pointers; keyboard uses
- * :focus-visible / :has(:focus-visible) there (not :focus-within — mouse
- * click focus would otherwise stick the pill on after toggle).
- */
+/** Growing fill behind nav rows; hover gated to fine pointers in styles.css. */
 export function NavRowHighlight({
 	active = false,
 	disabled = false,

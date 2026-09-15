@@ -2025,5 +2025,6 @@
 	"chat.draftDiscard.stay": "Bleiben",
 	"chat.draftDiscard.leaveAnyway": "Trotzdem verlassen",
 	"chat.edit.abandonRecovery": "Bearbeitungswiederherstellung aufgeben",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "Zur Startseite"
 }
