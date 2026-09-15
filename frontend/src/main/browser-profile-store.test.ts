@@ -137,6 +137,18 @@ describe("BrowserProfileStore", () => {
 		expect(store.getSessionProfileId("worker-1")).toBeUndefined();
 	});
 
+	it("loads a pre-existing registry written before defaultProfileId existed", async () => {
+		const stateDir = await makeStateDir();
+		const registryPath = path.join(stateDir, "browser-profiles.json");
+		const legacy = registryWithProfiles(1);
+		// Registries written before this field existed have no `defaultProfileId` key at all.
+		await writeFile(registryPath, JSON.stringify({ version: legacy.version, profiles: legacy.profiles, bindings: legacy.bindings }), "utf8");
+
+		const store = new BrowserProfileStore({ stateDir });
+		expect((await store.load()).error).toBeUndefined();
+		expect(store.getDefaultProfileId()).toBeNull();
+	});
+
 	it("persists a default profile and clears it when that profile is deleted", async () => {
 		const stateDir = await makeStateDir();
 		const store = new BrowserProfileStore({ stateDir });
