@@ -341,6 +341,7 @@ if (typeof window !== "undefined") {
 			getSession: async () => null,
 			signIn: async () => undefined,
 			signOut: async () => undefined,
+			connectProviderAuth: async () => undefined,
 			localAuthAvailable: async () => false,
 			localRegister: async () => {
 				throw new Error("not available in tests");

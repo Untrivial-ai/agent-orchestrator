@@ -66,6 +66,39 @@ func TestBuildInteractiveUsesConfiguredDurableCodexHomeOnRestore(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveWritesOpaqueCodexAuthJSONWithoutRelogin(t *testing.T) {
+	codexHome := filepath.Join(t.TempDir(), "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	loginCalled := false
+	credential := `{"tokens":{"access_token":"opaque"}}`
+	command, err := (HarnessBuilder{CodexLogin: func(_, _, _, _ string) error {
+		loginCalled = true
+		return nil
+	}}).BuildInteractive(worker.LaunchContext{
+		SessionID: "session-1", Harness: "codex", Mode: "standard",
+	}, worker.CredentialResponse{Provider: "codex", CredentialType: "auth_json", Secret: credential}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginCalled {
+		t.Fatal("auth JSON must be handed to Codex as its native file, not passed through login")
+	}
+	got, err := os.ReadFile(filepath.Join(codexHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != credential || command.Env["CODEX_HOME"] != codexHome {
+		t.Fatalf("Codex auth handoff = %q, home = %q", got, command.Env["CODEX_HOME"])
+	}
+	info, err := os.Stat(filepath.Join(codexHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("auth.json permissions = %#o, want 0600", info.Mode().Perm())
+	}
+}
+
 func containsAdjacent(values []string, first, second string) bool {
 	for index := 0; index+1 < len(values); index++ {
 		if values[index] == first && values[index+1] == second {

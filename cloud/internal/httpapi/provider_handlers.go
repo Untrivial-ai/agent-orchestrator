@@ -136,7 +136,12 @@ func (s *Server) putAgentConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.CredentialType = strings.TrimSpace(request.CredentialType)
+	// Codex owns its refreshable auth document. Preserve its opaque bytes; the
+	// normal token normalization would corrupt JSON string values.
 	secret := normalizeAgentCredentialSecret(request.Secret)
+	if agent == "codex" && request.CredentialType == "auth_json" {
+		secret = []byte(request.Secret)
+	}
 	defer clear(secret)
 	request.Secret = ""
 	if len(secret) == 0 || len(secret) > 64<<10 ||
@@ -402,6 +407,9 @@ func (s *Server) putUserAgentConnection(w http.ResponseWriter, r *http.Request) 
 	}
 	request.CredentialType = strings.TrimSpace(request.CredentialType)
 	secret := normalizeAgentCredentialSecret(request.Secret)
+	if agent == "codex" && request.CredentialType == "auth_json" {
+		secret = []byte(request.Secret)
+	}
 	defer clear(secret)
 	request.Secret = ""
 	if len(secret) == 0 || len(secret) > 64<<10 ||
@@ -569,7 +577,7 @@ func validAgentCredentialType(agent, credentialType string) bool {
 	case "claude-code":
 		return credentialType == "api_key" || credentialType == "oauth_token"
 	case "codex":
-		return credentialType == "api_key" || credentialType == "access_token"
+		return credentialType == "api_key" || credentialType == "access_token" || credentialType == "auth_json"
 	case "cursor":
 		return credentialType == "api_key"
 	default:

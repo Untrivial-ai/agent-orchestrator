@@ -262,7 +262,7 @@ func (b HarnessBuilder) configureCredential(
 		}
 	case "codex":
 		switch credential.CredentialType {
-		case "api_key", "access_token":
+		case "api_key", "access_token", "auth_json":
 			return b.configureCodexCredential(command, credential)
 		default:
 			return errors.New("unsupported Codex credential type")
@@ -462,6 +462,17 @@ func (b HarnessBuilder) configureCodexCredential(
 	}
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("create Codex home: %w", err)
+	}
+	if credential.CredentialType == "auth_json" {
+		path := filepath.Join(home, "auth.json")
+		if err := os.WriteFile(path, []byte(credential.Secret), 0o600); err != nil {
+			return fmt.Errorf("write Codex authentication: %w", err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("secure Codex authentication: %w", err)
+		}
+		command.Env["CODEX_HOME"] = home
+		return nil
 	}
 	login := b.CodexLogin
 	if login == nil {
