@@ -468,7 +468,7 @@ export function mobileReachablePreviewURL(raw: string | undefined, aoHost: strin
 export type AgentInfo = {
 	id: string;
 	label: string;
-	authStatus?: "authorized" | "unauthorized" | "unknown";
+	authStatus?: "authorized" | "unauthorized" | "unknown" | "configured";
 };
 
 export type AgentCatalog = {

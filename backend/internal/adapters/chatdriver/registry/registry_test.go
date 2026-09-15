@@ -16,7 +16,7 @@ import (
 // Kimi, Kimchi, Pi, and OMP use the reusable ACP transport. Every remaining harness
 // is deliberately TUI-only.
 func TestShippedChatDrivers(t *testing.T) {
-	r := Build(nil)
+	r := Build(nil, nil)
 
 	for _, harness := range []domain.AgentHarness{
 		domain.HarnessCodex,

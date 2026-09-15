@@ -135,6 +135,7 @@ func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 type Discoverer struct {
 	CodexModels  CodexModelListFunc
 	ClineOptions ClineConfigOptionListFunc
+	ClaudeModels ClaudeModelListFunc
 }
 
 // CodexModelListFunc obtains Codex's account-scoped app-server catalog without
@@ -145,10 +146,16 @@ type CodexModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) 
 // the ACP configuration catalog advertised by session/new.
 type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error)
 
+// ClaudeModelListFunc obtains the Claude model IDs the configured provider
+// actually serves, in that provider's own ID format. It returns an error
+// whenever the provider could not be asked; discovery then falls back to the
+// static alias list rather than emptying the picker.
+type ClaudeModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error)
+
 // Discover uses the agent-owned model surface configured for this adapter.
 func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	if request.AgentID == "claude-code" {
-		return discoverClaudeCatalog(request), nil
+		return discoverClaudeCatalog(ctx, request, d.ClaudeModels)
 	}
 	if request.AgentID == "muse" {
 		return Base(request.AgentID), nil
@@ -180,18 +187,47 @@ func claudeCodeModels() []ports.AgentModelInfo {
 	}
 }
 
-// discoverClaudeCatalog returns the static Claude Code catalog, marking the row
-// matching the project/user configured model as default. The list is static, so
-// discovery never fails and never launches the Agent SDK or an interactive
-// Claude client.
-func discoverClaudeCatalog(request ports.AgentModelDiscoveryRequest) ports.AgentModelCatalog {
+// discoverClaudeCatalog builds the Claude Code catalog, preferring the model
+// list the provider itself reports and falling back to the static aliases.
+//
+// The fallback is not a formality. The static list is the set of aliases the
+// first-party API accepts — sonnet, opus, haiku — and those are wrong on every
+// other provider: Bedrock spells the same model anthropic.claude-…-v1:0 with a
+// region prefix, Vertex claude-opus-4-5@20251101. No string rule maps between
+// the three, so the only way to offer correct IDs is to ask the provider that
+// will serve them, which is exactly what the credential probe already does.
+//
+// The static aliases travel with a discovery error so the service can prefer a
+// last-known-good provider catalog. With no cache, the aliases still keep the
+// picker usable while accurately remaining stale/unverified.
+func discoverClaudeCatalog(
+	ctx context.Context,
+	request ports.AgentModelDiscoveryRequest,
+	list ClaudeModelListFunc,
+) (ports.AgentModelCatalog, error) {
 	base := Base(request.AgentID)
-	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
 	base.Source = "catalog"
 	base.FetchedAt = time.Now().UTC()
-	return base
-}
 
+	if list != nil {
+		models, err := list(ctx, request)
+		if err != nil {
+			base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+			return base, fmt.Errorf("claude-code model discovery: %w", err)
+		}
+		normalized := normalize(models)
+		if len(normalized) > 0 {
+			base.Models = applyClaudeConfiguredDefault(normalized, request.WorkingDir, request.Env)
+			base.Source = "provider"
+			return base, nil
+		}
+		base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+		return base, errors.New("claude-code model discovery returned no models")
+	}
+
+	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+	return base, nil
+}
 func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, workingDir string, env map[string]string) []ports.AgentModelInfo {
 	configured := claudeCodeResolvedModel(workingDir, env)
 	if configured == "" {
@@ -225,7 +261,10 @@ func (Discoverer) Manual(agentID string) ports.AgentModelCatalog { return Manual
 func Discover(ctx context.Context, agentID, binary, workingDir string, env map[string]string) (ports.AgentModelCatalog, error) {
 	base := Base(agentID)
 	if agentID == "claude-code" {
-		return discoverClaudeCatalog(ports.AgentModelDiscoveryRequest{AgentID: agentID, WorkingDir: workingDir, Env: env}), nil
+		// This package-level entry point has no injected provider lister, so it
+		// yields the static aliases. Daemon wiring uses Discoverer, which does.
+		return discoverClaudeCatalog(
+			ctx, ports.AgentModelDiscoveryRequest{AgentID: agentID, WorkingDir: workingDir, Env: env}, nil)
 	}
 	if agentID == "muse" {
 		return base, nil
@@ -362,6 +401,15 @@ func claudeCodeResolvedModel(workingDir string, env map[string]string) string {
 	if fromEnv := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")); fromEnv != "" {
 		return fromEnv
 	}
+	for _, candidate := range claudeCodeSettingsPaths(workingDir) {
+		if configured := claudeCodeSettingsModel(candidate); configured != "" {
+			return configured
+		}
+	}
+	return ""
+}
+
+func claudeCodeSettingsPaths(workingDir string) []string {
 	var candidates []string
 	if dir := strings.TrimSpace(workingDir); dir != "" {
 		candidates = append(candidates,
@@ -372,12 +420,7 @@ func claudeCodeResolvedModel(workingDir string, env map[string]string) string {
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".claude", "settings.json"))
 	}
-	for _, candidate := range candidates {
-		if configured := claudeCodeSettingsModel(candidate); configured != "" {
-			return configured
-		}
-	}
-	return ""
+	return candidates
 }
 
 // claudeCodeSettingsModel reads one settings file's "model". An unreadable or
@@ -483,10 +526,10 @@ func BinaryVersion(ctx context.Context, binary string) string {
 	return fmt.Sprintf("%x", hash.Sum(nil)[:8])
 }
 
-// CatalogFingerprint hashes every discovery input for an agent: the resolved
-// executable, plus the configuration values the adapter reads. A cached catalog
-// stays valid only while this is unchanged, so configuration AO reads during
-// discovery must be represented here or an edit would never take effect.
+// CatalogFingerprint hashes stable discovery inputs for adapters whose cache
+// can be validated locally. Claude provider catalogs are always revalidated by
+// the service because account and credential-chain state is not fully
+// fingerprintable.
 func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string, env map[string]string) string {
 	binaryVersion := BinaryVersion(ctx, binary)
 	config := discoveryConfigInputs(agentID, workingDir, env)
@@ -505,9 +548,6 @@ func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string,
 // discoveryConfigInputs returns the configuration an agent's discovery consults,
 // or "" when the catalog depends on the binary alone.
 func discoveryConfigInputs(agentID, workingDir string, env map[string]string) string {
-	if agentID == "claude-code" {
-		return "model=" + claudeCodeResolvedModel(workingDir, env)
-	}
 	if config := configDiscoveryFingerprint(agentID, workingDir, env); config != "" {
 		return "config=" + config
 	}

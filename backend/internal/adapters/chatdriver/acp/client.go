@@ -980,28 +980,6 @@ func sessionFailure(meta map[string]any) map[string]any {
 	return failure
 }
 
-// Claude puts negotiated terminal failures on the prompt response, which still
-// has stopReason=end_turn. Translate the protocol's severity and actions into the
-// shared provider-failure contract; never match provider prose or maintain a list
-// of subscription/limit error messages.
-func promptResponseFailure(meta map[string]any) error {
-	failure := sessionFailure(meta)
-	if failure["severity"] != "error" {
-		return nil
-	}
-	title, _ := failure["title"].(string)
-	details, _ := failure["details"].(string)
-	var cause error
-	if actions, ok := failure["actions"].([]any); ok {
-		for _, action := range actions {
-			if action == "login" {
-				cause = ports.ErrChatAuthRequired
-			}
-		}
-	}
-	return ports.NewChatProviderFailure(title, details, cause)
-}
-
 // AIR sends no recovery update, so output completes the active retry episode.
 func (c *conversation) completeProviderFailure(turnID string, emit func(ports.ChatEvent)) {
 	c.mu.Lock()

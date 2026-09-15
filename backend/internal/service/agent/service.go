@@ -271,7 +271,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	// Fingerprints the same inputs the discovery run would read, so a change to
 	// either the executable or the configuration behind it invalidates the cache.
 	version := s.discoverer.CatalogFingerprint(ctx, request)
-	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version {
+	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version && agentID != "claude-code" {
 		// A command-backed catalog can drift without the binary or its config
 		// changing (a provider adds a model), which no fingerprint can see. Ask
 		// cache-first clients to revalidate in the background once the catalog is
@@ -285,7 +285,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	if discoverErr != nil {
-		if hasCached && len(cached.Catalog.Models) > len(discovered.Models) {
+		if hasCached && len(cached.Catalog.Models) > 0 {
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
 			cached.Catalog.RefreshRecommended = true

@@ -569,6 +569,7 @@ type Session struct {
 	ConversationCheckpointTurnID     string
 	Revision                         int64
 	NativeCheckpointEvidence         string
+	Effort                           string
 }
 
 type SessionCleanupFact struct {

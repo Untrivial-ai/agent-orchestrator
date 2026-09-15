@@ -1650,7 +1650,7 @@ func TestManager_AddWorkspaceAcceptsChildWithoutOriginAsNeedsInit(t *testing.T) 
 	if needsInitRepo == nil {
 		t.Fatalf("expected a needs_init child")
 	}
-	if needsInitRepo.Repo != "" {
+	if needsInitRepo != nil && needsInitRepo.Repo != "" {
 		t.Fatalf("Repo = %q, want empty", needsInitRepo.Repo)
 	}
 }

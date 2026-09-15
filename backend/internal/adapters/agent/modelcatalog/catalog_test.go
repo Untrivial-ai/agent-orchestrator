@@ -579,30 +579,6 @@ func writeClaudeSettings(t *testing.T, dir, model string) {
 	}
 }
 
-func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	dir := t.TempDir()
-	writeClaudeSettings(t, dir, "opus")
-
-	first := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil)
-	if first == "" {
-		t.Fatal("fingerprint is empty for a configured model")
-	}
-
-	// A settings edit changes the catalog, so it has to change the fingerprint —
-	// otherwise the cached catalog stays authoritative forever.
-	writeClaudeSettings(t, dir, "haiku")
-	second := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil)
-	if second == first {
-		t.Fatalf("fingerprint unchanged (%q) after the configured model changed", second)
-	}
-
-	writeClaudeSettings(t, dir, "opus")
-	if again := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil); again != first {
-		t.Fatalf("fingerprint = %q, want %q for identical inputs", again, first)
-	}
-}
-
 func TestCatalogFingerprintKeepsTheExecutableOnlyValueForConfiglessAgents(t *testing.T) {
 	dir := t.TempDir()
 	writeClaudeSettings(t, dir, "opus")
@@ -611,19 +587,5 @@ func TestCatalogFingerprintKeepsTheExecutableOnlyValueForConfiglessAgents(t *tes
 	got := CatalogFingerprint(context.Background(), "codex", "codex", dir, nil)
 	if want := BinaryVersion(context.Background(), "codex"); got != want {
 		t.Fatalf("fingerprint = %q, want the executable fingerprint %q", got, want)
-	}
-}
-
-func TestCatalogFingerprintDistinguishesConfiguredFromUnconfigured(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	t.Setenv("HOME", t.TempDir())
-	unset := t.TempDir()
-	writeClaudeSettings(t, unset, "")
-	configured := t.TempDir()
-	writeClaudeSettings(t, configured, "opus")
-
-	if CatalogFingerprint(context.Background(), "claude-code", "", unset, nil) ==
-		CatalogFingerprint(context.Background(), "claude-code", "", configured, nil) {
-		t.Fatal("configuring a model must change the fingerprint")
 	}
 }

@@ -429,6 +429,34 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
+	it("saves Claude effort from the combined default model picker", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents") return agentCatalogResponse;
+			if (path === "/api/v1/agents/{agent}/models") return { data: {
+				agent: "claude-code", selectionMode: "catalog", allowCustom: false,
+				models: [{ id: "claude-opus", label: "Claude Opus", isDefault: true, efforts: ["medium", "high"] }],
+			} };
+			return { data: { status: "ok", project: {
+				id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one",
+				repo: "", defaultBranch: "main", config: {
+					worker: { agent: "claude-code", agentConfig: { model: "claude-opus" } },
+					orchestrator: { agent: "codex" },
+				},
+			} } };
+		});
+		renderSettings("proj-1", undefined, "agents");
+		const picker = await screen.findByRole("button", { name: "Worker model" });
+		expect(picker).toHaveTextContent("Claude Opus · Provider default");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig).toEqual(
+			expect.objectContaining({ model: "claude-opus", effort: "high" }),
+		);
+	});
+
 	it("loads agents fields and saves without dropping hidden workflow config", async () => {
 		mockProject({
 			id: "proj-1",

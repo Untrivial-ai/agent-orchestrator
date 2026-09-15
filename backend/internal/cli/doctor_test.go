@@ -160,6 +160,9 @@ func TestDoctorChecksHarnessVersions(t *testing.T) {
 		case "/bin/git":
 			return []byte("git version 2.43.0\n"), nil
 		case "/bin/claude", "/bin/codex", "/bin/muse":
+			if name == "/bin/claude" && len(args) == 2 && args[0] == "auth" && args[1] == "status" {
+				return []byte(`{"loggedIn":false}`), nil
+			}
 			if len(args) == 1 && args[0] == "--version" {
 				if name == "/bin/muse" {
 					return []byte("Muse Code 0.1.0 (0.1.0-R708.1)\n"), nil
@@ -803,5 +806,96 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dataDir, hooksLogName), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func stubDoctorValidator(t *testing.T, handler http.HandlerFunc) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	for _, name := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-doctor-test")
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+}
+
+func claudeAuthContext(t *testing.T, cliOutput string) *commandContext {
+	t.Helper()
+	return doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) { return []byte(cliOutput), nil })
+}
+
+func TestDoctorClaudeAuthSkipsWhenNotInstalled(t *testing.T) {
+	check := doctorContext(t, nil, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "skipped") {
+		t.Fatalf("check = %+v, want a skipped PASS", check)
+	}
+}
+
+func TestDoctorClaudeAuthPassesOnlyWhenTheProviderAccepts(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5-20251101"}]}`))
+	})
+	check := claudeAuthContext(t, `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "accepted the credential") {
+		t.Fatalf("check = %+v, want provider acceptance", check)
+	}
+}
+
+func TestDoctorClaudeAuthFailsWhenTheProviderRejects(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
+	})
+	check := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "REJECTED") {
+		t.Fatalf("check = %+v, want rejected credential failure", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsWhenValidationIsInconclusive(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	check := claudeAuthContext(t, `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "could not validate") {
+		t.Fatalf("check = %+v, want inconclusive warning", check)
+	}
+}
+
+func TestDoctorClaudeAuthFailsWhenSignedOut(t *testing.T) {
+	check := claudeAuthContext(t, `{"loggedIn":false}`).checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "claude login") {
+		t.Fatalf("check = %+v, want sign-in failure", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsOnUnparsableOutput(t *testing.T) {
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("unsupported subcommand on this version"), errors.New("exit status 1")
+		})
+	if check := c.checkClaudeAuth(context.Background()); check.Level != doctorWarn {
+		t.Fatalf("check = %+v, want WARN", check)
+	}
+}
+
+func TestDoctorClaudeAuthAnnotatesShadowingEnvVar(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
+	})
+	check := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","authMethod":"claude.ai","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "overrides any claude.ai login") {
+		t.Fatalf("check = %+v, want shadowing credential diagnosis", check)
+	}
+}
+
+func TestDoctorClaudeAuthDoesNotWarnAboutWorkingEnvKey(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5"}]}`))
+	})
+	check := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
+	if check.Level != doctorPass {
+		t.Fatalf("check = %+v, want PASS", check)
 	}
 }

@@ -177,7 +177,7 @@ func (m *Manager) executeChatAgentSwitch(
 		baseAgentConfig.Effort = ""
 		baseAgentConfig.Mode = ""
 	}
-	agentConfig, err := m.resolveChatAgentConfig(ctx, ports.SpawnConfig{
+	agentConfig, err := m.resolveAgentConfig(ctx, ports.SpawnConfig{
 		ProjectID: rec.ProjectID,
 		Kind:      rec.Kind,
 		Harness:   cfg.TargetHarness,

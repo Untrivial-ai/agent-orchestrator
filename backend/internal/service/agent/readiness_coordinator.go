@@ -529,6 +529,16 @@ func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAge
 		return successfulAuthentication(attempted, domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, item.Manifest.Name+" appears signed in."), false
 	case ports.AgentAuthStatusUnauthorized:
 		return successfulAuthentication(attempted, domain.AgentAuthenticationUnauthorized, domain.AgentReadinessReasonUnauthorized, item.Manifest.Name+" needs authentication."), false
+	case ports.AgentAuthStatusConfigured:
+		// A definite observation — a credential exists — but not a verified
+		// one. It is recorded as a success so the coordinator does not retry
+		// it as a failure, and it derives to unknown readiness, not ready.
+		return successfulAuthentication(attempted, domain.AgentAuthenticationConfigured, domain.AgentReadinessReasonAuthConfigured,
+			item.Manifest.Name+" has credentials configured, but AO could not verify them."), false
+	case ports.AgentAuthStatusUnavailable:
+		// Nothing to authenticate: the remedy is an install, not a login.
+		return successfulAuthentication(attempted, domain.AgentAuthenticationUnknown, domain.AgentReadinessReasonAuthSkippedNotInstalled,
+			item.Manifest.Name+" is not installed, so authentication was not checked."), false
 	default:
 		return failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckInconclusive, "Authentication check was inconclusive."), true
 	}
