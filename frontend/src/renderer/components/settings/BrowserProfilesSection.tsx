@@ -1,4 +1,4 @@
-import { Check, Eraser, Import, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Eraser, Import, Pencil, Plus, Star, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AoBridge } from "../../../preload";
@@ -19,6 +19,7 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 	const { t } = useTranslation();
 	const bridge = (aoBridge as Partial<AoBridge>).browserProfiles as ProfileBridge | undefined;
 	const [profiles, setProfiles] = useState<Awaited<ReturnType<ProfileBridge["list"]>>["profiles"]>([]);
+	const [defaultProfileId, setDefaultProfileIdState] = useState<string | null>(null);
 	const [loading, setLoading] = useState(Boolean(bridge));
 	const [error, setError] = useState("");
 	const [name, setName] = useState("");
@@ -34,6 +35,7 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 		try {
 			const result = await bridge.list();
 			setProfiles(result.profiles);
+			setDefaultProfileIdState(result.defaultProfileId);
 			setError(result.error?.message ?? "");
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : t("settings.browserProfiles.loadFailed"));
@@ -79,6 +81,18 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 		}
 	};
 
+	const toggleDefault = async (profile: Profile) => {
+		if (!bridge) return;
+		const nextId = defaultProfileId === profile.id ? null : profile.id;
+		try {
+			await bridge.setDefault(nextId);
+			setDefaultProfileIdState(nextId);
+			setError("");
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : t("settings.browserProfiles.saveDefaultFailed"));
+		}
+	};
+
 	const confirmAction = async () => {
 		if (!bridge || !pendingAction) return;
 		setActionBusy(true);
@@ -89,6 +103,7 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 			} else {
 				await bridge.delete(pendingAction.profile.id);
 				setProfiles((current) => current.filter((profile) => profile.id !== pendingAction.profile.id));
+				setDefaultProfileIdState((current) => (current === pendingAction.profile.id ? null : current));
 			}
 			setError("");
 			setPendingAction(null);
@@ -152,8 +167,32 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 				<p className="px-3 py-3 text-xs text-muted-foreground">{t("settings.browserProfiles.empty")}</p>
 			) : (
 				profiles.map((profile) => (
-					<SettingsRow key={profile.id} label={profile.name}>
+					<SettingsRow
+						key={profile.id}
+						label={
+							defaultProfileId === profile.id
+								? `${profile.name} (${t("settings.browserProfiles.defaultBadge")})`
+								: profile.name
+						}
+					>
 						<div className="flex min-w-0 items-center gap-1.5">
+							<Button
+								aria-label={t(
+									defaultProfileId === profile.id
+										? "settings.browserProfiles.unsetDefault"
+										: "settings.browserProfiles.setDefault",
+									{ profile: profile.name },
+								)}
+								onClick={() => void toggleDefault(profile)}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								<Star
+									aria-hidden="true"
+									className={cn("size-icon-base", defaultProfileId === profile.id && "fill-current text-accent")}
+								/>
+							</Button>
 							<Input
 								aria-label={t("settings.browserProfiles.renameInput", { profile: profile.name })}
 								className={cn("h-control-md w-36", !editing[profile.id] && "hidden")}

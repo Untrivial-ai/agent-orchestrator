@@ -735,11 +735,16 @@ function setupTabHost(
 	return { activeTargets, constructorOptions, debuggerCommands, emit, failNavigationTo, host, invoke, runtime, sent, views };
 }
 
-function fakeBrowserProfileStore(profile: BrowserProfile, bindings: Record<string, string>): BrowserProfileStore {
+function fakeBrowserProfileStore(
+	profile: BrowserProfile,
+	bindings: Record<string, string>,
+	defaultProfileId: string | null = null,
+): BrowserProfileStore {
 	return {
 		profiles: [profile],
 		getProfile: (profileId: string) => (profileId === profile.id ? { ...profile } : undefined),
 		getSessionProfileId: (sessionId: string) => bindings[sessionId],
+		getDefaultProfileId: () => defaultProfileId,
 		bindSession: vi.fn(async (sessionId: string, profileId: string | null) => {
 			if (profileId === null) delete bindings[sessionId];
 			else bindings[sessionId] = profileId;
@@ -1271,6 +1276,18 @@ describe("browser profile partitions and replacement", () => {
 		expect(secondPartition).toMatch(/^ao-browser-/);
 		expect(firstPartition).not.toBe(secondPartition);
 		expect(firstTabPartition).toBe(firstPartition);
+	});
+
+	it("falls back to the global default profile for a session with no binding of its own", async () => {
+		const store = fakeBrowserProfileStore(profile, {}, profile.id);
+		const { host, invoke } = setupTabHost(store);
+		const ensured = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+
+		expect(host.getProfileState(ensured.viewId)).toMatchObject({
+			profileId: profile.id,
+			profileName: "Work",
+			temporary: false,
+		});
 	});
 
 	it("uses a stable named partition and restores the durable binding on host reconstruction", async () => {
