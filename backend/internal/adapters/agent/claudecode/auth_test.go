@@ -159,6 +159,10 @@ func TestCLIReportVerdict(t *testing.T) {
 			name:   "unparsable output concludes nothing",
 			output: "unsupported subcommand on this version",
 		},
+		{
+			name:   "json error without loggedIn concludes nothing",
+			output: `{"error":"authentication unavailable"}`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

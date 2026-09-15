@@ -253,11 +253,23 @@ func claudeAuthReportFromOutput(out []byte) (claudeAuthReport, bool) {
 	if start < 0 || end < start {
 		return claudeAuthReport{}, false
 	}
-	var report claudeAuthReport
-	if json.Unmarshal(out[start:end+1], &report) != nil {
+	var payload struct {
+		LoggedIn         *bool  `json:"loggedIn"`
+		APIKeySource     string `json:"apiKeySource"`
+		APIProvider      string `json:"apiProvider"`
+		AuthMethod       string `json:"authMethod"`
+		SubscriptionType string `json:"subscriptionType"`
+	}
+	if json.Unmarshal(out[start:end+1], &payload) != nil || payload.LoggedIn == nil {
 		return claudeAuthReport{}, false
 	}
-	return report, true
+	return claudeAuthReport{
+		LoggedIn:         *payload.LoggedIn,
+		APIKeySource:     payload.APIKeySource,
+		APIProvider:      payload.APIProvider,
+		AuthMethod:       payload.AuthMethod,
+		SubscriptionType: payload.SubscriptionType,
+	}, true
 }
 
 // claudeLocalAuthVerdict is rung 4: environment variables, then ~/.claude.json.
