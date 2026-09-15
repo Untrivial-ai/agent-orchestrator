@@ -112,6 +112,28 @@ func TestRegistryIncludesOMP(t *testing.T) {
 	t.Fatal("Harnessed does not contain omp")
 }
 
+func TestRegistryIncludesCommandCode(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("command-code")
+	if !ok {
+		t.Fatal("registry does not contain command-code")
+	}
+	manifest := adapter.Manifest()
+	if manifest.Name != "Command Code" {
+		t.Fatalf("command-code manifest name = %q, want Command Code", manifest.Name)
+	}
+
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessCommandCode {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain command-code")
+}
+
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
 	for _, ha := range Harnessed() {
 		if ha.Harness == domain.HarnessFake {
