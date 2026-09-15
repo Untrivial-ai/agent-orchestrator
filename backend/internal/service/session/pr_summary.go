@@ -141,9 +141,12 @@ func summarizePRStateChangedAt(pr domain.PullRequest) time.Time {
 }
 
 func summarizeCI(pr domain.PullRequest, checks []domain.PullRequestCheck) PRCISummary {
-	state := ciOrUnknown(pr.CI)
+	state := domain.CIUnknown
+	if !pr.Merged && !pr.Closed {
+		state = ciOrUnknown(pr.CI)
+	}
 	out := PRCISummary{State: state, AutoInjectCI: pr.AutoInjectCI}
-	if state != domain.CIFailing || pr.Merged || pr.Closed {
+	if state != domain.CIFailing {
 		return out
 	}
 	for _, ch := range checks {
@@ -168,12 +171,17 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 	// rather than present-as-zero. It is only published when the stored thread
 	// rows are a complete observation.
 	var unresolvedThreadCount *int
-	if threadsExact {
+	terminal := pr.Merged || pr.Closed
+	if threadsExact && !terminal {
 		count := unresolvedHumanThreadCount(dedupeReviewThreads(threads))
 		unresolvedThreadCount = &count
 	}
-	out := PRReviewSummary{Decision: reviewOrNone(pr.Review), UnresolvedThreadCount: unresolvedThreadCount}
-	if pr.Merged || pr.Closed {
+	decision := domain.ReviewNone
+	if !terminal {
+		decision = reviewOrNone(pr.Review)
+	}
+	out := PRReviewSummary{Decision: decision, UnresolvedThreadCount: unresolvedThreadCount}
+	if terminal {
 		return out
 	}
 	byReviewer := map[string]int{}
@@ -390,8 +398,12 @@ func reviewAfter(a, b domain.PullRequestReview) bool {
 }
 
 func summarizeMergeability(pr domain.PullRequest, _ []domain.PullRequestReviewThread) PRMergeabilitySummary {
+	state := domain.MergeUnknown
+	if !pr.Merged && !pr.Closed {
+		state = mergeabilityOrUnknown(pr.Mergeability)
+	}
 	return PRMergeabilitySummary{
-		State:   mergeabilityOrUnknown(pr.Mergeability),
+		State:   state,
 		Reasons: mergeabilityReasons(pr),
 		PRURL:   firstNonEmpty(pr.HTMLURL, pr.URL),
 	}

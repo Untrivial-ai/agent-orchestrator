@@ -317,13 +317,23 @@ export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
 		{
 			key: "merge",
 			label: appI18n.t("pr.section.merge"),
-			status: mergeabilityLabel(pr.mergeability.state),
+			status:
+				pr.state === "merged"
+					? appI18n.t("pr.card.merged")
+					: pr.state === "closed"
+						? appI18n.t("pr.card.closed")
+						: mergeabilityLabel(pr.mergeability.state),
 			summary: mergeSummary(pr),
 			links: mergeLinks(pr),
 			linkTotal: mergeLinkTotal(pr),
 			overflowLabel: mergeOverflowLabel(pr),
 			overflowNoun: mergeOverflowNoun(pr),
-			tone: mergeabilityTone(pr.mergeability.state),
+			tone:
+				pr.state === "merged"
+					? "success"
+					: pr.state === "closed"
+						? "passive"
+						: mergeabilityTone(pr.mergeability.state),
 		},
 		{
 			key: "review",
