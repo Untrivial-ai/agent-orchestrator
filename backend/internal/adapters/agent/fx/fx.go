@@ -7,6 +7,8 @@ package fx
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,7 @@ var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentPromptReadinessProvider = (*Plugin)(nil)
 var _ ports.AgentAfterStartPromptBuilder = (*Plugin)(nil)
 var _ ports.AgentContinuationCapabilityProvider = (*Plugin)(nil)
+var _ ports.AgentNativeSessionConfigProvider = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -102,6 +105,22 @@ func (p *Plugin) ContinuationCapabilities() ports.ContinuationCapabilities {
 	return ports.ContinuationCapabilities{
 		FreshNativeSessionID: ports.FreshNativeSessionIDProviderAssigned,
 	}
+}
+
+// NativeSessionConfigDir returns the fx state root used by the invocation.
+func (p *Plugin) NativeSessionConfigDir(ctx context.Context, env map[string]string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	home := strings.TrimSpace(env["HOME"])
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(home, ".fx"), nil
 }
 
 // GetAgentHooks is intentionally a no-op. fx lifecycle integration uses its

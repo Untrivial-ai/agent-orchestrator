@@ -972,7 +972,8 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 			recorder.userImpact = domain.AgentSwitchUserImpactDeliveryUnknown
 			return result, fmt.Errorf("switch agent %s: deliver continuation: %w", id, err)
 		}
-		result, acknowledged, err := m.acknowledgeAgentSwitchTargetWithReadback(ctx, store, result, target.launchID, m.clock())
+		var acknowledged bool
+		result, acknowledged, err = m.acknowledgeAgentSwitchTargetWithReadback(ctx, store, result, target.launchID, m.clock())
 		if err != nil {
 			return result, fmt.Errorf("switch agent %s: acknowledge continuation: %w", id, err)
 		}

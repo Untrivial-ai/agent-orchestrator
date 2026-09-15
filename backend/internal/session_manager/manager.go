@@ -2366,6 +2366,25 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrNotResumable)
 	}
+	launchCfg := ports.LaunchConfig{
+		DataDir:          m.dataDir,
+		SessionID:        string(rec.ID),
+		WorkspacePath:    ws.Path,
+		Kind:             rec.Kind,
+		Prompt:           rec.Metadata.Prompt,
+		SystemPrompt:     systemPrompt,
+		SystemPromptFile: systemPromptFile,
+		Config:           agentConfig,
+		Permissions:      agentConfig.Permissions,
+	}
+	afterStartPrompt := rec.Metadata.Prompt
+	if delivery == ports.PromptDeliveryAfterStart && mode != RestoreModeNative {
+		afterStartPrompt, err = buildAfterStartPrompt(ctx, agent, launchCfg)
+		if err != nil {
+			m.cleanupSystemPromptDir(rec.ID)
+			return RestoreResult{}, fmt.Errorf("%s %s: after-start prompt: %w", operation, rec.ID, err)
+		}
+	}
 	if err := m.validateAgentBinary(argv); err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
@@ -2436,19 +2455,8 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: completed: %w", operation, rec.ID, err)
 	}
-	if delivery == ports.PromptDeliveryAfterStart && rec.Metadata.Prompt != "" {
-		launchCfg := ports.LaunchConfig{
-			DataDir:          m.dataDir,
-			SessionID:        string(rec.ID),
-			WorkspacePath:    ws.Path,
-			Kind:             rec.Kind,
-			Prompt:           rec.Metadata.Prompt,
-			SystemPrompt:     systemPrompt,
-			SystemPromptFile: systemPromptFile,
-			Config:           agentConfig,
-			Permissions:      agentConfig.Permissions,
-		}
-		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, rec.Metadata.Prompt); err != nil {
+	if delivery == ports.PromptDeliveryAfterStart && afterStartPrompt != "" {
+		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, afterStartPrompt); err != nil {
 			_ = m.runtime.Destroy(ctx, handle)
 			_ = m.lcm.MarkTerminated(ctx, rec.ID)
 			m.cleanupSystemPromptDir(rec.ID)

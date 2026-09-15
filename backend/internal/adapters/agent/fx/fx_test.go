@@ -3,6 +3,7 @@ package fx
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -103,6 +104,21 @@ func TestContinuationCapabilitiesUseProviderAssignedNativeSessionID(t *testing.T
 	}
 }
 
+func TestNativeSessionConfigDirUsesInvocationHome(t *testing.T) {
+	provider, ok := any(New()).(ports.AgentNativeSessionConfigProvider)
+	if !ok {
+		t.Fatal("fx must expose the native session state root used by switching")
+	}
+	home := t.TempDir()
+	got, err := provider.NativeSessionConfigDir(context.Background(), map[string]string{"HOME": home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".fx"); got != want {
+		t.Fatalf("native session config dir = %q, want %q", got, want)
+	}
+}
+
 func TestAfterStartPromptWrapsStandingInstructionsAndTaskInOneTurn(t *testing.T) {
 	builder, ok := any(New()).(ports.AgentAfterStartPromptBuilder)
 	if !ok {
@@ -199,6 +215,9 @@ func TestAdapterMethodsHonorCanceledContext(t *testing.T) {
 	}
 	if _, err := plugin.BuildAfterStartPrompt(ctx, ports.LaunchConfig{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("BuildAfterStartPrompt error = %v, want context.Canceled", err)
+	}
+	if _, err := plugin.NativeSessionConfigDir(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("NativeSessionConfigDir error = %v, want context.Canceled", err)
 	}
 	if err := plugin.GetAgentHooks(ctx, ports.WorkspaceHookConfig{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("GetAgentHooks error = %v, want context.Canceled", err)

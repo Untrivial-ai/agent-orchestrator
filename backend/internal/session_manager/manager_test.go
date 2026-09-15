@@ -4904,10 +4904,11 @@ func TestRestore_FallbackLaunchDeliversPromptAfterStartWhenAgentRequestsIt(t *te
 	}
 	rt := &fakeRuntime{}
 	msg := &fakeMessenger{}
-	agent := &recordingAgent{}
+	recording := &recordingAgent{}
+	agent := &composedAfterStartAgent{afterStartAgent: afterStartAgent{recordingAgent: recording}}
 	m := New(Deps{
 		Runtime:   rt,
-		Agents:    singleAgent{agent: afterStartAgent{recordingAgent: agent}},
+		Agents:    singleAgent{agent: agent},
 		Workspace: &fakeWorkspace{},
 		Store:     st,
 		Messenger: msg,
@@ -4918,14 +4919,56 @@ func TestRestore_FallbackLaunchDeliversPromptAfterStartWhenAgentRequestsIt(t *te
 	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
 		t.Fatal(err)
 	}
-	if agent.lastLaunch.Prompt != "" {
-		t.Fatalf("fallback launch prompt = %q, want empty for after-start delivery", agent.lastLaunch.Prompt)
+	if agent.buildCalls != 1 {
+		t.Fatalf("BuildAfterStartPrompt calls = %d, want 1", agent.buildCalls)
 	}
-	if len(msg.msgs) != 1 || msg.msgs[0] != "continue the task" {
-		t.Fatalf("delivered prompts = %#v, want saved prompt", msg.msgs)
+	if recording.lastLaunch.Prompt != "" {
+		t.Fatalf("fallback launch prompt = %q, want empty for after-start delivery", recording.lastLaunch.Prompt)
+	}
+	if len(msg.msgs) != 1 || !strings.HasPrefix(msg.msgs[0], "STANDING:\n") ||
+		!strings.Contains(msg.msgs[0], "## AO Worker Role") ||
+		!strings.HasSuffix(msg.msgs[0], "TASK:\ncontinue the task") {
+		t.Fatalf("delivered prompts = %#v, want one combined fallback turn", msg.msgs)
 	}
 	if rt.created != 1 {
 		t.Fatalf("runtime.Create = %d, want 1", rt.created)
+	}
+}
+
+func TestRestore_NativeAfterStartAgentResumesPassively(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "native-1", Prompt: "continue the task",
+		},
+	}
+	rt := &fakeRuntime{}
+	msg := &fakeMessenger{}
+	recording := &recordingAgent{}
+	agent := &composedAfterStartAgent{afterStartAgent: afterStartAgent{recordingAgent: recording}}
+	m := New(Deps{
+		Runtime: rt, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: msg, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	res, err := m.RestoreWithMode(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Mode != RestoreModeNative {
+		t.Fatalf("restore mode = %q, want %q", res.Mode, RestoreModeNative)
+	}
+	if recording.restoreCalls != 1 || recording.launchCalls != 0 {
+		t.Fatalf("adapter calls = restore %d launch %d, want restore 1 launch 0", recording.restoreCalls, recording.launchCalls)
+	}
+	if agent.buildCalls != 0 {
+		t.Fatalf("BuildAfterStartPrompt calls = %d, want 0 for passive native resume", agent.buildCalls)
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("delivered prompts = %#v, want no new user turn for passive native resume", msg.msgs)
 	}
 }
 
@@ -5296,6 +5339,14 @@ func (lostConversationAgent) NativeConversationExists(
 	return false, nil
 }
 
+type lostComposedAfterStartAgent struct{ *composedAfterStartAgent }
+
+func (lostComposedAfterStartAgent) NativeConversationExists(
+	context.Context, ports.SessionRef, string, map[string]string,
+) (bool, error) {
+	return false, nil
+}
+
 type lostDerivedConversationAgent struct {
 	fakeAgent
 	probedID string
@@ -5348,6 +5399,46 @@ func TestRestore_LostNativeConversationRelaunchesFresh(t *testing.T) {
 	}
 	if rt.created != 1 {
 		t.Errorf("runtime.Create = %d, want 1: the workspace holds real work", rt.created)
+	}
+}
+
+func TestRestore_PromptlessLostNativeConversationDeliversStandingInstructions(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", AgentSessionID: "reserved-but-empty",
+		},
+		Activity: domain.Activity{State: domain.ActivityExited},
+	}
+	recording := &recordingAgent{}
+	composed := &composedAfterStartAgent{afterStartAgent: afterStartAgent{recordingAgent: recording}}
+	agent := lostComposedAfterStartAgent{composedAfterStartAgent: composed}
+	msg := &fakeMessenger{}
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: msg, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	res, err := m.RestoreWithMode(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Mode != RestoreModeFresh {
+		t.Fatalf("restore mode = %q, want %q", res.Mode, RestoreModeFresh)
+	}
+	if composed.buildCalls != 1 {
+		t.Fatalf("BuildAfterStartPrompt calls = %d, want 1", composed.buildCalls)
+	}
+	if recording.lastLaunch.Prompt != "" {
+		t.Fatalf("fresh launch prompt = %q, want empty for after-start delivery", recording.lastLaunch.Prompt)
+	}
+	if len(msg.msgs) != 1 || !strings.HasPrefix(msg.msgs[0], "STANDING:\n") ||
+		!strings.Contains(msg.msgs[0], "## AO Worker Role") ||
+		!strings.HasSuffix(msg.msgs[0], "TASK:\n") {
+		t.Fatalf("delivered prompts = %#v, want one instruction-only bootstrap turn", msg.msgs)
 	}
 }
 

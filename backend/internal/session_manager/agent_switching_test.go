@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	fxagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/fx"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -63,6 +64,9 @@ type switchTestStore struct {
 	daemonFaults                  []ports.AgentSwitchDaemonFault
 	getSwitchErrOnceWhenRequested error
 	getSwitchErrOnce              error
+	getSwitchErrAfterAck          error
+	getSwitchReadsAfterAck        int
+	getSwitchAfterAckArmed        bool
 	getNativeErr                  error
 	createSwitchCommitted         chan struct{}
 	createSwitchRelease           chan struct{}
@@ -192,6 +196,12 @@ func (s *switchTestStore) GetAgentSwitch(ctx context.Context, id domain.AgentSwi
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.getSwitchAfterAckArmed {
+		s.getSwitchReadsAfterAck++
+		if s.getSwitchReadsAfterAck > 1 {
+			return domain.AgentSwitch{}, false, s.getSwitchErrAfterAck
+		}
+	}
 	if s.getSwitchErrOnce != nil {
 		err := s.getSwitchErrOnce
 		s.getSwitchErrOnce = nil
@@ -424,6 +434,10 @@ func (s *switchTestStore) AcknowledgeAgentSwitchTarget(_ context.Context, id dom
 	sw.TargetAcknowledgedAt = &at
 	sw.UpdatedAt = acknowledgedAt
 	s.switches[id] = sw
+	if s.getSwitchErrAfterAck != nil {
+		s.getSwitchAfterAckArmed = true
+		s.getSwitchReadsAfterAck = 0
+	}
 	return true, nil
 }
 
@@ -2279,6 +2293,104 @@ func TestSwitchAgentFromTUIToFXDeliversCombinedContinuationAfterActivation(t *te
 	if got := store.sessions["proj-1"]; got.Metadata.AgentSessionID != "fx-native-1" || got.Harness != domain.HarnessFX {
 		t.Fatalf("fx session ownership = %+v", got)
 	}
+}
+
+func TestSwitchAgentAfterStartAcknowledgementCompletesWithoutRecoveryRead(t *testing.T) {
+	runtime := &switchCreateCallbackRuntime{fakeRestartRuntime: &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	target := &switchAfterStartAgent{switchTestAgent: &switchTestAgent{
+		configDir: filepath.Join(t.TempDir(), "fx"), freshNativeIDMode: ports.FreshNativeSessionIDProviderAssigned,
+	}}
+	manager.agents.(switchTestAgents)[domain.HarnessFX] = target
+	runtime.afterCreate = func(_ ports.RuntimeConfig, _ ports.RuntimeHandle) {
+		sw, _, _ := store.GetActiveAgentSwitch(context.Background(), "proj-1")
+		native, _, _ := store.GetAgentNativeSession(context.Background(), *sw.TargetNativeSessionRef)
+		native.NativeSessionID = "fx-native-direct-completion"
+		_, _ = store.UpdateAgentNativeSession(context.Background(), native, sw.TargetGenerationID)
+	}
+	store.getSwitchErrAfterAck = errors.New("unexpected recovery read after acknowledgement")
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessFX, IdempotencyKey: "fx-direct-completion",
+	})
+	if err != nil {
+		t.Fatalf("switch should complete directly after acknowledgement: %v", err)
+	}
+	if sw.State != domain.AgentSwitchCompleted || sw.TargetAcknowledgedAt == nil {
+		t.Fatalf("switch = state %q acknowledged=%v, want completed/true", sw.State, sw.TargetAcknowledgedAt != nil)
+	}
+}
+
+func TestSwitchAgentWithRealFXAdapterInBothDirections(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "fx"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	t.Run("to fx", func(t *testing.T) {
+		runtime := &switchCreateCallbackRuntime{fakeRestartRuntime: &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}}
+		manager, store, _ := newSwitchTestManager(t, runtime)
+		fxHome := t.TempDir()
+		project := store.projects["proj"]
+		project.Config.Env = map[string]string{"HOME": fxHome}
+		store.projects[project.ID] = project
+		manager.agents.(switchTestAgents)[domain.HarnessFX] = fxagent.New()
+		runtime.afterCreate = func(_ ports.RuntimeConfig, _ ports.RuntimeHandle) {
+			sw, _, _ := store.GetActiveAgentSwitch(context.Background(), "proj-1")
+			native, _, _ := store.GetAgentNativeSession(context.Background(), *sw.TargetNativeSessionRef)
+			native.NativeSessionID = "fx-real-target"
+			_, _ = store.UpdateAgentNativeSession(context.Background(), native, sw.TargetGenerationID)
+		}
+		manager.lcm.(*switchReleaseLCM).onRelease = nil
+
+		sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+			TargetHarness: domain.HarnessFX, IdempotencyKey: "real-fx-target",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sw.State != domain.AgentSwitchCompleted || sw.TargetNativeSessionRef == nil {
+			t.Fatalf("switch = %+v, want completed real fx target", sw)
+		}
+		if got, want := store.native[*sw.TargetNativeSessionRef].ConfigDir, filepath.Join(fxHome, ".fx"); got != want {
+			t.Fatalf("fx target config dir = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("from fx", func(t *testing.T) {
+		runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+		manager, store, _ := newSwitchTestManager(t, runtime)
+		fxHome := t.TempDir()
+		project := store.projects["proj"]
+		project.Config.Env = map[string]string{"HOME": fxHome}
+		store.projects[project.ID] = project
+		manager.agents.(switchTestAgents)[domain.HarnessFX] = fxagent.New()
+		rec := store.sessions["proj-1"]
+		rec.Harness = domain.HarnessFX
+		rec.Metadata.AgentSessionID = "fx-real-source"
+		store.sessions[rec.ID] = rec
+
+		sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+			TargetHarness: domain.HarnessCodex, IdempotencyKey: "real-fx-source",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sw.State != domain.AgentSwitchCompleted {
+			t.Fatalf("switch state = %q, want %q", sw.State, domain.AgentSwitchCompleted)
+		}
+		var source *domain.AgentNativeSession
+		for _, native := range store.native {
+			if native.Harness == domain.HarnessFX && native.NativeSessionID == "fx-real-source" {
+				copy := native
+				source = &copy
+			}
+		}
+		if source == nil || source.ConfigDir != filepath.Join(fxHome, ".fx") {
+			t.Fatalf("preserved real fx source = %+v", source)
+		}
+	})
 }
 
 func TestSwitchAgentFromFXToOtherTUIRetainsSourceNativeOwnership(t *testing.T) {
