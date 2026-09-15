@@ -505,11 +505,10 @@ function appendDaemonOutput(text: string): void {
 // daemon's stderr — including a panic stack — lives only in the Electron console
 // and dies with the app, so a crash leaves nothing to correlate with the request
 // ID the API handed out. Keep-daemon mode redirects stdio to this same file at
-// spawn time instead, so this writer is only for the piped path.
-//
-// Dev-only (review #3892): in a packaged build the daemon's output already
-// reaches the Electron console, and a second on-disk copy on every launch is
-// noise. The tee-log is a debugging aid for unpackaged runs.
+// spawn time instead, so this writer is only for the piped path. The log is
+// written in packaged builds too — a crash in the installed app is exactly the
+// case with nothing else to look at; dev runs keep theirs under ~/.ao/dev/ so
+// the two states don't mix.
 const DAEMON_LOG_MAX_BYTES = 8 * 1024 * 1024;
 let daemonLogStream: WriteStream | undefined;
 let daemonLogBytes = 0;
@@ -520,10 +519,6 @@ function daemonLogPath(): string {
 
 function openDaemonLog(): void {
 	closeDaemonLog();
-	// Packaged builds skip the durable log entirely; the stream stays undefined so
-	// writeDaemonLog/closeDaemonLog are no-ops. Keep-daemon mode is unaffected —
-	// it redirects stdio to the file at spawn time regardless of dev.
-	if (!isDev) return;
 	const logPath = daemonLogPath();
 	try {
 		mkdirSync(path.dirname(logPath), { recursive: true });
@@ -1881,13 +1876,19 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 
 	child.once("exit", (code, signal) => {
 		stopDiscovery();
+		// Stale-exit guard before any log work: after a spawn failure Node emits
+		// both 'error' and 'exit' for the same child, and 'error' may already have
+		// cleared daemonProcess before a restart opened a fresh log. The stamp and
+		// close below act on the module-level shared stream, so they must run only
+		// while this child is still the current one — otherwise a stale 'exit'
+		// closes the new child's active log and silently drops its output.
+		if (daemonProcess !== child) return;
 		// Stamp the exit before closing: a bare stack with no terminator reads as
 		// a truncated log, while "exited with SIGSEGV" names the failure outright.
 		writeDaemonLog(
 			`\n[ao] daemon exited ${signal ? `with ${signal}` : `with code ${code ?? "unknown"}`} at ${new Date().toISOString()}\n`,
 		);
 		closeDaemonLog();
-		if (daemonProcess !== child) return;
 		daemonProcess = null;
 		// An explicit stopDaemon() already set a clean `{ state: "stopped" }`.
 		// daemon-telemetry reports any status carrying a `code` as
