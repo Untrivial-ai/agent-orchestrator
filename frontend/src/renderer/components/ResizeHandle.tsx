@@ -18,6 +18,7 @@
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
 
 type WidthConstraint = number | (() => number);
 
@@ -58,12 +59,18 @@ function borderCenterX(el: HTMLElement, edge: "left" | "right"): number {
 }
 
 /**
- * Inspector painted width is also capped by CSS max-width. Ignoring it lets the
- * grip travel past the panel (regression: clamp only against rangeRef / props).
+ * Inspector painted width is also capped by CSS max-width. Ignoring it — or
+ * parseFloat'ing an unresolved `min()` string as NaN — lets the grip travel
+ * past the leftmost (max-width) limit while the rightmost (min) still works.
  */
 function effectiveMaxWidth(panel: HTMLElement, propMax: number): number {
-	const computed = Number.parseFloat(getComputedStyle(panel).maxWidth);
-	if (Number.isFinite(computed) && computed > 0) return Math.min(propMax, computed);
+	const used = resolveUsedMaxWidthPx(panel);
+	if (used !== null) return Math.min(propMax, used);
+	// Last resort: never wider than the session split itself.
+	const split = panel.closest("#session-workspace");
+	if (split instanceof HTMLElement && split.clientWidth > 0) {
+		return Math.min(propMax, split.clientWidth);
+	}
 	return propMax;
 }
 
@@ -146,8 +153,14 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 
 			// Same width math as useResizable, then map clamped width → border X.
 			// DO NOT set left to event.clientX (offset hit strip ≠ edge; also skips clamp).
+			// Re-read prop max each move in case rangeRef tightened; CSS-resolved
+			// ceiling was captured at pointerdown in drag.maxW.
+			const liveMin = resolveWidth(minWidth);
+			const liveMaxProp = resolveWidth(maxWidth);
+			const maxW = liveMaxProp !== null ? Math.min(drag.maxW, liveMaxProp) : drag.maxW;
+			const minW = liveMin !== null ? Math.min(liveMin, maxW) : Math.min(drag.minW, maxW);
 			const rawWidth = drag.startWidth + drag.widthSign * (event.clientX - drag.startClientX);
-			const width = Math.min(drag.maxW, Math.max(drag.minW, rawWidth));
+			const width = Math.min(maxW, Math.max(minW, rawWidth));
 			const x =
 				drag.widthSign > 0
 					? drag.anchor + width - drag.borderHalf

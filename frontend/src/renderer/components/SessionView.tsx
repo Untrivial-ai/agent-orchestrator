@@ -326,10 +326,14 @@ function SessionInspectorRail({
 	const rangeModeRef = useRef(sizing.mode);
 	if (rangeModeRef.current !== sizing.mode) {
 		rangeModeRef.current = sizing.mode;
-		// The CSS max-width remains the live visual clamp while the shell moves.
-		// Start a new profile with an unconstrained destination; ResizeObserver
-		// updates only the pointer-drag limits without rerendering the browser.
-		rangeRef.current = { min: sizing.minWidth, max: sizing.defaultWidth * 2 };
+		// Prefer a split-derived max immediately — defaultWidth*2 is only a
+		// placeholder and was the leftmost overshoot when CSS max-width parse failed.
+		const split = splitRef.current;
+		const available = split ? Math.max(0, split.clientWidth - INSPECTOR_SEPARATOR_RESERVE_PX) : 0;
+		const max =
+			inspectorMaxWidthPx(available, sizing.maxPercent, sizing.chatMinWidth) ??
+			sizing.defaultWidth * 2;
+		rangeRef.current = { min: Math.min(sizing.minWidth, max), max };
 	}
 	const minWidth = useCallback(() => rangeRef.current.min, []);
 	const maxWidth = useCallback(() => rangeRef.current.max, []);

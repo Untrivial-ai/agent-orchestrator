@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
+import { resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
 
 type ResizableConstraint = number | (() => number);
 
@@ -72,13 +73,12 @@ export function useResizable({
 
 	const apply = useCallback(
 		(next: number) => {
-			// Prop max ∩ computed max-width — required for inspector CSS cap.
+			// Prop max ∩ used CSS max-width. Must use resolveUsedMaxWidthPx — bare
+			// parseFloat misses unresolved min() (inspector leftmost overshoot).
 			let max = maxValue();
 			for (const target of cssTargets()) {
-				const computedMax = Number.parseFloat(getComputedStyle(target).maxWidth);
-				if (Number.isFinite(computedMax) && computedMax > 0) {
-					max = Math.min(max, computedMax);
-				}
+				const usedMax = resolveUsedMaxWidthPx(target);
+				if (usedMax !== null) max = Math.min(max, usedMax);
 			}
 			const clamped = Math.min(max, Math.max(minValue(), next));
 			widthRef.current = clamped;
@@ -137,11 +137,21 @@ export function useResizable({
 			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
 			// Seed from the painted box when CSS max-width holds width below the var.
-			const visualWidth = cssTargets()
+			const targets = cssTargets();
+			const visualWidth = targets
 				.map((target) => target.getBoundingClientRect().width)
 				.find((width) => width > 0);
 			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
 				apply(visualWidth);
+			}
+			// Resolve used max-width once per drag (probe is not free). Unresolved
+			// min() expressions are why leftmost overshot while rightmost (min) worked.
+			let usedMax: number | null = null;
+			for (const target of targets) {
+				const resolved = resolveUsedMaxWidthPx(target);
+				if (resolved !== null) {
+					usedMax = usedMax === null ? resolved : Math.min(usedMax, resolved);
+				}
 			}
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
@@ -164,7 +174,9 @@ export function useResizable({
 			// Dragging never collapses the panel: `apply` clamps at `min`, so the
 			// drag simply stops at the floor. Collapse stays on explicit controls.
 			const onMove = (e: PointerEvent) => {
-				applyOnFrame(startWidth + sign * (e.clientX - startX));
+				const raw = startWidth + sign * (e.clientX - startX);
+				const max = usedMax === null ? maxValue() : Math.min(maxValue(), usedMax);
+				applyOnFrame(Math.min(max, Math.max(minValue(), raw)));
 			};
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onEnd);
