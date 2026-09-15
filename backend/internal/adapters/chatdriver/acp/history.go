@@ -51,8 +51,56 @@ func (c *refreshableConversation) loadHistory(ctx context.Context) (acpsdk.LoadS
 		c.abortHistoryReplay()
 		return acpsdk.LoadSessionResponse{}, err
 	}
-	c.finishHistoryReplay()
+	// The SDK waits for all notifications preceding this response to finish
+	// delivery. They are now captured, but not yet normalized.
+	if err := c.drainAndFinishReplay(ctx); err != nil {
+		c.abortHistoryReplay()
+		return acpsdk.LoadSessionResponse{}, err
+	}
 	return response, nil
+}
+
+// captureReplayUpdate also accepts arrivals during normalization. A response
+// watermark is a lower bound on delivery, not an exact replay/live boundary.
+// As before, history capture stays active until finishHistoryReplay.
+func (c *conversation) captureReplayUpdate(params acpsdk.SessionNotification) bool {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	if !c.replaying {
+		return false
+	}
+	c.replayUpdates = append(c.replayUpdates, params)
+	return true
+}
+
+func (c *conversation) drainAndFinishReplay(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.replayMu.Lock()
+		raw := c.replayUpdates
+		c.replayUpdates = nil
+		if len(raw) == 0 {
+			// Serialize final turn settlement and capture closure with delivery.
+			// Only this finalization holds the inbox lock, never a replay batch.
+			c.finishHistoryReplay()
+			c.replaying = false
+			c.replayMu.Unlock()
+			return nil
+		}
+		c.replayMu.Unlock()
+		for i := range raw {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// SDK handler errors are log-only; preserve that behavior.
+			if err := c.processUpdate(raw[i]); err != nil {
+				c.log.Warn("failed to handle replayed notification", "err", err)
+			}
+			raw[i] = acpsdk.SessionNotification{}
+		}
+	}
 }
 
 // RefreshHistory implements ports.ChatHistoryRefresher with a new ACP
@@ -72,6 +120,10 @@ func (c *refreshableConversation) RefreshHistory(ctx context.Context) ([]ports.C
 // historyCapture receives the session/update replay produced by ACP session/load.
 // ACP deliberately replays a flat stream rather than provider turns, so user
 // message ids are the durable boundaries from which AO reconstructs settled turns.
+//
+// Replay notifications are buffered separately from the normalized history to
+// reduce work on the SDK's sequential delivery path. This is an in-memory
+// backlog, not transcript pruning or a guarantee against SDK queue overflow.
 type historyCapture struct {
 	sessionID           string
 	events              []ports.ChatEvent
@@ -89,6 +141,11 @@ type historyCapture struct {
 // The controller has not started consuming yet, and a long transcript can be much
 // larger than that channel's bounded live-stream buffer.
 func (c *conversation) beginHistoryReplay(sessionID string) {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	c.replaying = true
+	c.replayUpdates = nil
+
 	c.mu.Lock()
 	c.sessionID = sessionID
 	c.activeTurn = ""
@@ -110,6 +167,11 @@ func (c *conversation) beginHistoryReplay(sessionID string) {
 }
 
 func (c *conversation) abortHistoryReplay() {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	c.replaying = false
+	c.replayUpdates = nil
+
 	c.historyMu.Lock()
 	c.history = nil
 	c.historyEvents = nil
