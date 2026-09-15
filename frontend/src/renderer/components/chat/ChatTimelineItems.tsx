@@ -2578,7 +2578,7 @@ export function TurnChangedFiles({
 								className="min-w-0 flex-1 truncate text-[12px] text-foreground/80"
 								title=""
 							>
-								{fileBasename(file.path)}
+								{openPath}
 							</span>
 							{file.additions > 0 ? (
 								<span className="shrink-0 font-mono text-[11px] tabular-nums text-success">
@@ -2623,6 +2623,7 @@ export function TurnChangedFiles({
 									<FileLocationLabel
 										path={file.path}
 										oldPath={file.oldPath}
+										displayPath={openPath}
 										locationPath={tooltipPath}
 										locationOldPath={tooltipOldPath}
 										className="min-w-0 flex-1 truncate text-[12px] text-foreground/80"
@@ -2671,8 +2672,15 @@ export function TurnChangedFiles({
 }
 
 /**
- * Basename only — color distinguishes it from "Edited", no hover fill. Hovering
- * shows the home-shortened worktree path in a monospace tooltip.
+ * Basename only by default — color distinguishes it from "Edited", no hover fill.
+ * Hovering shows the home-shortened worktree path in a monospace tooltip.
+ *
+ * `displayPath` overrides the visible label with a caller-computed string instead
+ * of trimming `path` to a basename: the turn's changed-files summary needs the same
+ * repository-qualified workspace-relative path the Files inspector opens
+ * (`alpha/workspace-test.txt`, not just `workspace-test.txt`), since a bare basename
+ * can't tell two same-named files in different repos apart. The tooltip still uses
+ * `locationPath`/`path`.
  */
 function FileLocationLabel({
 	path,
@@ -2680,6 +2688,7 @@ function FileLocationLabel({
 	locationPath,
 	locationOldPath,
 	className,
+	displayPath,
 }: {
 	path: string;
 	oldPath?: string;
@@ -2687,6 +2696,7 @@ function FileLocationLabel({
 	locationPath?: string;
 	locationOldPath?: string;
 	className?: string;
+	displayPath?: string;
 }) {
 	const location = fileLocationLabel(locationPath ?? path, locationOldPath ?? oldPath);
 
@@ -2702,7 +2712,7 @@ function FileLocationLabel({
 					)}
 					title=""
 				>
-					{fileBasename(path)}
+					{displayPath ?? fileBasename(path)}
 				</span>
 			</TooltipTrigger>
 			<TooltipContent side="top" className="max-w-[min(28rem,90vw)] font-mono text-[11px] font-normal">
