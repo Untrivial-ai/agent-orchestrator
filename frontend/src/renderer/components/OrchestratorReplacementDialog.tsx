@@ -2,7 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, RotateCw, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { isChatPreflightCode } from "../lib/spawn-orchestrator";
+import { canBypassOrchestratorApprovals, isChatPreflightCode } from "../lib/spawn-orchestrator";
 import type { OrchestratorReplacementFailure } from "../stores/ui-store";
 import { findProjectOrchestrator, type WorkspaceSummary } from "../types/workspace";
 import { Button } from "./ui/button";
@@ -20,6 +20,7 @@ type OrchestratorReplacementDialogProps = {
 	onOpenChange: (open: boolean) => void;
 	onRetry: (projectId: string) => void;
 	onRetryAsTui: (projectId: string) => void;
+	onRetryWithoutApprovals: (projectId: string) => void;
 };
 
 export function OrchestratorReplacementDialog({
@@ -30,11 +31,15 @@ export function OrchestratorReplacementDialog({
 	onOpenChange,
 	onRetry,
 	onRetryAsTui,
+	onRetryWithoutApprovals,
 }: OrchestratorReplacementDialogProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const open = Boolean(projectId && error);
 	const orchestrator = projectId ? findProjectOrchestrator(workspaces, projectId) : undefined;
+	const canBypassApprovals = Boolean(
+		error && canBypassOrchestratorApprovals(error.code, error.details),
+	);
 
 	const openCurrent = () => {
 		if (!projectId || !orchestrator) return;
@@ -82,6 +87,16 @@ export function OrchestratorReplacementDialog({
 						</div>
 					</div>
 					<div className={settingsDialogFooterClass}>
+						{canBypassApprovals ? (
+							<Button
+								type="button"
+								variant="footer-primary"
+								aria-disabled={pending}
+								onClick={() => !pending && projectId && onRetryWithoutApprovals(projectId)}
+							>
+								{t("newTask.startWithoutApprovals", { defaultValue: "Start without approvals" })}
+							</Button>
+						) : null}
 						{error && isChatPreflightCode(error.code) ? (
 							<Button
 								type="button"

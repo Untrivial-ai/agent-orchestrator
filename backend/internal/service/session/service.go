@@ -462,6 +462,7 @@ func (s *Service) SpawnOrchestrator(
 	projectID domain.ProjectID,
 	clean bool,
 	requestedMode domain.SessionMode,
+	approval domain.PermissionMode,
 ) (domain.Session, error) {
 	unlock := s.lockOrchestratorProject(projectID)
 	defer unlock()
@@ -503,6 +504,9 @@ func (s *Service) SpawnOrchestrator(
 		ProjectID:     projectID,
 		Kind:          domain.KindOrchestrator,
 		RequestedMode: mode,
+		AgentConfig: ports.AgentConfig{
+			Permissions: approval,
+		},
 	})
 	if err != nil {
 		return domain.Session{}, err

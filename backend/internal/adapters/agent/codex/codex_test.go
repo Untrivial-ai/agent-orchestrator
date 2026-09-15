@@ -39,6 +39,16 @@ func TestResolveCodexBinaryFindsLocalAppDataNPMShimOnWindows(t *testing.T) {
 	}
 }
 
+func TestInvalidateBinaryResolutionClearsCachedPath(t *testing.T) {
+	p := &Plugin{resolvedBinary: "old-codex"}
+
+	p.InvalidateBinaryResolution()
+
+	if p.resolvedBinary != "" {
+		t.Fatalf("resolvedBinary = %q, want empty after invalidation", p.resolvedBinary)
+	}
+}
+
 func TestNativeConversationIDRequiresCapturedCodexThreadForTUI(t *testing.T) {
 	p := &Plugin{}
 	if id, ok, err := p.NativeConversationID(context.Background(), ports.SessionRef{

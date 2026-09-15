@@ -2442,6 +2442,10 @@ describe("SessionView", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
 		expect(screen.getByRole("menuitem", { name: "Switch to chat UI" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Switch to chat UI" })).toHaveAttribute(
+			"title",
+			"This agent can't switch a running terminal session to chat. Start a new chat session instead.",
+		);
 	});
 
 	it("walks backward through auxiliary terminals before returning to the permanent terminal", () => {

@@ -2597,7 +2597,7 @@ func TestSpawnOrchestratorCleanRetiresActiveOrchestratorsBeforeSpawn(t *testing.
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 
@@ -2622,7 +2622,7 @@ func TestSpawnOrchestratorCleanContinuesWhenRetireNoticeFails(t *testing.T) {
 	fc := &fakeCommander{sendErr: errors.New("pane closed")}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if len(fc.retired) != 1 || fc.retired[0] != "mer-1" {
@@ -2643,7 +2643,7 @@ func TestSpawnOrchestratorCleanPreservesPersistedMode(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if fc.spawnedCfg.RequestedMode != domain.SessionModeChat {
@@ -2661,7 +2661,7 @@ func TestSpawnOrchestratorCleanHonorsExplicitReplacementMode(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, domain.SessionModeChat); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, domain.SessionModeChat, ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if fc.spawnedCfg.RequestedMode != domain.SessionModeChat {
@@ -2675,11 +2675,25 @@ func TestSpawnOrchestratorUsesExplicitModeForNewProjectOrchestrator(t *testing.T
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, domain.SessionModeChat); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, domain.SessionModeChat, ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if fc.spawnedCfg.RequestedMode != domain.SessionModeChat {
 		t.Fatalf("requested mode = %q, want chat", fc.spawnedCfg.RequestedMode)
+	}
+}
+
+func TestSpawnOrchestratorPassesApprovalOverrideToSpawn(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	fc := &fakeCommander{}
+	svc := &Service{manager: fc, store: st}
+
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, domain.SessionModeChat, domain.PermissionModeBypassPermissions); err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if fc.spawnedCfg.AgentConfig.Permissions != domain.PermissionModeBypassPermissions {
+		t.Fatalf("spawn permissions = %q, want bypass", fc.spawnedCfg.AgentConfig.Permissions)
 	}
 }
 
@@ -2690,7 +2704,7 @@ func TestSpawnOrchestratorCleanRetireNoticeIsBranchNeutral(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "scratch", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "scratch", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if len(fc.sentMessages) != 1 {
@@ -3266,7 +3280,7 @@ func TestSpawnOrchestratorUnknownProjectReturns404(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	_, err := svc.SpawnOrchestrator(context.Background(), "ghost", false, "")
+	_, err := svc.SpawnOrchestrator(context.Background(), "ghost", false, "", "")
 	var e *apierr.Error
 	if !errors.As(err, &e) || e.Kind != apierr.KindNotFound || e.Code != "PROJECT_NOT_FOUND" {
 		t.Fatalf("err = %v, want apierr.NotFound PROJECT_NOT_FOUND", err)
@@ -3809,7 +3823,7 @@ func TestSpawnOrchestratorNoCleanReturnsExistingWhenActiveExists(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", "")
 	if err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
@@ -3841,7 +3855,7 @@ func TestSpawnOrchestratorNoCleanSpawnsWhenNoneExists(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", "")
 	if err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
@@ -3873,7 +3887,7 @@ func TestSpawnOrchestratorVerifiesReplacementHarness(t *testing.T) {
 	}
 	svc := &Service{manager: fc, store: st}
 
-	_, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	_, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", "")
 	if err == nil || !strings.Contains(err.Error(), `uses harness "claude-code", want "codex"`) {
 		t.Fatalf("SpawnOrchestrator err = %v, want harness verification failure", err)
 	}

@@ -1423,6 +1423,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the button entirely rather than showing a permanently disabled control.
 	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	// Harnesses without a TUI/Chat handoff cannot convert a running terminal
+	// session. Say so plainly instead of showing the daemon's reason.
+	const interfaceSwitchBlockedReason =
+		interfaceSwitch.status?.reasonCode === "INTERFACE_HANDOFF_UNSUPPORTED"
+			? t("session.interfaceHandoffUnsupported", {
+					defaultValue:
+						"This agent can't switch a running terminal session to chat. Start a new chat session instead.",
+				})
+			: undefined;
 	const showInterfaceSwitchAction = Boolean(
 		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
 	);
@@ -1564,7 +1573,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
-						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+						: interfaceSwitchBlockedReason || interfaceSwitch.status?.reason || interfaceSwitch.statusError
 				}
 				pending={interfaceSwitch.starting || activeInterfaceTransition}
 				transition={interfaceSwitch.transition}
@@ -1585,6 +1594,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.status,
 			interfaceSwitch.statusError,
 			interfaceSwitch.transition,
+			interfaceSwitchBlockedReason,
 			interfaceTarget,
 			requestInterfaceSwitch,
 			session,
@@ -1599,7 +1609,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
-						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+						: interfaceSwitchBlockedReason || interfaceSwitch.status?.reason || interfaceSwitch.statusError
 				}
 				pending={interfaceSwitch.starting || chatLeaveLocked}
 				onClick={requestInterfaceSwitch}
@@ -1611,6 +1621,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.starting,
 			interfaceSwitch.status,
 			interfaceSwitch.statusError,
+			interfaceSwitchBlockedReason,
 			interfaceTarget,
 			requestInterfaceSwitch,
 			session,

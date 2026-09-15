@@ -725,3 +725,64 @@ func countQwenHookCommand(entries []hooksjson.MatcherGroup, command string) int 
 	}
 	return count
 }
+
+func TestNativeConversationIDRequiresCapturedQwenSessionForTUI(t *testing.T) {
+	p := &Plugin{}
+	if id, ok, err := p.NativeConversationID(context.Background(), ports.SessionRef{
+		ID: "ao-session-1", Metadata: map[string]string{},
+	}, domain.SessionModeTUI, ""); err != nil || ok || id != "" {
+		t.Fatalf("uncaptured TUI native id = %q ok=%v err=%v", id, ok, err)
+	}
+	tuiID, ok, err := p.NativeConversationID(context.Background(), ports.SessionRef{
+		ID:       "ao-session-1",
+		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "f194dbbc-f28a-4449-b885-09dcec9b5b7f"},
+	}, domain.SessionModeTUI, "")
+	if err != nil || !ok || tuiID != "f194dbbc-f28a-4449-b885-09dcec9b5b7f" {
+		t.Fatalf("captured TUI native id = %q ok=%v err=%v", tuiID, ok, err)
+	}
+	chatID, ok, err := p.NativeConversationID(context.Background(), ports.SessionRef{},
+		domain.SessionModeChat, tuiID)
+	if err != nil || !ok || chatID != tuiID {
+		t.Fatalf("Chat native id = %q ok=%v err=%v", chatID, ok, err)
+	}
+}
+
+func TestNativeConversationExistsRequiresPersistedQwenTranscript(t *testing.T) {
+	p := &Plugin{}
+	id := "f194dbbc-f28a-4449-b885-09dcec9b5b7f"
+	qwenHome := t.TempDir()
+	env := map[string]string{"QWEN_HOME": qwenHome}
+
+	exists, err := p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("reserved Qwen session without a transcript reported as persisted")
+	}
+
+	projectDir := filepath.Join(qwenHome, "projects", "-test-proj", "chats")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(projectDir, id+".jsonl")
+	if err := os.WriteFile(transcript, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err != nil || exists {
+		t.Fatalf("empty transcript: exists=%v err=%v", exists, err)
+	}
+	if err := os.WriteFile(transcript, []byte("{\"sessionId\":1}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err != nil || !exists {
+		t.Fatalf("persisted transcript: exists=%v err=%v", exists, err)
+	}
+
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, "not-a-uuid", env)
+	if err != nil || exists {
+		t.Fatalf("non-UUID id: exists=%v err=%v", exists, err)
+	}
+}

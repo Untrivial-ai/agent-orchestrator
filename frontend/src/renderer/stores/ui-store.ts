@@ -168,6 +168,7 @@ export type OrchestratorReplacementFailure = {
 	message: string;
 	code?: string;
 	requestId?: string;
+	details?: Record<string, unknown>;
 };
 
 const sidebarStorageKey = "ao.sidebar.open";

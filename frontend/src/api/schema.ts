@@ -4158,6 +4158,8 @@ export interface components {
             workingDir: string;
         };
         SpawnOrchestratorRequest: {
+            /** @enum {string} */
+            approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             clean?: boolean;
             /** @enum {string} */
             mode?: "chat" | "tui";

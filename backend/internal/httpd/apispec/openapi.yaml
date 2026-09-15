@@ -11665,6 +11665,13 @@ components:
       type: object
     SpawnOrchestratorRequest:
       properties:
+        approvalMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
         clean:
           type: boolean
         mode:
