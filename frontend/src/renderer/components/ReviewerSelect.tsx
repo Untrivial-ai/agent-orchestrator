@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -11,7 +11,7 @@ import {
 	type RankedAgentOption,
 	unknownAgentReadiness,
 } from "../lib/agent-select-options";
-import { KNOWN_REVIEWER_HARNESS_IDS } from "../lib/reviewer-harnesses";
+import { KNOWN_REVIEWER_HARNESS_IDS, reviewerCatalogQueryOptions } from "../lib/reviewer-harnesses";
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentSelectMenuItem } from "./settings/AgentSelectMenuItem";
@@ -83,14 +83,27 @@ export function ReviewerSelect({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [menuOpen, setMenuOpen] = useState(false);
-	// Until the daemon's catalog arrives these entries carry the whole menu, so
-	// label them the way the catalog would rather than printing bare ids: without
-	// this the same row reads "claude-code" now and "Claude Code" a moment later.
-	const fallbackAgents: AgentInfo[] = [...KNOWN_REVIEWER_HARNESS_IDS].map(
-		(id) => unknownAgentReadiness(id, agentLabel(id)),
-	);
-	const filteredSupported = (agents ?? fallbackAgents).filter((a) => KNOWN_REVIEWER_HARNESS_IDS.has(a.id));
-	const supportedAgents = filteredSupported.length > 0 ? filteredSupported : fallbackAgents;
+	const reviewerCatalog = useQuery(reviewerCatalogQueryOptions());
+	const catalogReviewers = reviewerCatalog.data;
+
+	const fallbackAgents: AgentInfo[] = useMemo(() => {
+		if (catalogReviewers && catalogReviewers.length > 0) {
+			return catalogReviewers.map((r) => unknownAgentReadiness(r.id, r.label || agentLabel(r.id)));
+		}
+		return [...KNOWN_REVIEWER_HARNESS_IDS].map((id) => unknownAgentReadiness(id, agentLabel(id)));
+	}, [catalogReviewers]);
+
+	const supportedAgents: AgentInfo[] = useMemo(() => {
+		if (!agents || agents.length === 0) {
+			return fallbackAgents;
+		}
+		const agentMap = new Map(agents.map((a) => [a.id, a]));
+		return fallbackAgents.map((fallback) => {
+			const existing = agentMap.get(fallback.id);
+			return existing ? { ...existing, label: existing.label || fallback.label } : fallback;
+		});
+	}, [agents, fallbackAgents]);
+
 	const options = buildRankedAgentOptions({
 		agents: supportedAgents,
 		priorityRank: REVIEWER_AGENT_PRIORITY_RANK,
@@ -118,7 +131,12 @@ export function ReviewerSelect({
 		}
 	}, [defaultHarness, menuOpen, menuProjectID, queryClient, selectableOptions]);
 	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.agentDefault"));
-	const triggerLabel = [value ? agentLabel(value) : (defaultTriggerLabel ?? defaultOptionLabel ?? defaultHarness), selectedModelLabel]
+	const activeReviewerLabel = useMemo(() => {
+		if (!value) return undefined;
+		const fromCatalog = catalogReviewers?.find((r) => r.id === value)?.label;
+		return fromCatalog || agentLabel(value);
+	}, [catalogReviewers, value]);
+	const triggerLabel = [activeReviewerLabel ?? (defaultTriggerLabel ?? defaultOptionLabel ?? defaultHarness), selectedModelLabel]
 		.filter(Boolean)
 		.join(" · ");
 
