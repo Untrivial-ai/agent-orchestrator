@@ -111,6 +111,7 @@ import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { ActivityRun } from "./ActivityRun";
+import { ContextMeter } from "./ContextMeter";
 import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
 import { ElicitationCard } from "./ElicitationCard";
@@ -1794,6 +1795,7 @@ function ChatHeader({
 					className="ml-auto flex shrink-0 items-center gap-1 pl-2 pr-3"
 					data-testid="session-action-region"
 				>
+					<ContextMeter usage={snapshot.usage} rateLimits={snapshot.rateLimits} />
 					{tabStripAction ? <div data-testid="session-tab-strip-action">{tabStripAction}</div> : null}
 					{headerActions}
 				</div>
