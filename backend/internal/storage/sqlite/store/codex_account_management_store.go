@@ -76,26 +76,21 @@ func (s *Store) SetCodexActiveAccount(ctx context.Context, accountID string, exp
 
 // CreateCodexAccountSwitch inserts or returns an idempotent global switch.
 func (s *Store) CreateCodexAccountSwitch(ctx context.Context, rec domain.CodexAccountSwitch) (domain.CodexAccountSwitch, bool, error) {
+	if rec.SourceKind == "" {
+		rec.SourceKind = domain.CodexAccountSwitchSourceManaged
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	var n int64
-	err := s.inTxDB(ctx, "create Codex account switch snapshot", func(q *gen.Queries, db gen.DBTX) error {
+	err := s.inTx(ctx, "create Codex account switch", func(q *gen.Queries) error {
 		var insertErr error
 		n, insertErr = q.InsertCodexAccountSwitch(ctx, gen.InsertCodexAccountSwitchParams{
-			ID: rec.ID, SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
+			ID: rec.ID, SourceKind: string(rec.SourceKind), SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
 			IdempotencyKey: rec.IdempotencyKey, RequestFingerprint: rec.RequestFingerprint,
 			ExpectedAccountRevision: rec.ExpectedAccountRevision, Phase: string(rec.Phase),
 			CreatedAt: rec.CreatedAt.UTC(), UpdatedAt: rec.UpdatedAt.UTC(),
 		})
-		if insertErr != nil || n == 0 {
-			return insertErr
-		}
-		for _, item := range rec.Sessions {
-			if err := insertCodexAccountSwitchSession(ctx, db, rec.ID, item); err != nil {
-				return err
-			}
-		}
-		return nil
+		return insertErr
 	})
 	if err != nil {
 		return domain.CodexAccountSwitch{}, false, fmt.Errorf("create Codex account switch %s: %w", rec.ID, err)
@@ -172,87 +167,9 @@ func (s *Store) UpdateCodexAccountSwitch(ctx context.Context, rec domain.CodexAc
 	return n > 0, nil
 }
 
-// InsertCodexAccountSwitchSession records one affected session.
-func (s *Store) InsertCodexAccountSwitchSession(ctx context.Context, switchID string, rec domain.CodexAccountSwitchSession) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return insertCodexAccountSwitchSession(ctx, s.writeDB, switchID, rec)
-}
-
-func insertCodexAccountSwitchSession(ctx context.Context, db gen.DBTX, switchID string, rec domain.CodexAccountSwitchSession) error {
-	result, err := db.ExecContext(ctx, `INSERT INTO codex_account_switch_sessions (
-		switch_id, session_id, native_session_id, interface_mode,
-		source_handle_id, source_generation, was_running, stop_state, restart_state,
-		reviewer_was_running, reviewer_source_handle_id, reviewer_native_session_id,
-		reviewer_stop_state, reviewer_restart_state
-	) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-	ON CONFLICT DO NOTHING`, switchID, string(rec.SessionID), rec.NativeSessionID, string(rec.InterfaceMode),
-		rec.SourceHandleID, rec.SourceGeneration, rec.WasRunning, rec.RestartState,
-		rec.ReviewerWasRunning, rec.ReviewerSourceHandleID, rec.ReviewerNativeSessionID,
-		rec.ReviewerStopState, rec.ReviewerRestartState)
-	if err != nil {
-		return fmt.Errorf("insert Codex account switch session %s: %w", rec.SessionID, err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("insert Codex account switch session %s result: %w", rec.SessionID, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("insert Codex account switch session %s: duplicate", rec.SessionID)
-	}
-	return nil
-}
-
-// ListCodexAccountSwitchSessions reads affected sessions in stable order.
-func (s *Store) ListCodexAccountSwitchSessions(ctx context.Context, switchID string) ([]domain.CodexAccountSwitchSession, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT session_id, native_session_id, interface_mode,
-		source_handle_id, source_generation, was_running, stop_state, restart_state,
-		reviewer_was_running, reviewer_source_handle_id, reviewer_native_session_id,
-		reviewer_stop_state, reviewer_restart_state, error_code, stopped_at, restarted_at
-		FROM codex_account_switch_sessions WHERE switch_id = ? ORDER BY session_id`, switchID)
-	if err != nil {
-		return nil, fmt.Errorf("list Codex account switch sessions: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := make([]domain.CodexAccountSwitchSession, 0)
-	for rows.Next() {
-		var item domain.CodexAccountSwitchSession
-		var mode string
-		var stoppedAt, restartedAt sql.NullTime
-		if err := rows.Scan(&item.SessionID, &item.NativeSessionID, &mode,
-			&item.SourceHandleID, &item.SourceGeneration, &item.WasRunning, &item.StopState, &item.RestartState,
-			&item.ReviewerWasRunning, &item.ReviewerSourceHandleID, &item.ReviewerNativeSessionID,
-			&item.ReviewerStopState, &item.ReviewerRestartState, &item.ErrorCode, &stoppedAt, &restartedAt); err != nil {
-			return nil, fmt.Errorf("scan Codex account switch session: %w", err)
-		}
-		item.InterfaceMode = domain.SessionMode(mode)
-		item.StoppedAt = nullTimeToPtr(stoppedAt)
-		item.RestartedAt = nullTimeToPtr(restartedAt)
-		out = append(out, item)
-	}
-	return out, rows.Err()
-}
-
-// UpdateCodexAccountSwitchSession applies compare-and-swap progress for one session.
-func (s *Store) UpdateCodexAccountSwitchSession(ctx context.Context, switchID string, rec domain.CodexAccountSwitchSession, expectedStop, expectedRestart string) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	n, err := s.qw.UpdateCodexAccountSwitchSession(ctx, gen.UpdateCodexAccountSwitchSessionParams{
-		StopState: rec.StopState, RestartState: rec.RestartState,
-		ErrorCode: rec.ErrorCode, ReviewerStopState: rec.ReviewerStopState,
-		ReviewerRestartState: rec.ReviewerRestartState, StoppedAt: timePtrToNull(rec.StoppedAt),
-		RestartedAt: timePtrToNull(rec.RestartedAt), SwitchID: switchID, SessionID: string(rec.SessionID),
-		ExpectedStopState: expectedStop, ExpectedRestartState: expectedRestart,
-	})
-	if err != nil {
-		return false, fmt.Errorf("update Codex account switch session %s: %w", rec.SessionID, err)
-	}
-	return n > 0, nil
-}
-
 func codexAccountSwitchFromGen(row gen.CodexAccountSwitch) domain.CodexAccountSwitch {
 	return domain.CodexAccountSwitch{
-		ID: row.ID, SourceAccountID: row.SourceAccountID, TargetAccountID: row.TargetAccountID,
+		ID: row.ID, SourceKind: domain.CodexAccountSwitchSourceKind(row.SourceKind), SourceAccountID: row.SourceAccountID, TargetAccountID: row.TargetAccountID,
 		Phase: domain.CodexAccountSwitchPhase(row.Phase), FailureCode: row.FailureCode,
 		CredentialsCommittedAt: nullTimeToPtr(row.CredentialsCommittedAt),
 		CreatedAt:              row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: nullTimeToPtr(row.CompletedAt),

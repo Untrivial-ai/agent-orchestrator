@@ -22,10 +22,11 @@ import (
 // CodexAccountService is the HTTP controller's account-management boundary.
 type CodexAccountService interface {
 	CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error)
-	EnsureCodexAccounts(context.Context, []string, bool) (agentsvc.CodexAccounts, error)
+	EnsureCodexAccounts(context.Context, []string, bool, bool, bool) (agentsvc.CodexAccounts, error)
 	ConsumeCodexAccountResetCredit(context.Context, string, string) (agentsvc.CodexAccounts, error)
 	SubscribeCodexAccounts(context.Context) (<-chan agentsvc.CodexAccounts, error)
 	OpenCodexAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error)
+	OpenCodexDeviceAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error)
 	OpenCodexAccountReauthenticationTerminal(context.Context, string) (agentsvc.CodexAccountLoginTerminalStart, error)
 	LogoutCodexAccount(context.Context, string) (agentsvc.CodexAccounts, error)
 	DeleteCodexAccount(context.Context, string) (agentsvc.CodexAccounts, error)
@@ -47,6 +48,7 @@ func (c *CodexAccountsController) Register(r chi.Router) {
 	r.Post("/agents/codex/accounts/{accountId}/logout", c.logoutAccount)
 	r.Delete("/agents/codex/accounts/{accountId}", c.deleteAccount)
 	r.Post("/agents/codex/accounts/login-terminal", c.openLoginTerminal)
+	r.Post("/agents/codex/accounts/device/login-terminal", c.openDeviceLoginTerminal)
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/verify", c.verifyLogin)
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/cancel", c.cancelLogin)
 	r.Post("/agents/codex/account-switches", c.startSwitch)
@@ -89,7 +91,10 @@ func (c *CodexAccountsController) startSwitch(w http.ResponseWriter, r *http.Req
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "IDEMPOTENCY_KEY_REQUIRED", "Idempotency key is required", nil)
 		return
 	}
-	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision, IdempotencyKey: request.IdempotencyKey})
+	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{
+		TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision,
+		IdempotencyKey: request.IdempotencyKey,
+	})
 	if err != nil {
 		writeCodexAccountSwitchError(w, r, err)
 		return
@@ -128,8 +133,6 @@ func writeCodexAccountSwitchError(w http.ResponseWriter, r *http.Request, err er
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials", nil)
 	case errors.Is(err, ports.ErrCodexGlobalAccountChanged):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed during switching", nil)
-	case errors.Is(err, ports.ErrCodexRunningSessionNotResumable):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_RUNNING_SESSION_NOT_RESUMABLE", "A running AO Codex session cannot be resumed exactly", nil)
 	case errors.Is(err, ports.ErrCodexAccountLoginInProgress):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before switching accounts", nil)
 	default:
@@ -165,7 +168,7 @@ func (c *CodexAccountsController) ensure(w http.ResponseWriter, r *http.Request)
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	result, err := c.Svc.EnsureCodexAccounts(r.Context(), request.AccountIDs, request.IncludeUsage)
+	result, err := c.Svc.EnsureCodexAccounts(r.Context(), request.AccountIDs, request.IncludeUsage, request.ForceAuthentication, request.ForceDeviceReconciliation)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -184,6 +187,24 @@ func (c *CodexAccountsController) openLoginTerminal(w http.ResponseWriter, r *ht
 		return
 	}
 	result, err := c.Svc.OpenCodexAccountLoginTerminal(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	writeCodexLoginTerminal(w, result)
+}
+
+func (c *CodexAccountsController) openDeviceLoginTerminal(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/codex/accounts/device/login-terminal")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1))
+	if err != nil || len(body) != 0 {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_REQUEST_BODY", "Request body must be empty", nil)
+		return
+	}
+	result, err := c.Svc.OpenCodexDeviceAccountLoginTerminal(r.Context())
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return

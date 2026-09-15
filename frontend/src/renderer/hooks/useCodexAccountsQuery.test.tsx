@@ -15,6 +15,7 @@ import { writeCodexAccounts } from "./codex-accounts-state";
 const response: CodexAccountsResponse = {
 	accountRevision: 0,
 	accounts: [],
+	deviceReconciliation: { status: "verified", activeAccountVerified: false, reasonCode: "verified", retryable: false },
 	capabilities: {
 		nativeLogin: { state: "supported", reasonCode: "supported", reason: "available" },
 		globalSwitch: { state: "supported", reasonCode: "supported", reason: "available" },

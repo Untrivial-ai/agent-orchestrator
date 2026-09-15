@@ -24,10 +24,13 @@ type fakeCodexAccounts struct {
 	result              agentsvc.CodexAccounts
 	ensureIDs           []string
 	includeUsage        bool
+	forceAuthentication bool
+	forceReconciliation bool
 	resetAccountID      string
 	resetIdempotencyKey string
 	events              chan agentsvc.CodexAccounts
 	loginStart          agentsvc.CodexAccountLoginTerminalStart
+	deviceLoginOpened   bool
 	verifiedOperation   string
 	cancelledOperation  string
 	reauthenticatedID   string
@@ -41,8 +44,8 @@ type fakeCodexAccounts struct {
 func (f *fakeCodexAccounts) CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error) {
 	return f.result, nil
 }
-func (f *fakeCodexAccounts) EnsureCodexAccounts(_ context.Context, ids []string, includeUsage bool) (agentsvc.CodexAccounts, error) {
-	f.ensureIDs, f.includeUsage = ids, includeUsage
+func (f *fakeCodexAccounts) EnsureCodexAccounts(_ context.Context, ids []string, includeUsage, forceAuthentication, forceReconciliation bool) (agentsvc.CodexAccounts, error) {
+	f.ensureIDs, f.includeUsage, f.forceAuthentication, f.forceReconciliation = ids, includeUsage, forceAuthentication, forceReconciliation
 	return f.result, nil
 }
 func (f *fakeCodexAccounts) ConsumeCodexAccountResetCredit(_ context.Context, accountID, idempotencyKey string) (agentsvc.CodexAccounts, error) {
@@ -58,6 +61,10 @@ func (f *fakeCodexAccounts) SubscribeCodexAccounts(ctx context.Context) (<-chan 
 	return ch, nil
 }
 func (f *fakeCodexAccounts) OpenCodexAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error) {
+	return f.loginStart, nil
+}
+func (f *fakeCodexAccounts) OpenCodexDeviceAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error) {
+	f.deviceLoginOpened = true
 	return f.loginStart, nil
 }
 func (f *fakeCodexAccounts) OpenCodexAccountReauthenticationTerminal(_ context.Context, id string) (agentsvc.CodexAccountLoginTerminalStart, error) {
@@ -100,6 +107,10 @@ func codexAccountsFixture() agentsvc.CodexAccounts {
 	return agentsvc.CodexAccounts{
 		ActiveAccountID: "72d4db6e-da2c-414c-a6a9-fdbd09a006b6",
 		AccountRevision: 3,
+		DeviceReconciliation: domain.CodexDeviceReconciliation{
+			Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true,
+			ReasonCode: "verified",
+		},
 		Accounts: []domain.CodexAccountSnapshot{{
 			ID: "72d4db6e-da2c-414c-a6a9-fdbd09a006b6", Label: "person@example.com", Source: domain.CodexAccountSourceManaged,
 			Status: domain.CodexAccountStatusValid, ReasonCode: domain.CodexAccountReasonValid, Reason: "available", Active: true,
@@ -130,11 +141,7 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	fixture := codexAccountsFixture()
 	fixture.CurrentSwitch = &domain.CodexAccountSwitch{
 		ID: "switch-1", SourceAccountID: "source-account", TargetAccountID: "target-account",
-		Phase: domain.CodexAccountSwitchRestartingSessions,
-		Sessions: []domain.CodexAccountSwitchSession{{
-			SessionID: "session-1", InterfaceMode: domain.SessionModeTUI, WasRunning: true,
-			RestartState: "in_progress", ErrorCode: "restart_in_progress:private-generation-id",
-		}},
+		Phase: domain.CodexAccountSwitchVerifyingAccount,
 	}
 	fake := &fakeCodexAccounts{result: fixture}
 	srv := newCodexAccountServer(t, fake)
@@ -166,13 +173,43 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	if len(response.Accounts) != 1 {
 		t.Fatalf("decoded accounts = %#v", response.Accounts)
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true}`)
-	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage {
-		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v body=%s", status, fake.ensureIDs, fake.includeUsage, body)
+	if response.DeviceReconciliation.Status != string(domain.CodexDeviceReconciliationVerified) || !response.DeviceReconciliation.ActiveAccountVerified {
+		t.Fatalf("decoded device reconciliation = %#v", response.DeviceReconciliation)
 	}
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"force":true}`)
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true,"forceAuthentication":true,"forceDeviceReconciliation":true}`)
+	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage || !fake.forceAuthentication || !fake.forceReconciliation {
+		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v forceAuthentication=%v forceReconciliation=%v body=%s", status, fake.ensureIDs, fake.includeUsage, fake.forceAuthentication, fake.forceReconciliation, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"unknown":true}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
 		t.Fatalf("strict ensure status=%d body=%s", status, body)
+	}
+}
+
+func TestCodexAccountReadRoutesStayAvailableDuringDeviceReconciliationFailure(t *testing.T) {
+	fixture := codexAccountsFixture()
+	fixture.DeviceReconciliation = domain.CodexDeviceReconciliation{
+		Status:     domain.CodexDeviceReconciliationTemporarilyUnavailable,
+		ReasonCode: "account_read_inconclusive", Retryable: true,
+	}
+	fixture.Accounts[0].Active = false
+	fake := &fakeCodexAccounts{result: fixture}
+	srv := newCodexAccountServer(t, fake)
+	defer srv.Close()
+
+	for _, request := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/agents/codex/accounts"},
+		{method: http.MethodPost, path: "/api/v1/agents/codex/accounts/ensure", body: `{"accountIds":[]}`},
+	} {
+		body, status, _ := doRequest(t, srv, request.method, request.path, request.body)
+		if status != http.StatusOK || !strings.Contains(string(body), `"status":"temporarily_unavailable"`) ||
+			!strings.Contains(string(body), `"reasonCode":"account_read_inconclusive"`) || strings.Contains(string(body), `"active":true`) {
+			t.Fatalf("%s %s status=%d body=%s", request.method, request.path, status, body)
+		}
 	}
 }
 
@@ -196,6 +233,14 @@ func TestCodexAccountLoginTerminalAndVerificationRoutesExposeNoCommandOrPath(t *
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/login-terminal", `{}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_REQUEST_BODY"`) {
 		t.Fatalf("body rejection status=%d body=%s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/device/login-terminal", "")
+	if status != http.StatusAccepted || !fake.deviceLoginOpened || !strings.Contains(string(body), `"operationId":"op-1"`) {
+		t.Fatalf("device login status=%d opened=%t body=%s", status, fake.deviceLoginOpened, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/device/login-terminal", `{}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_REQUEST_BODY"`) {
+		t.Fatalf("device body rejection status=%d body=%s", status, body)
 	}
 	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/login-operations/op-1/verify", "")
 	if status != http.StatusOK || fake.verifiedOperation != "op-1" {
@@ -311,11 +356,6 @@ func TestCodexAccountResetCreditRouteRequiresIdempotencyAndReturnsRefreshedAccou
 func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testing.T) {
 	fake := &fakeCodexAccounts{result: codexAccountsFixture(), switchResult: domain.CodexAccountSwitch{
 		ID: "switch-1", SourceAccountID: "source", TargetAccountID: "target", Phase: domain.CodexAccountSwitchRequested,
-		Sessions: []domain.CodexAccountSwitchSession{{
-			SessionID: "ao-1", InterfaceMode: domain.SessionModeChat, WasRunning: true, StopState: "pending", RestartState: "pending",
-			NativeSessionID: "native-secret", SourceHandleID: "source-handle-secret", SourceGeneration: "generation-secret",
-			ReviewerSourceHandleID: "reviewer-handle-secret", ReviewerNativeSessionID: "reviewer-native-secret",
-		}},
 		IdempotencyKey: "private-key", RequestFingerprint: "private-fingerprint", ExpectedAccountRevision: 3,
 	}}
 	srv := newCodexAccountServer(t, fake)
@@ -326,13 +366,18 @@ func TestCodexAccountSwitchRequiresIdempotencyAndRedactsPrivateIdentity(t *testi
 	}
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"request-key"}`)
 	text := string(body)
-	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" || !strings.Contains(text, `"sessionId":"ao-1"`) {
+	if status != http.StatusAccepted || fake.switchConfig.IdempotencyKey != "request-key" ||
+		strings.Contains(text, `"restartRunningSessions"`) || strings.Contains(text, `"sessions"`) {
 		t.Fatalf("switch status=%d config=%#v body=%s", status, fake.switchConfig, body)
 	}
-	for _, forbidden := range []string{"native-secret", "source-handle-secret", "generation-secret", "reviewer-handle-secret", "reviewer-native-secret", "private-key", "private-fingerprint"} {
+	for _, forbidden := range []string{"private-key", "private-fingerprint"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("switch leaked %q: %s", forbidden, body)
 		}
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/account-switches", `{"targetAccountId":"target","expectedAccountRevision":3,"idempotencyKey":"obsolete-key","restartRunningSessions":true}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
+		t.Fatalf("obsolete restart field status=%d body=%s", status, body)
 	}
 }
 

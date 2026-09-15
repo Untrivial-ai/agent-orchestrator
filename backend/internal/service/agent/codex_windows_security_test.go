@@ -29,10 +29,10 @@ func TestWindowsVaultACLPolicyRejectsUntrustedCredentialAccess(t *testing.T) {
 }
 
 func TestWindowsAncestorACLPolicyAllowsReadButRejectsMutation(t *testing.T) {
-	if !codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: codexWindowsGenericRead}}) {
+	if !codexWindowsAncestorACLIsSafe([]codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: codexWindowsGenericRead}}) {
 		t.Fatal("read-only ancestor ACL rejected")
 	}
-	if codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: codexWindowsDeleteChild}}) {
+	if codexWindowsAncestorACLIsSafe([]codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: codexWindowsDeleteChild}}) {
 		t.Fatal("mutable ancestor ACL accepted")
 	}
 }
@@ -81,5 +81,70 @@ func TestWindowsPathMetadataPolicyRejectsReparseOwnerACLTypeAndHardLinks(t *test
 	}
 	if !codexWindowsSameStableIdentity(safeFile, safeFile) {
 		t.Fatal("stable Windows file identity rejected")
+	}
+}
+
+func TestWindowsAncestorACLPolicyAcceptsDefaultSystemDriveRoot(t *testing.T) {
+	// Stock Windows grants Authenticated Users FILE_ADD_SUBDIRECTORY on the
+	// system drive root ("Authenticated Users:(AD)"). Creating a new entry
+	// beside the vault chain cannot redirect an ancestor that already exists,
+	// so the ancestor walk must accept it or no Windows machine can ever hold
+	// Codex account storage. The vault policy stays strict.
+	for name, mask := range map[string]uint32{
+		"add subdirectory": codexWindowsAppendData,
+		"add file":         codexWindowsWriteData,
+	} {
+		t.Run(name, func(t *testing.T) {
+			aces := []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: mask}}
+			if !codexWindowsAncestorACLIsSafe(aces) {
+				t.Fatal("ancestor ACL that only permits creating a new child rejected")
+			}
+			if codexWindowsVaultACLIsSafe(true, aces) {
+				t.Fatal("vault ACL accepted an untrusted principal")
+			}
+		})
+	}
+	for name, mask := range map[string]uint32{
+		"delete":        codexWindowsDelete,
+		"delete child":  codexWindowsDeleteChild,
+		"write DAC":     codexWindowsWriteDAC,
+		"write owner":   codexWindowsWriteOwner,
+		"generic all":   codexWindowsGenericAll,
+		"generic write": codexWindowsGenericWrite,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if codexWindowsAncestorACLIsSafe([]codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: mask}}) {
+				t.Fatalf("ancestor ACL granting %s to an untrusted principal accepted", name)
+			}
+		})
+	}
+}
+
+func TestWindowsAncestorACLPolicyAcceptsInheritedStandardWrite(t *testing.T) {
+	// This is the exact access mask inherited by the two unresolved SIDs on the
+	// affected Windows profile. It contains only specific read/write/execute and
+	// synchronize rights; it does not contain delete, ACL, owner, generic-write,
+	// or full-control rights.
+	const inheritedStandardWriteMask uint32 = 0x001201BF
+	aces := []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: inheritedStandardWriteMask}}
+	if !codexWindowsAncestorACLIsSafe(aces) {
+		t.Fatalf("ancestor ACL rejected inherited standard Write mask %#x", inheritedStandardWriteMask)
+	}
+	if codexWindowsVaultACLIsSafe(true, aces) {
+		t.Fatal("vault ACL accepted inherited standard Write mask")
+	}
+
+	for name, mask := range map[string]uint32{
+		"delete":       codexWindowsDelete,
+		"delete child": codexWindowsDeleteChild,
+		"write DAC":    codexWindowsWriteDAC,
+		"write owner":  codexWindowsWriteOwner,
+	} {
+		t.Run(name, func(t *testing.T) {
+			unsafeACEs := []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: inheritedStandardWriteMask | mask}}
+			if codexWindowsAncestorACLIsSafe(unsafeACEs) {
+				t.Fatalf("ancestor ACL accepted inherited standard Write plus %s", name)
+			}
+		})
 	}
 }

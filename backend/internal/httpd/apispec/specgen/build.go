@@ -270,6 +270,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersEnsureCodexAccountsRequest":               "EnsureCodexAccountsRequest",
 	"ControllersConsumeCodexAccountResetCreditRequest":    "ConsumeCodexAccountResetCreditRequest",
 	"ControllersCodexAccountsResponse":                    "CodexAccountsResponse",
+	"ControllersCodexDeviceReconciliationResponse":        "CodexDeviceReconciliationResponse",
 	"ControllersCodexAccountResponse":                     "CodexAccountResponse",
 	"ControllersCodexAuthenticationResponse":              "CodexAuthenticationResponse",
 	"ControllersCodexAccountCapacityResponse":             "CodexAccountCapacityResponse",
@@ -283,7 +284,6 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersCodexAccountLoginResponse":                "CodexAccountLoginResponse",
 	"ControllersCodexActiveLoginResponse":                 "CodexActiveLoginResponse",
 	"ControllersCodexAccountSwitchResponse":               "CodexAccountSwitchResponse",
-	"ControllersCodexAccountSwitchSessionResponse":        "CodexAccountSwitchSessionResponse",
 	"ControllersCodexAccountSwitchPhase":                  "CodexAccountSwitchPhase",
 	"ControllersStartCodexAccountSwitchRequest":           "StartCodexAccountSwitchRequest",
 	"ControllersCodexAccountSwitchIDParam":                "CodexAccountSwitchIDParam",
@@ -1182,6 +1182,11 @@ func agentOperations() []operation {
 			resps:   []respUnit{{http.StatusAccepted, controllers.OpenCodexAccountLoginTerminalResponse{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/device/login-terminal", id: "openCodexDeviceAccountLoginTerminal", tag: "agents",
+			summary: "Open an isolated native login that replaces the device Codex account after verification",
+			resps:   []respUnit{{http.StatusAccepted, controllers.OpenCodexAccountLoginTerminalResponse{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
 			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/login-operations/{operationId}/verify", id: "verifyCodexAccountLogin", tag: "agents",
 			summary: "Verify one native Codex account login operation", pathParams: []any{controllers.CodexAccountLoginIDParam{}},
 			resps: []respUnit{{http.StatusOK, controllers.CodexAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
@@ -1204,7 +1209,7 @@ func agentOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/codex/account-switches/{switchId}/recover", id: "recoverCodexAccountSwitch", tag: "agents",
-			summary: "Retry incomplete restarts for one Codex account switch", pathParams: []any{controllers.CodexAccountSwitchIDParam{}},
+			summary: "Retry recovery for one Codex account switch", pathParams: []any{controllers.CodexAccountSwitchIDParam{}},
 			resps: []respUnit{{http.StatusOK, controllers.CodexAccountSwitchResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}},
 		},
 		{

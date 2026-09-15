@@ -26,25 +26,27 @@ const (
 	codexAccountDescriptorFilename = "account.json"
 	codexCredentialHomeDirectory   = "credential-home" //nolint:gosec // directory name, not a credential value.
 	codexCredentialFilename        = "auth.json"
-	codexAccountVersion            = 1
+	codexAccountVersion            = 2
 	maxCodexDescriptorBytes        = 16 << 10
 )
 
 type codexAccountDescriptor struct {
-	Version      int                       `json:"version"`
-	ID           string                    `json:"id"`
-	Source       domain.CodexAccountSource `json:"source"`
-	AuthMethod   domain.CodexAuthMethod    `json:"authMethod"`
-	AccountEmail *string                   `json:"accountEmail,omitempty"`
-	CreatedAt    time.Time                 `json:"createdAt"`
-	VerifiedAt   time.Time                 `json:"verifiedAt"`
+	Version           int                       `json:"version"`
+	ID                string                    `json:"id"`
+	Source            domain.CodexAccountSource `json:"source"`
+	AuthMethod        domain.CodexAuthMethod    `json:"authMethod"`
+	AccountEmail      *string                   `json:"accountEmail,omitempty"`
+	ProviderAccountID string                    `json:"providerAccountId,omitempty"`
+	CreatedAt         time.Time                 `json:"createdAt"`
+	VerifiedAt        time.Time                 `json:"verifiedAt"`
 }
 
 type codexAccountRecord struct {
-	Snapshot   domain.CodexAccountSnapshot
-	Home       string
-	CreatedAt  time.Time
-	VerifiedAt time.Time
+	Snapshot          domain.CodexAccountSnapshot
+	Home              string
+	ProviderAccountID string
+	CreatedAt         time.Time
+	VerifiedAt        time.Time
 }
 
 type codexAccountCatalog struct {
@@ -184,6 +186,12 @@ func (c *codexAccountCatalog) updateVerifiedDescriptor(id string, observation po
 	}
 	descriptor.AuthMethod = observation.Method
 	descriptor.AccountEmail = observation.Email
+	if credential, credentialErr := readOpaqueCredential(filepath.Join(record.Home, codexCredentialFilename)); credentialErr == nil {
+		if identity, identityErr := parseCodexCredentialIdentity(credential); identityErr == nil && identity.ProviderAccountID != "" {
+			descriptor.ProviderAccountID = identity.ProviderAccountID
+		}
+	}
+	descriptor.Version = codexAccountVersion
 	descriptor.VerifiedAt = c.now()
 	data, err := json.MarshalIndent(descriptor, "", "  ")
 	if err != nil {
@@ -294,7 +302,7 @@ func (c *codexAccountCatalog) readManaged(id string) codexAccountRecord {
 		return broken(domain.CodexAccountReasonUnsafePath, "This Codex account has an unsafe directory layout.")
 	}
 	descriptor, err := readCodexAccountDescriptor(filepath.Join(accountDir, codexAccountDescriptorFilename))
-	if err != nil || descriptor.ID != id || descriptor.Version != codexAccountVersion || descriptor.Source != domain.CodexAccountSourceManaged || !validAccountAuthMethod(descriptor.AuthMethod) || (descriptor.AccountEmail != nil && !safeAccountEmail(*descriptor.AccountEmail)) || descriptor.CreatedAt.IsZero() || descriptor.VerifiedAt.IsZero() {
+	if err != nil || descriptor.ID != id || (descriptor.Version != 1 && descriptor.Version != codexAccountVersion) || descriptor.Source != domain.CodexAccountSourceManaged || !validAccountAuthMethod(descriptor.AuthMethod) || (descriptor.AccountEmail != nil && !safeAccountEmail(*descriptor.AccountEmail)) || (descriptor.ProviderAccountID != "" && !safeProviderAccountID(descriptor.ProviderAccountID)) || descriptor.CreatedAt.IsZero() || descriptor.VerifiedAt.IsZero() {
 		return broken(domain.CodexAccountReasonDescriptorInvalid, "This Codex account descriptor is invalid.")
 	}
 	_, err = os.Lstat(home)
@@ -310,7 +318,7 @@ func (c *codexAccountCatalog) readManaged(id string) codexAccountRecord {
 		return broken(domain.CodexAccountReasonUnsafePath, "This Codex account credential is unavailable or unsafe.")
 	}
 	if err == nil && !credentialState.exists {
-		return codexAccountRecord{Home: canonicalPath(home), CreatedAt: descriptor.CreatedAt, VerifiedAt: descriptor.VerifiedAt, Snapshot: domain.CodexAccountSnapshot{
+		return codexAccountRecord{Home: canonicalPath(home), ProviderAccountID: descriptor.ProviderAccountID, CreatedAt: descriptor.CreatedAt, VerifiedAt: descriptor.VerifiedAt, Snapshot: domain.CodexAccountSnapshot{
 			ID: id, Label: accountLabel(id, descriptor.AuthMethod, descriptor.AccountEmail),
 			Source: domain.CodexAccountSourceManaged, Status: domain.CodexAccountStatusSignedOut,
 			ReasonCode: domain.CodexAccountReasonSignedOut, Reason: "This Codex account is signed out.",
@@ -321,13 +329,46 @@ func (c *codexAccountCatalog) readManaged(id string) codexAccountRecord {
 	if err != nil {
 		return broken(domain.CodexAccountReasonUnsafePath, "This Codex account credential is unavailable or unsafe.")
 	}
-	return codexAccountRecord{Home: canonicalPath(home), CreatedAt: descriptor.CreatedAt, VerifiedAt: descriptor.VerifiedAt, Snapshot: domain.CodexAccountSnapshot{
+	return codexAccountRecord{Home: canonicalPath(home), ProviderAccountID: descriptor.ProviderAccountID, CreatedAt: descriptor.CreatedAt, VerifiedAt: descriptor.VerifiedAt, Snapshot: domain.CodexAccountSnapshot{
 		ID: id, Label: accountLabel(id, descriptor.AuthMethod, descriptor.AccountEmail),
 		Source: domain.CodexAccountSourceManaged, Status: domain.CodexAccountStatusValid,
 		ReasonCode: domain.CodexAccountReasonValid, Reason: "This Codex account is available.",
 		Authentication: uncheckedAuthentication(), AuthMethod: descriptor.AuthMethod,
 		AccountEmail: descriptor.AccountEmail, Capacity: uncheckedCodexCapacity(), CreatedAt: descriptor.CreatedAt,
 	}}
+}
+
+func (c *codexAccountCatalog) updateCredentialIdentity(id string, credential []byte) error {
+	record, ok := c.record(id)
+	if !ok || record.Snapshot.Status != domain.CodexAccountStatusValid {
+		return errors.New("codex account is unavailable")
+	}
+	identity, supported := inspectCodexCredentialIdentity(credential)
+	if !supported {
+		// Older opaque credentials can still be associated by exact byte match,
+		// but they do not contain safe local identity metadata to persist.
+		return nil
+	}
+	descriptorPath := filepath.Join(c.root, id, codexAccountDescriptorFilename)
+	descriptor, err := readCodexAccountDescriptor(descriptorPath)
+	if err != nil {
+		return err
+	}
+	descriptor.Version = codexAccountVersion
+	if identity.Method != domain.CodexAuthMethodUnknown {
+		descriptor.AuthMethod = identity.Method
+	}
+	if identity.ProviderAccountID != "" {
+		descriptor.ProviderAccountID = identity.ProviderAccountID
+	}
+	data, err := json.MarshalIndent(descriptor, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writePrivateFileAtomic(descriptorPath, append(data, '\n')); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *codexAccountCatalog) replaceCredential(id string, credential []byte, observation ports.CodexAccountObservation) (codexAccountRecord, error) {
@@ -417,6 +458,30 @@ func (c *codexAccountCatalog) deleteSignedOut(id string) error {
 	return nil
 }
 
+// discardCommitted removes a just-created account when a compound login commit
+// cannot finish. It is intentionally narrower than user-facing deletion: the
+// caller must still be inside the account mutation gate and supply an exact
+// catalog ID.
+func (c *codexAccountCatalog) discardCommitted(id string) error {
+	if !isCanonicalUUIDv4(id) {
+		return errors.New("invalid Codex account id")
+	}
+	accountDir := filepath.Join(c.root, id)
+	if !pathWithin(c.root, accountDir) || canonicalPath(filepath.Dir(accountDir)) != canonicalPath(c.root) {
+		return errors.New("codex account has an unsafe directory layout")
+	}
+	if err := os.RemoveAll(accountDir); err != nil {
+		return err
+	}
+	if err := syncDirectory(c.root); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	delete(c.records, id)
+	c.mu.Unlock()
+	return nil
+}
+
 func removePrivateCredential(path string) error {
 	return removeCodexFileIdentityBound(path)
 }
@@ -447,9 +512,19 @@ func (c *codexAccountCatalog) commitPending(pendingDir string, observation ports
 		return codexAccountRecord{}, errors.New("generated invalid Codex account id")
 	}
 	createdAt := c.now()
+	providerAccountID := ""
+	credentialPath := filepath.Join(pendingDir, codexCredentialHomeDirectory, codexCredentialFilename)
+	if credential, credentialErr := readOpaqueCredential(credentialPath); credentialErr == nil {
+		if identity, identityErr := parseCodexCredentialIdentity(credential); identityErr == nil {
+			providerAccountID = identity.ProviderAccountID
+			if observation.Method == domain.CodexAuthMethodUnknown {
+				observation.Method = identity.Method
+			}
+		}
+	}
 	descriptor := codexAccountDescriptor{
 		Version: codexAccountVersion, ID: id, Source: domain.CodexAccountSourceManaged,
-		AuthMethod: observation.Method, AccountEmail: observation.Email,
+		AuthMethod: observation.Method, AccountEmail: observation.Email, ProviderAccountID: providerAccountID,
 		CreatedAt: createdAt, VerifiedAt: createdAt,
 	}
 	data, err := json.MarshalIndent(descriptor, "", "  ")
@@ -461,7 +536,7 @@ func (c *codexAccountCatalog) commitPending(pendingDir string, observation ports
 		return codexAccountRecord{}, fmt.Errorf("write Codex account descriptor: %w", err)
 	}
 	target := filepath.Join(c.root, id)
-	if err := os.Rename(pendingDir, target); err != nil {
+	if err := renameCodexAccountDirectory(pendingDir, target); err != nil {
 		return codexAccountRecord{}, fmt.Errorf("commit Codex account: %w", err)
 	}
 	if err := syncDirectory(c.root); err != nil {

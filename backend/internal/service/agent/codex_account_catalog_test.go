@@ -15,12 +15,16 @@ const testAccountID = "72d4db6e-da2c-414c-a6a9-fdbd09a006b6"
 
 func commitTestAccount(t *testing.T, catalog *codexAccountCatalog, pendingRoot, operationID string, observed ports.CodexAccountObservation) codexAccountRecord {
 	t.Helper()
+	return commitTestAccountWithCredential(t, catalog, pendingRoot, operationID, []byte("opaque-codex-credential\x00\xff"), observed)
+}
+
+func commitTestAccountWithCredential(t *testing.T, catalog *codexAccountCatalog, pendingRoot, operationID string, credential []byte, observed ports.CodexAccountObservation) codexAccountRecord {
+	t.Helper()
 	pendingDir, home, err := createPendingCredentialHome(pendingRoot, operationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Deliberately not JSON: the vault treats Codex credentials as opaque bytes.
-	if err := writePrivateFileAtomic(filepath.Join(home, codexCredentialFilename), []byte("opaque-codex-credential\x00\xff")); err != nil {
+	if err := writePrivateFileAtomic(filepath.Join(home, codexCredentialFilename), credential); err != nil {
 		t.Fatal(err)
 	}
 	record, err := catalog.commitPending(pendingDir, observed)
@@ -28,6 +32,113 @@ func commitTestAccount(t *testing.T, catalog *codexAccountCatalog, pendingRoot, 
 		t.Fatal(err)
 	}
 	return record
+}
+
+func testOAuthCredential(accountID, accessToken string) []byte {
+	data, err := json.Marshal(map[string]any{
+		"tokens": map[string]string{
+			"account_id":    accountID,
+			"access_token":  accessToken,
+			"refresh_token": "refresh-" + accessToken,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func testAPIKeyCredential(key string) []byte {
+	data, err := json.Marshal(map[string]string{"OPENAI_API_KEY": key})
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func TestParseCodexCredentialIdentity(t *testing.T) {
+	for name, tc := range map[string]struct {
+		credential []byte
+		method     domain.CodexAuthMethod
+		accountID  string
+		wantError  bool
+	}{
+		"oauth account id": {credential: testOAuthCredential("account-123", "access"), method: domain.CodexAuthMethodChatGPT, accountID: "account-123"},
+		"legacy oauth":     {credential: []byte(`{"tokens":{"access_token":"access"}}`), method: domain.CodexAuthMethodChatGPT},
+		"api key":          {credential: testAPIKeyCredential("api-key"), method: domain.CodexAuthMethodAPIKey},
+		"malformed":        {credential: []byte(`{"tokens":`), wantError: true},
+		"unsupported":      {credential: []byte(`{}`), wantError: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			identity, err := parseCodexCredentialIdentity(tc.credential)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error = %v, wantError %v", err, tc.wantError)
+			}
+			if identity.Method != tc.method || identity.ProviderAccountID != tc.accountID {
+				t.Fatalf("safe identity fields = (%q, %q)", identity.Method, identity.ProviderAccountID)
+			}
+			if name == "api key" && identity.APIKey != "api-key" {
+				t.Fatal("API key was not retained for in-memory matching")
+			}
+		})
+	}
+}
+
+func TestCodexAccountCatalogPersistsSafeProviderAccountID(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	pending := filepath.Join(filepath.Dir(root), "pending-accounts")
+	catalog := newCodexAccountCatalog(root, nil)
+	catalog.newID = func() string { return testAccountID }
+	record := commitTestAccountWithCredential(t, catalog, pending, "b60a377d-da68-4a61-86f2-f31f04c571f2", testOAuthCredential("provider-account", "access"), ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationUnknown,
+		Method:         domain.CodexAuthMethodChatGPT,
+	})
+	if record.ProviderAccountID != "provider-account" {
+		t.Fatalf("provider account id = %q", record.ProviderAccountID)
+	}
+	descriptor, err := readCodexAccountDescriptor(filepath.Join(root, testAccountID, codexAccountDescriptorFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.Version != codexAccountVersion || descriptor.ProviderAccountID != "provider-account" {
+		t.Fatalf("descriptor = %#v", descriptor)
+	}
+}
+
+func TestCodexAccountCatalogLazilyUpgradesLegacyDescriptorIdentity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	pending := filepath.Join(filepath.Dir(root), "pending-accounts")
+	catalog := newCodexAccountCatalog(root, nil)
+	catalog.newID = func() string { return testAccountID }
+	credential := testOAuthCredential("provider-account", "access")
+	record := commitTestAccountWithCredential(t, catalog, pending, "b60a377d-da68-4a61-86f2-f31f04c571f2", credential, ports.CodexAccountObservation{Method: domain.CodexAuthMethodChatGPT})
+	descriptorPath := filepath.Join(root, testAccountID, codexAccountDescriptorFilename)
+	descriptor, err := readCodexAccountDescriptor(descriptorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor.Version = 1
+	descriptor.ProviderAccountID = ""
+	data, err := json.MarshalIndent(descriptor, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateFileAtomic(descriptorPath, append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.updateCredentialIdentity(record.Snapshot.ID, credential); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := readCodexAccountDescriptor(descriptorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.Version != codexAccountVersion || upgraded.ProviderAccountID != "provider-account" {
+		t.Fatalf("upgraded descriptor = %#v", upgraded)
+	}
 }
 
 func TestCodexAccountCatalogCommitsStrictPrivateOpaqueSlot(t *testing.T) {
