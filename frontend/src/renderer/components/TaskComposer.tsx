@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	ExecutionContextView,
 	TaskComposerView,
 	type TaskComposerAgentControl,
 	type TaskComposerModelCatalog,
@@ -126,8 +127,8 @@ export function TaskComposer({
 	// offers more than one); omitted lets the control plane use its default.
 	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
 	const cloudProjects = useCloudProjectsQuery();
-	const isCloudProject =
-		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === projectId);
+	const isCloudProject = Boolean(cloudProject);
 	const isStandalone = projectId === STANDALONE_WORKSPACE_ID;
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
@@ -369,6 +370,32 @@ export function TaskComposer({
 	useEffect(() => () => onSubmittingChange?.(false), [onSubmittingChange]);
 	useEffect(() => () => clearAttachments(), [clearAttachments]);
 
+	const executionContext = projectId ? (
+		<ExecutionContextView
+			activeAgent={selectedAgentLabel || undefined}
+			activeRole="worker"
+			baseBranch={projectQuery.data?.defaultBranch ?? cloudProject?.defaultBranch}
+			error={projectQuery.isError ? (projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")) : undefined}
+			labels={{
+				active: "active",
+				baseBranch: t("settings.project.defaultBranch"),
+				configured: "configured",
+				executionContext: "execution context",
+				loading: "loading project context…",
+				orchestrator: t("settings.models.orchestratorRole"),
+				path: t("settings.project.path"),
+				repository: t("settings.project.repository"),
+				worker: t("settings.models.workerRole"),
+			}}
+			loading={!isCloudProject && !isStandalone && projectQuery.isPending}
+			orchestratorAgent={projectQuery.data?.config?.orchestrator?.agent ? selectedAgentLabelFor(projectQuery.data.config.orchestrator.agent, agentCatalog?.agents) : undefined}
+			path={projectQuery.data?.path}
+			projectName={projectQuery.data?.name ?? cloudProject?.displayName ?? projectId}
+			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudProject ? [cloudProject.repositoryUrl] : []}
+			workerAgent={projectWorkerAgent ? selectedAgentLabelFor(projectWorkerAgent, agentCatalog?.agents) : undefined}
+		/>
+	) : undefined;
+
 	const submitTask = async (
 		brief: string,
 		interfaceMode?: "tui",
@@ -425,7 +452,8 @@ export function TaskComposer({
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "")}
+			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "") && (isCloudProject || isStandalone || projectQuery.data !== undefined)}
+			context={executionContext}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -508,6 +536,15 @@ export function TaskComposer({
 			)}
 		/>
 	);
+}
+
+function projectRepositories(project: Project | undefined): string[] {
+	if (!project) return [];
+	return [...new Set([project.repo, ...(project.workspaceRepos ?? []).map((repo) => repo.repo)].filter(Boolean))];
+}
+
+function selectedAgentLabelFor(agent: string, catalog?: Array<{ id: string; label: string }>): string {
+	return catalog?.find((item) => item.id === agent)?.label ?? agent;
 }
 
 function DesktopAgentControl(control: TaskComposerAgentControl) {

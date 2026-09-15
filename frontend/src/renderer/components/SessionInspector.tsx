@@ -7,6 +7,7 @@ import type { TFunction } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+	ExecutionContextView,
 	InspectorActivityTimelineView,
 	InspectorPullRequestCardView,
 	InspectorReviewsView,
@@ -87,6 +88,7 @@ import {
 } from "../lib/session-reviews";
 
 type ProjectConfig = components["schemas"]["ProjectConfig"];
+type Project = components["schemas"]["Project"];
 type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => void;
 
 export type { InspectorView } from "@aoagents/product-ui";
@@ -291,6 +293,20 @@ const SummaryView = memo(function SummaryView({
 	const query = useSessionScmSummary(session.id);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
+	const projectQuery = useQuery({
+		queryKey: ["project", session.workspaceId],
+		enabled: session.workspaceId !== STANDALONE_WORKSPACE_ID && session.cloud === undefined && !usePreviewData,
+		queryFn: async () => {
+			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
+				params: { path: { id: session.workspaceId } },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+			return data?.project as Project | undefined;
+		},
+	});
+	const project = projectQuery.data;
+	const configuredWorkerAgent = project?.config?.worker?.agent ?? project?.agent;
+	const configuredOrchestratorAgent = project?.config?.orchestrator?.agent;
 	const showUsage =
 		developerMode &&
 		!usageQuery.isLoading &&
@@ -314,6 +330,35 @@ const SummaryView = memo(function SummaryView({
 			}
 			activityTitle={t("inspector.activity")}
 			completion={<SessionControls session={session} />}
+			context={
+				<ExecutionContextView
+					activeAgent={agentLabel(session.provider)}
+					activeRole={session.kind === "orchestrator" ? "orchestrator" : "worker"}
+					baseBranch={project?.defaultBranch ?? session.branch}
+					labels={{
+						active: "active",
+						baseBranch: t("settings.project.defaultBranch"),
+						configured: "configured",
+						executionContext: "execution context",
+						loading: "loading project context…",
+						orchestrator: t("settings.models.orchestratorRole"),
+						path: t("settings.project.path"),
+						repository: t("settings.project.repository"),
+						worker: t("settings.models.workerRole"),
+					}}
+					loading={
+						!usePreviewData &&
+						session.workspaceId !== STANDALONE_WORKSPACE_ID &&
+						session.cloud === undefined &&
+						projectQuery.isPending
+					}
+					orchestratorAgent={configuredOrchestratorAgent ? agentLabel(configuredOrchestratorAgent) : undefined}
+					path={project?.path}
+					projectName={project?.name ?? session.workspaceName}
+					repositories={projectRepositories(project)}
+					workerAgent={configuredWorkerAgent ? agentLabel(configuredWorkerAgent) : undefined}
+				/>
+			}
 			pullRequestCards={
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
@@ -349,6 +394,11 @@ const SummaryView = memo(function SummaryView({
 		/>
 	);
 });
+
+function projectRepositories(project: Project | undefined): string[] {
+	if (!project) return [];
+	return [...new Set([project.repo, ...(project.workspaceRepos ?? []).map((repo) => repo.repo)].filter(Boolean))];
+}
 
 const ReviewsView = memo(function ReviewsView({
 	session,

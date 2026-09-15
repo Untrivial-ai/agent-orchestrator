@@ -1624,6 +1624,16 @@ describe("SessionInspector Activity section", () => {
     }
   });
 
+  it("surfaces project, repository, branch, and active agent context in the summary", async () => {
+    renderWithQuery(<SessionInspector session={session([])} />);
+
+    const context = await screen.findByTestId("execution-context");
+    await waitFor(() => expect(context).toHaveTextContent("main"));
+    expect(context).toHaveTextContent("my-app");
+    expect(context).toHaveTextContent("/repo");
+    expect(context).toHaveTextContent("Claude");
+  });
+
   it("keeps workspace, PR, and SCM context rows in the Activity timeline", () => {
     renderWithQuery(
       <SessionInspector
