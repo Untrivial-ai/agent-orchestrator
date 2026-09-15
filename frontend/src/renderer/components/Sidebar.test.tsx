@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -361,6 +361,20 @@ async function openCreateProjectDialog(
 	await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "Codex");
 	await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
 	return user;
+}
+
+function fireDrag(
+	type: "dragStart" | "dragOver" | "drop",
+	element: Element,
+	props: { clientY?: number },
+) {
+	const dataTransfer = { setData: () => {}, getData: () => "", setDragImage: () => {}, dropEffect: "", effectAllowed: "" };
+	const event = createEvent[type](element);
+	Object.defineProperty(event, "dataTransfer", { value: dataTransfer, configurable: true });
+	if (props.clientY !== undefined) {
+		Object.defineProperty(event, "clientY", { value: props.clientY, configurable: true });
+	}
+	fireEvent(element, event);
 }
 
 beforeEach(() => {
@@ -2360,16 +2374,12 @@ describe("Sidebar", () => {
 			],
 		});
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
-			dragOvers.get("sidebar-projects")?.({
-				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: "alpha", rect: { height: 20, top: 0 } },
-			});
-			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
-		});
+		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+		fireDrag("dragStart", bravoRow, {});
+		// jsdom rows measure as zero-height, so clientY 0 lands in the top half — drop before Alpha.
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
 	});
@@ -2390,34 +2400,24 @@ describe("Sidebar", () => {
 		});
 		const labels = () => Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent);
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } });
-			dragOvers.get("sidebar-projects")?.({
-				active: { id: "alpha", rect: { current: { initial: null, translated: null } } },
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: STANDALONE_WORKSPACE_ID, rect: { height: 20, top: 40 } },
-			});
-			dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: { id: STANDALONE_WORKSPACE_ID } });
-		});
+		const alphaRow = document.querySelector('[data-project-drag-row][data-project-id="alpha"]')!;
+		const standaloneTarget = document.querySelector(`li[data-project-id="${STANDALONE_WORKSPACE_ID}"]`)!;
+		fireDrag("dragStart", alphaRow, {});
+		fireDrag("dragOver", standaloneTarget, { clientY: 40 });
+		fireDrag("drop", standaloneTarget, {});
 		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID } });
-			dragEnds.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID }, over: { id: "alpha" } });
-		});
+		const standaloneRow = document.querySelector(`[data-project-drag-row][data-project-id="${STANDALONE_WORKSPACE_ID}"]`)!;
+		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+		fireDrag("dragStart", standaloneRow, {});
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
-			dragOvers.get("sidebar-projects")?.({
-				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: "alpha", rect: { height: 20, top: 0 } },
-			});
-			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
-		});
+		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+		fireDrag("dragStart", bravoRow, {});
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 		expect(labels()).toEqual(["Bravo", "Alpha", "Ad hoc agents"]);
 	});
 
@@ -2450,18 +2450,15 @@ describe("Sidebar", () => {
 				],
 			});
 
-			act(() => {
-				dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
-				dragOvers.get("sidebar-projects")?.({
-					active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
-					activatorEvent: null,
-					delta: { x: 0, y: 0 },
-					over: { id: "alpha", rect: { height: 20, top: 0 } },
-				});
-			});
+			const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+			const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+			fireDrag("dragStart", bravoRow, {});
+			fireDrag("dragOver", alphaTarget, { clientY: 0 });
 
-			const indicator = document.querySelector('[data-project-drop-target][data-project-id="alpha"]');
-			expect(indicator).toHaveAttribute("data-drop-indicator", "before");
+			const indicator = document.querySelector("[data-project-drop-line]");
+			expect(indicator).not.toBeNull();
+			expect(indicator).toHaveClass("bg-foreground");
+			expect(indicator).not.toHaveClass("bg-white");
 		} finally {
 			document.documentElement.classList.remove("dark");
 		}

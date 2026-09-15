@@ -4,19 +4,11 @@ import type { TFunction } from "i18next";
 import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
 	DndContext,
-	DragOverlay,
 	PointerSensor,
 	closestCenter,
-	pointerWithin,
-	useDraggable,
-	useDroppable,
 	useSensor,
 	useSensors,
-	type CollisionDetection,
 	type Modifier,
-	type DragMoveEvent,
-	type DragOverEvent,
-	type DragStartEvent,
 	type DragEndEvent,
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -53,8 +45,8 @@ import {
 	useRef,
 	useState,
 	type CSSProperties,
+	type DragEvent as ReactDragEvent,
 	type MouseEvent,
-	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
 	type RefObject,
 } from "react";
@@ -208,7 +200,6 @@ function NavRowHighlight({
 // Search + Pinned/Projects section chrome: same type, icon, and row size.
 const SECTION_ROW_CLASS =
 	"flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-passive [&_svg]:size-icon-md [&_svg]:shrink-0";
-const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
 
 // Mirrors the daemon's display-name cap (maxDisplayNameLen) and the spawn
 // `--name` flag, so inline edits never round-trip a value the API would reject.
@@ -217,9 +208,12 @@ const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
 // distance keeps a plain navigation/disclosure click from starting a drag;
 // nested action buttons remain outside that activator surface.
 const REORDER_ACTIVATION_DISTANCE = 4;
+// A transparent 1x1 image replaces the browser's default drag ghost, so the
+// dragged row stays put at reduced opacity instead of trailing under the cursor.
+const EMPTY_DRAG_IMAGE = typeof Image === "undefined" ? null : new Image();
+if (EMPTY_DRAG_IMAGE) EMPTY_DRAG_IMAGE.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
-/** Stable drag-context ids: one for the project list, one per project's sessions. */
-export const PROJECT_DND_ID = "sidebar-projects";
+/** Stable drag-context id per project's session list. */
 export const sessionDndId = (projectId: string) => `sidebar-sessions-${projectId}`;
 
 function useReorderSensors() {
@@ -275,8 +269,7 @@ function sortableRowStyle({ transform, transition, isDragging, dropTransitionDis
 	};
 }
 
-// Session drags use their owning list as the visual boundary. Project drags use
-// row-derived bounds below because their list fills the remaining sidebar height.
+// Session drags use their owning list as the visual boundary.
 const restrictToListBounds: Modifier = ({ activeNodeRect, containerNodeRect, transform }) => {
 	if (!activeNodeRect || !containerNodeRect) return transform;
 	const minY = containerNodeRect.top - activeNodeRect.top;
@@ -288,37 +281,7 @@ const restrictToListBounds: Modifier = ({ activeNodeRect, containerNodeRect, tra
 	};
 };
 
-type DragBounds = { minY: number; maxY: number };
 type ProjectDropPlacement = "before" | "after";
-
-// Each full project block is one droppable. Pointer intersection covers the
-// row and expanded sessions; the fallback exposes the outermost top/bottom
-// boundaries and the tiny gaps between adjacent blocks.
-const projectBlockCollision: CollisionDetection = (args) => {
-	const direct = pointerWithin(args);
-	if (direct.length > 0 || !args.pointerCoordinates) return direct;
-	const { x, y } = args.pointerCoordinates;
-	let closest: {
-		container: (typeof args.droppableContainers)[number];
-		rect: NonNullable<ReturnType<typeof args.droppableRects.get>>;
-		distance: number;
-	} | null = null;
-	let listLeft = Number.POSITIVE_INFINITY;
-	let listRight = Number.NEGATIVE_INFINITY;
-	for (const container of args.droppableContainers) {
-		const rect = args.droppableRects.get(container.id);
-		if (!rect) continue;
-		listLeft = Math.min(listLeft, rect.left);
-		listRight = Math.max(listRight, rect.right);
-		const distance = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
-		if (!closest || distance < closest.distance) closest = { container, rect, distance };
-	}
-	if (!closest || x < listLeft || x > listRight) return [];
-	return [{
-		id: closest.container.id,
-		data: { droppableContainer: closest.container, value: closest.distance },
-	}];
-};
 
 function reorderAtProjectBoundary(
 	ids: string[],
@@ -602,7 +565,6 @@ export function Sidebar({
 	}, []);
 
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
-	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
@@ -632,120 +594,86 @@ export function Sidebar({
 			.map((workspace) => workspace.id),
 		[orderedWorkspaces],
 	);
-	const reorderSensors = useReorderSensors();
 	const projectDragClickGuard = usePostDragClickGuard();
 	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
-	const projectDragBoundsRef = useRef<DragBounds | null>(null);
+	// Keep the active id and drop target in refs so dragover can decide without a
+	// full-list re-render while dragging: only the dragged row re-renders (via
+	// `isDragged`), and the drop line updates through dedicated React state.
+	const draggingProjectIdRef = useRef<string | null>(null);
 	const projectDropTargetRef = useRef<{ overId: string; placement: ProjectDropPlacement } | null>(null);
-	const projectDropNodesRef = useRef(new Map<string, HTMLElement>());
 	useGrabbingCursor(draggingProjectId !== null);
+	// The drop line is a single element placed at the boundary's gap centre, so
+	// "after A" and "before B" resolve to the same spot (no shift across the
+	// boundary). Its top animates so the line slides between projects.
+	const [dropLine, setDropLine] = useState<{ top: number; visible: boolean }>({ top: 0, visible: false });
 
-	const activeDragWorkspace = useMemo(
-		() => orderedWorkspaces.find((workspace) => workspace.id === draggingProjectId) ?? null,
-		[draggingProjectId, orderedWorkspaces],
-	);
-	const activeDragSessions = useMemo(
-		() => activeDragWorkspace
-			? applyOrder(
-				sortedWorkerSessions(activeDragWorkspace.sessions).filter((session) => session.isTerminated !== true),
-				(session) => session.id,
-				sessionOrderByProject[activeDragWorkspace.id] ?? [],
-				"start",
-			)
-			: [],
-		[activeDragWorkspace, sessionOrderByProject],
-	);
-	const recordSessionOrder = useCallback((projectId: string, order: string[]) => {
-		setSessionOrderByProject((previous) => ({ ...previous, [projectId]: order }));
-	}, []);
-	const restrictProjectOverlayToRows = useCallback<Modifier>(({ transform }) => {
-		const bounds = projectDragBoundsRef.current;
-		return {
-			...transform,
-			x: 0,
-			y: bounds ? Math.min(bounds.maxY, Math.max(bounds.minY, transform.y)) : transform.y,
-			scaleX: 1,
-			scaleY: 1,
-		};
-	}, []);
-
-	const commitProjectOrder = useCallback((next: string[] | null) => {
-		if (next) setProjectOrder(next);
-	}, []);
-	const setProjectDropIndicator = useCallback((next: { overId: string; placement: ProjectDropPlacement } | null) => {
-		const previous = projectDropTargetRef.current;
-		if (previous && (previous.overId !== next?.overId || previous.placement !== next?.placement)) {
-			projectDropNodesRef.current.get(previous.overId)?.removeAttribute("data-drop-indicator");
-		}
-		if (next && (previous?.overId !== next.overId || previous.placement !== next.placement)) {
-			projectDropNodesRef.current.get(next.overId)?.setAttribute("data-drop-indicator", next.placement);
-		}
-		projectDropTargetRef.current = next;
-	}, []);
-
-	const onProjectDragEnd = useCallback(
-		({ active, over }: DragEndEvent) => {
-			const projectId = String(active.id);
-			projectDragClickGuard.markDragEnded(projectId);
-			if (over) {
-				const targetId = String(over.id);
-				const placement = projectDropTargetRef.current?.overId === targetId
-					? projectDropTargetRef.current.placement
-					: projectIds.indexOf(projectId) < projectIds.indexOf(targetId) ? "after" : "before";
-				commitProjectOrder(reorderAtProjectBoundary(projectIds, projectId, targetId, placement));
-			}
-			projectDragBoundsRef.current = null;
-			setProjectDropIndicator(null);
-			projectDropNodesRef.current.clear();
-			setDraggingProjectId(null);
-		},
-		[commitProjectOrder, projectDragClickGuard, projectIds, setProjectDropIndicator],
-	);
-	const onProjectDragStart = useCallback(({ active }: DragStartEvent) => {
-		const projectId = String(active.id);
-		if (!projectIds.includes(projectId)) return;
-		projectDragBoundsRef.current = null;
+	const clearProjectDropIndicator = useCallback(() => {
 		projectDropTargetRef.current = null;
-		const blocks = Array.from(
-			document.querySelectorAll<HTMLElement>("[data-project-drop-target]"),
-		).filter((block) => block.dataset.projectId && projectIds.includes(block.dataset.projectId));
-		projectDropNodesRef.current = new Map(blocks.map((block) => [block.dataset.projectId ?? "", block]));
-		const activeRow = blocks.find((block) => block.dataset.projectId === projectId)
-			?.querySelector<HTMLElement>("[data-project-drag-row]");
-		if (activeRow && blocks.length > 0) {
-			const activeTop = activeRow.getBoundingClientRect().top;
-			projectDragBoundsRef.current = {
-				minY: blocks[0].getBoundingClientRect().top - activeTop,
-				maxY: blocks[blocks.length - 1].getBoundingClientRect().bottom - activeTop,
-			};
-		}
+		setDropLine((previous) => ({ ...previous, visible: false }));
+	}, []);
+
+	const handleProjectDragStart = useCallback((event: ReactDragEvent<HTMLElement>, projectId: string) => {
+		if (!projectIds.includes(projectId)) return;
+		event.dataTransfer.effectAllowed = "move";
+		// Some engines refuse to begin a drag unless the transfer carries data.
+		event.dataTransfer.setData("text/plain", projectId);
+		if (EMPTY_DRAG_IMAGE) event.dataTransfer.setDragImage(EMPTY_DRAG_IMAGE, 0, 0);
+		draggingProjectIdRef.current = projectId;
+		projectDropTargetRef.current = null;
 		setDraggingProjectId(projectId);
 	}, [projectIds]);
-	const updateProjectDropTarget = useCallback(({ active, activatorEvent, delta, over }: DragMoveEvent | DragOverEvent) => {
-		const activeId = String(active.id);
-		const overId = over ? String(over.id) : null;
-		if (!over || activeId === overId) {
-			setProjectDropIndicator(null);
+
+	const handleProjectDragEnd = useCallback(() => {
+		const projectId = draggingProjectIdRef.current;
+		if (projectId) projectDragClickGuard.markDragEnded(projectId);
+		draggingProjectIdRef.current = null;
+		clearProjectDropIndicator();
+		setDraggingProjectId(null);
+	}, [clearProjectDropIndicator, projectDragClickGuard]);
+
+	const handleProjectDragOver = useCallback((event: ReactDragEvent<HTMLElement>, overId: string) => {
+		const activeId = draggingProjectIdRef.current;
+		if (!activeId || activeId === overId) {
+			clearProjectDropIndicator();
 			return;
 		}
-		const pointerY = activatorEvent && "clientY" in activatorEvent && typeof activatorEvent.clientY === "number"
-			? activatorEvent.clientY + delta.y
-			: null;
-		const activeRect = active.rect.current.translated ?? active.rect.current.initial;
-		const activeCenter = activeRect ? activeRect.top + activeRect.height / 2 : null;
-		const boundaryReference = pointerY ?? activeCenter;
-		const placement: ProjectDropPlacement = boundaryReference === null
-			? projectIds.indexOf(activeId) < projectIds.indexOf(overId!) ? "after" : "before"
-			: boundaryReference <= over.rect.top + over.rect.height / 2 ? "before" : "after";
-		const changesOrder = reorderAtProjectBoundary(projectIds, activeId, overId!, placement) !== null;
-		setProjectDropIndicator(changesOrder ? { overId: overId!, placement } : null);
-	}, [projectIds, setProjectDropIndicator]);
-	const onProjectDragCancel = useCallback(() => {
-		projectDragBoundsRef.current = null;
-		setProjectDropIndicator(null);
-		projectDropNodesRef.current.clear();
-		setDraggingProjectId(null);
-	}, [setProjectDropIndicator]);
+		const row = event.currentTarget;
+		const rect = row.getBoundingClientRect();
+		const placement: ProjectDropPlacement = event.clientY <= rect.top + rect.height / 2 ? "before" : "after";
+		if (reorderAtProjectBoundary(projectIds, activeId, overId, placement) === null) {
+			clearProjectDropIndicator();
+			return;
+		}
+		// Only invite the drop once this is a real reorder target.
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "move";
+		const target = projectDropTargetRef.current;
+		if (target?.overId === overId && target.placement === placement) return;
+		projectDropTargetRef.current = { overId, placement };
+		const rows = row.parentElement
+			? Array.from(row.parentElement.querySelectorAll<HTMLElement>(":scope > [data-project-drop-target]"))
+			: [row];
+		const index = rows.indexOf(row);
+		const insertAt = placement === "before" ? index : index + 1;
+		const last = rows[rows.length - 1];
+		const top =
+			insertAt <= 0
+				? rows[0].offsetTop
+				: insertAt >= rows.length
+					? last.offsetTop + last.offsetHeight
+					: (rows[insertAt - 1].offsetTop + rows[insertAt - 1].offsetHeight + rows[insertAt].offsetTop) / 2;
+		setDropLine({ top, visible: true });
+	}, [clearProjectDropIndicator, projectIds]);
+
+	const handleProjectDrop = useCallback((event: ReactDragEvent<HTMLElement>) => {
+		const activeId = draggingProjectIdRef.current;
+		const target = projectDropTargetRef.current;
+		if (!activeId || !target) return;
+		event.preventDefault();
+		const next = reorderAtProjectBoundary(projectIds, activeId, target.overId, target.placement);
+		if (next) setProjectOrder(next);
+		handleProjectDragEnd();
+	}, [handleProjectDragEnd, projectIds]);
 
 	const pinnedSessions = useMemo(
 		() => workspaces
@@ -896,65 +824,49 @@ export function Sidebar({
 								<p className="mt-1 text-caption text-passive">{workspaceError}</p>
 							</div>
 						) : workspaces.length === 0 ? null : (
-							<DndContext
-								collisionDetection={projectBlockCollision}
-								id={PROJECT_DND_ID}
-								onDragStart={onProjectDragStart}
-								onDragMove={updateProjectDropTarget}
-								onDragOver={updateProjectDropTarget}
-								onDragCancel={onProjectDragCancel}
-								onDragEnd={onProjectDragEnd}
-								sensors={reorderSensors}
-							>
-								<SidebarMenu className="min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
-									{visibleWorkspaces.map((workspace) => (
-										<ProjectItem
-											key={workspace.id}
-											workspace={workspace}
-											expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
-											suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
-											selection={selection}
-											draggingProjectId={draggingProjectId}
-											layoutSettled={layoutSettled}
-											consumeDragClick={projectDragClickGuard.consumeClick}
-											onSessionOrderChange={recordSessionOrder}
-											onToggle={toggleProjectDisclosure}
-											onRemoveProject={onRemoveProject}
-										/>
-									))}
-									{!isCollapsed && !showAllProjects && hiddenProjectCount > 0 ? (
-										<button
-											aria-label={t("shell.showMoreProjects", { count: hiddenProjectCount })}
-											className={cn(
-												SECTION_ROW_CLASS,
-												NAV_ROW_HIGHLIGHT_HOST_CLASS,
-												"mb-1 rounded-lg text-left text-muted-foreground",
-											)}
-											onClick={() => setShowAllProjects(true)}
-											type="button"
-										>
-											<NavRowHighlight />
-											<span className="relative z-[1] truncate">{t("shell.showMore")}</span>
-										</button>
-									) : null}
-									{isCollapsed && <CreateProjectListItem />}
-								</SidebarMenu>
-								<DragOverlay adjustScale={false} dropAnimation={null} modifiers={[restrictProjectOverlayToRows]} style={PROJECT_DRAG_OVERLAY_STYLE} zIndex={60}>
-									{activeDragWorkspace ? (
-										<ProjectDragPreview
-											expanded={
-												!isCollapsed &&
-												(expandedIds.has(activeDragWorkspace.id) ||
-													(initialActiveSessionProjectId === activeDragWorkspace.id &&
-														!dismissedInitialActiveProjectIds.has(activeDragWorkspace.id)))
-											}
-											selection={selection}
-											sessions={activeDragSessions}
-											workspace={activeDragWorkspace}
-										/>
-									) : null}
-								</DragOverlay>
-							</DndContext>
+							<SidebarMenu className="relative min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
+								{visibleWorkspaces.map((workspace) => (
+									<ProjectItem
+										key={workspace.id}
+										workspace={workspace}
+										expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
+										suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
+										selection={selection}
+										isDragged={draggingProjectId === workspace.id}
+										projectDragInProgress={draggingProjectId !== null}
+										layoutSettled={layoutSettled}
+										consumeDragClick={projectDragClickGuard.consumeClick}
+										onToggle={toggleProjectDisclosure}
+										onRemoveProject={onRemoveProject}
+										onProjectDragStart={handleProjectDragStart}
+										onProjectDragEnd={handleProjectDragEnd}
+										onProjectDragOver={handleProjectDragOver}
+										onProjectDrop={handleProjectDrop}
+									/>
+								))}
+								{!isCollapsed && !showAllProjects && hiddenProjectCount > 0 ? (
+									<button
+										aria-label={t("shell.showMoreProjects", { count: hiddenProjectCount })}
+										className={cn(
+											SECTION_ROW_CLASS,
+											NAV_ROW_HIGHLIGHT_HOST_CLASS,
+											"mb-1 rounded-lg text-left text-muted-foreground",
+										)}
+										onClick={() => setShowAllProjects(true)}
+										type="button"
+									>
+										<NavRowHighlight />
+										<span className="relative z-[1] truncate">{t("shell.showMore")}</span>
+									</button>
+								) : null}
+								{isCollapsed && <CreateProjectListItem />}
+								<div
+									aria-hidden="true"
+									data-project-drop-line=""
+									className="pointer-events-none absolute inset-x-0 z-[70] h-px rounded-full bg-foreground transition-opacity duration-100"
+									style={{ top: dropLine.top, opacity: dropLine.visible ? 1 : 0 }}
+								/>
+							</SidebarMenu>
 						)}
 					</SidebarGroupContent>
 				</SidebarGroup>
@@ -1092,88 +1004,35 @@ type ProjectItemProps = {
 	workspace: WorkspaceSummary;
 	expanded: boolean;
 	selection: Selection;
-	draggingProjectId?: string | null;
+	isDragged: boolean;
+	projectDragInProgress: boolean;
 	consumeDragClick: (id: string) => boolean;
 	layoutSettled: boolean;
-	onSessionOrderChange: (projectId: string, order: string[]) => void;
 	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
+	onProjectDragStart: (event: ReactDragEvent<HTMLElement>, projectId: string) => void;
+	onProjectDragEnd: () => void;
+	onProjectDragOver: (event: ReactDragEvent<HTMLElement>, overId: string) => void;
+	onProjectDrop: (event: ReactDragEvent<HTMLElement>) => void;
 };
 
-type ProjectDraggable = ReturnType<typeof useDraggable>;
-type ProjectItemDndProps = Pick<ProjectDraggable, "listeners" | "setActivatorNodeRef"> & {
-	setDraggableNodeRef: ProjectDraggable["setNodeRef"];
-	setDroppableNodeRef: ReturnType<typeof useDroppable>["setNodeRef"];
-};
-
-// Keep the pointer-frequency draggable subscription outside the expensive
-// project/session subtree. The content only rerenders when its visible props
-// change (drag start/end or a different drop boundary), not for every transform.
-const ProjectItem = memo(function ProjectItem(props: ProjectItemProps) {
-	const isStandaloneWorkspace = props.workspace.kind === STANDALONE_PROJECT_KIND;
-	const draggable = useDraggable({
-		id: props.workspace.id,
-		disabled: isStandaloneWorkspace,
-	});
-	const droppable = useDroppable({
-		id: props.workspace.id,
-		disabled: isStandaloneWorkspace,
-	});
-	// dnd-kit refreshes the objects returned by these hooks as the pointer moves.
-	// Keep that high-frequency churn in this thin wrapper: the project content
-	// contains the expanded session tree and must not receive new props merely
-	// because the cursor crossed another project.
-	const draggableRef = useRef(draggable);
-	const droppableRef = useRef(droppable);
-	draggableRef.current = draggable;
-	droppableRef.current = droppable;
-	const listeners = useMemo<ProjectDraggable["listeners"]>(
-		() => ({
-			onPointerDown: (event: ReactPointerEvent<HTMLElement>) =>
-				draggableRef.current.listeners?.onPointerDown?.(event),
-		}),
-		[],
-	);
-	const setActivatorNodeRef = useCallback(
-		(node: HTMLElement | null) => draggableRef.current.setActivatorNodeRef(node),
-		[],
-	);
-	const setDraggableNodeRef = useCallback(
-		(node: HTMLElement | null) => draggableRef.current.setNodeRef(node),
-		[],
-	);
-	const setDroppableNodeRef = useCallback(
-		(node: HTMLElement | null) => droppableRef.current.setNodeRef(node),
-		[],
-	);
-	return (
-		<ProjectItemContent
-			{...props}
-			listeners={listeners}
-			setActivatorNodeRef={setActivatorNodeRef}
-			setDraggableNodeRef={setDraggableNodeRef}
-			setDroppableNodeRef={setDroppableNodeRef}
-		/>
-	);
-});
-
-const ProjectItemContent = memo(function ProjectItemContent({
+const ProjectItem = memo(function ProjectItem({
 	workspace,
 	expanded,
 	selection,
-	draggingProjectId,
+	isDragged,
+	projectDragInProgress,
 	consumeDragClick,
 	layoutSettled,
-	onSessionOrderChange,
 	onToggle,
 	onRemoveProject,
 	suppressInitialExpandAnimation,
-	listeners,
-	setActivatorNodeRef,
-	setDraggableNodeRef,
-	setDroppableNodeRef,
-}: ProjectItemProps & ProjectItemDndProps) {
+	onProjectDragStart,
+	onProjectDragEnd,
+	onProjectDragOver,
+	onProjectDrop,
+}: ProjectItemProps) {
 	const { t } = useTranslation();
 	const prefersReducedMotion = useReducedMotion();
 	const activeProjectMatches = selection.activeProjectId === workspace.id;
@@ -1201,7 +1060,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const isProjectProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const projectIsDragging = draggingProjectId === workspace.id;
+	const projectIsDragging = isDragged;
+	const isStandaloneWorkspace = workspace.kind === STANDALONE_PROJECT_KIND;
 	// Keep completed PR sessions reachable while their runtime still exists.
 	// Only termination removes a worker from the sidebar; archived sessions stay
 	// reachable through SessionsBoard.
@@ -1216,11 +1076,9 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	);
 	const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
 	const sessionLayoutDependency = useMemo(() => sessionIds.join("\u0000"), [sessionIds]);
-	// Project and session reordering use nested DnD contexts. While a project is
-	// being dragged, leave the session lists as plain rows: otherwise every
-	// expanded project's DnD context measures its sortable descendants on drop.
-	// With a dense sidebar that turns one project drop into a full-tree layout.
-	const projectDragInProgress = draggingProjectId !== null && draggingProjectId !== undefined;
+	// While a project is being dragged, leave the session lists as plain rows:
+	// otherwise every expanded project's DnD context measures its sortable
+	// descendants on drop.
 	const sessionSensors = useReorderSensors();
 	const sessionDragClickGuard = usePostDragClickGuard();
 	const [sessionDragging, setSessionDragging] = useState(false);
@@ -1229,8 +1087,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const commitSessionOrder = useCallback((next: string[] | null) => {
 		if (!next) return;
 		setSessionOrder(next);
-		onSessionOrderChange(workspace.id, next);
-	}, [onSessionOrderChange, workspace.id]);
+	}, []);
 
 	const onSessionDragEnd = useCallback(({ active, over }: DragEndEvent) => {
 		const sessionId = String(active.id);
@@ -1373,33 +1230,25 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				<motion.li
 					className={cn(
 						"group/menu-item relative group-data-[collapsible=icon]:mb-0",
-						projectIsDragging && "opacity-0",
+						projectIsDragging && "opacity-50",
 					)}
 					data-dragging={projectIsDragging ? "true" : undefined}
-					data-project-drop-target=""
+					data-project-drop-target={isStandaloneWorkspace ? undefined : ""}
 					data-project-id={workspace.id}
-					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-					layout={!layoutSettled || draggingProjectId ? false : "position"}
-					ref={setDroppableNodeRef}
+					layout={!layoutSettled || projectDragInProgress ? false : "position"}
+					onDragOver={(event) => onProjectDragOver(event, workspace.id)}
+					onDrop={onProjectDrop}
 					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>
-					<div
-						aria-hidden="true"
-						className="pointer-events-none absolute inset-x-0 top-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=before]/menu-item:opacity-100"
-						data-project-drop-indicator="before"
-					/>
-					<div
-						aria-hidden="true"
-						className="pointer-events-none absolute inset-x-0 bottom-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=after]/menu-item:opacity-100"
-						data-project-drop-indicator="after"
-					/>
 					<div
 						className="relative"
 						data-project-drag-row=""
 						data-project-id={workspace.id}
-						ref={setDraggableNodeRef}
+						draggable={!isStandaloneWorkspace}
+						onDragStart={isStandaloneWorkspace ? undefined : (event) => onProjectDragStart(event, workspace.id)}
+						onDragEnd={isStandaloneWorkspace ? undefined : onProjectDragEnd}
 					>
 						<div className={cn("relative", projectIsDragging && "cursor-grabbing")}>
 							<div>
@@ -1409,18 +1258,17 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									aria-expanded={expanded}
 									isActive={projectActive}
 									tooltip={workspace.name}
-									{...listeners}
 									onClick={onProjectClick}
-									ref={setActivatorNodeRef}
 									className={cn(
 										NAV_ROW_CLASS,
 										NAV_ROW_HIGHLIGHT_HOST_CLASS,
 										// gap-2 matches SectionDisclosure so project icons/labels share the
 										// Projects header's left edge (NAV_ROW defaults to gap-2.5).
-										"cursor-grab gap-2 pr-sidebar-project-actions active:cursor-grabbing [&_svg]:size-icon-md",
+										!isStandaloneWorkspace && "cursor-grab active:cursor-grabbing",
+										"gap-2 pr-sidebar-project-actions [&_svg]:size-icon-md",
 										"transition-none",
 										projectIsDragging && "!cursor-grabbing",
-										draggingProjectId && "hover:text-muted-foreground active:text-muted-foreground",
+										projectDragInProgress && "hover:text-muted-foreground active:text-muted-foreground",
 										"group-data-[collapsible=icon]:size-control-board! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:font-semibold",
 									)}
 								>
@@ -1437,19 +1285,19 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										{/* 1.2 — contextual icon swap: scale 0.8↔1 (animated); opacity snaps for hide.
 										    Hover paint lives in styles.css (fine pointer only). */}
 										<span
-											className="inline-flex size-icon-md items-center justify-center transition-[scale] duration-normal ease-[var(--ease-out)] motion-reduce:transition-none"
-											data-project-folder-icon=""
+											className={cn(
+												"inline-flex size-icon-md items-center justify-center transition-[transform] duration-150 ease-[var(--ease-out)] will-change-transform group-hover/menu-item:scale-80 motion-reduce:transition-none",
+												"group-hover/menu-item:opacity-0",
+											)}
 										>
 											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
 										</span>
 										<span
 											className={cn(
-												"absolute inline-flex size-icon-md scale-[0.8] items-center justify-center opacity-0",
-												"transition-[scale,rotate] duration-normal ease-[var(--ease-out)]",
-												"motion-reduce:transition-none",
+												"absolute inline-flex size-icon-md scale-80 items-center justify-center opacity-0 transition-[transform] duration-150 ease-[var(--ease-out)] will-change-transform group-hover/menu-item:scale-100 motion-reduce:transition-none",
+												"group-hover/menu-item:opacity-100",
 												expanded && "rotate-90",
 											)}
-											data-project-chevron-icon=""
 										>
 											<ChevronRight strokeWidth={1.75} />
 										</span>
@@ -1485,7 +1333,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									aria-expanded={expanded}
 									className="absolute inset-y-0 left-0 z-10 w-9 cursor-pointer bg-transparent group-data-[collapsible=icon]:hidden"
 									data-project-folder=""
-									{...listeners}
 									onClick={onFolderClick}
 									type="button"
 								/>
@@ -1496,9 +1343,10 @@ const ProjectItemContent = memo(function ProjectItemContent({
 								className={cn(
 									"sidebar-expanded-chrome absolute top-0 right-0.5 z-chrome flex h-control-form items-center gap-px",
 									"group-data-[collapsible=icon]:hidden",
-									draggingProjectId && "pointer-events-none",
+									projectDragInProgress && "pointer-events-none",
 								)}
 								data-project-actions=""
+								draggable={false}
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
@@ -1712,56 +1560,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				</>}
 			</ContextMenuContent>
 		</ContextMenu>
-	);
-});
-
-/** Non-interactive drag snapshot: the project row is the anchor, while its
- * visible sessions travel with it without becoming collision targets. */
-const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expanded, selection, sessions }: { workspace: WorkspaceSummary; expanded: boolean; selection: Selection; sessions: WorkspaceSession[] }) {
-	const { t } = useTranslation();
-	const activeProjectMatches = selection.activeProjectId === workspace.id;
-	const projectActive =
-		(activeProjectMatches && !selection.activeSessionId) ||
-		(activeProjectMatches && workspace.sessions.some((session) => session.id === selection.activeSessionId && session.kind === "orchestrator"));
-
-	return (
-		<div className="pointer-events-none w-full cursor-grabbing" data-project-drag-overlay="">
-			<div
-				className={cn(NAV_ROW_CLASS, "flex w-full cursor-grabbing items-center gap-2 pr-sidebar-project-actions [&_svg]:size-icon-md")}
-				data-active={projectActive}
-			>
-				<span className="inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground">
-					{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
-				</span>
-				<span className="min-w-0 flex-1 translate-y-px truncate">{workspace.name}</span>
-			</div>
-			{expanded && sessions.length > 0 ? (
-				<div className="ml-3.5 py-1">
-					{sessions.map((session) => {
-						const switchPresentation = deriveSessionAgentSwitchPresentation(session);
-						const switchLabel = switchPresentation ? t(switchPresentation.compactLabelKey, switchPresentation.values) : undefined;
-						const active = selection.activeSessionId === session.id;
-						return (
-							<div className="pl-0.5" data-project-drag-preview-session="" key={session.id}>
-								<div className={cn("flex h-8 w-full items-center rounded-lg", active && "bg-interactive-active text-foreground")}>
-									<div className="flex h-8 min-w-0 flex-1 items-center gap-1.5 py-0 pl-1.5 pr-2.5 text-sm">
-										<SessionStatusDot session={session} />
-										<span className="flex min-w-0 flex-1 items-center gap-1.5">
-											<span className={cn("min-w-0 flex-1 truncate", active ? "text-foreground" : "text-muted-foreground")}>
-												{session.title}
-											</span>
-											{switchLabel ? (
-												<span className="max-w-28 shrink-0 truncate text-2xs text-muted-foreground">{switchLabel}</span>
-											) : null}
-										</span>
-									</div>
-								</div>
-							</div>
-						);
-					})}
-				</div>
-			) : null}
-		</div>
 	);
 });
 
