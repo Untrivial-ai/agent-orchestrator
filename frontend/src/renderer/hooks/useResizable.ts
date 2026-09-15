@@ -64,7 +64,14 @@ export function useResizable({
 
 	const apply = useCallback(
 		(next: number) => {
-			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
+			let max = maxValue();
+			for (const target of cssTargets()) {
+				const computedMax = Number.parseFloat(getComputedStyle(target).maxWidth);
+				if (Number.isFinite(computedMax) && computedMax > 0) {
+					max = Math.min(max, computedMax);
+				}
+			}
+			const clamped = Math.min(max, Math.max(minValue(), next));
 			widthRef.current = clamped;
 			for (const target of cssTargets()) {
 				target.style.setProperty(cssVar, `${clamped}px`);
@@ -120,6 +127,14 @@ export function useResizable({
 			const captureTarget = event.currentTarget;
 			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
+			// CSS max-width (inspector) can hold the painted width below the custom
+			// property. Seed from the visible box so drag deltas match the edge.
+			const visualWidth = cssTargets()
+				.map((target) => target.getBoundingClientRect().width)
+				.find((width) => width > 0);
+			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
+				apply(visualWidth);
+			}
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
 			document.body.classList.add("is-resizing-x");
@@ -149,7 +164,7 @@ export function useResizable({
 			window.addEventListener("blur", finish);
 			activeDragCleanupRef.current = finish;
 		},
-		[applyOnFrame, edge, flushPending, maxValue, minValue, storageKey],
+		[apply, applyOnFrame, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(
