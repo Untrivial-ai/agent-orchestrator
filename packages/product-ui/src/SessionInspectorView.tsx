@@ -107,9 +107,20 @@ export function SessionInspectorShellView({
 
 	return (
 		<aside className={inspectorShellClass} aria-label={ariaLabel}>
-			<div className="session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border pl-1">
+			<div
+				className={cn(
+					"session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border-strong pl-1",
+					activeView === "browser" && "session-inspector__topbar--browser",
+				)}
+			>
 				{isVisible ? (
-					<div className="session-inspector__tablist flex min-w-0 flex-1 items-center justify-start gap-1" role="tablist">
+					<div
+						className={cn(
+							"session-inspector__tablist flex min-w-0 items-center justify-start gap-1",
+							activeView === "browser" ? "shrink-0" : "flex-1",
+						)}
+						role="tablist"
+					>
 						{tabs.map((tab, index) => (
 							<button
 								aria-label={tab.label}
@@ -224,6 +235,7 @@ export function SessionInspectorSummaryView({
 	pullRequestTitle,
 	reviews,
 	usage,
+	workers,
 }: {
 	activity: ReactNode;
 	activityTitle: string;
@@ -232,9 +244,15 @@ export function SessionInspectorSummaryView({
 	pullRequestTitle: string;
 	reviews?: ReactNode;
 	usage?: ReactNode;
+	/**
+	 * The sessions this orchestrator spawned. Rendered first: for an
+	 * orchestrator, its workers are the summary's primary content.
+	 */
+	workers?: ReactNode;
 }) {
 	return (
 		<div role="tabpanel">
+			{workers}
 			<InspectorSection surface={false} title={pullRequestTitle}>
 				<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
 			</InspectorSection>

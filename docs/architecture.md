@@ -1,6 +1,6 @@
 # Agent Orchestrator Architecture
 
-Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Every session owns an isolated git worktree and one committed interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
+Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
 
 ## Table of Contents
 
@@ -89,7 +89,7 @@ graph TB
         AgentAdapter[Agent Adapters]
         RuntimeAdapter[Runtime tmux/conpty]
         ChatDriver[Native Chat / ACP Drivers]
-        WorkspaceAdapter[Workspace git worktree]
+        WorkspaceAdapter[Git worktree / standalone directory]
         SCMAdapter[SCM GitHub]
     end
 
@@ -213,7 +213,7 @@ backend/internal/
 │   ├── agent/           # 23+ agent harnesses
 │   ├── chatdriver/      # Native provider protocols and reusable ACP transport
 │   ├── runtime/         # tmux/conpty runtimes
-│   ├── workspace/       # git worktree
+│   ├── workspace/       # git worktree and standalone-directory adapters
 │   ├── scm/             # GitHub
 │   └── tracker/         # GitHub tracker
 ├── daemon/              # Production wiring
@@ -255,8 +255,12 @@ sequenceDiagram
     CDC->>UI: SSE session.created
 
     Note over Mgr: 2. Create workspace
-    Mgr->>WS: Create(project, branch)
-    WS->>WS: git worktree add
+    alt project session
+        Mgr->>WS: Create(project, branch)
+        WS->>WS: git worktree add
+    else standalone worker
+        Mgr->>WS: Create AO-managed directory
+    end
 
     alt persisted mode = tui
         Note over Mgr: 3a. Launch terminal controller
@@ -291,14 +295,17 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start([User spawns session]) --> Validate[Validate project config and explicit mode]
+    Start([User spawns session]) --> Scope{Project attached?}
+    Scope -->|yes| Validate[Validate project config and explicit mode]
+    Scope -->|no, worker only| ValidateStandalone[Validate standalone mode]
     Validate --> InitialMode{Resolved initial mode}
+    ValidateStandalone --> InitialMode
     InitialMode -->|chat| Preflight[Probe native Chat driver]
     InitialMode -->|tui| RuntimePreflight[Validate runtime prerequisites]
     Preflight --> CreateRow[Create session row in SQLite]
     RuntimePreflight --> CreateRow
     CreateRow --> Trigger1[CDC: session.created]
-    CreateRow --> CreateWS[Create git worktree]
+    CreateRow --> CreateWS[Create git worktree or standalone directory]
     CreateWS --> LaunchMode{Persisted mode}
     LaunchMode -->|tui| CreateRT[Launch runtime tmux/conpty]
     CreateRT --> GetCmd[Get agent launch command]
@@ -316,9 +323,9 @@ flowchart TD
 ### Session Interface Handoff
 
 An interface switch is a controller replacement inside the existing AO session,
-not a new session. The session id, project, worktree, branch, lifecycle facts,
-PR ownership, and provider-native conversation id stay the same. Only the
-mode-owned controller changes.
+not a new session. The session id, optional project, workspace, lifecycle facts,
+and provider-native conversation id stay the same. For project sessions, branch
+and PR ownership also stay the same. Only the mode-owned controller changes.
 
 The generic coordinator lives in `session_manager`; providers opt in through the
 small `AgentInterfaceHandoff` capability only after their TUI resume id and Chat
@@ -464,8 +471,8 @@ sequenceDiagram
 
 ```mermaid
 erDiagram
-    projects ||--o{ sessions : owns
-    projects ||--o| conversations : owns_orchestrator_narrative
+    projects o|--o{ sessions : optionally_owns
+    projects o|--o| conversations : optionally_owns_orchestrator_narrative
     sessions ||--o| conversations : owns_worker_narrative
     sessions ||--o{ session_interface_transitions : records_controller_handoffs
     session_interface_transitions ||--o{ session_interface_transition_messages : holds_messages_during_gap
@@ -477,8 +484,8 @@ erDiagram
     pull_requests ||--o{ pr_review_threads : has
     pull_requests ||--o{ pr_comments : has
     sessions ||--o{ notifications : has
-    change_log }|--|| projects : tracks
-    change_log }|--|| sessions : tracks
+    change_log }o--o| projects : optionally_tracks
+    change_log }o--o| sessions : optionally_tracks
     change_log }|--|| pull_requests : tracks
 
     projects {
@@ -490,7 +497,7 @@ erDiagram
 
     sessions {
         string id PK
-        string project_id FK
+        string project_id FK "nullable for standalone workers"
         string harness
         string session_mode
         string runtime_handle_id
@@ -504,7 +511,7 @@ erDiagram
     conversations {
         string id PK
         string scope
-        string project_id FK
+        string project_id FK "nullable for standalone conversations"
         string session_id FK
         string current_session_id FK
         integer latest_sequence
@@ -1044,7 +1051,7 @@ Agent Orchestrator's architecture is designed around:
 - **Port-based design** — Core code depends on interfaces, not implementations
 - **Durable minimalism** — Store only facts, compute everything else
 - **Event-driven updates** — CDC broadcasts changes to all subscribers
-- **Isolation** — Each session owns a worktree and exactly one live mode-specific controller, including across handoffs
+- **Isolation** — Each project session owns a git worktree, each standalone worker owns an AO-managed directory, and every session has exactly one live mode-specific controller, including across handoffs
 - **Safety** — Conservative termination, path validation, gitignored hooks
 
 This architecture enables parallel AI agents to work safely while maintaining complete visibility and control.

@@ -57,6 +57,7 @@ type switchTestStore struct {
 	requestHandoffAfterCommitErr  error
 	requestHandoffNoop            bool
 	failTransitionErr             error
+	mutationErr                   error
 	faultMutations                []ports.AgentSwitchMutation
 	operationalFaults             []ports.AgentSwitchOperationalFault
 	daemonFaults                  []ports.AgentSwitchDaemonFault
@@ -285,6 +286,9 @@ func (s *switchTestStore) ApplyAgentSwitchMutation(ctx context.Context, mutation
 	s.mu.Lock()
 	s.faultMutations = append(s.faultMutations, mutation)
 	s.mu.Unlock()
+	if s.mutationErr != nil {
+		return ports.AgentSwitchMutationResult{}, s.mutationErr
+	}
 	changed, err := s.UpdateAgentSwitch(ctx, mutation.Record, mutation.ExpectedState, mutation.ExpectedSourceGenerationID, mutation.ExpectedTargetGenerationID)
 	return ports.AgentSwitchMutationResult{CoreChanged: changed, Enrollment: domain.AgentSwitchEnrollmentEnrolled}, err
 }
@@ -3860,6 +3864,43 @@ func TestReconcilePropagatesAgentSwitchDiscoveryFailureBeforeServing(t *testing.
 	}
 }
 
+func TestReconcileAgentSwitchesDoesNotWedgeBootOnTerminalCleanupFailure(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+
+	// A terminal switch left a private handoff directory behind that cannot be
+	// deleted. Replace it with a symlink so cleanupAgentHandoffArtifacts fails
+	// closed, standing in for a Windows artifact that stays undeletable across
+	// restarts (open handle from a crashed agent, or a read-only attribute).
+	// The boot reconcile must still succeed: refusing to bind the daemon over a
+	// best-effort maintenance deletion is exactly the wedge #4724 reported.
+	store.switches["sw-terminal"] = domain.AgentSwitch{
+		ID: "sw-terminal", SessionID: "proj-1",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchCompleted, UpdatedAt: time.Now().UTC(),
+	}
+
+	dir, err := manager.handoffDirectory("proj-1", "sw-terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), dir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	// Guard the premise: cleanup on this switch genuinely fails.
+	if cleanupErr := manager.cleanupAgentHandoffArtifacts(context.Background(), store.switches["sw-terminal"]); cleanupErr == nil {
+		t.Fatal("expected terminal handoff cleanup to fail on a symlinked switch directory")
+	}
+
+	if err := manager.ReconcileAgentSwitches(context.Background()); err != nil {
+		t.Fatalf("boot reconcile wedged on a maintenance cleanup failure: %v", err)
+	}
+}
+
 func TestSwitchAgentRetainsGateWhenSourceStopCommitIsUnknown(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 	manager, store, _ := newSwitchTestManager(t, runtime)
@@ -3990,6 +4031,114 @@ func TestSwitchAgentRetainedActivationAndCleanupFailureRecoversByAdoptingOpaqueH
 	}
 	if manager.SessionMutationInProgress("proj-1") {
 		t.Fatal("conservative terminal recovery did not reopen the input gate")
+	}
+}
+
+func TestStartupQuarantinesPersistedAgentSwitchAmbiguity(t *testing.T) {
+	for _, scenario := range []struct {
+		name     string
+		state    domain.AgentSwitchState
+		identity string
+	}{
+		{name: "unknown source", state: domain.AgentSwitchStoppingSource},
+		{name: "unknown target", state: domain.AgentSwitchStartingTarget},
+		{name: "live target without reference", state: domain.AgentSwitchStartingTarget, identity: "no reference"},
+		{name: "live target without row", state: domain.AgentSwitchStartingTarget, identity: "no row"},
+		{name: "live target wrong session", state: domain.AgentSwitchStartingTarget, identity: "session"},
+		{name: "live target wrong harness", state: domain.AgentSwitchStartingTarget, identity: "harness"},
+		{name: "live target wrong generation", state: domain.AgentSwitchStartingTarget, identity: "generation"},
+		{name: "live target empty native id", state: domain.AgentSwitchStartingTarget, identity: "empty id"},
+		{name: "live target unreadable identity", state: domain.AgentSwitchStartingTarget, identity: "read error"},
+	} {
+		for _, writeFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/write-fails=%v", scenario.name, writeFails), func(t *testing.T) {
+				runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+				manager, store, _ := newSwitchTestManager(t, runtime)
+				runtime.aliveErr = ports.ErrRuntimeProbeInconclusive
+				writeErr := errors.New("marker storage unavailable")
+				if writeFails {
+					store.mutationErr = writeErr
+				}
+				sw := domain.AgentSwitch{
+					ID: "ambiguous", SessionID: "proj-1", State: scenario.state,
+					FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+					SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
+					RequestedAt: time.Now(), UpdatedAt: time.Now(),
+				}
+				readErr := errors.New("native identity storage unavailable")
+				if scenario.identity != "" {
+					runtime.aliveErr = nil
+					sw.TargetRuntimeHandleID = "live-target"
+					runtime.aliveByHandle[sw.TargetRuntimeHandleID] = true
+					native := domain.AgentNativeSession{
+						ID: "target-native", AOSessionID: sw.SessionID, Harness: sw.TargetHarness,
+						LastGenerationID: sw.TargetGenerationID, NativeSessionID: "provider-thread",
+					}
+					if scenario.identity != "no reference" {
+						sw.TargetNativeSessionRef = &native.ID
+					}
+					switch scenario.identity {
+					case "session":
+						native.AOSessionID = "other-session"
+					case "harness":
+						native.Harness = sw.FromHarness
+					case "generation":
+						native.LastGenerationID = "other-generation"
+					case "empty id":
+						native.NativeSessionID = ""
+					case "read error":
+						store.getNativeErr = readErr
+					}
+					if scenario.identity != "no row" {
+						store.native[native.ID] = native
+					}
+				}
+				store.switches[sw.ID] = sw
+				healthy := store.sessions[sw.SessionID]
+				healthy.ID = "healthy"
+				store.sessions[healthy.ID] = healthy
+				err := manager.ReconcileStartupSafety(context.Background())
+				if writeFails {
+					if !errors.Is(err, writeErr) {
+						t.Fatalf("startup hid failed marker: %v", err)
+					}
+				} else if scenario.identity == "read error" {
+					if !errors.Is(err, readErr) {
+						t.Fatalf("startup hid native identity read failure: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("persisted per-session quarantine aborted startup: %v", err)
+				}
+				if release, ok := manager.AcquireSessionInput(sw.SessionID); ok {
+					release()
+					t.Fatal("ambiguous switch admitted input")
+				}
+				if !writeFails {
+					if !store.switches[sw.ID].RequiresRecovery() {
+						t.Fatal("quarantine has no durable recovery marker")
+					}
+					if release, ok := manager.AcquireSessionInput(healthy.ID); !ok {
+						t.Fatal("unrelated session was fenced")
+					} else {
+						release()
+					}
+					err = manager.ReconcileStartupSafety(context.Background())
+					if scenario.identity == "read error" {
+						if !errors.Is(err, readErr) {
+							t.Fatalf("existing marker hid native identity read failure: %v", err)
+						}
+					} else if err != nil {
+						t.Fatalf("persisted quarantine failed repeat recovery: %v", err)
+					}
+					if err := manager.ReconcileAgentSwitches(context.Background()); err == nil {
+						t.Fatal("explicit recovery hid unresolved ownership")
+					}
+				}
+				if runtime.created != 0 || runtime.destroyed != 0 {
+					t.Fatalf("ambiguous identity changed runtime ownership: creates=%d destroys=%d", runtime.created, runtime.destroyed)
+				}
+			})
+		}
 	}
 }
 

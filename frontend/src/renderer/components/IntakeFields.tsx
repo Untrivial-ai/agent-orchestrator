@@ -1,3 +1,4 @@
+import { AppLink } from "./AppLink";
 import { TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
@@ -137,14 +138,14 @@ export function IntakeFields({
 						{repoPreview && (
 							<SettingsRow label={t("settings.project.repository")}>
 								{repoPreview.value ? (
-									<a
+									<AppLink
 										href={`https://${repoPreview.host ?? "github.com"}/${repoPreview.value}`}
 										target="_blank"
 										rel="noopener noreferrer"
 										className="settings-row-value text-settings-accent hover:underline"
 									>
 										{repoPreview.value}
-									</a>
+									</AppLink>
 								) : (
 									<span className="settings-row-value">
 										{t("settings.project.repoNotDetected")}
@@ -204,14 +205,14 @@ export function IntakeFields({
 					{repoPreview && (
 						<IntakeField label={t("settings.project.repository")} labelClassName={labelClassName}>
 							{repoPreview.value ? (
-								<a
+								<AppLink
 									href={`https://${repoPreview.host ?? "github.com"}/${repoPreview.value}`}
 									target="_blank"
 									rel="noopener noreferrer"
 									className="text-control text-accent hover:underline"
 								>
 									{repoPreview.value}
-								</a>
+								</AppLink>
 							) : (
 								<span className="text-control text-muted-foreground">
 									{t("settings.project.repoNotDetected")}

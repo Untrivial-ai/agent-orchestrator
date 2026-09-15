@@ -1,3 +1,4 @@
+import { AppLink } from "../AppLink";
 /**
  * Timeline entries for the Chat surface.
  *
@@ -1927,7 +1928,7 @@ const trailingProviderUrlPunctuation = /[),.;!?}\]]+$/u;
 
 function ProviderErrorLink({ href }: { href: string }) {
 	return (
-		<a
+		<AppLink
 			href={href}
 			target="_blank"
 			rel="noreferrer noopener"
@@ -1938,7 +1939,7 @@ function ProviderErrorLink({ href }: { href: string }) {
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
 			{href}
-		</a>
+		</AppLink>
 	);
 }
 

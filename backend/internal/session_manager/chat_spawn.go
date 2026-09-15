@@ -90,6 +90,9 @@ type ChatStart struct {
 	// RequireNativeHistory is set only for a TUI -> Chat handoff. The target must
 	// replay the provider transcript before it can become the committed UI.
 	RequireNativeHistory bool
+	// HistoryPolicy is persisted by an interface transition and scopes explicit
+	// provider-history recovery to legacy hook text only.
+	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy
 	// SkipNativeHistoryImport is set by agent switching: the target's provider
 	// boundary is committed inside ControllerReady, so old provider events must
 	// not be projected into the source branch before that atomic write.
@@ -102,6 +105,7 @@ type ChatStart struct {
 
 // ChatStarted is the durable result of a launch.
 type ChatStarted struct {
+	LiveReconnect          bool
 	ProviderConversationID string
 	ControllerGeneration   string
 	Conversation           domain.ConversationRecord
@@ -228,7 +232,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			}
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, id, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, started.LiveReconnect,
 			)
 			completionErr = commitErr
 			controllerCommitted = completionErr == nil
@@ -359,6 +363,7 @@ func (m *Manager) resumeChatController(
 	ws ports.WorkspaceInfo,
 	requireNativeHistory bool,
 	controllerGeneration string,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (RestoreResult, error) {
 	if m.chat == nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
@@ -437,6 +442,7 @@ func (m *Manager) resumeChatController(
 		// second restart can still prove exact target ownership.
 		ControllerGeneration: controllerGeneration,
 		RequireNativeHistory: requireNativeHistory,
+		HistoryPolicy:        historyPolicy,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path
@@ -451,7 +457,7 @@ func (m *Manager) resumeChatController(
 
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, rec.ID, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, started.LiveReconnect,
 			)
 			completionErr = commitErr
 			return ChatControllerCommit{
@@ -545,7 +551,14 @@ func (m *Manager) markChatControllerSpawned(
 	conversation domain.ConversationRecord,
 	providerBoundary *domain.ConversationBranch,
 	commitProviderHistory func(context.Context) error,
+	liveReconnect bool,
 ) (domain.ConversationRecord, error) {
+	if liveReconnect {
+		if providerBoundary != nil {
+			return domain.ConversationRecord{}, errors.New("live Chat reconnect cannot replace the provider boundary")
+		}
+		return conversation, m.lcm.MarkChatReconnected(ctx, id, metadata)
+	}
 	if providerBoundary == nil {
 		return conversation, m.lcm.MarkSpawned(ctx, id, metadata)
 	}

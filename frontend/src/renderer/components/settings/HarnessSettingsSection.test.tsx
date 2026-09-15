@@ -343,10 +343,10 @@ describe("HarnessSettingsSection", () => {
 		const user = userEvent.setup();
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
-		await user.click(await within(row).findByRole("button", { name: "Show details" }));
+		await user.click(await within(row).findByRole("button", { name: "Show diagnostics" }));
 		expect(row).toHaveTextContent("permission denied");
 		expect(row).toHaveTextContent("/Users/test/.npm/bin/codex");
-		await user.click(within(row).getByRole("button", { name: "Copy details" }));
+		await user.click(within(row).getByRole("button", { name: "Copy diagnostics" }));
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("permission denied"));
 	});
 

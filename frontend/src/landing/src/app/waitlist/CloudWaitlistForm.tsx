@@ -8,8 +8,10 @@ import { track } from "@/lib/analytics";
 export function CloudWaitlistForm() {
   const emailId = useId();
   const roleId = useId();
+  const socialProfileId = useId();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
+  const [socialProfile, setSocialProfile] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -18,7 +20,8 @@ export function CloudWaitlistForm() {
     e.preventDefault();
     const normalizedEmail = email.trim().toLowerCase();
     const trimmedRole = role.trim();
-    if (!normalizedEmail || !trimmedRole) return;
+    const trimmedSocialProfile = socialProfile.trim();
+    if (!normalizedEmail || !trimmedRole || !trimmedSocialProfile) return;
     setError("");
     setIsSubmitting(true);
 
@@ -54,11 +57,18 @@ export function CloudWaitlistForm() {
         body: JSON.stringify({
           email: normalizedEmail,
           role: trimmedRole,
+          socialProfile: trimmedSocialProfile,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Waitlist request failed");
+        const result = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setError(
+          result?.error || "We could not save your request. Please try again.",
+        );
+        return;
       }
 
       setSubmitted(true);
@@ -120,6 +130,33 @@ export function CloudWaitlistForm() {
           onChange={(e) => setRole(e.target.value)}
           className="min-h-12 w-full rounded-xl border border-border bg-background px-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         />
+      </div>
+
+      <div className="grid gap-2">
+        <label
+          htmlFor={socialProfileId}
+          className="text-sm font-medium text-foreground"
+        >
+          LinkedIn or Twitter
+        </label>
+        <input
+          id={socialProfileId}
+          type="text"
+          required
+          autoComplete="url"
+          maxLength={300}
+          placeholder="linkedin.com/in/you or @you"
+          value={socialProfile}
+          onChange={(e) => setSocialProfile(e.target.value)}
+          aria-describedby={`${socialProfileId}-hint`}
+          className="min-h-12 w-full rounded-xl border border-border bg-background px-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <p
+          id={`${socialProfileId}-hint`}
+          className="text-xs leading-relaxed text-muted-foreground"
+        >
+          Share one profile URL, or your Twitter handle.
+        </p>
       </div>
 
       <button

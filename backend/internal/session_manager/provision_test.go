@@ -108,6 +108,58 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	}
 }
 
+func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) {
+	daemonRunFile := filepath.Join(t.TempDir(), "daemon-running.json")
+	previous := envKeysCaseInsensitive
+	envKeysCaseInsensitive = true
+	t.Cleanup(func() { envKeysCaseInsensitive = previous })
+
+	manager := &Manager{
+		dataDir:     `C:\ao`,
+		runFilePath: daemonRunFile,
+		executable:  func() (string, error) { return filepath.Join(t.TempDir(), "ao"), nil },
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "issue-9", map[string]string{
+		"Path":                           `C:\project\bin`,
+		"ao_session_id":                  "hacked",
+		"Ao_Project_Id":                  "hacked",
+		"aO_Issue_ID":                    "hacked",
+		"Ao_Data_Dir":                    "hacked",
+		"ao_run_file":                    "hacked",
+		"ao_browser_runtime_token":       "runtime-secret",
+		"ao_browser_runtime_token_stdin": "1",
+		"buildMode":                      "production",
+	})
+
+	for _, key := range []string{
+		"Path",
+		"ao_session_id",
+		"Ao_Project_Id",
+		"aO_Issue_ID",
+		"Ao_Data_Dir",
+		"ao_run_file",
+		"ao_browser_runtime_token",
+		"ao_browser_runtime_token_stdin",
+	} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("case variant %s survived in runtime env: %v", key, env)
+		}
+	}
+	if env["PATH"] == "" {
+		t.Fatalf("PATH was not pinned: %v", env)
+	}
+	if env[EnvSessionID] != "mer-1" || env[EnvProjectID] != "mer" || env[EnvIssueID] != "issue-9" || env[EnvDataDir] != `C:\ao` {
+		t.Fatalf("protected AO env = %v", env)
+	}
+	if env[EnvRunFile] != daemonRunFile || env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
+		t.Fatalf("runtime protected env = %v", env)
+	}
+	if env["buildMode"] != "production" {
+		t.Fatalf("project env spelling was not preserved: %v", env)
+	}
+}
+
 func TestRuntimeEnvPinsHooksToDaemonRunFile(t *testing.T) {
 	daemonRunFile := filepath.Join(t.TempDir(), "daemon-running.json")
 	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "inherited-wrong-daemon.json"))

@@ -382,6 +382,8 @@ const api = {
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
 		historySuggestions: (input: { viewId: string; query: string }) =>
 			ipcRenderer.invoke("browser:history:suggest", input) as Promise<BrowserHistorySuggestion[]>,
+		historyFavicon: (input: { viewId: string; url: string }) =>
+			ipcRenderer.invoke("browser:history:favicon", input) as Promise<string | undefined>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,
@@ -569,6 +571,9 @@ const api = {
 		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
 		install: (confirmedVersion?: string) => ipcRenderer.invoke("updates:install", confirmedVersion) as Promise<UpdateInstallResult>,
+		// True only when this boot is a genuine post-update relaunch; lets the
+		// startup loader swap "Connecting" copy for "Updating / Restarting".
+		isPostUpdateRelaunch: () => ipcRenderer.invoke("updates:isPostUpdateRelaunch") as Promise<boolean>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);

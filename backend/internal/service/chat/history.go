@@ -918,7 +918,7 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	if err := s.store.ActivateConversationBranch(operationCtx, id, conversation.ID, branch.ID,
 		branch.ProviderConversationID, generation, s.now()); err != nil {
-		cleanupUnpublishedConversation(provider, true)
+		_ = cleanupUnpublishedConversation(provider, true)
 		activateErr := err
 		if restoreErr := s.restoreClosedSourceController(
 			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {

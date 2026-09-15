@@ -541,12 +541,14 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		ProviderScopeID:         cfg.ProviderScopeID,
 		ControllerGeneration:    cfg.ControllerGeneration,
 		RequireNativeHistory:    cfg.RequireNativeHistory,
+		HistoryPolicy:           cfg.HistoryPolicy,
 		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
 		ControllerReady: func(out chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if cfg.ControllerReady == nil {
 				return chatsvc.ControllerCommit{}, nil
 			}
 			commit, err := cfg.ControllerReady(sessionmanager.ChatStarted{
+				LiveReconnect:          out.LiveReconnect,
 				ProviderConversationID: out.ProviderConversationID,
 				ControllerGeneration:   out.ControllerGeneration,
 				Conversation:           out.Conversation,
@@ -563,6 +565,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		return sessionmanager.ChatStarted{}, err
 	}
 	return sessionmanager.ChatStarted{
+		LiveReconnect:          out.LiveReconnect,
 		ProviderConversationID: out.ProviderConversationID,
 		ControllerGeneration:   out.ControllerGeneration,
 	}, nil

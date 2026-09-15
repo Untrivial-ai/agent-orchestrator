@@ -100,6 +100,10 @@ func newFakeStore() *fakeStore {
 	}
 }
 
+func (f *fakeStore) ListWorkspaceRepos(context.Context, string) ([]domain.WorkspaceRepoRecord, error) {
+	return nil, nil
+}
+
 func TestListBatchesKanbanReads(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
@@ -722,6 +726,44 @@ func TestListWorkspaceFilesRepoUnavailableWrapsSentinel(t *testing.T) {
 	}
 	if !errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
 		t.Fatalf("error = %v, want errors.Is(ErrWorkspaceRepoUnavailable)", err)
+	}
+}
+
+func TestListWorkspaceFilesTreatsStandaloneWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "standalone note\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("standalone files = %#v, want added notes.txt", got.Files)
+	}
+}
+
+func TestListWorkspaceFilesTreatsMigratedScratchWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "migrated scratch note\n")
+	st := newFakeStore()
+	st.sessions["scratch-1"] = domain.SessionRecord{
+		ID:       "scratch-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "scratch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("migrated scratch files = %#v, want added notes.txt", got.Files)
 	}
 }
 
@@ -2321,6 +2363,8 @@ type fakeCommander struct {
 	restoreErr      error
 	restoreResult   sessionmanager.RestoreResult
 	readyErr        error
+	killFunc        func(domain.SessionID)
+	killMu          sync.Mutex
 }
 
 func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
@@ -2378,7 +2422,12 @@ func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, erro
 	if f.killErr != nil {
 		return false, f.killErr
 	}
+	f.killMu.Lock()
 	f.killed = append(f.killed, id)
+	f.killMu.Unlock()
+	if f.killFunc != nil {
+		f.killFunc(id)
+	}
 	return true, nil
 }
 func (f *fakeCommander) RetireForReplacement(_ context.Context, id domain.SessionID) error {
@@ -2454,6 +2503,65 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	}
 	if len(fc.killed) != 1 || fc.killed[0] != "mer-1" {
 		t.Fatalf("killed = %#v, want only mer-1", fc.killed)
+	}
+	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
+		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)
+	}
+}
+
+// Project removal must tear live sessions down in parallel: the per-session
+// cost (agent/runtime shutdown, controller teardown) dominates and is
+// independent, which is exactly what makes removing a many-session project
+// slow when kills run one after another. Stalling one session's kill must not
+// delay the others.
+func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer"}
+	st.sessions["other-1"] = domain.SessionRecord{ID: "other-1", ProjectID: "other"}
+	mer1Entered := make(chan struct{})
+	mer2Killed := make(chan struct{})
+	releaseMer1 := make(chan struct{})
+	fc := &fakeCommander{killFunc: func(id domain.SessionID) {
+		switch id {
+		case "mer-1":
+			close(mer1Entered)
+			<-releaseMer1
+		case "mer-2":
+			close(mer2Killed)
+		}
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	done := make(chan error, 1)
+	go func() { done <- svc.TeardownProject(context.Background(), "mer") }()
+
+	select {
+	case <-mer1Entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-1 never started")
+	}
+	select {
+	case <-mer2Killed:
+		// mer-2 was killed while mer-1's teardown was still blocked.
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-2 waited for mer-1's teardown to finish; kills are serial, not parallel")
+	}
+	close(releaseMer1)
+	if err := <-done; err != nil {
+		t.Fatalf("TeardownProject: %v", err)
+	}
+
+	fc.killMu.Lock()
+	killed := append([]domain.SessionID(nil), fc.killed...)
+	fc.killMu.Unlock()
+	if len(killed) != 2 {
+		t.Fatalf("killed = %#v, want mer-1 and mer-2", killed)
+	}
+	for _, id := range killed {
+		if id != "mer-1" && id != "mer-2" {
+			t.Fatalf("unexpected session killed: %s", id)
+		}
 	}
 	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
 		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)
@@ -2609,6 +2717,47 @@ func TestSpawnUnknownProjectReturns404(t *testing.T) {
 	}
 	if fc.spawned {
 		t.Fatal("manager.Spawn must NOT be invoked for an unknown project")
+	}
+}
+
+func TestSpawnStandaloneWorkerDoesNotRequireProject(t *testing.T) {
+	st := newFakeStore()
+	fc := &fakeCommander{spawnRecord: domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	session, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+		Kind:    domain.KindWorker,
+		Harness: domain.HarnessCodex,
+		Prompt:  "Research release options",
+	})
+	if err != nil {
+		t.Fatalf("Spawn standalone: %v", err)
+	}
+	if session.ID != "standalone-1" || session.ProjectID != "" {
+		t.Fatalf("standalone session = %#v", session)
+	}
+	if fc.spawnedCfg.ProjectID != "" || fc.spawnedCfg.Kind != domain.KindWorker {
+		t.Fatalf("manager config = %#v", fc.spawnedCfg)
+	}
+}
+
+func TestSpawnStandaloneRejectsProjectFeatures(t *testing.T) {
+	for _, cfg := range []ports.SpawnConfig{
+		{Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, Branch: "feature/x"},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, IssueID: "42"},
+		{Kind: domain.KindWorker},
+	} {
+		fc := &fakeCommander{}
+		svc := &Service{manager: fc, store: newFakeStore()}
+		if _, _, _, err := svc.Spawn(context.Background(), cfg); err == nil {
+			t.Fatalf("Spawn(%#v) succeeded, want validation error", cfg)
+		}
+		if fc.spawned {
+			t.Fatalf("manager called for invalid standalone config %#v", cfg)
+		}
 	}
 }
 
@@ -3172,6 +3321,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"chat driver incompatible", fmt.Errorf("spawn: %w", ports.ErrChatDriverIncompatible), apierr.KindConflict, "CHAT_DRIVER_INCOMPATIBLE"},
 		{"chat auth required", fmt.Errorf("spawn: %w", ports.ErrChatAuthRequired), apierr.KindConflict, "CHAT_AUTH_REQUIRED"},
 		{"interface notice not acknowledgeable", fmt.Errorf("acknowledge interface notice: %w", sessionmanager.ErrInterfaceTransitionNoticeNotAcknowledgeable), apierr.KindConflict, "INTERFACE_TRANSITION_NOTICE_NOT_ACKNOWLEDGEABLE"},
+		{"provider history recovery unavailable", fmt.Errorf("recover interface: %w", sessionmanager.ErrInterfaceProviderHistoryRecoveryUnavailable), apierr.KindConflict, "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"},
 		{"native conversation missing", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationMissing), apierr.KindConflict, "NATIVE_SESSION_MISSING"},
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
 	}
