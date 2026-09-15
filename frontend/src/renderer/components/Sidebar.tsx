@@ -210,8 +210,6 @@ function NavRowHighlight({
 // Search + Pinned/Projects section chrome: same type, icon, and row size.
 const SECTION_ROW_CLASS =
 	"flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-passive [&_svg]:size-icon-md [&_svg]:shrink-0";
-// Hover fill only for collapsible section headers (Pinned). Projects is a static label.
-const SECTION_ROW_INTERACTIVE_CLASS = "transition-colors hover:bg-interactive-hover hover:text-foreground";
 const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
 
 // Mirrors the daemon's display-name cap (maxDisplayNameLen) and the spawn
@@ -888,7 +886,7 @@ export function Sidebar({
 				</div>
 			</div>
 
-			<SidebarContent className="project-sidebar-scrollbar gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
+			<SidebarContent className="scrollbar-none gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
 				<SidebarGroup className="min-h-full p-0">
 					{/* Tree (project-sidebar__tree) */}
 					<SidebarGroupContent className="min-h-full">
@@ -2063,8 +2061,8 @@ const SessionActions = memo(function SessionActions({
 		>
 			<div
 				className={cn(
-					/* 1.3 — pin/kill: scale 0.8↔1 (animated); opacity snaps for hide */
-					"absolute inset-y-0 right-0.5 flex origin-right scale-[0.8] items-center gap-px opacity-0",
+					/* 1.3 — pin/kill: scale 0.8↔1 from center (not origin-right — that reads as a slide) */
+					"absolute inset-y-0 right-0.5 flex origin-center scale-[0.8] items-center gap-px opacity-0",
 					"transition-[scale] duration-normal ease-[var(--ease-out)]",
 					"motion-reduce:transition-none",
 					!isDragging &&
@@ -2633,17 +2631,25 @@ function SectionDisclosure({
 
 	if (trailing) {
 		return (
-			<div className={cn(SECTION_ROW_CLASS, SECTION_ROW_INTERACTIVE_CLASS, "pr-1", className)}>
+			<div
+				className={cn(
+					SECTION_ROW_CLASS,
+					NAV_ROW_HIGHLIGHT_HOST_CLASS,
+					"rounded-lg pr-1",
+					className,
+				)}
+			>
+				<NavRowHighlight />
 				<button
 					aria-expanded={open}
 					aria-label={label}
-					className="flex min-w-0 flex-1 items-center gap-2 text-left"
+					className="relative z-[1] flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={onToggle}
 					type="button"
 				>
 					{labelRow}
 				</button>
-				{trailing}
+				<span className="relative z-[1] shrink-0">{trailing}</span>
 			</div>
 		);
 	}
@@ -2652,11 +2658,19 @@ function SectionDisclosure({
 		<button
 			aria-expanded={open}
 			aria-label={label}
-			className={cn(SECTION_ROW_CLASS, SECTION_ROW_INTERACTIVE_CLASS, "text-left", className)}
+			className={cn(
+				SECTION_ROW_CLASS,
+				NAV_ROW_HIGHLIGHT_HOST_CLASS,
+				"rounded-lg text-left",
+				className,
+			)}
 			onClick={onToggle}
 			type="button"
 		>
-			{labelRow}
+			<NavRowHighlight />
+			<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2">
+				{labelRow}
+			</span>
 		</button>
 	);
 }
