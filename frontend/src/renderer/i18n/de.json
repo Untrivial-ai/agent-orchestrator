@@ -1201,6 +1201,7 @@
 	"workflow.error.loadFailed": "Failed to load plans",
 	"workflow.error.planNotFound": "Plan not found",
 	"workflow.error.stagesLoadFailed": "Failed to load stages",
+	"workflow.error.tasksLoadFailed": "Fehler beim Laden der Aufgaben",
 	"workflow.error.taskNotFound": "Task not found",
 	"workflow.backToPlans": "Back to Plans",
 	"workflow.plan.title": "Title",

@@ -1201,6 +1201,7 @@
 	"workflow.error.loadFailed": "Failed to load plans",
 	"workflow.error.planNotFound": "Plan not found",
 	"workflow.error.stagesLoadFailed": "Failed to load stages",
+	"workflow.error.tasksLoadFailed": "작업을 불러오지 못했습니다",
 	"workflow.error.taskNotFound": "Task not found",
 	"workflow.backToPlans": "Back to Plans",
 	"workflow.plan.title": "Title",

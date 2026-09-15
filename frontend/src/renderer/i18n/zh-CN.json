@@ -1183,6 +1183,7 @@
 	"workflow.error.loadFailed": "加载计划失败",
 	"workflow.error.planNotFound": "计划不存在",
 	"workflow.error.stagesLoadFailed": "加载阶段失败",
+	"workflow.error.tasksLoadFailed": "加载任务失败",
 	"workflow.error.taskNotFound": "任务不存在",
 	"workflow.backToPlans": "返回计划列表",
 	"workflow.plan.title": "标题",
