@@ -669,7 +669,6 @@ function ConfigModelChoices({
 		...choice,
 		id: choice.value,
 		label: choice.name,
-		provider: choice.groupName || choice.group,
 	})), [option.choices]);
 	return (
 		<ModelMenuChoices models={models}>
