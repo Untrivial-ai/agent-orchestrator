@@ -749,6 +749,8 @@ func decodeConversationBody(w http.ResponseWriter, r *http.Request, into any) bo
 // codes, so a client can tell a permanent answer from a retryable one.
 func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrChatPermissionModeUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "PERMISSION_MODE_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, ports.ErrSessionNotFound):
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found",
 			"SESSION_NOT_FOUND", "session not found", nil)
@@ -914,6 +916,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 		ThreadState:                      threadStatePayload(s.Conversation.ThreadState),
 		MCPServers:                       mcpServersPayload(s.Conversation.MCPServers),
 		Capabilities:                     capabilityNames(s.Capabilities),
+		Permissions:                      s.Permissions,
 	}
 
 	for _, turn := range s.Turns {

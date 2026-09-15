@@ -342,7 +342,8 @@ type sequenceDriver struct {
 	conversations []ports.ChatConversation
 }
 
-func (d *sequenceDriver) Harness() domain.AgentHarness { return domain.HarnessCodex }
+func (d *sequenceDriver) Capabilities() ports.ChatCapabilities { return productionCaps() }
+func (d *sequenceDriver) Harness() domain.AgentHarness         { return domain.HarnessCodex }
 func (d *sequenceDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	return productionCaps(), nil
 }
@@ -363,6 +364,12 @@ func (d *sequenceDriver) Resume(context.Context, ports.ChatResumeConfig) (ports.
 	return d.next()
 }
 
+func (d fakeDriver) Capabilities() ports.ChatCapabilities {
+	if d.caps != nil {
+		return d.caps
+	}
+	return productionCaps()
+}
 func (d fakeDriver) Harness() domain.AgentHarness { return domain.HarnessCodex }
 func (d fakeDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	if d.probe != nil {
@@ -414,6 +421,10 @@ func conversationReconnectedLive(conversation ports.ChatConversation) bool {
 }
 
 type fakeRegistry struct{ driver ports.ChatDriver }
+
+func (r fakeRegistry) SupportsReadOnlyChat(_ domain.AgentHarness) bool {
+	return r.driver.Capabilities().Has(ports.ChatCapabilityPreventiveReadOnly)
+}
 
 func (r fakeRegistry) Driver(domain.AgentHarness) (ports.ChatDriver, error) { return r.driver, nil }
 func (r fakeRegistry) SupportsChat(domain.AgentHarness) bool                { return true }
@@ -4027,6 +4038,27 @@ func TestChatHandoffDrainFinishesAcceptedQueueAndClosesNewIntake(t *testing.T) {
 		Text: "source reopened", ClientMessageID: "handoff-4",
 	}); err != nil {
 		t.Fatalf("send after aborting handoff: %v", err)
+	}
+}
+
+func TestChatHandoffArmFreezesTurnSettingsUntilAbort(t *testing.T) {
+	h := newHarness(t)
+	caps := h.conv.Capabilities()
+	caps[ports.ChatCapabilityPreventiveReadOnly] = true
+	h.conv.setCapabilities(caps)
+	ctx := context.Background()
+
+	if err := h.svc.ArmChatHandoff(ctx, testSession, domain.SessionInterfaceTransitionInterrupt); err != nil {
+		t.Fatalf("ArmChatHandoff: %v", err)
+	}
+	settings := h.ctrl.Settings()
+	settings.ApprovalMode = ports.PermissionModeReadOnly
+	if _, err := h.svc.SetTurnSettings(ctx, testSession, settings); !errors.Is(err, chatsvc.ErrControllerHandoff) {
+		t.Fatalf("SetTurnSettings while armed = %v, want ErrControllerHandoff", err)
+	}
+	h.svc.AbortChatHandoff(testSession)
+	if _, err := h.svc.SetTurnSettings(ctx, testSession, settings); err != nil {
+		t.Fatalf("SetTurnSettings after abort: %v", err)
 	}
 }
 

@@ -13,7 +13,9 @@ const (
 	// PermissionModeDefault is special: adapters choose their own baseline
 	// behavior for it. Most defer to the agent's own config; some managed
 	// adapters may map it to a safer non-interactive default.
-	PermissionModeDefault           PermissionMode = "default"
+	PermissionModeDefault PermissionMode = "default"
+	// PermissionModeReadOnly requires preventive filesystem write isolation.
+	PermissionModeReadOnly          PermissionMode = "read-only"
 	PermissionModeAcceptEdits       PermissionMode = "accept-edits"
 	PermissionModeAuto              PermissionMode = "auto"
 	PermissionModeBypassPermissions PermissionMode = "bypass-permissions"
@@ -45,7 +47,7 @@ func (c AgentConfig) IsZero() bool {
 // one.
 func (m PermissionMode) Valid() bool {
 	switch m {
-	case "", PermissionModeDefault, PermissionModeAcceptEdits,
+	case "", PermissionModeDefault, PermissionModeReadOnly, PermissionModeAcceptEdits,
 		PermissionModeAuto, PermissionModeBypassPermissions:
 		return true
 	default:
@@ -64,5 +66,5 @@ func (c AgentConfig) Validate() error {
 	if c.Permissions.Valid() {
 		return nil
 	}
-	return fmt.Errorf("invalid permissions %q: want one of default, accept-edits, auto, bypass-permissions", c.Permissions)
+	return fmt.Errorf("invalid permissions %q: want one of default, read-only, accept-edits, auto, bypass-permissions", c.Permissions)
 }

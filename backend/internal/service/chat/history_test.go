@@ -791,6 +791,33 @@ func TestEditAndBranchActivationRotateControllerCredentialsAfterStoppingSource(t
 	}
 }
 
+func TestEditMessageCarriesCurrentReadOnlySettingsIntoReplacement(t *testing.T) {
+	h, source, driver := newEditHarness(t, false)
+	caps := source.Capabilities()
+	caps[ports.ChatCapabilityPreventiveReadOnly] = true
+	source.setCapabilities(caps)
+	driver.fresh.setCapabilities(caps)
+
+	ctx := context.Background()
+	first := completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	settings := h.ctrl.Settings()
+	settings.ApprovalMode = ports.PermissionModeReadOnly
+	if _, err := h.svc.SetTurnSettings(ctx, testSession, settings); err != nil {
+		t.Fatalf("SetTurnSettings: %v", err)
+	}
+
+	if _, err := h.svc.EditMessage(ctx, testSession, first, ports.ChatUserMessage{
+		Text: "A edited", ClientMessageID: "edit-read-only", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	sent := driver.fresh.sentMessages()
+	if len(sent) != 1 || sent[0].Settings.Approval != ports.PermissionModeReadOnly {
+		t.Fatalf("replacement send settings = %#v, want read-only", sent)
+	}
+}
+
 func TestEditMessageReplaysDurableContextWhenNativeForkIsUnavailable(t *testing.T) {
 	h, _, driver := newEditHarness(t, true)
 	ctx := context.Background()
@@ -2454,6 +2481,12 @@ func TestActivateBranchResumesWithoutSending(t *testing.T) {
 		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101"},
 		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", TurnState: domain.TurnStateCompleted},
 	)
+	caps := driver.fresh.Capabilities()
+	caps[ports.ChatCapabilityPreventiveReadOnly] = true
+	driver.fresh.setCapabilities(caps)
+	driver.mu.Lock()
+	driver.resumed["thread-1"].setCapabilities(caps)
+	driver.mu.Unlock()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		controller, controllerErr := h.svc.Controller(testSession)
@@ -2464,6 +2497,15 @@ func TestActivateBranchResumesWithoutSending(t *testing.T) {
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	current, err := h.svc.Controller(testSession)
+	if err != nil {
+		t.Fatalf("Controller before activation: %v", err)
+	}
+	settings := current.Settings()
+	settings.ApprovalMode = ports.PermissionModeReadOnly
+	if _, err := h.svc.SetTurnSettings(context.Background(), testSession, settings); err != nil {
+		t.Fatalf("SetTurnSettings: %v", err)
 	}
 	active, err := h.svc.ActivateBranch(context.Background(), testSession, result.SourceBranchID)
 	if err != nil {
@@ -2477,6 +2519,15 @@ func TestActivateBranchResumesWithoutSending(t *testing.T) {
 	driver.mu.Unlock()
 	if sent := root.sentTexts(); len(sent) != 0 {
 		t.Fatalf("branch activation sent messages: %v", sent)
+	}
+	if _, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "after activation", ClientMessageID: "activation-read-only", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("Send after activation: %v", err)
+	}
+	sent := root.sentMessages()
+	if len(sent) != 1 || sent[0].Settings.Approval != ports.PermissionModeReadOnly {
+		t.Fatalf("activated branch send settings = %#v, want read-only", sent)
 	}
 }
 

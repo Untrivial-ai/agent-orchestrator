@@ -18,6 +18,7 @@ type SettingsService interface {
 	SetDefaultSessionMode(ctx context.Context, mode domain.SessionMode) (settingssvc.Snapshot, error)
 	SetCloudOffering(ctx context.Context, enabled bool) (settingssvc.Snapshot, error)
 	ChatHarnesses(candidates []domain.AgentHarness) []domain.AgentHarness
+	ReadOnlyChatHarnesses(candidates []domain.AgentHarness) []domain.AgentHarness
 	Offering() settingssvc.Offering
 }
 
@@ -107,14 +108,20 @@ func (c *SettingsController) response(snapshot settingssvc.Snapshot) SettingsRes
 	for _, harness := range chatHarnesses {
 		names = append(names, string(harness))
 	}
+	readOnlyHarnesses := c.Svc.ReadOnlyChatHarnesses(domain.AllHarnesses)
+	readOnlyNames := make([]string, 0, len(readOnlyHarnesses))
+	for _, harness := range readOnlyHarnesses {
+		readOnlyNames = append(readOnlyNames, string(harness))
+	}
 	offering := c.Svc.Offering()
 	return SettingsResponse{
-		DefaultSessionMode:   string(snapshot.DefaultSessionMode),
-		ChatHarnesses:        names,
-		Client:               offering.Client,
-		LocalEnabled:         offering.LocalEnabled,
-		CloudOffering:        snapshot.CloudOffering,
-		CloudEnabled:         offering.CloudEnabled(snapshot),
-		CloudControlPlaneURL: offering.CloudControlPlaneURL,
+		DefaultSessionMode:    string(snapshot.DefaultSessionMode),
+		ChatHarnesses:         names,
+		ReadOnlyChatHarnesses: readOnlyNames,
+		Client:                offering.Client,
+		LocalEnabled:          offering.LocalEnabled,
+		CloudOffering:         snapshot.CloudOffering,
+		CloudEnabled:          offering.CloudEnabled(snapshot),
+		CloudControlPlaneURL:  offering.CloudControlPlaneURL,
 	}
 }

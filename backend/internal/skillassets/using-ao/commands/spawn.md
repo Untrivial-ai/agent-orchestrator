@@ -22,6 +22,7 @@ ao spawn [flags]
 | `--project string` | Project id to spawn the session in | Optional when `--standalone` is used; defaults to `AO_PROJECT_ID` or the current repo's registered project |
 | `--standalone` | Spawn a projectless worker session in an AO-managed directory | Disabled when `--project` is set |
 | `--prompt string` | Initial prompt for the agent | - |
+| `--permission string` | Session permission override: `read-only`, `default`, `accept-edits`, `auto`, `bypass-permissions` | Project/role default |
 
 `--agent` is an alias for `--harness`.
 
@@ -38,3 +39,13 @@ ao spawn --project agent-orchestrator --issue 142 --name "fix-session-leak" --pr
 # Spawn a worker and immediately claim an open PR
 ao spawn --project agent-orchestrator --name "review-pr-88" --claim-pr 88 --harness claude-code
 ```
+
+```bash
+# Inspect with a preventive filesystem restriction
+ao spawn --project agent-orchestrator --agent codex --mode chat --permission read-only --name reader --prompt "Inspect the code and report findings."
+```
+
+A worker launched `read-only` keeps that restriction across restarts and settings
+changes. Only Codex Chat currently supports it; unsupported harnesses and terminal
+mode fail before creating a session. `GET /api/v1/settings` reports supported
+`readOnlyChatHarnesses` before launch.

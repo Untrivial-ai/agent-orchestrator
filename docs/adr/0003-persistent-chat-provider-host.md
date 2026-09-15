@@ -38,6 +38,11 @@ Codex app-server uses the original raw protocol profile:
 - The host records the greatest numeric client request id it forwarded. A new
   controller starts above that high-water mark, preventing a late provider
   response from correlating with a replacement request.
+- The raw host retains Codex's effective approval/sandbox receipts from thread
+  open responses and settings updates. Policy-changing requests invalidate stale
+  receipts before forwarding. A read-only reconnect requires a matching thread
+  receipt for `never` / `readOnly`; older hosts without this additive handshake
+  field remain usable for ordinary sessions but cannot prove read-only access.
 - Controller-generation checks in SQLite remain the projection fence. The
   transport additionally rejects concurrent attachment, preventing two live
   daemon controllers from writing the provider connection.

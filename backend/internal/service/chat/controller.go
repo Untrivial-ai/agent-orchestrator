@@ -169,10 +169,11 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 
 // Controller drives one Chat session.
 type Controller struct {
-	sessionID    domain.SessionID
-	conversation domain.ConversationRecord
-	generation   string
-	harness      domain.AgentHarness
+	sessionID       domain.SessionID
+	conversation    domain.ConversationRecord
+	generation      string
+	harness         domain.AgentHarness
+	permissionFloor ports.PermissionMode
 
 	conv                   ports.ChatConversation
 	store                  Store
@@ -290,6 +291,7 @@ func newController(
 	conversation domain.ConversationRecord,
 	generation string,
 	harness domain.AgentHarness,
+	permissionFloor ports.PermissionMode,
 	conv ports.ChatConversation,
 	store Store,
 	activity ActivityRecorder,
@@ -304,6 +306,7 @@ func newController(
 		conversation:           conversation,
 		generation:             generation,
 		harness:                harness,
+		permissionFloor:        permissionFloor,
 		conv:                   conv,
 		store:                  store,
 		activity:               activity,
@@ -335,6 +338,7 @@ func newController(
 		}
 		c.mcpServers[server.Name] = server
 	}
+	c.settings = c.constrainSettings(c.settings)
 	return c
 }
 
@@ -1433,7 +1437,7 @@ func retryPromptContent(raw string, capabilities ports.ChatCapabilities) ([]port
 func (c *Controller) Settings() domain.ConversationSettings {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.settings
+	return c.constrainSettings(c.settings)
 }
 
 // SetSettings records the provider choices for the next turn.
@@ -1441,6 +1445,26 @@ func (c *Controller) Settings() domain.ConversationSettings {
 // The row is written first: if that fails, the in-memory copy must not move, or a
 // restart would silently revert a choice the user watched take effect.
 func (c *Controller) SetSettings(ctx context.Context, settings domain.ConversationSettings) error {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	return c.setSettingsLocked(ctx, settings)
+}
+
+// setSettingsLocked keeps a provider-owned config change and its durable AO
+// projection inside the same handoff fence. The caller holds configMu.
+func (c *Controller) setSettingsLocked(ctx context.Context, settings domain.ConversationSettings) error {
+	if c.permissionFloor == ports.PermissionModeReadOnly && settings.ApprovalMode != ports.PermissionModeReadOnly {
+		return fmt.Errorf("%w: a read-only session cannot grant write access", ports.ErrChatPermissionModeUnsupported)
+	}
+	if settings.ApprovalMode == ports.PermissionModeReadOnly && !c.Capabilities().Has(ports.ChatCapabilityPreventiveReadOnly) {
+		return fmt.Errorf("%w: %s cannot enforce read-only Chat", ports.ErrChatPermissionModeUnsupported, c.harness)
+	}
+	c.mu.Lock()
+	handoff := c.handoff != controllerHandoffNone
+	c.mu.Unlock()
+	if handoff {
+		return ErrControllerHandoff
+	}
 	if err := c.store.SetConversationSettings(ctx, c.conversation.ID, settings, c.now()); err != nil {
 		return fmt.Errorf("record conversation settings: %w", err)
 	}
@@ -1448,6 +1472,14 @@ func (c *Controller) SetSettings(ctx context.Context, settings domain.Conversati
 	c.settings = settings
 	c.mu.Unlock()
 	return nil
+}
+
+// constrainSettings applies the immutable launch restriction to stale or provider-owned settings.
+func (c *Controller) constrainSettings(settings domain.ConversationSettings) domain.ConversationSettings {
+	if c.permissionFloor == ports.PermissionModeReadOnly {
+		settings.ApprovalMode = ports.PermissionModeReadOnly
+	}
+	return settings
 }
 
 // turnSettings converts the stored choices into what a driver takes per turn.
@@ -1690,6 +1722,8 @@ func (c *Controller) ArmHandoff(
 	}
 	want := interfaceHandoff(policy)
 
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -1800,6 +1834,8 @@ func (c *Controller) BeginHandoff(
 // or interrupts accepted work: branch changes are refused until the user stops
 // the active turn and the durable queue is empty.
 func (c *Controller) BeginIdleBranchHandoff(ctx context.Context) error {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 

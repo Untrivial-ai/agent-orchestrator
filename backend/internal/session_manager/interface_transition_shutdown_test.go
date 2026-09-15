@@ -336,7 +336,13 @@ func (s *postTargetLaunchReadFailureStore) GetSession(ctx context.Context, id do
 func TestInterfaceTransitionChatToTUIRetainsShutdownFenceAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	m, st, runtime, _, log := newTransitionManager(t, domain.SessionModeChat)
-	m.store = &postTargetLaunchReadFailureStore{transitionStore: st, failRead: true}
+	m.store = struct {
+		*postTargetLaunchReadFailureStore
+		chatHandoffSettingsStore
+	}{
+		postTargetLaunchReadFailureStore: &postTargetLaunchReadFailureStore{transitionStore: st, failRead: true},
+		chatHandoffSettingsStore:         &transitionSettingsStore{transitionStore: st},
+	}
 	runtime.destroyErr = errors.New("terminal target remains alive")
 	tr, err := m.StartInterfaceTransition(ctx, "session-1", domain.SessionModeTUI,
 		domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)

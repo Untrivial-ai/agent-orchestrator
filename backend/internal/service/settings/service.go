@@ -71,6 +71,7 @@ func (o Offering) CloudEnabled(snapshot Snapshot) bool {
 // discover it at spawn time.
 type ChatCapability interface {
 	SupportsChat(harness domain.AgentHarness) bool
+	SupportsReadOnlyChat(harness domain.AgentHarness) bool
 }
 
 // Service reads and writes preferences.
@@ -141,6 +142,21 @@ func (s *Service) ChatHarnesses(candidates []domain.AgentHarness) []domain.Agent
 	var out []domain.AgentHarness
 	for _, harness := range candidates {
 		if s.chat.SupportsChat(harness) {
+			out = append(out, harness)
+		}
+	}
+	return out
+}
+
+// ReadOnlyChatHarnesses declares preventive read-only support independently of
+// local installation and authentication readiness.
+func (s *Service) ReadOnlyChatHarnesses(candidates []domain.AgentHarness) []domain.AgentHarness {
+	if s.chat == nil {
+		return nil
+	}
+	var out []domain.AgentHarness
+	for _, harness := range candidates {
+		if s.chat.SupportsReadOnlyChat(harness) {
 			out = append(out, harness)
 		}
 	}

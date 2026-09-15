@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -126,6 +127,7 @@ type Transport struct {
 	Reconnected   bool
 	NextRequestID int64
 	ACPState      *ACPState
+	CodexReadOnly map[string]bool
 }
 
 type hello struct {
@@ -135,10 +137,11 @@ type hello struct {
 }
 
 type helloResponse struct {
-	OK            bool      `json:"ok"`
-	Error         string    `json:"error,omitempty"`
-	NextRequestID int64     `json:"nextRequestId,omitempty"`
-	ACPState      *ACPState `json:"acpState,omitempty"`
+	OK            bool            `json:"ok"`
+	Error         string          `json:"error,omitempty"`
+	NextRequestID int64           `json:"nextRequestId,omitempty"`
+	ACPState      *ACPState       `json:"acpState,omitempty"`
+	CodexReadOnly map[string]bool `json:"codexReadOnly,omitempty"`
 }
 
 func hostDir(dataDir, sessionID string) (string, error) {
@@ -466,6 +469,7 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 	return &Transport{
 		Stdin: conn, Stdout: reader, Reconnected: reconnected,
 		NextRequestID: response.NextRequestID, ACPState: response.ACPState,
+		CodexReadOnly: response.CodexReadOnly,
 	}, nil
 }
 
@@ -663,6 +667,7 @@ type host struct {
 	pendingRequests  map[string]*pendingRequest
 	pendingOrder     []string
 	maxRequestID     int64
+	codexReadOnly    map[string]bool
 	shutdown         chan struct{}
 	shutdownOnce     sync.Once
 }
@@ -721,7 +726,7 @@ func (h *host) handle(conn net.Conn) {
 	h.client = conn
 	h.clientGeneration++
 	generation := h.clientGeneration
-	response := helloResponse{OK: true, NextRequestID: h.maxRequestID}
+	response := helloResponse{OK: true, NextRequestID: h.maxRequestID, CodexReadOnly: maps.Clone(h.codexReadOnly)}
 	if h.acp != nil {
 		response.ACPState = h.acp.snapshot()
 	}
@@ -756,6 +761,9 @@ func (h *host) handle(conn net.Conn) {
 			providerFrame := frame
 			var clientFrame []byte
 			h.mu.Lock()
+			if h.acp == nil {
+				h.observeCodexRequest(frame)
+			}
 			if h.acp != nil {
 				var relayErr error
 				var relayed acpClientFrames
@@ -835,6 +843,9 @@ func (h *host) forwardProvider(stdout io.Reader) error {
 		frame, err := reader.ReadBytes('\n')
 		if len(frame) > 0 {
 			h.mu.Lock()
+			if h.acp == nil {
+				h.observeCodexReadOnly(frame)
+			}
 			retainedByACP := false
 			if h.acp != nil {
 				var relayErr error

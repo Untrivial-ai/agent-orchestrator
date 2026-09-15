@@ -29,6 +29,23 @@ type transitionStore struct {
 	messenger      *fakeMessenger
 	markMessageErr error
 	beforeCreate   func(domain.SessionInterfaceTransition)
+	conversation   domain.ConversationRecord
+}
+
+type transitionSettingsStore struct {
+	*transitionStore
+}
+
+func (s *transitionSettingsStore) ConversationForSession(
+	_ context.Context,
+	sessionID domain.SessionID,
+) (domain.ConversationRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conversation.SessionID != sessionID {
+		return domain.ConversationRecord{}, domain.ErrNoConversation
+	}
+	return s.conversation, nil
 }
 
 type blockingRestoreLifecycle struct {
@@ -842,6 +859,9 @@ func newTransitionManager(t *testing.T, mode domain.SessionMode) (*Manager, *tra
 		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()},
 		FirstSignalAt: time.Now(),
 	}
+	store.conversation = domain.ConversationRecord{
+		ID: "conversation-1", SessionID: "session-1",
+	}
 	log := &[]string{}
 	runtime := &transitionRuntime{fakeRuntime: &fakeRuntime{}, log: log}
 	chat := &transitionChat{
@@ -854,7 +874,7 @@ func newTransitionManager(t *testing.T, mode domain.SessionMode) (*Manager, *tra
 	counter := 0
 	manager := New(Deps{
 		Runtime: runtime, Agents: singleAgent{agent: transitionAgent{}}, Workspace: &fakeWorkspace{},
-		Store: store, Messenger: messenger, Chat: chat,
+		Store: &transitionSettingsStore{transitionStore: store}, Messenger: messenger, Chat: chat,
 		Lifecycle: &fakeLCM{store: store.fakeStore}, LookPath: func(string) (string, error) { return "/bin/true", nil },
 		NewLaunchID: func() string { counter++; return fmt.Sprintf("generation-%d", counter) },
 	})
@@ -2766,6 +2786,34 @@ func TestInterfaceTransitionChatToTUIPreflightFailureReopensArmedSource(t *testi
 	}
 	if runtime.created != 0 || runtime.destroyed != 0 || len(*log) != 0 {
 		t.Fatalf("preflight failure mutated controllers: runtime=%d/%d log=%v",
+			runtime.created, runtime.destroyed, *log)
+	}
+}
+
+func TestInterfaceTransitionChatToTUIRejectsSelectedReadOnlyBeforeStoppingChat(t *testing.T) {
+	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeChat)
+	store.conversation.Settings.ApprovalMode = ports.PermissionModeReadOnly
+
+	transition, err := manager.StartInterfaceTransition(
+		context.Background(), "session-1", domain.SessionModeTUI,
+		domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "TARGET_PREFLIGHT_FAILED" {
+		t.Fatalf("transition = %+v, want failed target preflight", settled)
+	}
+	if !strings.Contains(settled.ErrorDetail, "read-only requires Chat") {
+		t.Fatalf("error detail = %q, want read-only incompatibility", settled.ErrorDetail)
+	}
+	select {
+	case <-chat.aborted:
+	default:
+		t.Fatal("read-only preflight failure did not reopen the armed Chat source")
+	}
+	if runtime.created != 0 || runtime.destroyed != 0 || len(*log) != 0 {
+		t.Fatalf("read-only preflight failure mutated controllers: runtime=%d/%d log=%v",
 			runtime.created, runtime.destroyed, *log)
 	}
 }

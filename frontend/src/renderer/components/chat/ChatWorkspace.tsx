@@ -1098,6 +1098,8 @@ function ChatWorkspaceContent({
 					rememberPermissionsError={rememberPermissionsError}
 					rememberedPermissionMode={rememberedPermissionMode}
 					harness={snapshot.harness}
+					permissions={snapshot.permissions}
+					supportsReadOnly={snapshot.capabilities?.includes("preventive_read_only")}
 					reroute={stableModelReroute}
 					onChange={newWorkDisabled ? undefined : onChooseSettings}
 					configOptions={configOptions ?? []}
@@ -1122,6 +1124,8 @@ function ChatWorkspaceContent({
 			rememberPermissionsPending,
 			rememberPermissionsError,
 			rememberedPermissionMode,
+			snapshot.permissions,
+			snapshot.capabilities,
 			snapshot.controller.state,
 			stableModelReroute,
 			stableSettings,

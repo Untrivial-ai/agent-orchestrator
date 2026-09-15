@@ -65,6 +65,10 @@ type chatHandoffHistoryStore interface {
 	HasConversationTurns(context.Context, string) (bool, error)
 }
 
+type chatHandoffSettingsStore interface {
+	ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
+}
+
 type runtimeInterrupter interface {
 	Interrupt(context.Context, ports.RuntimeHandle) error
 }
@@ -789,7 +793,7 @@ func (m *Manager) preflightInterfaceTarget(
 		if err != nil {
 			return err
 		}
-		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
+		permissions := sessionPermissions(rec, project.Config)
 		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -805,6 +809,13 @@ func (m *Manager) preflightInterfaceTarget(
 		return err
 	}
 	config := effectiveAgentConfig(rec.Kind, project.Config)
+	config.Permissions, err = m.interfaceTransitionPermissions(ctx, rec, project.Config)
+	if err != nil {
+		return err
+	}
+	if config.Permissions == ports.PermissionModeReadOnly {
+		return fmt.Errorf("%w: read-only requires Chat", ports.ErrChatPermissionModeUnsupported)
+	}
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
@@ -827,6 +838,35 @@ func (m *Manager) preflightInterfaceTarget(
 		return err
 	}
 	return m.validateAgentBinary(cmd)
+}
+
+// interfaceTransitionPermissions combines the immutable launch policy with the
+// durable policy selected for the next Chat turn. A TUI cannot enforce the
+// latter, so a read-only Chat must be rejected before its controller is stopped.
+func (m *Manager) interfaceTransitionPermissions(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	projectConfig domain.ProjectConfig,
+) (ports.PermissionMode, error) {
+	permissions := sessionPermissions(rec, projectConfig)
+	if permissions == ports.PermissionModeReadOnly || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
+		return permissions, nil
+	}
+	settingsStore, ok := m.store.(chatHandoffSettingsStore)
+	if !ok {
+		return "", fmt.Errorf("%w: current Chat permissions cannot be verified", ErrInterfaceHandoffUnsupported)
+	}
+	conversation, err := settingsStore.ConversationForSession(ctx, rec.ID)
+	if err != nil {
+		return "", fmt.Errorf("load current Chat permissions: %w", err)
+	}
+	if conversation.SessionID != rec.ID {
+		return "", fmt.Errorf("%w: Chat conversation belongs to session %s", ErrInterfaceHandoffUnsupported, conversation.SessionID)
+	}
+	if conversation.Settings.ApprovalMode == ports.PermissionModeReadOnly {
+		return ports.PermissionModeReadOnly, nil
+	}
+	return permissions, nil
 }
 
 func (m *Manager) prepareSourceHandoff(

@@ -16,7 +16,7 @@ export type ActivityKind =
 	| "auto_review"
 	| "user_input";
 
-export type ApprovalMode = "default" | "accept-edits" | "auto" | "bypass-permissions";
+export type ApprovalMode = "read-only" | "default" | "accept-edits" | "auto" | "bypass-permissions";
 export type TurnSettings = { model?: string; reasoningEffort?: string; approvalMode?: ApprovalMode };
 
 export type PlanStep = { text: string; status: "pending" | "in_progress" | "completed" };
@@ -203,6 +203,7 @@ export type ConversationThreadState = {
 export type McpServer = { name: string; status: string; error?: string; failureReason?: string };
 
 export type ConversationSnapshot = {
+	permissions?: ApprovalMode;
 	conversationId: string;
 	sessionId: string;
 	harness: string;

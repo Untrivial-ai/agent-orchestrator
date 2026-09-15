@@ -94,6 +94,12 @@ func (r *Registry) SupportsChat(harness domain.AgentHarness) bool {
 	return ok
 }
 
+// SupportsReadOnlyChat reports whether a driver declares preventive read-only.
+func (r *Registry) SupportsReadOnlyChat(harness domain.AgentHarness) bool {
+	driver, ok := r.drivers[harness]
+	return ok && driver.Capabilities().Has(ports.ChatCapabilityPreventiveReadOnly)
+}
+
 // Harnesses lists the harnesses with a registered driver, for diagnostics and for
 // telling a user which agents can run in chat mode.
 func (r *Registry) Harnesses() []domain.AgentHarness {

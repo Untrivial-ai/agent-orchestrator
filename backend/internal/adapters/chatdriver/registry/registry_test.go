@@ -50,3 +50,12 @@ func TestShippedChatDrivers(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlySupportIsDiscoverableWithoutLaunchingProviders(t *testing.T) {
+	r := Build(nil)
+	for _, harness := range domain.AllHarnesses {
+		if got := r.SupportsReadOnlyChat(harness); got != (harness == domain.HarnessCodex) {
+			t.Errorf("read-only support for %s = %v", harness, got)
+		}
+	}
+}
