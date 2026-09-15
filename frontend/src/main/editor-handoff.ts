@@ -13,7 +13,7 @@ type Platform = NodeJS.Platform;
 
 type ResolvedCommand = {
 	command: string;
-	argsBeforeWorkspace?: string[];
+	argsForWorkspace: (workspacePath: string) => string[];
 };
 
 type EditorCandidate = {
@@ -21,6 +21,7 @@ type EditorCandidate = {
 	name: string;
 	commands: string[];
 	macApps?: string[];
+	requiresTerminal?: boolean;
 	/**
 	 * Windows-only fallback install locations, relative to a resolved root
 	 * (e.g. `%LOCALAPPDATA%\Programs\Cursor\bin`). These are probed only on
@@ -38,6 +39,7 @@ const LOCAL_APPDATA_PROGRAMS = "%LOCALAPPDATA%\\Programs";
 const EDITOR_CANDIDATES: EditorCandidate[] = [
 	{ id: "cursor", name: "Cursor", commands: ["cursor"], macApps: ["Cursor"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Cursor", "resources", "app", "bin"], [PROGRAM_FILES, "Cursor", "bin"]] },
 	{ id: "vscode", name: "VS Code", commands: ["code"], macApps: ["Visual Studio Code"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Microsoft VS Code", "bin"], [PROGRAM_FILES, "Microsoft VS Code", "bin"]] },
+	{ id: "neovim", name: "Neovim", commands: ["nvim"], requiresTerminal: true },
 	{ id: "windsurf", name: "Windsurf", commands: ["windsurf"], macApps: ["Windsurf"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Windsurf", "resources", "app", "bin"], [PROGRAM_FILES, "Windsurf", "bin"]] },
 	{ id: "zed", name: "Zed", commands: ["zed"], macApps: ["Zed"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Zed", "bin"]] },
 	{ id: "trae", name: "Trae", commands: ["trae"], macApps: ["Trae"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Trae", "resources", "app", "bin"], [PROGRAM_FILES, "Trae", "bin"]] },
@@ -61,7 +63,7 @@ const EDITOR_CANDIDATES: EditorCandidate[] = [
 const WIN_INSTALL_ROOTS: Record<string, (env: NodeJS.ProcessEnv) => string | undefined> = {
 	[LOCAL_APPDATA_PROGRAMS]: (env) => {
 		const localAppData = env.LOCALAPPDATA;
-		return localAppData ? path.join(localAppData, "Programs") : undefined;
+		return localAppData ? path.win32.join(localAppData, "Programs") : undefined;
 	},
 	[PROGRAM_FILES]: (env) => env.ProgramFiles || env.PROGRAMFILES,
 	[PROGRAM_FILES_X86]: (env) => env["ProgramFiles(x86)"] || env.PROGRAMFILES_X86,
@@ -103,8 +105,12 @@ function defaultIsDirectory(candidatePath: string): boolean {
 	}
 }
 
+function pathAPI(platform: Platform) {
+	return platform === "win32" ? path.win32 : path.posix;
+}
+
 function executableNames(command: string, platform: Platform, env: NodeJS.ProcessEnv): string[] {
-	if (platform !== "win32" || path.extname(command)) return [command];
+	if (platform !== "win32" || pathAPI(platform).extname(command)) return [command];
 	const extensions = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
 	const extended = [
 		...extensions.map((extension) => command + extension.toLowerCase()),
@@ -119,7 +125,7 @@ function executableNames(command: string, platform: Platform, env: NodeJS.Proces
 }
 
 function commandSearchDirs(platform: Platform, env: NodeJS.ProcessEnv): string[] {
-	const fromPath = (env.PATH || "").split(path.delimiter).filter(Boolean);
+	const fromPath = (env.PATH || "").split(pathAPI(platform).delimiter).filter(Boolean);
 	if (platform === "darwin") return [...fromPath, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
 	if (platform === "linux") return [...fromPath, "/usr/local/bin", "/usr/bin"];
 	return fromPath;
@@ -133,8 +139,65 @@ function resolveOnPath(
 ): string | undefined {
 	for (const directory of commandSearchDirs(platform, env)) {
 		for (const name of executableNames(command, platform, env)) {
-			const candidatePath = path.join(directory, name);
+			const candidatePath = pathAPI(platform).join(directory, name);
 			if (isExecutable(candidatePath)) return candidatePath;
+		}
+	}
+	return undefined;
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function appleScriptString(value: string): string {
+	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function windowsCommandArg(value: string): string {
+	return `"${value.replaceAll('"', '""')}"`;
+}
+
+const LINUX_TERMINAL_LAUNCHERS = [
+	{ command: "x-terminal-emulator", argsBeforeCommand: ["-e"] },
+	{ command: "gnome-terminal", argsBeforeCommand: ["--"] },
+	{ command: "konsole", argsBeforeCommand: ["-e"] },
+	{ command: "xfce4-terminal", argsBeforeCommand: ["--execute"] },
+	{ command: "kitty", argsBeforeCommand: [] },
+	{ command: "alacritty", argsBeforeCommand: ["-e"] },
+] as const;
+
+function resolveTerminalEditor(editorCommand: string, deps: EditorHandoffDeps, isExecutable: (candidatePath: string) => boolean): ResolvedCommand | undefined {
+	if (deps.platform === "darwin") {
+		return {
+			command: "/usr/bin/osascript",
+			argsForWorkspace: (workspacePath) => {
+				const commandLine = `exec ${shellQuote(editorCommand)} ${shellQuote(workspacePath)}`;
+				const script = `tell application "Terminal"\nactivate\ndo script ${appleScriptString(commandLine)}\nend tell`;
+				return ["-e", script];
+			},
+		};
+	}
+	if (deps.platform === "win32") {
+		return {
+			command: deps.env.ComSpec || deps.env.COMSPEC || "cmd.exe",
+			argsForWorkspace: () => {
+				// launch() sets cwd to the workspace, so opening "." avoids sending the
+				// workspace path through cmd.exe variable expansion (for example %TEMP%).
+				const commandLine = [editorCommand, "."].map(windowsCommandArg).join(" ");
+				// /s strips the first and last quotes around the command string. The
+				// extra outer pair preserves the quotes around both executable paths.
+				return ["/d", "/s", "/v:off", "/k", `"${commandLine}"`];
+			},
+		};
+	}
+	for (const launcher of LINUX_TERMINAL_LAUNCHERS) {
+		const resolved = resolveOnPath(launcher.command, deps.platform, deps.env, isExecutable);
+		if (resolved) {
+			return {
+				command: resolved,
+				argsForWorkspace: (workspacePath) => [...launcher.argsBeforeCommand, editorCommand, workspacePath],
+			};
 		}
 	}
 	return undefined;
@@ -152,7 +215,7 @@ function winInstallDirsFor(candidate: EditorCandidate, env: NodeJS.ProcessEnv): 
 		if (!resolver) continue;
 		const root = resolver(env);
 		if (!root) continue;
-		dirs.push(path.join(root, ...rest));
+		dirs.push(path.win32.join(root, ...rest));
 	}
 	return dirs;
 }
@@ -166,7 +229,7 @@ function resolveInDirs(
 ): string | undefined {
 	for (const directory of dirs) {
 		for (const name of executableNames(command, platform, env)) {
-			const candidatePath = path.join(directory, name);
+			const candidatePath = pathAPI(platform).join(directory, name);
 			if (isExecutable(candidatePath)) return candidatePath;
 		}
 	}
@@ -181,7 +244,13 @@ function resolveEditor(
 ): ResolvedCommand | undefined {
 	for (const command of candidate.commands) {
 		const resolved = resolveOnPath(command, deps.platform, deps.env, isExecutable);
-		if (resolved) return { command: resolved };
+		if (resolved) {
+			if (candidate.requiresTerminal) return resolveTerminalEditor(resolved, deps, isExecutable);
+			return {
+				command: resolved,
+				argsForWorkspace: (workspacePath) => [workspacePath],
+			};
+		}
 	}
 	// Windows-only fallback: probe standard per-user and system install locations
 	// after PATH misses. Keep this on the PATH-first path so an explicit PATH
@@ -190,14 +259,17 @@ function resolveEditor(
 		const installDirs = winInstallDirsFor(candidate, deps.env);
 		for (const command of candidate.commands) {
 			const resolved = resolveInDirs(command, deps.platform, deps.env, installDirs, isExecutable);
-			if (resolved) return { command: resolved };
+			if (resolved) return { command: resolved, argsForWorkspace: (workspacePath) => [workspacePath] };
 		}
 	}
 	if (deps.platform !== "darwin") return undefined;
 	for (const appName of candidate.macApps ?? []) {
-		for (const root of ["/Applications", path.join(deps.homeDir, "Applications")]) {
-			if (isDirectory(path.join(root, `${appName}.app`))) {
-				return { command: "/usr/bin/open", argsBeforeWorkspace: ["-a", appName] };
+		for (const root of ["/Applications", path.posix.join(deps.homeDir, "Applications")]) {
+			if (isDirectory(path.posix.join(root, `${appName}.app`))) {
+				return {
+					command: "/usr/bin/open",
+					argsForWorkspace: (workspacePath) => ["-a", appName, workspacePath],
+				};
 			}
 		}
 	}
@@ -211,21 +283,27 @@ function resolveTerminal(
 	if (deps.platform === "darwin") {
 		return {
 			target: { id: "terminal", name: "Terminal", kind: "terminal" },
-			command: { command: "/usr/bin/open", argsBeforeWorkspace: ["-a", "Terminal"] },
+			command: {
+				command: "/usr/bin/open",
+				argsForWorkspace: (workspacePath) => ["-a", "Terminal", workspacePath],
+			},
 		};
 	}
 	if (deps.platform === "win32") {
 		return {
 			target: { id: "terminal", name: "Command Prompt", kind: "terminal" },
-			command: { command: deps.env.ComSpec || deps.env.COMSPEC || "cmd.exe" },
+			command: {
+				command: deps.env.ComSpec || deps.env.COMSPEC || "cmd.exe",
+				argsForWorkspace: () => [],
+			},
 		};
 	}
-	for (const command of ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "kitty"]) {
-		const resolved = resolveOnPath(command, deps.platform, deps.env, isExecutable);
+	for (const launcher of LINUX_TERMINAL_LAUNCHERS) {
+		const resolved = resolveOnPath(launcher.command, deps.platform, deps.env, isExecutable);
 		if (resolved) {
 			return {
 				target: { id: "terminal", name: "Terminal", kind: "terminal" },
-				command: { command: resolved },
+				command: { command: resolved, argsForWorkspace: () => [] },
 			};
 		}
 	}
@@ -297,8 +375,7 @@ export function createEditorHandoff(deps: EditorHandoffDeps): EditorHandoff {
 						? terminal?.command
 						: editors.find(({ target: editor }) => editor.id === target.id)?.command;
 					if (!resolved) throw new Error("target command was not resolved");
-					const args = [...(resolved.argsBeforeWorkspace ?? []), ...(target.kind === "terminal" && deps.platform !== "darwin" ? [] : [workspacePath])];
-					await deps.launch(resolved.command, args, workspacePath);
+					await deps.launch(resolved.command, resolved.argsForWorkspace(workspacePath), workspacePath);
 				}
 			} catch (error) {
 				deps.logError?.(`failed to open session target ${target.id}`, error);

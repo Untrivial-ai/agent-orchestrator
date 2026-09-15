@@ -3,6 +3,7 @@ package gitdefault
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -220,5 +221,70 @@ func run(t *testing.T, binary string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s: %v\n%s", binary, strings.Join(args, " "), err, out)
+	}
+}
+
+func TestResolveAOInitializedEmptyCloneBeforeAndAfterFirstPush(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprint("legacy=", legacy), func(t *testing.T) {
+			ctx := context.Background()
+			origin := filepath.Join(t.TempDir(), "empty.git")
+			run(t, "git", "init", "--bare", "-b", "main", origin)
+			repo := filepath.Join(t.TempDir(), "clone")
+			run(t, "git", "clone", origin, repo)
+			configureGit(t, repo)
+			runGit(t, repo, "-c", "user.name=Agent Orchestrator", "commit", "--allow-empty", "-m", "initial commit")
+			if !legacy {
+				runGit(t, repo, "config", "--local", ManagedDefaultConfigKey, "main")
+			}
+			runGit(t, repo, "switch", "-c", "feature/work")
+			resolver := New("", nil)
+			for _, inspect := range []bool{true, false} {
+				var got Resolution
+				var err error
+				if inspect {
+					got, err = resolver.Inspect(ctx, repo)
+				} else {
+					got, err = resolver.Resolve(ctx, ctx, repo)
+				}
+				if err != nil || got.Ref != "refs/heads/main" || got.Source != SourceAOInitialized {
+					t.Fatalf("before first push (inspect=%v): %#v, %v", inspect, got, err)
+				}
+			}
+			runGit(t, repo, "push", "origin", "main:trunk")
+			runGit(t, origin, "symbolic-ref", "HEAD", "refs/heads/trunk")
+			got, err := resolver.Resolve(ctx, ctx, repo)
+			if err != nil || got.Branch != "trunk" || got.Source != SourceLiveRemoteHead {
+				t.Fatalf("after first push: %#v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestAOInitializedFallbackRejectsExistingRemoteBranches(t *testing.T) {
+	origin, repo := remoteRepo(t, "main")
+	runGit(t, repo, "config", "--local", ManagedDefaultConfigKey, "main")
+	runGit(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	runGit(t, origin, "symbolic-ref", "HEAD", "refs/heads/missing")
+	_, err := New("", nil).Resolve(context.Background(), context.Background(), repo)
+	if !errors.Is(err, ErrUnresolved) {
+		t.Fatalf("Resolve = %v, want unresolved remote", err)
+	}
+}
+
+func TestAOInitializedFallbackDoesNotOverrideKnownRemoteDefault(t *testing.T) {
+	origin, _ := remoteRepo(t, "trunk")
+	repo := localRepo(t, "main")
+	runGit(t, repo, "config", "--local", ManagedDefaultConfigKey, "main")
+	runGit(t, repo, "remote", "add", "origin", origin)
+	resolver := New("", func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "fetch" {
+			return nil, errors.New("fetch unavailable")
+		}
+		return runCommand(ctx, binary, args...)
+	})
+	_, err := resolver.Resolve(context.Background(), context.Background(), repo)
+	if !errors.Is(err, ErrUnresolved) {
+		t.Fatalf("Resolve = %v, want unresolved fetch rather than local main", err)
 	}
 }

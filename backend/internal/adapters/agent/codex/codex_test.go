@@ -420,6 +420,24 @@ func TestGetLaunchCommandAppendsConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandAppendsConfiguredEffort(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{Effort: "  high  "},
+		Prompt: "review this change",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "model_reasoning_effort='high'"}) {
+		t.Fatalf("command %#v missing trimmed model_reasoning_effort config", cmd)
+	}
+	if containsSubsequence(cmd, []string{"-c", "model_reasoning_effort='  high  '"}) {
+		t.Fatalf("command %#v used untrimmed effort", cmd)
+	}
+}
+
 func TestGetLaunchCommandOmitsBlankConfiguredModel(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "codex"}
 
@@ -919,6 +937,23 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	}
 	if !containsSubsequence(cmd, []string{"--model", "gpt-5.4-mini"}) {
 		t.Fatalf("restore command %#v missing trimmed --model flag", cmd)
+	}
+}
+
+func TestGetRestoreCommandAppendsConfiguredEffort(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config: ports.AgentConfig{Effort: "high"},
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "model_reasoning_effort='high'"}) {
+		t.Fatalf("restore command %#v missing configured effort", cmd)
 	}
 }
 

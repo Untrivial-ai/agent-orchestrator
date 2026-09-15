@@ -29,6 +29,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/aoagents/agent-orchestrator/cloud/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/workerexec"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/workertransport"
@@ -80,9 +81,9 @@ func run(logger *slog.Logger) error {
 	if sessionID == "" {
 		return errors.New("AO_CLOUD_SESSION_ID is required")
 	}
-	if bootstrapToken == "" {
-		return errors.New("AO_WORKER_BOOTSTRAP_TOKEN is required")
-	}
+	// AO_WORKER_BOOTSTRAP_TOKEN is not required up front: a restarted worker
+	// reconnects with its persisted token, and connect() validates that a ticket
+	// is present only when no valid token exists.
 	if workspace == "" {
 		return errors.New("AO_WORKSPACE_DIR is required")
 	}
@@ -92,6 +93,11 @@ func run(logger *slog.Logger) error {
 	}
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("create worker data directory: %w", err)
+	}
+	// The system prompt points the agent at this path; the skill enhances the
+	// prompts and is not load-bearing, so a failed install only warns.
+	if err := skillassets.Install(dataDir); err != nil {
+		logger.Warn("install using-ao skill assets", "error", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -103,21 +109,25 @@ func run(logger *slog.Logger) error {
 		tokenFile: filepath.Join(dataDir, "worker-token"),
 	}
 
-	bootstrap, err := client.bootstrap(ctx, bootstrapToken)
+	// Heal a stale baked binary before any credential-bearing work, so the
+	// control plane's exact worker version runs even when the template lags a
+	// deployment. A no-op when the control plane advertised no expected hash.
+	if err := selfUpdateIfStale(ctx, logger, publicURL, dataDir); err != nil {
+		logger.Warn("worker self-update check failed; continuing", "error", err)
+	}
+
+	bootstrap, err := client.connect(ctx, logger, bootstrapToken)
 	if err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
-	}
-	if bootstrap.SessionID != sessionID {
-		return errors.New("bootstrap session does not match AO_CLOUD_SESSION_ID")
-	}
-	// The ticket is single-use and now spent; from here the only credential is
-	// the rotating worker token.
-	_ = os.Unsetenv("AO_WORKER_BOOTSTRAP_TOKEN")
-	bootstrapToken = ""
-	if err := client.setToken(bootstrap.WorkerToken); err != nil {
 		return err
 	}
-	logger.Info("worker bootstrapped",
+	if bootstrap.SessionID != sessionID {
+		return errors.New("worker session does not match AO_CLOUD_SESSION_ID")
+	}
+	// Any ticket was single-use and is now spent; from here the only credential
+	// is the rotating worker token, already persisted by connect.
+	_ = os.Unsetenv("AO_WORKER_BOOTSTRAP_TOKEN")
+	bootstrapToken = ""
+	logger.Info("worker connected",
 		"session_id", bootstrap.SessionID,
 		"worker_id", bootstrap.WorkerID,
 		"epoch", bootstrap.Epoch,
@@ -125,51 +135,11 @@ func run(logger *slog.Logger) error {
 		"repository_url", bootstrap.Launch.RepositoryURL,
 	)
 
-	if worker.IsScratchRepositoryURL(bootstrap.Launch.RepositoryURL) {
-		if err := worker.PrepareScratchWorkspace(
-			ctx,
-			worker.ExecGitRunner{},
-			workspace,
-		); err != nil {
-			return fmt.Errorf("prepare scratch workspace: %w", err)
-		}
-		logger.Info("initialized scratch workspace")
-	} else {
-		checkoutGrant, err := client.checkoutGrant(ctx)
-		if err != nil {
-			if !anonymousCheckoutEnabled() {
-				if errors.Is(err, errCheckoutForbidden) {
-					// A permanent fault: the session has no repository grant, so
-					// no amount of restarting this worker will make progress.
-					// Surface the cause plainly; the reconciler's startup ceiling
-					// stops the sandbox once repairs stay fruitless.
-					logger.Error("checkout grant refused; session cannot start without a repository grant",
-						"session_id", bootstrap.SessionID,
-						"repository_url", bootstrap.Launch.RepositoryURL,
-						"hint", "connect the repository through the GitHub App, or set AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT for a public repository",
-					)
-				}
-				return fmt.Errorf("request checkout grant: %w", err)
-			}
-			checkoutGrant = worker.CheckoutGrantResponse{
-				CloneURL: bootstrap.Launch.RepositoryURL,
-			}
-			logger.Info("using anonymous public GitHub checkout")
-		}
-		if err := worker.PrepareCheckout(
-			ctx,
-			worker.ExecGitRunner{},
-			workspace,
-			checkoutGrant,
-		); err != nil {
-			return fmt.Errorf("prepare repository checkout: %w", err)
-		}
-		if err := worker.ConfigureWorkerGit(
-			ctx, worker.ExecGitRunner{}, workspace, dataDir, publicURL,
-			bootstrap.SessionID, bootstrap.Launch.Branch,
-		); err != nil {
-			return fmt.Errorf("configure repository tooling: %w", err)
-		}
+	// The workspace shell is deliberately available before checkout starts. A
+	// developer can inspect the sandbox immediately while repository preparation
+	// and coding-agent authentication continue in the background.
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return fmt.Errorf("create workspace directory: %w", err)
 	}
 	for key, value := range map[string]string{
 		"AO_CLOUD_PUBLIC_URL": publicURL,
@@ -194,60 +164,26 @@ func run(logger *slog.Logger) error {
 	} else if err := client.setToken(renewed); err != nil {
 		return err
 	}
-	var agentCommand workerexec.Command
-	agentTerminalID := ""
 	pullRequestSocketPath := filepath.Join(dataDir, "ao-pull-request.sock")
 	reviewSocketPath := filepath.Join(dataDir, "ao-review.sock")
-	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
-		// Workspace files and shell terminals use the same worker transport as the
-		// coding agent. Keep that transport alive when a rootfs is missing the
-		// selected harness instead of making the whole sandbox unreachable.
-		logger.Warn("coding-agent harness unavailable; continuing with workspace transport", "error", err)
-	} else {
-		credential, err := client.Credential(ctx)
-		if err != nil {
-			return fmt.Errorf("load coding-agent credential: %w", err)
-		}
-		agentCommand, err = (workerexec.HarnessBuilder{
-			DataDir: dataDir,
-		}).BuildInteractive(bootstrap.Launch, credential, workspace)
-		if err != nil {
-			return fmt.Errorf("build interactive coding-agent command: %w", err)
-		}
-		agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
-		agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
-		agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
-		agentCommand.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
-		agentCommand.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
-		agentCommand.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
-		agentCommand.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
-			`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
-			`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
-			"to push the current branch and open a pull request against the repository's default branch."
-		agentCommand.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
-		agentCommand.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
-			`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
-			`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
-			"to submit an AO-triggered review verdict."
-		agentTerminal, err := client.ensureAgentTerminal(ctx)
-		if err != nil {
-			agentCommand.Cleanup()
-			return fmt.Errorf("initialize agent terminal: %w", err)
-		}
-		agentTerminalID = agentTerminal.TerminalID
-	}
-
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	started := make(chan error, 1)
 	transportSupervisor := workertransport.Supervisor{
 		Control: client, Workspace: workspace, Logger: logger,
-		AgentCommand: agentCommand, AgentTerminalID: agentTerminalID,
 		Started: started,
 	}
+	// Real-time terminal streaming (duplex predictive echo) rides the same
+	// worker transport; wire it before Run when the sandbox opts in. Preserved
+	// from the terminal-stream feature alongside #4960's workspace-ready gate.
 	if os.Getenv("AO_CLOUD_TERMINAL_STREAM") == "1" {
 		transportSupervisor.Streams = client
 	}
+	// The coding-agent process may connect before checkout completes, but no
+	// user prompt may reach it until the repository is usable. This keeps the
+	// perceived connection path independent from clone latency without letting
+	// a prompt run in an empty workspace.
+	transportSupervisor.HoldAgentInputUntilWorkspaceReady()
 	results := make(chan error, 5)
 	go func() { results <- client.heartbeatLoop(runCtx, logger) }()
 	go func() { results <- transportSupervisor.Run(runCtx) }()
@@ -267,7 +203,7 @@ func run(logger *slog.Logger) error {
 		<-results
 		<-results
 		<-results
-		return fmt.Errorf("start interactive coding-agent terminal: %w", err)
+		return fmt.Errorf("start workspace transport: %w", err)
 	}
 	if err := client.publishEvent(ctx, "worker.ready", map[string]any{
 		"workerId":     bootstrap.WorkerID,
@@ -277,6 +213,25 @@ func run(logger *slog.Logger) error {
 	}); err != nil {
 		logger.Warn("publish worker.ready failed", "error", err)
 	}
+	go func() {
+		if err := prepareWorkspace(
+			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL,
+		); err != nil {
+			if runCtx.Err() == nil {
+				logger.Error("background workspace startup failed", "error", err)
+			}
+			return
+		}
+		transportSupervisor.MarkWorkspaceReady()
+	}()
+	go func() {
+		if err := startInteractiveAgent(
+			runCtx, logger, client, bootstrap, workspace, dataDir,
+			pullRequestSocketPath, reviewSocketPath, &transportSupervisor,
+		); err != nil && runCtx.Err() == nil {
+			logger.Error("background coding-agent startup failed", "error", err)
+		}
+	}()
 	first := <-results
 	cancel()
 	<-results
@@ -288,6 +243,103 @@ func run(logger *slog.Logger) error {
 		return nil
 	}
 	return first
+}
+
+func prepareWorkspace(
+	ctx context.Context,
+	logger *slog.Logger,
+	client *client,
+	bootstrap worker.BootstrapResponse,
+	workspace, dataDir, publicURL string,
+) error {
+	if worker.IsScratchRepositoryURL(bootstrap.Launch.RepositoryURL) {
+		if err := worker.PrepareScratchWorkspace(ctx, worker.ExecGitRunner{}, workspace); err != nil {
+			return fmt.Errorf("prepare scratch workspace: %w", err)
+		}
+		logger.Info("initialized scratch workspace")
+	} else {
+		checkoutGrant, err := client.checkoutGrant(ctx)
+		if err != nil {
+			if !anonymousCheckoutEnabled() {
+				if errors.Is(err, errCheckoutForbidden) {
+					logger.Error("checkout grant refused; session cannot start without a repository grant",
+						"session_id", bootstrap.SessionID,
+						"repository_url", bootstrap.Launch.RepositoryURL,
+						"hint", "connect the repository through the GitHub App, or set AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT for a public repository",
+					)
+				}
+				return fmt.Errorf("request checkout grant: %w", err)
+			}
+			checkoutGrant = worker.CheckoutGrantResponse{CloneURL: bootstrap.Launch.RepositoryURL}
+			logger.Info("using anonymous public GitHub checkout")
+		}
+		if err := worker.PrepareCheckout(ctx, worker.ExecGitRunner{}, workspace, checkoutGrant); err != nil {
+			return fmt.Errorf("prepare repository checkout: %w", err)
+		}
+		if err := worker.ConfigureWorkerGit(
+			ctx, worker.ExecGitRunner{}, workspace, dataDir, publicURL,
+			bootstrap.SessionID, bootstrap.Launch.Branch,
+		); err != nil {
+			return fmt.Errorf("configure repository tooling: %w", err)
+		}
+	}
+	return nil
+}
+
+func startInteractiveAgent(
+	ctx context.Context,
+	logger *slog.Logger,
+	client *client,
+	bootstrap worker.BootstrapResponse,
+	workspace, dataDir, pullRequestSocketPath, reviewSocketPath string,
+	transportSupervisor *workertransport.Supervisor,
+) error {
+	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
+		logger.Warn("coding-agent harness unavailable", "error", err)
+		return nil
+	}
+	credential, err := client.Credential(ctx)
+	if err != nil {
+		return fmt.Errorf("load coding-agent credential: %w", err)
+	}
+	agentCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(
+		bootstrap.Launch, credential, workspace,
+	)
+	if err != nil {
+		return fmt.Errorf("build interactive coding-agent command: %w", err)
+	}
+	agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
+	agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
+	agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
+	agentCommand.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
+	agentCommand.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
+	agentCommand.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
+	agentCommand.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
+		`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
+		`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
+		"to push the current branch and open a pull request against the repository's default branch."
+	agentCommand.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
+	agentCommand.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
+		`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
+		`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
+		"to submit an AO-triggered review verdict."
+	agentTerminal, err := client.ensureAgentTerminal(ctx)
+	if err != nil {
+		agentCommand.Cleanup()
+		return fmt.Errorf("initialize agent terminal: %w", err)
+	}
+	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal.TerminalID); err != nil {
+		return fmt.Errorf("start interactive coding-agent terminal: %w", err)
+	}
+	if err := client.publishEvent(ctx, "agent.ready", map[string]any{
+		"workerId":     bootstrap.WorkerID,
+		"epoch":        bootstrap.Epoch,
+		"version":      workerVersion,
+		"capabilities": workerCapabilities,
+	}); err != nil {
+		logger.Warn("publish agent.ready failed", "error", err)
+	}
+	return nil
 }
 
 var errStaleWorker = errors.New("worker credential replaced")
@@ -318,6 +370,74 @@ func (c *client) bootstrap(ctx context.Context, bootstrapToken string) (worker.B
 	}
 	if response.WorkerToken == "" {
 		return worker.BootstrapResponse{}, errors.New("control plane returned no worker token")
+	}
+	return response, nil
+}
+
+// connect establishes the worker's live credential. It prefers a persisted
+// token so a rebooted or crash-restarted worker reconnects without a fresh
+// ticket — the single-use bootstrap ticket baked into the sandbox environment is
+// only spent to register a genuinely new sandbox. It falls back to redeeming the
+// ticket when no valid token exists.
+func (c *client) connect(
+	ctx context.Context, logger *slog.Logger, bootstrapToken string,
+) (worker.BootstrapResponse, error) {
+	if persisted := c.loadPersistedToken(); persisted != "" {
+		c.mu.Lock()
+		c.token = persisted
+		c.mu.Unlock()
+		if renewed, err := c.heartbeat(ctx); err == nil {
+			if err := c.setToken(renewed); err != nil {
+				return worker.BootstrapResponse{}, err
+			}
+			resp, err := c.reconnect(ctx)
+			if err == nil {
+				logger.Info("worker reconnected with a persisted credential",
+					"session_id", resp.SessionID, "worker_id", resp.WorkerID, "epoch", resp.Epoch)
+				return resp, nil
+			}
+			logger.Warn("reconnect after heartbeat failed; bootstrapping fresh", "error", err)
+		} else {
+			logger.Info("persisted worker credential is no longer valid; bootstrapping fresh", "error", err)
+		}
+		c.mu.Lock()
+		c.token = ""
+		c.mu.Unlock()
+	}
+	if strings.TrimSpace(bootstrapToken) == "" {
+		return worker.BootstrapResponse{}, errors.New(
+			"no valid worker credential and AO_WORKER_BOOTSTRAP_TOKEN is required")
+	}
+	resp, err := c.bootstrap(ctx, bootstrapToken)
+	if err != nil {
+		return worker.BootstrapResponse{}, fmt.Errorf("bootstrap: %w", err)
+	}
+	if err := c.setToken(resp.WorkerToken); err != nil {
+		return worker.BootstrapResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *client) loadPersistedToken() string {
+	if c.tokenFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(c.tokenFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// reconnect fetches the durable launch context for a worker that re-presented a
+// persisted token, so a restart does not need to redeem a bootstrap ticket.
+func (c *client) reconnect(ctx context.Context) (worker.BootstrapResponse, error) {
+	var response worker.BootstrapResponse
+	if err := c.doMethod(ctx, http.MethodGet, "/worker/reconnect", nil, &response); err != nil {
+		return worker.BootstrapResponse{}, err
+	}
+	if response.SessionID == "" {
+		return worker.BootstrapResponse{}, errors.New("control plane returned no session on reconnect")
 	}
 	return response, nil
 }
@@ -503,6 +623,15 @@ func (c *client) ClaimTransport(ctx context.Context) (*worker.TransportRequest, 
 		return nil, err
 	}
 	return response.Request, nil
+}
+
+// WaitForWork long-polls the control plane until a turn or transport request is
+// enqueued for this session (or a short server-side timeout), replacing the old
+// ~100ms busy-poll of the claim routes. It returns no work; the caller re-runs
+// the claim RPCs. An older control plane without the endpoint returns an error,
+// which the transport supervisor treats as a bounded back-off.
+func (c *client) WaitForWork(ctx context.Context) error {
+	return c.doMethod(ctx, http.MethodGet, "/worker/work/wait", nil, nil)
 }
 
 func (c *client) CompleteTransport(

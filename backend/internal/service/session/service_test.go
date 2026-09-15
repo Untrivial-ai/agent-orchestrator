@@ -100,6 +100,10 @@ func newFakeStore() *fakeStore {
 	}
 }
 
+func (f *fakeStore) ListWorkspaceRepos(context.Context, string) ([]domain.WorkspaceRepoRecord, error) {
+	return nil, nil
+}
+
 func TestListBatchesKanbanReads(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
@@ -722,6 +726,44 @@ func TestListWorkspaceFilesRepoUnavailableWrapsSentinel(t *testing.T) {
 	}
 	if !errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
 		t.Fatalf("error = %v, want errors.Is(ErrWorkspaceRepoUnavailable)", err)
+	}
+}
+
+func TestListWorkspaceFilesTreatsStandaloneWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "standalone note\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("standalone files = %#v, want added notes.txt", got.Files)
+	}
+}
+
+func TestListWorkspaceFilesTreatsMigratedScratchWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "migrated scratch note\n")
+	st := newFakeStore()
+	st.sessions["scratch-1"] = domain.SessionRecord{
+		ID:       "scratch-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "scratch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("migrated scratch files = %#v, want added notes.txt", got.Files)
 	}
 }
 
@@ -1671,6 +1713,12 @@ func TestWorkspaceFileSectionsSplitByGitState(t *testing.T) {
 	if len(files.Commits) != 1 || files.Commits[0].Subject != "agent: add committed.go" {
 		t.Fatalf("commits = %+v, want one commit for agent: add committed.go", files.Commits)
 	}
+	if len(files.Commits[0].Files) != 1 || files.Commits[0].Files[0].Path != "committed.go" || files.Commits[0].Files[0].Status != WorkspaceFileAdded || files.Commits[0].Files[0].Additions != 1 {
+		t.Fatalf("commit files = %+v, want added committed.go with one addition", files.Commits[0].Files)
+	}
+	if files.Commits[0].Files[0].Editable {
+		t.Fatal("historical commit file must not be editable")
+	}
 	if files.Summary.Files == 0 || files.Summary.Additions == 0 {
 		t.Fatalf("summary = %+v, want non-zero files and additions", files.Summary)
 	}
@@ -2072,6 +2120,9 @@ func TestListWorkspaceFilesScratchUsesFilesystem(t *testing.T) {
 	if !byPath["image.bin"].Binary || byPath["image.bin"].Additions != 0 || byPath["image.bin"].Deletions != 0 {
 		t.Fatalf("binary summary = %#v, want binary with zero counts", byPath["image.bin"])
 	}
+	if !byPath["README.md"].Editable || byPath["image.bin"].Editable {
+		t.Fatalf("editable flags = README:%v image:%v, want true/false", byPath["README.md"].Editable, byPath["image.bin"].Editable)
+	}
 	if _, ok := byPath[".git/config"]; ok {
 		t.Fatal(".git content should not be listed for scratch")
 	}
@@ -2164,6 +2215,25 @@ func TestGetWorkspaceFileScratchReturnsContentWithEmptyDiff(t *testing.T) {
 	if got.Diff != "" || got.DiffTruncated {
 		t.Fatalf("scratch diff = %q truncated=%v, want empty", got.Diff, got.DiffTruncated)
 	}
+	if !got.Editable {
+		t.Fatal("Editable = false, want true for a complete UTF-8 text file")
+	}
+}
+
+func TestGetWorkspaceFileMarksOversizedTextAsNotEditable(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "large.yaml", strings.Repeat("a", maxWorkspaceFileBytes+1))
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch}
+	st.sessions["scratch-1"] = domain.SessionRecord{ID: "scratch-1", ProjectID: "scratch", Metadata: domain.SessionMetadata{WorkspacePath: root}}
+
+	got, err := (&Service{store: st}).GetWorkspaceFile(context.Background(), "scratch-1", "large.yaml", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Editable || !got.ContentTruncated {
+		t.Fatalf("editable=%v truncated=%v, want false/true", got.Editable, got.ContentTruncated)
+	}
 }
 
 func TestGetWorkspaceFileRejectsTraversal(t *testing.T) {
@@ -2190,6 +2260,70 @@ func TestGetWorkspaceFileRejectsIntermediateSymlinkEscape(t *testing.T) {
 	var e *apierr.Error
 	if !errors.As(err, &e) || e.Kind != apierr.KindInvalid || e.Code != "INVALID_WORKSPACE_PATH" {
 		t.Fatalf("err = %v, want bad request INVALID_WORKSPACE_PATH", err)
+	}
+}
+
+func TestUpdateWorkspaceFileReplacesExistingTextWithOptimisticFingerprint(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "before\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	before, err := svc.GetWorkspaceFile(context.Background(), "ao-1", "notes.txt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "after\n",
+		ExpectedFileFingerprint: before.FileFingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Content != "after\n" || after.FileFingerprint == before.FileFingerprint {
+		t.Fatalf("updated detail = %#v", after)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("workspace content = %q err=%v", data, err)
+	}
+}
+
+func TestUpdateWorkspaceFileRejectsStaleFingerprintWithoutWriting(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "current\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	_, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "replacement\n",
+		ExpectedFileFingerprint: "stale",
+	})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "WORKSPACE_FILE_STALE" {
+		t.Fatalf("err = %v, want conflict WORKSPACE_FILE_STALE", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if readErr != nil || string(data) != "current\n" {
+		t.Fatalf("workspace content = %q err=%v", data, readErr)
+	}
+}
+
+func TestWorkspaceFileSizeDoesNotTreatTruncatedUTF8RuneAsBinary(t *testing.T) {
+	repo := t.TempDir()
+	content := strings.Repeat("a", 8190) + "你tail"
+	writeWorkspaceFile(t, repo, "translated.json", content)
+
+	size, binary := workspaceFileSizeAndBinary(repo, "translated.json", WorkspaceFileModified)
+	if binary {
+		t.Fatal("valid UTF-8 file was classified as binary when the preview ended mid-rune")
+	}
+	if size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", size, len(content))
 	}
 }
 
@@ -2229,6 +2363,8 @@ type fakeCommander struct {
 	restoreErr      error
 	restoreResult   sessionmanager.RestoreResult
 	readyErr        error
+	killFunc        func(domain.SessionID)
+	killMu          sync.Mutex
 }
 
 func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
@@ -2286,7 +2422,12 @@ func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, erro
 	if f.killErr != nil {
 		return false, f.killErr
 	}
+	f.killMu.Lock()
 	f.killed = append(f.killed, id)
+	f.killMu.Unlock()
+	if f.killFunc != nil {
+		f.killFunc(id)
+	}
 	return true, nil
 }
 func (f *fakeCommander) RetireForReplacement(_ context.Context, id domain.SessionID) error {
@@ -2362,6 +2503,65 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	}
 	if len(fc.killed) != 1 || fc.killed[0] != "mer-1" {
 		t.Fatalf("killed = %#v, want only mer-1", fc.killed)
+	}
+	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
+		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)
+	}
+}
+
+// Project removal must tear live sessions down in parallel: the per-session
+// cost (agent/runtime shutdown, controller teardown) dominates and is
+// independent, which is exactly what makes removing a many-session project
+// slow when kills run one after another. Stalling one session's kill must not
+// delay the others.
+func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer"}
+	st.sessions["other-1"] = domain.SessionRecord{ID: "other-1", ProjectID: "other"}
+	mer1Entered := make(chan struct{})
+	mer2Killed := make(chan struct{})
+	releaseMer1 := make(chan struct{})
+	fc := &fakeCommander{killFunc: func(id domain.SessionID) {
+		switch id {
+		case "mer-1":
+			close(mer1Entered)
+			<-releaseMer1
+		case "mer-2":
+			close(mer2Killed)
+		}
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	done := make(chan error, 1)
+	go func() { done <- svc.TeardownProject(context.Background(), "mer") }()
+
+	select {
+	case <-mer1Entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-1 never started")
+	}
+	select {
+	case <-mer2Killed:
+		// mer-2 was killed while mer-1's teardown was still blocked.
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-2 waited for mer-1's teardown to finish; kills are serial, not parallel")
+	}
+	close(releaseMer1)
+	if err := <-done; err != nil {
+		t.Fatalf("TeardownProject: %v", err)
+	}
+
+	fc.killMu.Lock()
+	killed := append([]domain.SessionID(nil), fc.killed...)
+	fc.killMu.Unlock()
+	if len(killed) != 2 {
+		t.Fatalf("killed = %#v, want mer-1 and mer-2", killed)
+	}
+	for _, id := range killed {
+		if id != "mer-1" && id != "mer-2" {
+			t.Fatalf("unexpected session killed: %s", id)
+		}
 	}
 	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
 		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)
@@ -2517,6 +2717,47 @@ func TestSpawnUnknownProjectReturns404(t *testing.T) {
 	}
 	if fc.spawned {
 		t.Fatal("manager.Spawn must NOT be invoked for an unknown project")
+	}
+}
+
+func TestSpawnStandaloneWorkerDoesNotRequireProject(t *testing.T) {
+	st := newFakeStore()
+	fc := &fakeCommander{spawnRecord: domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	session, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+		Kind:    domain.KindWorker,
+		Harness: domain.HarnessCodex,
+		Prompt:  "Research release options",
+	})
+	if err != nil {
+		t.Fatalf("Spawn standalone: %v", err)
+	}
+	if session.ID != "standalone-1" || session.ProjectID != "" {
+		t.Fatalf("standalone session = %#v", session)
+	}
+	if fc.spawnedCfg.ProjectID != "" || fc.spawnedCfg.Kind != domain.KindWorker {
+		t.Fatalf("manager config = %#v", fc.spawnedCfg)
+	}
+}
+
+func TestSpawnStandaloneRejectsProjectFeatures(t *testing.T) {
+	for _, cfg := range []ports.SpawnConfig{
+		{Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, Branch: "feature/x"},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, IssueID: "42"},
+		{Kind: domain.KindWorker},
+	} {
+		fc := &fakeCommander{}
+		svc := &Service{manager: fc, store: newFakeStore()}
+		if _, _, _, err := svc.Spawn(context.Background(), cfg); err == nil {
+			t.Fatalf("Spawn(%#v) succeeded, want validation error", cfg)
+		}
+		if fc.spawned {
+			t.Fatalf("manager called for invalid standalone config %#v", cfg)
+		}
 	}
 }
 
@@ -3080,8 +3321,11 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"chat driver incompatible", fmt.Errorf("spawn: %w", ports.ErrChatDriverIncompatible), apierr.KindConflict, "CHAT_DRIVER_INCOMPATIBLE"},
 		{"chat auth required", fmt.Errorf("spawn: %w", ports.ErrChatAuthRequired), apierr.KindConflict, "CHAT_AUTH_REQUIRED"},
 		{"interface notice not acknowledgeable", fmt.Errorf("acknowledge interface notice: %w", sessionmanager.ErrInterfaceTransitionNoticeNotAcknowledgeable), apierr.KindConflict, "INTERFACE_TRANSITION_NOTICE_NOT_ACKNOWLEDGEABLE"},
+		{"provider history recovery unavailable", fmt.Errorf("recover interface: %w", sessionmanager.ErrInterfaceProviderHistoryRecoveryUnavailable), apierr.KindConflict, "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"},
 		{"native conversation missing", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationMissing), apierr.KindConflict, "NATIVE_SESSION_MISSING"},
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
+		{"unsupported effort", fmt.Errorf("spawn: %w", ports.ErrUnsupportedEffort), apierr.KindInvalid, "UNSUPPORTED_EFFORT"},
+		{"model capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrModelCapabilitiesUnavailable), apierr.KindInvalid, "MODEL_CAPABILITIES_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3711,7 +3955,7 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 	}
 	for _, autoInject := range []bool{false, true} {
 		t.Run(fmt.Sprintf("auto_inject_%t", autoInject), func(t *testing.T) {
-			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, now, domain.SessionRecord{AutoInjectReview: autoInject})
+			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, ports.ReviewWriteReplace, now, domain.SessionRecord{AutoInjectReview: autoInject})
 			if len(reviews) != 1 || reviews[0].AutoInjectReview != autoInject {
 				t.Fatalf("reviews = %+v, want policy %t", reviews, autoInject)
 			}
@@ -4139,6 +4383,12 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		{Author: "reviewer-a", File: "main.go", Line: 14, Body: "resolved body", URL: "https://github.com/acme/repo/pull/7#discussion_r4", Resolved: true},
 		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3", AutoInjectReview: true},
 	}
+	stList.threads[prURL] = []domain.PullRequestReviewThread{
+		{ThreadID: "thread-1"},
+		{ThreadID: "thread-2"},
+		{ThreadID: "thread-3", Resolved: true},
+		{ThreadID: "thread-4", IsBot: true},
+	}
 
 	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
 	if err != nil {
@@ -4157,7 +4407,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	if len(pr.CI.FailingChecks) != 1 || pr.CI.FailingChecks[0].Name != "unit" || pr.CI.FailingChecks[0].URL == "" {
 		t.Fatalf("failing checks = %+v", pr.CI.FailingChecks)
 	}
-	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || len(pr.Review.UnresolvedBy) != 1 {
+	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || pr.Review.UnresolvedThreadCount == nil || *pr.Review.UnresolvedThreadCount != 2 || len(pr.Review.UnresolvedBy) != 1 {
 		t.Fatalf("review = %+v", pr.Review)
 	}
 	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
@@ -4200,6 +4450,127 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 }
 
+func TestListPRSummariesThreadCountKnownOnlyForCompleteObservations(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	unresolved := []domain.PullRequestReviewThread{{ThreadID: "thread-1"}, {ThreadID: "thread-2"}}
+
+	cases := []struct {
+		name string
+		pr   domain.PullRequest
+		want *int // nil means the count must stay unknown
+	}{
+		{
+			name: "complete observation publishes the exact count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/1", SessionID: "mer-1", Number: 1, ReviewObservedAt: now},
+			want: intPtrForTest(2),
+		},
+		{
+			name: "partial observation omits the count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/2", SessionID: "mer-1", Number: 2, ReviewObservedAt: now, ReviewPartial: true},
+			want: nil,
+		},
+		{
+			name: "never-observed reviews omit the count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/3", SessionID: "mer-1", Number: 3},
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+			stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{tc.pr}}
+			stList.threads[tc.pr.URL] = unresolved
+
+			got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("summaries = %+v", got)
+			}
+			count := got[0].Review.UnresolvedThreadCount
+			if tc.want == nil {
+				if count != nil {
+					t.Fatalf("unresolvedThreadCount = %d, want unknown (nil)", *count)
+				}
+				return
+			}
+			if count == nil || *count != *tc.want {
+				t.Fatalf("unresolvedThreadCount = %v, want %d", count, *tc.want)
+			}
+		})
+	}
+}
+
+func TestListPRSummariesThreadCountSerializesObservedZero(t *testing.T) {
+	// An observed zero must survive the DTO round trip as an explicit 0 rather
+	// than being dropped by omitempty.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	prURL := "https://github.com/acme/repo/pull/4"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{{URL: prURL, SessionID: "mer-1", Number: 4, ReviewObservedAt: now}}}
+	stList.threads[prURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", Resolved: true}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 0 {
+		t.Fatalf("unresolvedThreadCount = %v, want explicit 0", count)
+	}
+}
+
+func TestListPRSummariesDedupesAliasReviewThreads(t *testing.T) {
+	// The same provider thread persisted under two repository-URL aliases of
+	// one canonical PR must count once, with the fresher alias record winning
+	// a disagreement.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	oldURL := "https://github.com/acme/repo/pull/9"
+	newURL := "https://github.com/acme-corp/repo/pull/9"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	pr := func(url string) domain.PullRequest {
+		return domain.PullRequest{
+			URL: url, SessionID: "mer-1", Number: 9, Provider: "github",
+			SourceBranch: "fix/alias", HeadSHA: "abc123",
+			ReviewObservedAt: now, UpdatedAt: now,
+		}
+	}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{pr(oldURL), pr(newURL)}}
+	// Same unresolved thread under both aliases: one thread, not two.
+	stList.threads[oldURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now.Add(-time.Hour)}}
+	stList.threads[newURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("aliases did not group: %+v", got)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 1 {
+		t.Fatalf("unresolvedThreadCount = %v, want 1", count)
+	}
+
+	// Conflicting aliases: the old alias still has the thread unresolved, the
+	// newer alias records it resolved. The fresher record wins, so the exact
+	// count is 0.
+	stList.threads[oldURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now.Add(-time.Hour)}}
+	stList.threads[newURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", Resolved: true, UpdatedAt: now}}
+
+	got, err = (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 0 {
+		t.Fatalf("unresolvedThreadCount = %v, want 0", count)
+	}
+}
+
+func intPtrForTest(v int) *int { return &v }
+
 func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	reviews := []domain.PullRequestReview{
@@ -4210,7 +4581,7 @@ func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 		{ID: "c", Author: "charlie", State: domain.ReviewNone, Body: "non-blocking suggestion", URL: "url-c", SubmittedAt: now},
 	}
 
-	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews)
+	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews, nil, false)
 
 	byReviewer := map[string]PRReviewEntry{}
 	for _, entry := range got.Reviews {

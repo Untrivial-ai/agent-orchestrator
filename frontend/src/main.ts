@@ -1,3 +1,6 @@
+import { finishUpdateQuit } from "./main/update-quit";
+import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
+import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
 	app,
 	BaseWindow,
@@ -24,6 +27,8 @@ import {
 	checkForUpdatesNow,
 	downloadUpdateNow,
 	quitAndInstallUpdate,
+	isUpdateRestartRequested,
+	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
 	returnToHome,
@@ -81,6 +86,17 @@ import {
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
 } from "./shared/tray";
 import {
+	parseChatDraftBoundaryKinds,
+	parseChatDraftDialogCopy,
+	type ChatDraftDialogCopy,
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+} from "./shared/chat-draft-risk";
+import {
+	confirmUnsafeChatDraftLeave,
+	shouldPreventUnsafeChatDraftClose,
+} from "./main/chat-draft-unload";
+import {
 	type DaemonProbe,
 	expectedDaemonPort,
 	parseDaemonProbe,
@@ -113,6 +129,7 @@ import {
 	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
 	TELEMETRY_POLICY_CHANGED_CHANNEL,
 	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
+	telemetryPolicyRetryable,
 	type RendererTelemetryCapture,
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
@@ -289,6 +306,10 @@ let keybindingOverrides: KeybindingOverrides = {};
 let keybindingRecordingActive = false;
 let closeShellTerminalShortcutEnabled = false;
 let terminalFocused = false;
+let chatDraftRisks: ChatDraftBoundaryKind[] = [];
+let chatDraftDialog: ChatDraftDialogCopy | undefined;
+let chatDraftQuitConfirmed = false;
+let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
 // Guard: prevents stacking multiple flashFrame(true) calls when notifications arrive rapidly.
@@ -319,7 +340,7 @@ const MAC_WINDOW_BUTTON_Y = 12;
 const RENDERER_SCHEME = "app";
 const RENDERER_HOST = "renderer";
 const RENDERER_ORIGIN = `${RENDERER_SCHEME}://${RENDERER_HOST}`;
-const NATIVE_WINDOW_BACKGROUND_DARK = "#0f1014";
+const NATIVE_WINDOW_BACKGROUND_DARK = "#0c0c0e";
 const NATIVE_WINDOW_BACKGROUND_LIGHT = "#fbfbfb";
 
 function getShellWebContents(): WebContents | null {
@@ -638,6 +659,33 @@ async function createWindowInternal(): Promise<void> {
 		}
 	});
 
+	shellWebContents.on("will-prevent-unload", (event) => {
+		if (chatDraftRisks.length === 0) return;
+		if (
+			chatDraftQuitConfirmed ||
+			chatDraftWindowCloseConfirmed ||
+			confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog)
+		) {
+			// Electron uses preventDefault here to ignore beforeunload and continue
+			// leaving. Doing nothing honors the renderer's request to stay.
+			event.preventDefault();
+		}
+	});
+
+	mainWindow.on("close", (event) => {
+		const preventClose = shouldPreventUnsafeChatDraftClose(
+			chatDraftRisks,
+			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		);
+		if (preventClose) {
+			event.preventDefault();
+			return;
+		}
+		if (chatDraftRisks.length > 0) chatDraftWindowCloseConfirmed = true;
+	});
+
 	// Application shortcuts are handled here so they fire no matter which web
 	// contents holds focus — the shell renderer, xterm's helper textarea, or a
 	// browser-preview view (wired per-view in the browser host).
@@ -747,12 +795,20 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		chatDraftRisks = [];
+		chatDraftDialog = undefined;
+		chatDraftQuitConfirmed = false;
+		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
 		if (windowComposition === composition) windowComposition = null;
-		void disposeBrowserViewHost().finally(() => {
-			composition.dispose();
-		});
+		void disposeBrowserViewHost()
+			.finally(() => {
+				composition.dispose();
+			})
+			.catch((error) => {
+				console.error("AO: window teardown failed:", error);
+			});
 		mainWindow = null;
 		// Drop any pending dock bounce with the window it was attached to: its
 		// focus listener died with the window, so leaving the id set would make
@@ -1029,11 +1085,8 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	// re-linked, survives app quit); a normal app-owned daemon is "app";
 	// headless `ao start` sets none (stays unlinked, persistent by default).
 	//
-	// AO_APP_RUN_ID identifies THIS app launch. It is constant for the process
-	// lifetime, so a daemon the supervisor restarts inherits the same id and its
-	// standalone shell terminals survive; a later app launch gets a new id, which
-	// is how the daemon recognises the previous run's shells as orphans and
-	// destroys them (see internal/service/shellterm).
+	// AO_APP_RUN_ID scopes temporary command/auth terminals to this app launch.
+	// User-opened shells remain attachable across launches while their PTYs live.
 	const AO_OWNER = forceKeep ? "persistent" : "app";
 	const bundledTmuxBinary = stagedBundledTmuxBinary;
 	const ownerTag = {
@@ -1935,6 +1988,22 @@ ipcMain.on(SET_TERMINAL_FOCUSED_CHANNEL, (event, focused: unknown) => {
 	terminalFocused = focused;
 });
 
+ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unknown) => {
+	if (event.sender !== getShellWebContents()) return;
+	const parsed = parseChatDraftBoundaryKinds(risks);
+	const parsedCopy = parseChatDraftDialogCopy(dialogCopy);
+	if (!parsed || (parsed.length > 0 && !parsedCopy)) return;
+	if (
+		chatDraftRisks.length === parsed.length &&
+		chatDraftRisks.every((risk, index) => risk === parsed[index]) &&
+		JSON.stringify(chatDraftDialog) === JSON.stringify(parsedCopy)
+	) return;
+	chatDraftRisks = [...parsed];
+	chatDraftDialog = parsedCopy;
+	chatDraftQuitConfirmed = false;
+	chatDraftWindowCloseConfirmed = false;
+});
+
 // Backs the custom title-bar menu (WindowTitlebar). Each item maps to the same
 // action the native default menu would have performed.
 ipcMain.handle("menu:action", (_event, action: string) => {
@@ -2029,11 +2098,13 @@ ipcMain.on(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, (event, request: unknown) => {
 });
 
 function failClosedTelemetryPolicyView(): TelemetryPolicyView {
-	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
+	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
 }
-async function chooseDirectory(title: string): Promise<string | null> {
+async function chooseDirectory(title: string, defaultPath?: string): Promise<string | null> {
+	if (defaultPath) await mkdir(defaultPath, { recursive: true });
 	const options: OpenDialogOptions = {
-		properties: ["openDirectory"],
+		defaultPath,
+		properties: ["openDirectory", "createDirectory"],
 		title,
 	};
 	// On Windows, parenting the common file dialog forces a repaint of the main
@@ -2046,8 +2117,14 @@ async function chooseDirectory(title: string): Promise<string | null> {
 	return result.filePaths[0] ?? null;
 }
 
-ipcMain.handle("app:chooseDirectory", async (_event, title?: string) => {
-	return chooseDirectory(typeof title === "string" && title.trim() ? title : "Choose a git repository");
+ipcMain.handle("app:chooseDirectory", async (_event, input?: string | { title?: string; defaultPath?: string }) => {
+	const title = typeof input === "string"
+		? input
+		: input?.title;
+	const defaultPath = typeof input === "object" && input !== null && typeof input.defaultPath === "string"
+		? input.defaultPath.trim()
+		: "";
+	return chooseDirectory(title?.trim() || "Choose a git repository", defaultPath === "~/ao/projects" ? path.join(os.homedir(), "ao", "projects") : undefined);
 });
 ipcMain.handle("app:checkGitRepository", async (_event, remoteUrl: string) => {
 	await ensureShellEnv();
@@ -2246,9 +2323,26 @@ ipcMain.handle("updates:returnHome", async (_event, requestId?: string) => {
 ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 	await downloadUpdateNow(requestId);
 });
-ipcMain.handle("updates:install", () => {
-	quitAndInstallUpdate();
-});
+ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
+
+// Whether THIS boot is a post-update relaunch, so the startup loader can show
+// "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
+// marker is written on the quitAndInstall path (auto-updater.ts) on every OS and
+// consumed exactly once here; a corrupt/stale/mismatched marker reads as false
+// (see consumeUpdateRelaunchFlag). Cached so every renderer that asks during the
+// same boot gets the same answer and the marker is deleted only once.
+let postUpdateRelaunchPromise: Promise<boolean> | undefined;
+function detectPostUpdateRelaunch(): Promise<boolean> {
+	if (!postUpdateRelaunchPromise) {
+		const runFile = runFilePath();
+		postUpdateRelaunchPromise =
+			app.isPackaged && runFile
+				? consumeUpdateRelaunchFlag({ stateDir: path.dirname(runFile), version: app.getVersion() }).catch(() => false)
+				: Promise.resolve(false);
+	}
+	return postUpdateRelaunchPromise;
+}
+ipcMain.handle("updates:isPostUpdateRelaunch", () => detectPostUpdateRelaunch());
 
 function cancelDockBounce(): void {
 	if (pendingBounce === null) return;
@@ -2380,6 +2474,17 @@ ipcMain.on(TRAY_SET_ATTENTION_STATE_CHANNEL, (event, state) => trayLifecycle.han
 
 ipcMain.on(TRAY_RENDERER_READY_CHANNEL, (event) => {
 	trayLifecycle.handleRendererReady(event);
+	// This existing handshake comes from TrayRuntime after the React shell has
+	// mounted. Loading the HTML or merely observing a new PID is not success.
+	if (app.isPackaged && process.platform === "darwin" && event.sender === getShellWebContents()) {
+		const runFile = runFilePath();
+		if (runFile) void acknowledgeMacUpdateRestart({
+			stateDir: path.dirname(runFile),
+			appPath: resolveBundlePath(),
+			version: app.getVersion(),
+		});
+	}
+
 	if (pendingFolderPath && event.sender === getShellWebContents()) {
 		event.sender.send(OPEN_FOLDER_PATH_CHANNEL, pendingFolderPath);
 		pendingFolderPath = null;
@@ -2528,6 +2633,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 	const stateDir = path.dirname(runFile);
 	await writeAppStateMarker({
 		stateDir,
+		updateRestartProtocol: 1,
 		appPath: resolveBundlePath(),
 		version: app.getVersion(),
 		installedVia: parseInstalledVia(process.argv),
@@ -2536,6 +2642,12 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	if (app.isPackaged) {
+		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
+		await checkDesktopVersionFloor().catch((err) =>
+			console.warn("desktop version floor check failed:", err),
+		);
+	}
 	void refreshGitHubOwners();
 	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
 	// The approved release gate is intentionally closed. Tests inject the
@@ -2559,7 +2671,7 @@ app.whenReady().then(async () => {
 	telemetryPolicyController = policyController;
 	try { await policyController.initialize(); }
 	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	setInterval(() => { if (policyController.snapshot().state !== "applied") void policyController.retryPendingCleanup(); }, 1_000).unref();
+	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
 	// code past a successful move never runs in this instance, so a post-move-only
@@ -2663,7 +2775,24 @@ app.whenReady().then(async () => {
 // self-stops ~5s after the last client (this process) drops its connection.
 // The supervisorLink fd is NOT explicitly closed on quit; the OS closes it when
 // the process exits for any reason (Cmd+Q, crash, SIGKILL). Sessions survive.
+setUpdateRestartFailureHandler(() => {
+	if (!browserQuitRequested) focusMainWindow();
+});
+
+let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
+	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
+		event.preventDefault();
+		if (confirmUnsafeChatDraftLeave(
+			chatDraftRisks,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		)) {
+			chatDraftQuitConfirmed = true;
+			app.quit();
+		}
+		return;
+	}
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	trayLifecycle.dispose();
@@ -2671,13 +2800,24 @@ app.on("before-quit", (event) => {
 	if (!browserCleanupComplete) {
 		event.preventDefault();
 		if (!browserQuitCleanupPromise) {
-			browserQuitCleanupPromise = Promise.all([
+			const cleanup = Promise.all([
 				disposeAllBrowserViewHosts(),
 				telemetryPolicyController?.close() ?? Promise.resolve(),
-			]).then(() => undefined).finally(() => {
+			]);
+			const finishQuit = () => {
 				browserCleanupComplete = true;
 				browserQuitCleanupPromise = null;
 				app.quit();
+			};
+			browserQuitCleanupPromise = cleanup.then(() => undefined).finally(finishQuit);
+		}
+		if (isUpdateRestartRequested() && !updateQuitDeadlineArmed) {
+			updateQuitDeadlineArmed = true;
+			// Also cover a normal quit already waiting on the same cleanup.
+			void finishUpdateQuit(browserQuitCleanupPromise, {
+				quit: () => undefined, // The existing cleanup continuation owns normal quit.
+				exit: () => { if (isUpdateRestartRequested()) app.exit(0); },
+				log: (error) => console.error("update shutdown:", error),
 			});
 		}
 		return;

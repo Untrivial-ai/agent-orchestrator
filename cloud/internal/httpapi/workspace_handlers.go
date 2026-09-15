@@ -151,6 +151,12 @@ func (s *Server) runWorkspaceRequest(
 	payload json.RawMessage,
 ) (json.RawMessage, bool) {
 	principal := principalFrom(r)
+	if strings.HasPrefix(kind, "workspace.") {
+		if _, err := s.store.ResumeSession(r.Context(), principal, orgID, sessionID); err != nil {
+			s.writeStoreError(w, r, err)
+			return nil, false
+		}
+	}
 	request, err := s.store.CreateWorkspaceRequest(
 		r.Context(), principal, orgID, sessionID, kind, payload, s.workerRequestTimeout,
 	)

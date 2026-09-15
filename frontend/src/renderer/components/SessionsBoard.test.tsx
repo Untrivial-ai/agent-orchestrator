@@ -114,6 +114,23 @@ beforeEach(() => {
 });
 
 describe("SessionsBoard", () => {
+	it("retries an unverified session without opening or terminating it", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "unverified", title: "Unverified task", status: "unknown", displayStatus: "Working", statusReadiness: "unavailable" })])],
+			isSuccess: true, isError: false,
+		});
+		const client = renderBoard("p1");
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+		expect(screen.queryByText("Working")).not.toBeInTheDocument();
+		expect(screen.getByText("Unable to verify")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Retry status check" }));
+		await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
+			params: { path: { sessionId: "unverified" } },
+		}));
+		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["workspaces"] }));
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
 	it("uses the last human message time rather than generic session updatedAt", () => {
 		const presentation = toBoardSessionPresentation(
 			boardSession({
@@ -599,6 +616,31 @@ describe("SessionsBoard", () => {
 		const card = screen.getByText("mergeable-active-task").closest('[data-testid="board-session-card"]') as HTMLElement;
 		const status = within(card).getByTestId("session-status");
 		expect(status.querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("paints Closed without merge red while keeping merged status purple", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-closed-without-merge",
+						title: "closed-without-merge-task",
+						status: "idle",
+						displayStatus: "Closed without merge",
+						kanbanColumn: "ready",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("closed-without-merge-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Closed without merge");
+		expect(status).toHaveClass("text-status-exited");
+		expect(status).not.toHaveClass("text-status-ready", "text-status-merged");
 	});
 
 	it("keeps a spawning card labeled Working when raw activity has not become active", () => {

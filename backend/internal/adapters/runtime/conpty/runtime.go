@@ -371,6 +371,32 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 	return clientIsAlive(sess.addr)
 }
 
+// IsChildAlive reads the child status, unlike IsAlive which also returns true
+// for a host retaining scrollback after exit. Unresolved hosts remain unknown.
+func (r *Runtime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	sess, err := r.resolveWithEvidence(ctx, handle.ID)
+	if err != nil {
+		return false, err
+	}
+	if sess == nil {
+		return false, nil
+	}
+	if sess.addr == unresolvedHostAddress {
+		if sess.pid <= 0 || r.pidIsAlive(sess.pid) {
+			return false, fmt.Errorf("conpty: child status unavailable for unresolved pty-host pid %d: %w", sess.pid, ports.ErrRuntimeProbeInconclusive)
+		}
+		return false, nil
+	}
+	status, hostAlive, err := clientStatusContext(ctx, sess.addr)
+	if err != nil || !hostAlive {
+		return false, err
+	}
+	if !status.Alive && status.ExitCode == nil {
+		return false, fmt.Errorf("conpty: child status lacks exit evidence: %w", ports.ErrRuntimeProbeInconclusive)
+	}
+	return status.Alive, nil
+}
+
 // ProbeFencedRuntime returns liveness evidence for the exact fenced runtime identity.
 func (r *Runtime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
 	if ref.Handle.ID == "" || ref.SessionID == "" || ref.Generation == "" || ref.Handle.ID != string(ref.SessionID) {

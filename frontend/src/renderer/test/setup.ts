@@ -116,6 +116,7 @@ if (typeof window !== "undefined") {
 			onNewShellTerminalShortcut: () => () => undefined,
 			onCloseShellTerminalShortcut: () => () => undefined,
 			setCloseShellTerminalShortcutEnabled: () => undefined,
+			setChatDraftRisk: () => undefined,
 			onOpenSettingsShortcut: () => () => undefined,
 			onPreviousSessionShortcut: () => () => undefined,
 			onNextSessionShortcut: () => () => undefined,
@@ -171,8 +172,8 @@ if (typeof window !== "undefined") {
 		},
 		telemetry: {
 			getBootstrap: async () => null,
-			getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "test", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "applied", environmentVeto: true, durabilitySupported: false }),
-			setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "test", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "applied", environmentVeto: true, durabilitySupported: false }),
+			getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "test", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false }),
+			setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "test", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false }),
 			onPolicy: () => () => false,
 			onClearQueues: () => () => false,
 			capture: async () => false,
@@ -188,9 +189,9 @@ if (typeof window !== "undefined") {
 				canGoForward: false,
 				isLoading: false,
 			}),
-			setBounds: () => undefined,
-			setOverlayOpen: () => undefined,
-			navigate: async ({ viewId }: { viewId: string }) => ({
+		setBounds: () => undefined,
+		setOverlayOpen: () => undefined,
+		navigate: async ({ viewId }: { viewId: string }) => ({
 				viewId,
 				url: "",
 				title: "",
@@ -199,6 +200,7 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 			historySuggestions: async () => [],
+			historyFavicon: async () => undefined,
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",
@@ -323,6 +325,7 @@ if (typeof window !== "undefined") {
 			returnHome: async () => undefined,
 			download: async () => undefined,
 			install: async () => undefined,
+			isPostUpdateRelaunch: async () => false,
 			onStatus: () => () => undefined,
 		onTelemetry: () => () => undefined,
 		},

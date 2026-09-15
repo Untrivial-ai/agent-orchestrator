@@ -24,6 +24,7 @@ import { chatErrorCopy, isChatPreflightError } from "../lib/chatError";
 import { haptics } from "../lib/haptics";
 import { agentSheetRoute, modelSheetRoute, projectSheetRoute } from "../lib/sheetResult";
 import { screenKeyboardAvoidance } from "../lib/session/keyboardInset";
+import { ALL_PROJECTS, resolveActiveProject } from "../lib/projectFilter";
 import { modelOverride, resolveSpawnAgent, resolveSpawnModel, spawnModelSourceChanged } from "../lib/spawnModel";
 import { useApp } from "../lib/store";
 import type { Theme } from "../lib/theme";
@@ -34,7 +35,7 @@ export default function SpawnModal() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
-	const { projects, activeProjectId, config, spawn } = useApp();
+	const { projects, projectsKnown, activeProjectId, config, spawn } = useApp();
 
 	const [projectId, setProjectId] = useState<string | null>(null);
 	const [harness, setHarness] = useState("");
@@ -86,10 +87,21 @@ export default function SpawnModal() {
 	// `targetProject()`; kept here because the screen needs it as UI state to
 	// drive the picker's value and the button's disabled state.
 	useEffect(() => {
-		if (projectId) return;
-		if (activeProjectId !== "all") setProjectId(activeProjectId);
-		else if (projects.length === 1) setProjectId(projects[0].id);
-	}, [activeProjectId, projects, projectId]);
+		if (projectId) {
+			// The seed can outlive its project: the list lands after the sheet
+			// opened, or the project was removed while it was open. Drop it so the
+			// branch below re-seeds from what the store now reports, instead of
+			// posting a dead id the daemon answers with 404 (#4843). A pick is on
+			// the list when it is made, so this only drops a pick whose project has
+			// since gone — the same 404 otherwise. Judged with the same rule and
+			// the same known-list flag as the board, so a failed /projects tick
+			// cannot invalidate a seed the daemon still honours.
+			if (resolveActiveProject(projectId, projects, projectsKnown) !== projectId) changeProject(null);
+			return;
+		}
+		if (activeProjectId !== ALL_PROJECTS) changeProject(activeProjectId);
+		else if (projects.length === 1) changeProject(projects[0].id);
+	}, [activeProjectId, projects, projectsKnown, projectId]);
 
 	useEffect(() => {
 		if (!config) return;
@@ -163,7 +175,18 @@ export default function SpawnModal() {
 
 	const clearModelOverride = () => { setModel(""); setModelTouched(false); };
 	const resetModelSource = () => { clearModelOverride(); setModelCatalog(undefined); setModelError(undefined); };
-	const selectProject = (nextProjectId: string) => {
+	// The one path that moves the sheet to another project — a pick from the
+	// picker, and the automatic re-seed when the id it holds stops existing. Both
+	// have to drop what was derived from the old project: an explicit model and a
+	// touched agent are choices made under that project's defaults, and carried
+	// across they beat the new project's own and get posted with the spawn (#5058
+	// review). The picker was already doing this; the re-seed was not.
+	//
+	// The guard is the same helper the agent path uses; with the agent unchanged
+	// on both sides it asks only whether the project id moved. Seeding from null
+	// passes it, which is right: the Model row is disabled without a project
+	// (`disabled={!projectId || ...}`), so there is never a choice to lose there.
+	const changeProject = (nextProjectId: string | null) => {
 		if (!spawnModelSourceChanged({ projectId, agentId: harness }, { projectId: nextProjectId, agentId: harness })) return;
 		resetModelSource();
 		setProjectDetail(undefined);
@@ -252,7 +275,7 @@ export default function SpawnModal() {
 							router.push(
 								projectSheetRoute({
 									selected: projectId ?? "",
-								onSelect: selectProject,
+								onSelect: changeProject,
 									// "All projects" is a filter — there is nothing to spawn into.
 									includeAll: false,
 									title: "Project",

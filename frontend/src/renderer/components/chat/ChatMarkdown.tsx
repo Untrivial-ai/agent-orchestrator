@@ -38,16 +38,10 @@ import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { aoBridge } from "../../lib/bridge";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
-import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
-import {
-	ContextMenu,
-	ContextMenuContent,
-	ContextMenuItem,
-	ContextMenuTrigger,
-} from "../ui/context-menu";
+import { isWebLink, isWorkspaceFileLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
+import { AppLink } from "../AppLink";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
@@ -79,16 +73,18 @@ const PLUGINS = [remarkGfm];
  * and re-parse every message on every poll.
  */
 const StreamingProse = createContext(false);
-const OpenChatLink = createContext<((url: string) => void) | undefined>(undefined);
+const OpenChatLink = createContext<{ open?: (url: string) => void; workspacePaths: string[] }>({ workspacePaths: [] });
 
 export function ChatLinkProvider({
 	onLinkOpen,
+	workspacePaths = [],
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
+	workspacePaths?: string[];
 	children: ReactNode;
 }) {
-	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
+	return <OpenChatLink.Provider value={{ open: onLinkOpen, workspacePaths }}>{children}</OpenChatLink.Provider>;
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
@@ -214,46 +210,24 @@ function compactEmoji(children: ReactNode): ReactNode {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
-	const onLinkOpen = useContext(OpenChatLink);
-	const anchor = (
-		<a
+	const { open: onLinkOpen, workspacePaths } = useContext(OpenChatLink);
+	return (
+		<AppLink
 			href={href}
+			onBrowserOpen={onLinkOpen}
+			inAppLink={href ? (url) => isWebLink(url) || isWorkspaceFileLink(url, workspacePaths) : undefined}
+			onClick={(event) => {
+				if (href && !isWebLink(href) && !isWorkspaceFileLink(href, workspacePaths)) {
+					event.preventDefault();
+					void openLinkInSystemBrowser(href);
+				}
+			}}
 			target="_blank"
 			rel="noreferrer noopener"
-			onClick={(event) => {
-				if (!href) return;
-				event.preventDefault();
-				// Cmd/Ctrl-click (the VS Code/Slack convention) and Option/Alt-click
-				// escape the in-app panel and go straight to the system browser.
-				const toSystemBrowser = event.metaKey || event.ctrlKey || event.altKey;
-				if (!toSystemBrowser && onLinkOpen && isWebLink(href)) {
-					onLinkOpen(href);
-					return;
-				}
-				void openLinkInSystemBrowser(href);
-			}}
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
 			{children}
-		</a>
-	);
-	if (!href) return anchor;
-	return (
-		<ContextMenu>
-			<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
-			<ContextMenuContent className="min-w-44">
-				{/* Only http(s) may reach shell.openExternal from here; other schemes
-				    still get their address copied. */}
-				{isWebLink(href) ? (
-					<ContextMenuItem onSelect={() => void openLinkInSystemBrowser(href)}>
-						Open in system browser
-					</ContextMenuItem>
-				) : null}
-				<ContextMenuItem onSelect={() => void aoBridge.clipboard.writeText(href)}>
-					Copy link address
-				</ContextMenuItem>
-			</ContextMenuContent>
-		</ContextMenu>
+		</AppLink>
 	);
 }
 
@@ -266,7 +240,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
  */
 function MermaidFence({ code }: { code: string }) {
 	const streaming = useContext(StreamingProse);
-	const onLinkOpen = useContext(OpenChatLink);
+	const { open: onLinkOpen } = useContext(OpenChatLink);
 	return <MermaidBlock code={code} streaming={streaming} onLinkOpen={onLinkOpen} />;
 }
 

@@ -111,6 +111,12 @@ func TestEditMessageRequiresBothApproximateReplayCapabilitiesBeforeStartingProvi
 				if startCalls != 1 {
 					t.Fatalf("provider Start calls = %d, want refusal before a fresh start", startCalls)
 				}
+				_, retryErr := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+					Text: "B edited", ClientMessageID: "capability-matrix", Origin: domain.MessageOriginHuman,
+				})
+				if !errors.Is(retryErr, chatsvc.ErrForkUnsupported) {
+					t.Fatalf("same-ID replay error = %v, want ErrForkUnsupported", retryErr)
+				}
 				return
 			}
 

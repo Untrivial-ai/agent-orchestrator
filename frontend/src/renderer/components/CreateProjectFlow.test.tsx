@@ -140,7 +140,7 @@ vi.mock("./CloneRepositoryDialog", () => ({
 		value: { remoteUrl: string; destinationParent: string };
 	}) =>
 		open ? (
-			<div data-testid="clone-dialog">
+			<div data-testid="clone-dialog" data-destination={value.destinationParent}>
 				<input
 					aria-label="Clone URL"
 					value={value.remoteUrl}
@@ -261,6 +261,18 @@ beforeEach(() => {
 });
 
 describe("CreateProjectFlow droppedPath", () => {
+	it("shows the standalone agent action when the host provides one", async () => {
+		const onCreateStandaloneAgent = vi.fn();
+		const user = userEvent.setup();
+		renderChooseFlow({ onCreateStandaloneAgent });
+
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "New standalone agent" }));
+
+		expect(onCreateStandaloneAgent).toHaveBeenCalledOnce();
+		await waitFor(() => expect(screen.queryByRole("button", { name: "New standalone agent" })).not.toBeInTheDocument());
+	});
+
 	it("does not open on mount", () => {
 		render(<CreateProjectFlow mode="choose" {...noop} droppedPath={null} />);
 		expect(screen.queryByRole("button", { name: "Import a workspace folder" })).not.toBeInTheDocument();
@@ -352,6 +364,17 @@ describe("CreateProjectFlow droppedPath", () => {
 
 		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/dropped/first");
 		expect(screen.queryByRole("button", { name: "Import an existing project" })).not.toBeInTheDocument();
+	});
+
+	it.each([null, "/chosen/projects"])("uses a sensible clone destination with saved folder %s", async (saved) => {
+		window.localStorage.removeItem("ao.clone.lastDestinationParent");
+		if (saved) window.localStorage.setItem("ao.clone.lastDestinationParent", saved);
+		const user = userEvent.setup();
+		const { rerender } = render(<CreateProjectFlow mode="choose" {...noop} openSignal={0} />);
+		rerender(<CreateProjectFlow mode="choose" {...noop} openSignal={1} />);
+		await user.click(await screen.findByRole("button", { name: "Clone from Git" }));
+		expect(await screen.findByTestId("clone-dialog")).toHaveAttribute("data-destination", saved ?? "~/ao/projects");
+		window.localStorage.removeItem("ao.clone.lastDestinationParent");
 	});
 
 	it("ignores a drop while the clone-from-Git dialog is open", async () => {
@@ -571,7 +594,7 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import a workspace folder");
 
-		expect(await screen.findByText("This is a single project, not a collection of projects. Import it as a project instead.")).toBeInTheDocument();
+		expect(await screen.findByText("This is a single repository, not a collection of repositories. Import it as a project instead.")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
 		expect(screen.queryByText("proj")).not.toBeInTheDocument();
 
@@ -629,7 +652,7 @@ describe("CreateProjectFlow project import validation", () => {
 		renderChooseFlow();
 		await openSource(user, "Import a workspace folder");
 
-		expect(screen.queryByText("This is a single project, not a collection of projects. Import it as a project instead.")).not.toBeInTheDocument();
+		expect(screen.queryByText("This is a single repository, not a collection of repositories. Import it as a project instead.")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Import as project" })).not.toBeInTheDocument();
 		expect(await screen.findByText("app")).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Continue" }));
@@ -1079,8 +1102,13 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(await screen.findByRole("option", { name: "acme" }));
 		const privateRepository = screen.getByRole("switch", { name: "Private repository" });
 		expect(privateRepository).toBeChecked();
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
 		await user.click(privateRepository);
 		expect(privateRepository).not.toBeChecked();
+		expect(screen.getByRole("switch", { name: "Public repository" })).toBe(privateRepository);
+		expect(screen.getByText("Public repository")).toBeInTheDocument();
+		expect(screen.getByText("Anyone on the internet can see this repo")).toBeInTheDocument();
 			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
 			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
@@ -1100,6 +1128,44 @@ describe("CreateProjectFlow project import validation", () => {
 		const sheet = await screen.findByTestId("agent-sheet");
 		expect(sheet).toHaveAttribute("data-path", "/repo/project");
 		expect(screen.queryByText("Prepare project")).not.toBeInTheDocument();
+	});
+
+	it("updates visibility toggle label, helper text, and accessible name dynamically when toggled", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/project", {
+				nextStep: "prepare_git",
+				root: { hasOrigin: false, requiredActions: ["create_remote_repository"] },
+			}),
+		});
+
+		renderChooseFlow();
+
+		await openSource(user, "Import an existing project");
+		const ownerInput = await screen.findByLabelText("Owner");
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+
+		// Default state is ON (Private repository)
+		const toggle = screen.getByRole("switch", { name: "Private repository" });
+		expect(toggle).toBeChecked();
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
+
+		// Toggle to OFF (Public repository)
+		await user.click(toggle);
+		expect(toggle).not.toBeChecked();
+		expect(screen.getByRole("switch", { name: "Public repository" })).toBe(toggle);
+		expect(screen.getByText("Public repository")).toBeInTheDocument();
+		expect(screen.getByText("Anyone on the internet can see this repo")).toBeInTheDocument();
+
+		// Toggle back to ON (Private repository)
+		await user.click(toggle);
+		expect(toggle).toBeChecked();
+		expect(screen.getByRole("switch", { name: "Private repository" })).toBe(toggle);
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
 	});
 
 	it("blocks an unavailable GitHub repository before Git preparation", async () => {
@@ -1146,43 +1212,60 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(sheet).toHaveClass("modal-shake"));
 	});
 
-	it.each(["single_repo", "workspace"] as const)("passes the checked-out root branch when importing %s", async (kind) => {
+	it("submits single_repo imports without a blocking branch lookup", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn(async () => undefined);
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
-		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
-		if (kind === "workspace") {
-			bridgeMocks.scanImportFolder.mockResolvedValue({
-				path: "/repo/project",
-				repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
-			});
-			apiMocks.POST.mockResolvedValueOnce({
-				data: {
-					...projectValidation("/repo/project", {
-						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
-						childRepos: [{
-							repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
-							isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
-						}],
-					}),
-					importKind: "workspace",
-				},
-			});
-		} else {
-			apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
-		}
+		apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
 
 		renderChooseFlow({ onCreateProject });
-		await openSource(user, kind === "workspace" ? "Import a workspace folder" : "Import an existing project");
-		if (kind === "workspace") {
-			await user.click(await screen.findByRole("button", { name: "Continue" }));
-		}
+		await openSource(user, "Import an existing project");
 		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
 
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/project",
-				asWorkspace: kind === "workspace",
+				asWorkspace: false,
+				workerAgent: "codex",
+				orchestratorAgent: "codex",
+			}),
+		);
+		// The daemon resolves the base branch itself; the import must not
+		// block on a branch lookup before submitting.
+		expect(bridgeMocks.getRepositoryBranch).not.toHaveBeenCalled();
+	});
+
+	it("preserves the checked-out root branch when importing a workspace", async () => {
+		const user = userEvent.setup();
+		const onCreateProject = vi.fn(async () => undefined);
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/project",
+			repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/project", {
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
+					childRepos: [{
+						repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
+						isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
+					}],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow({ onCreateProject });
+		await openSource(user, "Import a workspace folder");
+		await user.click(await screen.findByRole("button", { name: "Continue" }));
+		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
+
+		await waitFor(() =>
+			expect(onCreateProject).toHaveBeenCalledWith({
+				path: "/repo/project",
+				asWorkspace: true,
 				defaultBranch: "main",
 				workerAgent: "codex",
 				orchestratorAgent: "codex",

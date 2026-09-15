@@ -30,9 +30,14 @@ describe("sessionsAtRiskFromInstall", () => {
 		expect(sessionsAtRiskFromInstall([session({ mode: "tui" })])).toEqual([]);
 	});
 
-	it("spares Codex chat, which runs in a detached per-session host", () => {
-		expect(sessionsAtRiskFromInstall([session({ provider: "codex" })])).toEqual([]);
-	});
+	it.each(["codex", "claude-code", "cursor", "opencode", "droid", "kimi", "kimchi", "pi", "omp"] as const)(
+		"spares %s only when the daemon confirms persistent ownership",
+		(provider) => {
+			expect(sessionsAtRiskFromInstall([session({ provider, chatProviderPreserved: true })])).toEqual([]);
+			expect(sessionsAtRiskFromInstall([session({ provider })])).toHaveLength(1);
+			expect(sessionsAtRiskFromInstall([session({ provider, chatProviderPreserved: false })])).toHaveLength(1);
+		},
+	);
 
 	it("spares sessions with no turn in flight", () => {
 		for (const status of ["idle", "exited", "merged", "pr_open"]) {
