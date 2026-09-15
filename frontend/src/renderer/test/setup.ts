@@ -200,6 +200,7 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 			historySuggestions: async () => [],
+			historyFavicon: async () => undefined,
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",
@@ -324,6 +325,7 @@ if (typeof window !== "undefined") {
 			returnHome: async () => undefined,
 			download: async () => undefined,
 			install: async () => undefined,
+			isPostUpdateRelaunch: async () => false,
 			onStatus: () => () => undefined,
 		onTelemetry: () => () => undefined,
 		},

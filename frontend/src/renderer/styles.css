@@ -3551,6 +3551,11 @@ html.sidebar-reordering * {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(0, 240px) minmax(0, 1fr);
 	padding-left: 0;
+	transition: grid-template-columns var(--duration-fast) ease;
+}
+
+.session-inspector__topbar--browser:has(.browser-panel__address-bar--editing) {
+	grid-template-columns: minmax(0, 1fr) clamp(240px, 58cqw, 640px) minmax(0, 1fr);
 }
 
 .session-inspector__topbar--browser > .session-inspector__tablist {
@@ -3593,6 +3598,12 @@ html.sidebar-reordering * {
 		grid-row: 2;
 		width: 180px;
 		justify-self: center;
+		transition: width var(--duration-fast) ease;
+	}
+
+	.session-inspector__topbar--browser:has(.browser-panel__address-bar--editing)
+		> .browser-panel__topbar-host {
+		width: min(400px, calc(100cqw - 16px));
 	}
 }
 
@@ -4352,13 +4363,26 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-popout-titlebar > .browser-panel__address-bar {
-	flex: 1 1 0;
+	position: absolute;
+	left: 50%;
+	width: min(480px, calc(100vw - 32px));
+	flex: none;
 	height: auto;
 	min-height: 0;
+	transform: translateX(-50%);
+	transition: width var(--duration-fast) ease;
+}
+
+.browser-popout-titlebar > .browser-panel__address-bar--editing {
+	width: min(760px, calc(100vw - 32px));
 }
 
 .browser-popout-titlebar .browser-panel__url-wrap {
-	max-width: 480px;
+	max-width: none;
+}
+
+.browser-popout-titlebar--mac-windowed > .browser-panel__address-bar {
+	max-width: calc(100vw - (2 * var(--size-titlebar-content-offset)));
 }
 
 /* Native macOS fullscreen drops the traffic-light reserve: keep a titlebar
@@ -4682,6 +4706,30 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	flex: 1;
 	max-width: 240px;
 	height: var(--size-control-md);
+	transition: max-width var(--duration-fast) ease;
+}
+
+.browser-panel > .browser-panel__address-bar--editing .browser-panel__url-wrap {
+	max-width: min(520px, calc(100% - 8px));
+}
+
+.browser-panel__topbar-host > .browser-panel__address-bar--editing .browser-panel__url-wrap {
+	max-width: 100%;
+}
+
+.browser-panel__history-suggestions {
+	--browser-history-suggestion-inset: 4px;
+	width: min(var(--radix-popover-trigger-width, 240px), calc(100vw - 16px));
+	min-width: min(var(--radix-popover-trigger-width, 240px), calc(100vw - 16px));
+	max-height: min(360px, var(--radix-popover-content-available-height));
+	padding: var(--browser-history-suggestion-inset);
+	overflow-x: hidden;
+	overflow-y: auto;
+	animation: none;
+}
+
+.browser-panel__history-suggestions > [role="option"] {
+	border-radius: calc(var(--radius-settings-panel) - var(--browser-history-suggestion-inset));
 }
 
 .browser-panel__annotate-btn[aria-pressed="true"] {

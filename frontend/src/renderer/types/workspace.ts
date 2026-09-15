@@ -111,6 +111,7 @@ export type WorkspaceSession = {
 	 * {@link status} already produced.
 	 */
 	displayStatus?: string;
+	statusReadiness?: "checking" | "ready" | "unavailable";
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
 	/** Whether the cloud worker has a current control-plane connection. */
@@ -226,7 +227,7 @@ export function primaryPR(session: WorkspaceSession): PullRequestFacts | undefin
 	return sortedPRs(session)[0];
 }
 
-export function isOrchestratorSession(session: WorkspaceSession): boolean {
+export function isOrchestratorSession(session: Pick<WorkspaceSession, "id" | "kind">): boolean {
 	return session.kind === "orchestrator" || session.id.endsWith("-orchestrator");
 }
 

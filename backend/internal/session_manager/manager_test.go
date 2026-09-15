@@ -21,7 +21,9 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 var ctx = context.Background()
@@ -84,7 +86,7 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	f.sessions[rec.ID] = rec
 	return nil
 }
-func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string, updatedAt time.Time) (bool, error) {
+func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error) {
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr
 	}
@@ -93,9 +95,6 @@ func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain
 		return false, nil
 	}
 	rec.Metadata.BrowserCapabilityVerifier = verifier
-	if rec.UpdatedAt.Before(updatedAt) {
-		rec.UpdatedAt = updatedAt
-	}
 	f.sessions[id] = rec
 	return true, nil
 }
@@ -106,6 +105,10 @@ func (f *fakeStore) RecordSessionLatestUserPrompt(_ context.Context, id domain.S
 	}
 	rec.Metadata.LatestUserPrompt = prompt
 	rec.Metadata.LatestUserPromptAt = updatedAt
+	rec.Metadata.LatestAssistantUpdate = ""
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointLegacy
+	rec.Metadata.ConversationCheckpointGeneration = ""
+	rec.Metadata.ConversationCheckpointNativeID = ""
 	rec.UpdatedAt = updatedAt
 	f.sessions[id] = rec
 	return true, nil
@@ -213,6 +216,13 @@ func (l *fakeLCM) MarkSpawned(_ context.Context, id domain.SessionID, metadata d
 	rec.IsTerminated = false
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()}
 	rec.FirstSignalAt = time.Now()
+	rec.Metadata = preserveCheckpointOnFakeMarkSpawned(rec.Metadata, metadata)
+	l.store.sessions[id] = rec
+	return nil
+}
+
+func (l *fakeLCM) MarkChatReconnected(_ context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	rec := l.store.sessions[id]
 	rec.Metadata = metadata
 	l.store.sessions[id] = rec
 	return nil
@@ -228,6 +238,25 @@ func (l *fakeLCM) MarkChatSpawned(
 	return l.MarkSpawned(ctx, id, metadata)
 }
 
+// Production Lifecycle Manager merges launch handles into the existing row;
+// launch metadata never replaces replay checkpoint provenance. Keep the shared
+// session-manager fake faithful to that ownership boundary.
+func preserveCheckpointOnFakeMarkSpawned(
+	base, launched domain.SessionMetadata,
+) domain.SessionMetadata {
+	if launched.LatestUserPrompt == "" {
+		launched.LatestUserPrompt = base.LatestUserPrompt
+	}
+	if launched.LatestAssistantUpdate == "" {
+		launched.LatestAssistantUpdate = base.LatestAssistantUpdate
+	}
+	launched.ConversationCheckpointState = base.ConversationCheckpointState
+	launched.ConversationCheckpointGeneration = base.ConversationCheckpointGeneration
+	launched.ConversationCheckpointNativeID = base.ConversationCheckpointNativeID
+	launched.ConversationCheckpointUnsettled = base.ConversationCheckpointUnsettled
+	return launched
+}
+
 func (l *fakeLCM) ApplyActivitySignal(_ context.Context, id domain.SessionID, signal ports.ActivitySignal) error {
 	rec, ok := l.store.sessions[id]
 	if !ok {
@@ -236,7 +265,7 @@ func (l *fakeLCM) ApplyActivitySignal(_ context.Context, id domain.SessionID, si
 	if rec.IsTerminated || !signal.Valid {
 		return nil
 	}
-	if !signal.ExpectedUpdatedAt.IsZero() && !rec.UpdatedAt.Equal(signal.ExpectedUpdatedAt) {
+	if signal.ExpectedRevision != nil && rec.Revision != *signal.ExpectedRevision {
 		return nil
 	}
 	if signal.LaunchID != "" && signal.LaunchID != rec.Metadata.RuntimeLaunchID {
@@ -273,6 +302,25 @@ func (l *fakeLCM) CommitControllerEpoch(
 	nativeConversationID string,
 	_ bool,
 ) (bool, error) {
+	return l.changeControllerEpoch(id, source, target, nativeConversationID, false)
+}
+
+func (l *fakeLCM) RestoreControllerEpoch(
+	_ context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeConversationID string,
+	_ bool,
+) (bool, error) {
+	return l.changeControllerEpoch(id, source, target, nativeConversationID, true)
+}
+
+func (l *fakeLCM) changeControllerEpoch(
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeConversationID string,
+	restore bool,
+) (bool, error) {
 	rec, ok := l.store.sessions[id]
 	if !ok || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != source {
 		return false, nil
@@ -283,6 +331,14 @@ func (l *fakeLCM) CommitControllerEpoch(
 	rec.Metadata.AgentSessionID = nativeConversationID
 	rec.Metadata.ProviderConversationID = nativeConversationID
 	rec.Metadata.ControllerGeneration = ""
+	if !restore && target == domain.SessionModeTUI {
+		rec.Metadata.LatestUserPrompt = ""
+		rec.Metadata.LatestAssistantUpdate = ""
+		rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
+		rec.Metadata.ConversationCheckpointGeneration = ""
+		rec.Metadata.ConversationCheckpointNativeID = ""
+		rec.Metadata.ConversationCheckpointUnsettled = false
+	}
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()}
 	l.store.sessions[id] = rec
 	return true, nil
@@ -3060,6 +3116,30 @@ func TestKill_MissingProjectRepoPreservesWorkspaceAndTerminates(t *testing.T) {
 	}
 }
 
+// A worktree whose directory is still pinned by a process handle (a live agent
+// or scoped shell on Windows) survives the removeAll retry budget. git has
+// already unregistered it by then, so nothing is being reconciled — only the
+// directory cannot go away right now. Erroring the kill for that stranded the
+// session in the sidebar forever: every retry answered 500 and the row never
+// left (#3408). The kill must succeed with freed=false, and the leftover
+// directory is left for a later `ao session cleanup` pass to retry.
+func TestKill_DeferredWorkspaceRemovalPreservesAndTerminates(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	ws.destroyErr = fmt.Errorf("gitworktree: remove unregistered path %q: %w (deferred: %w)", "/ws/mer-1", ports.ErrWorkspaceDeferred, errors.New("access denied"))
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("kill err = %v, want the session to terminate anyway", err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false: the worktree was left on disk")
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be marked terminated so it leaves the sidebar")
+	}
+}
+
 func TestKill_DeletesStaleRestoreMarker(t *testing.T) {
 	m, st, _, _ := newManager()
 	st.sessions["mer-1"] = mkLive("mer-1")
@@ -3205,6 +3285,41 @@ func TestKill_WorkspaceProjectDirtyRowRefusesRemoval(t *testing.T) {
 	}
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("session should be terminated even when dirty workspace cleanup is deferred")
+	}
+}
+
+// Same deferred outcome through the workspace-project path: a child repo whose
+// removal is deferred must not fail the kill, and the leftover rows stay marked
+// for a later cleanup pass to retry (#3408).
+func TestKill_WorkspaceProjectDeferredRowDefersRemoval(t *testing.T) {
+	m, st, _, ws := newManager()
+	ws.destroyErr = fmt.Errorf("gitworktree: force remove path %q: %w (deferred: %w)", "/ws/mer-1/api", ports.ErrWorkspaceDeferred, errors.New("access denied"))
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Metadata:  domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", RuntimeHandleID: "h1"},
+		Activity:  domain.Activity{State: domain.ActivityActive},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
+	}
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false: deferred rows preserve the workspace")
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session should be terminated even when workspace removal is deferred")
+	}
+	want := []string{"Destroy:api", "Destroy:__root__"}
+	if got := ws.calls; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("calls = %v, want %v", got, want)
 	}
 }
 
@@ -3574,6 +3689,29 @@ func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	}
 	if res.Skipped[0].Reason != "project is archived or unregistered — remove worktree manually" {
 		t.Fatalf("reason = %q, want archived-project reason", res.Skipped[0].Reason)
+	}
+}
+
+// A deferred removal is a skip, not a failure: the session stays terminated,
+// the leftover directory is reported visibly so the user is not left staring at
+// a silent "0 sessions cleaned", and the next cleanup run retries the unlink
+// (#3408).
+func TestCleanup_ReportsDeferredWorkspaceRemoval(t *testing.T) {
+	m, st, _, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	ws.destroyErr = fmt.Errorf("gitworktree: remove unregistered path %q: %w (deferred: %w)", "/ws/mer-1", ports.ErrWorkspaceDeferred, errors.New("access denied"))
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cleaned) != 0 {
+		t.Fatalf("cleaned = %v, want none", res.Cleaned)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
+		t.Fatalf("skipped = %v, want mer-1", res.Skipped)
+	}
+	if res.Skipped[0].Reason != "worktree is in use; will retry on a later run" {
+		t.Fatalf("reason = %q", res.Skipped[0].Reason)
 	}
 }
 
@@ -7891,7 +8029,7 @@ func TestReconcileLive_RelaunchFailureLeavesSessionExitedAndRecoverable(t *testi
 	}
 }
 
-func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResumable(t *testing.T) {
+func TestReconcileLive_RuntimeFailureAfterCapabilityUpdateLeavesSessionResumable(t *testing.T) {
 	st := newFakeStore()
 	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
 	rt := &fakeRuntime{
@@ -7931,15 +8069,15 @@ func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResum
 	if failed.Metadata.BrowserCapabilityVerifier != "verifier-1" {
 		t.Fatalf("browser capability verifier = %q, want launch metadata persisted", failed.Metadata.BrowserCapabilityVerifier)
 	}
-	if !failed.UpdatedAt.Equal(launchUpdatedAt) {
-		t.Fatalf("UpdatedAt = %v, want launch metadata timestamp %v", failed.UpdatedAt, launchUpdatedAt)
+	if !failed.UpdatedAt.Equal(bootUpdatedAt) {
+		t.Fatalf("UpdatedAt = %v, want preserved recency %v", failed.UpdatedAt, bootUpdatedAt)
 	}
 	if failed.Metadata.AgentSessionID != "native-conversation-1" || failed.Metadata.WorkspacePath != "/wt/s1" {
 		t.Fatalf("native identity/worktree changed after failed relaunch: %+v", failed.Metadata)
 	}
 
-	// The failed startup attempt must land in the ordinary Resume Agent state,
-	// even though launch preparation advanced UpdatedAt before runtime.Create.
+	// The failed startup attempt must land in the ordinary Resume Agent state
+	// without treating capability rotation as user-visible session activity.
 	rt.createErr = nil
 	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
 		t.Fatalf("ResumeAgentWithMode after dependency recovery: %v", err)
@@ -7964,7 +8102,7 @@ func TestPreserveFailedReconcileRelaunchRetriesContendedCAS(t *testing.T) {
 			return
 		}
 		current := st.sessions[id]
-		current.UpdatedAt = signal.ExpectedUpdatedAt.Add(time.Nanosecond)
+		current.Revision = *signal.ExpectedRevision + 1
 		st.sessions[id] = current
 	}
 	m := New(Deps{Store: st, Lifecycle: lcm})
@@ -7995,7 +8133,7 @@ func TestPreserveFailedReconcileRelaunchBoundsPersistentCASContention(t *testing
 	lcm := &contendedActivityLCM{fakeLCM: &fakeLCM{store: st}}
 	lcm.before = func(_ int, id domain.SessionID, signal ports.ActivitySignal) {
 		current := st.sessions[id]
-		current.UpdatedAt = signal.ExpectedUpdatedAt.Add(time.Nanosecond)
+		current.Revision = *signal.ExpectedRevision + 1
 		st.sessions[id] = current
 	}
 	m := New(Deps{Store: st, Lifecycle: lcm})
@@ -8602,6 +8740,371 @@ func TestSend_RecordsDeliveredUserInput(t *testing.T) {
 	}
 	if got := st.sessions["s1"].Metadata.LatestUserPromptAt; got.IsZero() {
 		t.Fatal("LatestUserPromptAt is zero after delivered user input")
+	}
+}
+
+func TestSend_PaneFallbackCannotPairLostPromptHookWithPriorTrustedAssistant(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	st, err := sqlite.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{
+		ID: "proj", Path: "/repo", RegisteredAt: now,
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	created, err := st.CreateSession(ctx, domain.SessionRecord{
+		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/session-1", Branch: "ao/session-1",
+			RuntimeHandleID: "runtime-1", RuntimeLaunchID: "terminal-generation",
+			AgentSessionID: "native-1", AgentSessionIDLaunchID: "terminal-generation",
+			LatestUserPrompt: "prior trusted prompt", LatestAssistantUpdate: "prior trusted answer",
+			ConversationCheckpointState:      domain.ConversationCheckpointComplete,
+			ConversationCheckpointGeneration: "terminal-generation",
+			ConversationCheckpointNativeID:   "native-1",
+		},
+		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		FirstSignalAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	lcm := lifecycle.New(st, nil)
+	manager := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: singleAgent{agent: fakeAgent{}}, Workspace: &fakeWorkspace{},
+		Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm,
+	})
+	if err := manager.Send(ctx, created.ID, "new prompt whose UserPromptSubmit hook is lost", nil); err != nil {
+		t.Fatalf("send pane prompt: %v", err)
+	}
+	afterFallback, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read fallback checkpoint: ok=%v err=%v", ok, err)
+	}
+	checkpoint := afterFallback.Metadata
+	if checkpoint.LatestUserPrompt != "new prompt whose UserPromptSubmit hook is lost" ||
+		checkpoint.LatestAssistantUpdate != "" ||
+		checkpoint.ConversationCheckpointState != domain.ConversationCheckpointLegacy ||
+		checkpoint.ConversationCheckpointGeneration != "" ||
+		checkpoint.ConversationCheckpointNativeID != "" {
+		t.Fatalf("pane fallback checkpoint = %+v, want untrusted new prompt with prior assistant/provenance cleared", checkpoint)
+	}
+
+	// A delayed Stop from the old trusted turn must not borrow the new pane
+	// prompt after its UserPromptSubmit hook was lost.
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "stop", AgentSessionID: "native-1", LatestAssistantUpdate: "delayed prior answer",
+		LaunchID: "terminal-generation", Valid: true, State: domain.ActivityIdle,
+	}); err != nil {
+		t.Fatalf("apply delayed prior Stop: %v", err)
+	}
+	afterDelayedStop, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read after delayed Stop: ok=%v err=%v", ok, err)
+	}
+	if afterDelayedStop.Metadata.LatestAssistantUpdate != "" ||
+		afterDelayedStop.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy ||
+		!afterDelayedStop.Metadata.ConversationCheckpointUnsettled {
+		t.Fatalf("delayed Stop paired with pane fallback: %+v", afterDelayedStop.Metadata)
+	}
+
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "user-prompt-submit", AgentSessionID: "native-1",
+		LatestUserPrompt: "later canonical prompt",
+		LaunchID:         "terminal-generation", Valid: true, State: domain.ActivityActive,
+	}); err != nil {
+		t.Fatalf("apply later canonical UserPromptSubmit: %v", err)
+	}
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "stop", AgentSessionID: "native-1", LatestAssistantUpdate: "new trusted answer",
+		LaunchID: "terminal-generation", Valid: true, State: domain.ActivityIdle,
+	}); err != nil {
+		t.Fatalf("apply canonical Stop: %v", err)
+	}
+	afterHooks, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read promoted checkpoint: ok=%v err=%v", ok, err)
+	}
+	promoted := afterHooks.Metadata
+	// Hooks without native identities cannot repair the missing witness, even
+	// after another prompt. Only transcript-backed admission can prove a pair.
+	if promoted.LatestUserPrompt != "later canonical prompt" ||
+		promoted.LatestAssistantUpdate != "" ||
+		promoted.ConversationCheckpointState != domain.ConversationCheckpointPrompt ||
+		promoted.ConversationCheckpointGeneration != "terminal-generation" ||
+		promoted.ConversationCheckpointNativeID != "native-1" ||
+		!promoted.ConversationCheckpointUnsettled ||
+		!strings.Contains(promoted.NativeCheckpointEvidence, `"invalid":true`) {
+		t.Fatalf("unproven canonical hooks certified completion: %+v", promoted)
+	}
+}
+
+type activityProjectionBarrierStore struct {
+	*sqlite.Store
+	updateEntered chan struct{}
+	releaseUpdate chan struct{}
+	blockOnce     sync.Once
+	barrierMu     sync.Mutex
+	skipUpdates   int
+}
+
+func (s *activityProjectionBarrierStore) UpdateSessionFromActivitySignal(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	expectedRevision int64,
+) (bool, error) {
+	s.barrierMu.Lock()
+	if s.skipUpdates > 0 {
+		s.skipUpdates--
+		s.barrierMu.Unlock()
+		return s.Store.UpdateSessionFromActivitySignal(ctx, rec, expectedRevision)
+	}
+	blocked := false
+	s.blockOnce.Do(func() {
+		blocked = true
+		close(s.updateEntered)
+	})
+	s.barrierMu.Unlock()
+	if blocked {
+		select {
+		case <-s.releaseUpdate:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return s.Store.UpdateSessionFromActivitySignal(ctx, rec, expectedRevision)
+}
+
+func TestActivitySignal_CASRetryPreservesCorrelatedPermissionPost(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	baseStore, err := sqlite.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := baseStore.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	st := &activityProjectionBarrierStore{
+		Store: baseStore, updateEntered: make(chan struct{}), releaseUpdate: make(chan struct{}),
+		// The permission request is the first projection. Let it establish the
+		// blocked row, then interleave the correlated post at the next CAS.
+		skipUpdates: 1,
+	}
+	t.Cleanup(func() {
+		select {
+		case <-st.releaseUpdate:
+		default:
+			close(st.releaseUpdate)
+		}
+	})
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{
+		ID: "proj", Path: "/repo", RegisteredAt: now,
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	created, err := st.CreateSession(ctx, domain.SessionRecord{
+		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/session-1", Branch: "ao/session-1",
+			RuntimeHandleID: "runtime-1", RuntimeLaunchID: "terminal-generation",
+		},
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
+		FirstSignalAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	lcm := lifecycle.New(st, nil)
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "pre-tool-use", ToolName: "Bash", ToolUseID: "tool-1",
+		LaunchID: "terminal-generation", Valid: true, State: domain.ActivityActive,
+	}); err != nil {
+		t.Fatalf("apply pre-tool-use: %v", err)
+	}
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "permission-request", ToolName: "Bash", ToolUseID: "tool-1",
+		LaunchID: "terminal-generation", Valid: true, State: domain.ActivityBlocked,
+	}); err != nil {
+		t.Fatalf("apply permission request: %v", err)
+	}
+	blocked, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok || blocked.Activity.State != domain.ActivityBlocked {
+		t.Fatalf("permission request did not block: session=%+v ok=%v err=%v", blocked, ok, err)
+	}
+
+	postDone := make(chan error, 1)
+	go func() {
+		postDone <- lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+			Event: "post-tool-use", ToolName: "Bash", ToolUseID: "tool-1",
+			LaunchID: "terminal-generation", Valid: true, State: domain.ActivityActive,
+		})
+	}()
+	select {
+	case <-st.updateEntered:
+	case <-time.After(time.Second):
+		t.Fatal("correlated post did not reach the storage barrier")
+	}
+	if changed, err := st.RecordSessionLatestUserPrompt(
+		ctx, created.ID, "pane prompt during permission post", blocked.UpdatedAt.Add(time.Second),
+	); err != nil || !changed {
+		t.Fatalf("advance session revision: changed=%v err=%v", changed, err)
+	}
+	close(st.releaseUpdate)
+	if err := <-postDone; err != nil {
+		t.Fatalf("apply correlated post: %v", err)
+	}
+
+	after, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read session after CAS retry: ok=%v err=%v", ok, err)
+	}
+	if after.Activity.State != domain.ActivityActive {
+		t.Fatalf("correlated permission post left activity %q, want active", after.Activity.State)
+	}
+	if after.Metadata.LatestUserPrompt != "pane prompt during permission post" ||
+		after.Metadata.LatestAssistantUpdate != "" ||
+		after.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy {
+		t.Fatalf("CAS retry overwrote concurrent pane checkpoint: %+v", after.Metadata)
+	}
+}
+
+func TestSend_PaneFallbackWinsAgainstStaleLifecycleProjection(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	baseStore, err := sqlite.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := baseStore.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	st := &activityProjectionBarrierStore{
+		Store: baseStore, updateEntered: make(chan struct{}), releaseUpdate: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-st.releaseUpdate:
+		default:
+			close(st.releaseUpdate)
+		}
+	})
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{
+		ID: "proj", Path: "/repo", RegisteredAt: now,
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	created, err := st.CreateSession(ctx, domain.SessionRecord{
+		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/session-1", Branch: "ao/session-1",
+			RuntimeHandleID: "runtime-1", RuntimeLaunchID: "terminal-generation",
+			AgentSessionID: "native-1", AgentSessionIDLaunchID: "terminal-generation",
+			LatestUserPrompt:                 "prior trusted prompt",
+			ConversationCheckpointState:      domain.ConversationCheckpointPrompt,
+			ConversationCheckpointGeneration: "terminal-generation",
+			ConversationCheckpointNativeID:   "native-1",
+		},
+		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		FirstSignalAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	lcm := lifecycle.New(st, nil)
+	manager := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: singleAgent{agent: fakeAgent{}}, Workspace: &fakeWorkspace{},
+		Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm,
+	})
+	hookDone := make(chan error, 1)
+	go func() {
+		hookDone <- lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+			Event: "stop", AgentSessionID: "native-1", LatestAssistantUpdate: "stale prior answer",
+			LaunchID: "terminal-generation", Valid: true, State: domain.ActivityIdle,
+		})
+	}()
+	select {
+	case <-st.updateEntered:
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle projection did not reach the storage barrier")
+	}
+
+	if err := manager.Send(ctx, created.ID, "pane prompt whose hook is lost", nil); err != nil {
+		t.Fatalf("send pane prompt: %v", err)
+	}
+	afterPane, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read pane fallback: ok=%v err=%v", ok, err)
+	}
+	if afterPane.Metadata.LatestUserPrompt != "pane prompt whose hook is lost" ||
+		afterPane.Metadata.LatestAssistantUpdate != "" ||
+		afterPane.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy {
+		t.Fatalf("pane fallback before stale projection = %+v", afterPane.Metadata)
+	}
+	close(st.releaseUpdate)
+	if err := <-hookDone; err != nil {
+		t.Fatalf("apply stale Stop: %v", err)
+	}
+
+	afterRace, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read checkpoint after race: ok=%v err=%v", ok, err)
+	}
+	checkpoint := afterRace.Metadata
+	if checkpoint.LatestUserPrompt != "pane prompt whose hook is lost" ||
+		checkpoint.LatestAssistantUpdate != "" ||
+		checkpoint.ConversationCheckpointState != domain.ConversationCheckpointLegacy ||
+		checkpoint.ConversationCheckpointGeneration != "" ||
+		checkpoint.ConversationCheckpointNativeID != "" ||
+		!checkpoint.ConversationCheckpointUnsettled {
+		t.Fatalf("stale lifecycle projection resurrected trusted checkpoint: %+v", checkpoint)
+	}
+
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "user-prompt-submit", AgentSessionID: "native-1", LatestUserPrompt: "later canonical prompt",
+		LaunchID: "terminal-generation", Valid: true, State: domain.ActivityActive,
+	}); err != nil {
+		t.Fatalf("apply later canonical UserPromptSubmit: %v", err)
+	}
+	if err := lcm.ApplyActivitySignal(ctx, created.ID, ports.ActivitySignal{
+		Event: "stop", AgentSessionID: "native-1", LatestAssistantUpdate: "later canonical answer",
+		LaunchID: "terminal-generation", Valid: true, State: domain.ActivityIdle,
+	}); err != nil {
+		t.Fatalf("apply later canonical Stop: %v", err)
+	}
+	promoted, ok, err := st.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read later canonical checkpoint: ok=%v err=%v", ok, err)
+	}
+	if promoted.Metadata.LatestUserPrompt != "later canonical prompt" ||
+		promoted.Metadata.LatestAssistantUpdate != "" ||
+		promoted.Metadata.ConversationCheckpointState != domain.ConversationCheckpointPrompt ||
+		promoted.Metadata.ConversationCheckpointGeneration != "terminal-generation" ||
+		promoted.Metadata.ConversationCheckpointNativeID != "native-1" ||
+		!promoted.Metadata.ConversationCheckpointUnsettled ||
+		!strings.Contains(promoted.Metadata.NativeCheckpointEvidence, `"invalid":true`) {
+		t.Fatalf("unproven later canonical hooks certified completion: %+v", promoted.Metadata)
 	}
 }
 

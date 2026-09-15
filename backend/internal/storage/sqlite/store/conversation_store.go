@@ -438,7 +438,6 @@ func (s *Store) commitChatSpawn(
 			// terminated target remains unavailable to every concurrent reader.
 			rows, err := q.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
 				ControllerGeneration: rec.Metadata.ControllerGeneration,
-				UpdatedAt:            rec.UpdatedAt,
 				ID:                   rec.ID,
 			})
 			if err != nil {

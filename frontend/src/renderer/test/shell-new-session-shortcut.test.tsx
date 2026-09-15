@@ -148,7 +148,8 @@ vi.mock("../lib/bridge", () => ({
 	},
 }));
 
-vi.mock("../hooks/useWorkspaceQuery", () => ({
+vi.mock("../hooks/useWorkspaceQuery", async (importOriginal) => ({
+	workspaceStatusesChecking: (await importOriginal<typeof import("../hooks/useWorkspaceQuery")>()).workspaceStatusesChecking,
 	useWorkspaceQuery: () => shellMocks.state.workspaceQuery,
 	useWorkspaceTraySessions: () => ({ data: [] }),
 	workspaceQueryKey: ["workspaces"],
@@ -500,6 +501,27 @@ describe("shell workspace startup", () => {
 		// inside the terminal panel so the inspector header can occupy this row too.
 		expect(sidebar).not.toHaveAttribute("data-topbar-offset", "session");
 		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")).toBeInTheDocument();
+	});
+
+	it("waits for session recovery and then reveals ready or unavailable cards", async () => {
+		const checking: WorkspaceSummary[] = workspaces.map((workspace) => ({ ...workspace,
+			sessions: workspace.sessions.map((session) => ({ ...session, statusReadiness: "checking" })),
+		}));
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		shellMocks.state.workspaceQuery = { data: checking, dataUpdatedAt: 100, isError: false, isSuccess: true };
+		shellMocks.queryClient.getQueryState.mockReturnValue({ dataUpdatedAt: 100 });
+		shellMocks.queryClient.fetchQuery.mockResolvedValueOnce(checking);
+		const view = await renderShell();
+		await act(async () => {});
+		expect(screen.getByTestId("daemon-startup-loader")).toBeInTheDocument();
+		expect(screen.queryByTestId("sidebar-provider")).not.toBeInTheDocument();
+		const settled = checking.map((workspace) => ({ ...workspace,
+			sessions: workspace.sessions.map((session, index) => ({ ...session, statusReadiness: index === 0 ? "ready" as const : "unavailable" as const })),
+		}));
+		shellMocks.state.workspaceQuery = { data: settled, dataUpdatedAt: 101, isError: false, isSuccess: true };
+		view.rerender(<Suspense fallback={null}><ShellRoute /></Suspense>);
+		await waitFor(() => expect(shellMocks.state.shellValue?.workspaceStartupState).toBe("ready"));
+		view.unmount();
 	});
 
 	it("forces a confirmed fetch and preserves a collapsed sidebar preference", async () => {

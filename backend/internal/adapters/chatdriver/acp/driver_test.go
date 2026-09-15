@@ -1591,6 +1591,9 @@ func TestACPDriverRefreshesHistoryWithAnotherSessionLoad(t *testing.T) {
 	}
 	initialTurns := 0
 	for _, event := range initial {
+		if event.Kind == ports.ChatEventUserMessageCompleted && event.NativeUserMessageID != userOneID {
+			t.Fatalf("replay lost native user identity: %+v", event)
+		}
 		if event.Kind == ports.ChatEventTurnCompleted {
 			initialTurns++
 		}

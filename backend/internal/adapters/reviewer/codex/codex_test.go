@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -71,6 +73,25 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	}
 	if agent.got.SystemPrompt != "review only" {
 		t.Fatalf("system prompt = %q", agent.got.SystemPrompt)
+	}
+}
+
+func TestReviewCommandEmitsConfiguredCodexEffort(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	got, err := New().ReviewCommand(context.Background(), ports.ReviewInvocation{
+		Config: ports.AgentConfig{Effort: "high"},
+		Prompt: "review it",
+	})
+	if err != nil {
+		t.Fatalf("ReviewCommand: %v", err)
+	}
+	if !slices.Contains(got.Argv, "model_reasoning_effort='high'") {
+		t.Fatalf("review command %#v missing configured Codex effort", got.Argv)
 	}
 }
 

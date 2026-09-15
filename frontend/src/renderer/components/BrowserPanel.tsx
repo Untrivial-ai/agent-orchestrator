@@ -8,6 +8,8 @@ import {
 	useState,
 	type FocusEvent,
 	type FormEvent,
+	type KeyboardEvent,
+	type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -66,7 +68,9 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { SETTINGS_MENU_ROW, SETTINGS_MENU_SURFACE } from "./settings/SettingsMenuTrigger";
 import { Input } from "./ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
@@ -117,6 +121,7 @@ const DEVICE_PRESETS: { id: string; label: string; width: number; height: number
 	{ id: "nest-hub-max", label: "Nest Hub Max", width: 1280, height: 800, category: "tablet" },
 ];
 const CUSTOM_DEVICE_PRESET_ID = "custom";
+const MAX_HISTORY_SUGGESTIONS = 4;
 const MIN_DEVICE_FRAME_WIDTH = 240;
 const MAX_DEVICE_FRAME_WIDTH = 2560;
 
@@ -378,7 +383,8 @@ export function BrowserPanelView({
 	} = browserView;
 	const [urlInput, setUrlInput] = useState(navState.url);
 	const [historySuggestions, setHistorySuggestions] = useState<Array<{ url: string; title?: string }>>([]);
-	const historyListId = useId();
+	const historyMenuId = useId();
+	const [activeHistorySuggestion, setActiveHistorySuggestion] = useState(-1);
 	const [urlEditing, setUrlEditing] = useState(false);
 	const { beginPicking, cancelPicking, enqueue, error, failPicking, queuedCount, retryQueued, status } =
 		annotationQueue;
@@ -389,6 +395,7 @@ export function BrowserPanelView({
 	const [devicePreset, setDevicePreset] = useState<string | null>(null);
 	const [customDeviceWidth, setCustomDeviceWidth] = useState("390");
 	const [controlsView, setControlsView] = useState<"root" | "devices" | "profiles">("root");
+	const [controlsOpen, setControlsOpen] = useState(false);
 	const [browserProfiles, setBrowserProfiles] = useState<BrowserProfile[]>([]);
 	const [profilesLoading, setProfilesLoading] = useState(false);
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
@@ -397,6 +404,8 @@ export function BrowserPanelView({
 			? clampDeviceFrameWidth(Number(customDeviceWidth))
 			: DEVICE_PRESETS.find((preset) => preset.id === devicePreset)?.width;
 	const urlInputRef = useRef<HTMLInputElement>(null);
+	const historyMenuRef = useRef<HTMLDivElement>(null);
+	const historyRequestGenerationRef = useRef(0);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
 	const {
@@ -559,6 +568,7 @@ export function BrowserPanelView({
 	useEffect(() => {
 		setUrlInput(navState.url);
 		setHistorySuggestions([]);
+		setActiveHistorySuggestion(-1);
 		// A prior submit (typed, or pasted, then Enter) leaves the caret at the
 		// end of the old value; the browser keeps that same horizontal scroll
 		// position for the new value, scrolling the scheme/host off the left
@@ -572,6 +582,7 @@ export function BrowserPanelView({
 	}, [navState.url]);
 
 	useEffect(() => {
+		const generation = ++historyRequestGenerationRef.current;
 		const query = urlInput.trim();
 		if (
 			!urlEditing ||
@@ -579,7 +590,7 @@ export function BrowserPanelView({
 			!viewId ||
 			!profileState.profileId ||
 			query === navState.url ||
-			query.length < 2
+			query.length < 1
 		) {
 			setHistorySuggestions([]);
 			return;
@@ -587,8 +598,16 @@ export function BrowserPanelView({
 		let current = true;
 		const timer = window.setTimeout(() => {
 			void window.ao!.browser.historySuggestions({ viewId, query }).then(
-				(suggestions) => current && setHistorySuggestions(suggestions),
-				() => current && setHistorySuggestions([]),
+				(suggestions) => {
+					if (!current || historyRequestGenerationRef.current !== generation) return;
+					setHistorySuggestions(suggestions.slice(0, MAX_HISTORY_SUGGESTIONS));
+					setActiveHistorySuggestion(-1);
+				},
+				() => {
+					if (!current || historyRequestGenerationRef.current !== generation) return;
+					setHistorySuggestions([]);
+					setActiveHistorySuggestion(-1);
+				},
 			);
 		}, 120);
 		return () => {
@@ -607,10 +626,12 @@ export function BrowserPanelView({
 		if (!onPageFocus) return;
 		return onPageFocus((focusedViewId) => {
 			if (focusedViewId !== viewId) return;
+			historyRequestGenerationRef.current += 1;
 			urlInputRef.current?.blur();
 			setUrlEditing(false);
 			setUrlInput(navState.url);
 			setHistorySuggestions([]);
+			setActiveHistorySuggestion(-1);
 		});
 	}, [navState.url, viewId]);
 
@@ -630,10 +651,12 @@ export function BrowserPanelView({
 	}, [cancelPicking, enqueue, viewId]);
 
 	const navigateFromAddressBar = (url: string) => {
+		historyRequestGenerationRef.current += 1;
 		urlInputRef.current?.blur();
 		setUrlEditing(false);
 		setUrlInput(url);
 		setHistorySuggestions([]);
+		setActiveHistorySuggestion(-1);
 		void navigate(url);
 	};
 
@@ -644,16 +667,43 @@ export function BrowserPanelView({
 	};
 
 	const handleURLChange = (value: string) => {
+		historyRequestGenerationRef.current += 1;
 		setUrlInput(value);
-		const selected = historySuggestions.find((suggestion) => suggestion.url === value.trim());
-		if (!selected) return;
-		navigateFromAddressBar(selected.url);
+		setActiveHistorySuggestion(-1);
 	};
 
-	const endUrlEditing = () => {
+	const handleURLKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			historyRequestGenerationRef.current += 1;
+			setHistorySuggestions([]);
+			setActiveHistorySuggestion(-1);
+			return;
+		}
+		if (historySuggestions.length === 0) return;
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+			event.preventDefault();
+			const direction = event.key === "ArrowDown" ? 1 : -1;
+			setActiveHistorySuggestion((current) => {
+				if (current < 0) return direction > 0 ? 0 : historySuggestions.length - 1;
+				return (current + direction + historySuggestions.length) % historySuggestions.length;
+			});
+			return;
+		}
+		if (event.key === "Enter" && activeHistorySuggestion >= 0) {
+			event.preventDefault();
+			navigateFromAddressBar(historySuggestions[activeHistorySuggestion]!.url);
+			return;
+		}
+	};
+
+	const endUrlEditing = (event: FocusEvent<HTMLInputElement>) => {
+		if (event.relatedTarget instanceof Node && historyMenuRef.current?.contains(event.relatedTarget)) return;
+		historyRequestGenerationRef.current += 1;
 		setUrlEditing(false);
 		setUrlInput(navState.url);
 		setHistorySuggestions([]);
+		setActiveHistorySuggestion(-1);
 	};
 
 	const beginUrlEditing = () => {
@@ -724,52 +774,105 @@ export function BrowserPanelView({
 							? error
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
+	const suggestionsOpen = urlEditing && historySuggestions.length > 0;
 	const browserAddressBar = (
 		<form
-			className="browser-panel__address-bar min-w-0 flex-1"
+			className={cn(
+				"browser-panel__address-bar min-w-0 flex-1",
+				urlEditing && "browser-panel__address-bar--editing",
+			)}
 			data-testid="browser-address-bar"
 			onSubmit={submit}
 		>
-			<div className="browser-panel__url-wrap relative min-w-0 flex-1">
-				<Input
-					aria-label={t("browser.url")}
-					className="browser-panel__url-input h-browser-url text-xs"
-					list={historySuggestions.length > 0 ? historyListId : undefined}
-					onBlur={endUrlEditing}
-					onChange={(event) => handleURLChange(event.target.value)}
-					onClick={() => urlInputRef.current?.select()}
-					onFocus={beginUrlEditing}
-					placeholder={t("browser.urlPlaceholder")}
-					ref={urlInputRef}
-					value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
-				/>
-				{isWebLink(navState.url) ? (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<Button
-								aria-label={t("inspector.openInSystemBrowser")}
-								className="browser-panel__url-external"
-								onClick={openCurrentPageExternally}
-								size="icon-sm"
-								type="button"
-								variant="ghost"
-							>
-								<ExternalLink aria-hidden="true" className="size-icon-base" />
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent data-browser-native-overlay="true" side="bottom">
-							{t("inspector.openInSystemBrowser")}
-						</TooltipContent>
-					</Tooltip>
-				) : null}
-				<datalist id={historyListId}>
-					{historySuggestions.map((suggestion) => (
-						<option key={suggestion.url} value={suggestion.url}>
-							{suggestion.title}
-						</option>
+			<Popover
+				onOpenChange={(open) => {
+					if (!open && suggestionsOpen) {
+						historyRequestGenerationRef.current += 1;
+						setHistorySuggestions([]);
+						setActiveHistorySuggestion(-1);
+					}
+				}}
+				open={suggestionsOpen}
+			>
+				<PopoverAnchor asChild>
+					<div className="browser-panel__url-wrap relative min-w-0 flex-1">
+						<Input
+							aria-activedescendant={activeHistorySuggestion >= 0 ? `${historyMenuId}-${activeHistorySuggestion}` : undefined}
+							aria-controls={suggestionsOpen ? historyMenuId : undefined}
+							aria-expanded={suggestionsOpen}
+							aria-haspopup="listbox"
+							aria-label={t("browser.url")}
+							className="browser-panel__url-input h-browser-url text-xs"
+							onBlur={endUrlEditing}
+							onChange={(event) => handleURLChange(event.target.value)}
+							onClick={() => urlInputRef.current?.select()}
+							onFocus={beginUrlEditing}
+							onKeyDown={handleURLKeyDown}
+							placeholder={t("browser.urlPlaceholder")}
+							ref={urlInputRef}
+							value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
+						/>
+						{isWebLink(navState.url) ? (
+							<BrowserControlTooltip label={t("inspector.openInSystemBrowser")}>
+									<Button
+										aria-label={t("inspector.openInSystemBrowser")}
+										className="browser-panel__url-external"
+										onClick={openCurrentPageExternally}
+										size="icon-sm"
+										type="button"
+										variant="ghost"
+									>
+										<ExternalLink aria-hidden="true" className="size-icon-base" />
+									</Button>
+							</BrowserControlTooltip>
+						) : null}
+					</div>
+				</PopoverAnchor>
+				<PopoverContent
+					align="start"
+					aria-label={t("browser.urlSuggestions")}
+					className={cn(
+						SETTINGS_MENU_SURFACE,
+						"browser-panel__history-suggestions",
+					)}
+					data-browser-native-overlay="true"
+					id={historyMenuId}
+					onOpenAutoFocus={(event) => event.preventDefault()}
+					ref={historyMenuRef}
+					role="listbox"
+					sideOffset={4}
+				>
+					{historySuggestions.map((suggestion, index) => (
+						<button
+							aria-selected={index === activeHistorySuggestion}
+							className={cn(
+								SETTINGS_MENU_ROW,
+								"flex w-full items-center gap-2.5 px-2.5 py-2 text-left",
+								index === activeHistorySuggestion && "bg-settings-menu-selected text-settings-title",
+							)}
+							id={`${historyMenuId}-${index}`}
+							key={suggestion.url}
+							onClick={() => navigateFromAddressBar(suggestion.url)}
+							onMouseDown={(event) => event.preventDefault()}
+							onPointerMove={() => setActiveHistorySuggestion(index)}
+							role="option"
+							type="button"
+						>
+							<BrowserSuggestionIcon
+								cachedFavicon={faviconForOpenTab(suggestion.url, tabs)}
+								url={suggestion.url}
+								viewId={viewId}
+							/>
+							<span className="min-w-0 flex-1">
+								{suggestion.title ? (
+									<span className="block truncate text-control text-settings-title">{suggestion.title}</span>
+								) : null}
+								<span className="block truncate text-caption text-settings-muted">{suggestion.url}</span>
+							</span>
+						</button>
 					))}
-				</datalist>
-			</div>
+				</PopoverContent>
+			</Popover>
 		</form>
 	);
 	const browserTabBar = (
@@ -812,15 +915,16 @@ export function BrowserPanelView({
 					{draggedTopTab ? <BrowserTopTabDragOverlay onlyTab={tabs.length === 1} tab={draggedTopTab} /> : null}
 				</DragOverlay>
 			</DndContext>
-			<button
-				aria-label={t("browser.openNewTab")}
-				className={cn("browser-panel__tab-new", draggedTopTabId && "browser-panel__tab-new--dragging")}
-				onClick={() => void handleOpenTab()}
-				title={t("browser.openNewTab")}
-				type="button"
-			>
-				<Plus aria-hidden="true" className="size-icon-base" />
-			</button>
+				<BrowserControlTooltip label={t("browser.openNewTab")}>
+					<button
+						aria-label={t("browser.openNewTab")}
+						className={cn("browser-panel__tab-new", draggedTopTabId && "browser-panel__tab-new--dragging")}
+						onClick={() => void handleOpenTab()}
+						type="button"
+					>
+						<Plus aria-hidden="true" className="size-icon-base" />
+					</button>
+				</BrowserControlTooltip>
 		</div>
 	);
 	return (
@@ -853,7 +957,8 @@ export function BrowserPanelView({
 					className="browser-panel__toolbar"
 					data-testid="browser-toolbar"
 				>
-				<span className="browser-panel__navigation-control inline-flex" title={t("browser.back")}>
+				<BrowserControlTooltip label={t("browser.back")}>
+					<span className="browser-panel__navigation-control inline-flex">
 							<Button
 								aria-label={t("browser.back")}
 								className="browser-panel__navigation-btn"
@@ -865,8 +970,10 @@ export function BrowserPanelView({
 							>
 								<ArrowLeft aria-hidden="true" className="size-icon-base" />
 							</Button>
-				</span>
-				<span className="browser-panel__navigation-control inline-flex" title={t("browser.forward")}>
+					</span>
+				</BrowserControlTooltip>
+				<BrowserControlTooltip label={t("browser.forward")}>
+					<span className="browser-panel__navigation-control inline-flex">
 							<Button
 								aria-label={t("browser.forward")}
 								className="browser-panel__navigation-btn"
@@ -878,13 +985,14 @@ export function BrowserPanelView({
 							>
 								<ArrowRight aria-hidden="true" className="size-icon-base" />
 							</Button>
-				</span>
-				<Button
+					</span>
+				</BrowserControlTooltip>
+				<BrowserControlTooltip label={navState.isLoading ? t("browser.stop") : t("browser.reload")}>
+					<Button
 							aria-label={navState.isLoading ? t("browser.stop") : t("browser.reload")}
 							className="browser-panel__navigation-btn"
 							onClick={() => void (navState.isLoading ? stop() : reload())}
 							size="icon-sm"
-							title={navState.isLoading ? t("browser.stop") : t("browser.reload")}
 							type="button"
 							variant="ghost"
 						>
@@ -893,7 +1001,8 @@ export function BrowserPanelView({
 							) : (
 								<RefreshCw aria-hidden="true" className="size-icon-base" />
 							)}
-				</Button>
+					</Button>
+				</BrowserControlTooltip>
 				{annotationStatusLabel ? (
 					<span className="sr-only" role="status">
 						{annotationStatusLabel}
@@ -908,10 +1017,10 @@ export function BrowserPanelView({
 						{tabNotice}
 					</span>
 				) : null}
-				<span
-					className="inline-flex"
-					title={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
+				<BrowserControlTooltip
+					label={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
 				>
+					<span className="inline-flex">
 							<Button
 								aria-label={
 									canRetryAnnotation
@@ -941,7 +1050,8 @@ export function BrowserPanelView({
 									<span aria-hidden="true" className="pointer-events-none absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent" />
 								) : null}
 							</Button>
-				</span>
+					</span>
+				</BrowserControlTooltip>
 				{browserDownloads.downloads.length > 0 ? (
 					<DropdownMenu
 						onOpenChange={(open) => {
@@ -949,19 +1059,20 @@ export function BrowserPanelView({
 						}}
 						open={downloadsOpen}
 					>
-						<DropdownMenuTrigger asChild>
+						<BrowserControlTooltip disabled={downloadsOpen} label={t("browser.downloads.title")}>
+							<DropdownMenuTrigger asChild>
 									<Button
 									aria-label={t("browser.downloads.title")}
 									className={cn("relative", hasActiveDownload && "text-accent")}
 										size="icon-sm"
-										title={t("browser.downloads.title")}
 										type="button"
 										variant="ghost"
 									>
 										<Download aria-hidden="true" className="size-icon-base" />
 										{hasActiveDownload ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-accent" /> : null}
 									</Button>
-						</DropdownMenuTrigger>
+							</DropdownMenuTrigger>
+						</BrowserControlTooltip>
 						<DropdownMenuContent
 							align="end"
 							className="w-96 p-0"
@@ -984,22 +1095,22 @@ export function BrowserPanelView({
 				) : null}
 				<DropdownMenu
 					onOpenChange={(open) => {
+						setControlsOpen(open);
 						if (!open) setControlsView("root");
 					}}
 				>
-					<DropdownMenuTrigger asChild>
+					<BrowserControlTooltip disabled={controlsOpen} label={t("browser.controls")}>
+						<DropdownMenuTrigger asChild>
 								<Button
 									aria-label={t("browser.controls")}
 									size="icon-sm"
-									title={t("browser.controls")}
 									type="button"
 									variant="ghost"
 								>
 									<MoreVertical aria-hidden="true" className="size-icon-base" />
 								</Button>
-					</DropdownMenuTrigger>
-					{/* Menus render over the native page and require the compositor handoff.
-					    Toolbar labels use native title tooltips and never enter this path. */}
+						</DropdownMenuTrigger>
+					</BrowserControlTooltip>
 					<DropdownMenuContent
 						align="end"
 						className={controlsView === "root" ? "w-56" : "w-64"}
@@ -1234,6 +1345,29 @@ export function BrowserPanelView({
 	);
 }
 
+function BrowserControlTooltip({
+	children,
+	disabled = false,
+	label,
+}: {
+	children: ReactElement;
+	disabled?: boolean;
+	label: string;
+}) {
+	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		if (disabled) setOpen(false);
+	}, [disabled]);
+	return (
+		<Tooltip open={open} onOpenChange={(nextOpen) => setOpen(disabled ? false : nextOpen)}>
+			<TooltipTrigger asChild>{children}</TooltipTrigger>
+			<TooltipContent data-browser-native-overlay="true" side="bottom" sideOffset={4}>
+				{label}
+			</TooltipContent>
+		</Tooltip>
+	);
+}
+
 const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 	tab,
 	selected,
@@ -1262,34 +1396,36 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			ref={setNodeRef}
 			style={{ transform: CSS.Transform.toString(transform), transition }}
 		>
-			<button
-				{...attributes}
-				{...listeners}
-				aria-selected={selected}
-				className="browser-panel__tab-select"
-				onClick={() => void onSelect(tab.id)}
-				role="tab"
-				tabIndex={selected ? 0 : -1}
-				title={label.title}
-				type="button"
-			>
-				{tab.favicon ? (
-					<img alt="" className="browser-panel__tab-icon object-cover" src={tab.favicon} />
-				) : (
-					<Globe2 aria-hidden="true" className="browser-panel__tab-icon" />
-				)}
-				<span className="browser-panel__tab-title">{label.title}</span>
-			</button>
-			<button
-				aria-label={closeLabel}
-				className="browser-panel__tab-close"
-				disabled={onlyTab}
-				onClick={() => onClose(tab.id)}
-				title={onlyTab ? t("browser.onlyTab") : closeLabel}
-				type="button"
-			>
-				<X aria-hidden="true" className="size-icon-base" />
-			</button>
+			<BrowserControlTooltip label={label.title}>
+				<button
+					{...attributes}
+					{...listeners}
+					aria-selected={selected}
+					className="browser-panel__tab-select"
+					onClick={() => void onSelect(tab.id)}
+					role="tab"
+					tabIndex={selected ? 0 : -1}
+					type="button"
+				>
+					{tab.favicon ? (
+						<img alt="" className="browser-panel__tab-icon object-cover" src={tab.favicon} />
+					) : (
+						<Globe2 aria-hidden="true" className="browser-panel__tab-icon" />
+					)}
+					<span className="browser-panel__tab-title">{label.title}</span>
+				</button>
+			</BrowserControlTooltip>
+			<BrowserControlTooltip label={onlyTab ? t("browser.onlyTab") : closeLabel}>
+				<button
+					aria-label={closeLabel}
+					className="browser-panel__tab-close"
+					disabled={onlyTab}
+					onClick={() => onClose(tab.id)}
+					type="button"
+				>
+					<X aria-hidden="true" className="size-icon-base" />
+				</button>
+			</BrowserControlTooltip>
 		</div>
 	);
 });
@@ -1382,6 +1518,54 @@ function getDisplayUrl(url: string): string {
 	} catch {
 		return url;
 	}
+}
+
+function webOrigin(url: string): string | undefined {
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function faviconForOpenTab(url: string, tabs: BrowserViewModel["tabs"]): string | undefined {
+	const origin = webOrigin(url);
+	if (!origin) return undefined;
+	return tabs.find((tab) => tab.favicon && webOrigin(tab.url) === origin)?.favicon;
+}
+
+function BrowserSuggestionIcon({ cachedFavicon, url, viewId }: { cachedFavicon?: string; url: string; viewId: string }) {
+	const origin = webOrigin(url);
+	const nativeCompositionEnabled = window.ao?.browser.nativeCompositionEnabled === true;
+	const directFavicon = !nativeCompositionEnabled && origin ? `${origin}/favicon.ico` : undefined;
+	const [favicon, setFavicon] = useState(cachedFavicon ?? directFavicon);
+	useEffect(() => {
+		setFavicon(cachedFavicon ?? directFavicon);
+		const historyFavicon = window.ao?.browser.historyFavicon;
+		if (cachedFavicon || !nativeCompositionEnabled || !viewId || typeof historyFavicon !== "function") return;
+		let current = true;
+		void historyFavicon({ viewId, url }).then(
+			(nextFavicon) => {
+				if (current && nextFavicon) setFavicon(nextFavicon);
+			},
+			() => undefined,
+		);
+		return () => {
+			current = false;
+		};
+	}, [cachedFavicon, directFavicon, nativeCompositionEnabled, url, viewId]);
+	if (!favicon) {
+		return <Globe2 aria-hidden="true" className="size-icon-base shrink-0 text-settings-muted" />;
+	}
+	return (
+		<img
+			alt=""
+			className="size-icon-base shrink-0 rounded-sm object-contain"
+			onError={() => setFavicon(undefined)}
+			src={favicon}
+		/>
+	);
 }
 
 function StaticPreview({ url }: { url: string }) {

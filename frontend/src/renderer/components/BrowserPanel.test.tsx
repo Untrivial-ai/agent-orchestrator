@@ -227,6 +227,7 @@ describe("BrowserPanel", () => {
 			};
 		});
 		window.ao!.browser.historySuggestions = vi.fn(async () => []);
+		window.ao!.browser.historyFavicon = vi.fn(async () => undefined);
 		window.ao!.browser.captureScreenshot = vi.fn(async () => undefined);
 		window.ao!.browser.downloads.list = vi.fn(async () => ({ downloads: [] }));
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
@@ -286,7 +287,7 @@ describe("BrowserPanel", () => {
 		expect(input).not.toHaveFocus();
 	});
 
-	it("shows imported history through native address-bar suggestions without adding an overlay", async () => {
+	it("shows imported history in the shared dropdown and navigates from a suggestion", async () => {
 		hookState.profileState = {
 			viewId: "42:sess-1",
 			profileId: "11111111-1111-4111-8111-111111111111",
@@ -294,26 +295,92 @@ describe("BrowserPanel", () => {
 		};
 		window.ao!.browser.historySuggestions = vi.fn(async () => [
 			{ url: "https://github.com/openai", title: "OpenAI" },
+			{ url: "https://gitlab.com/example", title: "GitLab" },
+			{ url: "https://github.blog/example", title: "GitHub Blog" },
+			{ url: "https://gist.github.com/example", title: "Gist" },
+			{ url: "https://githubstatus.com", title: "Fifth result" },
+		]);
+		let resolveGithubFavicon: (favicon: string | undefined) => void = () => undefined;
+		window.ao!.browser.historyFavicon = vi.fn(({ url }) =>
+			url.startsWith("https://github.com/")
+				? new Promise<string | undefined>((resolve) => {
+					resolveGithubFavicon = resolve;
+				})
+				: Promise.resolve(undefined),
+		);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("textbox", { name: /browser url/i });
+		const addressBar = screen.getByTestId("browser-address-bar");
+		expect(addressBar).not.toHaveClass("browser-panel__address-bar--editing");
+
+		await userEvent.type(input, "g");
+		expect(addressBar).toHaveClass("browser-panel__address-bar--editing");
+
+		await waitFor(() => expect(window.ao!.browser.historySuggestions).toHaveBeenCalledWith({
+			viewId: "42:sess-1",
+			query: "g",
+		}), { timeout: 2_000 });
+		const menu = await screen.findByRole("listbox", { name: "Address suggestions" });
+		expect(menu).toHaveAttribute("data-browser-native-overlay", "true");
+		expect(menu).toHaveClass("browser-panel__history-suggestions");
+		expect(screen.getAllByRole("option")).toHaveLength(4);
+		expect(screen.getByText("OpenAI")).toBeInTheDocument();
+		expect(screen.getByText("https://github.com/openai")).toBeInTheDocument();
+		expect(screen.queryByText("Fifth result")).not.toBeInTheDocument();
+		expect(screen.getAllByRole("option")[0]!.querySelector("img")).not.toBeInTheDocument();
+		await act(async () => resolveGithubFavicon("data:image/png;base64,github"));
+		await waitFor(() => expect(menu.querySelector("img")).toHaveAttribute("src", "data:image/png;base64,github"));
+		expect(window.ao!.browser.historyFavicon).toHaveBeenCalledWith({
+			viewId: "42:sess-1",
+			url: "https://github.com/openai",
+		});
+
+		await userEvent.click(screen.getAllByRole("option")[0]!);
+		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/openai");
+		expect(input).not.toHaveFocus();
+		expect(addressBar).not.toHaveClass("browser-panel__address-bar--editing");
+		expect(screen.queryByRole("listbox", { name: "Address suggestions" })).not.toBeInTheDocument();
+	});
+
+	it("supports keyboard selection in address suggestions", async () => {
+		hookState.profileState = {
+			viewId: "42:sess-1",
+			profileId: "11111111-1111-4111-8111-111111111111",
+			temporary: false,
+		};
+		window.ao!.browser.historySuggestions = vi.fn(async () => [
+			{ url: "https://github.com/openai", title: "OpenAI" },
+			{ url: "https://github.com/aoagents", title: "AO" },
 		]);
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		const input = screen.getByRole("textbox", { name: /browser url/i });
 
 		await userEvent.type(input, "git");
+		await screen.findByRole("listbox", { name: "Address suggestions" });
+		await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
 
-		await waitFor(() => expect(window.ao!.browser.historySuggestions).toHaveBeenCalledWith({
+		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/aoagents");
+	});
+
+	it("keeps address suggestions closed when an escaped request resolves late", async () => {
+		hookState.profileState = {
 			viewId: "42:sess-1",
-			query: "git",
-		}), { timeout: 2_000 });
-		await waitFor(() => expect(document.querySelector("datalist option")).not.toBeNull());
-		const option = document.querySelector("datalist option")!;
-		expect(option).toHaveValue("https://github.com/openai");
-		expect(input).toHaveAttribute("list", option.closest("datalist")?.id);
-		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+			profileId: "11111111-1111-4111-8111-111111111111",
+			temporary: false,
+		};
+		let resolveSuggestions: (suggestions: Array<{ url: string; title?: string }>) => void = () => undefined;
+		window.ao!.browser.historySuggestions = vi.fn(() => new Promise<Array<{ url: string; title?: string }>>((resolve) => {
+			resolveSuggestions = resolve;
+		}));
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("textbox", { name: /browser url/i });
 
-		fireEvent.change(input, { target: { value: "https://github.com/openai" } });
-		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/openai");
-		expect(input).not.toHaveFocus();
-		expect(document.querySelector("datalist option")).toBeNull();
+		await userEvent.type(input, "git");
+		await waitFor(() => expect(window.ao!.browser.historySuggestions).toHaveBeenCalledOnce());
+		await userEvent.keyboard("{Escape}");
+		await act(async () => resolveSuggestions([{ url: "https://github.com/openai", title: "OpenAI" }]));
+
+		expect(screen.queryByRole("listbox", { name: "Address suggestions" })).not.toBeInTheDocument();
 	});
 
 	it("does not search imported history until the address is edited", async () => {
@@ -488,7 +555,7 @@ describe("BrowserPanel", () => {
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "browserProfiles" });
 	});
 
-	it("does not show the Downloads tooltip when its menu returns focus", async () => {
+	it("restores the shared Downloads tooltip when its menu returns focus", async () => {
 		window.ao!.browser.downloads.list = vi.fn(async () => ({
 			downloads: [{
 				id: "download-1",
@@ -513,7 +580,7 @@ describe("BrowserPanel", () => {
 		await userEvent.keyboard("{Escape}");
 		await waitFor(() => expect(screen.queryByText("report.pdf")).not.toBeInTheDocument());
 		expect(trigger).toHaveFocus();
-		expect(screen.queryByRole("tooltip", { name: "Downloads" })).not.toBeInTheDocument();
+		expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveTextContent("Downloads");
 	});
 
 	it("keeps browser profiles inside the AO controls menu", async () => {
@@ -624,7 +691,7 @@ describe("BrowserPanel", () => {
 		expect(menu.getAttribute("data-browser-native-overlay")).toBe("true");
 	});
 
-	it("does not mount a renderer tooltip when the dropdown returns focus to its trigger", async () => {
+	it("restores the shared tooltip when the dropdown returns focus to its trigger", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		const trigger = screen.getByRole("button", { name: "Browser controls" });
 
@@ -634,15 +701,18 @@ describe("BrowserPanel", () => {
 		await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Device preset" })).not.toBeInTheDocument());
 		fireEvent.focus(trigger);
 
-		expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+		expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveTextContent("Browser controls");
 	});
 
-	it("uses a native tooltip for browser controls", () => {
+	it("uses the shared AO tooltip for browser controls", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		const trigger = screen.getByRole("button", { name: "Browser controls" });
 
-		expect(trigger).toHaveAttribute("title", "Browser controls");
-		expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+		expect(trigger).toHaveAttribute("data-slot", "tooltip-trigger");
+		fireEvent.focus(trigger);
+		await waitFor(() => expect(document.querySelector('[data-slot="tooltip-content"]')).not.toBeNull());
+		expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveAttribute("data-browser-native-overlay", "true");
+		expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveAttribute("data-side", "bottom");
 	});
 
 	it("keeps the URL input editable while the browser is maximized", async () => {
@@ -702,7 +772,7 @@ describe("BrowserPanel", () => {
 		expect(hookState.stop).toHaveBeenCalled();
 	});
 
-	it("uses native toolbar tooltips without entering the overlay stacking path", () => {
+	it("uses shared AO tooltips for toolbar controls", async () => {
 		hookState.navState = {
 			viewId: "42:sess-1",
 			url: "http://localhost:5173/",
@@ -714,11 +784,12 @@ describe("BrowserPanel", () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
 		const backButton = screen.getByRole("button", { name: /back/i });
-		expect(backButton.parentElement).toHaveAttribute("title", "Back");
-		expect(document.querySelector('[data-browser-native-overlay]')).toBeNull();
+		expect(backButton.parentElement).toHaveAttribute("data-slot", "tooltip-trigger");
+		fireEvent.focus(backButton.parentElement!);
+		await waitFor(() => expect(document.querySelector('[data-slot="tooltip-content"]')).not.toBeNull());
 	});
 
-	it("uses native toolbar tooltips while maximized", () => {
+	it("uses shared AO tooltips while maximized", async () => {
 		hookState.navState = {
 			viewId: "42:sess-1",
 			url: "http://localhost:5173/",
@@ -730,11 +801,12 @@ describe("BrowserPanel", () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
 
 		const annotateButton = screen.getByRole("button", { name: /annotate page/i });
-		expect(annotateButton.closest("[title]")).toHaveAttribute("title", "Annotate page");
-		expect(document.querySelector('[data-browser-native-overlay]')).toBeNull();
+		expect(annotateButton.parentElement).toHaveAttribute("data-slot", "tooltip-trigger");
+		fireEvent.focus(annotateButton.parentElement!);
+		await waitFor(() => expect(document.querySelector('[data-slot="tooltip-content"]')).not.toBeNull());
 	});
 
-	it("keeps a native tooltip on a disabled toolbar button wrapper", () => {
+	it("keeps a shared AO tooltip trigger around a disabled toolbar button", () => {
 		// Disabled buttons never dispatch pointer/focus events natively, so the
 		// hover listener has to live on a wrapping span around the button rather
 		// than on the (potentially disabled) button itself.
@@ -753,7 +825,7 @@ describe("BrowserPanel", () => {
 		const wrapper = backButton.parentElement;
 		expect(wrapper?.tagName).toBe("SPAN");
 
-		expect(wrapper).toHaveAttribute("title", "Back");
+		expect(wrapper).toHaveAttribute("data-slot", "tooltip-trigger");
 	});
 
 	it("shows browser tabs in a horizontal tab strip and selects them", async () => {
@@ -770,6 +842,8 @@ describe("BrowserPanel", () => {
 
 		expect(firstTab).toHaveAttribute("aria-selected", "false");
 		expect(secondTab).toHaveAttribute("aria-selected", "true");
+		expect(firstTab).toHaveAttribute("data-slot", "tooltip-trigger");
+		expect(screen.getByRole("button", { name: "Close tab First app" })).toHaveAttribute("data-slot", "tooltip-trigger");
 		await userEvent.click(firstTab);
 		expect(hookState.selectTab).toHaveBeenCalledWith("t1");
 	});

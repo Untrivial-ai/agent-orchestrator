@@ -504,6 +504,13 @@ func Run() error {
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
+	if tunable, ok := sessMgr.(interface {
+		SetModelCatalog(interface {
+			Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
+		})
+	}); ok {
+		tunable.SetModelCatalog(agentSvc)
+	}
 
 	// servers isn't clobbered. See preview_wiring.go (issue #4500).
 	wireManagedPreviewExit(managedPreview, sessionSvc, log)
@@ -542,7 +549,6 @@ func Run() error {
 		agentSvc.InvalidateAgentInstallation(harness)
 		agentSvc.RecheckAgent(harness)
 	})
-	agentSvc.WarmReadiness()
 
 	// Connect Mobile: the bridge service needs the LAN listener, but the LAN
 	// listener needs the built router's handler, which only exists once srv is
@@ -638,8 +644,8 @@ func Run() error {
 
 	// Durable agent-switch and interface-transition recovery is the startup
 	// safety boundary. The in-memory input fence disappeared with the previous
-	// daemon; if AO cannot prove and close every active saga, do not bind a
-	// usable API with user input accidentally reopened. Runtime/worktree
+	// daemon; every active saga must be closed or explicitly quarantined before
+	// binding a usable API, without accidentally reopening input. Runtime/worktree
 	// restoration follows in the background after the listener is live.
 	if reconcileErr := sessMgr.ReconcileStartupSafety(ctx); reconcileErr != nil {
 		stop()
@@ -841,6 +847,11 @@ func Run() error {
 
 	var startupReconcileDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
+		// Agent-readiness warming is advisory and idempotent, and request paths
+		// lazily Ensure on demand. Kick it here, after the listener is live, so its
+		// bounded subprocess probes no longer contend with the synchronous
+		// migration and fencing reconcile that gate the port bind.
+		agentSvc.WarmReadiness()
 		done := make(chan struct{})
 		startupReconcileDone = done
 		go func() {

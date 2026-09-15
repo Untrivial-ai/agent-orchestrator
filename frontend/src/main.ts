@@ -1,5 +1,6 @@
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
+import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
 	app,
 	BaseWindow,
@@ -2323,6 +2324,25 @@ ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 	await downloadUpdateNow(requestId);
 });
 ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
+
+// Whether THIS boot is a post-update relaunch, so the startup loader can show
+// "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
+// marker is written on the quitAndInstall path (auto-updater.ts) on every OS and
+// consumed exactly once here; a corrupt/stale/mismatched marker reads as false
+// (see consumeUpdateRelaunchFlag). Cached so every renderer that asks during the
+// same boot gets the same answer and the marker is deleted only once.
+let postUpdateRelaunchPromise: Promise<boolean> | undefined;
+function detectPostUpdateRelaunch(): Promise<boolean> {
+	if (!postUpdateRelaunchPromise) {
+		const runFile = runFilePath();
+		postUpdateRelaunchPromise =
+			app.isPackaged && runFile
+				? consumeUpdateRelaunchFlag({ stateDir: path.dirname(runFile), version: app.getVersion() }).catch(() => false)
+				: Promise.resolve(false);
+	}
+	return postUpdateRelaunchPromise;
+}
+ipcMain.handle("updates:isPostUpdateRelaunch", () => detectPostUpdateRelaunch());
 
 function cancelDockBounce(): void {
 	if (pendingBounce === null) return;

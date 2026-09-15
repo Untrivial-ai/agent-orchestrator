@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import type { TraySessionEntry } from "../../shared/tray";
 import { useEffect, useMemo } from "react";
 import type { components } from "../../api/schema";
@@ -71,12 +71,14 @@ function toWorkspaceSession(
 	session: components["schemas"]["ControllersSessionView"],
 	project: Pick<WorkspaceSummary, "id" | "name">,
 ): WorkspaceSession {
-	const status = toSessionStatus(session.status, session.isTerminated);
+	const statusReadiness = session.statusReadiness ?? "ready";
+	const status =
+		statusReadiness === "ready" ? toSessionStatus(session.status, session.isTerminated) : "unknown";
 	const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
 	const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
-	const activity = toSessionActivity(session.activity);
-	if (status === "unknown") reportUnknownSessionField("status", session.status);
-	if (!activity || activity.state === "unknown") {
+	const activity = statusReadiness === "ready" ? toSessionActivity(session.activity) : undefined;
+	if (statusReadiness === "ready" && status === "unknown") reportUnknownSessionField("status", session.status);
+	if (statusReadiness === "ready" && (!activity || activity.state === "unknown")) {
 		reportUnknownSessionField("activity", session.activity?.state);
 	}
 	return {
@@ -104,6 +106,7 @@ function toWorkspaceSession(
 		scmStatus,
 		kanbanColumn,
 		displayStatus: session.displayStatus || undefined,
+		statusReadiness,
 		isTerminated: session.isTerminated,
 		chatProviderPreserved: session.chatProviderPreserved,
 		terminateOnPrMerge: session.terminateOnPrMerge ?? false,
@@ -123,6 +126,9 @@ function toWorkspaceSession(
 }
 
 export const workspaceQueryKey = ["workspaces"] as const;
+export function workspaceStatusesChecking(workspaces: WorkspaceSummary[] | undefined): boolean {
+	return workspaces?.some((workspace) => workspace.sessions.some((session) => session.statusReadiness === "checking")) ?? false;
+}
 const reportedUnknownSessionFields = new Set<string>();
 
 function reportUnknownSessionField(field: "status" | "activity", value?: string): void {
@@ -250,7 +256,8 @@ export const workspaceQueryOptions = {
 	queryFn: fetchWorkspaces,
 	retry: 1,
 	staleTime: 10_000,
-	refetchInterval: 15_000,
+	refetchInterval: (query: Query<WorkspaceSummary[]>) =>
+		workspaceStatusesChecking(query.state.data) ? 300 : 15_000,
 };
 
 // Cloud projects are a separate query so a control-plane failure can never
