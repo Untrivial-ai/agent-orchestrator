@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { encodePairingCode, isLegacyPairingCode, parsePairingCode, pairingUrl } from "./pairingCode";
+import {
+	encodePairingCode,
+	isLegacyPairingCode,
+	pairingNeedsUnencryptedConfirmation,
+	parsePairingCode,
+	pairingUrl,
+} from "./pairingCode";
 
 const offer = {
 	v: 2 as const,
@@ -71,6 +77,21 @@ describe("parsePairingCode", () => {
 	it("decodes a payload whose base64 padding was stripped", () => {
 		const padded = encodePairingCode(offer);
 		expect(parsePairingCode(padded.replace(/=+$/, ""))?.hostId).toBe("h_b3e07f31");
+	});
+});
+
+describe("pairingNeedsUnencryptedConfirmation", () => {
+	it("requires confirmation when endpoint racing could select plaintext LAN", () => {
+		expect(pairingNeedsUnencryptedConfirmation(offer)).toBe(true);
+	});
+
+	it("does not interrupt an all-TLS pairing offer", () => {
+		expect(
+			pairingNeedsUnencryptedConfirmation({
+				...offer,
+				endpoints: [{ kind: "tunnel", host: "abc.trycloudflare.com", port: 443, secure: true }],
+			}),
+		).toBe(false);
 	});
 });
 

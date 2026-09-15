@@ -169,7 +169,11 @@ function ConnectionSection({
 	return (
 		<SettingsGroup
 			title="Connection"
-			footer="Your PC's Tailscale name / 100.x address, or its LAN IP on the same Wi-Fi."
+			footer={
+				paired && !cfg.secure
+					? "Not encrypted. Use this connection only on a private network you trust."
+					: "Your PC's Tailscale name / 100.x address, or its LAN IP on the same Wi-Fi."
+			}
 		>
 			<SettingsRow
 				icon="link"
