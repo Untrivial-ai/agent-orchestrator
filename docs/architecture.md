@@ -392,7 +392,11 @@ adapters that can interpret their rendered TUI report work state and composer
 occupancy as separate ephemeral facts. The runtime side of that contract must
 provide the current rendered viewport with ANSI cell styles: tmux uses styled
 `capture-pane`, while macOS and Windows detached PTY hosts maintain a VT cell
-model beside their historical replay ring. AO accepts only repeated observations
+model beside their historical replay ring. A host with no attached client is also
+the only terminal the agent has, so it answers the startup capability queries a
+TUI waits on — cursor position, device attributes, keyboard-protocol flags —
+while a session with a client attached leaves those answers to that client's
+emulator, so one query never yields two cursor reports. AO accepts only repeated observations
 of an idle surface with an empty composer, held across the settle window; a
 visible draft fails with the source untouched and requires the user to submit,
 clear, or explicitly discard it. Adapter/runtime pairs without rendered-surface
