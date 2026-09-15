@@ -848,6 +848,17 @@ retryProjection:
 		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath) ||
 		checkpointChanged
 	toolFlightBeforeProjection := cloneToolFlight(m.flights[id])
+	// Claude Code emits agent_needs_input as a delayed notification after a
+	// completed turn. The deriver intentionally maps that notification to
+	// waiting_input, but a stop hook already proved that this turn ended and
+	// no prompt has started since. Promoting the durable idle state here would
+	// create a sticky phantom pause that suppresses automated delivery. Keep
+	// the guard in lifecycle, where the preceding authoritative signal is
+	// available, rather than weakening the pure notification mapping.
+	if s.Valid && s.Event == "notification" &&
+		s.State == domain.ActivityWaitingInput && rec.Activity.State == domain.ActivityIdle {
+		s.Valid = false
+	}
 	if s.Valid {
 		s = m.applyToolPrecedenceLocked(id, rec.Activity.State, s)
 	}
