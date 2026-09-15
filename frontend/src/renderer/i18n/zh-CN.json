@@ -2007,5 +2007,6 @@
 	"chat.draftDiscard.stay": "留下",
 	"chat.draftDiscard.leaveAnyway": "仍然离开",
 	"chat.edit.abandonRecovery": "放弃编辑恢复",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "返回主页"
 }

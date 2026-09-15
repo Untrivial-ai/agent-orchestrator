@@ -1331,6 +1331,7 @@
 	"shell.downloadUpdateVersion": "Download update v{{version}}",
 	"shell.dismissUpdateVersion": "Hide update v{{version}} for 24 hours",
 	"shell.expandSidebar": "Expand sidebar",
+	"shell.goHome": "Go to home",
 	"shell.expandSidebarTitle": "Expand sidebar · Ctrl+B",
 	"shell.intakeIssue": "Intake issue: {{id}}",
 	"shell.kanban": "Kanban",

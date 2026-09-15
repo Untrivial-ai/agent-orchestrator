@@ -116,19 +116,19 @@ import { OrchestratorIcon } from "./icons";
 import { Badge } from "./ui/badge";
 import aoLogo from "../../../assets/ao-logo.svg";
 import { cn } from "../lib/utils";
-import { useUiStore } from "../stores/ui-store"
+import { useUiStore } from "../stores/ui-store";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
 import { ResizeHandle } from "./ResizeHandle";
-import { isMacPlatform, isWindowsPlatform } from "../lib/platform";
+import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
+import { isMacPlatform } from "../lib/platform";
 import { useCloudSession } from "../lib/cloud-session";
 
 // macOS paints framed chrome: the fixed TitlebarNav cluster carries the
 // sidebar toggle + history arrows above this surface. Windows hangs the sidebar
 // under its custom titlebar.
 const isMac = isMacPlatform();
-const isWindows = isWindowsPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
 // Shared styling for the per-project hover action buttons (orchestrator, kebab):
@@ -149,10 +149,6 @@ const SESSION_ACTION_CLASS =
 const NAV_ROW_CLASS =
 	"h-9 gap-2.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:text-foreground data-[active=true]:bg-interactive-active data-[active=true]:font-medium data-[active=true]:text-foreground";
 
-/** Host for {@link NavRowHighlight}: transparent shell, text still tints on hover/active. */
-const NAV_ROW_HIGHLIGHT_HOST_CLASS =
-	"group/nav-row relative hover:bg-transparent! focus-visible:bg-transparent! active:bg-transparent! data-[active=true]:bg-transparent! hover:text-foreground data-[active=true]:font-medium data-[active=true]:text-foreground";
-
 /** Expanded footer action row: growing highlight behind icon + label. */
 const FOOTER_NAV_BUTTON_CLASS = cn(
 	NAV_ROW_CLASS,
@@ -165,38 +161,6 @@ const FOOTER_RAIL_BUTTON_CLASS = cn(
 	NAV_ROW_HIGHLIGHT_HOST_CLASS,
 	"grid size-control-board place-items-center rounded-lg text-muted-foreground [&_svg]:size-icon-base",
 );
-
-/**
- * Absolute pill behind row content. Starts 4px smaller on both axes
- * (centered); hover/focus grows width+height to fill the host. Opacity snaps.
- * Hover paint is gated in styles.css to fine pointers; keyboard uses
- * :focus-visible / :has(:focus-visible) there (not :focus-within — mouse
- * click focus would otherwise stick the pill on after toggle).
- */
-function NavRowHighlight({
-	active = false,
-	disabled = false,
-}: {
-	active?: boolean;
-	disabled?: boolean;
-}) {
-	return (
-		<span
-			aria-hidden="true"
-			className={cn(
-				"pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-lg bg-interactive-hover",
-				"transition-[width,height] duration-normal ease-[var(--ease-out)]",
-				"motion-reduce:h-full motion-reduce:w-full motion-reduce:transition-none",
-				active
-					? "h-full w-full bg-interactive-active opacity-100"
-					: "h-[calc(100%-4px)] w-[calc(100%-4px)] opacity-0",
-				disabled && !active && "opacity-0!",
-			)}
-			data-nav-row-highlight=""
-			data-nav-row-highlight-idle={active || disabled ? undefined : ""}
-		/>
-	);
-}
 
 // Search + Pinned/Projects section chrome: same type, icon, and row size.
 const SECTION_ROW_CLASS =
@@ -329,6 +293,7 @@ function useGrabbingCursor(active: boolean) {
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 240;
+/** Floor/ceiling for sidebar resize — pass the same values to useResizable AND ResizeHandle. */
 export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 420;
 /** Cap the expanded project list until the user clicks Show more.
@@ -698,19 +663,31 @@ export function Sidebar({
 			className={cn(
 				"sidebar-focusless",
 				hideEdgeBorder ? "border-transparent" : "border-r-0 group-data-[side=left]:border-r-0",
+				// Prefer top/bottom over h-svh/inset-y so titlebar offset (`top-(--sidebar-chrome-offset)`)
+				// clears chrome without fighting a second height constraint.
 				!underTopbar
-					? "top-0 h-svh!"
-					: "top-(--sidebar-chrome-offset) h-[calc(100svh-var(--sidebar-chrome-offset))]!",
+					? "top-0 bottom-0"
+					: "top-(--sidebar-chrome-offset) bottom-0 h-auto!",
 			)}
 		>
 			<SidebarHeader className="gap-0 p-0 px-3 pt-2 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:pt-2">
-				{/* Brand (project-sidebar__brand); in the icon rail it becomes the old
-            36px board button wrapping the 22px accent mark. */}
-				<div
+				{/*
+				 * Brand → home. Design contracts (do not regress):
+				 * - Click navigates home; do NOT add hover/focus fill (styles.css
+				 *   opts `[data-sidebar-brand]` out of `.sidebar-focusless` wash).
+				 * - No separate "home" affordance on the mark — the whole brand is the control.
+				 */}
+				<button
+					aria-label={t("shell.goHome")}
 					className={cn(
-						"group/brand flex shrink-0 items-center gap-1.5 rounded-md px-0.5 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
+						"group/brand flex w-full shrink-0 items-center gap-1.5 rounded-md px-0.5 text-left",
+						"focus-visible:outline-none",
+						"group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
+					data-sidebar-brand=""
+					onClick={() => selection.goHome()}
+					type="button"
 				>
 					<span
 						className={cn(
@@ -720,25 +697,17 @@ export function Sidebar({
 					>
 						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
 					</span>
-					{isWindows ? (
-						<span
-							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
-						>
-							Agent Orchestrator
-						</span>
-					) : (
-						<span
-							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
-						>
-							Agent Orchestrator
-						</span>
-					)}
+					<span
+						className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
+					>
+						Agent Orchestrator
+					</span>
 					{isNightly && (
 						<span className="sidebar-expanded-chrome shrink-0 rounded-full bg-purple-subtle px-1.5 py-0.5 text-micro font-semibold leading-none text-purple-accent group-data-[collapsible=icon]:hidden">
 							{t("shell.nightly")}
 						</span>
 					)}
-				</div>
+				</button>
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<button
@@ -982,8 +951,11 @@ export function Sidebar({
 				</div>
 			</SidebarFooter>
 
+			{/* min/max MUST match useResizable above — ResizeHandle has no unclamped fallback. */}
 			<ResizeHandle
 				className="group-data-[state=collapsed]:hidden"
+				maxWidth={SIDEBAR_MAX_WIDTH}
+				minWidth={SIDEBAR_MIN_WIDTH}
 				onDoubleClick={onResizeDoubleClick}
 				onPointerDown={onResizePointerDown}
 				side="right"

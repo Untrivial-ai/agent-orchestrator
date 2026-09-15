@@ -1,7 +1,7 @@
 import type { ProjectSource } from "@aoagents/product-ui";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Bot, Folder, Folders, FolderOpen, GitFork, Smartphone, Star } from "lucide-react";
+import { AlertTriangle, Bot, Folder, Folders, FolderOpen, GitFork, Star } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useSystemRequirementsGate } from "../hooks/useSystemRequirementsGate";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
@@ -9,6 +9,7 @@ import { aoBridge } from "../lib/bridge";
 import { getProjectLastOpenedAt } from "../lib/project-history";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { useShell } from "../lib/shell-context";
+import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import {
 	STANDALONE_PROJECT_KIND,
@@ -20,17 +21,31 @@ import { BoardWelcome } from "./BoardEmptyStates";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
-import { TopbarButton } from "./TopbarButton";
+import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
 import { Badge } from "./ui/badge";
 
+/**
+ * Home landing layout contracts (do not regress without explicit design sign-off):
+ * - One centered column (`max-w-[640px]`); no upward translate hack.
+ * - "Star us" is a quiet text link with dashed underline on hover — NOT a
+ *   TopbarButton / accent pill / bordered card.
+ * - Primary actions are a 2×2 grid; standalone agent lives IN the grid (not a
+ *   full-width accent CTA above). Connect Mobile is settings-only — not here.
+ * - Recent rows use shared {@link NavRowHighlight} (same as sidebar), not a
+ *   flat `hover:bg-interactive-hover` wash.
+ * - Section titles share {@link HOME_SECTION_TITLE_CLASS}; keep Jump back /
+ *   Recent projects visually paired.
+ */
 const GITHUB_REPOSITORY_URL = "https://github.com/Untrivial-ai/agent-orchestrator";
 const RECENT_PROJECT_LIMIT = 3;
 const HOME_BUTTON_CLASS =
-	"flex w-full items-center gap-3 rounded-welcome-panel bg-[var(--color-bg-import-card)] px-4 py-3 text-left hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
+	"flex w-full items-center gap-3 rounded-lg bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-[scale] duration-fast ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transform-none";
 const HOME_ICON_SLOT_CLASS =
-	"grid size-8 shrink-0 place-items-center text-[var(--color-text-import-muted)] [&_svg]:size-4";
+	"grid size-8 shrink-0 place-items-center text-muted-foreground [&_svg]:size-4";
 const HOME_PROJECT_ICON_CLASS =
-	"grid size-8 shrink-0 place-items-center rounded-lg text-foreground/65 [&_svg]:size-4";
+	"grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground [&_svg]:size-4";
+const HOME_SECTION_TITLE_CLASS =
+	"text-base font-medium tracking-tight text-foreground";
 
 function latestProjectTimestamp(project: WorkspaceSummary): string {
 	return [
@@ -83,23 +98,29 @@ function ProjectRow({ project, onClick, emptyTimeLabel, justNowLabel }: { projec
 
 	return (
 		<button
-			className="group flex w-full items-center gap-3 rounded-welcome-panel px-4 py-3 text-left text-foreground/75 hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+			// Host must use NAV_ROW_HIGHLIGHT_HOST_CLASS — pill owns the fill.
+			className={cn(
+				"flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left text-muted-foreground",
+				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+				NAV_ROW_HIGHLIGHT_HOST_CLASS,
+			)}
 			onClick={onClick}
 			type="button"
 		>
-			<span className={HOME_PROJECT_ICON_CLASS} aria-hidden="true">
+			<NavRowHighlight />
+			<span className={cn(HOME_PROJECT_ICON_CLASS, "relative z-[1]")} aria-hidden="true">
 				{project.folderMissing ? <AlertTriangle strokeWidth={1.8} className="text-warning" /> : <Folder strokeWidth={1.8} />}
 			</span>
-			<span className="min-w-0 text-[14px] leading-5">
+			<span className="relative z-[1] min-w-0 text-sm leading-5">
 				<span className="flex items-center gap-1.5">
-					<span className="block truncate font-medium text-[var(--color-text-import-title)]">{project.name}</span>
+					<span className="block truncate font-medium text-foreground">{project.name}</span>
 					{project.folderMissing ? (
 						<Badge variant="warning" className="h-4 shrink-0 px-1.5 text-2xs">{t("home.folderMissing")}</Badge>
 					) : null}
 				</span>
-				<span className="block truncate text-[13px] text-muted-foreground">{project.path}</span>
+				<span className="block truncate text-caption text-muted-foreground">{project.path}</span>
 			</span>
-			<span className="ml-auto shrink-0 text-right text-[13px] text-muted-foreground">
+			<span className="relative z-[1] ml-auto shrink-0 text-right text-caption tabular-nums text-muted-foreground">
 				{relativeProjectTime(latestProjectFact, emptyTimeLabel, justNowLabel)}
 			</span>
 		</button>
@@ -127,10 +148,10 @@ function HomeActionCard({
 			onClick={onClick}
 			type="button"
 		>
-			<span className={HOME_ICON_SLOT_CLASS}>
+			<span className={HOME_ICON_SLOT_CLASS} aria-hidden="true">
 				{icon}
 			</span>
-			<span className="min-w-0 text-[14px] font-medium leading-5 text-[var(--color-text-import-title)]">{label}</span>
+			<span className="min-w-0 text-sm font-medium leading-5 text-foreground">{label}</span>
 		</button>
 	);
 }
@@ -138,7 +159,6 @@ function HomeActionCard({
 export function HomePage() {
 	const navigate = useNavigate();
 	const { t } = useTranslation();
-	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const { cloneProject, createProject, daemonStatus, initializeProjectRepository, workspaceStartupState } =
 		useShell();
@@ -183,78 +203,74 @@ export function HomePage() {
 
 	return (
 		<div className="flex min-h-full items-center justify-center px-6 py-16">
-			<div className="w-full max-w-[640px] -translate-y-3">
+			<div className="w-full max-w-[640px]">
 				<div className="space-y-6">
-					<TopbarButton
-						className="w-full justify-center"
-						onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
-						variant="accent"
-					>
-						<Bot className="size-4" aria-hidden="true" />
-						{t("home.newStandaloneAgent")}
-					</TopbarButton>
-					<div className="flex items-center justify-between gap-4 px-3">
-						<h1 className="text-[17px] font-medium tracking-[-0.01em] text-foreground/80">{t("home.jumpBack")}</h1>
-						<TopbarButton
+					<section className="space-y-3 px-3">
+						<div className="flex items-baseline justify-between gap-4">
+							<h1 className={HOME_SECTION_TITLE_CLASS}>{t("home.jumpBack")}</h1>
+							{/* Quiet text link — not TopbarButton / accent. Dashed underline only on hover. */}
+							<button
+								className="inline-flex shrink-0 items-center gap-1.5 border-b border-dashed border-transparent pb-px text-sm text-muted-foreground hover:border-current hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+								onClick={() => void aoBridge.app.openExternal(GITHUB_REPOSITORY_URL)}
+								type="button"
+							>
+								<Star className="size-3.5" strokeWidth={1.8} aria-hidden="true" />
+								{t("home.starUs")}
+							</button>
+						</div>
 
-							className="shrink-0 font-mono text-[15px] tracking-[0.03em] transition-[transform,filter,background,color,border-color] duration-150 ease-out active:scale-[0.96] motion-reduce:transform-none"
-							onClick={() => void aoBridge.app.openExternal(GITHUB_REPOSITORY_URL)}
-
-							variant="accent"
-						>
-							<Star className="size-4" strokeWidth={1.8} aria-hidden="true" />
-							{t("home.starUs")}
-						</TopbarButton>
-					</div>
-
-					<div className="grid grid-cols-2 gap-3 px-3">
-						<HomeActionCard
-							ariaLabel={t("createProject.cloneFromGit")}
-							icon={<GitFork className="size-4" aria-hidden="true" />}
-							label={t("createProject.cloneFromGit")}
-							onClick={() => requestSource("clone")}
-						/>
-						<HomeActionCard
-							ariaLabel={t("createProject.openLocal")}
-							icon={<FolderOpen className="size-4" aria-hidden="true" />}
-							label={t("createProject.openLocal")}
-							onClick={() => requestSource("local")}
-						/>
-						<HomeActionCard
-							ariaLabel={t("createProject.addWorkspace")}
-							icon={<Folders className="size-4" aria-hidden="true" />}
-							label={t("createProject.addWorkspace")}
-							onClick={() => requestSource("workspace")}
-						/>
-						<HomeActionCard
-							ariaLabel={t("settings.connectMobile")}
-							icon={<Smartphone aria-hidden="true" />}
-							label={t("settings.connectMobile")}
-							onClick={() => openGlobalSettings("mobile")}
-						/>
-					</div>
-
-					<div className="-mt-3 space-y-1 px-3">
-						<h2 className="text-[17px] font-medium tracking-[-0.01em] text-foreground/80">{t("home.recentProjects")}</h2>
-						{recentProjects.map((project) => (
-							<ProjectRow
-								key={project.id}
-								project={project}
-								onClick={() => {
-									if (project.kind === STANDALONE_PROJECT_KIND) {
-										const session = mostRecentStandaloneSession(project.sessions);
-										session
-											? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
-											: requestNewTask(STANDALONE_WORKSPACE_ID);
-										return;
-									}
-									openProject(project.id);
-								}}
-								emptyTimeLabel={t("home.never")}
-								justNowLabel={t("time.justNow")}
+						{/* 2×2 action grid; standalone agent is a cell here, not a hero CTA above. */}
+						<div className="grid grid-cols-2 gap-3">
+							<HomeActionCard
+								ariaLabel={t("createProject.cloneFromGit")}
+								icon={<GitFork strokeWidth={1.8} />}
+								label={t("createProject.cloneFromGit")}
+								onClick={() => requestSource("clone")}
 							/>
-						))}
-					</div>
+							<HomeActionCard
+								ariaLabel={t("createProject.openLocal")}
+								icon={<FolderOpen strokeWidth={1.8} />}
+								label={t("createProject.openLocal")}
+								onClick={() => requestSource("local")}
+							/>
+							<HomeActionCard
+								ariaLabel={t("createProject.addWorkspace")}
+								icon={<Folders strokeWidth={1.8} />}
+								label={t("createProject.addWorkspace")}
+								onClick={() => requestSource("workspace")}
+							/>
+							<HomeActionCard
+								ariaLabel={t("home.newStandaloneAgent")}
+								icon={<Bot strokeWidth={1.8} />}
+								label={t("home.newStandaloneAgent")}
+								onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
+							/>
+						</div>
+					</section>
+
+					<section className="space-y-3 px-3">
+						<h2 className={HOME_SECTION_TITLE_CLASS}>{t("home.recentProjects")}</h2>
+						<div>
+							{recentProjects.map((project) => (
+								<ProjectRow
+									key={project.id}
+									project={project}
+									onClick={() => {
+										if (project.kind === STANDALONE_PROJECT_KIND) {
+											const session = mostRecentStandaloneSession(project.sessions);
+											session
+												? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
+												: requestNewTask(STANDALONE_WORKSPACE_ID);
+											return;
+										}
+										openProject(project.id);
+									}}
+									emptyTimeLabel={t("home.never")}
+									justNowLabel={t("time.justNow")}
+								/>
+							))}
+						</div>
+					</section>
 
 					<GitHubOnboardingNotice />
 				</div>

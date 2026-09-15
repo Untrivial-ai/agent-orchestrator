@@ -2054,5 +2054,6 @@
 	"chat.draftDiscard.stay": "Rester",
 	"chat.draftDiscard.leaveAnyway": "Quitter quand même",
 	"chat.edit.abandonRecovery": "Abandonner la récupération de la modification",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "Aller à l’accueil"
 }

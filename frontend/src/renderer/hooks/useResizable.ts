@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
+import { resolveSessionInspectorMaxWidthPx, resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
 
 type ResizableConstraint = number | (() => number);
 
@@ -34,6 +35,14 @@ interface UseResizableOptions {
  * Persists the width to localStorage and applies it via a CSS custom property
  * to the nearest consuming layout elements. Keeping a high-frequency custom
  * property off :root avoids invalidating unrelated renderer subtrees.
+ *
+ * Inspector clamp contracts (do not regress):
+ * - `apply` MUST also respect each target's computed CSS `max-width` (e.g.
+ *   `--session-inspector-max-width`). Prop/`rangeRef` max alone is not enough —
+ *   the var can grow past the painted panel and desync ResizeHandle.
+ * - On pointerdown, seed `widthRef` from the painted box when it disagrees with
+ *   the custom property (same CSS max-width desync).
+ * - Dragging never auto-collapses: clamp at `min`; collapse stays on explicit UI.
  */
 export function useResizable({
 	cssVar,
@@ -64,7 +73,14 @@ export function useResizable({
 
 	const apply = useCallback(
 		(next: number) => {
-			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
+			// Prop max ∩ used CSS max-width. Must use resolveUsedMaxWidthPx — bare
+			// parseFloat misses unresolved min() (inspector leftmost overshoot).
+			let max = maxValue();
+			for (const target of cssTargets()) {
+				const usedMax = resolveUsedMaxWidthPx(target);
+				if (usedMax !== null) max = Math.min(max, usedMax);
+			}
+			const clamped = Math.min(max, Math.max(minValue(), next));
 			widthRef.current = clamped;
 			for (const target of cssTargets()) {
 				target.style.setProperty(cssVar, `${clamped}px`);
@@ -120,6 +136,24 @@ export function useResizable({
 			const captureTarget = event.currentTarget;
 			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
+			// Seed from the painted box when CSS max-width holds width below the var.
+			const targets = cssTargets();
+			const visualWidth = targets
+				.map((target) => target.getBoundingClientRect().width)
+				.find((width) => width > 0);
+			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
+				apply(visualWidth);
+			}
+			// Resolve used max-width once per drag. Prefer the session-split CSS
+			// variable formula — unresolved min() is why leftmost overshot.
+			let usedMax: number | null = null;
+			for (const target of targets) {
+				const resolved =
+					resolveSessionInspectorMaxWidthPx(target) ?? resolveUsedMaxWidthPx(target);
+				if (resolved !== null) {
+					usedMax = usedMax === null ? resolved : Math.min(usedMax, resolved);
+				}
+			}
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
 			document.body.classList.add("is-resizing-x");
@@ -141,7 +175,9 @@ export function useResizable({
 			// Dragging never collapses the panel: `apply` clamps at `min`, so the
 			// drag simply stops at the floor. Collapse stays on explicit controls.
 			const onMove = (e: PointerEvent) => {
-				applyOnFrame(startWidth + sign * (e.clientX - startX));
+				const raw = startWidth + sign * (e.clientX - startX);
+				const max = usedMax === null ? maxValue() : Math.min(maxValue(), usedMax);
+				applyOnFrame(Math.min(max, Math.max(minValue(), raw)));
 			};
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onEnd);
@@ -149,7 +185,7 @@ export function useResizable({
 			window.addEventListener("blur", finish);
 			activeDragCleanupRef.current = finish;
 		},
-		[applyOnFrame, edge, flushPending, maxValue, minValue, storageKey],
+		[apply, applyOnFrame, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(

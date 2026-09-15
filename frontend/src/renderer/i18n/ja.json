@@ -2025,5 +2025,6 @@
 	"chat.draftDiscard.stay": "留まる",
 	"chat.draftDiscard.leaveAnyway": "離れる",
 	"chat.edit.abandonRecovery": "編集の復旧を中止",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "ホームに移動"
 }
