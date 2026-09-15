@@ -5010,6 +5010,9 @@ func (m *Manager) wrapAgentProcessWithLaunchID(agent ports.Agent, id domain.Sess
 	// Without this env value an old source hook can overwrite the target's
 	// native session id after an in-place switch.
 	env[EnvRuntimeLaunchID] = launchID
+	if augmenter, ok := agent.(ports.AgentRuntimeLaunchEnv); ok {
+		augmenter.AugmentRuntimeLaunchEnv(env, m.dataDir, id, launchID)
+	}
 	detector, ok := agent.(ports.AgentExitDetector)
 	if !force && (!ok || detector.ExitDetectionMode() != ports.AgentExitDetectionSupervisor) {
 		return argv, nil

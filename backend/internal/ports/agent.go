@@ -74,6 +74,13 @@ type AgentBinaryResolver interface {
 	ResolveBinary(ctx context.Context) (path string, err error)
 }
 
+// AgentRuntimeLaunchEnv augments a terminal launch after its generation has
+// been assigned. Native reporters can then carry that generation in their
+// own protocol identity. Implementations only modify the supplied environment.
+type AgentRuntimeLaunchEnv interface {
+	AugmentRuntimeLaunchEnv(env map[string]string, dataDir string, sessionID domain.SessionID, launchID string)
+}
+
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
 // adapter whose normal binary resolution performs additional validation. It
 // must only inspect local executable paths; it must not start the agent CLI.

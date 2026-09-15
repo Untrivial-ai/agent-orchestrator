@@ -45,10 +45,13 @@ type ActivitySignal struct {
 	// ExpectedRevision fences a daemon observer's pre-probe snapshot. nil is an
 	// unversioned hook, while a pointer to zero is a valid initial revision.
 	ExpectedRevision *int64
-	Event            string
-	ToolName         string
-	ToolUseID        string
-	AgentSessionID   string
+	// ExpectedHarness fences native reports to their provider. Empty preserves
+	// the existing generic hook contract; socket reporters always set it.
+	ExpectedHarness domain.AgentHarness
+	Event           string
+	ToolName        string
+	ToolUseID       string
+	AgentSessionID  string
 	// LatestUserPrompt and LatestAssistantUpdate are provider hook facts used
 	// to build a deterministic handoff. Lifecycle accepts them only from their
 	// main-turn event boundaries (UserPromptSubmit and Stop) under the current
