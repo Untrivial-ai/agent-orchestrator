@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
 import { renderMermaidDiagram } from "../../lib/mermaid-diagram";
 import { ActivityTitle, ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
+import { ChatImageSourceProvider } from "./chat-image-source";
 
 // Mermaid needs real SVG layout APIs jsdom lacks; pin the routing boundary and
 // let MermaidBlock.test.tsx own the block's states.
@@ -283,6 +284,50 @@ describe("ChatMarkdown", () => {
 		const code = screen.getByText(/aoagents/);
 		expect(code.closest("pre")).not.toBeNull();
 		expect(screen.getByRole("button", { name: /copy code/i })).toBeInTheDocument();
+	});
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("ChatMarkdown image sources", () => {
+	function renderInSession(text: string) {
+		return render(
+			<ChatImageSourceProvider sessionId="session-1">
+				<ChatMarkdown text={text} />
+			</ChatImageSourceProvider>,
+		);
+	}
+
+	it("resolves a worktree-relative image path against the session's workspace", () => {
+		renderInSession("![screenshot](docs/screen%20shot.png)");
+		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		const url = new URL(src, "http://127.0.0.1");
+		expect(url.pathname).toBe("/api/v1/sessions/session-1/workspace/file/blob");
+		expect(url.searchParams.get("path")).toBe("docs/screen shot.png");
+		expect(url.searchParams.get("side")).toBe("after");
+	});
+
+	it("resolves from the worktree root and never climbs above it", () => {
+		renderInSession("![a](./out/a.png) ![b](../../etc/b.png)");
+		const paths = screen
+			.getAllByRole("img")
+			.map((image) => new URL(image.getAttribute("src") ?? "", "http://127.0.0.1").searchParams.get("path"));
+		expect(paths).toEqual(["out/a.png", "etc/b.png"]);
+	});
+
+	it("keeps absolute sources exactly as the agent wrote them", () => {
+		// Existing transcripts with full daemon URLs must render as they always have.
+		renderInSession("![remote](https://example.com/a.png) ![daemon](http://127.0.0.1:3001/api/v1/x.png)");
+		expect(screen.getByRole("img", { name: "remote" })).toHaveAttribute("src", "https://example.com/a.png");
+		expect(screen.getByRole("img", { name: "daemon" })).toHaveAttribute(
+			"src",
+			"http://127.0.0.1:3001/api/v1/x.png",
+		);
+	});
+
+	it("leaves a relative path untouched outside a session", () => {
+		render(<ChatMarkdown text={"![screenshot](docs/shot.png)"} />);
+		expect(screen.getByRole("img", { name: "screenshot" })).toHaveAttribute("src", "docs/shot.png");
 	});
 });
 

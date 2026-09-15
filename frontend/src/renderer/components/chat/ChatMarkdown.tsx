@@ -45,6 +45,7 @@ import { AppLink } from "../AppLink";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
+import { ChatMarkdownImage } from "./chat-image-source";
 import "./code-theme.css";
 
 // Activity titles live inside disclosure buttons: keep inline formatting, but
@@ -343,7 +344,6 @@ const COMPONENTS: Components = {
 	// and right-click offers the system browser and copying the address.
 	a: MarkdownLink,
 
-	img: ({ src, alt }) => (
-		<img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} className="my-2 max-w-full rounded-md border border-border" />
-	),
+	// Relative paths resolve against the session worktree; see `chat-image-source.tsx`.
+	img: ChatMarkdownImage,
 };
