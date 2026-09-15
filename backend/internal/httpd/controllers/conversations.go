@@ -872,6 +872,16 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_AUTH_REQUIRED", "the agent is installed but not authenticated", nil)
 
+	case errors.Is(err, chatsvc.ErrSkillsUnavailable):
+		// The provider is up (its skills feature is detected) but this call to it
+		// failed, e.g. Codex app-server's `skills/list` returned a JSON-RPC error.
+		// That is a provider-side fault, usually transient, and not the generic
+		// "AO is broken" a bare 500 implies. err.Error() carries the raw upstream
+		// error through to the response (and any caller/log that prints it)
+		// instead of losing it behind "Internal server error".
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable",
+			"CHAT_SKILLS_UNAVAILABLE", err.Error(), nil)
+
 	case errors.Is(err, ports.ErrChatResumeFailed):
 		// Deliberately not a silent recovery: the client must offer the user a
 		// choice rather than have AO invent a fresh conversation.
