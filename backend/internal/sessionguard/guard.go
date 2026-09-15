@@ -113,6 +113,9 @@ type Guard struct {
 
 	startupGateMu           sync.RWMutex
 	startupSignalGatesInput func(domain.AgentHarness) bool
+
+	deliveryMu    sync.Mutex
+	deliveryLocks map[domain.SessionID]chan struct{}
 }
 
 var _ ports.AgentMessenger = (*Guard)(nil)
@@ -153,7 +156,12 @@ func New(store SessionReader, messenger ports.AgentMessenger, logger *slog.Logge
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Guard{store: store, messenger: messenger, logger: logger}
+	return &Guard{
+		store:         store,
+		messenger:     messenger,
+		logger:        logger,
+		deliveryLocks: make(map[domain.SessionID]chan struct{}),
+	}
 }
 
 // SetInputLease late-binds the process-wide pane-input admission authority.
@@ -348,6 +356,12 @@ func (g *Guard) send(ctx context.Context, id domain.SessionID, msg string, refus
 }
 
 func (g *Guard) sendThen(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), after func(context.Context) error) (Outcome, error) {
+	releaseDelivery, err := g.acquireDelivery(ctx, id)
+	if err != nil {
+		return SuppressedUnknown, err
+	}
+	defer releaseDelivery()
+
 	g.leaseMu.RLock()
 	lease := g.lease
 	g.leaseMu.RUnlock()
@@ -366,6 +380,27 @@ func (g *Guard) sendThen(ctx context.Context, id domain.SessionID, msg string, r
 		}
 	}
 	return outcome, err
+}
+
+func (g *Guard) acquireDelivery(ctx context.Context, id domain.SessionID) (func(), error) {
+	g.deliveryMu.Lock()
+	if g.deliveryLocks == nil {
+		g.deliveryLocks = make(map[domain.SessionID]chan struct{})
+	}
+	lock, ok := g.deliveryLocks[id]
+	if !ok {
+		lock = make(chan struct{}, 1)
+		lock <- struct{}{}
+		g.deliveryLocks[id] = lock
+	}
+	g.deliveryMu.Unlock()
+
+	select {
+	case <-lock:
+		return func() { lock <- struct{}{} }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // sendAdmitted performs the durable safety read and the actual pane write. A
