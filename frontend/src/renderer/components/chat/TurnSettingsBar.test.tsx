@@ -108,14 +108,14 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 		}
 	});
 
-	it("searches the full catalog by model ID and preserves selection semantics", async () => {
+	it("searches the full catalog by model name and preserves selection semantics", async () => {
 		const { user, onChange, onComposerClick, open } = setup();
 		await open();
 		expect(screen.getAllByRole("menuitemradio")).toHaveLength(100);
 		expect(screen.getByRole("menuitemradio", { name: "Model 0" })).toHaveAttribute("aria-checked", "true");
 		const search = screen.getByRole("searchbox", { name: "Search models" });
 		onComposerClick.mockClear();
-		await user.type(search, "  PROVIDER-1/MODEL-99  ");
+		await user.type(search, "  MODEL 99  ");
 		expect(search).toHaveFocus();
 		expect(onComposerClick).not.toHaveBeenCalled();
 		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
@@ -131,7 +131,7 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 		expect(screen.getAllByRole("menuitemradio")).toHaveLength(100);
 	});
 
-	it("matches names fuzzily and supports keyboard selection", async () => {
+	it("matches model names and supports keyboard selection", async () => {
 		const { user, onChange, open } = setup();
 		await open();
 		if (path === "ACP standalone") {
@@ -139,8 +139,8 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 		}
 		const search = screen.getByRole("searchbox", { name: "Search models" });
 		expect(search).toHaveFocus();
-		await user.keyboard("Md99");
-		expect(search).toHaveValue("Md99");
+		await user.keyboard("Model 99");
+		expect(search).toHaveValue("Model 99");
 		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
 		await user.keyboard("{ArrowDown}");
 		expect(screen.getByRole("menuitemradio", { name: "Model 99" })).toHaveFocus();
@@ -185,6 +185,16 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
 	});
 
+	it("routes Backspace from a focused result back to the search query", async () => {
+		const { user, open } = setup();
+		await open();
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		await user.type(search, "Model 99");
+		await user.keyboard("{ArrowDown}{Backspace}");
+		expect(search).toHaveFocus();
+		expect(search).toHaveValue("Model 9");
+	});
+
 	it("keeps Space as the select key on a focused result", async () => {
 		const { user, onChange, open } = setup();
 		await open();
@@ -211,12 +221,12 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 		expect(screen.getByRole("menuitemradio", { name: "Model 0" })).toHaveFocus();
 	});
 
-	it("filters providers and restores all models after clearing or dismissing search", async () => {
+	it("filters models and restores all models after clearing or dismissing search", async () => {
 		const { user, open } = setup();
 		await open();
 		const search = screen.getByRole("searchbox", { name: "Search models" });
-		await user.type(search, path === "native" ? "provider-1" : "Provider 1");
-		expect(screen.getAllByRole("menuitemradio")).toHaveLength(50);
+		await user.type(search, "Model 99");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
 		expect(screen.queryByRole("menuitemradio", { name: "Model 0" })).not.toBeInTheDocument();
 		if (path !== "native") expect(screen.getByText("Provider 1")).toBeInTheDocument();
 		await user.clear(search);
@@ -233,6 +243,41 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 });
 
 describe("ACP session config options", () => {
+	it("searches visible model names without matching hidden choice values", async () => {
+		const user = userEvent.setup();
+		const choices = [
+			{ value: "chatgpt/claude-opus-4-8", name: "Claude Opus 4.8" },
+			{ value: "chatgpt/claude-sonnet-4", name: "Claude Sonnet 4" },
+			...Array.from({ length: 8 }, (_, index) => ({
+				value: `chatgpt/gpt-5.${index + 3}`,
+				name: `GPT-5.${index + 3}`,
+			})),
+		].map((choice) => ({ ...choice, group: "chatgpt", groupName: "ChatGPT" }));
+		render(
+			<TurnSettingsBar
+				models={[]}
+				settings={{}}
+				configOptions={[{
+					id: "model",
+					name: "Model",
+					category: "model",
+					type: "select",
+					currentValue: choices[0].value,
+					choices,
+				}]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Model" }));
+		await user.type(screen.getByRole("searchbox", { name: "Search models" }), "cl");
+
+		expect(screen.getByRole("menuitemradio", { name: "Claude Opus 4.8" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Claude Sonnet 4" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "GPT-5.3" })).not.toBeInTheDocument();
+		expect(screen.getByText("Showing 2 of 2 matching models", { exact: true })).toBeInTheDocument();
+	});
+
 	it.each(["ao-plan-project-1", "agents/plan-reviewer", "my_plan_agent"])(
 		"does not treat custom agent %s as native Plan Mode",
 		async (custom) => {

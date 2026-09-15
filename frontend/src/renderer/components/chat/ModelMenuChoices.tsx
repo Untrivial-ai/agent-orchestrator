@@ -2,10 +2,9 @@ import { Search } from "lucide-react";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
-import { buildModelSearchIndex, searchModelIndex } from "../settings/AgentModelCombobox";
 
 /** Mounted inside menu content so closing either menu also clears its query. */
-export function ModelMenuChoices<T extends { id: string; label: string; provider?: string }>({
+export function ModelMenuChoices<T extends { id: string; label: string }>({
 	models,
 	children,
 }: {
@@ -16,11 +15,11 @@ export function ModelMenuChoices<T extends { id: string; label: string; provider
 	const [search, setSearch] = useState("");
 	const showSearch = models.length >= 10;
 	const query = showSearch ? search.trim() : "";
-	const index = useMemo(() => buildModelSearchIndex(models), [models]);
-	const matches = useMemo(
-		() => query ? searchModelIndex(index, query).models.map((item) => models[item.index]) : models,
-		[index, models, query],
-	);
+	const normalizedQuery = query.toLocaleLowerCase();
+	const matches = useMemo(() => {
+		if (!normalizedQuery) return models;
+		return models.filter((model) => model.label.toLocaleLowerCase().includes(normalizedQuery));
+	}, [models, normalizedQuery]);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
@@ -72,7 +71,7 @@ export function ModelMenuChoices<T extends { id: string; label: string; provider
 							aria-label={t("settings.models.searchAria", { label: "models" })}
 							value={search}
 							onChange={(event) => setSearch(event.target.value)}
-							placeholder={t("settings.models.searchModelsOrProvidersPlaceholder")}
+							placeholder={t("settings.models.searchPlaceholder")}
 							className="menu-search-input h-control-form! rounded-[10px] pl-8!"
 						/>
 					</div>
@@ -91,6 +90,13 @@ export function ModelMenuChoices<T extends { id: string; label: string; provider
 							event.preventDefault();
 							event.stopPropagation();
 							searchRef.current.focus();
+							return;
+						}
+						if (event.key === "Backspace") {
+							event.preventDefault();
+							event.stopPropagation();
+							searchRef.current.focus();
+							setSearch((current) => current.slice(0, -1));
 							return;
 						}
 						if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.metaKey && !event.altKey) {
