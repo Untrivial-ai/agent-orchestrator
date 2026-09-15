@@ -425,14 +425,21 @@ export async function getSessions(cfg: ServerConfig, _projectId?: string): Promi
 // "no preview". We build the URL from our own base (httpBase honors the TLS
 // toggle) rather than the daemon's `previewUrl`, which hardcodes http:// + its
 // request host and would break over a TLS tunnel (e.g. tailscale serve).
+/**
+ * The daemon's preview-files route for a workspace path, each segment escaped.
+ * Shared by the preview button and chat attachment images so the route shape
+ * lives in one place.
+ */
+export function previewFilePath(sessionId: string, path: string): string {
+	return `${API}/sessions/${encodeURIComponent(sessionId)}/preview/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export async function getPreview(cfg: ServerConfig, id: string, preferredURL?: string): Promise<{ entry: string; url: string; authenticated: boolean } | null> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/preview`);
 	const data = await res.json();
 	const entry = typeof data?.entry === "string" ? data.entry.trim() : "";
 	if (entry) {
-		// Mirror the daemon's files route: /preview/files/<entry>, each segment escaped.
-		const escaped = entry.split("/").map(encodeURIComponent).join("/");
-		const url = `${httpBase(cfg)}${API}/sessions/${encodeURIComponent(id)}/preview/files/${escaped}`;
+		const url = `${httpBase(cfg)}${previewFilePath(id, entry)}`;
 		return { entry, url, authenticated: true };
 	}
 	const external = mobileReachablePreviewURL(preferredURL, cfg.host);

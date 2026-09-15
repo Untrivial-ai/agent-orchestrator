@@ -1,5 +1,3 @@
-const API = "/api/v1";
-
 // AO-owned prompt suffixes, not general markdown. Desktop chat, spawn, older
 // image-only prompts and earlier mobile builds each shipped their own wording;
 // durable history keeps all of them, so the transcript must accept every form.
@@ -48,9 +46,4 @@ export function isImageAttachment(path: string): boolean {
 
 export function attachmentName(path: string): string {
 	return path.slice(path.lastIndexOf("/") + 1);
-}
-
-/** The daemon's preview-files route for a workspace path, each segment escaped. */
-export function attachmentFilePath(sessionId: string, path: string): string {
-	return `${API}/sessions/${encodeURIComponent(sessionId)}/preview/files/${path.split("/").map(encodeURIComponent).join("/")}`;
 }

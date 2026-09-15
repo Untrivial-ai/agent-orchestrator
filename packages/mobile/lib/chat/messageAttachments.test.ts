@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentFilePath, attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, withAttachmentReferences } from "./messageAttachments";
+import { attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, withAttachmentReferences } from "./messageAttachments";
 
 describe("mobile Chat staged attachments", () => {
 	it("strips the desktop composer suffix so the image can render instead of the raw path list", () => {
@@ -58,10 +58,7 @@ describe("mobile Chat staged attachments", () => {
 		expect(attachmentTileSize(0)).toBe(160);
 	});
 
-	it("builds the escaped preview-files route and recognises image paths", () => {
-		expect(attachmentFilePath("sess 1", ".ao/attachments/attachment-a.png")).toBe(
-			"/api/v1/sessions/sess%201/preview/files/.ao/attachments/attachment-a.png",
-		);
+	it("recognises image paths", () => {
 		expect(isImageAttachment(".ao/attachments/attachment-a.JPG")).toBe(true);
 		expect(isImageAttachment(".ao/attachments/attachment-a.webp")).toBe(true);
 		expect(isImageAttachment(".ao/attachments/attachment-a.pdf")).toBe(false);

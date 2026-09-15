@@ -35,7 +35,8 @@ import {
 	toggleInputValue,
 	validateInput,
 } from "./elicitationModel";
-import { attachmentFilePath, attachmentName, attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, type AttachmentImageSource } from "./messageAttachments";
+import { previewFilePath } from "../api";
+import { attachmentName, attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, type AttachmentImageSource } from "./messageAttachments";
 import type {
 	ConversationActivity,
 	ConversationItem,
@@ -270,7 +271,7 @@ function StagedAttachments({ sessionId, paths, spaced }: { sessionId: string; pa
 	return <View style={[styles.attachments, spaced && styles.attachmentsSpaced]}>
 		{paths.map((path) => {
 			const source = config && isImageAttachment(path)
-				? { uri: `${httpBase(config)}${attachmentFilePath(sessionId, path)}`, headers: authHeaders(config) }
+				? { uri: `${httpBase(config)}${previewFilePath(sessionId, path)}`, headers: authHeaders(config) }
 				: undefined;
 			return <StagedAttachment key={path} name={attachmentName(path)} source={source} tileSize={tileSize} />;
 		})}
@@ -283,7 +284,6 @@ function StagedAttachment({ name, source, tileSize }: { name: string; source?: A
 	// The failure belongs to the load that failed, so a reconnect to another address
 	// or a rotated password retries on its own; tapping the chip retries in place.
 	const [failedLoad, setFailedLoad] = useState<AttachmentImageSource>();
-	const [attempt, setAttempt] = useState(0);
 	const [viewerOpen, setViewerOpen] = useState(false);
 	if (!source) {
 		return <View style={styles.attachmentChip}><Feather name="file-text" size={12} color={t.textTertiary} /><Text numberOfLines={1} style={styles.attachmentName}>{name}</Text></View>;
@@ -292,12 +292,12 @@ function StagedAttachment({ name, source, tileSize }: { name: string; source?: A
 		// Cover-cropping a square reads as a deliberate thumbnail; the viewer shows the whole image.
 		return <>
 			<Pressable accessibilityRole="imagebutton" accessibilityLabel={`Open ${name}`} onPress={() => { haptics.tap(); setViewerOpen(true); }} style={[styles.attachmentTile, { width: tileSize, height: tileSize }]}>
-				<Image key={attempt} accessibilityIgnoresInvertColors source={source} resizeMode="cover" onError={() => setFailedLoad(source)} style={styles.attachmentTileImage} />
+				<Image accessibilityIgnoresInvertColors source={source} resizeMode="cover" onError={() => setFailedLoad(source)} style={styles.attachmentTileImage} />
 			</Pressable>
 			<AttachmentViewer visible={viewerOpen} name={name} source={source} onClose={() => setViewerOpen(false)} />
 		</>;
 	}
-	return <Pressable accessibilityRole="button" accessibilityLabel={`Retry loading ${name}`} hitSlop={6} onPress={() => { haptics.tap(); setFailedLoad(undefined); setAttempt((value) => value + 1); }} style={styles.attachmentChip}>
+	return <Pressable accessibilityRole="button" accessibilityLabel={`Retry loading ${name}`} hitSlop={6} onPress={() => { haptics.tap(); setFailedLoad(undefined); }} style={styles.attachmentChip}>
 		<Feather name="refresh-cw" size={12} color={t.textTertiary} />
 		<Text numberOfLines={1} style={styles.attachmentName}>{name}</Text>
 		<Text style={styles.attachmentRetry}>Tap to retry</Text>
