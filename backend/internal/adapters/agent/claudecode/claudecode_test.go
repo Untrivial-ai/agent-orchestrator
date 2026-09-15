@@ -996,6 +996,13 @@ func TestClaudeAuthStatusFromOutputUnknownForUnrecognizedFailure(t *testing.T) {
 	}
 }
 
+func TestClaudeAuthStatusFromOutputUnknownWithoutLoggedIn(t *testing.T) {
+	status, ok := claudeAuthStatusFromOutput([]byte(`{"error":"authentication unavailable"}`))
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestClaudeAuthStatusPrefersCLILoggedOutOverStaleProfileIdentity(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")
