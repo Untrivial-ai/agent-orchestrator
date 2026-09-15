@@ -37,7 +37,6 @@ import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { createCloudTerminalMux } from "../lib/cloud-terminal-mux";
-import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -332,36 +331,18 @@ export function TerminalCacheProvider({
 			const factory = () =>
 				createCloudTerminalMux({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
+					// Ask for the actual agent terminal immediately. The ticket endpoint
+					// already waits for the worker and terminal process, so an SSE
+					// agent.ready gate can only make the pane hang if that event was
+					// published before the subscription was established.
 					kind,
 					cursor,
-					// #4960: hold the agent pane in "connecting" until the worker's
-					// agent.ready arrives (do not flash the temporary workspace shell).
-					// A workspace/shell terminal attaches to its own kind immediately
-					// and must never be upgraded to the agent terminal, so gate both
-					// the wait and the agent-ready subscription on the agent pane.
-					waitForAgentReady: kind === "agent",
 					mintTicket: async (ticketKind) => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
 							kind: ticketKind,
 						});
 						return response.ticket;
 					},
-					subscribeAgentReady:
-						kind === "agent"
-							? (onReady) => {
-									const controller = new AbortController();
-									void subscribeSessionEventsBridged({
-										baseUrl: cloudCpRef.current.baseUrl,
-										orgId,
-										sessionId,
-										signal: controller.signal,
-										onEvent: (event) => {
-											if (event.type === "agent.ready") onReady();
-										},
-									});
-									return () => controller.abort();
-								}
-							: undefined,
 				});
 			cloudMuxFactoriesRef.current.set(factoryKey, factory);
 			return factory;

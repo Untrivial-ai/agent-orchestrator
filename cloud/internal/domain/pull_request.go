@@ -80,6 +80,9 @@ type ReviewRun struct {
 	Verdict          contract.AOReviewVerdict
 	Body             string
 	ProviderReviewID string
+	// ReviewTerminalID identifies the short-lived agent terminal running this
+	// pass. It is empty for runs created before dedicated reviewer terminals.
+	ReviewTerminalID string
 	LastError        string
 	CreatedAt        time.Time
 	CompletedAt      *time.Time
