@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 )
 
@@ -167,11 +168,16 @@ type aoReviewRunResponse struct {
 	AutoInjectReview bool       `json:"autoInjectReview"`
 }
 
-func toAOReviewRunResponse(run domain.ReviewRunPullRequest) aoReviewRunResponse {
+func toAOReviewRunResponse(run domain.ReviewRunPullRequest, harness string) aoReviewRunResponse {
 	return aoReviewRunResponse{
-		ID:               run.ID,
-		ReviewID:         run.ID,
-		SessionID:        run.ReviewSessionID,
+		ID:        run.ID,
+		ReviewID:  run.ID,
+		SessionID: run.ReviewSessionID,
+		// Cloud runs are one-pass batches. Keep the stable run ID here rather
+		// than inventing a second grouping record just to satisfy the shared
+		// inspector's history model.
+		BatchID:          run.ID,
+		Harness:          harness,
 		PullRequestURL:   run.PullRequestURL,
 		TargetSHA:        run.TargetSHA,
 		Status:           string(run.Status),
@@ -193,6 +199,77 @@ type aoPullRequestReviewStateResponse struct {
 	PreviousRun       *aoReviewRunResponse `json:"previousRun,omitempty"`
 }
 
+func (s *Server) sessionReviewPayload(r *http.Request, orgID, sessionID string) (map[string]any, error) {
+	session, err := s.store.GetSession(r.Context(), principalFrom(r), orgID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	prs, err := s.store.ListPullRequestsBySession(r.Context(), principalFrom(r), orgID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := s.store.ListReviewRunsBySession(r.Context(), principalFrom(r), orgID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	allRuns := make([]aoReviewRunResponse, 0, len(runs))
+	runsByPR := make(map[string][]domain.ReviewRunPullRequest, len(prs))
+	for _, run := range runs {
+		allRuns = append(allRuns, toAOReviewRunResponse(run, session.Harness))
+		runsByPR[run.PullRequestID] = append(runsByPR[run.PullRequestID], run)
+	}
+	reviews := make([]aoPullRequestReviewStateResponse, 0, len(prs))
+	reviewerHandleID := ""
+	for _, pr := range prs {
+		state := reviewStateForPullRequest(pr, runsByPR[pr.ID])
+		response := aoPullRequestReviewStateResponse{
+			PullRequestURL: pr.URL, PullRequestNumber: pr.Number, Title: pr.Title,
+			TargetSHA: pr.HeadSHA, Status: state,
+		}
+		if current := runsByPR[pr.ID]; len(current) > 0 {
+			latest := toAOReviewRunResponse(current[0], session.Harness)
+			response.LatestRun = &latest
+			if latest.Status == "running" && current[0].ReviewTerminalID != "" {
+				reviewerHandleID = current[0].ReviewTerminalID
+			}
+			if len(current) > 1 {
+				previous := toAOReviewRunResponse(current[1], session.Harness)
+				response.PreviousRun = &previous
+			}
+		}
+		reviews = append(reviews, response)
+	}
+	return map[string]any{
+		"sessionId":        sessionID,
+		"reviewerHandleId": reviewerHandleID,
+		"reviewerHarness":  session.Harness,
+		"reviews":          nonNilReviews(reviews),
+		"runs":             allRuns,
+	}, nil
+}
+
+func reviewStateForPullRequest(pr domain.PullRequest, runs []domain.ReviewRunPullRequest) string {
+	if pr.Draft || pr.State != contract.PRStateOpen || pr.HeadSHA == "" {
+		return "ineligible"
+	}
+	if len(runs) == 0 || runs[0].TargetSHA != pr.HeadSHA {
+		return "needs_review"
+	}
+	latest := runs[0]
+	switch latest.Status {
+	case contract.AOReviewRunRunning:
+		return "running"
+	case contract.AOReviewRunDelivered:
+		if latest.Verdict == contract.AOReviewVerdictApproved {
+			return "up_to_date"
+		}
+		if latest.Verdict == contract.AOReviewVerdictChangesRequested {
+			return "changes_requested"
+		}
+	}
+	return "needs_review"
+}
+
 func (s *Server) getSessionReviewState(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgId")
 	sessionID := chi.URLParam(r, "sessionId")
@@ -200,38 +277,79 @@ func (s *Server) getSessionReviewState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
 		return
 	}
-	runs, err := s.store.ListReviewRunsBySession(r.Context(), principalFrom(r), orgID, sessionID)
+	payload, err := s.sessionReviewPayload(r, orgID, sessionID)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	allRuns := make([]aoReviewRunResponse, 0, len(runs))
-	var reviews []aoPullRequestReviewStateResponse
-	var currentPullRequestID string
-	for _, run := range runs {
-		allRuns = append(allRuns, toAOReviewRunResponse(run))
-		response := toAOReviewRunResponse(run)
-		if run.PullRequestID == currentPullRequestID && len(reviews) > 0 {
-			if reviews[len(reviews)-1].PreviousRun == nil {
-				reviews[len(reviews)-1].PreviousRun = &response
-			}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// triggerSessionReviews starts one reviewer terminal for every open PR in the
+// worker session that has not already been reviewed at its current head.
+func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	if s.github == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Starting a review is not available.")
+		return
+	}
+	prs, err := s.store.ListPullRequestsBySession(r.Context(), principalFrom(r), orgID, sessionID)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	created := false
+	for _, pr := range prs {
+		if pr.Draft || pr.State != contract.PRStateOpen || pr.HeadSHA == "" {
 			continue
 		}
-		currentPullRequestID = run.PullRequestID
-		reviews = append(reviews, aoPullRequestReviewStateResponse{
-			PullRequestURL:    run.PullRequestURL,
-			PullRequestNumber: run.PullRequestNumber,
-			Title:             run.PullRequestTitle,
-			TargetSHA:         run.TargetSHA,
-			Status:            string(run.PullRequestAOReviewState),
-			LatestRun:         &response,
-		})
+		_, didCreate, err := s.github.TriggerReview(r.Context(), orgID, sessionID, pr)
+		if err != nil {
+			s.logger.Error("trigger cloud review", "error", err, "request_id", requestID(r), "pull_request_id", pr.ID)
+			writeError(w, r, http.StatusBadGateway, "REVIEW_FAILED", "The review could not be started.")
+			return
+		}
+		created = created || didCreate
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"sessionId": sessionID,
-		"reviews":   nonNilReviews(reviews),
-		"runs":      allRuns,
-	})
+	payload, err := s.sessionReviewPayload(r, orgID, sessionID)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, payload)
+}
+
+func (s *Server) cancelSessionReviews(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	if s.github == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Cancelling a review is not available.")
+		return
+	}
+	if _, err := s.github.CancelReviews(r.Context(), orgID, sessionID); err != nil {
+		s.logger.Error("cancel cloud review", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "REVIEW_FAILED", "The review could not be cancelled.")
+		return
+	}
+	payload, err := s.sessionReviewPayload(r, orgID, sessionID)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func nonNilReviews(reviews []aoPullRequestReviewStateResponse) []aoPullRequestReviewStateResponse {

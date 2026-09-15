@@ -37,7 +37,11 @@ import type { TerminalMux } from "./terminal-mux";
  * user-facing terminal-options surface to hang a setting off yet; flip this
  * to false to disable predictions entirely (server echo still renders).
  */
-export const LOCAL_ECHO_ENABLED = true;
+// Keep this disabled until cloud PTY echo and alternate-buffer detection are
+// reliable for every agent TUI. If the remote echo is delayed or absent, the
+// optimistic character is rolled back after the timeout, which makes user
+// input appear to delete itself.
+export const LOCAL_ECHO_ENABLED = false;
 
 export type TerminalBufferType = "normal" | "alternate";
 

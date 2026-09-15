@@ -75,6 +75,7 @@ type Store interface {
 		providerReviewID string,
 	) (domain.ReviewRun, error)
 	FailReviewRun(ctx context.Context, orgID, reviewRunID, reviewSessionID, lastError string) (domain.ReviewRun, error)
+	CancelRunningReviewRunsBySession(ctx context.Context, orgID, sessionID string) ([]domain.ReviewRun, error)
 	ReserveGitHubRepositoryCapability(context.Context, domain.Principal, string, string, string, []byte, int64) (domain.GitHubRepositoryCapability, bool, error)
 	ActivateGitHubRepositoryCapability(context.Context, domain.Principal, string, string, domain.GitHubRepository, []byte, []byte, []byte) (domain.GitHubRepositoryCapability, error)
 	GitHubRepositoryCapability(context.Context, []byte, string) (domain.GitHubRepositoryCapability, error)
@@ -535,7 +536,6 @@ func (s *Service) RaisePullRequest(
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	s.triggerReview(ctx, orgID, sessionID, record)
 	return record, nil
 }
 
@@ -600,7 +600,6 @@ func (s *Service) ClaimPullRequest(
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	s.triggerReview(ctx, orgID, sessionID, record)
 	return record, nil
 }
 

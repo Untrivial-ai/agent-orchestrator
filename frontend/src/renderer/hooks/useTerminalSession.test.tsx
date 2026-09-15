@@ -1056,27 +1056,27 @@ describe("useTerminalSession", () => {
 		expect(muxes).toHaveLength(1);
 	});
 
-	describe("predictive local echo (cloud sessions)", () => {
+	describe("cloud terminal input", () => {
 		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
 
-		it("renders a predicted keystroke immediately and strips the server echo", () => {
+		it("waits for the authoritative server echo instead of predicting a keystroke", () => {
 			const { terminal, muxes } = setup({ attachedSession: cloudSession });
 			act(() => muxes[0].emitConnection("open"));
 			act(() => muxes[0].emitOpened("handle-1"));
 			terminal.typeKeys("a");
-			// The prediction landed locally before any server round trip…
-			expect(terminal.lines).toEqual(["a"]);
-			// …while the wire got the raw keystroke.
+			// Input always reaches the PTY, but must not be rendered optimistically:
+			// a delayed or absent echo used to roll the local character back.
+			expect(terminal.lines).toEqual([]);
 			expect(muxes[0].inputs).toEqual([["handle-1", "a"]]);
-			// The authoritative echo of what is already on screen renders nothing.
+			// The server echo is the only copy rendered in the terminal.
 			act(() => muxes[0].emitData("handle-1", "a"));
 			expect(terminal.lines).toEqual(["a"]);
-			// Output beyond the echo flows through verbatim.
+			// Subsequent PTY output flows through verbatim.
 			act(() => muxes[0].emitData("handle-1", "$ "));
 			expect(terminal.lines).toEqual(["a", "$ "]);
 		});
 
-		it("never predicts while the pane is on the alternate buffer", () => {
+		it("does not locally echo while the pane is on the alternate buffer", () => {
 			const { terminal, muxes } = setup({ attachedSession: cloudSession });
 			terminal.activeBufferType = "alternate";
 			act(() => muxes[0].emitConnection("open"));
