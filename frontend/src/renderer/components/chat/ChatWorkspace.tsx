@@ -3170,6 +3170,7 @@ const TurnGroup = memo(function TurnGroup({
 						queued={queued}
 						newHumanMessageIds={newHumanMessageIds}
 						showCopy={run.items[0]?.id === copyableMessageId}
+						providerErrorResolved={group.outcome?.state === "completed"}
 						onRollback={
 							canRollback && run.items[0]?.id === copyableMessageId
 								? () => onRollback(group.turnId as string)
@@ -3339,6 +3340,7 @@ function TimelineItem({
 	showCopy,
 	onRollback,
 	durationMs,
+	providerErrorResolved,
 }: {
 	item: ConversationItem;
 	sessionId: string;
@@ -3375,6 +3377,8 @@ function TimelineItem({
 	onRollback?: () => void;
 	/** Finished-turn duration; shown next to rollback on the final answer. */
 	durationMs?: number;
+	/** The enclosing turn completed despite any provider error rows it retained. */
+	providerErrorResolved?: boolean;
 	/** This message is the live edge of its turn, rather than an earlier fragment
 	 * followed by tool activity. */
 }) {
@@ -3449,7 +3453,7 @@ function TimelineItem({
 		const plan = activityPlan(item);
 		return plan ? <TurnPlan plan={plan} /> : <ActivityRow activity={item} />;
 	}
-	return <ActivityRow activity={item} />;
+	return <ActivityRow activity={item} providerErrorResolved={providerErrorResolved} />;
 }
 
 /* -------------------------------------------------------------------------- */

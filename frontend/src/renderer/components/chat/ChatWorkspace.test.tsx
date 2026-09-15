@@ -339,6 +339,92 @@ describe("Chat message timestamps", () => {
 });
 
 describe("ChatWorkspace timeline", () => {
+	it("marks transient reconnect errors as recovered after their turn completes", () => {
+		const reconnectError = (attempt: number) => `provider error: ${JSON.stringify({
+			error: {
+				message: `Reconnecting... [${attempt}/5]`,
+				additionalDetails: "stream disconnected before completion",
+			},
+			turnId: "provider-turn-reconnected",
+			willRetry: true,
+		})}`;
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			controller: { state: "ready" },
+			turns: [
+				{
+					id: "turn-reconnected",
+					state: "completed",
+					requestedAt: "2026-09-14T00:00:00Z",
+					startedAt: "2026-09-14T00:00:01Z",
+					completedAt: "2026-09-14T00:00:06Z",
+				},
+			],
+			items: [
+				{
+					kind: "message",
+					id: "prompt-reconnected",
+					turnId: "turn-reconnected",
+					sequence: 1,
+					revision: 0,
+					role: "user",
+					origin: "human",
+					text: "Keep going if the connection returns",
+					streaming: false,
+					createdAt: "2026-09-14T00:00:00Z",
+				},
+				...Array.from({ length: 2 }, (_, index) => ({
+					kind: "activity" as const,
+					id: `reconnect-${index + 1}`,
+					turnId: "turn-reconnected",
+					sequence: index + 2,
+					revision: 0,
+					activityKind: "error" as const,
+					status: "failed" as const,
+					summary: reconnectError(index + 1),
+					detail: { error: reconnectError(index + 1) },
+					createdAt: `2026-09-14T00:00:0${index + 2}Z`,
+				})),
+				{
+					kind: "message",
+					id: "answer-reconnected",
+					turnId: "turn-reconnected",
+					sequence: 4,
+					revision: 1,
+					role: "assistant",
+					origin: "provider",
+					text: "The turn completed after reconnecting.",
+					streaming: false,
+					createdAt: "2026-09-14T00:00:06Z",
+				},
+			],
+			latestSequence: 4,
+			oldestSequence: 1,
+		};
+
+		const running = structuredClone(snapshot);
+		running.turns[0] = {
+			...running.turns[0]!,
+			state: "running",
+			completedAt: undefined,
+		};
+		const answer = running.items.find(
+			(item): item is ConversationMessage => item.kind === "message" && item.role === "assistant",
+		);
+		if (!answer) throw new Error("reconnect fixture has no assistant answer");
+		answer.streaming = true;
+
+		const view = render(<ChatWorkspace snapshot={running} />);
+		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
+		expect(screen.getByText("Reconnecting... [2/5]")).toBeInTheDocument();
+		expect(screen.queryByText("Provider recovered")).not.toBeInTheDocument();
+
+		view.rerender(<ChatWorkspace snapshot={snapshot} />);
+
+		expect(screen.getByText("The turn completed after reconnecting.")).toBeInTheDocument();
+		expect(screen.getAllByText("Provider recovered")).toHaveLength(2);
+	});
+
 	it("shows a local human echo until the matching durable turn arrives", () => {
 		const snapshot = idleSnapshot(chatFixtureEmpty);
 		const localEchos = [

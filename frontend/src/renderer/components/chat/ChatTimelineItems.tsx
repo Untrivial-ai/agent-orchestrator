@@ -758,7 +758,14 @@ function DeliveryNote({ state }: { state: DeliveryState }) {
  * kind this build does not recognize still renders as a generic row — dropping it
  * would hide work the agent really did.
  */
-export function ActivityRow({ activity }: { activity: ConversationActivity }) {
+export function ActivityRow({
+	activity,
+	providerErrorResolved = false,
+}: {
+	activity: ConversationActivity;
+	/** The enclosing turn completed despite this provider error. */
+	providerErrorResolved?: boolean;
+}) {
 	const toolActivity =
 		activity.activityKind === "command" ||
 		activity.activityKind === "file_change" ||
@@ -769,7 +776,9 @@ export function ActivityRow({ activity }: { activity: ConversationActivity }) {
 	if (activity.activityKind === "mcp_tool") content = <McpToolRow activity={activity} />;
 	else if (activity.activityKind === "auto_review") content = <AutoReviewRow activity={activity} />;
 	else if (activity.activityKind === "reasoning") content = <ReasoningBlock activity={activity} />;
-	else if (activity.activityKind === "error") content = <ErrorActivityRow activity={activity} />;
+	else if (activity.activityKind === "error") {
+		content = <ErrorActivityRow activity={activity} resolved={providerErrorResolved} />;
+	}
 	else if (activity.detail?.event === "model.rerouted") content = <RerouteRow activity={activity} />;
 	else if (activity.detail?.event === "auth.reauth_required") content = <ReauthRow activity={activity} />;
 	else content = <GenericActivityRow activity={activity} />;
@@ -1892,12 +1901,23 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
  * controller banner announces a terminal failure. Marking every historical
  * reconnect row as `role="alert"` would interrupt a screen reader once per attempt.
  */
-function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
+function ErrorActivityRow({
+	activity,
+	resolved,
+}: {
+	activity: ConversationActivity;
+	resolved: boolean;
+}) {
 	const { headline, detail } = providerErrorCopy(activity);
 	const actionUrl = String(activity.detail?.actionUrl ?? "").trim();
 	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
-		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
+		<div
+			className={cn(
+				"flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground",
+				resolved && "opacity-65",
+			)}
+		>
 			<span className="wrap-anywhere min-w-0">
 				<span>{headline}</span>
 				{detail ? (
@@ -1917,6 +1937,11 @@ function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
 							<span className="text-muted-foreground/80">{standaloneActionUrl}</span>
 						)}
 					</>
+				) : null}
+				{resolved ? (
+					<span className="ml-1.5 whitespace-nowrap font-medium text-muted-foreground">
+						Provider recovered
+					</span>
 				) : null}
 			</span>
 		</div>
