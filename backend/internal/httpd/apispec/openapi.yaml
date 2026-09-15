@@ -3962,6 +3962,63 @@ paths:
       summary: Send guidance into the in-flight turn of a chat session
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/steer-or-send:
+    post:
+      operationId: steerOrSendSessionConversationTurn
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SteerConversationRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SteerOrSendConversationResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Steer the active turn or send a new turn when idle
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/title:
     put:
       operationId: setSessionConversationTitle
@@ -11896,6 +11953,34 @@ components:
           type: string
       required:
       - providerTurnId
+      type: object
+    SteerOrSendConversationResponse:
+      properties:
+        activityId:
+          type: string
+        duplicate:
+          type: boolean
+        outcome:
+          enum:
+          - steered
+          - sent
+          type: string
+        providerTurnId:
+          type: string
+        state:
+          enum:
+          - queued
+          - running
+          - completed
+          - recovered
+          - interrupted
+          - failed
+          type: string
+        turnId:
+          type: string
+      required:
+      - outcome
+      - duplicate
       type: object
     SubmitAgentHandoffRequest:
       properties:

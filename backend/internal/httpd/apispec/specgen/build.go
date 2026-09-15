@@ -191,6 +191,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSetConversationTitleResponse":              "SetConversationTitleResponse",
 	"ControllersSteerConversationRequest":                  "SteerConversationRequest",
 	"ControllersSteerConversationResponse":                 "SteerConversationResponse",
+	"ControllersSteerOrSendConversationResponse":           "SteerOrSendConversationResponse",
 	"ControllersPromoteQueuedTurnResponse":                 "PromoteQueuedTurnResponse",
 	// httpd/envelope
 	"EnvelopeAPIError": "APIError",
@@ -945,6 +946,20 @@ func shellTerminalOperations() []operation {
 			reqBody:    controllers.SteerConversationRequest{},
 			resps: []respUnit{
 				{http.StatusAccepted, controllers.SteerConversationResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/conversation/steer-or-send", id: "steerOrSendSessionConversationTurn", tag: "conversations",
+			summary:    "Steer the active turn or send a new turn when idle",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.SteerConversationRequest{},
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.SteerOrSendConversationResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},

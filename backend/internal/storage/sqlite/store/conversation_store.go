@@ -878,6 +878,25 @@ func (s *Store) appendUserMessage(
 	return true, nil
 }
 
+// ConversationMessageByClientID finds the durable normal-message outcome for an
+// idempotent client delivery handle.
+func (s *Store) ConversationMessageByClientID(
+	ctx context.Context,
+	conversationID, clientMessageID string,
+) (domain.ConversationMessage, bool, error) {
+	row, err := s.qr.SelectConversationMessageByClientID(ctx,
+		gen.SelectConversationMessageByClientIDParams{
+			ConversationID: conversationID, ClientMessageID: clientMessageID,
+		})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if err != nil {
+		return domain.ConversationMessage{}, false, err
+	}
+	return messageToDomain(row), true, nil
+}
+
 // AdoptProviderTurn records a turn the provider started that AO never dispatched.
 //
 // A compaction runs as its own provider turn, and so does work the provider
