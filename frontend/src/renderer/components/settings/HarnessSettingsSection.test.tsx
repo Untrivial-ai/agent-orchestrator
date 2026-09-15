@@ -52,9 +52,10 @@ const plans = {
 			methods: [{ id: "official-installer", label: "Official installer", available: true, recommended: true, command: "bash <downloaded from https://cursor.com/install>", reinstallAvailable: false, reinstallReason: "No headless reinstall" }],
 		},
 		{
-			agentId: "goose", available: false, automatic: false, method: "manual",
-			reason: "Goose does not publish a native Windows CLI installer; use WSL or the desktop download.",
-			documentationUrl: "https://block.github.io/goose/index.html", methods: [],
+			agentId: "goose", available: true, automatic: true, method: "official-installer",
+			command: "pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>",
+			documentationUrl: "https://goose-docs.ai/docs/getting-started/installation/",
+			methods: [{ id: "official-installer", label: "Official installer", available: true, recommended: true, command: "pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>", reinstallAvailable: false, reinstallReason: "No headless reinstall" }],
 		},
 	],
 };
@@ -213,11 +214,11 @@ describe("HarnessSettingsSection", () => {
 		expect(row).toHaveTextContent("Installing…");
 	});
 
-	it("does not show instructions for harnesses without an automatic installer", async () => {
+	it("shows the official Goose installer", async () => {
 		renderSection();
 		const row = (await screen.findByText("Goose")).closest('[data-agent="goose"]') as HTMLElement;
-		expect(within(row).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
-		expect(within(row).queryByRole("button", { name: "Install" })).not.toBeInTheDocument();
+		await waitFor(() => expect(row).toHaveTextContent("Available via Official"));
+		expect(within(row).getByRole("button", { name: "Install" })).toBeInTheDocument();
 	});
 
 	it("does not treat a historical successful job as current installation inventory", async () => {
