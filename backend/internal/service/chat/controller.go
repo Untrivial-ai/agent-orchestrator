@@ -226,6 +226,14 @@ type Controller struct {
 	// the closing controller from projecting a false provider exit or failing work
 	// that the detached host continues to run.
 	preserveProviderOnStop bool
+	// plannedStop marks that Close (not Terminate) initiated this controller's
+	// retirement — the only caller is Service.StopAll, which closes every
+	// controller for daemon shutdown. It distinguishes a daemon relinquishing
+	// controller ownership from a provider connection genuinely being lost, so
+	// project's stopped-path can avoid reporting a false ActivityExited for a
+	// routine restart. Terminate leaves this false: real teardown still reports
+	// exited.
+	plannedStop bool
 
 	// account, threadState and mcpServers are merged here before being written,
 	// because the provider reports each of them in pieces: account/updated carries
@@ -2258,6 +2266,9 @@ func (c *Controller) Rollback(ctx context.Context, turnID string) (int, error) {
 // output and unresolved provider requests to the replacement controller.
 func (c *Controller) Close(ctx context.Context) error {
 	c.once.Do(func() {
+		c.mu.Lock()
+		c.plannedStop = true
+		c.mu.Unlock()
 		if preserver, ok := c.conv.(ports.ChatProviderPreserver); ok && preserver.PreservesProviderOnClose() {
 			c.mu.Lock()
 			c.preserveProviderOnStop = true
@@ -2398,6 +2409,7 @@ func (c *Controller) project() {
 	c.state = ports.ChatControllerStopped
 	suppressStoppedActivity := c.suppressStoppedActivity
 	preserveProvider := c.preserveProviderOnStop
+	plannedStop := c.plannedStop
 	c.mu.Unlock()
 	if preserveProvider {
 		return
@@ -2418,7 +2430,18 @@ func (c *Controller) project() {
 	// transport cannot. Report the same lifecycle boundary here so the session
 	// does not remain durably active, idle, or blocked after its controller died.
 	// ControllerGeneration fences this write from a replacement controller.
-	if !suppressStoppedActivity {
+	//
+	// A planned stop is different: Close (used only by Service.StopAll, for
+	// daemon shutdown) means this daemon is relinquishing controller ownership,
+	// not that the agent durably exited. Publishing ActivityExited here would
+	// flash a false "the agent died" reading through an ordinary restart,
+	// moments before the replacement daemon's controller reconnects and reports
+	// the same session active/idle again. Report nothing and leave the
+	// last-known durable activity exactly as it was — a real unexpected loss
+	// (no Close/Terminate ever called) still reports exited below.
+	switch {
+	case suppressStoppedActivity, plannedStop:
+	default:
 		c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 	}
 	if _, err := c.store.CleanupOwnedControllerWork(

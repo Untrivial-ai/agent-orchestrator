@@ -816,7 +816,7 @@ describe("Sidebar", () => {
 		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
-	it("lists worker sessions by updated time, newest first", () => {
+	it("lists worker sessions by creation time, newest first", () => {
 		const oldest: WorkspaceSession = {
 			...session,
 			id: "proj-1-old",
@@ -830,42 +830,112 @@ describe("Sidebar", () => {
 			id: "proj-1-new",
 			title: "new task",
 			createdAt: "2026-07-01T00:00:00Z",
-			updatedAt: "2026-07-01T00:00:00Z",
-			activity: { state: "active", lastActivityAt: "2026-07-02T00:00:00Z" },
+			// Older updatedAt/activity than `oldest` above — createdAt order must
+			// win regardless, which is the point of this test.
+			updatedAt: "2026-06-30T00:00:00Z",
+			activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
 		};
-		const noActivity: WorkspaceSession = {
+		const noCreatedAt: WorkspaceSession = {
 			...session,
-			id: "proj-1-no-activity",
-			title: "no activity",
-			createdAt: "2026-06-29T00:00:00Z",
+			id: "proj-1-no-created-at",
+			title: "no created at",
+			createdAt: undefined,
 			updatedAt: "2026-07-03T00:00:00Z",
 		};
-		const invalidActivity: WorkspaceSession = {
-			...session,
-			id: "proj-1-invalid-activity",
-			title: "invalid activity",
-			createdAt: "2026-06-29T00:00:00Z",
-			updatedAt: "2026-07-04T00:00:00Z",
-			activity: { state: "idle", lastActivityAt: "not-a-timestamp" },
-		};
-		const createdFallback: WorkspaceSession = {
-			...session,
-			id: "proj-1-created-fallback",
-			title: "created fallback",
-			createdAt: "2026-07-05T00:00:00Z",
-			updatedAt: "not-a-timestamp",
-			activity: { state: "idle", lastActivityAt: "also-not-a-timestamp" },
-		};
-		renderSidebar({ workspaces: [{ ...workspace, sessions: [oldest, newest, noActivity, invalidActivity, createdFallback] }] });
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [oldest, newest, noCreatedAt] }] });
 
 		const sessionButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-session-row] button[aria-label^="Open "]'));
 		expect(sessionButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
-			"Open invalid activity",
-			"Open no activity",
-			"Open old task",
+			// newest createdAt first, despite having the least recent updatedAt/activity.
 			"Open new task",
-			"Open created fallback",
+			"Open old task",
+			// Missing createdAt sorts as the oldest (timestamp 0).
+			"Open no created at",
 		]);
+	});
+
+	it("keeps sidebar order stable while controller reconnect activity churns updatedAt/activity", () => {
+		// Reproduces the restart-recovery scenario from GH #4573: several
+		// sessions created in order, then their updatedAt/activity mutate out of
+		// order (as controllers reconnect in staggered waves) without any
+		// createdAt change. The sidebar order must not move.
+		const first: WorkspaceSession = {
+			...session,
+			id: "proj-1-first",
+			title: "first",
+			createdAt: "2026-08-01T00:00:00Z",
+			updatedAt: "2026-08-01T00:00:00Z",
+			activity: { state: "idle", lastActivityAt: "2026-08-01T00:00:00Z" },
+		};
+		const second: WorkspaceSession = {
+			...session,
+			id: "proj-1-second",
+			title: "second",
+			createdAt: "2026-08-02T00:00:00Z",
+			updatedAt: "2026-08-02T00:00:00Z",
+			activity: { state: "idle", lastActivityAt: "2026-08-02T00:00:00Z" },
+		};
+		const third: WorkspaceSession = {
+			...session,
+			id: "proj-1-third",
+			title: "third",
+			createdAt: "2026-08-03T00:00:00Z",
+			updatedAt: "2026-08-03T00:00:00Z",
+			activity: { state: "idle", lastActivityAt: "2026-08-03T00:00:00Z" },
+		};
+		window.localStorage.setItem("ao.sidebar.expanded-projects", JSON.stringify([workspace.id]));
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		queryClient.setQueryData(agentReadinessQueryKey, {
+			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+		});
+		const renderWorkspaces = (sessions: WorkspaceSession[]) => (
+			<QueryClientProvider client={queryClient}>
+				<TooltipProvider>
+					<SidebarProvider defaultOpen={true}>
+						<Sidebar
+							topbarOffset="toolbar"
+							onCloneProject={vi.fn().mockResolvedValue(undefined) as CloneProjectHandler}
+							onCreateProject={vi.fn().mockResolvedValue(undefined) as CreateProjectHandler}
+							onInitializeProject={vi.fn().mockResolvedValue(undefined) as InitializeProjectHandler}
+							onRemoveProject={vi.fn().mockResolvedValue(undefined) as RemoveProjectHandler}
+							workspaces={[{ ...workspace, sessions }]}
+						/>
+					</SidebarProvider>
+				</TooltipProvider>
+			</QueryClientProvider>
+		);
+		const { rerender } = render(renderWorkspaces([first, second, third]));
+
+		const rowLabels = () =>
+			Array.from(document.querySelectorAll<HTMLButtonElement>('[data-session-row] button[aria-label^="Open "]')).map((button) =>
+				button.getAttribute("aria-label"),
+			);
+		const initialOrder = rowLabels();
+		expect(initialOrder).toEqual(["Open third", "Open second", "Open first"]);
+
+		// Simulate the "first" and "third" sessions' controllers recovering last,
+		// in reverse creation order — exactly the out-of-order-wave scenario the
+		// acceptance criteria call out. Only updatedAt/activity change.
+		const recoveredFirst: WorkspaceSession = {
+			...first,
+			updatedAt: "2026-08-04T00:10:00Z",
+			activity: { state: "idle", lastActivityAt: "2026-08-04T00:10:00Z" },
+		};
+		const recoveredThird: WorkspaceSession = {
+			...third,
+			updatedAt: "2026-08-04T00:00:00Z",
+			activity: { state: "idle", lastActivityAt: "2026-08-04T00:00:00Z" },
+		};
+		const recoveredSecond: WorkspaceSession = {
+			...second,
+			updatedAt: "2026-08-04T00:20:00Z",
+			activity: { state: "idle", lastActivityAt: "2026-08-04T00:20:00Z" },
+		};
+		rerender(renderWorkspaces([recoveredFirst, recoveredThird, recoveredSecond]));
+
+		expect(rowLabels()).toEqual(initialOrder);
 	});
 
 	it("navigates to the project board when the project row button is clicked", async () => {
@@ -2453,8 +2523,8 @@ describe("Sidebar", () => {
 			workspaces: [{
 				...workspace,
 				sessions: [
-					{ ...session, id: "first", title: "First", updatedAt: "2026-06-30T01:00:00Z" },
-					{ ...session, id: "second", title: "Second", updatedAt: "2026-06-30T00:00:00Z" },
+					{ ...session, id: "first", title: "First", createdAt: "2026-06-30T01:00:00Z", updatedAt: "2026-06-30T01:00:00Z" },
+					{ ...session, id: "second", title: "Second", createdAt: "2026-06-30T00:00:00Z", updatedAt: "2026-06-30T00:00:00Z" },
 				],
 			}],
 		});
