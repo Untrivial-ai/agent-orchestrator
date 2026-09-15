@@ -72,6 +72,7 @@ import { SETTINGS_MENU_ROW, SETTINGS_MENU_SURFACE } from "./settings/SettingsMen
 import { Input } from "./ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { BrowserPermissionPrompt, BrowserSiteInfo } from "./BrowserSiteInfo";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { appI18n, type MessageKey } from "../i18n";
@@ -796,13 +797,15 @@ export function BrowserPanelView({
 			>
 				<PopoverAnchor asChild>
 					<div className="browser-panel__url-wrap relative min-w-0 flex-1">
+						<BrowserSiteInfo key={`${activeTabId}:${profileState.profileId}:${navState.url}`} url={navState.url} native={hasNativeBrowser} viewId={viewId} tabId={activeTabId} />
+						<BrowserPermissionPrompt viewId={viewId} tabId={activeTabId} />
 						<Input
 							aria-activedescendant={activeHistorySuggestion >= 0 ? `${historyMenuId}-${activeHistorySuggestion}` : undefined}
 							aria-controls={suggestionsOpen ? historyMenuId : undefined}
 							aria-expanded={suggestionsOpen}
 							aria-haspopup="listbox"
 							aria-label={t("browser.url")}
-							className="browser-panel__url-input h-browser-url text-xs"
+							className={cn("browser-panel__url-input h-browser-url text-xs", isWebLink(navState.url) && "px-8")}
 							onBlur={endUrlEditing}
 							onChange={(event) => handleURLChange(event.target.value)}
 							onClick={() => urlInputRef.current?.select()}

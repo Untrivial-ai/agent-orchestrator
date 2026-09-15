@@ -4775,6 +4775,209 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	pointer-events: none;
 }
 
+.browser-panel__site-info {
+	position: absolute;
+	top: 3px;
+	left: 3px;
+	z-index: 3;
+	width: 23px;
+	height: 23px;
+	border-radius: var(--radius-sm);
+	color: var(--fg-muted);
+}
+
+.browser-panel__site-info-content {
+	width: min(312px, calc(100vw - 16px));
+	max-height: var(--radix-popover-content-available-height);
+	overflow-y: auto;
+	padding: 0;
+	font-size: var(--font-size-base);
+	box-shadow: var(--shadow-lg);
+}
+
+.browser-site__header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 44px;
+	padding: 5px 6px;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.browser-site__identity {
+	display: grid;
+	width: 28px;
+	height: 28px;
+	place-items: center;
+	flex-shrink: 0;
+	border-radius: 50%;
+	background: var(--surface);
+	color: var(--fg-muted);
+}
+
+.browser-site__identity > svg,
+.browser-site__connection > svg,
+.browser-site__action > svg {
+	width: var(--size-icon-base);
+	height: var(--size-icon-base);
+}
+
+.browser-site__host {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex: 1;
+	font-weight: 500;
+}
+
+.browser-site__subtitle {
+	color: var(--fg-muted);
+	font-size: var(--font-size-caption);
+	line-height: 1.35;
+}
+
+.browser-site__connection {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 11px 12px;
+	color: var(--fg-muted);
+	font-size: var(--font-size-sm);
+}
+
+.browser-site__connection > svg {
+	flex-shrink: 0;
+	margin-top: 1px;
+	color: var(--fg-muted);
+}
+
+.browser-site__summary-actions,
+.browser-site__actions {
+	border-top: 1px solid var(--color-border);
+	padding: 4px;
+}
+
+.browser-site__permissions {
+	padding: 4px;
+}
+
+.browser-site__permission {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	padding: 4px 8px;
+	border-radius: var(--radius-md);
+}
+
+.browser-site__permission > svg {
+	flex-shrink: 0;
+	color: var(--fg-muted);
+}
+
+.browser-site__permission-select {
+	width: 88px;
+	height: 28px;
+	padding-inline: 8px;
+	background: transparent;
+	font-size: var(--font-size-sm);
+}
+
+.browser-site__permission-placeholder {
+	width: 88px;
+	height: 28px;
+	flex-shrink: 0;
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	opacity: 0.6;
+}
+
+.browser-site__action {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 30px;
+	padding: 7px 8px;
+	border-radius: var(--radius-md);
+	color: var(--fg-muted);
+	font-size: var(--font-size-base);
+	text-align: left;
+	cursor: pointer;
+}
+
+.browser-site__action:hover {
+	background: var(--surface);
+	color: var(--fg);
+}
+
+.browser-site__action:disabled,
+.browser-site__permission-select:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.browser-site__confirmation {
+	border-top: 1px solid var(--color-border);
+	padding: 10px 12px;
+}
+
+.browser-site__feedback {
+	border-top: 1px solid var(--color-border);
+	padding: 7px 8px;
+	font-size: var(--font-size-caption);
+}
+
+.browser-panel__permission-prompt {
+	position: absolute;
+	top: calc(100% + 5px);
+	left: 0;
+	z-index: var(--z-overlay, 50);
+	width: min(348px, calc(100vw - 24px));
+	padding: 10px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	background: var(--color-card);
+	color: var(--fg);
+	box-shadow: var(--shadow-lg);
+}
+
+.browser-permission__message {
+	display: flex;
+	align-items: flex-start;
+	gap: 9px;
+	padding: 2px;
+	font-size: var(--font-size-base);
+	line-height: 1.4;
+}
+
+.browser-permission__icon {
+	display: grid;
+	width: 28px;
+	height: 28px;
+	place-items: center;
+	flex-shrink: 0;
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--fg-muted);
+}
+
+.browser-permission__actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 4px;
+	margin-top: 8px;
+}
+
+.browser-permission__actions > :first-child {
+	margin-right: auto;
+}
+
+.browser-permission__actions button {
+	white-space: nowrap;
+}
+
 .browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) .browser-panel__url-external,
 .browser-panel__url-external:focus-visible {
 	opacity: 1;
