@@ -293,6 +293,7 @@ function useGrabbingCursor(active: boolean) {
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 240;
+/** Floor/ceiling for sidebar resize — pass the same values to useResizable AND ResizeHandle. */
 export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 420;
 /** Cap the expanded project list until the user clicks Show more.
@@ -662,14 +663,20 @@ export function Sidebar({
 			className={cn(
 				"sidebar-focusless",
 				hideEdgeBorder ? "border-transparent" : "border-r-0 group-data-[side=left]:border-r-0",
+				// Prefer top/bottom over h-svh/inset-y so titlebar offset (`top-(--sidebar-chrome-offset)`)
+				// clears chrome without fighting a second height constraint.
 				!underTopbar
 					? "top-0 bottom-0"
 					: "top-(--sidebar-chrome-offset) bottom-0 h-auto!",
 			)}
 		>
 			<SidebarHeader className="gap-0 p-0 px-3 pt-2 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:pt-2">
-				{/* Brand (project-sidebar__brand); in the icon rail it becomes the old
-            36px board button wrapping the 22px accent mark. Click → home. */}
+				{/*
+				 * Brand → home. Design contracts (do not regress):
+				 * - Click navigates home; do NOT add hover/focus fill (styles.css
+				 *   opts `[data-sidebar-brand]` out of `.sidebar-focusless` wash).
+				 * - No separate "home" affordance on the mark — the whole brand is the control.
+				 */}
 				<button
 					aria-label={t("shell.goHome")}
 					className={cn(
@@ -944,6 +951,7 @@ export function Sidebar({
 				</div>
 			</SidebarFooter>
 
+			{/* min/max MUST match useResizable above — ResizeHandle has no unclamped fallback. */}
 			<ResizeHandle
 				className="group-data-[state=collapsed]:hidden"
 				maxWidth={SIDEBAR_MAX_WIDTH}

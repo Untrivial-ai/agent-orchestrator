@@ -403,6 +403,7 @@ function SessionInspectorRail({
 				style={{ width: `var(${inspectorWidthVar}, ${sizing.defaultWidth}px)` }}
 				transition={transition}
 			>
+				{/* min/max MUST match useResizable — grip clamps against these ∩ CSS max-width. */}
 				<ResizeHandle
 					className={!isOpen ? "hidden" : undefined}
 					data-testid="inspector-resize-handle"

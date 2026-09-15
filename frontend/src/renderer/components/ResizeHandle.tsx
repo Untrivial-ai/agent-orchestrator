@@ -1,3 +1,21 @@
+/**
+ * Shared sidebar/inspector resize hit-strip + grip.
+ *
+ * DO NOT regress these design contracts (home-page-ui / shell polish):
+ * - Grip is a fixed, hover/active-only pill on the CENTER-PANE border (sidebar:
+ *   `.center-panel-surface` left; inspector: panel `border-l`). Not inset into
+ *   the panel, not a CSS `::after` on the hit strip, not always-visible.
+ * - Height is 80vh, vertically centered — not full inset-y / not titlebar-tall.
+ * - While dragging, the grip must move 1:1 with the width delta and MUST stop
+ *   at the same min/max as the panel. Never follow raw `clientX` past limits.
+ * - Inspector also has CSS `max-width: var(--session-inspector-max-width)`.
+ *   Prop/`rangeRef` max can be looser (e.g. `defaultWidth * 2` before RO).
+ *   ALWAYS take `min(propMax, computed max-width)` and place the grip from the
+ *   docked edge (panel right) + clamped width — never from an unconstrained
+ *   originEdge + pointer delta alone, or the grip will fly past both limits.
+ * - Call sites MUST pass `minWidth` / `maxWidth` matching `useResizable`.
+ *   Without them, drag tracking is disabled (no unclamped fallback).
+ */
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
@@ -5,7 +23,9 @@ type WidthConstraint = number | (() => number);
 
 type ResizeHandleProps = React.HTMLAttributes<HTMLDivElement> & {
 	side: "left" | "right";
+	/** Same floor as the paired `useResizable({ min })`. Required for drag grip tracking. */
 	minWidth?: WidthConstraint;
+	/** Same ceiling as the paired `useResizable({ max })`. Required for drag grip tracking. */
 	maxWidth?: WidthConstraint;
 };
 
@@ -37,14 +57,16 @@ function borderCenterX(el: HTMLElement, edge: "left" | "right"): number {
 	return rect.right - (Number.parseFloat(style.borderRightWidth) || 1) / 2;
 }
 
-/** Prefer the live CSS max-width when it is tighter than the prop (inspector). */
+/**
+ * Inspector painted width is also capped by CSS max-width. Ignoring it lets the
+ * grip travel past the panel (regression: clamp only against rangeRef / props).
+ */
 function effectiveMaxWidth(panel: HTMLElement, propMax: number): number {
 	const computed = Number.parseFloat(getComputedStyle(panel).maxWidth);
 	if (Number.isFinite(computed) && computed > 0) return Math.min(propMax, computed);
 	return propMax;
 }
 
-/** Hit strip for sidebar/inspector resize; hover grip sits on the center-pane border. */
 export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: ResizeHandleProps) {
 	const hitRef = useRef<HTMLDivElement>(null);
 	const gripRef = useRef<HTMLSpanElement>(null);
@@ -62,6 +84,7 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 		};
 
 		const borderEl = (): HTMLElement | null => {
+			// Sidebar grip sits on the center pane's left border, not the sidebar's right edge.
 			if (side === "right") return document.querySelector<HTMLElement>(".center-panel-surface");
 			return hit.closest<HTMLElement>("[data-slot='inspector-container']");
 		};
@@ -72,6 +95,7 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 		};
 
 		const sync = () => {
+			// During drag, moveDrag owns left — RO/MO must not fight it.
 			if (dragRef.current) return;
 			const hitRect = hit.getBoundingClientRect();
 			if (hitRect.width < 1 || hitRect.height < 1 || getComputedStyle(hit).display === "none") {
@@ -86,6 +110,7 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 			const panel = panelEl();
 			const propMin = resolveWidth(minWidth);
 			const propMax = resolveWidth(maxWidth);
+			// No unclamped fallback: missing limits ⇒ do not track (avoids flying past edges).
 			if (!panel || propMin === null || propMax === null) {
 				dragRef.current = null;
 				return;
@@ -94,6 +119,7 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 			const style = getComputedStyle(panel);
 			const maxW = effectiveMaxWidth(panel, propMax);
 			const minW = Math.min(propMin, maxW);
+			// Use painted width, not the CSS var — var can exceed CSS max-width.
 			const startWidth = Math.min(maxW, Math.max(minW, rect.width));
 			const borderHalf =
 				(side === "left"
@@ -118,9 +144,10 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 			if (!drag || event.pointerId !== drag.pointerId) return;
 			if (!document.body.classList.contains("is-resizing-x")) return;
 
+			// Same width math as useResizable, then map clamped width → border X.
+			// DO NOT set left to event.clientX (offset hit strip ≠ edge; also skips clamp).
 			const rawWidth = drag.startWidth + drag.widthSign * (event.clientX - drag.startClientX);
 			const width = Math.min(drag.maxW, Math.max(drag.minW, rawWidth));
-			// Place from the docked edge so CSS max-width cannot desync travel distance.
 			const x =
 				drag.widthSign > 0
 					? drag.anchor + width - drag.borderHalf
@@ -186,6 +213,8 @@ export function ResizeHandle({ className, side, minWidth, maxWidth, ...props }: 
 					ref={gripRef}
 					aria-hidden="true"
 					data-resize-grip=""
+					// Fixed + 80vh + hover opacity only. Do not restore always-on / inset-y /
+					// ::after grips — those were rejected for this shell polish.
 					className="pointer-events-none fixed z-[6] h-[80vh] w-0.5 rounded-full bg-foreground/20 opacity-0 transition-opacity duration-fast group-hover/resize:opacity-100 group-active/resize:opacity-100 motion-reduce:transition-none"
 					style={{ top: "50%", left: edgeX, transform: "translate(-50%, -50%)" }}
 				/>

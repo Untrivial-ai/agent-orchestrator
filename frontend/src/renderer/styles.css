@@ -2010,6 +2010,8 @@ textarea,
 }
 
 /* ── Global resize state (sidebar / inspector drag) ─────────────────────── */
+/* Grip paint lives on ResizeHandle's fixed span — DO NOT restore
+   `body.is-resizing-x [data-slot="resize-handle"]::after` (rejected chrome). */
 body.is-resizing-x {
 	cursor: col-resize;
 	user-select: none;
@@ -2059,7 +2061,8 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	background-color: transparent !important;
 }
 
-/* Brand home control: no focus fill. */
+/* Brand → home: no focus/hover fill. The control is quiet on purpose —
+   do not let `.sidebar-focusless :focus-visible` paint a slab behind the mark. */
 .sidebar-focusless [data-sidebar-brand]:focus-visible {
 	background-color: transparent !important;
 }

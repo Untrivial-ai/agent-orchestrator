@@ -24,6 +24,18 @@ import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
 import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
 import { Badge } from "./ui/badge";
 
+/**
+ * Home landing layout contracts (do not regress without explicit design sign-off):
+ * - One centered column (`max-w-[640px]`); no upward translate hack.
+ * - "Star us" is a quiet text link with dashed underline on hover — NOT a
+ *   TopbarButton / accent pill / bordered card.
+ * - Primary actions are a 2×2 grid; standalone agent lives IN the grid (not a
+ *   full-width accent CTA above). Connect Mobile is settings-only — not here.
+ * - Recent rows use shared {@link NavRowHighlight} (same as sidebar), not a
+ *   flat `hover:bg-interactive-hover` wash.
+ * - Section titles share {@link HOME_SECTION_TITLE_CLASS}; keep Jump back /
+ *   Recent projects visually paired.
+ */
 const GITHUB_REPOSITORY_URL = "https://github.com/Untrivial-ai/agent-orchestrator";
 const RECENT_PROJECT_LIMIT = 3;
 const HOME_BUTTON_CLASS =
@@ -86,6 +98,7 @@ function ProjectRow({ project, onClick, emptyTimeLabel, justNowLabel }: { projec
 
 	return (
 		<button
+			// Host must use NAV_ROW_HIGHLIGHT_HOST_CLASS — pill owns the fill.
 			className={cn(
 				"flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left text-muted-foreground",
 				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
@@ -195,6 +208,7 @@ export function HomePage() {
 					<section className="space-y-3 px-3">
 						<div className="flex items-baseline justify-between gap-4">
 							<h1 className={HOME_SECTION_TITLE_CLASS}>{t("home.jumpBack")}</h1>
+							{/* Quiet text link — not TopbarButton / accent. Dashed underline only on hover. */}
 							<button
 								className="inline-flex shrink-0 items-center gap-1.5 border-b border-dashed border-transparent pb-px text-sm text-muted-foreground hover:border-current hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 								onClick={() => void aoBridge.app.openExternal(GITHUB_REPOSITORY_URL)}
@@ -205,6 +219,7 @@ export function HomePage() {
 							</button>
 						</div>
 
+						{/* 2×2 action grid; standalone agent is a cell here, not a hero CTA above. */}
 						<div className="grid grid-cols-2 gap-3">
 							<HomeActionCard
 								ariaLabel={t("createProject.cloneFromGit")}

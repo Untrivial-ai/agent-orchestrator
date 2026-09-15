@@ -34,6 +34,14 @@ interface UseResizableOptions {
  * Persists the width to localStorage and applies it via a CSS custom property
  * to the nearest consuming layout elements. Keeping a high-frequency custom
  * property off :root avoids invalidating unrelated renderer subtrees.
+ *
+ * Inspector clamp contracts (do not regress):
+ * - `apply` MUST also respect each target's computed CSS `max-width` (e.g.
+ *   `--session-inspector-max-width`). Prop/`rangeRef` max alone is not enough —
+ *   the var can grow past the painted panel and desync ResizeHandle.
+ * - On pointerdown, seed `widthRef` from the painted box when it disagrees with
+ *   the custom property (same CSS max-width desync).
+ * - Dragging never auto-collapses: clamp at `min`; collapse stays on explicit UI.
  */
 export function useResizable({
 	cssVar,
@@ -64,6 +72,7 @@ export function useResizable({
 
 	const apply = useCallback(
 		(next: number) => {
+			// Prop max ∩ computed max-width — required for inspector CSS cap.
 			let max = maxValue();
 			for (const target of cssTargets()) {
 				const computedMax = Number.parseFloat(getComputedStyle(target).maxWidth);
@@ -127,8 +136,7 @@ export function useResizable({
 			const captureTarget = event.currentTarget;
 			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
-			// CSS max-width (inspector) can hold the painted width below the custom
-			// property. Seed from the visible box so drag deltas match the edge.
+			// Seed from the painted box when CSS max-width holds width below the var.
 			const visualWidth = cssTargets()
 				.map((target) => target.getBoundingClientRect().width)
 				.find((width) => width > 0);

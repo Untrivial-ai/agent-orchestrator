@@ -1,9 +1,26 @@
 import { cn } from "../lib/utils";
 
+/**
+ * Host class for rows that use {@link NavRowHighlight}.
+ *
+ * MUST keep host backgrounds transparent on hover/active/focus — the growing
+ * pill owns the fill. Painting `hover:bg-interactive-hover` on the host again
+ * doubles the highlight (sidebar + home recent-row regression).
+ */
 export const NAV_ROW_HIGHLIGHT_HOST_CLASS =
 	"group/nav-row relative hover:bg-transparent! focus-visible:bg-transparent! active:bg-transparent! data-[active=true]:bg-transparent! hover:text-foreground data-[active=true]:font-medium data-[active=true]:text-foreground";
 
-/** Growing fill behind nav rows; hover gated to fine pointers in styles.css. */
+/**
+ * Growing fill behind nav / home recent rows.
+ *
+ * Design contracts — do not regress:
+ * - Idle size is inset (`100%-8px`); hover/focus grows to fill the host.
+ * - Opacity snaps; width/height animate. Motion-reduce → full size, no transition.
+ * - Fine-pointer hover is gated in `styles.css` (`[data-nav-row-highlight-idle]`).
+ *   Keyboard uses `:focus-visible` / `:has(:focus-visible)` there — NOT
+ *   `:focus-within` (mouse click focus would stick the pill on after toggle).
+ * - Shared by Sidebar and HomePage recent rows; keep one implementation.
+ */
 export function NavRowHighlight({
 	active = false,
 	disabled = false,

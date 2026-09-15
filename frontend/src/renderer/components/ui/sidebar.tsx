@@ -254,6 +254,7 @@ function Sidebar({
 				className={cn(
 					// Prefer top/bottom over inset-y so callers can clear titlebar chrome
 					// with `top-(--sidebar-chrome-offset)` without fighting inset-y-0.
+					// DO NOT restore `inset-y-0` + `h-svh` — under-topbar offset then clips wrong.
 					"fixed top-0 bottom-0 z-chrome hidden w-(--ao-sidebar-w,var(--sidebar-width)) md:flex",
 					side === "left" ? "left-0" : "right-0",
 					// Adjust the padding for floating and inset variants.
