@@ -102,6 +102,71 @@ oauth = { storage = "file", key = "oauth/kimi-code" }
 	}
 }
 
+func TestKimiConfigAuthStatusAuthorizedWithKeyringOAuthReference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[providers."managed:kimi-code"]
+oauth = { storage = "keyring", key = "oauth/kimi-code" }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok, err := kimiConfigAuthStatus(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	}
+}
+
+func TestKimiConfigAuthStatusUnknownWithKeyringOAuthReferenceAndEmptyCredentials(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[providers."managed:kimi-code"]
+oauth = { storage = "keyring", key = "oauth/kimi-code" }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credentialsDir := filepath.Join(home, "credentials")
+	if err := os.MkdirAll(credentialsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(credentialsDir, "kimi-code.json"), []byte(`{"access_token":"","refresh_token":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok, err := kimiConfigAuthStatus(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestKimiConfigAuthStatusUnknownWithFileOAuthReferenceWithoutToken(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{
+  "providers": {
+    "managed:kimi-code": {
+      "oauth": {"storage": "file", "key": "oauth/kimi-code"}
+    }
+  }
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok, err := kimiConfigAuthStatus(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestKimiLocalAuthStatusUsesKimiCodeHome(t *testing.T) {
 	clearKimiAuthEnv(t)
 	home := t.TempDir()
@@ -245,7 +310,7 @@ func TestKimiCredentialsAuthStatusUnknownWithEmptyTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	if !ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
