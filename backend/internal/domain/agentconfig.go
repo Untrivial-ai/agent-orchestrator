@@ -84,6 +84,12 @@ func (c AgentConfig) IsZero() bool {
 	return reflect.DeepEqual(c, AgentConfig{})
 }
 
+// Equal compares two configs by value; a bare == does not compile now that
+// AgentConfig carries map/slice/pointer fields.
+func (c AgentConfig) Equal(other AgentConfig) bool {
+	return reflect.DeepEqual(c, other)
+}
+
 // Valid reports whether the mode is one AO knows. Empty counts as valid: it means
 // "the adapter's own baseline", which is a legitimate choice rather than a missing
 // one.
