@@ -478,7 +478,10 @@ func TestCreate_InvalidIDErrors(t *testing.T) {
 	rt := New(Options{Spawner: fakeSpawnerFor(t, nil, livePID())})
 	ctx := context.Background()
 
-	for _, bad := range []string{"", "has space", "has/slash", "has.dot"} {
+	// Dots are legal (session ids derive from project names — #4479) and are
+	// covered by TestCreate_AcceptsDottedSessionID; only characters outside
+	// the widened alphabet and leading-dot ids stay invalid here.
+	for _, bad := range []string{"", "has space", "has/slash", ".leading"} {
 		_, err := rt.Create(ctx, ports.RuntimeConfig{
 			SessionID:     domain.SessionID(bad),
 			WorkspacePath: "/tmp/w",
@@ -1162,6 +1165,52 @@ func TestIsAlive_RefusedIsGone_TimeoutIsTransient(t *testing.T) {
 func TestClientKill_Idempotent(t *testing.T) {
 	if err := clientKill("127.0.0.1:1"); err != nil {
 		t.Fatalf("clientKill on unreachable addr: %v", err)
+	}
+}
+
+// TestCreate_AcceptsDottedSessionID pins the #4479 boundary: session ids
+// derive from project names and legitimately contain dots, so conpty must
+// accept them like the CLI env bound and the tmux runtime do. The id is used
+// only as a map key / host argv[0] / registry identity — never as a path or
+// pipe component — so dots are safe here.
+func TestCreate_AcceptsDottedSessionID(t *testing.T) {
+	isolateRegistry(t)
+	hosts := map[string]*inProcHost{}
+	rt := New(Options{Spawner: fakeSpawnerFor(t, hosts, livePID())})
+
+	const dotted = "myproj.github.io-38"
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     domain.SessionID(dotted),
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"claude-code"},
+	})
+	if err != nil {
+		t.Fatalf("Create(%q): %v", dotted, err)
+	}
+	if handle.ID != dotted {
+		t.Fatalf("handle.ID = %q, want %q", handle.ID, dotted)
+	}
+	hosts[dotted].cleanup(t)
+}
+
+// TestCreate_RejectsUnsafeSessionIDs keeps the traversal anchor the widened
+// pattern promises: leading dots (".", "..", ".hidden") stay rejected, and so
+// does any other character outside the id alphabet. The assertion matches the
+// validation message specifically — a spawner failure must not count as a
+// rejection, otherwise a pattern mutation could survive on a spawn error.
+func TestCreate_RejectsUnsafeSessionIDs(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{})
+
+	for _, id := range []string{".", "..", ".hidden", "a/b", "a:b"} {
+		_, err := rt.Create(context.Background(), ports.RuntimeConfig{
+			SessionID:     domain.SessionID(id),
+			WorkspacePath: "/tmp/workspace",
+			Argv:          []string{"claude-code"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "invalid session id") {
+			t.Errorf("Create(%q): err = %v, want the invalid-session-id validation error", id, err)
+		}
 	}
 }
 
