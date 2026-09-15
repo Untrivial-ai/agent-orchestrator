@@ -182,9 +182,9 @@ AO works with the coding agents and source-control workflow you already use. Age
 
 ## Report a bug
 
-[Open a bug report](https://github.com/Untrivial-ai/agent-orchestrator/issues/new?template=bug_report.yml) from your own GitHub account. A few sentences in your own words about what you did and what went wrong are enough. Add what you expected, reproduction steps, your AO version and OS, or a screenshot if you have them; these are helpful, not prerequisites.
+[Open a bug report](https://github.com/Untrivial-ai/agent-orchestrator/issues/new?template=bug_report.yml) and briefly describe what you did and what went wrong. Reproduction steps, expected behavior, your AO version and OS, and screenshots are helpful when available.
 
-A local coding agent can help you clarify the report and gather evidence using the [bug-triage skill](.agents/skills/bug-triage/SKILL.md). Keep the issue body focused on your observations, with agent-collected logs, database excerpts, and investigation notes in separate attachments. Review any draft before submitting it under your own account. Please don't ask AO Bot to file issues on your behalf; reporter attribution matters.
+Want help? Ask your local coding agent: **“Use the [bug-triage skill](.agents/skills/bug-triage/SKILL.md) to help me report this bug.”** It can clarify the symptoms, look for duplicate issues, and gather relevant logs or other diagnostic evidence before preparing a concise issue draft.
 
 For help describing a problem, join the [bug-triaging channel on Discord](https://discord.com/channels/1476302178913357958/1491735678156013588). See [contribution guidance](CONTRIBUTING.md#bugs-and-features) for more detail.
 
