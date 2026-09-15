@@ -8,13 +8,11 @@
  * - Height is 80vh, vertically centered — not full inset-y / not titlebar-tall.
  * - While dragging, the grip must move 1:1 with the width delta and MUST stop
  *   at the same min/max as the panel. Never follow raw `clientX` past limits.
- * - Inspector also has CSS `max-width: var(--session-inspector-max-width)`.
- *   Prop/`rangeRef` max can be looser (e.g. `defaultWidth * 2` before RO).
- *   ALWAYS take `min(propMax, computed max-width)` and place the grip from the
- *   docked edge (panel right) + clamped width — never from an unconstrained
- *   originEdge + pointer delta alone, or the grip will fly past both limits.
- * - Call sites MUST pass `minWidth` / `maxWidth` matching `useResizable`.
- *   Without them, drag tracking is disabled (no unclamped fallback).
+ * - Inspector also has CSS `max-width: var(--session-inspector-max-width)` as a
+ *   `min()` expression. NEVER `parseFloat(getComputedStyle().maxWidth)` alone —
+ *   unresolved `min()` yields NaN and the leftmost (max) clamp falls back to a
+ *   loose prop max while the rightmost (min) still works. Use
+ *   `resolveUsedMaxWidthPx` (probe) and pass matching min/max from useResizable.
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
