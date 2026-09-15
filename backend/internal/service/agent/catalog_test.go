@@ -1390,3 +1390,7 @@ func TestWarmModelCatalogsStartsAsynchronously(t *testing.T) {
 		t.Fatal("background warm did not finish")
 	}
 }
+
+// Test fakes stand in for command-backed adapters, which is the case the auth
+// gate applies to.
+func (f *fakeModelDiscoverer) RunsAgentCommand(string) bool { return true }

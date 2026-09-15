@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -278,7 +279,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		return cached.Catalog, nil
 	}
 
-	discovered, discoverErr := s.discoverer.Discover(ctx, request)
+	discovered, discoverErr := s.discoverModels(ctx, item, agentID, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	if discoverErr != nil {
@@ -444,6 +445,80 @@ func (s *Service) saveCatalog(ctx context.Context, projectID string, catalog por
 		Source:        catalog.Source,
 		FetchedAt:     catalog.FetchedAt,
 	})
+}
+
+// errAgentNotSignedIn marks a discovery run AO declined to start. It flows
+// through the normal discovery-failure path, so the caller still gets the
+// cached, shared, or manual catalog exactly as it would for a failed run.
+var errAgentNotSignedIn = errors.New("agent is not signed in")
+
+// discoverModels runs the adapter's model-discovery command, unless the adapter
+// can tell us the agent is signed out.
+//
+// Discovery executes the agent's own CLI, and some of those commands are the
+// agent's interactive entrypoint: Kiro's is `chat --list-models`, which starts a
+// browser OAuth sign-in when it finds no token. Rendering a model picker must
+// never be able to do that, so an adapter that positively reports "signed out"
+// stops the run before it begins.
+//
+// Only an explicit Unauthorized blocks. Unknown means the probe could not tell,
+// which is not a denial — treating it as one would silently disable discovery
+// for every adapter whose probe is imprecise.
+func (s *Service) discoverModels(
+	ctx context.Context,
+	item agentregistry.HarnessAgent,
+	agentID string,
+	request ports.AgentModelDiscoveryRequest,
+) (ports.AgentModelCatalog, error) {
+	// Only decline runs that would actually execute the agent. A static or
+	// config-derived catalog cannot start a sign-in, so gating it would strip a
+	// model list from a signed-out user for no benefit.
+	if !s.discoverer.RunsAgentCommand(agentID) {
+		return s.discoverer.Discover(ctx, request)
+	}
+	status, ok := s.discoveryAuthStatus(ctx, item, request)
+	if !ok {
+		return s.discoverer.Discover(ctx, request)
+	}
+	if status == ports.AgentAuthStatusUnauthorized {
+		return ports.AgentModelCatalog{}, fmt.Errorf(
+			"%s is signed out, so AO did not run its model-discovery command: %w. Sign in to the agent, then refresh",
+			agentID, errAgentNotSignedIn)
+	}
+	return s.discoverer.Discover(ctx, request)
+}
+
+// discoveryAuthStatus reads the adapter's auth status for the environment the
+// discovery command would actually run in. The bool reports whether the answer
+// is usable at all.
+//
+// Discovery runs with a project-scoped environment overlay, and an adapter can
+// take credentials from it — Kiro reads KIRO_API_KEY that way. Asking an
+// adapter that only answers for the daemon's own environment would then report
+// a project-authenticated agent as signed out and suppress a discovery run that
+// would have succeeded. When an overlay is in play and the adapter cannot
+// account for it, this reports no usable answer rather than a wrong one.
+func (s *Service) discoveryAuthStatus(
+	ctx context.Context,
+	item agentregistry.HarnessAgent,
+	request ports.AgentModelDiscoveryRequest,
+) (ports.AgentAuthStatus, bool) {
+	if envChecker, ok := item.Agent.(ports.AgentAuthCheckerWithEnv); ok {
+		status, err := envChecker.AuthStatusInEnv(ctx, request.Env)
+		return status, err == nil
+	}
+	checker, ok := item.Agent.(ports.AgentAuthChecker)
+	if !ok {
+		return "", false
+	}
+	if len(request.Env) > 0 {
+		// The overlay could carry the very credential that authenticates this
+		// agent, and this adapter cannot be asked about it. Never block on an
+		// answer that describes a different environment.
+		return "", false
+	}
+	status, err := checker.AuthStatus(ctx)
+	return status, err == nil
 }
 
 func (s *Service) agent(agentID string) (agentregistry.HarnessAgent, bool) {

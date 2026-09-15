@@ -2,6 +2,8 @@ package authprobe
 
 import (
 	"context"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +15,40 @@ import (
 // It is exposed as a package variable to allow mocking in tests.
 var CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, error) {
 	return aoprocess.CommandContext(ctx, name, arg...).CombinedOutput()
+}
+
+// CmdRunnerEnv is CmdRunner with an environment overlay applied over the
+// daemon's own. A probe whose answer gates a command that will itself run with
+// a project-scoped environment must observe that same environment, or it
+// reports on credentials the real command would never have used.
+var CmdRunnerEnv = func(ctx context.Context, env map[string]string, name string, arg ...string) ([]byte, error) {
+	cmd := aoprocess.CommandContext(ctx, name, arg...)
+	if len(env) > 0 {
+		cmd.Env = mergedEnvironment(os.Environ(), env)
+	}
+	return cmd.CombinedOutput()
+}
+
+func mergedEnvironment(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, item := range base {
+		key, _, _ := strings.Cut(item, "=")
+		if _, replaced := overrides[key]; !replaced {
+			out = append(out, item)
+		}
+	}
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		out = append(out, key+"="+overrides[key])
+	}
+	return out
 }
 
 // CLIStatus runs bounded local CLI probes and classifies their output.
