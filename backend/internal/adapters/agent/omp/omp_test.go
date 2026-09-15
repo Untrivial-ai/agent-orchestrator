@@ -49,6 +49,13 @@ func TestGetConfigSpecReportsModelField(t *testing.T) {
 	}
 }
 
+func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
+	plugin := &Plugin{}
+	if got := plugin.ExitDetectionMode(); got != ports.AgentExitDetectionSupervisor {
+		t.Fatalf("exit detection mode = %q, want %q", got, ports.AgentExitDetectionSupervisor)
+	}
+}
+
 func TestGetPromptDeliveryStrategyIsInCommand(t *testing.T) {
 	got, err := (&Plugin{}).GetPromptDeliveryStrategy(context.Background(), ports.LaunchConfig{})
 	if err != nil {
