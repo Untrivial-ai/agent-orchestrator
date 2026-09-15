@@ -283,9 +283,13 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	// MCP/plugin flags are also rebuilt from flags on resume (they are not part
 	// of the transcript), so re-apply them or a restored worker loses its scoped
-	// MCP set and plugins.
-	appendMCPFlags(&cmd, cfg.Config.MCP)
-	appendPluginFlags(&cmd, cfg.Config.PluginDirs)
+	// MCP set and plugins. Insert them before --resume, matching the ordering
+	// buildClaudeRestore uses for every other flag (claude CLI parses them the
+	// same either way, but the restore argv stays uniform).
+	insertBeforeResume(&cmd, func(cmd *[]string) {
+		appendMCPFlags(cmd, cfg.Config.MCP)
+		appendPluginFlags(cmd, cfg.Config.PluginDirs)
+	})
 	return cmd, true, nil
 }
 
@@ -404,6 +408,31 @@ func claudeSessionUUID(aoSessionID string) string {
 // used by --session-id and --resume.
 func SessionUUID(aoSessionID string) string {
 	return claudeSessionUUID(aoSessionID)
+}
+
+// insertBeforeResume applies emit to the command, inserting the emitted flags
+// before the --resume marker (and its identity value) rather than after it, so
+// late-applied flags keep the same argv shape as flags applied at build time.
+// Without a --resume token the flags are simply appended.
+func insertBeforeResume(cmd *[]string, emit func(cmd *[]string)) {
+	resumeAt := -1
+	for i, v := range *cmd {
+		if v == "--resume" {
+			resumeAt = i
+			break
+		}
+	}
+	var extra []string
+	emit(&extra)
+	if resumeAt < 0 {
+		*cmd = append(*cmd, extra...)
+		return
+	}
+	out := make([]string, 0, len(*cmd)+len(extra))
+	out = append(out, (*cmd)[:resumeAt]...)
+	out = append(out, extra...)
+	out = append(out, (*cmd)[resumeAt:]...)
+	*cmd = out
 }
 
 // appendMCPFlags emits claude-code's per-session MCP flags. Each MCPConfig
