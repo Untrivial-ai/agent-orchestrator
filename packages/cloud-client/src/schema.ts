@@ -497,6 +497,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/file/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** @description Read one supported cloud workspace file with its bounded unified diff. Docker, NodeOps, and Coder sessions use the same isolated ao-worker workspace protocol. */
+        get: operations["readWorkspaceDiffFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/diff": {
         parameters: {
             query?: never;
@@ -507,6 +527,7 @@ export interface paths {
             };
             cookie?: never;
         };
+        /** @description Changed-file summary and line counts for Docker, NodeOps, and Coder sessions, relative to the session compare base. */
         get: operations["getWorkspaceDiff"];
         put?: never;
         post?: never;
@@ -1332,6 +1353,9 @@ export interface components {
         WorkerWorkspaceReadPayload: {
             path: string;
         };
+        WorkerWorkspaceDiffFilePayload: {
+            path: string;
+        };
         WorkerWorkspaceWritePayload: components["schemas"]["WorkspaceFileWriteInput"];
         WorkerWorkspaceEntryPage: {
             path: string;
@@ -1418,6 +1442,17 @@ export interface components {
             kind: "WorkerWorkspaceDiffTransport";
             payload: components["schemas"]["EmptyObject"];
         };
+        WorkerWorkspaceDiffFileTransport: {
+            /** Format: uuid */
+            id: string;
+            attempt: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerWorkspaceDiffFileTransport";
+            payload: components["schemas"]["WorkerWorkspaceDiffFilePayload"];
+        };
         WorkerTerminalOpenTransport: {
             /** Format: uuid */
             id: string;
@@ -1462,12 +1497,12 @@ export interface components {
             kind: "WorkerTerminalCloseTransport";
             payload: components["schemas"]["WorkerTerminalClosePayload"];
         };
-        WorkerTransportRequest: components["schemas"]["WorkerWorkspaceListTransport"] | components["schemas"]["WorkerWorkspaceReadTransport"] | components["schemas"]["WorkerWorkspaceWriteTransport"] | components["schemas"]["WorkerWorkspaceDiffTransport"] | components["schemas"]["WorkerTerminalOpenTransport"] | components["schemas"]["WorkerTerminalInputTransport"] | components["schemas"]["WorkerTerminalResizeTransport"] | components["schemas"]["WorkerTerminalCloseTransport"];
+        WorkerTransportRequest: components["schemas"]["WorkerWorkspaceListTransport"] | components["schemas"]["WorkerWorkspaceReadTransport"] | components["schemas"]["WorkerWorkspaceWriteTransport"] | components["schemas"]["WorkerWorkspaceDiffTransport"] | components["schemas"]["WorkerWorkspaceDiffFileTransport"] | components["schemas"]["WorkerTerminalOpenTransport"] | components["schemas"]["WorkerTerminalInputTransport"] | components["schemas"]["WorkerTerminalResizeTransport"] | components["schemas"]["WorkerTerminalCloseTransport"];
         WorkerClaimTransportResponse: {
             request: components["schemas"]["WorkerTransportRequest"] | null;
         };
         /** @description The server accepts any non-null JSON object. Built-in workers return a
-         *     WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiff,
+         *     WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiffFileDetail, WorkspaceDiff,
          *     WorkerTerminalOpenResult, WorkerTerminalInputResult, or
          *     WorkerTerminalCloseResult appropriate to the claimed command.
          *      */
@@ -1849,6 +1884,8 @@ export interface components {
         };
         /** @enum {string} */
         WorkspaceFileStatus: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
+        /** @enum {string} */
+        WorkspaceDiffCategory: "uncommitted" | "unpushed" | "pushed";
         WorkspaceDiffFile: {
             path: string;
             oldPath?: string;
@@ -1859,6 +1896,26 @@ export interface components {
             deletions: number;
             binary: boolean;
         };
+        WorkspaceDiffFileDetail: {
+            path: string;
+            status: components["schemas"]["WorkspaceFileStatus"];
+            additions: number;
+            deletions: number;
+            /** Format: int64 */
+            size: number;
+            binary: boolean;
+            deleted: boolean;
+            content: string;
+            baseContent: string;
+            contentTruncated: boolean;
+            diff: string;
+            diffTruncated: boolean;
+        };
+        WorkspaceDiffCategorySummary: {
+            files: components["schemas"]["WorkspaceDiffFile"][];
+            baseRef?: string;
+            headRef?: string;
+        };
         WorkspaceDiff: {
             status: string;
             unstaged: string;
@@ -1868,6 +1925,11 @@ export interface components {
             diffBaseSha?: string;
             files: components["schemas"]["WorkspaceDiffFile"][];
             untrackedFiles: string[];
+            categories?: {
+                uncommitted?: components["schemas"]["WorkspaceDiffCategorySummary"];
+                unpushed?: components["schemas"]["WorkspaceDiffCategorySummary"];
+                pushed?: components["schemas"]["WorkspaceDiffCategorySummary"];
+            };
             truncated: {
                 combined: boolean;
                 stats: boolean;
@@ -2894,6 +2956,34 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    readWorkspaceDiffFile: {
+        parameters: {
+            query: {
+                path: string;
+                category?: components["schemas"]["WorkspaceDiffCategory"];
+            };
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cloud workspace file review details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDiffFileDetail"];
+                };
+            };
+            501: components["responses"]["Error"];
+            default: components["responses"]["Error"];
+        };
+    };
     getWorkspaceDiff: {
         parameters: {
             query?: never;
@@ -2915,6 +3005,7 @@ export interface operations {
                     "application/json": components["schemas"]["WorkspaceDiff"];
                 };
             };
+            501: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };

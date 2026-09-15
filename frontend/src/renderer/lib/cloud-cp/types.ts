@@ -214,6 +214,39 @@ export interface CloudCpSessionListResponse {
 	page: CloudCpPageInfo;
 }
 
+// ---------------------------------------------------------------------------
+// Cloud workspace review (`workspace_handlers.go`)
+// ---------------------------------------------------------------------------
+
+/** One changed file in a supported cloud workspace. */
+export interface CloudCpWorkspaceDiffFile {
+	path: string;
+	status: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
+	additions: number;
+	deletions: number;
+	binary: boolean;
+}
+
+/** Changed-file summary, compared with the session's HEAD. */
+export interface CloudCpWorkspaceDiff {
+	files: CloudCpWorkspaceDiffFile[];
+	categories?: Partial<Record<"uncommitted" | "unpushed" | "pushed", { files: CloudCpWorkspaceDiffFile[]; baseRef?: string; headRef?: string }>>;
+	diffBaseRef: string;
+	diffBaseSha?: string;
+	truncated: { combined: boolean; stats: boolean };
+}
+
+/** Selected-file review details. */
+export interface CloudCpWorkspaceDiffFileDetail extends CloudCpWorkspaceDiffFile {
+	size: number;
+	deleted: boolean;
+	content: string;
+	baseContent: string;
+	contentTruncated: boolean;
+	diff: string;
+	diffTruncated: boolean;
+}
+
 /** One pull request on a children listing (GET .../sessions/{id}/children). */
 export interface CloudCpSessionPullRequest {
 	url: string;

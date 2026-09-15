@@ -38,6 +38,8 @@ import type {
 	CloudCpSessionListResponse,
 	CloudCpResumeSessionResponse,
 	CloudCpSessionResponse,
+	CloudCpWorkspaceDiff,
+	CloudCpWorkspaceDiffFileDetail,
 	CloudCpTerminalTicketRequest,
 	CloudCpTerminalTicketResponse,
 	CloudCpUpdateProjectRequest,
@@ -136,6 +138,16 @@ export interface CloudCpClient {
 		sessionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpResumeSessionResponse>;
+	/** Changed-file summary for a supported cloud sandbox session. */
+	getWorkspaceDiff(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceDiff>;
+	/** Selected-file review details for a supported cloud sandbox session. */
+	readWorkspaceDiffFile(
+		orgId: string,
+		sessionId: string,
+		path: string,
+		category?: "uncommitted" | "unpushed" | "pushed",
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpWorkspaceDiffFileDetail>;
 
 	sendSessionMessage(
 		orgId: string,
@@ -386,6 +398,15 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
 		resumeSession: (orgId, sessionId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/resume`, {
+				signal: o?.signal,
+			}),
+		getWorkspaceDiff: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/diff`, {
+				signal: o?.signal,
+			}),
+		readWorkspaceDiffFile: (orgId, sessionId, path, category, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/file/diff`, {
+				query: { path, category },
 				signal: o?.signal,
 			}),
 

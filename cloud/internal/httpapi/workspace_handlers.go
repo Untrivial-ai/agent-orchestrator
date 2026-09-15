@@ -10,6 +10,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/go-chi/chi/v5"
 )
@@ -80,6 +81,52 @@ func (s *Server) readWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
+// readWorkspaceDiffFile exposes the shared cloud worker's per-file review model.
+func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
+	orgID, sessionID, ok := workspaceRoute(w, r)
+	if !ok {
+		return
+	}
+	path := r.URL.Query().Get("path")
+	category := r.URL.Query().Get("category")
+	if strings.TrimSpace(path) == "" || len(path) > maxWorkspacePath {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid workspace-relative path is required.")
+		return
+	}
+	if !validWorkspaceDiffCategory(category) {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid workspace diff category is required.")
+		return
+	}
+	principal := principalFrom(r)
+	session, err := s.store.GetSession(r.Context(), principal, orgID, sessionID)
+	if err != nil {
+		s.logger.Warn("workspace diff-file request rejected", "org_id", orgID, "session_id", sessionID, "path", path, "error", err)
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if !supportsWorkspaceDiff(session.SandboxProvider) {
+		s.logger.Warn("workspace diff-file request unsupported", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_FILE_UNSUPPORTED", "Per-file diffs are unavailable for this cloud sandbox provider.")
+		return
+	}
+
+	s.logger.Debug("workspace diff-file request started", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+	payload, _ := json.Marshal(worker.WorkspaceDiffFileRequest{Path: path, Category: category})
+	result, ok := s.runWorkspaceRequest(w, r, orgID, sessionID, "workspace.diff-file", payload)
+	if !ok {
+		s.logger.Info("workspace diff-file request failed", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+		return
+	}
+	var file worker.WorkspaceDiffFile
+	if err := json.Unmarshal(result, &file); err != nil {
+		s.logger.Warn("workspace diff-file worker response invalid", "org_id", orgID, "session_id", sessionID, "path", path, "error", err)
+		writeError(w, r, http.StatusBadGateway, "INVALID_WORKER_RESPONSE", "The worker returned an invalid workspace diff file.")
+		return
+	}
+	s.logger.Info("workspace diff-file request completed", "org_id", orgID, "session_id", sessionID, "path", file.Path, "provider", session.SandboxProvider, "size", file.Size, "binary", file.Binary, "deleted", file.Deleted, "diff_truncated", file.DiffTruncated)
+	writeJSON(w, http.StatusOK, file)
+}
+
 func (s *Server) writeWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	orgID, sessionID, ok := workspaceRoute(w, r)
 	if !ok {
@@ -120,18 +167,60 @@ func (s *Server) getWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	principal := principalFrom(r)
+	session, err := s.store.GetSession(r.Context(), principal, orgID, sessionID)
+	if err != nil {
+		s.logger.Warn("workspace diff request rejected", "org_id", orgID, "session_id", sessionID, "error", err)
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if !supportsWorkspaceDiff(session.SandboxProvider) {
+		s.logger.Warn("workspace diff request unsupported", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
+		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_UNSUPPORTED", "Workspace diffs are unavailable for this cloud sandbox provider.")
+		return
+	}
+	s.logger.Debug("workspace diff request started", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 	result, ok := s.runWorkspaceRequest(
 		w, r, orgID, sessionID, "workspace.diff", json.RawMessage(`{}`),
 	)
 	if !ok {
+		s.logger.Info("workspace diff request failed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 		return
 	}
 	var value map[string]any
 	if json.Unmarshal(result, &value) != nil {
+		s.logger.Warn("workspace diff worker response invalid", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 		writeError(w, r, http.StatusBadGateway, "INVALID_WORKER_RESPONSE", "The worker returned an invalid workspace diff.")
 		return
 	}
+	fileCount := 0
+	if files, ok := value["files"].([]any); ok {
+		fileCount = len(files)
+	}
+	s.logger.Info("workspace diff request completed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider, "file_count", fileCount)
 	writeJSON(w, http.StatusOK, value)
+}
+
+// supportsWorkspaceDiff is intentionally explicit: all supported providers
+// bootstrap the same ao-worker and supply it an isolated repository through
+// AO_WORKSPACE_DIR. Unknown providers must opt in before they can dispatch
+// workspace review requests.
+func supportsWorkspaceDiff(provider string) bool {
+	switch provider {
+	case sandbox.ProviderDocker, sandbox.ProviderNodeOps, sandbox.ProviderCoder:
+		return true
+	default:
+		return false
+	}
+}
+
+func validWorkspaceDiffCategory(category string) bool {
+	switch category {
+	case "", "uncommitted", "unpushed", "pushed":
+		return true
+	default:
+		return false
+	}
 }
 
 func workspaceRoute(w http.ResponseWriter, r *http.Request) (string, string, bool) {

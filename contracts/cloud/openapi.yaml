@@ -696,6 +696,40 @@ paths:
                 $ref: "#/components/schemas/WorkspaceFile"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/file/diff:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: readWorkspaceDiffFile
+      tags: [Workspace]
+      description: >-
+        Read one supported cloud workspace file with its bounded unified diff.
+        Docker, NodeOps, and Coder sessions use the same isolated ao-worker
+        workspace protocol.
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/WorkspaceDiffCategory"
+      responses:
+        "200":
+          description: Cloud workspace file review details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceDiffFileDetail"
+        "501":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/diff:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -703,6 +737,9 @@ paths:
     get:
       operationId: getWorkspaceDiff
       tags: [Workspace]
+      description: >-
+        Changed-file summary and line counts for Docker, NodeOps, and Coder
+        sessions, relative to the session compare base.
       responses:
         "200":
           description: Workspace changes relative to the session compare base.
@@ -710,6 +747,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkspaceDiff"
+        "501":
+          $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/provider-connections:
@@ -2473,6 +2512,15 @@ components:
           type: string
           minLength: 1
           maxLength: 4096
+    WorkerWorkspaceDiffFilePayload:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
     WorkerWorkspaceWritePayload:
       $ref: "#/components/schemas/WorkspaceFileWriteInput"
     WorkerWorkspaceEntryPage:
@@ -2637,6 +2685,22 @@ components:
           const: workspace.diff
         payload:
           $ref: "#/components/schemas/EmptyObject"
+    WorkerWorkspaceDiffFileTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: workspace.diff-file
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceDiffFilePayload"
     WorkerTerminalOpenTransport:
       type: object
       additionalProperties: false
@@ -2707,6 +2771,7 @@ components:
         - $ref: "#/components/schemas/WorkerWorkspaceReadTransport"
         - $ref: "#/components/schemas/WorkerWorkspaceWriteTransport"
         - $ref: "#/components/schemas/WorkerWorkspaceDiffTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceDiffFileTransport"
         - $ref: "#/components/schemas/WorkerTerminalOpenTransport"
         - $ref: "#/components/schemas/WorkerTerminalInputTransport"
         - $ref: "#/components/schemas/WorkerTerminalResizeTransport"
@@ -2727,7 +2792,7 @@ components:
       additionalProperties: true
       description: |
         The server accepts any non-null JSON object. Built-in workers return a
-        WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiff,
+        WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiffFileDetail, WorkspaceDiff,
         WorkerTerminalOpenResult, WorkerTerminalInputResult, or
         WorkerTerminalCloseResult appropriate to the claimed command.
     WorkerCompleteTransportInput:
@@ -3576,6 +3641,9 @@ components:
     WorkspaceFileStatus:
       type: string
       enum: [unmodified, modified, added, deleted, renamed, untracked, copied, changed]
+    WorkspaceDiffCategory:
+      type: string
+      enum: [uncommitted, unpushed, pushed]
     WorkspaceDiffFile:
       type: object
       additionalProperties: false
@@ -3599,6 +3667,52 @@ components:
           minimum: 0
         binary:
           type: boolean
+    WorkspaceDiffFileDetail:
+      type: object
+      additionalProperties: false
+      required: [path, status, additions, deletions, size, binary, deleted, content, baseContent, contentTruncated, diff, diffTruncated]
+      properties:
+        path:
+          type: string
+        status:
+          $ref: "#/components/schemas/WorkspaceFileStatus"
+        additions:
+          type: integer
+          minimum: 0
+        deletions:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        binary:
+          type: boolean
+        deleted:
+          type: boolean
+        content:
+          type: string
+        baseContent:
+          type: string
+        contentTruncated:
+          type: boolean
+        diff:
+          type: string
+        diffTruncated:
+          type: boolean
+    WorkspaceDiffCategorySummary:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceDiffFile"
+        baseRef:
+          type: string
+        headRef:
+          type: string
     WorkspaceDiff:
       type: object
       additionalProperties: false
@@ -3624,6 +3738,16 @@ components:
           type: array
           items:
             type: string
+        categories:
+          type: object
+          additionalProperties: false
+          properties:
+            uncommitted:
+              $ref: "#/components/schemas/WorkspaceDiffCategorySummary"
+            unpushed:
+              $ref: "#/components/schemas/WorkspaceDiffCategorySummary"
+            pushed:
+              $ref: "#/components/schemas/WorkspaceDiffCategorySummary"
         truncated:
           type: object
           additionalProperties: false
