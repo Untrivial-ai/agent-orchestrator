@@ -1311,9 +1311,39 @@ func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 	}
 }
 
-func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
+// A host reboot on a tmpfs-backed /tmp wipes the entire per-user tmux socket
+// directory, not just the socket file inside it — tmux reports that as
+// "error connecting ... no such file or directory" rather than "no server
+// running". Both mean the same thing: no server exists for this user at
+// all. Misclassifying this as merely inconclusive left reconcileLivePass
+// permanently unable to detect a rebooted session as dead and revive it,
+// which is the root cause behind #4641's "sessions never come back after a
+// restart" reports (confirmed live: this is exactly the message a real
+// daemon logs after a reboot). Socket-migration ambiguity (#3475) does not
+// apply here: runForSession has already resolved which single socket is
+// authoritative for this session before IsAlive inspects the output.
+func TestIsAliveReportsMissingSocketDirectoryAsRuntimeUnavailable(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
+	fr.err = &exec.ExitError{}
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false")
+	}
+}
+
+// A dial failure that is NOT "no such file or directory" (the socket
+// directory exists but the connection itself failed, e.g. a permission
+// problem or a race against the server's own startup) stays genuinely
+// ambiguous: it says nothing about whether a server exists, unlike the
+// missing-directory case above.
+func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (Permission denied)")}
 	fr.err = &exec.ExitError{}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
