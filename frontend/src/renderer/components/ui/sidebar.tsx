@@ -252,7 +252,9 @@ function Sidebar({
 				animate={{ x: containerX }}
 				transition={activeTransition}
 				className={cn(
-					"fixed inset-y-0 z-chrome hidden h-svh w-(--ao-sidebar-w,var(--sidebar-width)) md:flex",
+					// Prefer top/bottom over inset-y so callers can clear titlebar chrome
+					// with `top-(--sidebar-chrome-offset)` without fighting inset-y-0.
+					"fixed top-0 bottom-0 z-chrome hidden w-(--ao-sidebar-w,var(--sidebar-width)) md:flex",
 					side === "left" ? "left-0" : "right-0",
 					// Adjust the padding for floating and inset variants.
 					variant === "floating" || variant === "inset"
