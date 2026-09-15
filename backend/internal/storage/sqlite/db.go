@@ -194,25 +194,45 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 // touch goose.
 var gooseMu sync.Mutex
 
+// cachedMigrationVersion holds the one-time computed expected migration version.
+// The first call to expectedMigrationVersion populates it; subsequent calls
+// return the cached value without re-scanning embedded files or touching goose
+// globals.
+var cachedMigrationVersion struct {
+	sync.Once
+	version int64
+	err     error
+}
+
 // expectedMigrationVersion returns the highest version number among the
 // embedded migration files. This is the version a fully-migrated database must
 // have recorded as applied in goose_db_version.
+//
+// The result is computed once and cached for the lifetime of the process.
 func expectedMigrationVersion() (int64, error) {
+	cachedMigrationVersion.Do(func() {
+		cachedMigrationVersion.err = computeExpectedMigrationVersion()
+	})
+	return cachedMigrationVersion.version, cachedMigrationVersion.err
+}
+
+func computeExpectedMigrationVersion() error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
 	goose.SetBaseFS(migrationsFS)
 	goose.SetLogger(goose.NopLogger())
 	if err := goose.SetDialect("sqlite3"); err != nil {
-		return 0, fmt.Errorf("set goose dialect: %w", err)
+		return fmt.Errorf("set goose dialect: %w", err)
 	}
 	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
 	if err != nil {
-		return 0, fmt.Errorf("collect migrations: %w", err)
+		return fmt.Errorf("collect migrations: %w", err)
 	}
 	if len(migrations) == 0 {
-		return 0, fmt.Errorf("no embedded migrations found")
+		return fmt.Errorf("no embedded migrations found")
 	}
-	return migrations[len(migrations)-1].Version, nil
+	cachedMigrationVersion.version = migrations[len(migrations)-1].Version
+	return nil
 }
 
 // OpenPreMigrated opens an already-fully-migrated SQLite database under
