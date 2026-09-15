@@ -364,6 +364,23 @@ describe("SessionInspector tabs", () => {
   });
 
   it("renders the supplied files view when the Files tab opens", async () => {
+    renderWithQuery(
+      <SessionInspector
+        filesView={<div>workspace file review</div>}
+        session={session([])}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+
+    expect(screen.getByText("workspace file review")).toBeInTheDocument();
+  });
+
+  it("does not call onOpenFiles from plain tab navigation, only from an explicit open", async () => {
+    // onOpenFiles resets the Files changed-only toggle to its default. Tab
+    // switching must never trigger it on its own, or leaving Files and
+    // coming back silently clobbers the user's toggle choice (#5398-adjacent
+    // regression: "Changed Only re-enables after navigating away and back").
     const onOpenFiles = vi.fn();
     renderWithQuery(
       <SessionInspector
@@ -374,9 +391,10 @@ describe("SessionInspector tabs", () => {
     );
 
     await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Summary" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Files" }));
 
-    expect(onOpenFiles).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("workspace file review")).toBeInTheDocument();
+    expect(onOpenFiles).not.toHaveBeenCalled();
   });
 
   it("warms the workspace files cache before the Files tab opens", async () => {
