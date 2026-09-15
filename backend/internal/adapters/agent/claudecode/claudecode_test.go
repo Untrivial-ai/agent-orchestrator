@@ -160,6 +160,7 @@ func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 		{"default omits flag (defers to settings.json)", ports.PermissionModeDefault, nil, "--permission-mode"},
 		{"accept-edits", ports.PermissionModeAcceptEdits, []string{"--permission-mode", "acceptEdits"}, ""},
 		{"auto", ports.PermissionModeAuto, []string{"--permission-mode", "auto"}, ""},
+		{"deny-unapproved internal mode", ports.PermissionModeDenyUnapproved, []string{"--permission-mode", "dontAsk"}, ""},
 		{"bypass-permissions", ports.PermissionModeBypassPermissions, []string{"--permission-mode", "bypassPermissions"}, ""},
 		{"empty omits permission flags", "", nil, "--permission-mode"},
 	}
