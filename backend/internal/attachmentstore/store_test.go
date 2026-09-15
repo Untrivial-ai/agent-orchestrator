@@ -3,11 +3,14 @@ package attachmentstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -531,5 +534,240 @@ func TestStoreRejectsUnsafeNamesAndDoesNotImportSymlinks(t *testing.T) {
 	}
 	if _, _, err := store.Open(context.Background(), "ao-1", "attachment-link.png"); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("Open symlink import error = %v, want not exist", err)
+	}
+}
+
+func TestStoreCommitProtectsAttachmentFromRelease(t *testing.T) {
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+	name := "attachment-committed.png"
+	if err := store.Put(context.Background(), "ao-1", workspace, name, []byte("kept")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Lease(context.Background(), "ao-1", name, workspace, time.Hour); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+
+	// The message referencing the file was accepted: commit the lease.
+	if err := store.Commit(context.Background(), "ao-1", []string{name}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// A release that arrives after commit (e.g. the composer chip removal racing
+	// the send) must never delete an already-accepted attachment.
+	if err := store.Release(context.Background(), "ao-1", []string{name}); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	file, _, err := store.Open(context.Background(), "ao-1", name)
+	if err != nil {
+		t.Fatalf("committed attachment was deleted: %v", err)
+	}
+	_ = file.Close()
+	if _, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(WorkspaceDir), name)); err != nil {
+		t.Fatalf("committed workspace projection was deleted: %v", err)
+	}
+}
+
+func TestStoreReleaseDeletesUncommittedLease(t *testing.T) {
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+	name := "attachment-discarded.png"
+	if err := store.Put(context.Background(), "ao-1", workspace, name, []byte("discard me")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Lease(context.Background(), "ao-1", name, workspace, time.Hour); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+
+	// The composer chip was removed without sending: release the uncommitted lease.
+	if err := store.Release(context.Background(), "ao-1", []string{name}); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	if file, _, err := store.Open(context.Background(), "ao-1", name); !errors.Is(err, fs.ErrNotExist) {
+		if file != nil {
+			_ = file.Close()
+		}
+		t.Fatalf("Open after release error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(WorkspaceDir), name)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("released workspace projection still present: %v", err)
+	}
+}
+
+func TestStoreGCExpiredLeasesReclaimsOnlyExpiredUncommittedLeases(t *testing.T) {
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+
+	expired := "attachment-expired.png"
+	fresh := "attachment-fresh.png"
+	committed := "attachment-committed.png"
+	for _, name := range []string{expired, fresh, committed} {
+		if err := store.Put(context.Background(), "ao-1", workspace, name, []byte(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Backdate the expired lease directly: staging happens well before a restart
+	// that runs GC, so the test must not depend on real wall-clock sleeps.
+	if err := store.Lease(context.Background(), "ao-1", expired, workspace, time.Nanosecond); err != nil {
+		t.Fatalf("Lease expired: %v", err)
+	}
+	if err := store.Lease(context.Background(), "ao-1", fresh, workspace, time.Hour); err != nil {
+		t.Fatalf("Lease fresh: %v", err)
+	}
+	if err := store.Lease(context.Background(), "ao-1", committed, workspace, time.Hour); err != nil {
+		t.Fatalf("Lease committed: %v", err)
+	}
+	if err := store.Commit(context.Background(), "ao-1", []string{committed}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	reclaimed, err := store.GCExpiredLeases(context.Background(), time.Now().Add(time.Millisecond))
+	if err != nil {
+		t.Fatalf("GCExpiredLeases: %v", err)
+	}
+	if reclaimed != 1 {
+		t.Fatalf("reclaimed = %d, want 1", reclaimed)
+	}
+
+	if file, _, err := store.Open(context.Background(), "ao-1", expired); !errors.Is(err, fs.ErrNotExist) {
+		if file != nil {
+			_ = file.Close()
+		}
+		t.Fatalf("expired lease survived GC: %v", err)
+	}
+	for _, name := range []string{fresh, committed} {
+		file, _, err := store.Open(context.Background(), "ao-1", name)
+		if err != nil {
+			t.Fatalf("Open(%q) after GC: %v", name, err)
+		}
+		_ = file.Close()
+	}
+
+	// GC is idempotent: a second pass (e.g. a second restart) reclaims nothing more.
+	reclaimed, err = store.GCExpiredLeases(context.Background(), time.Now().Add(time.Millisecond))
+	if err != nil {
+		t.Fatalf("second GCExpiredLeases: %v", err)
+	}
+	if reclaimed != 0 {
+		t.Fatalf("second GC reclaimed = %d, want 0", reclaimed)
+	}
+}
+
+func TestStoreCommitIsIdempotentAndIgnoresUnknownNames(t *testing.T) {
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+	name := "attachment-idempotent.png"
+	if err := store.Put(context.Background(), "ao-1", workspace, name, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Lease(context.Background(), "ao-1", name, workspace, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Commit(context.Background(), "ao-1", []string{name}); err != nil {
+		t.Fatalf("first Commit: %v", err)
+	}
+	if err := store.Commit(context.Background(), "ao-1", []string{name}); err != nil {
+		t.Fatalf("second Commit: %v", err)
+	}
+	if err := store.Commit(context.Background(), "ao-1", []string{"attachment-never-staged.png"}); err != nil {
+		t.Fatalf("Commit of unknown name: %v", err)
+	}
+	file, _, err := store.Open(context.Background(), "ao-1", name)
+	if err != nil {
+		t.Fatalf("Open after idempotent commit: %v", err)
+	}
+	_ = file.Close()
+}
+
+func TestStoreReleaseIsIdempotentAndIgnoresUnknownNames(t *testing.T) {
+	store := New(t.TempDir())
+	if err := store.Release(context.Background(), "ao-1", []string{"attachment-never-staged.png"}); err != nil {
+		t.Fatalf("Release of unknown name: %v", err)
+	}
+}
+
+func TestStoreLeaseHandlesConcurrentStaging(t *testing.T) {
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+	const n = 16
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("attachment-concurrent-%02d.png", i)
+		if err := store.Put(context.Background(), "ao-1", workspace, names[i], []byte(names[i])); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for _, name := range names {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			if err := store.Lease(context.Background(), "ao-1", name, workspace, time.Hour); err != nil {
+				t.Errorf("Lease(%q): %v", name, err)
+			}
+		}(name)
+	}
+	wg.Wait()
+
+	// Every concurrently staged lease must have survived the interleaved writes:
+	// committing all of them and then releasing all of them should delete every
+	// file, proving none were lost from the manifest.
+	if err := store.Release(context.Background(), "ao-1", names); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	for _, name := range names {
+		if file, _, err := store.Open(context.Background(), "ao-1", name); !errors.Is(err, fs.ErrNotExist) {
+			if file != nil {
+				_ = file.Close()
+			}
+			t.Errorf("Open(%q) after release = %v, want not exist (lease lost or not tracked)", name, err)
+		}
+	}
+}
+
+func TestNamesFromMessageExtractsAttachmentReferences(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    []string
+	}{
+		{
+			name:    "no attachments",
+			message: "just a plain message",
+			want:    nil,
+		},
+		{
+			name: "composer-style references",
+			message: "Attached files (read these files in the workspace):\n" +
+				"- .ao/attachments/attachment-a1b2c3d4.png\n" +
+				"- .ao/attachments/attachment-e5f6a7b8.txt",
+			want: []string{"attachment-a1b2c3d4.png", "attachment-e5f6a7b8.txt"},
+		},
+		{
+			name:    "duplicate references collapse",
+			message: "- .ao/attachments/attachment-dup.png\n- .ao/attachments/attachment-dup.png",
+			want:    []string{"attachment-dup.png"},
+		},
+		{
+			name:    "traversal-looking reference is skipped",
+			message: ".ao/attachments/../secret",
+			want:    nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NamesFromMessage(tt.message)
+			if len(got) != len(tt.want) {
+				t.Fatalf("NamesFromMessage(%q) = %v, want %v", tt.message, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("NamesFromMessage(%q) = %v, want %v", tt.message, got, tt.want)
+				}
+			}
+		})
 	}
 }

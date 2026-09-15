@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -322,6 +323,18 @@ func (m *Manager) sendChat(ctx context.Context, id domain.SessionID, message, cl
 	}
 	if relayErr != nil {
 		return true, fmt.Errorf("send %s: %w", id, relayErr)
+	}
+	// The message was accepted into conversation history: any staged draft
+	// attachment it names is no longer a discardable lease. Committing here
+	// rather than from the caller keeps this the single place a chat message
+	// actually lands, so no send path (steer, queued-edit replay, relay retry)
+	// can forget to commit its attachments. A message with no attachment
+	// references costs one substring check, so an ordinary text-only send has no
+	// added latency.
+	if names := attachmentstore.NamesFromMessage(message); len(names) > 0 {
+		if err := m.attachments.Commit(ctx, id, names); err != nil {
+			m.logger.Warn("send: commit attachment leases", "sessionID", id, "error", err)
+		}
 	}
 	return true, nil
 }

@@ -23,3 +23,18 @@ func (s *Service) StageAttachments(
 ) ([]string, error) {
 	return s.manager.StageAttachments(ctx, id, attachments)
 }
+
+// ReleaseAttachments discards staged draft attachments (worktree-relative refs,
+// as returned by StageAttachments) that were never sent — an explicit chip
+// removal, or a draft being thrown away outright.
+//
+// A ref whose message was already accepted is left alone: only an uncommitted
+// lease is deletable, so this can never remove an attachment that made it into
+// conversation history, even if it races the send that committed it.
+func (s *Service) ReleaseAttachments(
+	ctx context.Context,
+	id domain.SessionID,
+	refs []string,
+) error {
+	return s.manager.ReleaseAttachments(ctx, id, refs)
+}
