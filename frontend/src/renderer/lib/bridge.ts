@@ -196,7 +196,7 @@ export const aoBridge: AoBridge =
 			onAnnotationState: () => () => undefined,
 		},
 		browserProfiles: {
-			list: async () => ({ profiles: [] }),
+			list: async () => ({ profiles: [], defaultProfileId: null }),
 			create: async (name: string) => {
 				const now = new Date().toISOString();
 				return { id: `preview-${name}`, name, createdAt: now, updatedAt: now };
@@ -207,6 +207,7 @@ export const aoBridge: AoBridge =
 			},
 			clear: async () => undefined,
 			delete: async () => undefined,
+			setDefault: async () => undefined,
 			discoverImportSources: async () => ({ sources: [] }),
 			import: async () => ({ sourceName: "", entries: [] }),
 			onImportProgress: () => () => undefined,
