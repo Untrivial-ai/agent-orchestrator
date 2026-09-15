@@ -781,6 +781,14 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 	runtimeCfg := ports.RuntimeConfig{
 		SessionID: id, WorkspacePath: rec.Metadata.WorkspacePath, Argv: target.argv, Env: target.env,
 	}
+	// A switched-to target is a new child on the same session. Gating Spawn and
+	// Restore but not this path would leave the same hole: the target keeps
+	// whatever config root it inherited while the writer seeded another.
+	if err := m.applyLaunchGateForRecord(ctx, rec, rec.Metadata.WorkspacePath, target.launch.Config,
+		target.argv, target.env,
+		launchGateIdentity{launchID: string(target.launchID), conversationID: string(target.native.ID)}); err != nil {
+		return result, fmt.Errorf("switch agent %s: %w", id, err)
+	}
 	recorder.boundary(domain.AgentSwitchFailureTargetRuntimeCreate)
 	// The post-stop preparation budget may expire while hooks are being
 	// finalized. Controller admission belongs to the durable switch worker, not
