@@ -109,6 +109,10 @@ type UsageSourceContext struct {
 	InitialModelID string
 	ProviderHint   string
 	BindingState   UsageBindingState
+	// SessionMode decides whether a hook is ever coming for this binding. A
+	// chat session has no terminal hook, so an empty ProviderHint on one is
+	// final rather than merely early.
+	SessionMode SessionMode
 }
 
 // UsageProviderID identifies the provider vocabulary normalized into a usage
@@ -326,7 +330,33 @@ type UsageCostAggregate struct {
 	KnownOutputCount              int64
 	KnownOutputNanos              int64
 	UnpricedKnownOutputNanos      int64
+
+	// UnattributedEventCount counts events with no billing provider recorded.
+	// It separates "no rates for a known provider" from "no provider yet",
+	// which decides whether an absent estimate is still pending.
+	UnattributedEventCount int64
+	// UnidentifiedRouteEventCount counts events whose binding reported a route
+	// AO does not bill against. Those can never be priced, however long we wait.
+	UnidentifiedRouteEventCount int64
 }
+
+// UnpricedReason explains why a scope carries no estimate. It exists so the
+// product can distinguish an estimate that has not arrived yet from one that is
+// never coming — the two are indistinguishable from a null total alone.
+type UnpricedReason string
+
+// Unpriced reasons, ordered from recoverable to terminal.
+const (
+	// UnpricedReasonPendingAttribution means no contributing event has a billing
+	// provider yet. A hook or a repair pass can still resolve it.
+	UnpricedReasonPendingAttribution UnpricedReason = "pending_attribution"
+	// UnpricedReasonUnidentifiedRoute means a hook reported a route AO does not
+	// bill against. Terminal: no later observation can name it.
+	UnpricedReasonUnidentifiedRoute UnpricedReason = "unidentified_route"
+	// UnpricedReasonNoCatalogRates means the provider is known but the catalog
+	// lists no rates for the served model. Resolves only if a catalog adds them.
+	UnpricedReasonNoCatalogRates UnpricedReason = "no_catalog_rates"
+)
 
 // UsageModelAggregate is the raw model-level aggregate read from storage before
 // the service applies user-facing coverage rules.
@@ -352,6 +382,7 @@ type CompactSessionUsage struct {
 	ProcessedTokens *int64
 	Incomplete      bool
 	EstimatedCost   *EstimatedCost
+	UnpricedReason  UnpricedReason
 }
 
 // UsageMetricTotals is the aggregate metric block used by session, harness,
@@ -363,6 +394,9 @@ type UsageMetricTotals struct {
 	OutputTokens        *int64
 	ProcessedTokens     *int64
 	EstimatedCost       *EstimatedCost
+	// UnpricedReason is set only when EstimatedCost is nil and the scope has
+	// usage. It is the difference between "not yet" and "never".
+	UnpricedReason UnpricedReason
 }
 
 // ModelUsageSummary is a per-model aggregate. The billing provider stays a

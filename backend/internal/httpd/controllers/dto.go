@@ -1469,6 +1469,7 @@ type CompactSessionUsageResponse struct {
 	TotalTokens     int64                  `json:"totalTokens" minimum:"0" description:"Deprecated compatibility alias for processedTokens."`
 	Incomplete      bool                   `json:"incomplete"`
 	EstimatedCost   *EstimatedCostResponse `json:"estimatedCost"`
+	UnpricedReason  *string                `json:"unpricedReason" enum:"pending_attribution,unidentified_route,no_catalog_rates" description:"Why estimatedCost is null, when the session has usage."`
 }
 
 // ListCompactSessionUsageResponse is the batch dashboard usage response.
@@ -1489,6 +1490,7 @@ type UsageTotalsResponse struct {
 	ProcessedTokens     *int64                 `json:"processedTokens" minimum:"0" description:"Canonical input plus output. Null when either component is unknown."`
 	CacheReadTokens     *int64                 `json:"cacheReadTokens" minimum:"0" description:"Deprecated compatibility alias for cachedInputTokens."`
 	EstimatedCost       *EstimatedCostResponse `json:"estimatedCost"`
+	UnpricedReason      *string                `json:"unpricedReason" enum:"pending_attribution,unidentified_route,no_catalog_rates" description:"Why estimatedCost is null, when the scope has usage. Distinguishes an estimate that is still pending attribution from one that can never arrive."`
 }
 
 // UsageModelResponse is telemetry grouped by model. The billing provider is a
