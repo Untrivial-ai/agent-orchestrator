@@ -68,6 +68,22 @@ func TestSessionCreateAllowsPrimeAgentHarness(t *testing.T) {
 	}
 }
 
+func TestSessionCreateAndReadFXHarness(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "fx-project")
+	rec := sampleRecord("fx-project")
+	rec.Harness = domain.HarnessFX
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create fx session: %v", err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok || got.Harness != domain.HarnessFX {
+		t.Fatalf("read fx session = %+v, %v, %v", got, ok, err)
+	}
+}
+
 func TestSessionPersistsReviewerHarness(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

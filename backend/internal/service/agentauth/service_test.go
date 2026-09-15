@@ -26,6 +26,7 @@ func TestStartRejectsUnstartablePlans(t *testing.T) {
 		{name: "unknown target", agentID: "not-a-harness", code: "AGENT_AUTH_TARGET_UNKNOWN"},
 		{name: "unavailable command", agentID: "codex", code: "AGENT_AUTH_UNAVAILABLE"},
 		{name: "documentation setup", agentID: "aider", code: "AGENT_AUTH_DOCUMENTATION_ONLY"},
+		{name: "fx instructions", agentID: "fx", code: "AGENT_AUTH_INSTRUCTIONS_ONLY"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -25,7 +25,13 @@ ao spawn [flags]
 
 `--agent` is an alias for `--harness`.
 
-Available harnesses: `claude-code`, `codex`, `aider`, `opencode`, `grok`, `droid`, `amp`, `agy`, `crush`, `cursor`, `qwen`, `copilot`, `goose`, `auggie`, `continue`, `devin`, `cline`, `kimi`, `kiro`, `kilocode`, `vibe`, `pi`, `autohand`.
+Available harnesses: `claude-code`, `codex`, `aider`, `opencode`, `grok`, `droid`, `amp`, `agy`, `crush`, `cursor`, `qwen`, `copilot`, `goose`, `auggie`, `continue`, `devin`, `cline`, `kimi`, `muse`, `kiro`, `kilocode`, `vibe`, `pi`, `kimchi`, `prime-agent`, `autohand`, `omp`, `fx`.
+
+`fx` is experimental while its upstream CLI is pre-1.0. Spawn with `--agent fx
+--mode tui`; fx Chat and interface switching are unsupported. Interactive fx
+has no per-session system-prompt flag, so AO's standing instructions have reduced
+coverage. AO does not overwrite repository `AGENTS.md` or user `~/.fx/AGENTS.md`.
+See [fx setup documentation](https://fx.sh/docs).
 
 ## Examples
 

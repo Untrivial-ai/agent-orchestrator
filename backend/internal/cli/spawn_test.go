@@ -34,6 +34,16 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 	}
 }
 
+func TestSpawnHelpListsFXHarness(t *testing.T) {
+	out, _, err := executeCLI(t, Deps{}, "spawn", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, ", fx,") {
+		t.Fatalf("spawn help does not list fx:\n%s", out)
+	}
+}
+
 // TestSpawnCommand_MissingProjectContext asserts `ao spawn` gives a project
 // setup hint when neither --project, AO_PROJECT_ID, nor cwd can resolve one.
 func TestSpawnCommand_MissingProjectContext(t *testing.T) {

@@ -1,8 +1,13 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AgentAvatar } from "./AgentAvatar";
+import fxLogo from "../assets/agents/fx.svg";
 
 describe("AgentAvatar", () => {
+	it("renders the official fx brand asset", () => {
+		render(<AgentAvatar provider="fx" />);
+		expect(screen.getByRole("img", { name: "fx" })).toHaveAttribute("src", fxLogo);
+	});
 	it("renders the Prime Agent brand asset", () => {
 		render(<AgentAvatar provider="prime-agent" />);
 

@@ -237,6 +237,17 @@ func TestBuild_OMPIsPubliclySpawnable(t *testing.T) {
 	}
 }
 
+func TestBuild_FXPublicHarnessContracts(t *testing.T) {
+	doc := buildSchemas(t)
+	for schema, field := range map[string]string{
+		"SpawnSessionRequest": "harness", "DelegateTaskRequest": "agent", "InstallJob": "target",
+	} {
+		if values := doc.Components.Schemas[schema].Properties[field].Enum; !slices.Contains(values, "fx") {
+			t.Errorf("%s.%s enum = %v, want fx", schema, field, values)
+		}
+	}
+}
+
 func TestBuild_OMPIsPubliclyDelegatable(t *testing.T) {
 	doc := buildSchemas(t)
 	agents := doc.Components.Schemas["DelegateTaskRequest"].Properties["agent"].Enum

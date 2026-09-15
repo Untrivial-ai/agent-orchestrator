@@ -109,8 +109,18 @@ surface (`npm run sqlc`, `npm run api`).
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.
 - Lifecycle reducer plus reaper (`internal/observe/reaper`).
-- Agent adapter platform under `internal/adapters/agent/` (25 adapters) with a
+- Agent adapter platform under `internal/adapters/agent/` (28 public harnesses) with a
   registry and `ao hooks` activity dispatch.
+- Experimental fx Terminal UI adapter, persistent sessions, API/CLI spawn and
+  delegation, desktop/mobile logos, and Settings installation/readiness. fx
+  remains experimental while its upstream CLI is pre-1.0. The fixed macOS/Linux
+  installer is `curl -fsSL https://fx.sh/setup.sh | bash`, with expected binary
+  `~/.local/bin/fx`; Windows users receive WSL guidance. A `configured` readiness
+  state means local provider credentials exist, not that provider authorization
+  was verified. Interactive fx lacks a per-session system-prompt flag: AO does
+  not overwrite project `AGENTS.md` or user `~/.fx/AGENTS.md`, so TUI standing
+  instructions have reduced coverage. fx Chat and interface switching are not
+  implemented. See [fx docs](https://fx.sh/docs).
 - Daemon-owned in-memory agent readiness coordination with normalized
   installation/authentication observations, purpose-specific freshness,
   single-flight checks, bounded warm-up/retries, launch-time validation, and
