@@ -136,15 +136,11 @@ export const LAUNCH_CHANNELS: LaunchChannel[] = [
 		link: inbound("github", "referral"),
 	},
 	{
-		// TODO: no Instagram account exists yet. Replace the placeholder profile
-		// URL with the real handle when it is live; the tagged link is already
-		// correct and needs no change.
 		source: "instagram",
 		label: "Instagram",
 		medium: "social",
-		profileUrl: "https://instagram.com/TODO",
+		profileUrl: "https://www.instagram.com/aoagents",
 		link: inbound("instagram", "social"),
-		todo: true,
 	},
 ];
 
