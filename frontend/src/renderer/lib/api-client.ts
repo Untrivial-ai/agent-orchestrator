@@ -103,6 +103,8 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/projects/initialize",
 	"/api/v1/projects/{id}",
 	"/api/v1/projects/{id}/config",
+	"/api/v1/projects/{id}/summary",
+	"/api/v1/projects/{id}/summary/refresh",
 	"/api/v1/prs/{id}/merge",
 	"/api/v1/prs/{id}/resolve-comments",
 	"/api/v1/sessions",

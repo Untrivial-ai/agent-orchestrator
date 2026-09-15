@@ -514,6 +514,47 @@ type Project struct {
 	Kind          string
 }
 
+type ProjectSummary struct {
+	ProjectID       string
+	SourceWatermark string
+	Narrative       string
+	ProjectionJson  string
+	GeneratedAt     time.Time
+}
+
+type Report struct {
+	ID                 string
+	SessionID          string
+	ProjectID          string
+	State              string
+	Note               string
+	Message            string
+	CreatedAt          time.Time
+	DeliveryState      string
+	AvailableAt        time.Time
+	SettlementDeadline sql.NullTime
+	RepeatCount        int64
+	ClaimToken         string
+	ClaimedAt          sql.NullTime
+	DeliveryAttempts   int64
+	AcknowledgedAt     sql.NullTime
+	LastError          string
+	DeliveryBatchID    string
+}
+
+type ReportOutput struct {
+	ReportID  string
+	Position  int64
+	Kind      string
+	Reference string
+	Label     string
+}
+
+type ReportWorkerInterrupt struct {
+	SessionID         string
+	LastInterruptedAt time.Time
+}
+
 type Review struct {
 	ID                    string
 	SessionID             domain.SessionID

@@ -611,6 +611,16 @@ func TestHooks_UserPromptSubmitReportsOnlyMainUserCheckpoint(t *testing.T) {
 	}
 }
 
+func TestHookConversationFactsCorrelatesAcceptedReportDelivery(t *testing.T) {
+	prompt := domain.WrapReportDelivery("report-batch:abc123", "Reports since your previous turn:")
+	payload := []byte(`{"prompt":` + mustJSONString(t, prompt) + `,"prompt_id":"native-turn"}`)
+	got := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", payload)
+	if got.CheckpointOrigin != domain.ConversationCheckpointOriginCoordination ||
+		got.CoordinationID != "report-batch:abc123" || got.LatestUserPrompt != "" {
+		t.Fatalf("conversation facts = %+v", got)
+	}
+}
+
 func TestHooks_SubagentStopCannotReportMainConversationCheckpoint(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-3")

@@ -305,7 +305,7 @@ func TestSessionsAPI_ActivityThreadsConversationCheckpointOrigin(t *testing.T) {
 	srv := newActivityTestServer(t, rec)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
-		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"coordination","providerTurnId":"native-turn"}`)
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"coordination","coordinationId":"report-batch:abc123","providerTurnId":"native-turn"}`)
 	if status != http.StatusOK {
 		t.Fatalf("activity = %d, want 200; body=%s", status, body)
 	}
@@ -314,6 +314,9 @@ func TestSessionsAPI_ActivityThreadsConversationCheckpointOrigin(t *testing.T) {
 	}
 	if rec.gotSignal.ProviderTurnID != "native-turn" {
 		t.Fatalf("provider turn = %q", rec.gotSignal.ProviderTurnID)
+	}
+	if rec.gotSignal.CoordinationID != "report-batch:abc123" {
+		t.Fatalf("coordination id = %q", rec.gotSignal.CoordinationID)
 	}
 }
 

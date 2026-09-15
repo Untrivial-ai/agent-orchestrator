@@ -13,6 +13,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 )
 
 // ErrNoController reports a command for a session with no live Chat controller.
@@ -46,6 +47,7 @@ type Service struct {
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	stopProviderHost       func(context.Context, domain.SessionID) error
+	reports                *reportsvc.Coordinator
 
 	mu           sync.RWMutex
 	controllers  map[domain.SessionID]*Controller
@@ -54,6 +56,12 @@ type Service struct {
 	gates        map[domain.SessionID]controllerGate
 	probeMu      sync.Mutex
 	probed       map[domain.AgentHarness]ports.ChatCapabilities
+}
+
+// SetReportCoordinator installs the report piggyback hook after daemon wiring
+// has constructed both services.
+func (s *Service) SetReportCoordinator(coordinator *reportsvc.Coordinator) {
+	s.reports = coordinator
 }
 
 // controllerGate serializes start/stop for one session without making provider
@@ -882,11 +890,35 @@ func (s *Service) Send(
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return domain.ConversationTurn{}, err
 	}
+	var reports reportsvc.PreparedBatch
+	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation {
+		var err error
+		reports, err = s.reports.PreparePiggyback(ctx, id)
+		if err != nil {
+			return domain.ConversationTurn{}, fmt.Errorf("prepare worker reports: %w", err)
+		}
+		msg.Text = reports.PrefixUserMessage(msg.Text)
+	}
 	controller, err := s.Controller(id)
 	if err != nil {
+		if s.reports != nil {
+			_ = s.reports.ReleasePiggyback(ctx, reports, err)
+		}
 		return domain.ConversationTurn{}, err
 	}
-	return controller.Send(ctx, msg)
+	turn, err := controller.Send(ctx, msg)
+	if err != nil {
+		if s.reports != nil {
+			_ = s.reports.ReleasePiggyback(ctx, reports, err)
+		}
+		return turn, err
+	}
+	if s.reports != nil {
+		if err := s.reports.AcceptPiggyback(ctx, reports); err != nil {
+			return domain.ConversationTurn{}, fmt.Errorf("acknowledge worker reports: %w", err)
+		}
+	}
+	return turn, nil
 }
 
 // Resolve answers a pending approval.

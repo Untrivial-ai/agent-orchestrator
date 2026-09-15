@@ -55,6 +55,7 @@ type setActivityAPIRequest struct {
 	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty"`
 	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty"`
 	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty"`
+	CoordinationID               string                              `json:"coordinationId,omitempty"`
 	ProviderTurnID               string                              `json:"providerTurnId,omitempty"`
 	SubmissionID                 string                              `json:"submissionId,omitempty"`
 	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
@@ -248,6 +249,7 @@ type hookConversationSnapshot struct {
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
 	CheckpointOrigin      domain.ConversationCheckpointOrigin
+	CoordinationID        string
 	TranscriptPath        string
 }
 
@@ -309,11 +311,13 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 			origin = domain.ConversationCheckpointOriginCoordination
 		}
 	}
+	coordinationID, _ := domain.ReportDeliveryID(observedPrompt)
 	return hookConversationSnapshot{
 		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
 		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
 		CheckpointOrigin:      origin,
+		CoordinationID:        coordinationID,
 		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
 	}
 }
@@ -329,7 +333,8 @@ func firstHookValue(values ...string) string {
 
 func isAOCoordinationMessage(value string) bool {
 	value = strings.TrimSpace(value)
-	return strings.HasPrefix(value, "<ao-handoff-request") ||
+	_, reportDelivery := domain.ReportDeliveryID(value)
+	return reportDelivery || strings.HasPrefix(value, "<ao-handoff-request") ||
 		strings.HasPrefix(value, "AO transferred the previous agent's context in hidden system instructions.")
 }
 
@@ -455,6 +460,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		LatestUserPrompt:             conversation.LatestUserPrompt,
 		LatestAssistantUpdate:        conversation.LatestAssistantUpdate,
 		ConversationCheckpointOrigin: conversation.CheckpointOrigin,
+		CoordinationID:               conversation.CoordinationID,
 		ProviderTurnID:               conversation.ProviderTurnID,
 		TranscriptPath:               conversation.TranscriptPath,
 		LaunchID:                     launchID,
