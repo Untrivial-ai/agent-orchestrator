@@ -503,6 +503,23 @@ func (s *Store) RefreshTerminalInteraction(
 	})
 }
 
+// lockAgentTerminal serializes agent-terminal find-or-create for one
+// (org, session, worker epoch) tuple. The browser's OpenTerminal(agent) and the
+// worker's EnsureWorkerAgentTerminal are both find-or-create on the same tuple;
+// under Read Committed, two concurrent transactions could each see no existing
+// row and both insert, yielding two agent terminal rows for one epoch — and the
+// worker would then spawn a second interactive agent for the extra row. The
+// transaction-scoped advisory lock makes the pair mutually exclusive, so they
+// always converge on a single row (the loser reuses the winner's). Keyed off a
+// per-epoch string; released automatically at commit/rollback.
+func lockAgentTerminal(ctx context.Context, tx pgx.Tx, orgID, sessionID string, epoch int64) error {
+	_, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		fmt.Sprintf("ao-agent-terminal:%s:%s:%d", orgID, sessionID, epoch),
+	)
+	return err
+}
+
 func (s *Store) EnsureWorkerAgentTerminal(
 	ctx context.Context,
 	orgID, sessionID, workerID string,
@@ -522,6 +539,9 @@ func (s *Store) EnsureWorkerAgentTerminal(
 		}
 		if !current {
 			return ErrStaleWorker
+		}
+		if err := lockAgentTerminal(ctx, tx, orgID, sessionID, epoch); err != nil {
+			return err
 		}
 		err = tx.QueryRow(ctx,
 			`UPDATE ao_terminal_sessions
@@ -598,6 +618,12 @@ func (s *Store) OpenTerminal(
 			return ErrStaleWorker
 		}
 		if kind == "agent" {
+			// Serialize against the worker's own EnsureWorkerAgentTerminal so a
+			// browser open that races the worker cannot create a duplicate agent
+			// terminal row for this epoch (which would spawn a second agent).
+			if err := lockAgentTerminal(ctx, tx, ticket.OrgID, ticket.SessionID, ticket.WorkerEpoch); err != nil {
+				return err
+			}
 			err := tx.QueryRow(ctx,
 				`UPDATE ao_terminal_sessions
 				SET expires_at = now() + $1::interval, updated_at = now()

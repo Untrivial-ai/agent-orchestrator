@@ -36,6 +36,26 @@ type Control interface {
 // worker degrades to a slow poll rather than a tight spin.
 const workWaitFallback = 2 * time.Second
 
+// Fallback PTY geometry when an open request carries no client dimensions. The
+// agent terminal is spawned at worker boot (StartAgent), autonomously, long
+// before any human attaches — so there is no viewer width to honor yet, and the
+// coding agent draws its full-screen intro (the welcome box, "What's new") once,
+// committing that fixed-layout box art to scrollback. Committed scrollback never
+// reflows: a viewer whose pane is NARROWER than the boot width sees every line
+// overflow and wrap, garbling the banner permanently (the live region still
+// repaints correctly on the client's resize — only history is stuck).
+//
+// So the fallback must be a width the viewer is essentially always at least as
+// wide as. 80 is the canonical terminal width every agent TUI is designed to
+// render at, and every realistic AO viewer pane is >= 80 columns, so the banner
+// renders cleanly (under-filling at worst, never overflowing). The client's
+// authoritative resize immediately expands the live UI to the full pane width.
+// A client-provided size, when present, always wins over these.
+const (
+	fallbackTerminalColumns = 80
+	fallbackTerminalRows    = 24
+)
+
 type Supervisor struct {
 	Control         Control
 	Workspace       string
@@ -338,10 +358,10 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 	}
 	columns, rows := input.Columns, input.Rows
 	if columns == 0 {
-		columns = 120
+		columns = fallbackTerminalColumns
 	}
 	if rows == 0 {
-		rows = 40
+		rows = fallbackTerminalRows
 	}
 	terminalPTY, err := pty.StartWithSize(command, &pty.Winsize{
 		Cols: columns,

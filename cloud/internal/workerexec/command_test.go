@@ -124,6 +124,7 @@ func TestBuildInteractiveOrchestratorPrompt(t *testing.T) {
 		"ao kill",
 		"skills/using-ao/SKILL.md",
 		"coordination-only",
+		"Never guess file names",
 	} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("orchestrator prompt missing %q", needle)
@@ -149,6 +150,7 @@ func TestBuildInteractiveWorkerPromptWithParent(t *testing.T) {
 	for _, needle := range []string{
 		"AO Worker Role",
 		"ao report",
+		"never paste diffs",
 		"$AO_PULL_REQUEST_HELP",
 		"$AO_SESSION_BRANCH",
 		"ao claim-pr",

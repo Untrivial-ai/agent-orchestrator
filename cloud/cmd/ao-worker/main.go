@@ -213,21 +213,31 @@ func run(logger *slog.Logger) error {
 	}); err != nil {
 		logger.Warn("publish worker.ready failed", "error", err)
 	}
+	// workspaceReady is closed once the repository checkout has completed, so the
+	// coding agent is not spawned into an empty workspace. The agent's first task
+	// is baked into its launch argv, so it starts acting the instant its process
+	// exists; without this gate a fast worker start wins the race against the
+	// clone and the agent inspects an empty directory and gives up. On checkout
+	// failure the context is cancelled instead, so the agent goroutine unblocks
+	// and the worker shuts down rather than parking silently.
+	workspaceReady := make(chan struct{})
 	go func() {
 		if err := prepareWorkspace(
 			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL,
 		); err != nil {
 			if runCtx.Err() == nil {
 				logger.Error("background workspace startup failed", "error", err)
+				cancel()
 			}
 			return
 		}
 		transportSupervisor.MarkWorkspaceReady()
+		close(workspaceReady)
 	}()
 	go func() {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
-			pullRequestSocketPath, reviewSocketPath, &transportSupervisor,
+			pullRequestSocketPath, reviewSocketPath, &transportSupervisor, workspaceReady,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -293,6 +303,7 @@ func startInteractiveAgent(
 	bootstrap worker.BootstrapResponse,
 	workspace, dataDir, pullRequestSocketPath, reviewSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
+	workspaceReady <-chan struct{},
 ) error {
 	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
 		logger.Warn("coding-agent harness unavailable", "error", err)
@@ -327,6 +338,17 @@ func startInteractiveAgent(
 	if err != nil {
 		agentCommand.Cleanup()
 		return fmt.Errorf("initialize agent terminal: %w", err)
+	}
+	// The agent process begins acting on its baked-in first task the moment it
+	// exists, so hold the spawn until the repository checkout is ready. All the
+	// preparation above runs concurrently with the clone; only this final spawn
+	// waits, so a snappy start does not boot the agent into an empty workspace.
+	// The workspace shell is a separate terminal and is unaffected.
+	select {
+	case <-ctx.Done():
+		agentCommand.Cleanup()
+		return ctx.Err()
+	case <-workspaceReady:
 	}
 	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal.TerminalID); err != nil {
 		return fmt.Errorf("start interactive coding-agent terminal: %w", err)
