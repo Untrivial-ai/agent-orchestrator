@@ -681,9 +681,11 @@ func TestProjectsAPI_SetPermissions(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("create %d %s", status, body)
 	}
-	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", `{"permissions":"auto"}`)
-	if status != http.StatusOK || !strings.Contains(string(body), `"permissions":"auto"`) {
-		t.Fatalf("save %d %s", status, body)
+	for _, mode := range []string{"default", "accept-edits", "auto", "bypass-permissions"} {
+		body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", `{"sourceHarness":"codex","permissions":`+quote(mode)+`}`)
+		if status != http.StatusOK || !strings.Contains(string(body), `"permissions":`+quote(mode)) {
+			t.Fatalf("save %s: %d %s", mode, status, body)
+		}
 	}
 	for _, tc := range []struct{ body, code string }{{`{}`, "INVALID_PERMISSIONS"}, {`{"permissions":"yolo"}`, "INVALID_PERMISSIONS"}, {`{"permissions":"auto","extra":true}`, "INVALID_JSON"}, {`{`, "INVALID_JSON"}} {
 		body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", tc.body)

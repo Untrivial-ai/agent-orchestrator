@@ -187,6 +187,8 @@ func ClaudePermissionArgs(policy PermissionPolicy) []string {
 // CodexPermissionArgs maps AO policy onto Codex approval flags.
 func CodexPermissionArgs(policy PermissionPolicy) []string {
 	switch NormalizePermissionPolicy(policy) {
+	case PermissionDefault:
+		return nil
 	case PermissionAcceptEdits:
 		return []string{"--ask-for-approval", "on-request"}
 	case PermissionAuto:
@@ -194,10 +196,6 @@ func CodexPermissionArgs(policy PermissionPolicy) []string {
 	case PermissionBypassPermissions:
 		return []string{"--dangerously-bypass-approvals-and-sandbox"}
 	default:
-		// Default (and anything unrecognized, which normalizes onto it) passes no
-		// approval flag at all, deferring to the user's native Codex config the
-		// same way the Claude and Cursor mappings do. Bypassing the sandbox is
-		// what the user asked for only when they picked Bypass Permissions.
 		return nil
 	}
 }

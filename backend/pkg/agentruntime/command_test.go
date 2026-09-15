@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -255,34 +254,46 @@ func TestCodexPermissionArgsOnlyBypassesWhenAsked(t *testing.T) {
 
 // Both TUI launch surfaces -- fresh launch and resume -- carry the same rule.
 func TestCodexLaunchAndRestoreOnlyBypassWhenAsked(t *testing.T) {
-	bypass := "--dangerously-bypass-approvals-and-sandbox"
 	for _, tc := range []struct {
-		name       string
-		policy     PermissionPolicy
-		wantBypass bool
+		name   string
+		policy PermissionPolicy
+		args   []string
 	}{
-		{"default", PermissionDefault, false},
-		{"unknown", PermissionPolicy("nonsense"), false},
-		{"accept-edits", PermissionAcceptEdits, false},
-		{"auto", PermissionAuto, false},
-		{"bypass", PermissionBypassPermissions, true},
+		{"default", PermissionDefault, nil},
+		{"empty", "", nil},
+		{"unknown", PermissionPolicy("nonsense"), nil},
+		{"read-only", PermissionPolicyForMode(SessionModeReadOnly), nil},
+		{"unknown execution mode", PermissionPolicyForMode("nonsense"), nil},
+		{"accept-edits", PermissionAcceptEdits, []string{"--ask-for-approval", "on-request"}},
+		{"auto", PermissionAuto, []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}},
+		{"bypass", PermissionBypassPermissions, []string{"--dangerously-bypass-approvals-and-sandbox"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			launch := buildCodexLaunch(LaunchConfig{Binary: "codex", Permission: tc.policy})
-			if got := slices.Contains(launch, bypass); got != tc.wantBypass {
-				t.Errorf("launch bypass = %v, want %v: %#v", got, tc.wantBypass, launch)
+			base := []string{
+				"-c", "check_for_update_on_startup=false",
+				"-c", "notice.hide_rate_limit_model_nudge=true",
+				"--dangerously-bypass-hook-trust",
 			}
-			restore := buildCodexRestore(RestoreConfig{Binary: "codex", Permission: tc.policy}, "thread-1")
-			if got := slices.Contains(restore, bypass); got != tc.wantBypass {
-				t.Errorf("restore bypass = %v, want %v: %#v", got, tc.wantBypass, restore)
+			base = append(base, tc.args...)
+			launch, err := BuildLaunchCommand(LaunchConfig{Harness: HarnessCodex, Binary: "codex", Permission: tc.policy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := append([]string{"codex"}, base...); !reflect.DeepEqual(launch, want) {
+				t.Errorf("launch = %#v, want %#v", launch, want)
+			}
+			restore, ok, err := BuildRestoreCommand(RestoreConfig{
+				Harness: HarnessCodex, Binary: "codex", Permission: tc.policy,
+				Metadata: map[string]string{MetadataKeyAgentSessionID: "thread-1"},
+			})
+			if err != nil || !ok {
+				t.Fatalf("restore: ok=%v err=%v", ok, err)
+			}
+			want := append([]string{"codex", "resume"}, base...)
+			want = append(want, "thread-1")
+			if !reflect.DeepEqual(restore, want) {
+				t.Errorf("restore = %#v, want %#v", restore, want)
 			}
 		})
-	}
-
-	// The regression the issue reported: a Read Only session maps onto Default,
-	// which used to launch Codex with the sandbox bypassed.
-	readOnly := buildCodexLaunch(LaunchConfig{Binary: "codex", Permission: PermissionPolicyForMode(SessionModeReadOnly)})
-	if slices.Contains(readOnly, bypass) {
-		t.Errorf("read-only launch bypasses approvals and the sandbox: %#v", readOnly)
 	}
 }

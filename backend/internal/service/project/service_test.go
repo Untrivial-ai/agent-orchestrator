@@ -2173,7 +2173,7 @@ func TestManager_RememberPortablePermissions(t *testing.T) {
 	for _, tc := range []struct {
 		source domain.AgentHarness
 		want   domain.PermissionMode
-	}{{domain.HarnessCodex, domain.PermissionModeBypassPermissions}, {domain.HarnessClaudeCode, domain.PermissionModeDefault}, {"", domain.PermissionModeDefault}} {
+	}{{domain.HarnessCodex, domain.PermissionModeDefault}, {domain.HarnessClaudeCode, domain.PermissionModeDefault}, {"", domain.PermissionModeDefault}} {
 		got, err := m.SetPermissions(ctx, "portable", project.SetPermissionsInput{SourceHarness: tc.source, Permissions: domain.PermissionModeDefault})
 		if err != nil {
 			t.Fatal(err)

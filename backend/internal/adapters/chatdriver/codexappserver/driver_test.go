@@ -1014,23 +1014,53 @@ func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
 // Default so the provider's own configuration decides.
 func TestApprovalKeysOmittedForDefaultMode(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		mode ports.PermissionMode
-		want bool
+		name                      string
+		mode                      ports.PermissionMode
+		policy, sandbox, reviewer string
 	}{
-		{"default", ports.PermissionModeDefault, false},
-		{"unknown", ports.PermissionMode("nonsense"), false},
-		{"bypass", ports.PermissionModeBypassPermissions, true},
-		{"acceptEdits", ports.PermissionModeAcceptEdits, true},
-		{"auto", ports.PermissionModeAuto, true},
+		{"default", ports.PermissionModeDefault, "", "", ""},
+		{"empty", "", "", "", ""},
+		{"unknown", ports.PermissionMode("nonsense"), "", "", ""},
+		{"bypass", ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
+		{"acceptEdits", ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
+		{"auto", ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
 	} {
-		params := map[string]any{}
-		applyApprovalSettings(params, tc.mode)
-		_, gotPolicy := params["approvalPolicy"]
-		_, gotSandbox := params["sandbox"]
-		_, gotReviewer := params["approvalsReviewer"]
-		if gotPolicy != tc.want || gotSandbox != tc.want || gotReviewer != tc.want {
-			t.Errorf("%s: approvalPolicy present=%v sandbox present=%v approvalsReviewer present=%v, want all %v", tc.name, gotPolicy, gotSandbox, gotReviewer, tc.want)
+		for _, method := range []string{"thread/start", "thread/resume"} {
+			t.Run(tc.name+"/"+method, func(t *testing.T) {
+				d, srv := newTestDriver(t)
+				var conv ports.ChatConversation
+				var err error
+				if method == "thread/start" {
+					conv, err = d.Start(context.Background(), ports.ChatStartConfig{
+						WorkspacePath: "/tmp/ws", Permissions: tc.mode,
+					})
+				} else {
+					conv, err = d.Resume(context.Background(), ports.ChatResumeConfig{
+						WorkspacePath: "/tmp/ws", Permissions: tc.mode, ProviderConversationID: "thread-1",
+					})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = conv.Close() })
+				sent := srv.awaitFrame(func(f frame) bool { return f.Method == method })
+				var params map[string]any
+				if err := json.Unmarshal(sent.Params, &params); err != nil {
+					t.Fatal(err)
+				}
+				for key, want := range map[string]string{
+					"approvalPolicy": tc.policy, "sandbox": tc.sandbox, "approvalsReviewer": tc.reviewer,
+				} {
+					got, present := params[key]
+					if want == "" {
+						if present {
+							t.Errorf("%s must be omitted, got %v", key, got)
+						}
+					} else if got != want {
+						t.Errorf("%s = %v, want %q", key, got, want)
+					}
+				}
+			})
 		}
 	}
 }
@@ -1618,5 +1648,90 @@ func TestLaunchPostureDistinguishesStartFromResume(t *testing.T) {
 				t.Errorf("resume posture = %v, want %v", got, tc.resume)
 			}
 		})
+	}
+}
+
+func TestTurnsTrackAcceptedPermissionChanges(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run("resume="+strconv.FormatBool(resume), func(t *testing.T) {
+			d, srv := newTestDriver(t)
+			var conv ports.ChatConversation
+			var err error
+			if resume {
+				conv, err = d.Resume(context.Background(), ports.ChatResumeConfig{
+					WorkspacePath: "/tmp/ws", ProviderConversationID: "thread-1", Permissions: ports.PermissionModeDefault,
+				})
+			} else {
+				conv, err = d.Start(context.Background(), ports.ChatStartConfig{
+					WorkspacePath: "/tmp/ws", Permissions: ports.PermissionModeDefault,
+				})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conv.Close() })
+
+			for i, step := range []struct {
+				mode    ports.PermissionMode
+				reject  bool
+				sandbox string
+			}{
+				{ports.PermissionModeBypassPermissions, false, "dangerFullAccess"},
+				{ports.PermissionModeDefault, false, "workspaceWrite"},
+				{ports.PermissionModeDefault, false, ""},
+				{ports.PermissionModeBypassPermissions, true, "dangerFullAccess"},
+				{ports.PermissionModeDefault, false, ""},
+				{ports.PermissionModeBypassPermissions, false, "dangerFullAccess"},
+				{ports.PermissionModeAcceptEdits, true, "workspaceWrite"},
+				{ports.PermissionMode("unknown"), false, "workspaceWrite"},
+			} {
+				if step.reject {
+					srv.replyError("turn/start", -32600, "permission change rejected")
+				} else {
+					srv.mu.Lock()
+					delete(srv.failures, "turn/start")
+					srv.mu.Unlock()
+				}
+				messageID := "step-" + strconv.Itoa(i)
+				_, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
+					Text: "go", ClientMessageID: messageID,
+					Settings: ports.ChatTurnSettings{Approval: step.mode},
+				})
+				if (err != nil) != step.reject {
+					t.Fatalf("step %d: err=%v, want rejection=%v", i, err, step.reject)
+				}
+				sent := srv.awaitFrame(func(f frame) bool {
+					return f.Method == "turn/start" && strings.Contains(string(f.Params), messageID)
+				})
+				var params map[string]any
+				if err := json.Unmarshal(sent.Params, &params); err != nil {
+					t.Fatal(err)
+				}
+				if step.sandbox == "" {
+					for _, key := range []string{"approvalPolicy", "approvalsReviewer", "sandboxPolicy"} {
+						if _, present := params[key]; present {
+							t.Errorf("step %d: unexpected %s override", i, key)
+						}
+					}
+					continue
+				}
+				wantPolicy := "on-request"
+				if step.sandbox == "dangerFullAccess" {
+					wantPolicy = "never"
+				}
+				wantSandbox := map[string]any{"type": step.sandbox}
+				if !reflect.DeepEqual(params["sandboxPolicy"], wantSandbox) || params["approvalPolicy"] != wantPolicy || params["approvalsReviewer"] != "user" {
+					t.Errorf("step %d: unexpected permission settings: %v", i, params)
+				}
+			}
+		})
+	}
+}
+
+func TestTurnSandboxPolicyRequiresExplicitFullAccess(t *testing.T) {
+	for _, sandbox := range []string{"", "unknown"} {
+		if got := turnSandboxPolicy(sandbox); got != nil {
+			t.Errorf("turnSandboxPolicy(%q) = %v, want no override", sandbox, got)
+		}
 	}
 }

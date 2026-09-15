@@ -488,9 +488,13 @@ func initializeConnection(ctx context.Context, connection *conn) error {
 // choice disables approvals and the sandbox, matching the TUI mapping.
 func approvalSettings(mode ports.PermissionMode) (policy, sandbox string) {
 	switch ports.NormalizePermissionMode(mode) {
-	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
+	case ports.PermissionModeDefault:
+		return "", ""
+	case ports.PermissionModeAcceptEdits:
 		// on-request lets the provider decide when to ask; workspace-write keeps
 		// edits inside the worktree.
+		return "on-request", "workspace-write"
+	case ports.PermissionModeAuto:
 		return "on-request", "workspace-write"
 	case ports.PermissionModeBypassPermissions:
 		return "never", "danger-full-access"
