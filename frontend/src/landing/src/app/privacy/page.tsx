@@ -431,9 +431,9 @@ export default function PrivacyPage() {
                 API keys, tokens, passwords, or any other credential.
               </Bullet>
               <Bullet>
-                Names or account information. The only email address or company
-                role we collect is information you voluntarily submit through an
-                optional waitlist.
+                Names or account information. The only email address, company
+                role, or social profile we collect is information you
+                voluntarily submit through an optional waitlist.
               </Bullet>
               <Bullet>Precise location data.</Bullet>
               <Bullet>

@@ -10,7 +10,7 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 
 | Command | What it does | When to use | Details |
 |---|---|---|---|
-| `spawn` | Spawn a worker agent in a fresh git worktree | Starting a new task or issue | [commands/spawn.md](commands/spawn.md) |
+| `spawn` | Spawn a project worker or projectless standalone worker | Starting a new task or issue | [commands/spawn.md](commands/spawn.md) |
 | `session` | Manage agent sessions (list, kill, rename, restore, etc.) | Inspecting or controlling running/terminated sessions | [commands/session.md](commands/session.md) |
 | `project` | Register, inspect, configure, or remove projects | Setting up or managing repos AO knows about | [commands/project.md](commands/project.md) |
 | `orchestrator` | List orchestrator sessions | Viewing which sessions are orchestrators | [commands/orchestrator.md](commands/orchestrator.md) |

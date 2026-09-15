@@ -291,6 +291,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}
+	// thread/start has no top-level effort field either; carry the durable AO
+	// choice as a config override like thread/resume does, so a fresh thread
+	// does not silently fall back to the provider default.
+	if cfg.Effort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": cfg.Effort}
+	}
 	if cfg.SystemPrompt != "" {
 		params["developerInstructions"] = cfg.SystemPrompt
 	}

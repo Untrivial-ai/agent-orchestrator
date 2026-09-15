@@ -169,6 +169,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		isLoading: () => false,
 		insertCSS,
 		removeInsertedCSS,
+		invalidate: vi.fn(),
 		loadURL: vi.fn(async (url: string) => {
 			currentURL = url;
 		}),
@@ -194,6 +195,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		setBounds: vi.fn(),
 		setBorderRadius: vi.fn(),
 		setVisible: vi.fn(),
+		setIgnoreMouseEvents: vi.fn(),
 	};
 	const runtime =
 		agentBrowserRuntime ??
@@ -551,8 +553,9 @@ function setupTabHost(
 			openWindow: (url: string) => void;
 			close: ReturnType<typeof vi.fn>;
 			emitConsoleMessage: (level: number, message: string, line?: number, sourceId?: string) => void;
-			session: {
-				setPermissionCheckHandler: ReturnType<typeof vi.fn>;
+				session: {
+					fetch: ReturnType<typeof vi.fn>;
+					setPermissionCheckHandler: ReturnType<typeof vi.fn>;
 				setPermissionRequestHandler: ReturnType<typeof vi.fn>;
 				webRequest: {
 					onCompleted: ReturnType<typeof vi.fn>;
@@ -571,6 +574,7 @@ function setupTabHost(
 	// localhost dev server — every view's loadURL checks this shared set.
 	const failNavigationTo = new Set<string>();
 	const makeElectronSession = () => ({
+		fetch: vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: false } as Response)),
 		setPermissionCheckHandler: vi.fn(),
 		setPermissionRequestHandler: vi.fn(),
 		webRequest: {
@@ -655,7 +659,7 @@ function setupTabHost(
 				listener?.({}, level, message, line, sourceId);
 			},
 		};
-		const view = { webContents, listeners, setBounds: vi.fn(), setBorderRadius: vi.fn(), setVisible: vi.fn() };
+		const view = { webContents, listeners, setBounds: vi.fn(), setBorderRadius: vi.fn(), setVisible: vi.fn(), setIgnoreMouseEvents: vi.fn() };
 		views.push(view);
 		return view;
 	};
@@ -1363,6 +1367,11 @@ describe("browser profile partitions and replacement", () => {
 		await expect(named.invoke("browser:history:suggest", { viewId: namedNav.viewId, query: "openai" })).resolves.toEqual([
 			{ url: "https://github.com/openai", title: "OpenAI" },
 		]);
+		await expect(named.invoke("browser:history:favicon", { viewId: namedNav.viewId, url: "https://github.com/openai" })).resolves.toBeUndefined();
+		expect(named.views[0]!.webContents.session.fetch).toHaveBeenCalledWith(
+			"https://github.com/favicon.ico",
+			{ signal: expect.objectContaining({ aborted: false }) },
+		);
 
 		const temporary = setupTabHost(undefined, false, undefined, history);
 		const temporaryNav = (await temporary.invoke("browser:ensure", "worker-2")) as BrowserNavState;
@@ -1373,6 +1382,83 @@ describe("browser profile partitions and replacement", () => {
 		);
 		expect(await temporary.invoke("browser:history:suggest", { viewId: temporaryNav.viewId, query: "example" })).toEqual([]);
 		expect(history.record).toHaveBeenCalledTimes(1);
+	});
+
+	it("bounds and times out history favicon downloads", async () => {
+		const named = setupTabHost(fakeBrowserProfileStore(profile, { "worker-1": profile.id }));
+		const namedNav = (await named.invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		const fetch = named.views[0]!.webContents.session.fetch;
+		const ico = new Uint8Array([0, 0, 1, 0, 1, 0]);
+		let icoDelivered = false;
+		fetch.mockResolvedValueOnce({
+			ok: true,
+			headers: new Headers({ "content-length": String(ico.byteLength), "content-type": "image/x-icon" }),
+			body: {
+				getReader: () => ({
+					read: vi.fn(async () => {
+						if (icoDelivered) return { done: true, value: undefined };
+						icoDelivered = true;
+						return { done: false, value: ico };
+					}),
+					cancel: vi.fn(async () => undefined),
+					releaseLock: vi.fn(),
+				}),
+			},
+		} as unknown as Response);
+		await expect(named.invoke("browser:history:favicon", {
+			viewId: namedNav.viewId,
+			url: "https://uses-ico.example/icon",
+		})).resolves.toBe("data:image/x-icon;base64,AAABAAEA");
+
+		const responseCancel = vi.fn(async () => undefined);
+		fetch.mockResolvedValueOnce({
+			ok: true,
+			headers: new Headers({ "content-length": String(256 * 1024 + 1) }),
+			body: { cancel: responseCancel },
+		} as unknown as Response);
+		await expect(named.invoke("browser:history:favicon", {
+			viewId: namedNav.viewId,
+			url: "https://declared-too-large.example/icon",
+		})).resolves.toBeUndefined();
+		expect(responseCancel).toHaveBeenCalledOnce();
+
+		const readerCancel = vi.fn(async () => undefined);
+		const releaseLock = vi.fn();
+		fetch.mockResolvedValueOnce({
+			ok: true,
+			headers: new Headers(),
+			body: {
+				getReader: () => ({
+					read: vi.fn(async () => ({ done: false, value: new Uint8Array(256 * 1024 + 1) })),
+					cancel: readerCancel,
+					releaseLock,
+				}),
+			},
+		} as unknown as Response);
+		await expect(named.invoke("browser:history:favicon", {
+			viewId: namedNav.viewId,
+			url: "https://stream-too-large.example/icon",
+		})).resolves.toBeUndefined();
+		expect(readerCancel).toHaveBeenCalledOnce();
+		expect(releaseLock).toHaveBeenCalledOnce();
+
+		vi.useFakeTimers();
+		try {
+			let requestSignal: AbortSignal | undefined;
+			fetch.mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+				requestSignal = init.signal as AbortSignal;
+				requestSignal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+			}));
+			const favicon = named.invoke("browser:history:favicon", {
+				viewId: namedNav.viewId,
+				url: "https://never-responds.example/icon",
+			});
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(favicon).resolves.toBeUndefined();
+			expect(requestSignal?.aborted).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("cleans the old runtime before rebuilding tabs and preserves hardening on new views", async () => {
@@ -1650,10 +1736,10 @@ describe("native browser visibility", () => {
 	// window-composition.ts documents the same class of bug for its own shell
 	// view — re-adding a view to reorder it can leave its *previous*
 	// compositor surface on screen until a real geometry change rebuilds it,
-	// and identical bounds are a no-op Electron ignores. refreshLastFocusedPanelSurface
-	// applies that same "shrink by 1px, restore next tick" nudge to the live
-	// page's own view; main.ts calls it right after raising the shell.
-	it("toggles visibility and nudges the last-focused panel's bounds to force a real resize, then restores both", async () => {
+	// refreshLastFocusedPanelSurface resets visibility synchronously after
+	// main.ts raises the shell, so Electron rebuilds the native surface without
+	// presenting a hidden frame while the bounds restore on the next tick.
+	it("resets visibility synchronously, then restores the last-focused panel bounds", async () => {
 		const { emit, host, invoke, view } = setupHost();
 		await invoke("browser:ensure", "sess-1");
 		emit("browser:setBounds", 1, {
@@ -1666,12 +1752,12 @@ describe("native browser visibility", () => {
 		view.setVisible.mockClear();
 
 		host.refreshLastFocusedPanelSurface();
-		expect(view.setVisible).toHaveBeenLastCalledWith(false);
 		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 10, y: 20, width: 320, height: 239 });
+		expect(view.setVisible.mock.calls).toEqual([[false], [true]]);
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 10, y: 20, width: 320, height: 240 });
-		expect(view.setVisible).toHaveBeenLastCalledWith(true);
+		expect(view.setVisible.mock.calls).toEqual([[false], [true]]);
 	});
 
 	it("does nothing when nothing has been focused yet, or the panel is hidden", async () => {

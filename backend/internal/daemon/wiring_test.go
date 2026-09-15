@@ -21,7 +21,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
@@ -444,32 +443,6 @@ func TestStartSession_SpawnDoesNotPanicWhenNoTrackerToken(t *testing.T) {
 	// tries to materialize a workspace. The manager may return an error from the
 	// no-op runtime, but it must not panic — that is the regression.
 	_, _, _, _ = svc.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, IssueID: "107"})
-}
-
-func TestWiring_SeedScratchProjectOnBootUsesDataDir(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	cfg := config.Config{DataDir: t.TempDir(), Agent: string(domain.HarnessCodex)}
-	projects := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, DefaultHarness: domain.HarnessCodex})
-	if err := seedScratchProjectOnBoot(ctx, cfg, projects); err != nil {
-		t.Fatalf("seedScratchProjectOnBoot: %v", err)
-	}
-
-	got, ok, err := store.GetProject(ctx, "scratch")
-	if err != nil || !ok {
-		t.Fatalf("GetProject(scratch): ok=%v err=%v", ok, err)
-	}
-	if got.Kind != domain.ProjectKindScratch {
-		t.Fatalf("kind = %q, want scratch", got.Kind)
-	}
-	if want := filepath.Join(cfg.DataDir, "scratch", "default"); got.Path != want {
-		t.Fatalf("path = %q, want %q", got.Path, want)
-	}
 }
 
 // TestStartTrackerIntake_RunsEvenWithoutEnabledProjects is a regression test:

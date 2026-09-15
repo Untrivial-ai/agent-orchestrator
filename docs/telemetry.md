@@ -61,8 +61,8 @@ GitHub-derived value AO does send. It is limited to the owning
 organization or account and never includes the repository, path, or URL.
 
 The optional website waitlist is separate from product telemetry. If you submit
-an email address there, it is used to manage that waitlist as described in the
-[privacy policy](https://orchestrator.inc/privacy).
+an email address, company role, and social profile there, they are used to manage
+that waitlist as described in the [privacy policy](https://orchestrator.inc/privacy).
 
 ## How AO limits the data
 

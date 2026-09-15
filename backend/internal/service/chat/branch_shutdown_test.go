@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -45,7 +44,7 @@ func TestFailedBranchShutdownPreservesSurvivingHostCredentials(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		applied, err := st.UpdateBrowserCapabilityVerifier(ctx, testSession, expected, verifier, time.Now())
+		applied, err := st.UpdateBrowserCapabilityVerifier(ctx, testSession, expected, verifier)
 		if err != nil {
 			return nil, err
 		}

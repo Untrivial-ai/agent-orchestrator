@@ -128,7 +128,7 @@ WHERE project_id = ?2 AND kind = ?3
 
 type PinProjectSessionPermissionsParams struct {
 	Permissions string
-	ProjectID   domain.ProjectID
+	ProjectID   *domain.ProjectID
 	Kind        domain.SessionKind
 }
 
