@@ -1593,6 +1593,43 @@ describe("ChatWorkspace timeline", () => {
 });
 
 describe("automation reports", () => {
+	it("renders browser annotation transport as a compact feedback card", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const message: ConversationMessage = {
+			...source,
+			text: `<browser_annotations>
+Browser feedback
+Page: Google
+URL: https://www.google.com/
+Annotations: 1
+
+Annotation 1 (adjustment):
+Target: div.badge
+Selector: body > div.badge
+Dimensions: 120×24
+Requested visual changes:
+- Text color: "rgb(0, 0, 0)" → "#d7193f"
+- Background: "transparent" → "#32c873"
+
+Reference screenshots:
+- .ao/attachments/browser.png
+
+Task: Address the feedback below according to its wording. Visual adjustments are already previewed in AO's shared browser and describe the intended result.
+</browser_annotations>`,
+		};
+
+		render(<OriginMessage message={message} />);
+
+		expect(screen.getByText("Browser feedback")).toBeInTheDocument();
+		expect(screen.getByText("1 annotation on Google")).toBeInTheDocument();
+		expect(screen.getByText("2 visual changes")).toBeInTheDocument();
+		expect(screen.getByText("div.badge")).toBeInTheDocument();
+		expect(screen.getByText("1 reference screenshot")).toBeInTheDocument();
+		expect(screen.queryByText(/body > div\.badge/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Task: Address/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+	});
+
 	it("collapses a long report until the reader asks to expand it", async () => {
 		const user = userEvent.setup();
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;

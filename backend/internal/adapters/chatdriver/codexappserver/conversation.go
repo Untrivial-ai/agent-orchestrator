@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/commanddetail"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -147,17 +149,60 @@ func (c *conversation) Events() <-chan ports.ChatEvent { return c.events }
 func (c *conversation) pump() {
 	defer close(c.pumpDone)
 	defer close(c.events)
+	retries := make(map[string]ports.ChatEvent)
 
 	for n := range c.conn.notifs() {
 		// Before normalizing, because a token-usage report is the only place the
 		// context position is stated and a compaction event that arrives in the same
 		// batch has to be able to read it.
 		c.trackContext(n)
+		// Some normalized output events omit their thread ID. Read the native
+		// envelope so child-thread recovery cannot settle the root's retry.
+		var scope struct {
+			ThreadID string `json:"threadId"`
+		}
+		_ = json.Unmarshal(n.Params, &scope)
 
 		// The clock is passed in rather than read inside: a rate-limit reset arrives
 		// as an absolute instant and has to become a remaining duration, and a
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, time.Now()) {
+			threadID := ev.ProviderConversationID
+			if threadID == "" {
+				threadID = scope.ThreadID
+			}
+			if threadID == "" {
+				threadID = c.threadID
+			}
+			key := threadID + ":" + ev.ProviderTurnID
+			if ev.Kind == ports.ChatEventError {
+				// Turn settlement will settle the running retry along with the failure.
+				delete(retries, key)
+			}
+			isRetry := ev.Kind == ports.ChatEventActivityStarted && strings.HasPrefix(ev.ProviderItemID, "codex-retry:")
+			if isRetry {
+				if active, ok := retries[key]; ok {
+					ev.ProviderItemID = active.ProviderItemID
+				} else {
+					// Live Codex errors have no item/replay ID. Keep attempts on one
+					// row, but never overwrite a recovered episode later in the turn.
+					ev.ProviderItemID += ":" + uuid.NewString()
+				}
+				retries[key] = ev
+			}
+			completed := ev.Kind == ports.ChatEventTurnCompleted
+			recovered := !isRetry && (ev.Kind == ports.ChatEventMessageDelta || ev.Kind == ports.ChatEventMessageCompleted ||
+				ev.Kind == ports.ChatEventActivityStarted || ev.Kind == ports.ChatEventReasoningDelta || ev.Kind == ports.ChatEventPlanUpdated)
+			if completed || recovered {
+				if retry, ok := retries[key]; ok {
+					retry.Kind = ports.ChatEventActivityCompleted
+					retry.ActivityStatus = domain.ActivityStatusCompleted
+					if !completed || (ev.TurnState != domain.TurnStateFailed && ev.Err == nil) {
+						c.emit(retry)
+					}
+					delete(retries, key)
+				}
+			}
 			rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
 			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
 				c.mu.Lock()
@@ -189,7 +234,6 @@ func (c *conversation) pump() {
 			c.emit(ev)
 		}
 	}
-
 	// The connection ended. Say so explicitly rather than letting the stream go
 	// quiet: a silent channel close is indistinguishable from an idle agent.
 	state := ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped}
@@ -384,12 +428,8 @@ func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error
 				display = id
 			}
 			models = append(models, ports.ChatModel{
-				ID:            id,
-				DisplayName:   display,
-				Description:   entry.Description,
-				Default:       entry.IsDefault,
-				Efforts:       efforts,
-				DefaultEffort: entry.DefaultEff,
+				ID: id, DisplayName: display, Description: entry.Description,
+				Default: entry.IsDefault, Efforts: efforts, DefaultEffort: entry.DefaultEff,
 			})
 		}
 		if resp.NextCursor == nil || *resp.NextCursor == "" {

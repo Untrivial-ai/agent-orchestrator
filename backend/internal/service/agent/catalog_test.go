@@ -856,15 +856,15 @@ func TestModelsRediscoversWhenBinaryVersionChanges(t *testing.T) {
 func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	agent := &blockingResolverAgent{started: make(chan struct{}), release: make(chan struct{})}
 	svc := newService([]agentregistry.HarnessAgent{{
-		Harness:  domain.AgentHarness("codex"),
-		Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
+		Harness:  domain.AgentHarness("muse"),
+		Manifest: adapters.Manifest{ID: "muse", Name: "Muse"},
 		Agent:    agent,
 	}}, nil, nil, successfulModelDiscoverer())
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderErr := make(chan error, 1)
 	go func() {
-		_, err := svc.Models(leaderCtx, "codex", "proj-1", true)
+		_, err := svc.Models(leaderCtx, "muse", "proj-1", true)
 		leaderErr <- err
 	}()
 	<-agent.started
@@ -872,7 +872,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	waiterResult := make(chan ports.AgentModelCatalog, 1)
 	waiterErr := make(chan error, 1)
 	go func() {
-		catalog, err := svc.Models(context.Background(), "codex", "proj-1", true)
+		catalog, err := svc.Models(context.Background(), "muse", "proj-1", true)
 		waiterResult <- catalog
 		waiterErr <- err
 	}()
@@ -884,7 +884,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	if err := <-waiterErr; err != nil {
 		t.Fatalf("coalesced waiter: %v", err)
 	}
-	if got := <-waiterResult; got.AgentID != "codex" || len(got.Models) == 0 {
+	if got := <-waiterResult; got.AgentID != "muse" || len(got.Models) == 0 {
 		t.Fatalf("coalesced waiter catalog = %#v", got)
 	}
 }

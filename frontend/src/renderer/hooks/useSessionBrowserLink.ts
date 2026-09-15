@@ -15,7 +15,7 @@ function workspaceFilePreviewURL(uri: string, sessionId: string, workspacePaths:
 	return workspacePath ? attachmentURL(getApiBaseUrl(), sessionId, workspacePath) : undefined;
 }
 
-/** Open an HTTP(S) link in the active worker session's AO Browser panel. */
+/** Open a supported link in the active session's AO Browser panel. */
 export function useSessionBrowserLink(
 	session?: WorkspaceSession,
 	openInBrowser?: (uri: string) => Promise<void>,
@@ -28,7 +28,7 @@ export function useSessionBrowserLink(
 
 	return useCallback(
 		(uri: string) => {
-			if (!session?.id || session.kind !== "worker" || !active) return;
+			if (!session?.id || !active) return;
 			const isLocalWorkspaceFile = isWorkspaceFileLink(uri, workspacePaths);
 			try {
 				const url = new URL(uri);

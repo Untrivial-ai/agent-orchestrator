@@ -602,6 +602,16 @@ func TestResumeUsesPersistedBypassPermissionForCapabilityAdmission(t *testing.T)
 
 func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 	st := openStore(t)
+	existing, err := st.CreateConversation(context.Background(), "conversation-resume",
+		domain.ConversationScopeSession, testProject, testSession, time.Now())
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	if err := st.SetConversationSettings(context.Background(), existing.ID, domain.ConversationSettings{
+		Model: "gpt-test", ReasoningEffort: "high",
+	}, time.Now()); err != nil {
+		t.Fatalf("SetConversationSettings: %v", err)
+	}
 	conv := newFakeConversation()
 	var resumed ports.ChatResumeConfig
 	svc := chatsvc.New(chatsvc.Options{
@@ -614,7 +624,7 @@ func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 
 	workspace := t.TempDir()
 	dataDir := t.TempDir()
-	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		DataDir: dataDir, WorkspacePath: workspace, ProviderConversationID: "thread-1",
 		SystemPrompt: "Recomputed AO orchestrator instructions",
@@ -623,8 +633,83 @@ func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 		t.Fatalf("Start resume: %v", err)
 	}
 	if resumed.ProviderConversationID != "thread-1" || resumed.DataDir != dataDir || resumed.WorkspacePath != workspace ||
-		resumed.SystemPrompt != "Recomputed AO orchestrator instructions" {
+		resumed.SystemPrompt != "Recomputed AO orchestrator instructions" || resumed.Model != "gpt-test" ||
+		resumed.Effort != "high" {
 		t.Fatalf("resume config = %#v", resumed)
+	}
+	snapshot, err := st.LoadConversationSnapshot(context.Background(), "conversation-resume")
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	if snapshot.Conversation.Settings.Model != "gpt-test" || snapshot.Conversation.Settings.ReasoningEffort != "high" {
+		t.Fatalf("persisted settings = %#v", snapshot.Conversation.Settings)
+	}
+}
+
+func TestServiceResumePreservesExplicitProviderDefaultTuning(t *testing.T) {
+	st := openStore(t)
+	existing, err := st.CreateConversation(context.Background(), "conversation-provider-defaults",
+		domain.ConversationScopeSession, testProject, testSession, time.Now())
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	if err := st.SetConversationSettings(context.Background(), existing.ID, domain.ConversationSettings{}, time.Now()); err != nil {
+		t.Fatalf("SetConversationSettings: %v", err)
+	}
+
+	var resumed ports.ChatResumeConfig
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: newFakeConversation(), resumeCfg: &resumed}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "conversation-provider-defaults" },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+
+	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+		Effort: "high",
+	})
+	if err != nil {
+		t.Fatalf("Start resume: %v", err)
+	}
+	if resumed.Effort != "" {
+		t.Fatalf("resume effort = %q, want persisted provider default", resumed.Effort)
+	}
+}
+
+func TestServicePersistsAndPassesInitialModelTuningBeforeProviderStart(t *testing.T) {
+	st := openStore(t)
+	conv := newFakeConversation()
+	var started ports.ChatStartConfig
+	driver := fakeDriver{start: func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+		started = cfg
+		snapshot, err := st.LoadConversationSnapshot(context.Background(), "conversation-start")
+		if err != nil {
+			return nil, err
+		}
+		settings := snapshot.Conversation.Settings
+		if settings.Model != "gpt-test" || settings.ReasoningEffort != "high" {
+			return nil, fmt.Errorf("settings were not durable before provider start: %#v", settings)
+		}
+		return conv, nil
+	}}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st, Drivers: fakeRegistry{driver: driver},
+		Log: slog.New(slog.DiscardHandler), NewID: func() string { return "conversation-start" },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+
+	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), Model: "gpt-test", Effort: "high",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Model != "gpt-test" || started.Effort != "high" {
+		t.Fatalf("provider start config = %#v", started)
 	}
 }
 
@@ -2971,6 +3056,129 @@ func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 }
 
 /* ---- tests ------------------------------------------------------------- */
+
+func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
+	h := newHarness(t)
+	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "hello", ClientMessageID: "failure-prompt", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := "Provider rejected this request\n\nOriginal details with https://example.com/help"
+	completion := ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+		ProviderEventID: "host:1", TurnState: domain.TurnStateCompleted,
+		Err: ports.NewChatProviderFailure(
+			"Provider rejected this request",
+			"Original details with https://example.com/help",
+			ports.ErrChatAuthRequired,
+		),
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
+		completion,
+		// A daemon restart can replay the terminal event with the same identity.
+		completion,
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed &&
+			s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil
+	})
+	if snapshot.Turns[0].ErrorMessage != message {
+		t.Fatalf("turn error = %q", snapshot.Turns[0].ErrorMessage)
+	}
+	if snapshot.Conversation.Account.ReauthReason != message {
+		t.Fatalf("reauth reason = %q", snapshot.Conversation.Account.ReauthReason)
+	}
+	for _, activity := range snapshot.Activities {
+		if activity.Kind == domain.ActivityKindError || strings.Contains(activity.ProviderItemID, "ao-reauth-") {
+			t.Fatalf("terminal failure was duplicated as an activity: %#v", activity)
+		}
+	}
+}
+
+func TestStandaloneProviderFailurePreservesOpaqueText(t *testing.T) {
+	h := newHarness(t)
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventError, ProviderEventID: "provider-error-1",
+		Err: ports.NewChatProviderFailure(
+			"Connection interrupted",
+			"Inspect https://example.com/status",
+			nil,
+		),
+	})
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Activities) == 1 && s.Activities[0].Kind == domain.ActivityKindError
+	})
+	activity := snapshot.Activities[0]
+	if activity.Summary != "Connection interrupted\n\nInspect https://example.com/status" {
+		t.Fatalf("summary = %q", activity.Summary)
+	}
+	var detail map[string]string
+	if err := json.Unmarshal(activity.Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["error"] != activity.Summary {
+		t.Fatalf("detail = %#v", detail)
+	}
+}
+
+func TestTerminalFailureSettlesOnlyActiveRetry(t *testing.T) {
+	for _, source := range []string{"completion", "notification", "both"} {
+		t.Run(source, func(t *testing.T) {
+			h := newHarness(t)
+			turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+				Text: "hello", ClientMessageID: "retry-failure-prompt", Origin: domain.MessageOriginHuman,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			retry := func(id string, kind ports.ChatEventKind, status domain.ActivityStatus) ports.ChatEvent {
+				return ports.ChatEvent{
+					Kind: kind, ProviderTurnID: turn.ProviderTurnID, ProviderItemID: id,
+					ActivityKind: domain.ActivityKindSystem, ActivityStatus: status,
+					Summary: "Retrying", Detail: json.RawMessage(`{"event":"provider.failure"}`),
+				}
+			}
+			failure := ports.NewChatProviderFailure("Request failed", "Try later", nil)
+			var completionError error
+			if source != "notification" {
+				completionError = failure
+			}
+			h.conv.emit(
+				ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
+				retry("recovered-retry", ports.ChatEventActivityStarted, domain.ActivityStatusRunning),
+				retry("recovered-retry", ports.ChatEventActivityCompleted, domain.ActivityStatusCompleted),
+				retry("active-retry", ports.ChatEventActivityStarted, domain.ActivityStatusRunning),
+			)
+			if source != "completion" {
+				h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderTurnID: turn.ProviderTurnID, Err: failure})
+			}
+			h.conv.emit(
+				ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+					TurnState: domain.TurnStateFailed, Err: completionError},
+			)
+			snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed
+			})
+			if got := findActivity(t, snapshot, "recovered-retry").Status; got != domain.ActivityStatusCompleted {
+				t.Fatalf("recovered retry = %s", got)
+			}
+			if got := findActivity(t, snapshot, "active-retry").Status; got != domain.ActivityStatusFailed {
+				t.Fatalf("active retry = %s", got)
+			}
+			wantError := "Request failed\n\nTry later"
+			if source == "notification" {
+				wantError = ""
+			}
+			if snapshot.Turns[0].ErrorMessage != wantError {
+				t.Fatalf("failure = %q", snapshot.Turns[0].ErrorMessage)
+			}
+		})
+	}
+}
 
 // The whole point: a message goes out, provider events come back, and the durable
 // timeline reflects them in sequence order.

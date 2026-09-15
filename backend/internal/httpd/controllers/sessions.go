@@ -1547,6 +1547,7 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		Brief:          domain.SanitizeControlChars(in.Brief),
 		RequestedAgent: in.Agent,
 		Model:          domain.SanitizeControlChars(strings.TrimSpace(in.Model)),
+		Effort:         sanitizedOptionalString(in.Effort),
 		ApprovalMode:   in.ApprovalMode,
 		RequestedMode:  in.Mode,
 		Attachments:    attachments,
@@ -1556,6 +1557,14 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, DelegateTaskResponse{OK: true, WorkerID: out.WorkerID, OrchestratorID: out.OrchestratorID})
+}
+
+func sanitizedOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	sanitized := domain.SanitizeControlChars(strings.TrimSpace(*value))
+	return &sanitized
 }
 
 // activity records an agent activity-state signal reported by an agent hook

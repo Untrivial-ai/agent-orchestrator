@@ -416,6 +416,35 @@ describe("SessionChatSurface link routing", () => {
 		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: workspaceQueryKey }));
 	});
 
+	it("opens a plain Chat link from an active orchestrator in its Browser panel", async () => {
+		const user = userEvent.setup();
+		const openInNewTab = vi.fn().mockResolvedValue(undefined);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const orchestratorSession = {
+			...session,
+			id: "proj-1-orchestrator",
+			title: "orchestrator",
+			kind: "orchestrator",
+		} satisfies WorkspaceSession;
+
+		try {
+			render(
+				<Wrapper client={queryClient}>
+					<SessionChatSurface session={orchestratorSession} onOpenLinkInBrowser={openInNewTab} />
+				</Wrapper>,
+			);
+			await user.click(screen.getByRole("button", { name: "Open chat link" }));
+
+			expect(useUiStore.getState().inspectorSessions[orchestratorSession.id]).toMatchObject({ isOpen: true, view: "browser" });
+			expect(openInNewTab).toHaveBeenCalledWith(LINK);
+			expect(postMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", expect.anything());
+		} finally {
+			queryClient.clear();
+		}
+	});
+
 	it("automatically opens the first link in a newly completed agent response once", async () => {
 		const queryClient = new QueryClient({
 			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
