@@ -3,6 +3,7 @@ package sessionguard
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +66,46 @@ func record(state domain.ActivityState, terminated bool) domain.SessionRecord {
 		IsTerminated:  terminated,
 		Activity:      domain.Activity{State: state},
 		FirstSignalAt: time.Now(),
+	}
+}
+
+type concurrentMessenger struct {
+	inFlight int32
+	overlap  bool
+	delay    chan struct{}
+}
+
+func (m *concurrentMessenger) Send(_ context.Context, _ domain.SessionID, _ string) error {
+	current := atomic.AddInt32(&m.inFlight, 1)
+	if current > 1 {
+		m.overlap = true
+	}
+	<-m.delay
+	atomic.AddInt32(&m.inFlight, -1)
+	return nil
+}
+
+func TestGuard_ConcurrentDeliverSerializesWrites(t *testing.T) {
+	msgr := &concurrentMessenger{
+		delay: make(chan struct{}),
+	}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+
+	// Start two deliveries on the same session
+	go g.Deliver(context.Background(), "s1", "msg1")
+	go g.Deliver(context.Background(), "s1", "msg2")
+
+	// Give both goroutines time to enter the guard and reach Send (if unlocked)
+	time.Sleep(50 * time.Millisecond)
+
+	// Unblock them
+	close(msgr.delay)
+
+	// Wait for them to finish
+	time.Sleep(50 * time.Millisecond)
+
+	if msgr.overlap {
+		t.Fatal("expected serial delivery per session, but writes overlapped")
 	}
 }
 
