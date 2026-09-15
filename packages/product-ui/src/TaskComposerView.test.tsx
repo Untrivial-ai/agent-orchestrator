@@ -121,6 +121,20 @@ describe("TaskComposerView", () => {
 		expect(screen.getByRole("group", { name: "Runs with" })).toHaveClass("composer-run-controls");
 	});
 
+	it("renders execution context before the task prompt", () => {
+		const { container } = render(
+			<TaskComposerView
+				{...viewProps({ context: <div data-testid="execution-context">project context</div> })}
+			/>,
+		);
+
+		const context = screen.getByTestId("execution-context");
+		const prompt = screen.getByRole("textbox", { name: "Task" });
+		expect(context).toBeInTheDocument();
+		expect(Boolean(context.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+		expect(container.querySelector("form")?.firstElementChild).toBe(context);
+	});
+
 	it("claims the caret when asked to autofocus, and reclaims it from a surface that steals it", async () => {
 		render(<TaskComposerView {...viewProps({ autoFocusPrompt: true })} />);
 		const prompt = screen.getByRole("textbox", { name: "Task" });
