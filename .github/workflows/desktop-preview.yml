@@ -1,0 +1,208 @@
+# .github/workflows/desktop-preview.yml
+name: Desktop preview (PR artifacts)
+
+# Label-triggered unsigned desktop build for PR review. Uploads 7-day
+# workflow artifacts and comments the run link. Creates no release and uses
+# no secrets; the ao-releases conductor stays the only publisher
+# (frontend/docs/desktop-release.md). Unsigned: forge.config.ts signs only
+# when Apple env vars are present, which this workflow never sets.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# Pushes cancel stale builds; unrelated labels must not cancel a running one.
+concurrency:
+  group: desktop-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' || github.event.label.name == 'preview:mac' || github.event.label.name == 'preview:win' }}
+
+env:
+  VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin-arm64
+            artifact: preview-mac-arm64
+            label: preview:mac
+          - os: windows-latest
+            platform: win32-x64
+            artifact: preview-win
+            label: preview:win
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # Same-repo only; a labeled event runs just its platform.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, matrix.label) &&
+      (github.event.action != 'labeled' || github.event.label.name == matrix.label)
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            packages/product-ui/package-lock.json
+      # build-daemon.mjs compiles the Go daemon during premake.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: npm ci
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+      - name: Verify WorkOS build configuration
+        shell: bash
+        run: |
+          if [ -z "$VITE_WORKOS_CLIENT_ID" ]; then
+            echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
+            exit 1
+          fi
+      - name: Stamp version
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          base="$(node -p "require('./package.json').version")"
+          version="${base}-pr.${PR_NUMBER}.${GITHUB_RUN_NUMBER}"
+          node -e "const fs=require('fs'); const p=require('./package.json'); p.version=process.argv[1]; fs.writeFileSync('./package.json', JSON.stringify(p,null,'\t')+'\n');" "$version"
+          echo "Preview version: $version" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build (unsigned, no publish)
+        shell: bash
+        env:
+          # forge.config.ts falls back to DEFAULT_RELEASE_REPO without this (#3523).
+          AO_RELEASE_REPO: ${{ github.repository }}
+        run: npm run make
+      - name: Verify baked update feed repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(sed -n 's/^owner:[[:space:]]*//p' app-update.yml)"
+          repo="$(sed -n 's/^repo:[[:space:]]*//p' app-update.yml)"
+          echo "baked feed: $owner/$repo (expected $GITHUB_REPOSITORY)"
+          if [ "$owner/$repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::app-update.yml bakes $owner/$repo but this build runs in $GITHUB_REPOSITORY" >&2
+            exit 1
+          fi
+      - name: Collect installer
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-preview
+          case "$PLATFORM" in
+            darwin-arm64)
+              src_zip="$(find out/make/zip/darwin -name '*.zip' | head -n1)"
+              if [ -z "$src_zip" ]; then echo "no zip output found for $PLATFORM" >&2; exit 1; fi
+              cp "$src_zip" "dist-preview/agent-orchestrator-$PLATFORM.zip"
+              src_dmg="$(find out/make -maxdepth 1 -name '*.dmg' | head -n1)"
+              if [ -n "$src_dmg" ]; then cp "$src_dmg" "dist-preview/agent-orchestrator-$PLATFORM.dmg"; fi
+              ;;
+            win32-x64)
+              src="$(find out/make -maxdepth 1 -name '*Setup*.exe' | head -n1)"
+              if [ -z "$src" ]; then echo "no build output found for $PLATFORM" >&2; exit 1; fi
+              cp "$src" "dist-preview/agent-orchestrator-$PLATFORM.exe"
+              ;;
+            *)
+              echo "unknown platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          ls -la dist-preview >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: frontend/dist-preview/agent-orchestrator-${{ matrix.platform }}.*
+          retention-days: 7
+          if-no-files-found: error
+
+  # Posts the run link only; runs no PR code.
+  comment:
+    name: Comment preview link
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const labels = pullRequest.labels.map((label) => label.name);
+            const built = [];
+            if (labels.includes('preview:mac')) built.push('`preview-mac-arm64` (zip + dmg)');
+            if (labels.includes('preview:win')) built.push('`preview-win` (exe)');
+            if (
+              pullRequest.head.sha !== process.env.HEAD_SHA ||
+              pullRequest.state !== 'open' ||
+              built.length === 0
+            ) {
+              core.info('Skipping the outdated preview comment.');
+              return;
+            }
+
+            const marker = '<!-- desktop-preview -->';
+            const body = [
+              marker,
+              '### Desktop preview',
+              '',
+              `[Download installers from this run](${process.env.RUN_URL}) (GitHub sign-in required)`,
+              '',
+              `Commit: ${process.env.HEAD_SHA.slice(0, 7)}`,
+              `Artifacts: ${built.join(', ')}.`,
+              'Artifacts expire after 7 days.',
+              '',
+              'Unsigned builds. On macOS clear quarantine before opening, on Windows expect SmartScreen.',
+              'These installers prove the build works. They do not test the updater feed.',
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body,
+              });
+            }
