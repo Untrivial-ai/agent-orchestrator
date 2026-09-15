@@ -22,10 +22,14 @@ function renderWithQuery(children: ReactNode) {
 	// FileTree only mounts react-arborist's <Tree> once its container has a
 	// measured size; the test setup's ResizeObserver stub never invokes its
 	// callback, so drive it here the same way XtermTerminal.test.tsx does.
-	act(() => {
-		for (const callback of resizeCallbacks) callback([{ contentRect: { width: 400, height: 400 } }] as never, {} as ResizeObserver);
-	});
+	resizeTo(400, 400);
 	return view;
+}
+
+function resizeTo(width: number, height: number) {
+	act(() => {
+		for (const callback of resizeCallbacks) callback([{ contentRect: { width, height } }] as never, {} as ResizeObserver);
+	});
 }
 
 const resizeCallbacks: ResizeObserverCallback[] = [];
@@ -111,6 +115,33 @@ describe("FileTree", () => {
 				params: { path: { sessionId: "sess-1" }, query: { path: "src" } },
 			}),
 		);
+		expect(await screen.findByText("app.go")).toBeInTheDocument();
+	});
+
+	it("keeps expanded folders open while the docked explorer hides the tree behind a file preview", async () => {
+		getMock.mockImplementation(async (_path: string, options: unknown) => {
+			const query = (options as { params?: { query?: { path?: string } } }).params?.query?.path;
+			if (!query) return treeResponse("", [{ name: "src", path: "src", type: "dir", hasChanges: false }]);
+			if (query === "src") {
+				return treeResponse("src", [{ name: "app.go", path: "src/app.go", type: "file", status: "unmodified" }]);
+			}
+			return treeResponse(query, []);
+		});
+
+		renderWithQuery(
+			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="" />,
+		);
+
+		await userEvent.click(await screen.findByText("src"));
+		expect(await screen.findByText("app.go")).toBeInTheDocument();
+
+		// Docked, SessionFileExplorer keeps the tree mounted but display:none
+		// behind the file preview, which the browser reports as a 0x0 resize.
+		// Going back must return to the folder the file was opened from, not to
+		// a collapsed root.
+		resizeTo(0, 0);
+		resizeTo(400, 400);
+
 		expect(await screen.findByText("app.go")).toBeInTheDocument();
 	});
 
