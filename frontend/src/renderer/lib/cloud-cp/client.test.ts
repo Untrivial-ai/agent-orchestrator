@@ -30,4 +30,42 @@ describe("cloud control-plane session lifecycle", () => {
 			expect.objectContaining({ method: "POST" }),
 		);
 	});
+
+	it("gets the available agents for one encoded organization", async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(
+				JSON.stringify({
+					agents: [
+						{
+							id: "claude-code",
+							provider: "claude-code",
+							hasValidCred: true,
+							validationState: "valid",
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			),
+		);
+		const client = createCloudCpClient({
+			baseUrl: "https://cloud.example.test/",
+			getToken: async () => "token",
+			fetchImpl: fetchMock as typeof fetch,
+		});
+
+		const response = await client.getAvailableAgents("org/1");
+
+		expect(response.agents).toEqual([
+			{
+				id: "claude-code",
+				provider: "claude-code",
+				hasValidCred: true,
+				validationState: "valid",
+			},
+		]);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/agents/available",
+			expect.objectContaining({ method: "GET" }),
+		);
+	});
 });

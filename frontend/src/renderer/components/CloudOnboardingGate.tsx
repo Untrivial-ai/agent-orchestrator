@@ -35,7 +35,7 @@ export function CloudOnboardingGate() {
 		queryClient.removeQueries({ queryKey: cloudProjectsQueryKey });
 		queryClient.removeQueries({ queryKey: cloudSessionsQueryKey });
 		queryClient.removeQueries({ queryKey: cloudOrgQueryKey });
-		queryClient.removeQueries({ queryKey: ["cloud-provider-connections"] });
+		queryClient.removeQueries({ queryKey: ["cloud", "provider-connections"] });
 	}, [status, queryClient]);
 
 	useEffect(() => {

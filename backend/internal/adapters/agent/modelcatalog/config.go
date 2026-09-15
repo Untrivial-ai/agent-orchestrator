@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
@@ -18,6 +19,12 @@ import (
 )
 
 const modelConfigReadLimit = 2 << 20
+
+// configPathsCache avoids repeated filesystem scans for config paths.
+var (
+	configPathsCache = make(map[string][]string)
+	configPathsMu    sync.Mutex
+)
 
 type configParser func([]byte) ([]ports.AgentModelInfo, error)
 
@@ -38,7 +45,8 @@ func discoverConfigCatalog(agentID, workingDir string, env map[string]string) (p
 	}
 	var models []ports.AgentModelInfo
 	var found bool
-	for _, path := range modelConfigPaths(agentID, workingDir, env) {
+	// Use cached config paths to avoid repeated filesystem scans.
+	for _, path := range cachedModelConfigPaths(agentID, workingDir, env) {
 		raw, err := readModelConfig(path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -83,6 +91,26 @@ func configModelParser(agentID string) configParser {
 	default:
 		return nil
 	}
+}
+
+// cachedModelConfigPaths returns config paths for an agent, using a cache to avoid
+// repeated filesystem scans for VOLTA_HOME, FNM_DIR, and similar environment lookups.
+func cachedModelConfigPaths(agentID, workingDir string, env map[string]string) []string {
+	// Key includes agent ID and working directory to handle different contexts.
+	cacheKey := agentID + "\x00" + workingDir
+	configPathsMu.Lock()
+	if cached, ok := configPathsCache[cacheKey]; ok {
+		configPathsMu.Unlock()
+		return cached
+	}
+	configPathsMu.Unlock()
+
+	// Compute and cache the paths.
+	paths := modelConfigPaths(agentID, workingDir, env)
+	configPathsMu.Lock()
+	configPathsCache[cacheKey] = paths
+	configPathsMu.Unlock()
+	return paths
 }
 
 func modelConfigPaths(agentID, workingDir string, env map[string]string) []string {

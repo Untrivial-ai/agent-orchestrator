@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentInfo } from "../lib/agent-select-options";
 
 const h = vi.hoisted(() => ({
 	get: vi.fn(),
@@ -11,6 +12,10 @@ const h = vi.hoisted(() => ({
 	ensureReadiness: vi.fn(),
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
+	agentCatalog: undefined as { agents: AgentInfo[] } | undefined,
+	cloudProjects: [] as Array<{ id: string }>,
+	getAvailableAgents: vi.fn(),
+	createCloudSession: vi.fn(),
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
@@ -18,8 +23,31 @@ vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 	return {
 		...actual,
 		ensureAgentReadiness: h.ensureTargetedReadiness,
-		useAgentReadinessQuery: () => ({ data: undefined, isFetching: false }),
+		useAgentReadinessQuery: () => ({ data: h.agentCatalog, isFetching: false }),
 		useEnsureAgentReadiness: h.ensureReadiness,
+	};
+});
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({
+		client: {
+			getAvailableAgents: h.getAvailableAgents,
+			createSession: h.createCloudSession,
+		},
+		ready: true,
+		baseUrl: "http://127.0.0.1:8081",
+	}),
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: { id: "org-1" } }),
+}));
+
+vi.mock("../hooks/useWorkspaceQuery", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../hooks/useWorkspaceQuery")>();
+	return {
+		...actual,
+		useCloudProjectsQuery: () => ({ data: h.cloudProjects }),
 	};
 });
 
@@ -29,23 +57,35 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 		onChange,
 		triggerClassName,
 		disabled,
+		agents,
 	}: {
 		value: string;
 		onChange: (value: string) => void;
 		triggerClassName?: string;
 		disabled?: boolean;
+		agents?: Array<{ id: string; label: string; disabled?: boolean; hint?: string }>;
 	}) => {
 		h.agentValues.push(value);
 		return (
-			<button
-				type="button"
-				aria-label="Agent"
-				className={triggerClassName}
-				data-testid="agent-field"
-				data-value={value}
-				disabled={disabled}
-				onClick={() => onChange(value === "codex" ? "claude-code" : "codex")}
-			/>
+			<>
+				<button
+					type="button"
+					aria-label="Agent"
+					className={triggerClassName}
+					data-testid="agent-field"
+					data-value={value}
+					disabled={disabled}
+					onClick={() => onChange(value === "codex" ? "claude-code" : "codex")}
+				/>
+				<div aria-label="Agent options">
+					{agents?.map((option) => (
+						<button key={option.id} type="button" disabled={option.disabled}>
+							{option.label}
+							{option.hint}
+						</button>
+					))}
+				</div>
+			</>
 		);
 	},
 }));
@@ -97,11 +137,47 @@ afterEach(() => {
 	h.capture.mockReset();
 	h.ensureReadiness.mockReset();
 	h.ensureTargetedReadiness.mockReset();
+	h.getAvailableAgents.mockReset();
+	h.createCloudSession.mockReset();
+	h.agentCatalog = undefined;
+	h.cloudProjects = [];
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 });
 
 describe("TaskComposer", () => {
+	it("shows only control-plane agents for a cloud project", async () => {
+		h.cloudProjects = [{ id: "cloud-project" }];
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("claude-code", "Claude Code"),
+				agentReadiness("codex", "Codex"),
+				agentReadiness("cursor", "Cursor"),
+				agentReadiness("opencode", "OpenCode"),
+				agentReadiness("aider", "Aider"),
+			],
+		};
+		h.getAvailableAgents.mockResolvedValue({
+			agents: [
+				{ id: "claude-code", provider: "claude-code", hasValidCred: true, validationState: "valid" },
+				{ id: "codex", provider: "codex", hasValidCred: false, validationState: "not_configured" },
+				{ id: "cursor", provider: "cursor", hasValidCred: false, validationState: "not_configured" },
+			],
+		});
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="cloud-project" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		expect(await screen.findByRole("button", { name: "Claude Code" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "CodexNeeds auth" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "CursorNeeds auth" })).toBeDisabled();
+		expect(screen.queryByRole("button", { name: "OpenCode" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Aider" })).not.toBeInTheDocument();
+	});
+
 	it("starts a standalone worker without loading or sending a project", async () => {
 		const onCreated = vi.fn();
 		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
