@@ -661,7 +661,7 @@ export function CenterPane({
 																decorative
 															/>
 														}
-														isActive={target.kind === "reviewer"}
+														isActive={target.kind === "reviewer" && !workspaceActiveTabKey}
 														label={t("terminal.reviewer")}
 														onSelect={() => onSelectReviewerTerminal?.(tab.terminal)}
 														title={tab.terminal.harness}
@@ -669,7 +669,7 @@ export function CenterPane({
 												) : tab.kind === "shell" ? (
 													<ShellTerminalTab
 														appearance="connected"
-														isActive={target.kind === "shell" && target.handleId === tab.terminal.handleId}
+														isActive={target.kind === "shell" && target.handleId === tab.terminal.handleId && !workspaceActiveTabKey}
 														onClose={() => onCloseShellTerminal?.(tab.terminal.handleId)}
 														onRename={
 															onRenameShellTerminal

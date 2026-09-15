@@ -120,11 +120,11 @@ export function SessionFileTab({
 			contentClassName="font-medium"
 			trailingAction={closeAction}
 		>
-				<WorkspaceEntryIcon
-					className={cn(
-						"size-icon-base shrink-0 group-hover:opacity-0 group-focus-within:opacity-0",
-						dirty && "opacity-0",
-					)}
+			<WorkspaceEntryIcon
+				className={cn(
+					"size-icon-base shrink-0",
+					dirty && "opacity-0",
+				)}
 				kind="file"
 				name={name}
 			/>

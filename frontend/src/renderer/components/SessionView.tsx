@@ -1454,7 +1454,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						active={fileTabs.activePath === path}
 						dirty={Boolean(dirtyFiles[path])}
 						onActivate={() => activateCenterFile(path)}
-						onAddFeedback={() => fileAnnotation.begin({ path, side: "file" })}
+						onAddFeedback={() => fileAnnotation.begin({ path, side: "file", surface: "focused" })}
 						onClose={() => closeCenterFile(path)}
 						path={path}
 					/>

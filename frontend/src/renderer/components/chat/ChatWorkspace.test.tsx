@@ -3352,6 +3352,27 @@ describe("ChatWorkspace shell tabs", () => {
 		act(() => [...closeShellTerminalListeners][0]?.());
 		expect(onClose).toHaveBeenCalledOnce();
 	});
+
+	it("removes the active highlight from a shell while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				shellTerminals={shells}
+				shellTarget={shellTarget("shell-2")}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "second shell" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
 });
 
 describe("durable queued edits", () => {
