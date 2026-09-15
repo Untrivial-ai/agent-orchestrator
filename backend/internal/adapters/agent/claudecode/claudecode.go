@@ -364,10 +364,9 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := claudeLocalAuthStatus(ctx); err != nil {
+	localStatus, localOK, err := claudeLocalAuthStatus(ctx)
+	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -378,6 +377,9 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	}
 	if status, ok := claudeAuthStatusFromOutput(out); ok {
 		return status, nil
+	}
+	if localOK {
+		return localStatus, nil
 	}
 	// An unfamiliar non-zero result is not affirmative evidence of missing
 	// credentials. Keep this advisory probe unknown and let launch report the
