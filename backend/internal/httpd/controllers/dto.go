@@ -74,6 +74,13 @@ type ProjectResponse struct {
 	Project projectsvc.Project `json:"project"`
 }
 
+// UserConfigResponse is the body of GET/PUT /api/v1/user-config: the whole
+// user-scope AgentConfig (model + permissions today; more fields land when
+// AgentConfig grows, picked up for free because the type is reused end to end).
+type UserConfigResponse struct {
+	AgentConfig domain.AgentConfig `json:"agentConfig"`
+}
+
 // GetProjectResponse is the { status, project } body of GET /projects/{id},
 // where project is oneOf Project|Degraded discriminated by status.
 type GetProjectResponse struct {
