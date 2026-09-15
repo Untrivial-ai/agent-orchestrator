@@ -1285,19 +1285,19 @@ const ProjectItem = memo(function ProjectItem({
 										{/* 1.2 — contextual icon swap: scale 0.8↔1 (animated); opacity snaps for hide.
 										    Hover paint lives in styles.css (fine pointer only). */}
 										<span
-											className={cn(
-												"inline-flex size-icon-md items-center justify-center transition-[transform] duration-150 ease-[var(--ease-out)] will-change-transform group-hover/menu-item:scale-80 motion-reduce:transition-none",
-												"group-hover/menu-item:opacity-0",
-											)}
+											className="inline-flex size-icon-md items-center justify-center transition-[scale] duration-normal ease-[var(--ease-out)] motion-reduce:transition-none"
+											data-project-folder-icon=""
 										>
 											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
 										</span>
 										<span
 											className={cn(
-												"absolute inline-flex size-icon-md scale-80 items-center justify-center opacity-0 transition-[transform] duration-150 ease-[var(--ease-out)] will-change-transform group-hover/menu-item:scale-100 motion-reduce:transition-none",
-												"group-hover/menu-item:opacity-100",
+												"absolute inline-flex size-icon-md scale-[0.8] items-center justify-center opacity-0",
+												"transition-[scale,rotate] duration-normal ease-[var(--ease-out)]",
+												"motion-reduce:transition-none",
 												expanded && "rotate-90",
 											)}
+											data-project-chevron-icon=""
 										>
 											<ChevronRight strokeWidth={1.75} />
 										</span>
