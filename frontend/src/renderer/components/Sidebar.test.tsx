@@ -1722,7 +1722,13 @@ describe("Sidebar", () => {
 		expect(input).toHaveClass("border-0", "bg-transparent!", "p-0", "ring-0");
 		expect(input).not.toHaveClass("rounded-xs", "border-accent", "px-1", "focus-visible:ring-1");
 		expect(input.parentElement).toHaveAttribute("data-session-row");
-		expect(input.parentElement).toHaveClass("bg-interactive-active", "text-foreground", "pr-1");
+		expect(input.parentElement?.className).toContain("group/nav-row");
+		expect(input.parentElement).toHaveClass("text-foreground", "pr-1");
+		expect(input.parentElement).not.toHaveClass("bg-interactive-active");
+		const highlight = input.parentElement?.querySelector("[data-nav-row-highlight]");
+		expect(highlight).toBeTruthy();
+		expect(highlight?.className).toMatch(/bg-interactive-active/);
+		expect(highlight?.className).toMatch(/opacity-100/);
 		expect(time).toHaveAttribute("data-session-message-age", "");
 		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
 		expect(time).toHaveClass("font-sans", "tabular-nums");

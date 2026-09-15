@@ -2037,12 +2037,22 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	background-color: transparent !important;
 }
 
+/* Growing NavRowHighlight owns the fill — don't paint a second focus slab on
+   the host or its inner focusable (session open button). */
+.sidebar-focusless .group\/nav-row:focus-visible,
+.sidebar-focusless .group\/nav-row :focus-visible {
+	background-color: transparent !important;
+}
+
 /* Fine-pointer hover only: row highlight grow, folder↔chevron swap, session
    action reveal. Touch must not sticky-hover; keyboard uses focus-within.
    Folder/chevron/actions use `scale`/`rotate` (not `transform`) so Tailwind v4
    utilities are actually overridden on hover. */
 @media (hover: hover) and (pointer: fine) {
-	.group\/nav-row:hover [data-nav-row-highlight-idle] {
+	/* Project menu-item hover covers folder toggle + trailing actions so the
+	   pill and folder↔chevron stay in sync outside the nav button itself. */
+	.group\/nav-row:hover [data-nav-row-highlight-idle],
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-nav-row-highlight-idle] {
 		width: 100%;
 		height: 100%;
 		opacity: 1;

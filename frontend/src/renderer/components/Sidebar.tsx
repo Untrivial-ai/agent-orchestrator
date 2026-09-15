@@ -158,7 +158,7 @@ const NAV_ROW_CLASS =
 
 /** Host for {@link NavRowHighlight}: transparent shell, text still tints on hover/active. */
 const NAV_ROW_HIGHLIGHT_HOST_CLASS =
-	"group/nav-row relative hover:bg-transparent! active:bg-transparent! data-[active=true]:bg-transparent! hover:text-foreground data-[active=true]:font-medium data-[active=true]:text-foreground";
+	"group/nav-row relative hover:bg-transparent! focus-visible:bg-transparent! active:bg-transparent! data-[active=true]:bg-transparent! hover:text-foreground data-[active=true]:font-medium data-[active=true]:text-foreground";
 
 /** Expanded footer action row: growing highlight behind icon + label. */
 const FOOTER_NAV_BUTTON_CLASS = cn(
@@ -1426,7 +1426,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										"group-data-[collapsible=icon]:size-control-board! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:font-semibold",
 									)}
 								>
-									<NavRowHighlight active={projectActive} disabled={Boolean(draggingProjectId)} />
+									<NavRowHighlight active={projectActive} disabled={projectIsDragging} />
 									{/* Expanded sidebar: visual folder/chevron icon (decorative — toggle button is a sibling).
 		    size-icon-md matches the Projects section row; an 18px centered box was
 		    optically indenting these icons relative to the header. */}
@@ -2076,7 +2076,11 @@ const SessionActions = memo(function SessionActions({
 					<TooltipTrigger asChild>
 						<button
 							aria-label={session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
-							className={cn(SESSION_ACTION_CLASS, session.isPinned && "text-foreground")}
+							className={cn(
+								SESSION_ACTION_CLASS,
+								"focus-visible:text-foreground",
+								session.isPinned && "text-foreground",
+							)}
 							onClick={(event) => {
 								event.stopPropagation();
 								session.isPinned ? unpinSession(session) : pinSession(session);
@@ -2094,7 +2098,7 @@ const SessionActions = memo(function SessionActions({
 					<TooltipTrigger asChild>
 						<button
 							aria-label={t("shell.killSession")}
-							className={cn(SESSION_ACTION_CLASS, "hover:text-destructive")}
+							className={cn(SESSION_ACTION_CLASS, "hover:text-destructive focus-visible:text-destructive")}
 							disabled={isKilling}
 							onClick={(event) => {
 								event.stopPropagation();
