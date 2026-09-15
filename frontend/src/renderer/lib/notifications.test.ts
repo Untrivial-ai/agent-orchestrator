@@ -453,6 +453,19 @@ describe("notification cache helpers", () => {
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([]);
 	});
 
+	it("bounds remembered delete confirmations without dropping active optimistic deletes", () => {
+		const qc = queryClient();
+		applyOptimisticNotificationDelete(qc, notification({ id: "pending" }));
+
+		for (let index = 0; index < 300; index++) {
+			applyNotificationDeleted(qc, notification({ id: `confirmed-${index}` }));
+		}
+
+		expect(rollbackOptimisticNotificationDelete(qc, "pending")).toBe(true);
+		expect(applyNotificationDeleted(qc, notification({ id: "confirmed-299" }))).toBe(false);
+		expect(applyNotificationDeleted(qc, notification({ id: "confirmed-0" }))).toBe(true);
+	});
+
 	it("does not let an older clear generation erase a newer notification", () => {
 		const qc = queryClient();
 		expect(

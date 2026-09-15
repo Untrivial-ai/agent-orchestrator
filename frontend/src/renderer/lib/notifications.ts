@@ -16,6 +16,9 @@ export const recentNotificationsQueryKey = ["notifications", "history", "all"] a
 export const NOTIFICATION_PAGE_SIZE = 100;
 
 const EVENTSOURCE_CLOSED = 2;
+// HTTP responses and SSE deletes can arrive in either order. Keep recent
+// confirmations for deduplication, but never let that session state grow without bound.
+const MAX_CONFIRMED_NOTIFICATION_DELETIONS = 256;
 
 /**
  * Only these two kinds describe something still waiting on the user.
@@ -167,6 +170,20 @@ function deletionStates(queryClient: QueryClient): Map<string, NotificationDelet
 	return states;
 }
 
+function pruneConfirmedNotificationDeletions(states: Map<string, NotificationDeletionState>): void {
+	let confirmedCount = 0;
+	for (const state of states.values()) {
+		if (state.kind === "confirmed") confirmedCount++;
+	}
+	if (confirmedCount <= MAX_CONFIRMED_NOTIFICATION_DELETIONS) return;
+	for (const [id, state] of states) {
+		if (state.kind !== "confirmed") continue;
+		states.delete(id);
+		confirmedCount--;
+		if (confirmedCount <= MAX_CONFIRMED_NOTIFICATION_DELETIONS) return;
+	}
+}
+
 function cachedPageIndex(
 	queryClient: QueryClient,
 	queryKey: NotificationsQueryKey,
@@ -217,7 +234,9 @@ export function applyNotificationDeleted(queryClient: QueryClient, notification:
 	const states = deletionStates(queryClient);
 	const current = states.get(notification.id);
 	if (current?.kind === "confirmed") return false;
+	states.delete(notification.id);
 	states.set(notification.id, { kind: "confirmed" });
+	pruneConfirmedNotificationDeletions(states);
 	if (current?.kind === "optimistic") return false;
 	removeNotificationFromCaches(queryClient, notification);
 	return true;
@@ -383,9 +402,11 @@ export function applyNotificationsCleared(queryClient: QueryClient, clear: Notif
 	const latest = latestClearGeneration.get(queryClient);
 	if (latest?.epoch === clear.clearEpoch && latest.sequence >= clear.clearSequence) return false;
 	latestClearGeneration.set(queryClient, { epoch: clear.clearEpoch, sequence: clear.clearSequence });
-	for (const id of deletionStates(queryClient).keys()) {
-		deletionStates(queryClient).set(id, { kind: "confirmed" });
+	const states = deletionStates(queryClient);
+	for (const id of states.keys()) {
+		states.set(id, { kind: "confirmed" });
 	}
+	pruneConfirmedNotificationDeletions(states);
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, {
 			pageParams: [""],
