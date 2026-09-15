@@ -388,6 +388,13 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set window-size %s: %w", id, err))
 	}
 
+	// Make the attach client exit when this session is destroyed rather than
+	// hop onto one of the user's own sessions under a `detach-on-destroy off`
+	// tmux.conf (see setDetachOnDestroyOnArgs).
+	if _, err := r.run(ctx, setDetachOnDestroyOnArgs(id)...); err != nil {
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set detach-on-destroy %s: %w", id, err))
+	}
+
 	alive, err := r.IsAlive(ctx, handle)
 	if err != nil {
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: verify session %s: %w", id, err))
