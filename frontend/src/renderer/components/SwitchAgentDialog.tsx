@@ -37,29 +37,38 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 export const SWITCH_AGENT_OPTIONS = [
 	{ value: "claude-code", label: "Claude Code" },
 	{ value: "codex", label: "Codex" },
+	{ value: "fx", label: "fx" },
 ] as const satisfies ReadonlyArray<{ value: SwitchAgentHarness; label: string }>;
 
 const ALL_SWITCH_AGENT_OPTIONS = AGENT_OPTIONS.map((value) => ({ value, label: AGENT_LABELS[value] }));
 
-export function canSwitchAgentHarness(value: string): value is SwitchAgentHarness {
-	return SWITCH_AGENT_OPTIONS.some((option) => option.value === value);
+export function canSwitchAgentHarness(
+	value: string,
+	mode?: WorkspaceSession["mode"],
+): value is SwitchAgentHarness {
+	return (
+		SWITCH_AGENT_OPTIONS.some((option) => option.value === value) &&
+		(mode !== "chat" || value !== "fx")
+	);
 }
 
 function SwitchTargetPicker({
 	currentHarness,
 	disabled,
+	mode,
 	onChange,
 	value,
 }: {
 	currentHarness: string;
 	disabled: boolean;
+	mode?: WorkspaceSession["mode"];
 	onChange: (value: SwitchAgentHarness) => void;
 	value: SwitchAgentHarness;
 }) {
 	const { t } = useTranslation();
 	const options = ALL_SWITCH_AGENT_OPTIONS.map((option) => ({
 		...option,
-		disabled: !canSwitchAgentHarness(option.value) || option.value === currentHarness,
+		disabled: !canSwitchAgentHarness(option.value, mode) || option.value === currentHarness,
 	}));
 	const selected = options.find((option) => option.value === value);
 	return (
@@ -70,11 +79,11 @@ function SwitchTargetPicker({
 			menuClassName="settings-agent-menu-surface"
 			menuItemClassName="settings-agent-menu-item"
 			onChange={(nextValue) => {
-				if (canSwitchAgentHarness(nextValue) && nextValue !== currentHarness) onChange(nextValue);
+				if (canSwitchAgentHarness(nextValue, mode) && nextValue !== currentHarness) onChange(nextValue);
 			}}
 			options={options}
 			renderMenuItem={(option) => {
-				const supported = canSwitchAgentHarness(option.value);
+				const supported = canSwitchAgentHarness(option.value, mode);
 				const current = option.value === currentHarness;
 				return (
 					<span className="flex w-full min-w-0 items-center gap-2">
@@ -318,6 +327,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 									<SwitchTargetPicker
 										currentHarness={session.provider}
 										disabled={admissionPending}
+										mode={session.mode}
 										onChange={changeTarget}
 										value={targetHarness}
 									/>

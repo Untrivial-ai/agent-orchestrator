@@ -7,7 +7,7 @@ AO compiles agent adapters into the daemon. It uses your locally installed agent
 
 ## Shipped terminal harnesses
 
-The daemon registry currently advertises 27 worker harnesses:
+The daemon registry currently advertises 28 worker harnesses:
 
 | | | | |
 | --- | --- | --- | --- |
@@ -17,7 +17,7 @@ The daemon registry currently advertises 27 worker harnesses:
 | `crush` | `aider` | `goose` | `auggie` |
 | `continue` | `devin` | `cline` | `kiro` |
 | `kilocode` | `vibe` | `pi` | `kimchi` |
-| `prime-agent` | `autohand` | `omp` | |
+| `prime-agent` | `autohand` | `omp` | `fx` (experimental) |
 
 Run the catalog instead of relying on a static page when scripting:
 
@@ -27,6 +27,25 @@ ao agent ls --refresh --json
 ```
 
 The readiness probe reports whether a harness is supported, installed, and authenticated. Spawn still performs authoritative validation.
+
+### fx (experimental)
+
+fx remains experimental while its upstream CLI is pre-1.0. Install it from
+Settings → Agents on macOS or Linux, or follow the [official docs](https://fx.sh/docs):
+
+```bash
+curl -fsSL https://fx.sh/setup.sh | bash
+ao spawn --name fx-task --agent fx --mode tui
+```
+
+The expected executable is `~/.local/bin/fx`. Native Windows installation is
+unsupported; use WSL. Settings provides installation status, provider
+configuration status, installation help, and refresh. `Configured` indicates
+local provider credentials are present; AO has not verified authorization with
+the provider. fx currently supports Terminal UI only, with no Chat or interface
+switching. Interactive fx has no per-session system-prompt flag, so AO's standing
+instructions have reduced coverage; AO does not overwrite the repository's
+`AGENTS.md` or the user's `~/.fx/AGENTS.md` to compensate.
 
 ## Chat versus Terminal UI
 

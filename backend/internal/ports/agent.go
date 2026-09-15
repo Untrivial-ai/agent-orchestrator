@@ -24,6 +24,9 @@ const (
 	// AgentAuthStatusAuthorized means the local auth probe recently passed.
 	// It does not guarantee that a later spawn or model call will succeed.
 	AgentAuthStatusAuthorized AgentAuthStatus = "authorized"
+	// AgentAuthStatusConfigured means local credentials are present, but the
+	// agent has not confirmed them with its provider.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
 	// AgentAuthStatusUnauthorized means the agent is installed but its local
 	// auth probe reported missing or invalid authentication.
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"
@@ -69,6 +72,13 @@ type AgentAuthChecker interface {
 // binary can be checked without constructing a real session launch command.
 type AgentBinaryResolver interface {
 	ResolveBinary(ctx context.Context) (path string, err error)
+}
+
+// AgentRuntimeLaunchEnv augments a terminal launch after its generation has
+// been assigned. Native reporters can then carry that generation in their
+// own protocol identity. Implementations only modify the supplied environment.
+type AgentRuntimeLaunchEnv interface {
+	AugmentRuntimeLaunchEnv(env map[string]string, dataDir string, sessionID domain.SessionID, launchID string)
 }
 
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
@@ -244,6 +254,14 @@ type AgentExitDetector interface {
 // detection takes precedence over the fallback text patterns.
 type AgentPromptReadinessProvider interface {
 	PromptReadinessHints(ctx context.Context, cfg LaunchConfig) (PromptReadinessHints, error)
+}
+
+// AgentAfterStartPromptBuilder is an optional capability for interactive
+// adapters that need to combine launch-only context with the first user turn.
+// AO calls it exactly once per after-start delivery and sends the returned
+// value only after the runtime is ready.
+type AgentAfterStartPromptBuilder interface {
+	BuildAfterStartPrompt(ctx context.Context, cfg LaunchConfig) (string, error)
 }
 
 // TerminalActivityDetector derives activity only from authoritative terminal UI markers.

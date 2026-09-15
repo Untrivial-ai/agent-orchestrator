@@ -60,6 +60,7 @@ var commandSpecs = map[string]commandSpec{
 	"copilot":     {args: []string{"help", "config"}, parser: parseCopilotConfigModels},
 	"droid":       {args: []string{"exec", "--help"}, parser: parseDroidHelpModels},
 	"crush":       {args: []string{"models"}, parser: parseIDLines},
+	"fx":          {args: []string{"models", "--json"}, parser: parseFXModels},
 }
 
 // Base returns the picker behavior AO can provide without executing a CLI.
@@ -122,7 +123,7 @@ func Manual(agentID string) ports.AgentModelCatalog {
 func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 	switch agentID {
 	case "claude-code", "codex", "opencode", "grok", "cursor", "qwen",
-		"kimi", "muse", "aider", "goose", "autohand":
+		"kimi", "muse", "aider", "goose", "autohand", "fx":
 		return ports.CustomModelEntryDirect
 	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent":
 		return ports.CustomModelEntryConfigured
@@ -689,6 +690,23 @@ func parsePiModels(output []byte) ([]ports.AgentModelInfo, error) {
 		models = append(models, ports.AgentModelInfo{ID: id, Label: modelID, Provider: provider})
 	}
 	return normalize(models), nil
+}
+
+func parseFXModels(output []byte) ([]ports.AgentModelInfo, error) {
+	var response struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		return nil, err
+	}
+	models := make([]ports.AgentModelInfo, 0, len(response.IDs))
+	for _, id := range response.IDs {
+		if id == "" {
+			continue
+		}
+		models = append(models, ports.AgentModelInfo{ID: id, Label: id})
+	}
+	return models, nil
 }
 
 func looksLikeModelID(value string) bool {

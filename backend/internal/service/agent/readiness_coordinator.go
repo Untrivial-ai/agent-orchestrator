@@ -527,6 +527,8 @@ func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAge
 	switch status {
 	case ports.AgentAuthStatusAuthorized:
 		return successfulAuthentication(attempted, domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, item.Manifest.Name+" appears signed in."), false
+	case ports.AgentAuthStatusConfigured:
+		return successfulAuthentication(attempted, domain.AgentAuthenticationConfigured, domain.AgentReadinessReasonConfigured, item.Manifest.Name+" has authentication configured."), false
 	case ports.AgentAuthStatusUnauthorized:
 		return successfulAuthentication(attempted, domain.AgentAuthenticationUnauthorized, domain.AgentReadinessReasonUnauthorized, item.Manifest.Name+" needs authentication."), false
 	default:

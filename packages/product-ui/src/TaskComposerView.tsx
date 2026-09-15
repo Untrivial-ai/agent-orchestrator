@@ -26,7 +26,7 @@ const ATTACHMENT_ROW_HEIGHT = 70;
 
 export type TaskComposerAgentOption = {
 	authentication: {
-		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		state: "authorized" | "configured" | "unauthorized" | "unknown" | "not_applicable";
 		freshness: "fresh" | "stale" | "checking";
 	};
 	effectiveReadiness: "ready" | "not_ready" | "unknown";

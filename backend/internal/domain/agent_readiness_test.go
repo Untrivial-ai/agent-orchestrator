@@ -13,6 +13,7 @@ func TestEffectiveAgentReadiness(t *testing.T) {
 		{"missing", AgentInstallationNotInstalled, AgentAuthenticationUnknown, AgentReadinessNotReady},
 		{"installation unknown", AgentInstallationUnknown, AgentAuthenticationAuthorized, AgentReadinessUnknown},
 		{"authorized", AgentInstallationInstalled, AgentAuthenticationAuthorized, AgentReadinessReady},
+		{"configured", AgentInstallationInstalled, AgentAuthenticationConfigured, AgentReadinessReady},
 		{"auth not applicable", AgentInstallationInstalled, AgentAuthenticationNotApplicable, AgentReadinessReady},
 		{"unauthorized", AgentInstallationInstalled, AgentAuthenticationUnauthorized, AgentReadinessNotReady},
 		{"auth unknown", AgentInstallationInstalled, AgentAuthenticationUnknown, AgentReadinessUnknown},

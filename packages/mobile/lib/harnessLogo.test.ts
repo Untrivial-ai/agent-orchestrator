@@ -8,7 +8,7 @@ const ALL_HARNESSES = [
 	"claude-code", "codex", "aider", "opencode", "grok", "droid", "amp", "agy",
 	"crush", "cursor", "qwen", "copilot", "goose", "auggie", "continue", "devin",
 	"cline", "kimi", "muse", "kiro", "kilocode", "vibe", "pi", "autohand",
-	"kimchi", "prime-agent",
+	"kimchi", "prime-agent", "fx",
 ];
 
 // The fake harness exists only for tests and intentionally has no brand asset.
@@ -53,6 +53,13 @@ describe("logo registry", () => {
 			.sort();
 		expect(onDisk).toEqual([...LOGO_KEYS].sort());
 	});
+
+	it("registers fx as a real PNG asset for Metro", () => {
+		const registry = fs.readFileSync(path.join(__dirname, "harnessLogoAssets.ts"), "utf8");
+		expect(registry).toMatch(/fx:\s*require\("\.\.\/assets\/agents\/fx\.png"\)/);
+		const png = fs.readFileSync(path.join(__dirname, "..", "assets", "agents", "fx.png"));
+		expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+	});
 });
 
 describe("backdropFor", () => {
@@ -67,7 +74,7 @@ describe("backdropFor", () => {
 	// The symmetric case, which is the one that is easy to miss: goose and
 	// kilocode are pure black and vanish on the dark card.
 	it("puts a light chip behind marks that vanish on a dark card", () => {
-		for (const h of ["kilocode", "goose", "devin", "droid", "pi", "kimi"]) {
+		for (const h of ["kilocode", "goose", "devin", "droid", "pi", "kimi", "fx"]) {
 			expect(backdropFor(h), h).toBe("needs-light");
 		}
 	});

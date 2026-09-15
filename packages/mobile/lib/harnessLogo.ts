@@ -16,7 +16,7 @@ export const LOGO_KEYS: ReadonlySet<string> = new Set([
 	"agy", "aider", "amp", "auggie", "autohand", "claude-code", "cline", "codex",
 	"continue", "copilot", "crush", "cursor", "devin", "droid", "goose", "grok",
 	"kilocode", "kimi", "kiro", "muse", "opencode", "pi", "qwen", "vibe",
-	"kimchi",
+	"kimchi", "fx",
 ]);
 
 /** Normalised lookup key, or "" when there is no usable harness. */
@@ -42,7 +42,7 @@ export function hasLogo(harness?: string | null): boolean {
 // completely on the dark card. Desktop has both bugs and renders every mark
 // bare on every theme.
 const NEEDS_DARK_BACKDROP = new Set(["opencode", "cursor", "cline", "continue", "grok", "copilot"]);
-const NEEDS_LIGHT_BACKDROP = new Set(["kilocode", "goose", "devin", "droid", "pi", "kimi"]);
+const NEEDS_LIGHT_BACKDROP = new Set(["kilocode", "goose", "devin", "droid", "pi", "kimi", "fx"]);
 
 /**
  * What the mark needs behind it to stay visible.

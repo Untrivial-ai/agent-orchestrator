@@ -49,6 +49,7 @@ func TestReviewerAgentAuthUsesLaunchReadinessAndPreservesStrictStates(t *testing
 		want  ports.AgentAuthStatus
 	}{
 		{name: "authorized", state: domain.AgentAuthenticationAuthorized, want: ports.AgentAuthStatusAuthorized},
+		{name: "configured", state: domain.AgentAuthenticationConfigured, want: ports.AgentAuthStatusConfigured},
 		{name: "not applicable", state: domain.AgentAuthenticationNotApplicable, want: ports.AgentAuthStatusAuthorized},
 		{name: "unauthorized", state: domain.AgentAuthenticationUnauthorized, want: ports.AgentAuthStatusUnauthorized},
 		{name: "unknown", state: domain.AgentAuthenticationUnknown, want: ports.AgentAuthStatusUnknown},
@@ -186,6 +187,7 @@ func TestWiring_AgentResolverResolvesRealAdapters(t *testing.T) {
 		{domain.HarnessPi, "pi"},
 		{domain.HarnessPrimeAgent, "prime-agent"},
 		{domain.HarnessAutohand, "autohand"},
+		{domain.HarnessFX, "fx"},
 	} {
 		agent, ok := resolver.Agent(tc.harness)
 		if !ok {
@@ -672,7 +674,7 @@ func TestWiring_StartLifecycleThreadsMessengerIntoLCM(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -744,7 +746,7 @@ func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 

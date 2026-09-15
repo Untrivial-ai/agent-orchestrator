@@ -7148,6 +7148,7 @@ components:
         state:
           enum:
           - authorized
+          - configured
           - unauthorized
           - unknown
           - not_applicable
@@ -7173,9 +7174,11 @@ components:
       properties:
         authStatus:
           description: Advisory local auth probe result. authorized means a recent
-            local probe passed; spawn remains the authoritative validation point.
+            local probe passed; configured means local credentials exist without a
+            provider round-trip; spawn remains the authoritative validation point.
           enum:
           - authorized
+          - configured
           - unauthorized
           - unknown
           type: string
@@ -9180,6 +9183,7 @@ components:
           - pi
           - kimchi
           - omp
+          - fx
           - prime-agent
           - autohand
           - fake
@@ -9743,6 +9747,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - fx
           - cloudflared
           type: string
         updatedAt:
@@ -11709,6 +11714,7 @@ components:
           - pi
           - kimchi
           - omp
+          - fx
           - prime-agent
           - autohand
           type: string
@@ -11949,6 +11955,7 @@ components:
           enum:
           - claude-code
           - codex
+          - fx
           type: string
       required:
       - targetHarness

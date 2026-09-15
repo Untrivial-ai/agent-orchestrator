@@ -615,6 +615,10 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
+	if s.ExpectedHarness != "" && s.ExpectedHarness != rec.Harness {
+		m.mu.Unlock()
+		return nil
+	}
 	mode := domain.NormalizeSessionMode(rec.Mode)
 	// Rollback restores the TUI mode before its replacement runtime has a launch
 	// generation. While the durable transition remains active, an untagged hook
@@ -1000,6 +1004,9 @@ func (m *Manager) stagePendingAgentSwitchNativeMetadata(ctx context.Context, id 
 		return err
 	}
 	if !found || sw.State != domain.AgentSwitchStartingTarget || string(sw.TargetGenerationID) != s.LaunchID || sw.TargetNativeSessionRef == nil {
+		return nil
+	}
+	if s.ExpectedHarness != "" && s.ExpectedHarness != sw.TargetHarness {
 		return nil
 	}
 	native, found, err := store.GetAgentNativeSession(ctx, *sw.TargetNativeSessionRef)

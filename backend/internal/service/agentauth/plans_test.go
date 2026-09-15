@@ -46,6 +46,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"kimchi", "Log in to Kimchi", "kimchi", "Native browser login flow", "https://docs.kimchi.dev/docs/service-keys", "", ActionLogin, []string{"kimchi", "login"}},
 		{"prime-agent", "Log in to Prime Agent", "prime-agent", "Select Open login after Prime Agent finishes starting", "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md", "/login\r", ActionLogin, []string{"prime-agent"}},
 		{"omp", "Log in to OMP", "omp", "Select Open login after OMP finishes starting", "https://github.com/can1357/oh-my-pi", "/login\r", ActionLogin, []string{"omp"}},
+		{"fx", "Set up fx", "", "Configure an fx provider using its official setup documentation; local configuration does not verify provider authorization", "https://fx.sh/docs", "", ActionInstructions, nil},
 	}
 
 	svc := New(foundExecutables(cases), nil)
@@ -57,7 +58,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 	for i, want := range cases {
 		got := plans[i]
 		wantLaunchMode := LaunchTerminal
-		if want.id == "aider" {
+		if want.id == "aider" || want.id == "fx" {
 			wantLaunchMode = LaunchDocumentation
 		}
 		if seen[got.AgentID] {

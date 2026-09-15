@@ -450,6 +450,22 @@ func TestDefaultCatalogDisplaysPrimeAgent(t *testing.T) {
 	t.Fatal("default catalog does not contain prime-agent")
 }
 
+func TestDefaultCatalogDisplaysFX(t *testing.T) {
+	got, err := New().List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, info := range got.Supported {
+		if info.ID == "fx" {
+			if info.Label != "fx" {
+				t.Fatalf("fx label = %q, want fx", info.Label)
+			}
+			return
+		}
+	}
+	t.Fatal("default catalog does not contain fx")
+}
+
 func TestRefreshReportsInstalledAgentsAndIgnoresDetectorErrors(t *testing.T) {
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
 		harnessAgent("codex", "Codex", nil),
@@ -472,6 +488,7 @@ func TestRefreshReportsInstalledAgentsAndIgnoresDetectorErrors(t *testing.T) {
 func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
 		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
+		harnessAuthAgent("fx", "fx", ports.AgentAuthStatusConfigured, nil),
 		harnessAuthAgent("claude-code", "Claude Code", ports.AgentAuthStatusUnauthorized, nil),
 		harnessAgent("opencode", "OpenCode", nil),
 		harnessAuthAgent("broken-auth", "Broken Auth", ports.AgentAuthStatusAuthorized, errors.New("probe failed")),
@@ -481,8 +498,8 @@ func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if len(got.Supported) != 4 || len(got.Installed) != 4 {
-		t.Fatalf("inventory = %#v, want supported=4 installed=4", got)
+	if len(got.Supported) != 5 || len(got.Installed) != 5 {
+		t.Fatalf("inventory = %#v, want supported=5 installed=5", got)
 	}
 	if len(got.Authorized) != 1 || got.Authorized[0].ID != "codex" {
 		t.Fatalf("authorized = %#v, want only codex", got.Authorized)
@@ -494,6 +511,9 @@ func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	}
 	if byID["codex"].AuthStatus != ports.AgentAuthStatusAuthorized {
 		t.Fatalf("codex authStatus = %q", byID["codex"].AuthStatus)
+	}
+	if byID["fx"].AuthStatus != ports.AgentAuthStatusConfigured {
+		t.Fatalf("fx authStatus = %q, want configured", byID["fx"].AuthStatus)
 	}
 	if byID["claude-code"].AuthStatus != ports.AgentAuthStatusUnauthorized {
 		t.Fatalf("claude-code authStatus = %q", byID["claude-code"].AuthStatus)

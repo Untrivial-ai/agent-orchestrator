@@ -119,6 +119,35 @@ func TestReadinessCoordinatorEnsureNormalizesInstalledAndAuthorized(t *testing.T
 	}
 }
 
+func TestReadinessCoordinatorNormalizesConfiguredAuthentication(t *testing.T) {
+	t.Parallel()
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/fx", nil },
+		auth:    func(context.Context) (ports.AgentAuthStatus, error) { return ports.AgentAuthStatusConfigured, nil },
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("fx", "fx", agent)},
+		Factory: func() []agentregistry.HarnessAgent {
+			return []agentregistry.HarnessAgent{readinessHarness("fx", "fx", agent)}
+		},
+	})
+
+	got, err := coordinator.Ensure(context.Background(), []string{"fx"}, domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := got[0].Authentication
+	if auth.State != domain.AgentAuthenticationConfigured || auth.Freshness != domain.AgentReadinessFresh || auth.ReasonCode != domain.AgentReadinessReasonConfigured {
+		t.Fatalf("authentication = %#v, want fresh configured observation", auth)
+	}
+	if auth.CheckedAt == nil || auth.AttemptedAt == nil {
+		t.Fatalf("authentication timestamps = (%v, %v), want both populated", auth.CheckedAt, auth.AttemptedAt)
+	}
+	if got[0].EffectiveReadiness != domain.AgentReadinessReady {
+		t.Fatalf("effective readiness = %q, want ready", got[0].EffectiveReadiness)
+	}
+}
+
 func TestReadinessCoordinatorSingleFlightAndCallerCancellation(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})

@@ -126,7 +126,7 @@ AO works with the coding agents and source-control workflow you already use. Age
 
 ## Supported agents
 
-**27 coding agents supported** through one supervised workflow.
+**28 coding agents supported** through one supervised workflow.
 
 <table>
   <tr valign="middle">
@@ -174,9 +174,19 @@ AO works with the coding agents and source-control workflow you already use. Age
     <td valign="middle" nowrap><img src="docs/assets/readme/agents/prime-agent.svg" alt="Prime Agent" width="24" height="24" align="middle" /> &nbsp; <b>Prime Agent</b></td>
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/omp.png" alt="OMP" width="24" height="24" align="middle" /> &nbsp; <b>OMP</b></td>
   </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/fx.svg" alt="fx" width="24" height="24" align="middle" /> &nbsp; <b>fx (experimental)</b></td>
+  </tr>
 </table>
 
 [Browse agent setup guides →](https://orchestrator.inc/docs/plugins/agents)
+
+fx is experimental while its upstream CLI remains pre-1.0. It runs in Terminal
+UI mode (`ao spawn --agent fx --mode tui`); AO does not yet support fx Chat or
+interface switching. Interactive fx has no per-session system-prompt flag, so
+AO's standing instructions have reduced coverage: AO does not overwrite the
+repository's `AGENTS.md` or the user's `~/.fx/AGENTS.md`. See the
+[fx documentation](https://fx.sh/docs) for installation and provider setup.
 
 **Use the interface that fits the moment: structured Chat or the agent's native terminal UI.**
 
