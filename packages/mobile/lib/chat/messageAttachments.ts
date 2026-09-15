@@ -37,6 +37,11 @@ export function isSameAttachmentLoad(a: AttachmentImageSource | undefined, b: At
 	return a !== undefined && a.uri === b.uri && a.headers.Authorization === b.headers.Authorization;
 }
 
+/** Image tiles stay compact so a message still reads as a message; a lone image gets more room. */
+export function attachmentTileSize(imageCount: number): number {
+	return imageCount > 1 ? 104 : 160;
+}
+
 export function isImageAttachment(path: string): boolean {
 	return IMAGE_ATTACHMENT_PATH.test(path);
 }

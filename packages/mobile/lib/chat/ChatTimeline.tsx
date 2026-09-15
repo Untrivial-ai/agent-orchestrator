@@ -6,13 +6,17 @@ import {
 	ActivityIndicator,
 	FlatList,
 	Image,
+	Modal,
 	Pressable,
+	ScrollView,
 	StyleSheet,
 	Switch,
 	Text,
 	TextInput,
 	View,
+	useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { authHeaders, httpBase } from "../config";
 import { haptics } from "../haptics";
 import { useApp } from "../store";
@@ -31,7 +35,7 @@ import {
 	toggleInputValue,
 	validateInput,
 } from "./elicitationModel";
-import { attachmentFilePath, attachmentName, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, type AttachmentImageSource } from "./messageAttachments";
+import { attachmentFilePath, attachmentName, attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, type AttachmentImageSource } from "./messageAttachments";
 import type {
 	ConversationActivity,
 	ConversationItem,
@@ -208,7 +212,7 @@ const TimelineItem = memo(function TimelineItem({
 				<View style={styles.userRow}>
 					<View style={styles.userBubble}>
 						{body ? <Text selectable style={styles.userText}>{body}</Text> : null}
-						<StagedAttachments sessionId={sessionId} paths={attachments} spaced={Boolean(body)} />
+						{attachments.length > 0 ? <StagedAttachments sessionId={sessionId} paths={attachments} spaced={Boolean(body)} /> : null}
 						{delivery ? <Text style={styles.delivery}>{delivery}</Text> : null}
 					</View>
 				</View>
@@ -237,7 +241,7 @@ const TimelineItem = memo(function TimelineItem({
 	}
 	if (item.activityKind === "system" && item.detail?.event === "steer") {
 		const { body, attachments } = stagedAttachmentParts(item.detail.text || item.summary);
-		return <View style={styles.userRow}><View style={[styles.userBubble, styles.steerBubble]}><Text style={styles.steerLabel}>STEERED</Text>{body ? <Text selectable style={styles.userText}>{body}</Text> : null}<StagedAttachments sessionId={sessionId} paths={attachments} spaced={Boolean(body)} /></View></View>;
+		return <View style={styles.userRow}><View style={[styles.userBubble, styles.steerBubble]}><Text style={styles.steerLabel}>STEERED</Text>{body ? <Text selectable style={styles.userText}>{body}</Text> : null}{attachments.length > 0 ? <StagedAttachments sessionId={sessionId} paths={attachments} spaced={Boolean(body)} /> : null}</View></View>;
 	}
 	if (item.detail?.event === "model.rerouted") return <SystemSignal icon="shuffle" title={`Answered by ${item.detail.toModel || "another model"}`} detail={item.detail.fromModel ? `Instead of ${item.detail.fromModel}${item.detail.reason ? ` · ${item.detail.reason}` : ""}` : item.detail.reason} />;
 	if (item.detail?.event === "auth.reauth_required") return <SystemSignal icon="key" danger title="The provider asked you to sign in again" detail={item.detail.reason} />;
@@ -255,39 +259,66 @@ function SystemSignal({ icon, title, detail, danger }: { icon: keyof typeof Feat
  * Files AO staged into the worktree for a human message. Images load through the
  * daemon's preview-files route with the connection's Bearer header, the same
  * credential every other mobile request uses; anything else stays a name chip.
+ * Images sit in the bubble as center-cropped tiles and open full-screen on tap.
+ * Render it only for messages that carry attachments: it subscribes to the app
+ * store, and doing that for every bubble would defeat TimelineItem's memo.
  */
 function StagedAttachments({ sessionId, paths, spaced }: { sessionId: string; paths: string[]; spaced: boolean }) {
 	const { config } = useApp();
 	const styles = useThemedStyles(makeStyles);
-	if (paths.length === 0) return null;
+	const tileSize = attachmentTileSize(paths.filter(isImageAttachment).length);
 	return <View style={[styles.attachments, spaced && styles.attachmentsSpaced]}>
 		{paths.map((path) => {
 			const source = config && isImageAttachment(path)
 				? { uri: `${httpBase(config)}${attachmentFilePath(sessionId, path)}`, headers: authHeaders(config) }
 				: undefined;
-			return <StagedAttachment key={path} name={attachmentName(path)} source={source} />;
+			return <StagedAttachment key={path} name={attachmentName(path)} source={source} tileSize={tileSize} />;
 		})}
 	</View>;
 }
 
-function StagedAttachment({ name, source }: { name: string; source?: AttachmentImageSource }) {
+function StagedAttachment({ name, source, tileSize }: { name: string; source?: AttachmentImageSource; tileSize: number }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	// The failure belongs to the load that failed, so a reconnect to another address
 	// or a rotated password retries on its own; tapping the chip retries in place.
 	const [failedLoad, setFailedLoad] = useState<AttachmentImageSource>();
 	const [attempt, setAttempt] = useState(0);
+	const [viewerOpen, setViewerOpen] = useState(false);
 	if (!source) {
 		return <View style={styles.attachmentChip}><Feather name="file-text" size={12} color={t.textTertiary} /><Text numberOfLines={1} style={styles.attachmentName}>{name}</Text></View>;
 	}
 	if (!isSameAttachmentLoad(failedLoad, source)) {
-		return <Image key={attempt} accessibilityLabel={name} accessibilityIgnoresInvertColors source={source} resizeMode="contain" onError={() => setFailedLoad(source)} style={styles.attachmentImage} />;
+		// Cover-cropping a square reads as a deliberate thumbnail; the viewer shows the whole image.
+		return <>
+			<Pressable accessibilityRole="imagebutton" accessibilityLabel={`Open ${name}`} onPress={() => { haptics.tap(); setViewerOpen(true); }} style={[styles.attachmentTile, { width: tileSize, height: tileSize }]}>
+				<Image key={attempt} accessibilityIgnoresInvertColors source={source} resizeMode="cover" onError={() => setFailedLoad(source)} style={styles.attachmentTileImage} />
+			</Pressable>
+			<AttachmentViewer visible={viewerOpen} name={name} source={source} onClose={() => setViewerOpen(false)} />
+		</>;
 	}
 	return <Pressable accessibilityRole="button" accessibilityLabel={`Retry loading ${name}`} hitSlop={6} onPress={() => { haptics.tap(); setFailedLoad(undefined); setAttempt((value) => value + 1); }} style={styles.attachmentChip}>
 		<Feather name="refresh-cw" size={12} color={t.textTertiary} />
 		<Text numberOfLines={1} style={styles.attachmentName}>{name}</Text>
 		<Text style={styles.attachmentRetry}>Tap to retry</Text>
 	</Pressable>;
+}
+
+/** Full-screen image at its own aspect ratio; pinch-zoom where the platform scroll view supports it. */
+function AttachmentViewer({ visible, name, source, onClose }: { visible: boolean; name: string; source: AttachmentImageSource; onClose(): void }) {
+	const styles = useThemedStyles(makeStyles);
+	const insets = useSafeAreaInsets();
+	const { width, height } = useWindowDimensions();
+	return <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
+		<View style={styles.viewer}>
+			<ScrollView maximumZoomScale={4} minimumZoomScale={1} centerContent bouncesZoom showsHorizontalScrollIndicator={false} showsVerticalScrollIndicator={false}>
+				<Image accessibilityLabel={name} accessibilityIgnoresInvertColors source={source} resizeMode="contain" style={{ width, height }} />
+			</ScrollView>
+			<Pressable accessibilityRole="button" accessibilityLabel="Close image" hitSlop={10} onPress={() => { haptics.tap(); onClose(); }} style={[styles.viewerClose, { top: insets.top + 12 }]}>
+				<Feather name="x" size={20} color="#fff" />
+			</Pressable>
+		</View>
+	</Modal>;
 }
 
 function deliveryCopy(state?: string): string | undefined {
@@ -846,9 +877,12 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	userBubble: { maxWidth: "86%", backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 17, borderBottomRightRadius: 5, paddingHorizontal: 14, paddingVertical: 10 },
 	userText: { color: t.textPrimary, fontSize: 16, lineHeight: 22 },
 	delivery: { marginTop: 5, color: t.amber, fontSize: 10 },
-	attachments: { gap: 6 },
+	attachments: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
 	attachmentsSpaced: { marginTop: 8 },
-	attachmentImage: { width: 220, height: 220, borderRadius: 10, backgroundColor: t.bgColumn },
+	attachmentTile: { overflow: "hidden", borderRadius: 10, backgroundColor: t.bgColumn },
+	attachmentTileImage: { width: "100%", height: "100%" },
+	viewer: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.94)" },
+	viewerClose: { position: "absolute", right: 16, width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255, 255, 255, 0.16)" },
 	attachmentChip: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: t.borderSubtle, paddingHorizontal: 8, paddingVertical: 6 },
 	attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: 12 },
 	attachmentRetry: { color: t.blue, fontSize: 11, fontWeight: "600" },

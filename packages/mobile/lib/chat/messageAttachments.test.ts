@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentFilePath, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, withAttachmentReferences } from "./messageAttachments";
+import { attachmentFilePath, attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, withAttachmentReferences } from "./messageAttachments";
 
 describe("mobile Chat staged attachments", () => {
 	it("strips the desktop composer suffix so the image can render instead of the raw path list", () => {
@@ -49,6 +49,13 @@ describe("mobile Chat staged attachments", () => {
 		expect(isSameAttachmentLoad(failed, { uri: failed.uri, headers: { Authorization: "Bearer rotated" } })).toBe(false);
 		expect(isSameAttachmentLoad(failed, { uri: "http://other:3011/api/v1/sessions/s/preview/files/a.png", headers: failed.headers })).toBe(false);
 		expect(isSameAttachmentLoad(undefined, failed)).toBe(false);
+	});
+
+	it("sizes image tiles as compact squares, larger when a message carries a single image", () => {
+		expect(attachmentTileSize(1)).toBe(160);
+		expect(attachmentTileSize(2)).toBe(104);
+		expect(attachmentTileSize(4)).toBe(104);
+		expect(attachmentTileSize(0)).toBe(160);
 	});
 
 	it("builds the escaped preview-files route and recognises image paths", () => {
