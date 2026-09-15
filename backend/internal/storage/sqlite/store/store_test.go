@@ -990,6 +990,35 @@ func TestPRCRUD(t *testing.T) {
 	}
 }
 
+func TestGetPRByNumberPrefersActiveRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	now := time.Now().UTC().Truncate(time.Second)
+	closed := domain.PullRequest{
+		URL: "https://github.com/acme/closed/pull/7", SessionID: r.ID, Number: 7,
+		Closed: true, UpdatedAt: now.Add(time.Minute), StateChangedAt: now.Add(time.Minute),
+	}
+	active := domain.PullRequest{
+		URL: "https://github.com/acme/active/pull/7", SessionID: r.ID, Number: 7,
+		UpdatedAt: now, StateChangedAt: now,
+	}
+	if err := s.WritePR(ctx, closed, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WritePR(ctx, active, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetPRByNumber(ctx, 7)
+	if err != nil || !ok {
+		t.Fatalf("GetPRByNumber: ok=%v err=%v", ok, err)
+	}
+	if got.URL != active.URL {
+		t.Fatalf("selected %q, want active %q", got.URL, active.URL)
+	}
+}
+
 func TestWriteSCMObservationPersistsAuthorAvatarURL(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

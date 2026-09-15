@@ -21,6 +21,15 @@ type actionStore interface {
 	GetPR(ctx context.Context, url string) (domain.PullRequest, bool, error)
 }
 
+type resolveStore interface {
+	actionStore
+	GetPRByNumber(ctx context.Context, number int) (domain.PullRequest, bool, error)
+	ListChecks(ctx context.Context, prURL string) ([]domain.PullRequestCheck, error)
+	ListPRComments(ctx context.Context, prURL string) ([]domain.PullRequestComment, error)
+	ListPRReviewThreads(ctx context.Context, prURL string) ([]domain.PullRequestReviewThread, error)
+	ListPRReviews(ctx context.Context, prURL string) ([]domain.PullRequestReview, error)
+}
+
 type actionReader interface {
 	FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error)
 	FetchReviewThreads(ctx context.Context, ref ports.SCMPRRef) (ports.SCMReviewObservation, error)
@@ -28,23 +37,40 @@ type actionReader interface {
 
 // ActionDeps contains the storage and SCM boundaries used by ActionService.
 type ActionDeps struct {
-	Store  actionStore
-	Merger ports.SCMMerger
-	Reader actionReader
+	Store        actionStore
+	ResolveStore resolveStore
+	Merger       ports.SCMMerger
+	Reader       actionReader
+	Resolver     ports.SCMReviewResolver
+	Writer       ports.SCMWriter
 }
 
 // ActionService validates current pull request state before applying mutations.
 type ActionService struct {
-	store  actionStore
-	merger ports.SCMMerger
-	reader actionReader
+	store    actionStore
+	resolve  resolveStore
+	merger   ports.SCMMerger
+	reader   actionReader
+	resolver ports.SCMReviewResolver
+	writer   ports.SCMWriter
 }
 
 var _ ActionManager = (*ActionService)(nil)
 
 // NewActionService builds the guarded pull request action service.
 func NewActionService(deps ActionDeps) *ActionService {
-	return &ActionService{store: deps.Store, merger: deps.Merger, reader: deps.Reader}
+	resolve := deps.ResolveStore
+	if resolve == nil {
+		resolve, _ = deps.Store.(resolveStore)
+	}
+	return &ActionService{
+		store:    deps.Store,
+		resolve:  resolve,
+		merger:   deps.Merger,
+		reader:   deps.Reader,
+		resolver: deps.Resolver,
+		writer:   deps.Writer,
+	}
 }
 
 // Merge re-fetches authoritative SCM state and then squash-merges only the
@@ -194,7 +220,150 @@ func scmRepoForPR(pr domain.PullRequest) (ports.SCMRepo, bool) {
 	}, true
 }
 
-// ResolveComments is not implemented by the current provider action service.
-func (s *ActionService) ResolveComments(_ context.Context, _ string, _ []string) (ResolveResult, error) {
-	return ResolveResult{Resolved: 0}, nil
+// ResolveComments resolves provider review threads first and then updates the
+// local observation. Empty commentIDs resolves every unresolved thread returned
+// by the provider; supplied IDs are deduplicated and passed through as thread
+// IDs. A failed provider call never causes a local write for that thread.
+func (s *ActionService) ResolveComments(ctx context.Context, prID string, commentIDs []string) (ResolveResult, error) {
+	if s.resolve == nil || s.reader == nil || s.resolver == nil || s.writer == nil {
+		return ResolveResult{}, errors.New("pr: resolve-comments action is not configured")
+	}
+	pr, err := s.lookupResolvePR(ctx, prID)
+	if err != nil {
+		return ResolveResult{}, err
+	}
+
+	repo, ok := scmRepoForPR(pr)
+	if !ok {
+		return ResolveResult{}, fmt.Errorf("%w: pull request repository is unknown", ErrPRPreconditions)
+	}
+	ref := ports.SCMPRRef{Repo: repo, Number: pr.Number, URL: pr.URL}
+
+	// Refresh the provider view before mutating anything. This both supplies the
+	// resolve-all set and confirms that the tracked number still exists remotely.
+	review, err := s.reader.FetchReviewThreads(ctx, ref)
+	if err != nil {
+		if errors.Is(err, ports.ErrSCMNotFound) {
+			return ResolveResult{}, fmt.Errorf("%w: %w", ErrPRNotFound, err)
+		}
+		return ResolveResult{}, fmt.Errorf("refresh pull request reviews before resolving comments: %w", err)
+	}
+	if len(commentIDs) == 0 && review.Partial {
+		return ResolveResult{}, fmt.Errorf("%w: review thread listing is incomplete", ErrPRPreconditions)
+	}
+
+	threadIDs := normalizeThreadIDs(commentIDs)
+	if len(commentIDs) == 0 {
+		threadIDs = make([]string, 0, len(review.Threads))
+		for _, thread := range review.Threads {
+			if thread.Resolved {
+				continue
+			}
+			if id := strings.TrimSpace(thread.ID); id != "" {
+				threadIDs = append(threadIDs, id)
+			}
+		}
+		threadIDs = normalizeThreadIDs(threadIDs)
+	}
+	if len(threadIDs) == 0 {
+		return ResolveResult{}, ErrNothingToResolve
+	}
+
+	checks, err := s.resolve.ListChecks(ctx, pr.URL)
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("list checks before resolving comments: %w", err)
+	}
+	reviews, err := s.resolve.ListPRReviews(ctx, pr.URL)
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("list reviews before resolving comments: %w", err)
+	}
+	threads, err := s.resolve.ListPRReviewThreads(ctx, pr.URL)
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("list review threads before resolving comments: %w", err)
+	}
+	comments, err := s.resolve.ListPRComments(ctx, pr.URL)
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("list comments before resolving comments: %w", err)
+	}
+
+	resolvedIDs := make([]string, 0, len(threadIDs))
+	for _, id := range threadIDs {
+		if err := s.resolver.ResolveReviewThread(ctx, ports.SCMReviewResolveRequest{PR: ref, ThreadID: id}); err != nil {
+			mapped := mapResolveError(err)
+			if len(resolvedIDs) == 0 {
+				return ResolveResult{}, mapped
+			}
+			markResolvedIDs(resolvedIDs, threads, comments)
+			if persistErr := s.writer.WriteSCMObservation(ctx, pr, checks, reviews, threads, comments, ports.ReviewWriteMerge); persistErr != nil {
+				return ResolveResult{}, fmt.Errorf("persist partial resolved review threads: %w; remote resolve: %w", persistErr, mapped)
+			}
+			return ResolveResult{Resolved: len(resolvedIDs)}, mapped
+		}
+		resolvedIDs = append(resolvedIDs, id)
+	}
+	markResolvedIDs(resolvedIDs, threads, comments)
+	if err := s.writer.WriteSCMObservation(ctx, pr, checks, reviews, threads, comments, ports.ReviewWriteMerge); err != nil {
+		return ResolveResult{}, fmt.Errorf("persist resolved review threads: %w", err)
+	}
+	return ResolveResult{Resolved: len(resolvedIDs)}, nil
+}
+
+func (s *ActionService) lookupResolvePR(ctx context.Context, prID string) (domain.PullRequest, error) {
+	number, err := parsePRNumber(strings.TrimSpace(prID))
+	if err != nil {
+		return domain.PullRequest{}, fmt.Errorf("%w: invalid pull request identity", ErrInvalidPR)
+	}
+	pr, ok, err := s.resolve.GetPRByNumber(ctx, number)
+	if err != nil {
+		return domain.PullRequest{}, fmt.Errorf("load pull request: %w", err)
+	}
+	if !ok {
+		return domain.PullRequest{}, ErrPRNotFound
+	}
+	return pr, nil
+}
+
+func normalizeThreadIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func markResolvedIDs(threadIDs []string, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment) {
+	resolved := make(map[string]struct{}, len(threadIDs))
+	for _, threadID := range threadIDs {
+		resolved[threadID] = struct{}{}
+	}
+	for i := range threads {
+		if _, ok := resolved[threads[i].ThreadID]; ok {
+			threads[i].Resolved = true
+		}
+	}
+	for i := range comments {
+		if _, ok := resolved[comments[i].ThreadID]; ok {
+			comments[i].Resolved = true
+			continue
+		}
+		if _, ok := resolved[comments[i].ID]; ok {
+			comments[i].Resolved = true
+		}
+	}
+}
+
+func mapResolveError(err error) error {
+	if errors.Is(err, ports.ErrSCMNotFound) {
+		return fmt.Errorf("%w: %w", ErrPRNotFound, err)
+	}
+	return fmt.Errorf("resolve review thread: %w", err)
 }

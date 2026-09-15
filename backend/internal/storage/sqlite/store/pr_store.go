@@ -454,6 +454,23 @@ func (s *Store) GetPR(ctx context.Context, url string) (domain.PullRequest, bool
 	return prRowFromGen(p), true, nil
 }
 
+// GetPRByNumber returns the best matching tracked PR for the /prs/{id} path.
+// Active rows are preferred over terminal rows, then the newest observation
+// wins when the same provider number appears in more than one repository.
+func (s *Store) GetPRByNumber(ctx context.Context, number int) (domain.PullRequest, bool, error) {
+	if number <= 0 {
+		return domain.PullRequest{}, false, nil
+	}
+	p, err := s.qr.GetPRByNumber(ctx, int64(number))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.PullRequest{}, false, nil
+	}
+	if err != nil {
+		return domain.PullRequest{}, false, fmt.Errorf("get pr by number %d: %w", number, err)
+	}
+	return prRowFromGen(p), true, nil
+}
+
 // ListPRsBySession returns every PR owned by a session, newest first.
 func (s *Store) ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error) {
 	rows, err := s.qr.ListPRsBySession(ctx, sessionID)

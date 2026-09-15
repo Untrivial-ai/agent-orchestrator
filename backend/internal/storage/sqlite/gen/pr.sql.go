@@ -257,6 +257,70 @@ func (q *Queries) GetPR(ctx context.Context, url string) (PR, error) {
 	return i, err
 }
 
+const getPRByNumber = `-- name: GetPRByNumber :one
+SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci, provider_id, author_avatar_url, review_partial FROM pr
+WHERE number = ?
+ORDER BY
+    CASE WHEN pr_state NOT IN ('merged', 'closed') THEN 0 ELSE 1 END,
+    updated_at DESC
+LIMIT 1
+`
+
+// /prs/{id} carries the provider pull-request number. Numbers can repeat
+// across tracked repositories, so prefer an active row and then the newest
+// observation when choosing the path target.
+func (q *Queries) GetPRByNumber(ctx context.Context, number int64) (PR, error) {
+	row := q.db.QueryRowContext(ctx, getPRByNumber, number)
+	var i PR
+	err := row.Scan(
+		&i.URL,
+		&i.SessionID,
+		&i.Number,
+		&i.PRState,
+		&i.ReviewDecision,
+		&i.CIState,
+		&i.Mergeability,
+		&i.UpdatedAt,
+		&i.Provider,
+		&i.Host,
+		&i.Repo,
+		&i.SourceBranch,
+		&i.TargetBranch,
+		&i.HeadSha,
+		&i.Title,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+		&i.Author,
+		&i.BaseSha,
+		&i.MergeCommitSha,
+		&i.IsDraft,
+		&i.IsMerged,
+		&i.IsClosed,
+		&i.ProviderState,
+		&i.ProviderMergeable,
+		&i.ProviderMergeStateStatus,
+		&i.HtmlURL,
+		&i.CreatedAtProvider,
+		&i.UpdatedAtProvider,
+		&i.MergedAtProvider,
+		&i.ClosedAtProvider,
+		&i.MetadataHash,
+		&i.CIHash,
+		&i.ReviewHash,
+		&i.ObservedAt,
+		&i.CIObservedAt,
+		&i.ReviewObservedAt,
+		&i.LastNudgeSignature,
+		&i.StateChangedAt,
+		&i.AutoInjectCI,
+		&i.ProviderID,
+		&i.AuthorAvatarURL,
+		&i.ReviewPartial,
+	)
+	return i, err
+}
+
 const getPRByProviderIdentity = `-- name: GetPRByProviderIdentity :one
 SELECT url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, provider, host, repo, source_branch, target_branch, head_sha, title, additions, deletions, changed_files, author, base_sha, merge_commit_sha, is_draft, is_merged, is_closed, provider_state, provider_mergeable, provider_merge_state_status, html_url, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider, metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, last_nudge_signature, state_changed_at, auto_inject_ci, provider_id, author_avatar_url, review_partial
 FROM pr

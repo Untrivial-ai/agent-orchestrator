@@ -19,8 +19,26 @@ func (p *Provider) ResolveReviewThread(ctx context.Context, request ports.SCMRev
 	if threadID == "" {
 		return fmt.Errorf("github scm: review thread id is required")
 	}
-	_, err := p.client.doGraphQL(ctx, `mutation ResolveReviewThread($threadId: ID!) {
+	data, err := p.client.doGraphQL(ctx, `mutation ResolveReviewThread($threadId: ID!) {
   resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
 }`, map[string]any{"threadId": threadID})
-	return err
+	if err != nil {
+		return err
+	}
+	mutation, ok := data["resolveReviewThread"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("github scm: resolve review thread returned no mutation payload")
+	}
+	thread, ok := mutation["thread"].(map[string]any)
+	returnedThreadID, _ := thread["id"].(string)
+	if !ok || strings.TrimSpace(returnedThreadID) == "" {
+		return fmt.Errorf("github scm: resolve review thread returned no thread")
+	}
+	if returnedThreadID != threadID {
+		return fmt.Errorf("github scm: resolve review thread returned unexpected thread %q", returnedThreadID)
+	}
+	if resolved, ok := thread["isResolved"].(bool); ok && !resolved {
+		return fmt.Errorf("github scm: resolve review thread was not confirmed resolved")
+	}
+	return nil
 }

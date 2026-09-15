@@ -101,6 +101,17 @@ ON CONFLICT (url) DO UPDATE SET
 -- name: GetPR :one
 SELECT * FROM pr WHERE url = ?;
 
+-- name: GetPRByNumber :one
+-- /prs/{id} carries the provider pull-request number. Numbers can repeat
+-- across tracked repositories, so prefer an active row and then the newest
+-- observation when choosing the path target.
+SELECT * FROM pr
+WHERE number = ?
+ORDER BY
+    CASE WHEN pr_state NOT IN ('merged', 'closed') THEN 0 ELSE 1 END,
+    updated_at DESC
+LIMIT 1;
+
 -- name: GetPRByURLOrAlias :one
 SELECT pr.*
 FROM pr
