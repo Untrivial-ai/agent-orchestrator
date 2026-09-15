@@ -4,6 +4,7 @@ import type {
 	ConversationSnapshot,
 	ConversationTurn,
 } from "./types";
+import { stagedAttachmentParts } from "./messageAttachments";
 
 export type ConversationGroup = {
 	key: string;
@@ -96,11 +97,18 @@ export function conversationMarkers(snapshot: ConversationSnapshot): Conversatio
 		const human = group.items.find((item) => item.kind === "message" && item.role === "user" && item.origin === "human");
 		const assistant = [...group.items].reverse().find((item) => item.kind === "message" && item.role === "assistant" && item.text.trim());
 		const activity = group.items.find((item): item is ConversationActivity => item.kind === "activity");
-		const title = previewText(human?.kind === "message" ? human.text : activity?.summary || "Conversation update", 120);
+		const title = previewText(human?.kind === "message" ? humanMessageTitle(human.text) : activity?.summary || "Conversation update", 120);
 		const detailSource = assistant?.kind === "message" ? assistant.text : activity?.detail?.text || activity?.summary;
 		const detail = detailSource ? previewText(String(detailSource), 240) : undefined;
 		return { key: group.key, sequence: group.anchor, title, detail: detail && detail !== title ? detail : undefined, state: group.turn?.state };
 	});
+}
+
+/** A marker names what the human wrote, not the staged-path list AO appended. */
+function humanMessageTitle(text: string): string {
+	const { body, attachments } = stagedAttachmentParts(text);
+	if (attachments.length === 0) return text;
+	return body.trim() || (attachments.length === 1 ? "1 attachment" : `${attachments.length} attachments`);
 }
 
 export function canRollbackTurn(snapshot: ConversationSnapshot, turn: ConversationTurn): boolean {
