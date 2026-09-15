@@ -113,6 +113,8 @@ export function StageColumn({ stage, planId, planStatus }: StageColumnProps) {
 							<Skeleton className="h-20 rounded-md" />
 							<Skeleton className="h-20 rounded-md" />
 						</>
+					) : tasksQuery.isError ? (
+						<p className="py-4 text-center text-xs text-destructive">{t("workflow.error.tasksLoadFailed")}</p>
 					) : tasks.length === 0 ? (
 						<p className="py-4 text-center text-xs text-muted-foreground">{t("workflow.empty.noTasks")}</p>
 					) : (
