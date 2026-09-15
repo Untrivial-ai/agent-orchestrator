@@ -80,10 +80,12 @@ func (c *conptyConn) Read(b []byte) (int, error)  { return c.pty.Read(b) }
 func (c *conptyConn) Write(b []byte) (int, error) { return c.pty.Write(b) }
 func (c *conptyConn) Close() error {
 	err := c.pty.Close()
-	// Best-effort kill: a child that ignores ConPTY EOF still gets terminated
-	// so Done() fires. Mirrors pty.kill() in pty-host.ts.
+	// Best-effort tree-kill: a child that ignores ConPTY EOF still gets
+	// terminated so Done() fires, and its own descendants (the real agent
+	// under the supervise wrapper) die with it instead of being orphaned.
+	// Mirrors pty.kill() in pty-host.ts, plus the /T tree flag.
 	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+		_ = killProcessTree(c.cmd.Process.Pid)
 	}
 	return err
 }

@@ -161,15 +161,24 @@ func (l *lifecycleStack) Stop() {
 // boot/shutdown wiring. A minimal interface keeps the daemon testable without
 // depending on the concrete manager type.
 //
-// SaveAndTeardownAll is deliberately ABSENT from this interface so the daemon
-// cannot tear down live sessions on shutdown. Sessions survive the daemon exit
-// and Reconcile on the next boot adopts them, preserving session IDs. Re-adding
-// the method here is a visible, reviewable interface change.
+// Plain daemon shutdown (SIGTERM, supervisor EOF, `ao stop`, daemon replace)
+// still must NOT tear sessions down: sessions survive the daemon exit and
+// Reconcile on the next boot adopts them, preserving session IDs. Only the
+// explicit desktop app-quit path (POST /shutdown with teardownSessions, read
+// via Server.TeardownSessionsRequested after Run returns) may call
+// TeardownForAppQuit below. Keep it that way: re-adding a blanket
+// teardown-on-shutdown here would strand update restarts and headless
+// `ao stop` workflows that rely on adoption.
 type sessionLifecycle interface {
 	Reconcile(ctx context.Context) error
 	ReconcileStartupSafety(ctx context.Context) error
 	ReconcileBackground(ctx context.Context) error
 	RestoreAll(ctx context.Context) error
+	// TeardownForAppQuit puts every live session away (stash work, stop
+	// worker processes, write one-shot restore markers) so no agent processes
+	// are left behind after the IDE closes. Called only for the explicit
+	// app-quit shutdown; see the interface comment above.
+	TeardownForAppQuit(ctx context.Context) error
 	WaitAgentSwitchWorkers(ctx context.Context) error
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error

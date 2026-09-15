@@ -829,16 +829,18 @@ func TestProjectRepoResolver_ResolvesRegisteredProject(t *testing.T) {
 	}
 }
 
-// fakeSessionLifecycle records calls to Reconcile and RestoreAll so tests can
-// assert the daemon wiring invokes the correct methods without needing a real
-// runtime or worktree.
+// fakeSessionLifecycle records calls to Reconcile, RestoreAll, and
+// TeardownForAppQuit so tests can assert the daemon wiring invokes the
+// correct methods without needing a real runtime or worktree.
 type fakeSessionLifecycle struct {
 	reconcileCalled           bool
 	reconcileSafetyCalled     bool
 	reconcileBackgroundCalled bool
 	restoreAllCalled          bool
+	teardownForQuitCalled     bool
 	reconcileErr              error
 	restoreErr                error
+	teardownForQuitErr        error
 }
 
 type recordingAgentSwitchDaemonFaultStore struct {
@@ -920,6 +922,11 @@ func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 	return f.restoreErr
 }
 
+func (f *fakeSessionLifecycle) TeardownForAppQuit(_ context.Context) error {
+	f.teardownForQuitCalled = true
+	return f.teardownForQuitErr
+}
+
 func (*fakeSessionLifecycle) WaitAgentSwitchWorkers(context.Context) error { return nil }
 
 func (f *fakeSessionLifecycle) SetShellTerminalCloser(sessionmanager.ShellTerminalCloser) {}
@@ -945,8 +952,9 @@ func (f *fakeSessionLifecycle) SetCodexAccountSwitchObserver(func()) {}
 
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile
-// check) and that Reconcile and RestoreAll dispatch correctly through the
-// interface, matching what daemon.go wires at boot.
+// check) and that Reconcile, RestoreAll, and TeardownForAppQuit dispatch
+// correctly through the interface, matching what daemon.go wires at boot and
+// on explicit app-quit shutdown.
 func TestWiring_SessionLifecycleInterfaceInvokedByDaemon(t *testing.T) {
 	// Verify *sessionmanager.Manager satisfies the interface at compile time.
 	var _ sessionLifecycle = (*sessionmanager.Manager)(nil)
@@ -970,6 +978,13 @@ func TestWiring_SessionLifecycleInterfaceInvokedByDaemon(t *testing.T) {
 	}
 	if !fake.restoreAllCalled {
 		t.Fatal("RestoreAll was not called through the interface")
+	}
+
+	if err := sl.TeardownForAppQuit(ctx); err != nil {
+		t.Fatalf("TeardownForAppQuit: %v", err)
+	}
+	if !fake.teardownForQuitCalled {
+		t.Fatal("TeardownForAppQuit was not called through the interface")
 	}
 }
 

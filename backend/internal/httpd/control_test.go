@@ -37,7 +37,7 @@ func TestShutdownGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fired := false
 			r := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{}, ControlDeps{
-				RequestShutdown: func() { fired = true },
+				RequestShutdown: func(ShutdownRequest) { fired = true },
 			})
 
 			req := httptest.NewRequest(http.MethodPost, "http://"+tc.host+"/shutdown", nil)
@@ -55,6 +55,83 @@ func TestShutdownGuard(t *testing.T) {
 				t.Fatalf("shutdown fired = %v, want %v", fired, tc.wantFired)
 			}
 		})
+	}
+}
+
+func TestShutdownTeardownSessionsFlag(t *testing.T) {
+	cases := []struct {
+		name         string
+		body         string
+		wantTeardown bool
+	}{
+		{name: "empty body means plain shutdown", body: "", wantTeardown: false},
+		{name: "empty object means plain shutdown", body: `{}`, wantTeardown: false},
+		{name: "explicit false means plain shutdown", body: `{"teardownSessions":false}`, wantTeardown: false},
+		{name: "true requests session teardown", body: `{"teardownSessions":true}`, wantTeardown: true},
+		{name: "malformed body means plain shutdown", body: `{"teardownSessions":`, wantTeardown: false},
+		{name: "unknown fields are ignored", body: `{"other":true,"teardownSessions":true}`, wantTeardown: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got ShutdownRequest
+			fired := false
+			r := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{}, ControlDeps{
+				RequestShutdown: func(req ShutdownRequest) { fired = true; got = req },
+			})
+
+			var body *bytes.Reader
+			if tc.body == "" {
+				body = bytes.NewReader(nil)
+			} else {
+				body = bytes.NewReader([]byte(tc.body))
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3001/shutdown", body)
+			req.Host = "127.0.0.1:3001"
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+			}
+			if !fired {
+				t.Fatal("shutdown did not fire")
+			}
+			if got.TeardownSessions != tc.wantTeardown {
+				t.Fatalf("teardownSessions = %v, want %v", got.TeardownSessions, tc.wantTeardown)
+			}
+		})
+	}
+}
+
+// TestTeardownSessionsRequestedFirstWins covers the load-bearing shutdown
+// gate: a plain shutdown (empty body, `ao stop`, supervisor watchdog) must
+// never arm session teardown, and a racing second POST cannot change the mode
+// once the first request committed the shutdown.
+func TestTeardownSessionsRequestedFirstWins(t *testing.T) {
+	srv := &Server{shutdownRequested: make(chan struct{})}
+	if srv.TeardownSessionsRequested() {
+		t.Fatal("fresh server must not request teardown")
+	}
+	srv.requestShutdown()
+	if srv.TeardownSessionsRequested() {
+		t.Fatal("plain shutdown must not request teardown")
+	}
+	// A teardown POST racing after the plain shutdown committed changes nothing.
+	srv.requestShutdownWithMode(ShutdownRequest{TeardownSessions: true})
+	if srv.TeardownSessionsRequested() {
+		t.Fatal("late teardown request must not upgrade a committed plain shutdown")
+	}
+
+	teardownSrv := &Server{shutdownRequested: make(chan struct{})}
+	teardownSrv.requestShutdownWithMode(ShutdownRequest{TeardownSessions: true})
+	if !teardownSrv.TeardownSessionsRequested() {
+		t.Fatal("teardown shutdown must request teardown")
+	}
+	// ... and a racing plain POST cannot disarm it either.
+	teardownSrv.requestShutdown()
+	if !teardownSrv.TeardownSessionsRequested() {
+		t.Fatal("late plain request must not disarm a committed teardown shutdown")
 	}
 }
 

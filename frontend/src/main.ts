@@ -1,4 +1,5 @@
 import { finishUpdateQuit } from "./main/update-quit";
+import { teardownSessionsForQuit } from "./main/quit-teardown";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
@@ -2771,10 +2772,17 @@ app.whenReady().then(async () => {
 	});
 });
 
-// Daemon teardown is now handled via the OS-native supervisor socket: the daemon
-// self-stops ~5s after the last client (this process) drops its connection.
+// Daemon teardown works in two layers. On orderly quit, before-quit asks an
+// app-owned daemon to put sessions away (POST /shutdown with teardownSessions:
+// work stashed, worker processes stopped, restore markers written), so no
+// agent processes are left behind after the IDE closes. The OS-native
+// supervisor socket remains the backstop: the daemon self-stops ~5s after the
+// last client (this process) drops its connection, covering crash and SIGKILL
+// where before-quit never runs — sessions then survive for the next boot to
+// adopt, as do headless `ao start` daemons, which stay unlinked so they
+// remain persistent after app quit.
 // The supervisorLink fd is NOT explicitly closed on quit; the OS closes it when
-// the process exits for any reason (Cmd+Q, crash, SIGKILL). Sessions survive.
+// the process exits for any reason (Cmd+Q, crash, SIGKILL).
 setUpdateRestartFailureHandler(() => {
 	if (!browserQuitRequested) focusMainWindow();
 });
@@ -2803,6 +2811,31 @@ app.on("before-quit", (event) => {
 			const cleanup = Promise.all([
 				disposeAllBrowserViewHosts(),
 				telemetryPolicyController?.close() ?? Promise.resolve(),
+				// Put sessions away (stash work, stop worker processes) so no
+				// agent processes are left behind eating RAM after the IDE
+				// closes. App-owned daemons only; headless and AO_KEEP_DAEMON
+				// daemons stay persistent. Best-effort: never blocks quit.
+				teardownSessionsForQuit({
+					keepDaemon: keepDaemonAlive(process.env),
+					readRunFile: async () => {
+						const rfp = runFilePath();
+						if (!rfp) return null;
+						try {
+							return await readFile(rfp, "utf8");
+						} catch {
+							return null;
+						}
+					},
+					postShutdown: async (port, body) => {
+						const response = await fetch(`http://127.0.0.1:${port}/shutdown`, {
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify(body),
+						});
+						if (!response.ok) throw new Error(`daemon shutdown returned HTTP ${response.status}`);
+					},
+					log: (message) => console.log(`AO: ${message}`),
+				}),
 			]);
 			const finishQuit = () => {
 				browserCleanupComplete = true;
