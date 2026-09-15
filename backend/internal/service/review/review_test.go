@@ -450,6 +450,37 @@ func TestSubmitSnapshotsDisabledPolicyAndNeverDeliversOnRetry(t *testing.T) {
 	}
 }
 
+func TestSubmitDoesNotDeliverWhenSessionToggleTurnedOffAfterRun(t *testing.T) {
+	st := &fakeStore{
+		ok: true,
+		run: domain.ReviewRun{
+			ID:               "run-1",
+			SessionID:        "mer-1",
+			BatchID:          "batch-1",
+			PRURL:            "pr1",
+			TargetSHA:        "sha1",
+			Status:           domain.ReviewRunComplete,
+			Verdict:          domain.VerdictChangesRequested,
+			Body:             "fix it",
+			GithubReviewID:   "987",
+			AutoInjectReview: true,
+		},
+		prs: []domain.PullRequest{{URL: "pr1", HeadSHA: "sha1"}},
+	}
+	disabled := false
+	st.sessionAutoInjectReview = &disabled
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, st, WithLifecycleReducer(reducer))
+
+	run, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictChangesRequested, "fix it", "987")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.ReviewRunComplete || reducer.batchCalls != 0 || st.markCalls != 0 {
+		t.Fatalf("run delivered despite session toggle off = %+v reducerCalls=%d markCalls=%d", run, reducer.batchCalls, st.markCalls)
+	}
+}
+
 func TestSubmitBatchRunDoesNotWaitForOtherRunningRuns(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	st := &fakeStore{
@@ -518,6 +549,36 @@ func TestSubmitManySendsCombinedChangesRequested(t *testing.T) {
 	if runs[0].Status != domain.ReviewRunDelivered || runs[0].DeliveredAt == nil || !runs[0].DeliveredAt.Equal(now) ||
 		runs[1].Status != domain.ReviewRunDelivered || runs[1].DeliveredAt == nil || !runs[1].DeliveredAt.Equal(now) {
 		t.Fatalf("submitted runs not stamped delivered: %+v", runs)
+	}
+}
+
+func TestSubmitManyDoesNotDeliverWhenSessionToggleDisabled(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	disabled := false
+	st := &fakeStore{
+		ok:                      true,
+		sessionAutoInjectReview: &disabled,
+		batchRuns: []domain.ReviewRun{
+			{ID: "run-1", SessionID: "mer-1", BatchID: "batch-1", PRURL: "pr1", TargetSHA: "sha1", Status: domain.ReviewRunRunning},
+		},
+		prs: []domain.PullRequest{
+			{URL: "pr1", HeadSHA: "sha1"},
+		},
+	}
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, st, WithLifecycleReducer(reducer), WithClock(func() time.Time { return now }))
+
+	runs, err := svc.SubmitMany(context.Background(), "mer-1", []SubmittedReview{
+		{RunID: "run-1", Verdict: domain.VerdictChangesRequested, Body: "fix pr1", GithubReviewID: "101"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitMany: %v", err)
+	}
+	if reducer.batchCalls != 0 || st.markCalls != 0 {
+		t.Fatalf("batch delivery should not occur when toggle is off: batchCalls=%d markCalls=%d", reducer.batchCalls, st.markCalls)
+	}
+	if runs[0].Status == domain.ReviewRunDelivered || runs[0].DeliveredAt != nil {
+		t.Fatalf("run should not be delivered when toggle is off: %+v", runs[0])
 	}
 }
 
