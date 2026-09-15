@@ -35,6 +35,7 @@ const AUTH_TERMINAL_LIFETIME_MS = 15 * 60_000;
 
 type AgentAuthState = { pending: boolean; checking: boolean; error: string | null };
 type AgentAuthStates = Partial<Record<AgentId, AgentAuthState>>;
+type AgentAuthProbeResult = Awaited<ReturnType<typeof probeAgentAuth>>;
 type AuthTerminalWorkflow = {
 	agentId: AgentId;
 	action: string;
@@ -113,7 +114,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	authWorkflowRef.current = authWorkflow;
 	const refreshedSuccess = useRef(new Set<string>());
 	const pendingActions = useRef(new Set<AgentId>());
-	const authChecksInFlight = useRef(new Set<AgentId>());
+	const authChecksInFlight = useRef(new Map<AgentId, Promise<AgentAuthProbeResult | undefined>>());
 	const [pendingAgentIds, setPendingAgentIds] = useState<Set<AgentId>>(new Set());
 
 	const plans = useMemo(() => new Map(installers.data?.map((plan) => [plan.agentId, plan]) ?? []), [installers.data]);
@@ -284,22 +285,26 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		}
 	};
 
-	const checkAuth = useCallback(async (agentId: AgentId) => {
-		if (authChecksInFlight.current.has(agentId)) return undefined;
-		authChecksInFlight.current.add(agentId);
-		updateAuthState(agentId, { checking: true, error: null });
-		try {
-			const result = await probeAgentAuth(agentId);
-			const readiness = await ensureAgentReadiness([agentId], "display");
-			cacheAgentReadiness(queryClient, readiness);
-			return result;
-		} catch (error) {
-			updateAuthState(agentId, { error: error instanceof Error ? error.message : t("settings.harness.authFailed") });
-			return undefined;
-		} finally {
-			authChecksInFlight.current.delete(agentId);
-			updateAuthState(agentId, { checking: false });
-		}
+	const checkAuth = useCallback((agentId: AgentId): Promise<AgentAuthProbeResult | undefined> => {
+		const existing = authChecksInFlight.current.get(agentId);
+		if (existing) return existing;
+		const check = (async () => {
+			updateAuthState(agentId, { checking: true, error: null });
+			try {
+				const result = await probeAgentAuth(agentId);
+				const readiness = await ensureAgentReadiness([agentId], "display");
+				cacheAgentReadiness(queryClient, readiness);
+				return result;
+			} catch (error) {
+				updateAuthState(agentId, { error: error instanceof Error ? error.message : t("settings.harness.authFailed") });
+				return undefined;
+			} finally {
+				authChecksInFlight.current.delete(agentId);
+				updateAuthState(agentId, { checking: false });
+			}
+		})();
+		authChecksInFlight.current.set(agentId, check);
+		return check;
 	}, [queryClient, t, updateAuthState]);
 
 	useEffect(() => {
@@ -452,7 +457,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 								) : null}
 								{authPlan.available ? (
 									<Button
-										aria-label={authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}
+										aria-label={`${agentLabel(agentId)}: ${authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}`}
 										disabled={authState?.checking}
 										size="icon-sm"
 										variant="ghost"
