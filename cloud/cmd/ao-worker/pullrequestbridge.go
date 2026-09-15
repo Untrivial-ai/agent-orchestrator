@@ -85,7 +85,7 @@ func handlePullRequestBridgeRequest(
 	grant, err := apiClient.pushGrant(ctx)
 	if err != nil {
 		logger.Error("pull request bridge: push grant failed", "error", err)
-		writeBridgeError(w, http.StatusBadGateway, "could not obtain a push grant")
+		writeBridgeError(w, http.StatusBadGateway, "could not obtain a push grant: "+err.Error())
 		return
 	}
 	if err := worker.PushBranch(ctx, worker.ExecGitRunner{}, workspace, input.Branch, grant); err != nil {
@@ -101,7 +101,13 @@ func handlePullRequestBridgeRequest(
 	})
 	if err != nil {
 		logger.Error("pull request bridge: raise pull request failed", "error", err)
-		writeBridgeError(w, http.StatusBadGateway, "pull request could not be opened")
+		// apiClient.raisePullRequest -> doMethod already carries the real
+		// control-plane status code and error body (see doMethod's "%s
+		// returned %d: %s" wrap); surfacing only a flat, identical string
+		// here made every failure mode (broker unavailable, GitHub API
+		// rejection, auth failure, ...) look the same to the agent and to
+		// whoever read its transcript. Pass the real detail through instead.
+		writeBridgeError(w, http.StatusBadGateway, "pull request could not be opened: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
