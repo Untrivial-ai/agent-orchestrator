@@ -556,6 +556,13 @@ func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCM
 	if rec.IsTerminated || rec.Activity.State.NeedsInput() || !scmObservationIsReadyToMerge(o) {
 		return nil
 	}
+	// Bot-authored inline findings are actionable feedback even when the
+	// provider reports no formal review blocker. Keep the ready notification
+	// from racing that feedback; unanchored bot chatter is filtered by the
+	// projection below and remains eligible for a ready notification.
+	if hasUnresolvedComments(scmReviewCommentObservations(o.Review.Threads)) {
+		return nil
+	}
 	base.Type = domain.NotificationReadyToMerge
 	return &base
 }
@@ -614,6 +621,7 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 	if pr.Mergeability == "" {
 		pr.Mergeability = domain.MergeUnknown
 	}
+	pr.Comments = scmReviewCommentObservations(o.Review.Threads)
 
 	checkCommit := firstSCMNonEmpty(o.CI.HeadSHA, o.PR.HeadSHA)
 	for _, ch := range o.CI.FailedChecks {
@@ -639,7 +647,7 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 func prCommentObservations(comments []domain.PullRequestComment) []ports.PRCommentObservation {
 	out := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, comment := range comments {
-		if comment.Resolved || comment.IsBot {
+		if comment.Resolved || (comment.IsBot && !anchoredReviewComment(comment.File, comment.Line)) {
 			continue
 		}
 		out = append(out, ports.PRCommentObservation{
@@ -654,6 +662,43 @@ func prCommentObservations(comments []domain.PullRequestComment) []ports.PRComme
 			Resolved:         comment.Resolved,
 			AutoInjectReview: comment.AutoInjectReview,
 		})
+	}
+	return out
+}
+
+// anchoredReviewComment identifies a code location that gives automated
+// review feedback enough context to act on. Bot-authored general comments are
+// often status chatter and should not wake an agent; human comments remain
+// actionable regardless of whether they have an anchor.
+func anchoredReviewComment(file string, line int) bool {
+	return strings.TrimSpace(file) != "" && line > 0
+}
+
+func scmReviewCommentObservations(threads []ports.SCMReviewThreadObservation) []ports.PRCommentObservation {
+	var out []ports.PRCommentObservation
+	for _, thread := range threads {
+		if thread.Resolved {
+			continue
+		}
+		for _, comment := range thread.Comments {
+			// Thread bot-ness is aggregate metadata and may describe a bot-started
+			// thread that later receives human feedback. Use each comment's identity
+			// when deciding whether the unanchored-comment filter applies.
+			if comment.IsBot && !anchoredReviewComment(thread.Path, thread.Line) {
+				continue
+			}
+			out = append(out, ports.PRCommentObservation{
+				ID:       comment.ID,
+				ThreadID: thread.ID,
+				ReviewID: comment.ReviewID,
+				Author:   comment.Author,
+				File:     thread.Path,
+				Line:     thread.Line,
+				Body:     comment.Body,
+				URL:      comment.URL,
+				Resolved: thread.Resolved,
+			})
+		}
 	}
 	return out
 }
