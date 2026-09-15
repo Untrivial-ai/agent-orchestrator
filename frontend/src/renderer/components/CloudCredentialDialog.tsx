@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
+import { AgentAvatar } from "./AgentAvatar";
+import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Button } from "./ui/button";
 import {
 	Dialog,
@@ -8,15 +11,17 @@ import {
 	DialogContent,
 	DialogDescription,
 	DialogTitle,
-	settingsDialogBodyClass,
-	settingsDialogContentClass,
-	settingsDialogFooterClass,
-	settingsDialogHeaderClass,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import type { CloudCpAgentProvider } from "../lib/cloud-cp";
+import {
+	centeredOnboardingDialogClass,
+	onboardingFieldErrorClass,
+	onboardingFieldHintClass,
+	onboardingFooterActionsEndClass,
+	onboardingFormLabelClass,
+} from "../lib/onboarding-ui";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
@@ -72,6 +77,13 @@ export function CloudCredentialDialog() {
 	const [error, setError] = useState<string | null>(null);
 
 	const creds = useMemo(() => AGENTS.find((a) => a.agent === agent)?.creds ?? AGENTS[0].creds, [agent]);
+	const agentOptions = useMemo(() => AGENTS.map((entry) => ({ value: entry.agent, label: entry.label })), []);
+	const credentialOptions = useMemo(
+		() => creds.map((entry) => ({ value: entry.value, label: entry.label })),
+		[creds],
+	);
+	const selectedAgent = AGENTS.find((entry) => entry.agent === agent);
+	const selectedCredential = creds.find((entry) => entry.value === credentialType);
 
 	// Reset the whole form each time the dialog opens so a reopen never shows a
 	// stale secret or a previous error/success.
@@ -92,6 +104,7 @@ export function CloudCredentialDialog() {
 	};
 
 	const canSubmit = phase !== "submitting" && secret.trim() !== "" && org !== undefined;
+	const busy = phase === "submitting";
 
 	const submit = async () => {
 		if (!canSubmit || org === undefined) return;
@@ -118,87 +131,111 @@ export function CloudCredentialDialog() {
 
 	return (
 		<Dialog open={open} onOpenChange={setOpen}>
-			<DialogContent className={settingsDialogContentClass}>
-				<div className={settingsDialogHeaderClass}>
-					<DialogTitle className="settings-dialog-title">{t("cloudCredential.title")}</DialogTitle>
-					<DialogDescription asChild>
-						<div className="text-control leading-4 text-settings-muted">{t("cloudCredential.description")}</div>
-					</DialogDescription>
-				</div>
+			<DialogContent className={centeredOnboardingDialogClass} showCloseButton={false}>
+				<DialogClose asChild>
+					<button
+						type="button"
+						className="settings-dialog-close-button settings-close-button"
+						aria-label={t("common.close")}
+						disabled={busy}
+					>
+						<X className="size-icon-base" aria-hidden="true" />
+					</button>
+				</DialogClose>
+
+				<DialogTitle className="px-4 pr-12 pt-3 text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">{t("cloudCredential.title")}</DialogTitle>
+				<DialogDescription className="px-4 pr-12 pt-1 text-pretty text-[13px] leading-5 text-muted-foreground">
+					{t("cloudCredential.description")}
+				</DialogDescription>
 
 				{phase === "success" ? (
-					<div className={settingsDialogBodyClass}>
+					<div className="min-h-0 overflow-y-auto px-4 pb-1 pt-4">
 						<p role="status" className="text-control leading-4 text-success">
 							{t("cloudCredential.connected")}
 						</p>
 					</div>
 				) : (
-					<div className={cn(settingsDialogBodyClass, "flex flex-col gap-4")}>
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="cloud-cred-agent">{t("cloudCredential.agentLabel")}</Label>
-							<Select value={agent} onValueChange={onAgentChange}>
-								<SelectTrigger id="cloud-cred-agent">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{AGENTS.map((a) => (
-										<SelectItem key={a.agent} value={a.agent}>
-											{a.label}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
+					<div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pb-1 pt-4">
+						<div className="space-y-2">
+							<Label htmlFor="cloud-cred-agent" className={onboardingFormLabelClass}>
+								{t("cloudCredential.agentLabel")}
+							</Label>
+							<SettingsOptionMenu
+								aria-label={t("cloudCredential.agentLabel")}
+								value={agent}
+								options={agentOptions}
+								disabled={busy}
+								menuAlign="start"
+								onChange={onAgentChange}
+								triggerClassName="composer-chip composer-toolbar-option h-control-form w-full justify-between"
+								renderTrigger={() => (
+									<span className="flex min-w-0 items-center gap-2">
+										<AgentAvatar provider={agent} className="size-icon-base" decorative />
+										<span className="min-w-0 truncate text-control text-foreground" title={selectedAgent?.label}>
+											{selectedAgent?.label}
+										</span>
+									</span>
+								)}
+							/>
 						</div>
 
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="cloud-cred-type">{t("cloudCredential.typeLabel")}</Label>
-							<Select value={credentialType} onValueChange={setCredentialType} disabled={creds.length === 1}>
-								<SelectTrigger id="cloud-cred-type">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{creds.map((c) => (
-										<SelectItem key={c.value} value={c.value}>
-											{c.label}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
+						<div className="space-y-2">
+							<Label htmlFor="cloud-cred-type" className={onboardingFormLabelClass}>
+								{t("cloudCredential.typeLabel")}
+							</Label>
+							<SettingsOptionMenu
+								aria-label={t("cloudCredential.typeLabel")}
+								value={credentialType}
+								options={credentialOptions}
+								disabled={busy || creds.length === 1}
+								menuAlign="start"
+								onChange={setCredentialType}
+								triggerClassName="composer-chip composer-toolbar-option h-control-form w-full justify-between"
+								renderTrigger={() => (
+									<span className="min-w-0 truncate text-control text-foreground" title={selectedCredential?.label}>
+										{selectedCredential?.label}
+									</span>
+								)}
+							/>
 						</div>
 
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="cloud-cred-secret">{t("cloudCredential.tokenLabel")}</Label>
+						<div className="space-y-2">
+							<Label htmlFor="cloud-cred-secret" className={onboardingFormLabelClass}>
+								{t("cloudCredential.tokenLabel")}
+							</Label>
 							<Input
 								id="cloud-cred-secret"
 								type="password"
 								autoComplete="off"
 								spellCheck={false}
+								className="text-[13px]"
 								placeholder={t("cloudCredential.tokenPlaceholder")}
+								disabled={busy}
 								value={secret}
 								onChange={(e) => setSecret(e.target.value)}
 								onKeyDown={(e) => {
 									if (e.key === "Enter") void submit();
 								}}
 							/>
-							<p className="text-caption leading-4 text-settings-muted">{t("cloudCredential.tokenHint")}</p>
+							<p className={onboardingFieldHintClass}>{t("cloudCredential.tokenHint")}</p>
 						</div>
 
 						{error ? (
-							<p role="alert" className="text-caption leading-4 text-error">
+							<p role="alert" className={onboardingFieldErrorClass}>
 								{error}
 							</p>
 						) : null}
 					</div>
 				)}
 
-				<div className={settingsDialogFooterClass}>
+				<div className={cn(onboardingFooterActionsEndClass, "px-4 pb-4")}>
 					<DialogClose asChild>
-						<Button type="button" variant="footer">
+						<Button type="button" variant="outline" disabled={busy}>
 							{phase === "success" ? t("cloudCredential.done") : t("cloudCredential.cancel")}
 						</Button>
 					</DialogClose>
 					{phase !== "success" ? (
-						<Button type="button" variant="footer-primary" disabled={!canSubmit} onClick={() => void submit()}>
+						<Button type="button" variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
 							{phase === "submitting" ? t("cloudCredential.connecting") : t("cloudCredential.connect")}
 						</Button>
 					) : null}

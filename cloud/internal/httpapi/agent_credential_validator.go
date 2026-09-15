@@ -15,6 +15,7 @@ const (
 	defaultAnthropicAPIURL = "https://api.anthropic.com"
 	defaultOpenAIAPIURL    = "https://api.openai.com/v1"
 	defaultCursorAPIURL    = "https://api.cursor.com"
+	defaultGitHubAPIURL    = "https://api.github.com"
 )
 
 type agentCredentialValidator struct {
@@ -22,6 +23,7 @@ type agentCredentialValidator struct {
 	anthropicBaseURL string
 	openAIBaseURL    string
 	cursorBaseURL    string
+	githubBaseURL    string
 }
 
 func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator {
@@ -33,6 +35,7 @@ func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator 
 		anthropicBaseURL: defaultAnthropicAPIURL,
 		openAIBaseURL:    defaultOpenAIAPIURL,
 		cursorBaseURL:    defaultCursorAPIURL,
+		githubBaseURL:    defaultGitHubAPIURL,
 	}
 }
 
@@ -66,6 +69,16 @@ func (v *agentCredentialValidator) Validate(
 			ctx,
 			"Cursor",
 			strings.TrimRight(v.cursorBaseURL, "/")+"/v1/me",
+			secret,
+		)
+	case "github":
+		if credentialType != "personal_access_token" {
+			return errInvalidAgentCredential
+		}
+		return v.validateBearerEndpoint(
+			ctx,
+			"GitHub",
+			strings.TrimRight(v.githubBaseURL, "/")+"/user",
 			secret,
 		)
 	default:

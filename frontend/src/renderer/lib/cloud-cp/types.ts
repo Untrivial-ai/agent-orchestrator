@@ -347,6 +347,15 @@ export interface CloudCpPutGitHubPATRequest {
 	secret: string;
 }
 
+/** POST /me/github-pat/validate-saved-repository */
+export interface CloudCpValidateRepositoryAccessRequest {
+	repositoryUrl: string;
+}
+
+export interface CloudCpValidateRepositoryAccessResponse {
+	writeAccess: boolean;
+}
+
 export interface CloudCpProviderConnection {
 	id: string;
 	provider: string;

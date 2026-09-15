@@ -159,6 +159,7 @@ type Server struct {
 	environmentControlToken string
 	secretCipher            *secrets.Cipher
 	credentialValidator     credentialValidator
+	repositoryProbeClient   *http.Client
 	webhookMaxBody          int64
 	terminalStreamEnabled   bool
 	terminalStreams         *terminalStreams
@@ -193,6 +194,7 @@ type Options struct {
 	EnvironmentControlToken   string
 	SecretCipher              *secrets.Cipher
 	CredentialValidator       credentialValidator
+	RepositoryProbeClient     *http.Client
 	WebhookMaxBody            int64
 	TerminalStreamEnabled     bool
 }
@@ -262,6 +264,7 @@ func New(options Options) *Server {
 		environmentControlToken:   options.EnvironmentControlToken,
 		secretCipher:              options.SecretCipher,
 		credentialValidator:       options.CredentialValidator,
+		repositoryProbeClient:     options.RepositoryProbeClient,
 		webhookMaxBody:            webhookMaxBody,
 		terminalStreamEnabled:     options.TerminalStreamEnabled,
 		terminalStreams:           newTerminalStreams(),
@@ -270,6 +273,9 @@ func New(options Options) *Server {
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
 		server.credentialValidator = newAgentCredentialValidator(nil)
+	}
+	if server.repositoryProbeClient == nil {
+		server.repositoryProbeClient = &http.Client{Timeout: 5 * time.Second}
 	}
 	if server.checkoutBroker == nil && options.GitHub != nil {
 		server.checkoutBroker = options.GitHub
@@ -317,6 +323,7 @@ func New(options Options) *Server {
 		router.With(server.authenticate).Delete("/me/providers/{agent}", server.deleteUserAgentConnection)
 		router.With(server.authenticate).Put("/me/github-pat", server.putGitHubPAT)
 		router.With(server.authenticate).Delete("/me/github-pat", server.deleteGitHubPAT)
+		router.With(server.authenticate).Post("/me/github-pat/validate-saved-repository", server.validateSavedRepository)
 		router.With(server.authenticate).Post("/share-links/redeem", server.redeemProjectShareLink)
 		router.With(server.authenticate).Get("/shared/projects", server.listSharedProjects)
 		if server.github != nil {
