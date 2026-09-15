@@ -18,8 +18,8 @@ type commandRunner func(context.Context, string, ...string) ([]byte, error)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 
 // AuthStatus runs fx's documented local status probe. Its output establishes
-// missing or expired credentials, but a named credential source alone remains
-// unknown until a provider request proves authorization.
+// missing or expired credentials; a named credential source is configured but
+// not authorized until a provider request succeeds.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -60,11 +60,12 @@ func authStatusFromJSON(output []byte) ports.AgentAuthStatus {
 	if err := json.Unmarshal(output, &status); err != nil {
 		return ports.AgentAuthStatusUnknown
 	}
-	if status.AuthExpired || strings.EqualFold(strings.TrimSpace(status.Auth), "missing") {
+	auth := strings.TrimSpace(status.Auth)
+	if status.AuthExpired || strings.EqualFold(auth, "missing") {
 		return ports.AgentAuthStatusUnauthorized
 	}
-	// A non-empty auth name proves only that credentials are configured. The
-	// generic port has no "configured" state, and AO must not promote local
-	// evidence to authorized without a provider round-trip.
+	if auth != "" {
+		return ports.AgentAuthStatusConfigured
+	}
 	return ports.AgentAuthStatusUnknown
 }

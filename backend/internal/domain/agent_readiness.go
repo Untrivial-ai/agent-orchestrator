@@ -20,6 +20,9 @@ type AgentAuthenticationState string
 const (
 	// AgentAuthenticationAuthorized means the harness appears signed in.
 	AgentAuthenticationAuthorized AgentAuthenticationState = "authorized"
+	// AgentAuthenticationConfigured means local credentials are present, but
+	// the harness has not confirmed them with its provider.
+	AgentAuthenticationConfigured AgentAuthenticationState = "configured"
 	// AgentAuthenticationUnauthorized means the harness appears signed out.
 	AgentAuthenticationUnauthorized AgentAuthenticationState = "unauthorized"
 	// AgentAuthenticationUnknown means authentication could not be determined.
@@ -78,6 +81,7 @@ const (
 	AgentReadinessReasonInstallCheckTimeout     = "install_check_timeout"
 	AgentReadinessReasonInstallCheckFailed      = "install_check_failed"
 	AgentReadinessReasonAuthorized              = "authorized"
+	AgentReadinessReasonConfigured              = "configured"
 	AgentReadinessReasonUnauthorized            = "unauthorized"
 	AgentReadinessReasonAuthNotApplicable       = "auth_not_applicable"
 	AgentReadinessReasonAuthCheckUnsupported    = "auth_check_unsupported"
@@ -99,7 +103,7 @@ type AgentInstallationObservation struct {
 
 // AgentAuthenticationObservation records the latest normalized authentication check.
 type AgentAuthenticationObservation struct {
-	State       AgentAuthenticationState `json:"state" enum:"authorized,unauthorized,unknown,not_applicable"`
+	State       AgentAuthenticationState `json:"state" enum:"authorized,configured,unauthorized,unknown,not_applicable"`
 	Freshness   AgentReadinessFreshness  `json:"freshness" enum:"fresh,stale,checking"`
 	CheckedAt   *time.Time               `json:"checkedAt" format:"date-time"`
 	AttemptedAt *time.Time               `json:"attemptedAt" format:"date-time"`
@@ -128,7 +132,7 @@ func EffectiveAgentReadiness(installation AgentInstallationState, authentication
 		return AgentReadinessUnknown
 	case AgentInstallationInstalled:
 		switch authentication {
-		case AgentAuthenticationAuthorized, AgentAuthenticationNotApplicable:
+		case AgentAuthenticationAuthorized, AgentAuthenticationConfigured, AgentAuthenticationNotApplicable:
 			return AgentReadinessReady
 		case AgentAuthenticationUnauthorized:
 			return AgentReadinessNotReady

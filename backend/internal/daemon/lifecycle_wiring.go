@@ -439,6 +439,8 @@ func (r reviewerAgentAuth) AuthStatus(ctx context.Context, harness domain.Review
 	switch snapshot.Authentication.State {
 	case domain.AgentAuthenticationAuthorized, domain.AgentAuthenticationNotApplicable:
 		return ports.AgentAuthStatusAuthorized, true, nil
+	case domain.AgentAuthenticationConfigured:
+		return ports.AgentAuthStatusConfigured, true, nil
 	case domain.AgentAuthenticationUnauthorized:
 		return ports.AgentAuthStatusUnauthorized, true, nil
 	default:

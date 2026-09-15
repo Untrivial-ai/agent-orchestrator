@@ -18,8 +18,8 @@ func TestAuthStatusParsesDocumentedFXFields(t *testing.T) {
 	}{
 		{name: "missing", json: `{"auth":"missing","auth_expired":false}`, want: ports.AgentAuthStatusUnauthorized},
 		{name: "expired named source", json: `{"auth":"vercel","auth_expired":true}`, want: ports.AgentAuthStatusUnauthorized},
-		{name: "named source is only configured", json: `{"auth":"vercel","auth_expired":false}`, want: ports.AgentAuthStatusUnknown},
-		{name: "another named source is only configured", json: `{"auth":"api-key"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "named source is configured", json: `{"auth":"vercel","auth_expired":false}`, want: ports.AgentAuthStatusConfigured},
+		{name: "another named source is configured", json: `{"auth":"api-key"}`, want: ports.AgentAuthStatusConfigured},
 		{name: "unknown shape", json: `{"version":"0.0.9"}`, want: ports.AgentAuthStatusUnknown},
 		{name: "malformed", json: `{"auth":`, want: ports.AgentAuthStatusUnknown},
 	}

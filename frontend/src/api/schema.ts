@@ -2490,7 +2490,7 @@ export interface components {
             reason: string;
             reasonCode: string;
             /** @enum {string} */
-            state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+            state: "authorized" | "configured" | "unauthorized" | "unknown" | "not_applicable";
         };
         AgentConfig: {
             mode?: string;
@@ -2499,10 +2499,10 @@ export interface components {
         };
         AgentInfo: {
             /**
-             * @description Advisory local auth probe result. authorized means a recent local probe passed; spawn remains the authoritative validation point.
+             * @description Advisory local auth probe result. authorized means a recent local probe passed; configured means local credentials exist without a provider round-trip; spawn remains the authoritative validation point.
              * @enum {string}
              */
-            authStatus?: "authorized" | "unauthorized" | "unknown";
+            authStatus?: "authorized" | "configured" | "unauthorized" | "unknown";
             id: string;
             label: string;
             /**

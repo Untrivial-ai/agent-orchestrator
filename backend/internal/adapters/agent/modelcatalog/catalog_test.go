@@ -110,6 +110,21 @@ func TestParseFXModelsUsesOnlyIDsAndPreservesThem(t *testing.T) {
 	}
 }
 
+func TestParseFXModelsPreservesEveryNonEmptyIDExactly(t *testing.T) {
+	got, err := parseFXModels([]byte(`{"ids":["  padded/model  ","","   ","plain"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "  padded/model  ", Label: "  padded/model  "},
+		{ID: "   ", Label: "   "},
+		{ID: "plain", Label: "plain"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want exact non-empty IDs %#v", got, want)
+	}
+}
+
 func TestParseFXModelsRejectsMalformedJSON(t *testing.T) {
 	if _, err := parseFXModels([]byte(`{"ids":`)); err == nil {
 		t.Fatal("parseFXModels error = nil, want malformed JSON error")

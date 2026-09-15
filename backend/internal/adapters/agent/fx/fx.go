@@ -117,7 +117,7 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 
 func commandWithOverrides(binary string, cfg ports.AgentConfig, permissions ports.PermissionMode) []string {
 	env := make([]string, 0, 2)
-	if model := strings.TrimSpace(cfg.Model); model != "" {
+	if model := cfg.Model; model != "" {
 		env = append(env, "FX_MODEL="+model)
 	}
 	if mode := permissionMode(permissions); mode != "" {

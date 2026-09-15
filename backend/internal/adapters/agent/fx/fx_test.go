@@ -43,8 +43,9 @@ func TestGetLaunchCommandMapsEnvironmentOverrides(t *testing.T) {
 		permissions ports.PermissionMode
 		want        []string
 	}{
-		{name: "defaults omitted", want: []string{"fx"}},
-		{name: "model", model: "  anthropic/claude-sonnet-4-6  ", want: []string{"env", "FX_MODEL=anthropic/claude-sonnet-4-6", "fx"}},
+		{name: "empty defaults omitted", want: []string{"fx"}},
+		{name: "default permissions omitted", permissions: ports.PermissionModeDefault, want: []string{"fx"}},
+		{name: "model preserved exactly", model: "  anthropic/claude-sonnet-4-6  ", want: []string{"env", "FX_MODEL=  anthropic/claude-sonnet-4-6  ", "fx"}},
 		{name: "accept edits", permissions: ports.PermissionModeAcceptEdits, want: []string{"env", "FX_PERMISSION_MODE=ask", "fx"}},
 		{name: "auto", permissions: ports.PermissionModeAuto, want: []string{"env", "FX_PERMISSION_MODE=auto", "fx"}},
 		{name: "bypass permissions", permissions: ports.PermissionModeBypassPermissions, want: []string{"env", "FX_PERMISSION_MODE=full-access", "fx"}},

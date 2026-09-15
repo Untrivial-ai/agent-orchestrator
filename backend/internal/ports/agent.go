@@ -24,6 +24,9 @@ const (
 	// AgentAuthStatusAuthorized means the local auth probe recently passed.
 	// It does not guarantee that a later spawn or model call will succeed.
 	AgentAuthStatusAuthorized AgentAuthStatus = "authorized"
+	// AgentAuthStatusConfigured means local credentials are present, but the
+	// agent has not confirmed them with its provider.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
 	// AgentAuthStatusUnauthorized means the agent is installed but its local
 	// auth probe reported missing or invalid authentication.
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"

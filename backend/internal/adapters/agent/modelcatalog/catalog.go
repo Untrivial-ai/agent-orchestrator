@@ -701,9 +701,12 @@ func parseFXModels(output []byte) ([]ports.AgentModelInfo, error) {
 	}
 	models := make([]ports.AgentModelInfo, 0, len(response.IDs))
 	for _, id := range response.IDs {
+		if id == "" {
+			continue
+		}
 		models = append(models, ports.AgentModelInfo{ID: id, Label: id})
 	}
-	return normalize(models), nil
+	return models, nil
 }
 
 func looksLikeModelID(value string) bool {
