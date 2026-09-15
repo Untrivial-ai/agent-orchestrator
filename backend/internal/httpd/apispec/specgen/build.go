@@ -1281,6 +1281,27 @@ func agentOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/agents/codex/maintenance", id: "getCodexMaintenance", tag: "agents",
+			summary: "Get the installer-aware Codex update advisory shown on the Codex provider card",
+			resps: []respUnit{
+				{http.StatusOK, controllers.CodexMaintenanceResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/agents/codex/maintenance/update", id: "startCodexUpdate", tag: "agents",
+			summary: "Run the installer-aware Codex update command for the currently resolved installation",
+			reqBody: controllers.StartCodexUpdateRequest{}, optionalReqBody: true,
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.AgentInstallResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/agents/{agent}/models", id: "getAgentModels", tag: "agents",
 			summary:    "Return the cached model picker for one agent, discovering it on first use",
 			pathParams: []any{controllers.AgentIDParam{}, controllers.AgentModelsQuery{}},

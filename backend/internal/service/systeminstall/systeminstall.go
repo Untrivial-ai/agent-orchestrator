@@ -305,6 +305,25 @@ type Service struct {
 	// persistenceTimeout bounds worker-owned transition and terminal writes.
 	persistenceTimeout time.Duration
 	onSucceeded        func(Target)
+
+	// codexMaintenance and codexVersions cache the installer-aware Codex
+	// update advisory (see codexmaintenance.go). resolveCodexBinary lets the
+	// daemon and tests supply the same binary resolution the Codex adapter
+	// itself uses instead of a second, potentially divergent PATH search.
+	codexMaintenance   codexMaintenanceCache
+	codexVersions      codexVersionCache
+	resolveCodexBinary func(context.Context) (string, error)
+}
+
+// SetCodexBinaryResolver overrides how CodexMaintenanceStatus and
+// StartCodexUpdate resolve "the Codex binary AO actually uses". Production
+// wiring should pass the Codex adapter's own resolver (or codex.ResolveCodexBinary)
+// so maintenance always targets the exact executable sessions launch with;
+// nil restores the package default.
+func (s *Service) SetCodexBinaryResolver(resolver func(context.Context) (string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolveCodexBinary = resolver
 }
 
 // requestPlanner carries one immutable capability snapshot through all recipe
@@ -572,6 +591,21 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 		}
 	}
 
+	release := releaseDroid
+	releaseDroid = nil
+	return s.startAgentPlan(ctx, target, plan, release)
+}
+
+// startAgentPlan is the shared job-tracking tail for every route that starts
+// a harness operation from an already-resolved Plan: create and persist the
+// Job, then hand execution to a background worker. StartAgentOperation
+// resolves plan from the method/operation catalog; StartCodexUpdate resolves
+// it from installer-aware ownership detection instead — both then go through
+// this identical bookkeeping (in-flight dedupe keyed by target, durable
+// persistence, shutdown-drain-safe worker accounting), so a Codex update job
+// serializes against, and is recoverable exactly like, any other install or
+// reinstall job already tracked for the same target.
+func (s *Service) startAgentPlan(ctx context.Context, target Target, plan Plan, release func()) (Job, error) {
 	s.mu.Lock()
 	if current, ok := s.jobs[target]; ok && activeStatus(current.Status) {
 		s.mu.Unlock()
@@ -614,12 +648,10 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 		s.finishAgentJob(job, StatusInterrupted, "", "daemon shutdown interrupted the install", "")
 		return initial, nil
 	}
-	workerRelease := releaseDroid
-	releaseDroid = nil
 	go func() { //nolint:gosec // bounded daemon-owned worker intentionally outlives the request.
 		defer s.workers.Done()
-		if workerRelease != nil {
-			defer workerRelease()
+		if release != nil {
+			defer release()
 		}
 		s.runAgentInstall(s.backgroundContext, plan, job)
 	}()

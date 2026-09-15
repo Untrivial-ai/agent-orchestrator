@@ -22,6 +22,8 @@ type Installer interface {
 	AgentPlans(ctx context.Context) ([]systeminstall.AgentPlan, error)
 	AgentJobs(ctx context.Context) ([]systeminstall.Job, error)
 	Verify(ctx context.Context, target systeminstall.Target) (systeminstall.Job, error)
+	CodexMaintenanceStatus(ctx context.Context) (systeminstall.CodexMaintenanceStatus, error)
+	StartCodexUpdate(ctx context.Context, expectedOwnership systeminstall.CodexOwnershipKind) (systeminstall.Job, error)
 }
 
 // SystemInstallController owns the system prerequisite and agent harness install routes.
@@ -38,6 +40,8 @@ func (c *SystemInstallController) Register(r chi.Router) {
 	r.Post("/agents/{agent}/install", c.startAgent)
 	r.Get("/agents/{agent}/install", c.agentStatus)
 	r.Post("/agents/{agent}/verify", c.verifyAgent)
+	r.Get("/agents/codex/maintenance", c.codexMaintenance)
+	r.Post("/agents/codex/maintenance/update", c.startCodexUpdate)
 }
 
 func (c *SystemInstallController) agentPlans(w http.ResponseWriter, r *http.Request) {
@@ -130,9 +134,46 @@ func writeAgentInstallError(w http.ResponseWriter, r *http.Request, err error) b
 	case errors.Is(err, systeminstall.ErrInstallActive):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "INSTALL_ACTIVE", "an install or verification job is already active for this harness", nil)
 		return true
+	case errors.Is(err, systeminstall.ErrCodexOwnershipChanged):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_OWNERSHIP_CHANGED", "the Codex installation changed since this update was last checked; refresh and retry", nil)
+		return true
 	default:
 		return false
 	}
+}
+
+func (c *SystemInstallController) codexMaintenance(w http.ResponseWriter, r *http.Request) {
+	if c.Installer == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/codex/maintenance")
+		return
+	}
+	status, err := c.Installer.CodexMaintenanceStatus(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, CodexMaintenanceResponse(status))
+}
+
+func (c *SystemInstallController) startCodexUpdate(w http.ResponseWriter, r *http.Request) {
+	if c.Installer == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/codex/maintenance/update")
+		return
+	}
+	var request StartCodexUpdateRequest
+	if err := decodeJSONStrict(r, &request); err != nil && !errors.Is(err, io.EOF) {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_CODEX_UPDATE_REQUEST", "invalid codex update request", nil)
+		return
+	}
+	job, err := c.Installer.StartCodexUpdate(r.Context(), systeminstall.CodexOwnershipKind(request.ExpectedOwnership))
+	if err != nil {
+		if writeAgentInstallError(w, r, err) {
+			return
+		}
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, job)
 }
 
 func (c *SystemInstallController) agentStatus(w http.ResponseWriter, r *http.Request) {

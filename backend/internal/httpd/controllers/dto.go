@@ -1555,6 +1555,17 @@ type AgentInstallJobsResponse struct {
 	Jobs []systeminstall.Job `json:"jobs"`
 }
 
+// CodexMaintenanceResponse is the body of GET /api/v1/agents/codex/maintenance:
+// the installer-aware update advisory shown on the Codex provider card.
+type CodexMaintenanceResponse = systeminstall.CodexMaintenanceStatus
+
+// StartCodexUpdateRequest guards POST /api/v1/agents/codex/maintenance/update
+// against acting on stale advisory state: when set, it must match the
+// ownership AO freshly resolves, or the request fails with a conflict.
+type StartCodexUpdateRequest struct {
+	ExpectedOwnership string `json:"expectedOwnership,omitempty" enum:"npm,homebrew,standalone,unknown" description:"Ownership last shown to the user. Omit to skip the staleness check."`
+}
+
 // ListNotificationsQuery is the query string accepted by GET /api/v1/notifications.
 type ListNotificationsQuery struct {
 	Status string `query:"status,omitempty" enum:"unread,all,unresolved" description:"Notification filter. Defaults to unread (unseen); unresolved returns notifications whose underlying issue is still open; all includes read history."`

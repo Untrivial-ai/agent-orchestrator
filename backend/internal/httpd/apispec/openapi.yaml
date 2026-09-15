@@ -817,6 +817,75 @@ paths:
       summary: Open an inline native login terminal for a new AO Codex account
       tags:
       - agents
+  /api/v1/agents/codex/maintenance:
+    get:
+      operationId: getCodexMaintenance
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SysteminstallCodexMaintenanceStatus'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get the installer-aware Codex update advisory shown on the Codex provider
+        card
+      tags:
+      - agents
+  /api/v1/agents/codex/maintenance/update:
+    post:
+      operationId: startCodexUpdate
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersStartCodexUpdateRequest'
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Run the installer-aware Codex update command for the currently resolved
+        installation
+      tags:
+      - agents
   /api/v1/agents/install-jobs:
     get:
       operationId: listAgentInstallJobs
@@ -8491,6 +8560,18 @@ components:
       required:
       - enabled
       type: object
+    ControllersStartCodexUpdateRequest:
+      properties:
+        expectedOwnership:
+          description: Ownership last shown to the user. Omit to skip the staleness
+            check.
+          enum:
+          - npm
+          - homebrew
+          - standalone
+          - unknown
+          type: string
+      type: object
     ControllersUpdateCloudOfferingRequest:
       properties:
         enabled:
@@ -12011,6 +12092,50 @@ components:
       required:
       - ready
       - requirements
+      type: object
+    SysteminstallCodexMaintenanceStatus:
+      properties:
+        binaryPath:
+          description: The Codex executable AO currently launches sessions with.
+          type: string
+        checkedAt:
+          description: When this status was derived.
+          format: date-time
+          type: string
+        installedVersion:
+          description: Version reported by the resolved binary's --version probe.
+          type: string
+        latestVersion:
+          description: Latest version AO could confirm from the owning package manager.
+            Empty when unknown, not when current.
+          type: string
+        manualReason:
+          description: 'Set when UpdateSupported is false: why, and what to do manually.'
+          type: string
+        ownership:
+          description: How AO believes the resolved binary is owned.
+          enum:
+          - npm
+          - homebrew
+          - standalone
+          - unknown
+          type: string
+        updateAvailable:
+          description: True only when both versions were resolved and the latest is
+            strictly newer.
+          type: boolean
+        updateCommand:
+          description: Human-readable command Update now would run.
+          type: string
+        updateSupported:
+          description: True when AO can run an update command for this installation
+            without guessing.
+          type: boolean
+      required:
+      - ownership
+      - updateAvailable
+      - updateSupported
+      - checkedAt
       type: object
     TrackerIntakeConfig:
       properties:

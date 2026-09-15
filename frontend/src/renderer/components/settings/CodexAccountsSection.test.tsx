@@ -436,8 +436,15 @@ it("verifies exactly once on terminal exit and collapses after structured succes
 	const completedAccount = { ...inactiveAccount, id: "33333333-3333-4333-8333-333333333333", label: "new@example.com", accountEmail: "new@example.com" };
 	// The verified operation is enough to update the card immediately. A
 	// follow-up cached-list refresh is best-effort and must not keep the dead
-	// terminal open when it fails.
-	getMock.mockResolvedValueOnce({ data: accountResponse }).mockRejectedValue(new Error("refresh unavailable"));
+	// terminal open when it fails. Keyed by path (not call order) so the
+	// unrelated Codex maintenance advisory query -- which also calls GET --
+	// can't steal the one-time accounts response meant for this assertion.
+	let accountsGetCalls = 0;
+	getMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/maintenance") return Promise.resolve({ data: {} });
+		accountsGetCalls += 1;
+		return accountsGetCalls === 1 ? Promise.resolve({ data: accountResponse }) : Promise.reject(new Error("refresh unavailable"));
+	});
 	postMock.mockImplementation((path: string) => {
 		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: accountResponse });
 		if (path === "/api/v1/agents/codex/accounts/login-terminal") return Promise.resolve({ data: pendingLogin });

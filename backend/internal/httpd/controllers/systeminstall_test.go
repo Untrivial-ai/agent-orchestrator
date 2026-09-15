@@ -16,19 +16,24 @@ import (
 )
 
 type fakeInstaller struct {
-	startJob      systeminstall.Job
-	startErr      error
-	statusJob     systeminstall.Job
-	statusErr     error
-	plans         []systeminstall.AgentPlan
-	plansErr      error
-	startCalls    int
-	lastTarget    systeminstall.Target
-	lastMethod    string
-	lastOperation systeminstall.AgentOperation
-	agentJobs     []systeminstall.Job
-	verifyJob     systeminstall.Job
-	verifyErr     error
+	startJob              systeminstall.Job
+	startErr              error
+	statusJob             systeminstall.Job
+	statusErr             error
+	plans                 []systeminstall.AgentPlan
+	plansErr              error
+	startCalls            int
+	lastTarget            systeminstall.Target
+	lastMethod            string
+	lastOperation         systeminstall.AgentOperation
+	agentJobs             []systeminstall.Job
+	verifyJob             systeminstall.Job
+	verifyErr             error
+	maintenance           systeminstall.CodexMaintenanceStatus
+	maintenanceErr        error
+	updateJob             systeminstall.Job
+	updateErr             error
+	lastExpectedOwnership systeminstall.CodexOwnershipKind
 }
 
 func (f *fakeInstaller) Start(_ context.Context, target systeminstall.Target) (systeminstall.Job, error) {
@@ -63,6 +68,15 @@ func (f *fakeInstaller) Verify(_ context.Context, target systeminstall.Target) (
 	return f.verifyJob, f.verifyErr
 }
 
+func (f *fakeInstaller) CodexMaintenanceStatus(context.Context) (systeminstall.CodexMaintenanceStatus, error) {
+	return f.maintenance, f.maintenanceErr
+}
+
+func (f *fakeInstaller) StartCodexUpdate(_ context.Context, expectedOwnership systeminstall.CodexOwnershipKind) (systeminstall.Job, error) {
+	f.lastExpectedOwnership = expectedOwnership
+	return f.updateJob, f.updateErr
+}
+
 func TestAgentInstallRoutes(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	installer := &fakeInstaller{
@@ -95,6 +109,43 @@ func TestAgentInstallRoutes(t *testing.T) {
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/not-real/install", "")
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"UNKNOWN_AGENT_INSTALL_TARGET"`) {
 		t.Fatalf("POST /agents/not-real/install = %d, body=%s", status, body)
+	}
+}
+
+func TestCodexMaintenanceRoutes(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	installer := &fakeInstaller{
+		maintenance: systeminstall.CodexMaintenanceStatus{
+			Ownership: systeminstall.CodexOwnershipNPM, InstalledVersion: "0.149.1", LatestVersion: "0.153.4",
+			UpdateAvailable: true, UpdateSupported: true, UpdateCommand: "npm install -g @openai/codex@latest",
+		},
+		updateJob: systeminstall.Job{Target: systeminstall.TargetCodex, Status: systeminstall.StatusInstalling, Method: "npm"},
+	}
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Installer: installer,
+	}, httpd.ControlDeps{}))
+	defer srv.Close()
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/agents/codex/maintenance", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"ownership":"npm"`) || !strings.Contains(string(body), `"updateAvailable":true`) {
+		t.Fatalf("GET /agents/codex/maintenance = %d, body=%s", status, body)
+	}
+
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/maintenance/update", `{"expectedOwnership":"npm"}`)
+	if status != http.StatusAccepted || installer.lastExpectedOwnership != systeminstall.CodexOwnershipNPM || !strings.Contains(string(body), `"status":"installing"`) {
+		t.Fatalf("POST /agents/codex/maintenance/update = %d, expectedOwnership=%q, body=%s", status, installer.lastExpectedOwnership, body)
+	}
+}
+
+func TestCodexMaintenanceUpdateRejectsChangedOwnership(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	installer := &fakeInstaller{updateErr: systeminstall.ErrCodexOwnershipChanged}
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Installer: installer}, httpd.ControlDeps{}))
+	defer srv.Close()
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/maintenance/update", `{"expectedOwnership":"homebrew"}`)
+	if status != http.StatusConflict || !strings.Contains(string(body), `"code":"CODEX_OWNERSHIP_CHANGED"`) {
+		t.Fatalf("POST /agents/codex/maintenance/update = %d, body=%s", status, body)
 	}
 }
 

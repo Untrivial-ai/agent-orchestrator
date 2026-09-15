@@ -345,6 +345,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/codex/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the installer-aware Codex update advisory shown on the Codex provider card */
+        get: operations["getCodexMaintenance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/codex/maintenance/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run the installer-aware Codex update command for the currently resolved installation */
+        post: operations["startCodexUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/install-jobs": {
         parameters: {
             query?: never;
@@ -2958,6 +2992,13 @@ export interface components {
         ControllersSetSessionAutoReviewRequest: {
             enabled: boolean;
         };
+        ControllersStartCodexUpdateRequest: {
+            /**
+             * @description Ownership last shown to the user. Omit to skip the staleness check.
+             * @enum {string}
+             */
+            expectedOwnership?: "npm" | "homebrew" | "standalone" | "unknown";
+        };
         ControllersUpdateCloudOfferingRequest: {
             enabled: null | boolean;
         };
@@ -4304,6 +4345,32 @@ export interface components {
             /** @description Individual checks in stable order for the selected probe. */
             requirements: components["schemas"]["SystemRequirement"][];
         };
+        SysteminstallCodexMaintenanceStatus: {
+            /** @description The Codex executable AO currently launches sessions with. */
+            binaryPath?: string;
+            /**
+             * Format: date-time
+             * @description When this status was derived.
+             */
+            checkedAt: string;
+            /** @description Version reported by the resolved binary's --version probe. */
+            installedVersion?: string;
+            /** @description Latest version AO could confirm from the owning package manager. Empty when unknown, not when current. */
+            latestVersion?: string;
+            /** @description Set when UpdateSupported is false: why, and what to do manually. */
+            manualReason?: string;
+            /**
+             * @description How AO believes the resolved binary is owned.
+             * @enum {string}
+             */
+            ownership: "npm" | "homebrew" | "standalone" | "unknown";
+            /** @description True only when both versions were resolved and the latest is strictly newer. */
+            updateAvailable: boolean;
+            /** @description Human-readable command Update now would run. */
+            updateCommand?: string;
+            /** @description True when AO can run an update command for this installation without guessing. */
+            updateSupported: boolean;
+        };
         TrackerIntakeConfig: {
             assignee?: string;
             enabled?: boolean;
@@ -5570,6 +5637,104 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getCodexMaintenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SysteminstallCodexMaintenanceStatus"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    startCodexUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ControllersStartCodexUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallJob"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };
