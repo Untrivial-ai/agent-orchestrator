@@ -56,6 +56,16 @@ func validateCodexDirectoryAncestors(path string) error {
 		return errors.New("codex directory path is invalid")
 	}
 	for current := abs; ; current = filepath.Dir(current) {
+		// A Windows volume root is administered by the operating system, not by
+		// the user who owns the credential vault.  Standard Windows ACLs commonly
+		// grant Authenticated Users the ability to create entries directly at that
+		// root.  Treating that system-level policy as a vault-ancestor grant makes
+		// every vault on the volume unusable, even when each user-controlled
+		// ancestor has been verified.  Stop before inspecting the volume root;
+		// all intervening, user-controlled ancestors remain checked below.
+		if isCodexWindowsVolumeRoot(current) {
+			return nil
+		}
 		ptr, ptrErr := windows.UTF16PtrFromString(current)
 		if ptrErr != nil {
 			return errors.New("codex directory path is invalid")
@@ -78,10 +88,15 @@ func validateCodexDirectoryAncestors(path string) error {
 		if !codexWindowsPathMetadataIsSafe(codexWindowsMetadata(info, ownerTrusted, aclSafe), true, false) {
 			return errors.New("codex directory ancestor ACL is unsafe")
 		}
-		if parent := filepath.Dir(current); parent == current {
-			return nil
-		}
 	}
+}
+
+func isCodexWindowsVolumeRoot(path string) bool {
+	volume := filepath.VolumeName(path)
+	if volume == "" {
+		return false
+	}
+	return filepath.Clean(path) == filepath.Clean(volume+string(filepath.Separator))
 }
 
 func openCodexWindowsPath(path string, directory, requirePrivate bool) (windows.Handle, windows.ByHandleFileInformation, bool, bool, bool, error) {
