@@ -450,6 +450,22 @@ func TestDefaultCatalogDisplaysPrimeAgent(t *testing.T) {
 	t.Fatal("default catalog does not contain prime-agent")
 }
 
+func TestDefaultCatalogDisplaysFX(t *testing.T) {
+	got, err := New().List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, info := range got.Supported {
+		if info.ID == "fx" {
+			if info.Label != "fx" {
+				t.Fatalf("fx label = %q, want fx", info.Label)
+			}
+			return
+		}
+	}
+	t.Fatal("default catalog does not contain fx")
+}
+
 func TestRefreshReportsInstalledAgentsAndIgnoresDetectorErrors(t *testing.T) {
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
 		harnessAgent("codex", "Codex", nil),

@@ -75,6 +75,7 @@ func TestOMPAndHelpBackedAgentsUseDocumentedDiscoveryCommands(t *testing.T) {
 		{agent: "copilot", want: []string{"help", "config"}},
 		{agent: "droid", want: []string{"exec", "--help"}},
 		{agent: "crush", want: []string{"models"}},
+		{agent: "fx", want: []string{"models", "--json"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.agent, func(t *testing.T) {
@@ -89,6 +90,29 @@ func TestOMPAndHelpBackedAgentsUseDocumentedDiscoveryCommands(t *testing.T) {
 				t.Fatalf("%s discovery parser is nil", tc.agent)
 			}
 		})
+	}
+}
+
+func TestParseFXModelsUsesOnlyIDsAndPreservesThem(t *testing.T) {
+	got, err := parseFXModels([]byte(`{
+		"ids": ["anthropic/claude-sonnet-4-6", "openai/gpt-5.6-sol-high"],
+		"models": [{"id": "must-not-be-used"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "anthropic/claude-sonnet-4-6", Label: "anthropic/claude-sonnet-4-6"},
+		{ID: "openai/gpt-5.6-sol-high", Label: "openai/gpt-5.6-sol-high"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseFXModelsRejectsMalformedJSON(t *testing.T) {
+	if _, err := parseFXModels([]byte(`{"ids":`)); err == nil {
+		t.Fatal("parseFXModels error = nil, want malformed JSON error")
 	}
 }
 
@@ -203,6 +227,7 @@ func TestCustomModelEntryPolicy(t *testing.T) {
 		{agent: "kimchi", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
 		{agent: "prime-agent", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
 		{agent: "autohand", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "fx", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
 	}
 
 	for _, tc := range tests {

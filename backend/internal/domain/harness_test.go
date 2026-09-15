@@ -2,6 +2,21 @@ package domain
 
 import "testing"
 
+func TestFXHarnessIsKnown(t *testing.T) {
+	if HarnessFX != AgentHarness("fx") {
+		t.Fatalf("HarnessFX = %q, want fx", HarnessFX)
+	}
+	if !HarnessFX.IsKnown() {
+		t.Fatal("HarnessFX.IsKnown() = false, want true")
+	}
+	for _, harness := range AllHarnesses {
+		if harness == HarnessFX {
+			return
+		}
+	}
+	t.Fatal("AllHarnesses does not contain HarnessFX")
+}
+
 func TestPrimeAgentHarnessIsKnown(t *testing.T) {
 	if HarnessPrimeAgent != AgentHarness("prime-agent") {
 		t.Fatalf("HarnessPrimeAgent = %q, want prime-agent", HarnessPrimeAgent)

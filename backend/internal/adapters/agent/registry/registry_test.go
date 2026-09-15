@@ -68,6 +68,27 @@ func TestEveryHarnessReportsAuthStatus(t *testing.T) {
 	}
 }
 
+func TestRegistryIncludesFX(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("fx")
+	if !ok {
+		t.Fatal("registry does not contain fx")
+	}
+	if manifest := adapter.Manifest(); manifest.Name != "fx" {
+		t.Fatalf("fx manifest name = %q, want fx", manifest.Name)
+	}
+
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessFX {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain fx")
+}
+
 func TestRegistryIncludesPrimeAgent(t *testing.T) {
 	reg, err := Build()
 	if err != nil {
