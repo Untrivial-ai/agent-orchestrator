@@ -100,6 +100,41 @@ func TestBuildProjectConfigTrackerIntakeFlags(t *testing.T) {
 	}
 }
 
+// TestBuildProjectConfigWorkerProfileFlags: the worker MCP/plugin flags are
+// assembled into the per-role AgentConfig that the daemon validates and
+// claude-code maps to --mcp-config / --strict-mcp-config / --plugin-dir[-url].
+func TestBuildProjectConfigWorkerProfileFlags(t *testing.T) {
+	got, err := buildProjectConfig(projectSetConfigOptions{
+		workerMCPConfig: []string{`{"a":1}`, "/p/m.json"},
+		workerStrictMCP: true,
+		workerPluginDir: []string{"/local/plugin", "https://example.com/p.zip"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp := got.Worker.AgentConfig.MCP
+	if mcp == nil || !mcp.Strict || len(mcp.Configs) != 2 || mcp.Configs[0] != `{"a":1}` || mcp.Configs[1] != "/p/m.json" {
+		t.Fatalf("worker MCP = %#v, want strict with 2 configs", mcp)
+	}
+	if len(got.Worker.AgentConfig.PluginDirs) != 2 || got.Worker.AgentConfig.PluginDirs[1] != "https://example.com/p.zip" {
+		t.Fatalf("worker pluginDirs = %#v", got.Worker.AgentConfig.PluginDirs)
+	}
+}
+
+// TestBuildProjectConfigWorkerStrictMCPAlone: --worker-strict-mcp without any
+// --worker-mcp-config is a valid isolation request (empty MCP set), so it must
+// still build a present MCPConfig with Strict=true rather than dropping it.
+func TestBuildProjectConfigWorkerStrictMCPAlone(t *testing.T) {
+	got, err := buildProjectConfig(projectSetConfigOptions{workerStrictMCP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp := got.Worker.AgentConfig.MCP
+	if mcp == nil || !mcp.Strict || len(mcp.Configs) != 0 {
+		t.Fatalf("worker MCP = %#v, want strict isolation with empty configs", mcp)
+	}
+}
+
 func TestProjectList_Success(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, capture := projectServer(t, http.StatusOK, `{"projects":[{"id":"zeta","name":"Zeta","sessionPrefix":"zeta"},{"id":"alpha","name":"Alpha","sessionPrefix":"alpha","resolveError":"config missing"}]}`)
