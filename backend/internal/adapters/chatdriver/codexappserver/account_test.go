@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
@@ -54,6 +56,97 @@ func TestAccountFactoryUsesManagedHomeAndFileCredentialStore(t *testing.T) {
 	if account.Authentication != domain.AgentAuthenticationAuthorized || account.Method != domain.CodexAuthMethodChatGPT || account.Email == nil || *account.Email != "person@example.com" {
 		t.Fatalf("account = %#v", account)
 	}
+}
+
+func TestAccountFactoryAugmentsPathForResolvedBinary(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "environment.txt")
+	bin := filepath.Join(t.TempDir(), "codex.exe")
+	binary, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, binary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("AO_ACCOUNT_HELPER", "1")
+	t.Setenv("AO_ACCOUNT_HELPER_OUTPUT", output)
+	t.Setenv("PATH", "base-path")
+	factory := NewAccountFactoryWithResolver(func(context.Context) (string, error) {
+		return bin, nil
+	}, nil)
+	client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	recorded, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pathValue string
+	var pathEntries, homeEntries []string
+	for _, line := range strings.Split(strings.TrimSpace(string(recorded)), "\n") {
+		switch {
+		case strings.HasPrefix(line, "PATH="):
+			pathValue = strings.TrimPrefix(line, "PATH=")
+		case strings.HasPrefix(line, "PATH_ENTRY="):
+			pathEntries = append(pathEntries, strings.TrimPrefix(line, "PATH_ENTRY="))
+		case strings.HasPrefix(line, "CODEX_HOME_ENTRY="):
+			homeEntries = append(homeEntries, strings.TrimPrefix(line, "CODEX_HOME_ENTRY="))
+		}
+	}
+	parts := strings.Split(pathValue, string(os.PathListSeparator))
+	if len(parts) == 0 || parts[0] != filepath.Dir(bin) {
+		t.Fatalf("child PATH = %q, want executable directory %q first", pathValue, filepath.Dir(bin))
+	}
+	if len(pathEntries) != 1 || !strings.EqualFold(pathEntries[0], "PATH="+pathValue) {
+		t.Fatalf("child PATH entries = %#v, want one effective PATH entry", pathEntries)
+	}
+	if len(homeEntries) != 1 || homeEntries[0] != "CODEX_HOME="+home {
+		t.Fatalf("child CODEX_HOME entries = %#v, want one entry for %q", homeEntries, home)
+	}
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("AO_ACCOUNT_HELPER") == "1" {
+		accountAppServerTestHelper()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func accountAppServerTestHelper() {
+	request, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
+	if err != nil {
+		panic(err)
+	}
+	var message struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(request, &message); err != nil {
+		panic(err)
+	}
+	var records []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		switch {
+		case strings.EqualFold(key, "PATH"):
+			records = append(records, "PATH_ENTRY="+entry)
+		case strings.EqualFold(key, "CODEX_HOME"):
+			records = append(records, "CODEX_HOME_ENTRY="+entry)
+		}
+	}
+	records = append(records, "PATH="+os.Getenv("PATH"))
+	if err := os.WriteFile(os.Getenv("AO_ACCOUNT_HELPER_OUTPUT"), []byte(strings.Join(records, "\n")+"\n"), 0o600); err != nil {
+		panic(err)
+	}
+	response, err := json.Marshal(map[string]any{"id": message.ID, "result": map[string]any{}})
+	if err != nil {
+		panic(err)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, string(response))
 }
 
 func TestAccountReadMapsExplicitSignedOutAndNotApplicable(t *testing.T) {
