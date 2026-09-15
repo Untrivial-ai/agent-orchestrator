@@ -479,6 +479,17 @@ describe("ShellTopbar orchestrator actions", () => {
 });
 
 describe("ShellTopbar inspector state", () => {
+	it("reserves space for orchestrator controls without duplicating notifications", () => {
+		const view = renderTopbarSessions([orchestrator], orchestrator.id);
+		const reserve = screen.getByTestId("session-pinned-actions-reserve");
+		expect(reserve).toHaveAttribute("data-state", "expanded");
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
+		useUiStore.setState({ inspectorSessions: { [orchestrator.id]: { isOpen: true, view: "browser" } } });
+		view.rerenderTopbar();
+		expect(reserve).toHaveAttribute("data-state", "collapsed");
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
+	});
+
 	it("keeps the expanded worker controls out of the center topbar", () => {
 		renderTopbarSessions([worker], "sess-1");
 

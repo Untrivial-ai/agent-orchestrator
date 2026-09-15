@@ -999,11 +999,13 @@ describe("terminal link preview", () => {
 		}
 	});
 
-	it("does not mirror orchestrator links because orchestrators have no Browser inspector", () => {
+	it("opens orchestrator links in its Browser inspector", () => {
 		const view = renderPane(orchestrator);
 		try {
 			act(() => terminalLinkHandler?.("http://localhost:3000"));
-			expect(postMock).not.toHaveBeenCalled();
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+				params: { path: { sessionId: orchestrator.id } }, body: { url: "http://localhost:3000" },
+			});
 		} finally {
 			view.restore();
 		}

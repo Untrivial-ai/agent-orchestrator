@@ -11,6 +11,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+var (
+	// ErrUnsupportedEffort reports a value the selected model did not advertise.
+	ErrUnsupportedEffort = errors.New("unsupported model effort")
+	// ErrModelCapabilitiesUnavailable reports tuning that cannot be validated safely.
+	ErrModelCapabilitiesUnavailable = errors.New("model capabilities unavailable")
+)
+
 // ErrAgentBinaryNotFound is returned by agent adapters when neither PATH nor
 // any well-known install location holds the agent's binary. The session
 // manager surfaces this BEFORE creating the runtime so a missing CLI doesn't
@@ -232,7 +239,8 @@ type AgentModelInfo struct {
 	// setting, which is a real answer rather than a missing one — Sonnet 4.5
 	// and Haiku 4.5 accept none while the 5 family accepts five — so a picker
 	// must render no effort control at all rather than an empty one.
-	Efforts []string `json:"efforts,omitempty"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
 
 // AgentModelCatalog is AO's normalized model-picker response.

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentModelCombobox, buildModelSearchIndex, searchModelIndex } from "./AgentModelCombobox";
 
@@ -25,6 +26,55 @@ function renderCombobox(
 
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
+
+	it("opens effort after selecting a model and closes after selecting both", async () => {
+		function Picker() {
+			const [model, setModel] = useState("capable");
+			const [effort, setEffort] = useState("high");
+			return <AgentModelCombobox aria-label="Worker model" value={model}
+				models={[
+					{ id: "capable", label: "Capable", efforts: ["low", "high"] },
+					{ id: "plain", label: "Plain", efforts: ["low"] },
+				]}
+				onChange={setModel} onCustom={setModel} compact
+				tuning={{ effort, onEffortChange: setEffort }} />;
+		}
+		render(<Picker />);
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		expect(picker).toHaveTextContent("Capable · High");
+		await userEvent.click(picker);
+		expect(screen.getByRole("menuitem", { name: "Capable" })).toHaveAttribute("aria-current", "true");
+		await userEvent.click(screen.getByRole("menuitem", { name: "Plain" }));
+		expect(picker).toHaveTextContent("Plain · Provider default");
+		expect(screen.queryByRole("menuitemradio", { name: "High" })).not.toBeInTheDocument();
+		const providerDefault = screen.getByRole("menuitemradio", { name: "Provider default" });
+		expect(providerDefault).toHaveAttribute("aria-checked", "true");
+		await userEvent.hover(screen.getByRole("menuitem", { name: "Capable" }));
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+		await userEvent.hover(providerDefault);
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(picker).toHaveTextContent("Plain · Low");
+		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
+	});
+
+	it("closes immediately after selecting a model without effort choices", async () => {
+		function Picker() {
+			const [model, setModel] = useState("");
+			const [effort, setEffort] = useState("");
+			return <AgentModelCombobox aria-label="Worker model" value={model}
+				models={[{ id: "plain", label: "Plain" }]}
+				onChange={setModel} onCustom={setModel} compact
+				tuning={{ effort, onEffortChange: setEffort }} />;
+		}
+		render(<Picker />);
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Plain" }));
+
+		expect(picker).toHaveTextContent("Plain");
+		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
+	});
 
 	it("keeps the model menu closed while its owning operation is pending", async () => {
 		renderCombobox([{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }], { disabled: true });

@@ -8,6 +8,7 @@ package claudeacp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -102,13 +103,15 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
 				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
-			env := make(map[string]string, len(cfg.Env)+1)
-			for key, value := range cfg.Env {
-				env[key] = value
+			var models []ports.AgentModelInfo
+			if _, preserve := claudeACPModelConfig(cfg.Env); !preserve {
+				var modelErr error
+				models, modelErr = claudecode.ProviderModels(ctx, claudeBinary, cfg.Env)
+				if modelErr != nil && log != nil {
+					log.Debug("Claude provider model discovery unavailable; using ACP defaults", "error", modelErr)
+				}
 			}
-			// This is the line that prevents the adapter's optional native Claude
-			// package from becoming a second installation managed by AO.
-			env["CLAUDE_CODE_EXECUTABLE"] = claudeBinary
+			env := claudeACPLaunchEnv(cfg.Env, claudeBinary, cfg.Model, models)
 			return acpdriver.Launch{
 				Command: runtimeLaunch.command,
 				Args:    runtimeLaunch.args,
@@ -119,6 +122,97 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
 	}, log)}
+}
+
+// claudeACPLaunchEnv gives claude-agent-acp the same provider model IDs AO
+// exposes in its pre-launch picker. The adapter turns availableModels into its
+// authoritative ACP model choices, so a raw first-party ID selected in AO is
+// accepted by session/set_config_option instead of being rejected because the
+// adapter started with aliases only.
+func claudeACPLaunchEnv(
+	input map[string]string,
+	binary string,
+	selectedModel string,
+	models []ports.AgentModelInfo,
+) map[string]string {
+	env := make(map[string]string, len(input)+2)
+	for key, value := range input {
+		env[key] = value
+	}
+	// This prevents the adapter's optional native Claude package from becoming
+	// a second installation managed by AO.
+	env["CLAUDE_CODE_EXECUTABLE"] = binary
+	selected := strings.TrimSpace(selectedModel)
+	if _, configured := input["ANTHROPIC_CUSTOM_MODEL_OPTION"]; selected != "" &&
+		!configured && strings.TrimSpace(os.Getenv("ANTHROPIC_CUSTOM_MODEL_OPTION")) == "" {
+		// availableModels restricts Claude Code's built-in picker but does not
+		// make every provider-discovered API ID a selectable SDK model. The
+		// custom option is the supported bridge for the one API model AO is
+		// actually starting this session with.
+		env["ANTHROPIC_CUSTOM_MODEL_OPTION"] = selected
+	}
+	config, preserve := claudeACPModelConfig(input)
+	if preserve {
+		return env
+	}
+
+	ids := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if selected != "" {
+		if _, exists := seen[selected]; !exists {
+			ids = append(ids, selected)
+		}
+	}
+	if len(ids) == 0 {
+		return env
+	}
+
+	encodedIDs, err := json.Marshal(ids)
+	if err != nil {
+		return env
+	}
+	config["availableModels"] = encodedIDs
+	encodedConfig, err := json.Marshal(config)
+	if err != nil {
+		return env
+	}
+	env["CLAUDE_MODEL_CONFIG"] = string(encodedConfig)
+	return env
+}
+
+// claudeACPModelConfig returns a mergeable user configuration. preserve is
+// true when AO must pass the value through untouched, either because the user
+// supplied an authoritative availableModels list or because ACP should report
+// malformed configuration itself. Callers can also use preserve to avoid a
+// provider lookup whose result would be discarded.
+func claudeACPModelConfig(input map[string]string) (map[string]json.RawMessage, bool) {
+	raw, configured := input["CLAUDE_MODEL_CONFIG"]
+	if !configured {
+		raw = os.Getenv("CLAUDE_MODEL_CONFIG")
+	}
+	config := make(map[string]json.RawMessage)
+	if strings.TrimSpace(raw) == "" {
+		return config, false
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil, true
+	}
+	if config == nil {
+		return nil, true
+	}
+	_, userRestricted := config["availableModels"]
+	return config, userRestricted
 }
 
 func validateClaudeACPExecutable(binary, goos string) error {

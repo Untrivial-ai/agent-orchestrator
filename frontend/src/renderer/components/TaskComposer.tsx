@@ -30,9 +30,8 @@ import {
 	refreshAgentModels,
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
-import { AgentEffortSelect } from "./settings/AgentEffortSelect";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
-import { AgentModelCombobox } from "./settings/AgentModelCombobox";
+import { AgentModelCombobox, type ModelEffortSelection } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
 type Project = components["schemas"]["Project"];
@@ -106,6 +105,7 @@ export function TaskComposer({
 	const [agent, setAgent] = useState("");
 	const [agentTouched, setAgentTouched] = useState(false);
 	const [modelTouched, setModelTouched] = useState(false);
+	const [effortTouched, setEffortTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const [fallbackAction, setFallbackAction] = useState<FallbackAction>();
@@ -169,8 +169,8 @@ export function TaskComposer({
 						projectId: input.projectId,
 						brief: input.brief,
 						agent: input.agent,
-						model: input.model,
-						...(input.effort ? { effort: input.effort } : {}),
+						...(input.model ? { model: input.model } : {}),
+						...(input.effort !== undefined ? { effort: input.effort } : {}),
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
@@ -272,6 +272,8 @@ export function TaskComposer({
 		projectQuery.data?.config?.worker?.agentConfig?.model ?? projectQuery.data?.config?.agentConfig?.model ?? "";
 	const defaultWorkerMode =
 		projectQuery.data?.config?.worker?.agentConfig?.mode ?? projectQuery.data?.config?.agentConfig?.mode ?? "";
+	const defaultWorkerEffort =
+		projectQuery.data?.config?.worker?.agentConfig?.effort ?? projectQuery.data?.config?.agentConfig?.effort ?? "";
 	const projectModelForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerModel : "";
 	const projectModeForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerMode : "";
 	const agentCatalog = agentsQuery.data;
@@ -333,6 +335,11 @@ export function TaskComposer({
 		const refreshed = await refreshAgentModels(selectedAgent, modelsProjectId);
 		queryClient.setQueryData(agentModelsQueryKey(selectedAgent, modelsProjectId), refreshed);
 	}, [modelsProjectId, queryClient, selectedAgent]);
+	const displayedModelWarning = requiresTuiFallback
+		? t("newTask.tuningRequiresChat")
+		: fallbackAction === "tui"
+			? [modelWarning, t("newTask.tuiTuningDefaults")].filter(Boolean).join(" ")
+			: modelWarning;
 
 	useEffect(() => {
 		if (!agentTouched) setAgent(defaultWorkerAgent);
@@ -343,8 +350,11 @@ export function TaskComposer({
 			setMode(defaultModeForSelectedAgent);
 		}
 	}, [defaultModelForSelectedAgent, defaultModeForSelectedAgent, modelTouched]);
+	useEffect(() => {
+		if (!effortTouched) setEffort(selectedAgent === defaultWorkerAgent ? defaultWorkerEffort : "");
+	}, [defaultWorkerAgent, defaultWorkerEffort, effortTouched, selectedAgent]);
 
-	const isDirty = isPromptDirty || modelTouched || attachments.length > 0;
+	const isDirty = isPromptDirty || modelTouched || effortTouched || attachments.length > 0;
 	const handlePromptChange = useCallback((value: string) => {
 		const nextDirty = value.trim() !== "";
 		setIsPromptDirty((wasDirty) => (wasDirty === nextDirty ? wasDirty : nextDirty));
@@ -409,11 +419,7 @@ export function TaskComposer({
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
-				// Send effort whenever the level is non-empty. The control's option list
-				// is read from the currently displayed model, so if effort is selectable,
-				// the model vouches for it. This is decoupled from whether requestedModel
-				// was set, so a default model still gets its selected effort level.
-				effort: effort,
+				effort: interfaceMode === "tui" || !effortTouched ? undefined : effort,
 				mode: interfaceMode,
 				approvalMode,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
@@ -473,6 +479,7 @@ export function TaskComposer({
 					setMode("");
 					setEffort("");
 					setModelTouched(false);
+					setEffortTouched(false);
 				},
 			}}
 			model={{
@@ -517,7 +524,7 @@ export function TaskComposer({
 				showFallbackAction: fallbackAction !== undefined,
 				error,
 				isSubmitting,
-				modelWarning,
+				modelWarning: displayedModelWarning,
 				onFallbackAction: (brief) =>
 					void (fallbackAction === "bypass-permissions"
 						? submitTask(brief, undefined, "bypass-permissions")
@@ -526,17 +533,13 @@ export function TaskComposer({
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
 			renderModelControl={(control) => (
-				<div className="flex min-w-0 items-center gap-1">
-					<TaskModelPicker {...control} onRefresh={refreshSelectedModels} />
-					<AgentEffortSelect
-						aria-label={t("settings.models.effort")}
-						value={effort}
-						efforts={modelCatalog?.models?.find((item) => item.id === model)?.efforts}
-						onChange={setEffort}
-						disabled={isSubmitting || selectedAgent === ""}
-						triggerClassName="composer-chip composer-toolbar-option justify-between"
-					/>
-				</div>
+				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
+					tuning={!requiresTuiFallback ? {
+						effort,
+						onEffortChange: (value) => { setEffort(value); setEffortTouched(true); },
+						onEffortReset: setEffort,
+					} : undefined}
+				/>
 			)}
 		/>
 	);
@@ -564,7 +567,8 @@ function TaskModelPicker({
 	onModelChange,
 	onModeChange,
 	onRefresh,
-}: TaskComposerModelControl & { onRefresh: () => Promise<void> }) {
+	tuning,
+}: TaskComposerModelControl & { onRefresh: () => Promise<void>; tuning?: ModelEffortSelection }) {
 	const { t } = useTranslation();
 
 	// Says what happens with no override, rather than labelling it "Agent default".
@@ -629,6 +633,7 @@ function TaskModelPicker({
 	return (
 		<AgentModelCombobox
 			key={agentId}
+			tuning={tuning}
 			aria-label={t("newTask.model")}
 			value={value}
 			models={displayModels}

@@ -7318,6 +7318,8 @@ components:
       type: object
     AgentModelInfo:
       properties:
+        defaultEffort:
+          type: string
         efforts:
           items:
             type: string
@@ -9209,8 +9211,10 @@ components:
           maxLength: 16384
           type: string
         effort:
-          maxLength: 32
-          type: string
+          maxLength: 64
+          type:
+          - "null"
+          - string
         mode:
           enum:
           - tui

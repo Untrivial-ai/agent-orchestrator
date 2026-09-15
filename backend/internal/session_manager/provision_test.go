@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 type fixedBrowserCapability string
@@ -251,8 +252,8 @@ func TestHookPATH(t *testing.T) {
 
 func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	cfg := domain.ProjectConfig{
-		AgentConfig:  domain.AgentConfig{Model: "base", Mode: "low", Permissions: domain.PermissionModeAuto},
-		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker", Mode: "high"}},
+		AgentConfig:  domain.AgentConfig{Model: "base", Effort: "medium", Mode: "low", Permissions: domain.PermissionModeAuto},
+		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker", Effort: "high", Mode: "high"}},
 		Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode},
 	}
 
@@ -270,12 +271,113 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 
 	// Role override merges over the base agent config (set fields win; unset keep base).
 	got := effectiveAgentConfig(domain.KindWorker, cfg)
-	if got.Model != "worker" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
+	if got.Model != "worker" || got.Effort != "high" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
 		t.Fatalf("merged worker config = %#v, want model=worker mode=high permissions=auto", got)
 	}
 	// Orchestrator has no agent-config override, so the base config is used as-is.
 	if got := effectiveAgentConfig(domain.KindOrchestrator, cfg); got.Model != "base" {
 		t.Fatalf("orchestrator config = %#v, want base", got)
+	}
+}
+
+type tuningCatalog struct {
+	catalog ports.AgentModelCatalog
+	err     error
+	calls   *int
+}
+
+func (c tuningCatalog) Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
+	if c.calls != nil {
+		*c.calls++
+	}
+	return c.catalog, c.err
+}
+
+func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
+	m := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "old", Efforts: []string{"high"}},
+		{ID: "new", Efforts: []string{"low"}},
+	}}}}
+	project := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "old", Effort: "high"}}}
+	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new"},
+	}, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != "new" || resolved.Effort != "" {
+		t.Fatalf("resolved = %#v, want new model with provider defaults", resolved)
+	}
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "old"}, EffortOverride: true,
+	}, project)
+	if err != nil || resolved.Effort != "" {
+		t.Fatalf("explicit provider defaults did not clear role tuning: %#v, %v", resolved, err)
+	}
+
+	_, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new", Effort: "high"},
+	}, project)
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("error = %v, want ErrUnsupportedEffort", err)
+	}
+
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "custom"},
+	}, project)
+	if err != nil || resolved.Model != "custom" || resolved.Effort != "" {
+		t.Fatalf("custom model with provider defaults = %#v, %v", resolved, err)
+	}
+
+	m.modelCatalog = tuningCatalog{err: errors.New("discovery failed")}
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new"},
+	}, domain.ProjectConfig{})
+	if err != nil || resolved.Model != "new" {
+		t.Fatalf("provider defaults should survive discovery failure: %#v, %v", resolved, err)
+	}
+	_, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new", Effort: "high"},
+	}, domain.ProjectConfig{})
+	if !errors.Is(err, ports.ErrModelCapabilitiesUnavailable) {
+		t.Fatalf("error = %v, want ErrModelCapabilitiesUnavailable", err)
+	}
+}
+
+func TestResolveChatAgentConfigValidatesClaudeEffort(t *testing.T) {
+	catalogCalls := 0
+	m := &Manager{modelCatalog: tuningCatalog{calls: &catalogCalls, catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "sonnet", IsDefault: true, Efforts: []string{"high"}},
+	}}}}
+	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		AgentConfig: ports.AgentConfig{Model: "sonnet", Effort: "high"}, EffortOverride: true,
+	}, domain.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Effort != "high" {
+		t.Fatalf("Claude Code effort = %q, want high", resolved.Effort)
+	}
+	if catalogCalls != 1 {
+		t.Fatalf("Claude Code model catalog calls = %d, want 1", catalogCalls)
+	}
+
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		AgentConfig: ports.AgentConfig{Model: "sonnet"}, EffortOverride: true,
+	}, domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Effort: "high"}}})
+	if err != nil || resolved.Effort != "" {
+		t.Fatalf("explicit Claude provider default did not clear role tuning: %#v, %v", resolved, err)
+	}
+	if catalogCalls != 1 {
+		t.Fatalf("provider default made an unnecessary model catalog call: %d", catalogCalls)
 	}
 }
 
