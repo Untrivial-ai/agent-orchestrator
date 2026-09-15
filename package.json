@@ -1,7 +1,13 @@
 {
 	"name": "agent-orchestrator",
 	"private": true,
+	"packageManager": "npm@11.19.0",
+	"engines": {
+		"node": "24.20.x",
+		"npm": "11.19.x"
+	},
 	"scripts": {
+		"bootstrap:frontend": "node scripts/bootstrap-frontend.mjs",
 		"lint": "cd backend && go test ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --path-mode=abs",
 		"frontend:typecheck": "npm --prefix frontend run typecheck",
 		"cloud:check": "npm --prefix packages/cloud-client run generate && git diff --exit-code -- packages/cloud-client/src/schema.ts && npm --prefix packages/cloud-client run typecheck && npm --prefix packages/cloud-client test && npm --prefix packages/cloud-client run build",

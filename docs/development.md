@@ -4,11 +4,11 @@ How to set up, build, run, and test Agent Orchestrator locally.
 
 ## Prerequisites
 
-| Tool       | Minimum version | Notes                                                                  |
+| Tool       | Required version | Notes                                                                 |
 | ---------- | --------------- | ---------------------------------------------------------------------- |
 | Go         | 1.25.7          | `go version` to check; install via [go.dev](https://go.dev/dl/)        |
-| Node.js    | 20.19.0         | `node --version`; install via [nodejs.org](https://nodejs.org/)        |
-| npm        | 10              | Ships with Node.js                                                     |
+| Node.js    | 24.20.0         | Pinned by `.node-version` and `.nvmrc`                                 |
+| npm        | 11.19.0         | Ships with the pinned Node.js release                                  |
 | Nix (opt.) | -               | `nix develop` drops you into a shell with all deps; see `../flake.nix` |
 
 Additional runtime dependencies for the daemon:
@@ -45,8 +45,18 @@ agent-orchestrator/
 ```bash
 git clone https://github.com/AgentWrapper/agent-orchestrator.git
 cd agent-orchestrator
-npm ci
+npm run bootstrap:frontend
 ```
+
+The bootstrap command fails before installation when the Node/npm pair does
+not match the repository contract. It installs the root, product UI, and
+desktop dependencies with optional native packages enabled, then loads the
+critical native/tooling modules. A worktree-local marker keyed by OS,
+architecture, runtime versions, and all three lockfiles makes an unchanged
+second run fast without sharing mutable `node_modules` directories between
+branches. If npm omits an optional native package, bootstrap retries its
+materialization once and fails with a recovery command if validation still
+does not pass.
 
 ### Branching
 
@@ -259,7 +269,7 @@ go run ./cmd/ao --help
 | ------------------------------------- | ----------------------- | ------------------------------------------------------------ |
 | `npm run typecheck` has type errors   | API types out of sync   | Run `npm run api` from repo root to regenerate               |
 | `npm run dev` fails on native modules | Missing build tools     | Install Python + C++ build tools for `node-gyp`              |
-| `npm install` or `npm ci` fails       | Node.js version too old | `node --version`; must be 20.19.0+ (see prerequisites above) |
+| `npm install` or `npm ci` fails       | Runtime mismatch        | Run `npm run bootstrap:frontend`; it reports the exact pinned Node/npm pair |
 | Blank window or crash on Linux        | Broken GPU driver stack | Start with `AO_DISABLE_GPU=1` to skip hardware acceleration  |
 
 ### Code generation drift
