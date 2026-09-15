@@ -157,7 +157,8 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		return false, false, false, errors.New("codex path owner is unavailable")
 	}
 	ownerCurrent := owner.Equals(user.User.Sid)
-	ownerTrusted := ownerCurrent || owner.Equals(system) || owner.Equals(administrators)
+	sandboxSid, _, _, _ := windows.LookupSID("", "CodexSandboxUsers")
+	ownerTrusted := ownerCurrent || owner.Equals(system) || owner.Equals(administrators) || (sandboxSid != nil && owner.Equals(sandboxSid))
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		return ownerCurrent, ownerTrusted, false, nil
@@ -177,7 +178,7 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		ace := codexWindowsACE{Allowed: allowed, Mask: uint32(prefix.mask)}
 		if allowed {
 			sid := (*windows.SID)(unsafe.Pointer(&raw.SidStart))
-			ace.PrincipalTrusted = sid.Equals(user.User.Sid) || sid.Equals(system) || sid.Equals(administrators)
+			ace.PrincipalTrusted = sid.Equals(user.User.Sid) || sid.Equals(system) || sid.Equals(administrators) || (sandboxSid != nil && sid.Equals(sandboxSid))
 		} else if prefix.header.AceType == 5 || prefix.header.AceType == 9 || prefix.header.AceType == 11 {
 			ace.Allowed = true
 		}
