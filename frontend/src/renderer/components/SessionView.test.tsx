@@ -80,6 +80,32 @@ vi.mock("../hooks/useCloudCp", () => ({
 }));
 vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 	...await importOriginal<typeof import("../hooks/useSessionInterfaceTransition")>(),
+	interfaceTransitionIsActive: (transition?: { phase?: string }) =>
+		Boolean(
+			transition &&
+				[
+					"requested",
+					"preflighting",
+					"draining",
+					"source_stopping",
+					"source_stopped",
+					"target_starting",
+					"activating",
+				].includes(transition.phase ?? ""),
+		),
+	interfaceTransitionIsCancellable: (transition?: { phase?: string }) =>
+		Boolean(
+			transition && ["requested", "preflighting", "draining"].includes(transition.phase ?? ""),
+		),
+	interfaceTransitionHasUnacknowledgedNotice: (transition?: {
+		phase?: string;
+		noticeAcknowledgedAt?: string;
+	}) =>
+		Boolean(
+			transition &&
+				!transition.noticeAcknowledgedAt &&
+				(transition.phase === "failed" || transition.phase === "recovery_required"),
+		),
 	useSessionInterfaceTransition: () => ({
 		status: interfaceTransitionState.status,
 		transition: interfaceTransitionState.status?.transition,
@@ -2360,10 +2386,10 @@ describe("SessionView", () => {
 
 			render(<SessionView sessionId="sess-1" />);
 
-			expect(screen.getAllByRole("alert")).toHaveLength(1);
-			const alert = screen.getByRole("alert");
-			expect(alert).toHaveTextContent("Interface switch needs attention");
-			expect(alert).toHaveTextContent(errorDetail);
+			const alert = screen.getByRole("status", { name: /^Interface switch needs attention/ });
+			expect(alert).toHaveAttribute("aria-label", expect.stringContaining("Interface switch needs attention"));
+			expect(alert).toHaveAttribute("aria-label", expect.stringContaining(errorDetail));
+			expect(alert).toHaveAttribute("aria-live", "polite");
 			expect(within(alert).queryByRole("button")).not.toBeInTheDocument();
 			expect(screen.getByTestId("terminal-center")).toHaveAttribute("data-agent-input-disabled", "true");
 			expect(screen.getByRole("status", { name: /^Interface switch needs attention/ }).querySelector(".animate-spin")).toBeNull();

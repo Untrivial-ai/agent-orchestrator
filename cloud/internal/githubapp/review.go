@@ -10,27 +10,39 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 )
 
-// triggerReview starts a best-effort review in a dedicated sandbox process.
-func (s *Service) triggerReview(ctx context.Context, orgID, sessionID string, pr domain.PullRequest) {
+// TriggerReview starts one review in a dedicated agent terminal. Opening or
+// claiming a PR intentionally does not invoke it: cloud must follow the same
+// explicit "Run review" action as local sessions.
+func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID string, pr domain.PullRequest) (domain.ReviewRun, bool, error) {
 	run, created, err := s.store.CreateReviewRun(ctx, orgID, pr.ID, sessionID, pr.HeadSHA)
 	if err != nil {
-		s.logger.Error("create review run", "error", err, "pull_request_id", pr.ID)
-		return
+		return domain.ReviewRun{}, false, err
 	}
 	if !created {
-		return
+		return run, false, nil
 	}
 	if err := s.store.OpenReviewTerminal(ctx, orgID, sessionID, run.ID, reviewPrompt(run.ID, pr)); err != nil {
-		s.logger.Error("open review terminal", "error", err, "pull_request_id", pr.ID, "review_run_id", run.ID)
 		// A run is durable before the terminal is queued. Queue failures must
 		// resolve that durable record too; otherwise every client truthfully
 		// renders a review as running forever even though it never started.
-		if _, failErr := s.store.FailReviewRun(ctx, orgID, run.ID, sessionID, err.Error()); failErr != nil {
-			s.logger.Error("fail review run after terminal open failure",
-				"error", failErr, "pull_request_id", pr.ID, "review_run_id", run.ID)
-		}
+		_, _ = s.store.FailReviewRun(ctx, orgID, run.ID, sessionID, err.Error())
+		s.closeReviewTerminal(ctx, orgID, sessionID, run.ID)
+		return domain.ReviewRun{}, false, err
+	}
+	return run, true, nil
+}
+
+// CancelReviews makes cancellation durable before requesting terminal
+// teardown, so a disconnected worker cannot leave a stuck running review.
+func (s *Service) CancelReviews(ctx context.Context, orgID, sessionID string) ([]domain.ReviewRun, error) {
+	runs, err := s.store.CancelRunningReviewRunsBySession(ctx, orgID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, run := range runs {
 		s.closeReviewTerminal(ctx, orgID, sessionID, run.ID)
 	}
+	return runs, nil
 }
 
 func reviewPrompt(reviewRunID string, pr domain.PullRequest) string {
@@ -39,8 +51,9 @@ func reviewPrompt(reviewRunID string, pr domain.PullRequest) string {
 			"%s into %s. This is a fresh session with no prior context — you did not "+
 			"write this change. Start by running `git diff %s...%s` (and `git log`, `git show` "+
 			"as needed) in the current workspace to see exactly what changed, then review it "+
-			"for correctness, quality, and bugs as a careful human reviewer would, not just a "+
-			"summary of the diff.\n\n"+
+			"for correctness bugs, missing error handling, security issues, test coverage, and "+
+			"clear deviations from the surrounding code's conventions. Prefer a few high-confidence "+
+			"findings over nitpicks. Do not edit files, push commits, or modify the branch.\n\n"+
 			"When you are done, submit your verdict by POSTing to $AO_REVIEW_SOCKET: $AO_REVIEW_HELP\n\n"+
 			"Use reviewRunId %q, verdict \"approved\" if the change looks correct and ready to merge, "+
 			"or \"changes_requested\" if you found problems that should be fixed first, and a body "+
