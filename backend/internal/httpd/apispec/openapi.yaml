@@ -11955,6 +11955,7 @@ components:
           enum:
           - claude-code
           - codex
+          - fx
           type: string
       required:
       - targetHarness

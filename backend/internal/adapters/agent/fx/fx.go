@@ -34,6 +34,8 @@ var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentPromptReadinessProvider = (*Plugin)(nil)
+var _ ports.AgentAfterStartPromptBuilder = (*Plugin)(nil)
+var _ ports.AgentContinuationCapabilityProvider = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -81,6 +83,25 @@ func (p *Plugin) PromptReadinessHints(ctx context.Context, _ ports.LaunchConfig)
 		return ports.PromptReadinessHints{}, err
 	}
 	return ports.PromptReadinessHints{InitialDelay: 750 * time.Millisecond}, nil
+}
+
+// BuildAfterStartPrompt applies fx's accepted TUI degradation: because fx has
+// no per-session system-prompt interface, AO sends the standing instructions
+// and task together as one clearly marked first user turn.
+func (p *Plugin) BuildAfterStartPrompt(ctx context.Context, cfg ports.LaunchConfig) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return "## AO Standing Instructions\n\n" + strings.TrimSpace(cfg.SystemPrompt) +
+		"\n\n## AO Task\n\n" + strings.TrimSpace(cfg.Prompt), nil
+}
+
+// ContinuationCapabilities reports that fx assigns native session ids and
+// reports them through Herdr after the interactive process starts.
+func (p *Plugin) ContinuationCapabilities() ports.ContinuationCapabilities {
+	return ports.ContinuationCapabilities{
+		FreshNativeSessionID: ports.FreshNativeSessionIDProviderAssigned,
+	}
 }
 
 // GetAgentHooks is intentionally a no-op. fx lifecycle integration uses its

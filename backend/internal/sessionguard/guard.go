@@ -215,6 +215,20 @@ func (g *Guard) DeliverUnderMutation(ctx context.Context, id domain.SessionID, m
 	})
 }
 
+// DeliverUnderMutationChecked adds one caller-owned proof immediately before
+// an admitted mutation writes to the pane. Agent switching uses it to ensure
+// the target runtime generation still owns the terminal after readiness wait.
+func (g *Guard) DeliverUnderMutationChecked(
+	ctx context.Context,
+	id domain.SessionID,
+	msg string,
+	preWrite func(context.Context, domain.SessionRecord) error,
+) (Outcome, error) {
+	return g.sendAdmittedChecked(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
+		return SuppressedAwaitingUser, rec.Activity.State == domain.ActivityBlocked
+	}, preWrite)
+}
+
 // CoordinationUnderMutation writes an AO coordination message while the caller
 // owns the session's exclusive mutation fence. It intentionally bypasses the
 // ordinary input lease (which the mutation has already closed), but re-reads

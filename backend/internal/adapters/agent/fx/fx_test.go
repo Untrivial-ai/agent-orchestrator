@@ -93,6 +93,40 @@ func TestPromptDeliveryWaitsBrieflyAfterStart(t *testing.T) {
 	}
 }
 
+func TestContinuationCapabilitiesUseProviderAssignedNativeSessionID(t *testing.T) {
+	provider, ok := any(New()).(ports.AgentContinuationCapabilityProvider)
+	if !ok {
+		t.Fatal("fx must declare its native-session ownership for agent switching")
+	}
+	if got := provider.ContinuationCapabilities().FreshNativeSessionID; got != ports.FreshNativeSessionIDProviderAssigned {
+		t.Fatalf("fresh native-session id mode = %q, want %q", got, ports.FreshNativeSessionIDProviderAssigned)
+	}
+}
+
+func TestAfterStartPromptWrapsStandingInstructionsAndTaskInOneTurn(t *testing.T) {
+	builder, ok := any(New()).(ports.AgentAfterStartPromptBuilder)
+	if !ok {
+		t.Fatal("fx must compose its standing instructions and task for after-start delivery")
+	}
+	got, err := builder.BuildAfterStartPrompt(context.Background(), ports.LaunchConfig{
+		SystemPrompt: "Keep changes surgical.",
+		Prompt:       "Implement agent switching.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `## AO Standing Instructions
+
+Keep changes surgical.
+
+## AO Task
+
+Implement agent switching.`
+	if got != want {
+		t.Fatalf("after-start prompt = %q, want %q", got, want)
+	}
+}
+
 func TestGetRestoreCommandUsesNativeSessionIDAndOverrides(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "fx"}
 	got, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
@@ -162,6 +196,9 @@ func TestAdapterMethodsHonorCanceledContext(t *testing.T) {
 	}
 	if _, err := plugin.PromptReadinessHints(ctx, ports.LaunchConfig{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("PromptReadinessHints error = %v, want context.Canceled", err)
+	}
+	if _, err := plugin.BuildAfterStartPrompt(ctx, ports.LaunchConfig{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("BuildAfterStartPrompt error = %v, want context.Canceled", err)
 	}
 	if err := plugin.GetAgentHooks(ctx, ports.WorkspaceHookConfig{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("GetAgentHooks error = %v, want context.Canceled", err)

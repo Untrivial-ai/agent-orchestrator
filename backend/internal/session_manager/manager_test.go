@@ -725,6 +725,16 @@ func (a readinessAgent) PromptReadinessHints(context.Context, ports.LaunchConfig
 	return a.hints, nil
 }
 
+type composedAfterStartAgent struct {
+	afterStartAgent
+	buildCalls int
+}
+
+func (a *composedAfterStartAgent) BuildAfterStartPrompt(_ context.Context, cfg ports.LaunchConfig) (string, error) {
+	a.buildCalls++
+	return "STANDING:\n" + cfg.SystemPrompt + "\nTASK:\n" + cfg.Prompt, nil
+}
+
 type promptStrategyErrorAgent struct {
 	*recordingAgent
 	err error
@@ -2149,6 +2159,38 @@ func TestSpawn_DeliversPromptAfterStartWhenAgentRequestsIt(t *testing.T) {
 	}
 	if st.sessions["mer-1"].Metadata.Prompt != "fix the button" {
 		t.Fatalf("stored prompt = %q, want original prompt", st.sessions["mer-1"].Metadata.Prompt)
+	}
+}
+
+func TestSpawn_AfterStartPromptBuilderCombinesStandingInstructionsAndTaskOnce(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	msg := &fakeMessenger{}
+	recording := &recordingAgent{}
+	agent := &composedAfterStartAgent{afterStartAgent: afterStartAgent{recordingAgent: recording}}
+	m := New(Deps{
+		Runtime: rt, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: msg, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "fix the button"}); err != nil {
+		t.Fatal(err)
+	}
+	if agent.buildCalls != 1 {
+		t.Fatalf("BuildAfterStartPrompt calls = %d, want 1", agent.buildCalls)
+	}
+	if len(msg.msgs) != 1 || !strings.HasPrefix(msg.msgs[0], "STANDING:\n") ||
+		!strings.Contains(msg.msgs[0], "## AO Worker Role") ||
+		!strings.HasSuffix(msg.msgs[0], "TASK:\nfix the button") {
+		t.Fatalf("delivered prompts = %#v, want one combined bootstrap turn", msg.msgs)
+	}
+	if recording.lastLaunch.Prompt != "" {
+		t.Fatalf("launch prompt = %q, want empty for after-start delivery", recording.lastLaunch.Prompt)
+	}
+	if got := st.sessions["mer-1"].Metadata.Prompt; got != "fix the button" {
+		t.Fatalf("stored prompt = %q, want original task", got)
 	}
 }
 

@@ -256,6 +256,14 @@ type AgentPromptReadinessProvider interface {
 	PromptReadinessHints(ctx context.Context, cfg LaunchConfig) (PromptReadinessHints, error)
 }
 
+// AgentAfterStartPromptBuilder is an optional capability for interactive
+// adapters that need to combine launch-only context with the first user turn.
+// AO calls it exactly once per after-start delivery and sends the returned
+// value only after the runtime is ready.
+type AgentAfterStartPromptBuilder interface {
+	BuildAfterStartPrompt(ctx context.Context, cfg LaunchConfig) (string, error)
+}
+
 // TerminalActivityDetector derives activity only from authoritative terminal UI markers.
 type TerminalActivityDetector interface {
 	DetectTerminalActivity(output string) (domain.ActivityState, bool)

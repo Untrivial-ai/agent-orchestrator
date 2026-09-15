@@ -56,7 +56,7 @@ function renderDialog(
 	const queryClient = new QueryClient({
 		defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
 	});
-	for (const agentId of ["claude-code", "codex"]) {
+	for (const agentId of ["claude-code", "codex", "fx"]) {
 		queryClient.setQueryData(agentModelsQueryKey(agentId, session.workspaceId), {
 			agentId,
 			allowCustom: false,
@@ -154,6 +154,38 @@ describe("SwitchAgentDialog", () => {
 		const options = switchMocks.mutate.mock.calls[0]?.[1] as { onSuccess: () => void };
 		options.onSuccess();
 		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it("offers fx as a switch target", async () => {
+		const tuiWorker = { ...worker, mode: "tui" as const };
+		renderDialog(tuiWorker);
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Target agent" }));
+
+		const fxOption = screen.getByRole("menuitem", { name: "fx" });
+		expect(fxOption).not.toHaveAttribute("data-disabled");
+		await userEvent.click(fxOption);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			{
+				idempotencyKey: "idempotency-1",
+				model: "",
+				session: tuiWorker,
+				targetHarness: "fx",
+			},
+			{ onSuccess: expect.any(Function) },
+		);
+	});
+
+	it("keeps fx unavailable as a Chat switch target", async () => {
+		renderDialog({ ...worker, mode: "chat" });
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Target agent" }));
+
+		expect(screen.getByRole("menuitem", { name: /fx,\s*Coming soon/ })).toHaveAttribute(
+			"data-disabled",
+		);
 	});
 
 	it("keeps direct model IDs in the same searchable model picker", async () => {

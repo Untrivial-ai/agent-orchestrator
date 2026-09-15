@@ -48,7 +48,7 @@ export function TerminalSwitchAgentButton({
 	if (
 		session.kind !== "worker" ||
 		session.isTerminated ||
-		!canSwitchAgentHarness(session.provider) ||
+		!canSwitchAgentHarness(session.provider, session.mode) ||
 		(!controlPresentation && !sessionIsActive(session))
 	) {
 		return null;

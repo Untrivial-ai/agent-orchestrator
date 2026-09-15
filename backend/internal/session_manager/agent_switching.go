@@ -76,6 +76,8 @@ type preparedTargetActivation struct {
 	env                      map[string]string
 	launch                   ports.LaunchConfig
 	argv                     []string
+	promptDelivery           ports.PromptDeliveryStrategy
+	afterStartPrompt         string
 	launchID                 domain.AgentGenerationID
 	native                   domain.AgentNativeSession
 	nativeExpectedGeneration domain.AgentGenerationID
@@ -256,7 +258,7 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrIncompleteHandle)
 	}
 	if !switchHarnessSupported(rec.Harness) || !switchHarnessSupported(cfg.TargetHarness) {
-		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w: supported harnesses are claude-code and codex", id, ErrUnsupportedSwitchHarness)
+		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w: supported harnesses are claude-code, codex, and fx", id, ErrUnsupportedSwitchHarness)
 	}
 	if rec.Harness == cfg.TargetHarness {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w: %s", id, ErrAlreadyUsingHarness, cfg.TargetHarness)
@@ -953,10 +955,10 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 		return result, fmt.Errorf("switch agent %s: reload target activation: %w", id, err)
 	}
 
-	// The continuation is already an argv-bound user turn. Persist delivery
-	// before releasing the SessionStart/UserPromptSubmit hooks so their
-	// generation-fenced acknowledgement cannot arrive while the saga still says
-	// target_ready.
+	// Persist the delivery boundary before releasing lifecycle reports. For
+	// in-command targets this lets the prompt-submit hook acknowledge the argv
+	// turn. After-start targets are released, awaited, written exactly once, and
+	// acknowledged from the successful guarded write below.
 	recorder.boundary(domain.AgentSwitchFailureDeliveryOpenCommit)
 	if err := m.advanceAgentSwitch(ctx, store, &result, domain.AgentSwitchDelivering, nil); err != nil {
 		return result, fmt.Errorf("switch agent %s: begin launch continuation delivery: %w", id, err)
@@ -965,11 +967,25 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 	m.lcm.ReleaseLaunch(id, string(target.launchID))
 	launchPending = false
 	recorder.boundary(domain.AgentSwitchFailureTUITargetHookWait)
-	result, err = m.waitForTargetAcknowledgement(workerCtx, store, result)
-	if err != nil {
-		recorder.callOutcome = domain.AgentSwitchCallTimedOut
-		recorder.userImpact = domain.AgentSwitchUserImpactDeliveryUnknown
-		return result, fmt.Errorf("switch agent %s: confirm continuation: %w", id, err)
+	if target.promptDelivery == ports.PromptDeliveryAfterStart {
+		if err := m.deliverAgentSwitchAfterStartPrompt(ctx, target, handle, id); err != nil {
+			recorder.userImpact = domain.AgentSwitchUserImpactDeliveryUnknown
+			return result, fmt.Errorf("switch agent %s: deliver continuation: %w", id, err)
+		}
+		result, acknowledged, err := m.acknowledgeAgentSwitchTargetWithReadback(ctx, store, result, target.launchID, m.clock())
+		if err != nil {
+			return result, fmt.Errorf("switch agent %s: acknowledge continuation: %w", id, err)
+		}
+		if !acknowledged {
+			return result, fmt.Errorf("switch agent %s: acknowledge continuation: %w", id, ErrSwitchDeliveryUnconfirmed)
+		}
+	} else {
+		result, err = m.waitForTargetAcknowledgement(workerCtx, store, result)
+		if err != nil {
+			recorder.callOutcome = domain.AgentSwitchCallTimedOut
+			recorder.userImpact = domain.AgentSwitchUserImpactDeliveryUnknown
+			return result, fmt.Errorf("switch agent %s: confirm continuation: %w", id, err)
+		}
 	}
 	recorder.boundary(domain.AgentSwitchFailureTUITargetAckCommit)
 	completionCtx, cancelCompletion := switchDurableContext(ctx)
@@ -1257,7 +1273,7 @@ func (m *Manager) resolveTargetActivationOutcome(
 
 func switchHarnessSupported(h domain.AgentHarness) bool {
 	switch h {
-	case domain.HarnessClaudeCode, domain.HarnessCodex:
+	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessFX:
 		return true
 	default:
 		return false
@@ -1382,8 +1398,8 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("prompt delivery: %w", err)
 	}
-	if promptDelivery != ports.PromptDeliveryInCommand {
-		return preparedTargetActivation{}, fmt.Errorf("agent switching requires in-command prompt delivery, got %q", promptDelivery)
+	if promptDelivery != ports.PromptDeliveryInCommand && promptDelivery != ports.PromptDeliveryAfterStart {
+		return preparedTargetActivation{}, fmt.Errorf("agent switching does not support prompt delivery strategy %q", promptDelivery)
 	}
 	var argv []string
 	mode := domain.AgentSwitchTargetStartFresh
@@ -1444,7 +1460,8 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	}
 	return preparedTargetActivation{
 		agent: agent, harness: harness, env: env, launch: launch, argv: argv,
-		launchID: launchID, native: candidate, nativeExpectedGeneration: expectedGeneration,
+		promptDelivery: promptDelivery,
+		launchID:       launchID, native: candidate, nativeExpectedGeneration: expectedGeneration,
 		startMode: mode,
 	}, nil
 }
@@ -1524,6 +1541,16 @@ func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.Sess
 	launch.SystemPrompt = systemPrompt
 	launch.SystemPromptFile = systemFile
 	launch.Prompt = prompt
+	afterStartPrompt := ""
+	commandLaunch := launch
+	if target.promptDelivery == ports.PromptDeliveryAfterStart {
+		var err error
+		afterStartPrompt, err = buildAfterStartPrompt(ctx, target.agent, launch)
+		if err != nil {
+			return fmt.Errorf("after-start prompt: %w", err)
+		}
+		commandLaunch.Prompt = ""
+	}
 	var (
 		raw      []string
 		buildErr error
@@ -1535,7 +1562,7 @@ func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.Sess
 				WorkspacePath: rec.Metadata.WorkspacePath,
 				Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: target.native.NativeSessionID},
 			},
-			Kind: rec.Kind, DataDir: m.dataDir, Prompt: prompt,
+			Kind: rec.Kind, DataDir: m.dataDir, Prompt: commandLaunch.Prompt,
 			SystemPrompt: launch.SystemPrompt, SystemPromptFile: launch.SystemPromptFile,
 			Config: launch.Config, Permissions: launch.Config.Permissions,
 		})
@@ -1546,7 +1573,7 @@ func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.Sess
 			return errors.New("provider no longer accepted the selected native resume")
 		}
 	} else {
-		raw, buildErr = target.agent.GetLaunchCommand(ctx, launch)
+		raw, buildErr = target.agent.GetLaunchCommand(ctx, commandLaunch)
 		if buildErr != nil {
 			return fmt.Errorf("launch command: %w", buildErr)
 		}
@@ -1561,7 +1588,46 @@ func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.Sess
 	}
 	target.launch = launch
 	target.argv = wrapped
+	target.afterStartPrompt = afterStartPrompt
 	return nil
+}
+
+func (m *Manager) deliverAgentSwitchAfterStartPrompt(
+	ctx context.Context,
+	target preparedTargetActivation,
+	handle ports.RuntimeHandle,
+	id domain.SessionID,
+) error {
+	if err := m.waitForPromptReadiness(ctx, target.agent, target.launch, handle); err != nil {
+		return err
+	}
+	outcome, err := m.messenger.DeliverUnderMutationChecked(
+		ctx,
+		id,
+		target.afterStartPrompt,
+		m.exactGenerationPreWrite(id, target.harness, handle, target.launchID, ErrSwitchDeliveryUnconfirmed),
+	)
+	if err != nil {
+		return fmt.Errorf("send %s: %w", id, err)
+	}
+	switch outcome {
+	case sessionguard.SuppressedNotFound:
+		return fmt.Errorf("send %s: %w", id, ErrNotFound)
+	case sessionguard.SuppressedTerminated:
+		return fmt.Errorf("send %s: %w", id, ErrTerminated)
+	case sessionguard.SuppressedExited:
+		return fmt.Errorf("send %s: %w", id, ErrAgentExited)
+	case sessionguard.SuppressedAwaitingUser:
+		return fmt.Errorf("send %s: %w", id, ErrAwaitingDecision)
+	case sessionguard.SuppressedStartupPending:
+		return fmt.Errorf("send %s: %w", id, ErrStartupPending)
+	case sessionguard.SuppressedInputGated:
+		return fmt.Errorf("send %s: %w", id, ErrSwitchInProgress)
+	case sessionguard.SuppressedUnknown:
+		return fmt.Errorf("send %s: pre-write session read failed", id)
+	default:
+		return nil
+	}
 }
 
 // persistPreparedTargetNativeSession records the intended target conversation

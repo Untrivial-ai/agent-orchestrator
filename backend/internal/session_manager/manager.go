@@ -1044,7 +1044,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPromptDelivery, err)
 	}
+	afterStartPrompt := prompt
 	if delivery == ports.PromptDeliveryAfterStart {
+		afterStartPrompt, err = buildAfterStartPrompt(ctx, agent, launchCfg)
+		if err != nil {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPromptDelivery, err)
+		}
 		launchCfg.Prompt = ""
 	}
 	argv, err := agent.GetLaunchCommand(ctx, launchCfg)
@@ -1115,8 +1121,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		m.markSpawnFailedTerminated(ctx, id)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
 	}
-	if delivery == ports.PromptDeliveryAfterStart && prompt != "" {
-		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, id, prompt); err != nil {
+	if delivery == ports.PromptDeliveryAfterStart && afterStartPrompt != "" {
+		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, id, afterStartPrompt); err != nil {
 			runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
 			workspaceDestroyed := m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
 			if runtimeDestroyed && workspaceDestroyed {
@@ -4723,6 +4729,13 @@ func (m *Manager) deliverAfterStartPrompt(ctx context.Context, agent ports.Agent
 	default:
 		return nil
 	}
+}
+
+func buildAfterStartPrompt(ctx context.Context, agent ports.Agent, cfg ports.LaunchConfig) (string, error) {
+	if builder, ok := agent.(ports.AgentAfterStartPromptBuilder); ok {
+		return builder.BuildAfterStartPrompt(ctx, cfg)
+	}
+	return cfg.Prompt, nil
 }
 
 func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent, cfg ports.LaunchConfig, handle ports.RuntimeHandle) error {

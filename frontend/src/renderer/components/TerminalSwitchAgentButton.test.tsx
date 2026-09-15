@@ -174,6 +174,18 @@ describe("TerminalSwitchAgentButton", () => {
 		expect(screen.queryByRole("button", { name: "Switch agent" })).not.toBeInTheDocument();
 	});
 
+	it("renders for an fx TUI worker", async () => {
+		renderControl({ ...worker, mode: "tui", provider: "fx" });
+
+		expect(await screen.findByRole("button", { name: "Switch agent" })).toBeInTheDocument();
+	});
+
+	it("does not expose switching from an fx Chat worker", () => {
+		renderControl({ ...worker, mode: "chat", provider: "fx" });
+
+		expect(screen.queryByRole("button", { name: "Switch agent" })).not.toBeInTheDocument();
+	});
+
 	it("opens the existing dialog and submits the selected switch", async () => {
 		const activeSwitch = switchRecord();
 		postMock.mockResolvedValue({ data: { switch: activeSwitch }, error: undefined, response: { status: 202 } });

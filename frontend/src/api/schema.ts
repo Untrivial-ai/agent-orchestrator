@@ -4277,7 +4277,7 @@ export interface components {
              * @description Agent harness to continue the logical AO session with.
              * @enum {string}
              */
-            targetHarness: "claude-code" | "codex";
+            targetHarness: "claude-code" | "codex" | "fx";
         };
         SystemRequirement: {
             /** @description Extra context: the resolved path when satisfied, or why it is not. */
