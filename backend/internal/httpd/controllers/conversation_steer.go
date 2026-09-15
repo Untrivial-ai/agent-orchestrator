@@ -45,6 +45,17 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 	if !decodeConversationBody(w, r, &req) {
 		return
 	}
+	if req.RecoverOnly {
+		result, err := c.Svc.RecoverSteer(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), req.ClientMessageID)
+		if err != nil {
+			writeSteerError(w, r, err)
+			return
+		}
+		envelope.WriteJSON(w, http.StatusAccepted, SteerConversationResponse{
+			ProviderTurnID: result.ProviderTurnID, ActivityID: result.ActivityID,
+		})
+		return
+	}
 	content, attachmentErr := conversationContent(SendConversationMessageRequest{
 		Attachments: req.Attachments,
 	})
@@ -139,6 +150,16 @@ func writeSteerError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_UNSUPPORTED_STEER_CONTENT",
 			"this agent cannot steer every attachment in that message", nil)
+
+	case errors.Is(err, chatsvc.ErrSteerDeliveryUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_STEER_UNCERTAIN",
+			"the provider may have received this guidance; retry only with the same recovery action", nil)
+
+	case errors.Is(err, chatsvc.ErrSteerIdempotencyConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_STEER_IDEMPOTENCY_CONFLICT",
+			"this delivery handle belongs to different guidance", nil)
 
 	case errors.Is(err, chatsvc.ErrNoActiveTurn):
 		// Ordinary: the turn finished while the user was typing. Steering has nothing

@@ -259,7 +259,7 @@ function SettingsBody({
 									agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerHarness === "codex" ? form.reviewerEffort : "", form.reviewerPermissions),
 								}]
 							: undefined,
-						trackerIntake: buildIntake(intakeForm),
+						trackerIntake: buildIntake(intakeForm, config.trackerIntake),
 						autoReview: form.autoReview,
 					};
 			const { error } = await apiClient.PUT("/api/v1/projects/{id}", {

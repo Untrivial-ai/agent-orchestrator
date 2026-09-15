@@ -12,17 +12,11 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
 var ErrUnsupportedPolicy = errors.New("coding-agent policy cannot be enforced safely")
-
-const orchestratorSystemPrompt = `You are an AO orchestrator running in an isolated Cloud worker. Delegate independent work through the control plane with:
-- ao spawn --name NAME --agent HARNESS --prompt TEXT
-- ao list
-- ao send SESSION_ID MESSAGE
-- ao kill SESSION_ID
-Workers run in separate sandboxes. Never try to contact a child sandbox directly; use only these ao commands.`
 
 type Command struct {
 	Path    string
@@ -75,9 +69,16 @@ func (b HarnessBuilder) BuildInteractive(
 		)
 	}
 	binary := b.binary(launch.Harness)
-	systemPrompt := ""
+	skillDir := skillassets.Dir(b.DataDir)
+	systemPrompt := workerSystemPrompt(skillDir, launch.ParentSessionID != "")
 	if launch.Kind == "orchestrator" {
-		systemPrompt = orchestratorSystemPrompt
+		systemPrompt = orchestratorSystemPrompt(skillDir)
+	}
+	if launch.Harness == "cursor" {
+		// The cursor launch builder drops SystemPrompt entirely (see
+		// agentruntime.buildCursorLaunch); the installed skill on disk is the
+		// only guidance a cursor agent gets. Known limitation.
+		systemPrompt = ""
 	}
 	var providerArgs []string
 	switch launch.Harness {
@@ -455,11 +456,10 @@ func (b HarnessBuilder) configureCodexCredential(
 	command *Command,
 	credential worker.CredentialResponse,
 ) error {
-	parent := strings.TrimSpace(b.DataDir)
-	if parent == "" {
-		return errors.New("worker data directory is required for Codex configuration")
+	home, err := b.codexHome()
+	if err != nil {
+		return err
 	}
-	home := filepath.Join(parent, "codex")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("create Codex home: %w", err)
 	}
@@ -472,6 +472,17 @@ func (b HarnessBuilder) configureCodexCredential(
 	}
 	command.Env["CODEX_HOME"] = home
 	return nil
+}
+
+func (b HarnessBuilder) codexHome() (string, error) {
+	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
+		return home, nil
+	}
+	parent := strings.TrimSpace(b.DataDir)
+	if parent == "" {
+		return "", errors.New("worker data directory is required for Codex configuration")
+	}
+	return filepath.Join(parent, "codex"), nil
 }
 
 func loginCodex(binary, home, credentialType, secret string) error {

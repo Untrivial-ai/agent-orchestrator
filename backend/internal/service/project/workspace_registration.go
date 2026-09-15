@@ -206,10 +206,10 @@ func detectWorkspaceChildren(ctx context.Context, parent string, projectID domai
 			Name:          name,
 			RelativePath:  filepath.ToSlash(name),
 			RepoOriginURL: resolveGitOriginURL(child),
-			// This is display/import metadata only. Spawn resolves the selected
-			// remote again and never treats an unproven checked-out branch as a
-			// default.
-			DefaultBranch: resolveDefaultBranch(ctx, child),
+			// Preserve AO's recorded branch for repositories it initialized during
+			// onboarding, even when the freshly entered remote URL does not yet
+			// advertise origin/HEAD.
+			DefaultBranch: resolveWorkspaceChildDefaultBranch(ctx, child),
 			RegisteredAt:  registeredAt,
 			GitStatus:     domain.GitStatusReady,
 		})
@@ -379,6 +379,16 @@ func ensureWorkspaceGitignore(parent string, repos []domain.WorkspaceRepoRecord)
 		content += "\n"
 	}
 	return true, os.WriteFile(path, []byte(content), 0o600)
+}
+
+func resolveWorkspaceChildDefaultBranch(ctx context.Context, child string) string {
+	if branch := resolveDefaultBranch(ctx, child); branch != "" {
+		return branch
+	}
+	if out, err := gitOutput(ctx, child, "config", "--local", "--get", gitdefault.ManagedDefaultConfigKey); err == nil {
+		return strings.TrimSpace(out)
+	}
+	return ""
 }
 
 func guardNoGitlinks(ctx context.Context, repo string) error {

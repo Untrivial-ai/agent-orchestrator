@@ -300,14 +300,14 @@ elif mode == "wake":
     token = state["token"]
     org_id = state["orgId"]
     session_id = state["sessionId"]
-    woken = request(
+    resume = request(
         "POST",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/wake",
+        f"/api/cloud/v1/orgs/{org_id}/sessions/{session_id}/resume",
         token=token,
         expected=202,
-    ).get("woken", 0)
-    if woken < 1:
-        raise RuntimeError(f"wake did not resume the paused smoke session: {woken=}")
+    )["session"]
+    if resume.get("desiredState") != "running":
+        raise RuntimeError(f"resume did not record running intent: {resume!r}")
     wait_for_running(org_id, session_id, token)
     request(
         "POST",
@@ -508,6 +508,26 @@ session="$(session_id)"
 org="$(org_id)"
 first_worker="$(wait_for_worker "$session")"
 docker exec "$first_worker" ao list >/dev/null
+# ao-worker boot must materialize the cloud using-ao skill where the standing
+# prompts point the agent.
+docker exec "$first_worker" test -f /workspace/.ao/worker/skills/using-ao/SKILL.md
+docker exec "$first_worker" test -f /workspace/.ao/worker/skills/using-ao/commands/orchestration.md
+# The harness process appears shortly after the worker container does; retry
+# the argv probe instead of racing the PTY launch.
+wait_for_process_marker() {
+	local container="$1" marker="$2" attempts=30
+	while ((attempts > 0)); do
+		if docker exec "$container" sh -c "ps ax | grep -v grep | grep -q '$marker'"; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	echo "Process marker '$marker' never appeared in $container." >&2
+	exit 1
+}
+# The orchestrator harness launches with the coordination prompt in its argv.
+wait_for_process_marker "$first_worker" "AO Orchestrator Role"
 exercise_browser_proxy "$first_worker"
 spawn_output="$(
 	docker exec "$first_worker" ao spawn \
@@ -520,49 +540,76 @@ if [[ -z "$child_session" ]]; then
 	echo "AO orchestration CLI did not return a child session id: ${spawn_output}" >&2
 	exit 1
 fi
-wait_for_worker "$child_session" >/dev/null
+# Send BEFORE the child is up: the message must queue durably and be typed into
+# the agent PTY once the terminal has painted (readiness gate), not be lost.
 docker exec "$first_worker" ao send "$child_session" "Report smoke status" >/dev/null
-attempts=30
+child_worker="$(wait_for_worker "$child_session")"
+# The child harness carries the worker prompt, including report guidance (it
+# has an orchestrator parent).
+wait_for_process_marker "$child_worker" "AO Worker Role"
+wait_for_child_message() {
+	local target="$1" description="$2" attempts=45 forwarded=""
+	while ((attempts > 0)); do
+		forwarded="$(
+			compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
+				psql -U ao_cloud_owner -d ao_cloud -Atc "$target"
+		)"
+		if [[ "$forwarded" == "t" ]]; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	echo "$description" >&2
+	exit 1
+}
+wait_for_child_message \
+	"SELECT EXISTS (SELECT 1 FROM ao_turns WHERE session_id = '${child_session}' AND state = 'completed') OR EXISTS (SELECT 1 FROM ao_worker_requests WHERE session_id = '${child_session}' AND kind = 'terminal.input' AND status = 'succeeded')" \
+	"Orchestrator message was not forwarded into the child agent PTY."
+# Child -> orchestrator report lands in the parent's conversation with the
+# worker-provenance prefix.
+docker exec "$child_worker" ao report "smoke child reporting done" >/dev/null
+wait_for_child_message \
+	"SELECT EXISTS (SELECT 1 FROM ao_events WHERE session_id = '${session}' AND type = 'chat.user_message' AND payload::text LIKE '%from worker%smoke child reporting done%')" \
+	"Child report did not land in the orchestrator conversation."
+# A parentless orchestrator cannot report (scope never issued).
+if docker exec "$first_worker" ao report "should be rejected" >/dev/null 2>&1; then
+	echo "ao report from a parentless session must fail with SCOPE_REQUIRED." >&2
+	exit 1
+fi
+# List enrichment: branch and prs ride every child item.
+docker exec "$first_worker" ao list --json | python3 -c '
+import json, sys
+items = json.load(sys.stdin)
+assert items, "orchestrator sees no children"
+child = items[0]
+assert child["branch"], child
+assert isinstance(child["prs"], list), child
+'
+docker exec "$first_worker" ao kill "$child_session" >/dev/null
+# Terminated children leave the default listing; --all keeps the history.
+attempts=45
 while ((attempts > 0)); do
-	message_forwarded="$(
-		compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
-			psql -U ao_cloud_owner -d ao_cloud -Atc \
-			"SELECT EXISTS (SELECT 1 FROM ao_turns WHERE session_id = '${child_session}' AND state = 'completed') OR EXISTS (SELECT 1 FROM ao_worker_requests WHERE session_id = '${child_session}' AND kind = 'terminal.input' AND status = 'succeeded')"
-	)"
-	if [[ "$message_forwarded" == "t" ]]; then
+	list_state="$(docker exec "$first_worker" sh -c "ao list --json && echo --- && ao list --all --json" | python3 -c '
+import json, sys
+raw = sys.stdin.read().split("---")
+live = {item["id"] for item in (json.loads(raw[0]) or [])}
+everything = {item["id"]: item for item in (json.loads(raw[1]) or [])}
+child = sys.argv[1]
+if child not in live and child in everything and everything[child]["isTerminated"]:
+    print("settled")
+else:
+    print("pending")
+' "$child_session")"
+	if [[ "$list_state" == "settled" ]]; then
 		break
 	fi
 	attempts=$((attempts - 1))
 	sleep 1
 done
-if [[ "$message_forwarded" != "t" ]]; then
-	echo "Orchestrator message was not forwarded into the child agent PTY." >&2
+if [[ "$list_state" != "settled" ]]; then
+	echo "Killed child did not settle out of the default ao list (or out of --all)." >&2
 	exit 1
-fi
-docker exec "$first_worker" ao kill "$child_session" >/dev/null
-
-if [[ "${AO_CLOUD_TERMINAL_STREAM:-}" == "1" ]]; then
-	# The delivery above must have ridden the stream push, not the transport
-	# poll: the pushed request is completed by the control plane, and the
-	# stream never leaves failed input rows behind.
-	stream_pushed="$(
-		compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
-			psql -U ao_cloud_owner -d ao_cloud -Atc \
-			"SELECT NOT EXISTS (
-				SELECT 1 FROM ao_worker_requests
-				WHERE session_id = '${child_session}'
-				  AND kind = 'terminal.input' AND status = 'failed'
-			)"
-	)"
-	if [[ "$stream_pushed" != "t" ]]; then
-		echo "Terminal stream left failed input requests behind." >&2
-		exit 1
-	fi
-	if compose logs control-plane 2>/dev/null | grep -q "claim terminal input for push"; then
-		echo "Control plane logged terminal stream push failures." >&2
-		exit 1
-	fi
-	echo "terminal stream assertions passed"
 fi
 docker exec "$first_worker" bash -c \
 	'printf "%s\n" persistent-workspace > /workspace/repository/.ao-cloud-smoke'

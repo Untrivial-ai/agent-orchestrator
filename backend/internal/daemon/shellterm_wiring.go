@@ -13,12 +13,9 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
-// startShellTerminals builds the standalone shell terminal service and sweeps
-// any terminals left behind by a previous app run.
-//
-// The sweep runs at boot, before the server serves, for the same reason session
-// reconciliation does: a client that connects first would otherwise see — and
-// try to attach to — shells belonging to an app that is already gone.
+// startShellTerminals restores durable user shells and cleans up expired command
+// terminals before accepting clients. A different app launch alone never ends
+// a user shell's lifetime.
 func startShellTerminals(
 	ctx context.Context,
 	cfg config.Config,

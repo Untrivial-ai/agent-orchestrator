@@ -5,16 +5,17 @@ import {
 } from "@aoagents/product-ui";
 import { useTranslation } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { components } from "../../api/schema";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
+import { workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
 import { AGENT_OPTIONS } from "../lib/agent-options";
 import {
-	agentLabelCompare,
-	agentUsageCompare,
 	buildRankedAgentOptions,
 	DEFAULT_AGENT_PRIORITY_RANK,
+	defaultAuthorizedAgentForRole,
 	type AgentInfo,
 	unknownAgentReadiness,
 } from "../lib/agent-select-options";
@@ -53,6 +54,7 @@ type CreateProjectAgentSheetProps = {
 	path: string | null;
 	repositorySetupNeeded?: boolean;
 	repositorySetupWarning?: string | null;
+	shake?: boolean;
 };
 
 type SheetError = {
@@ -112,6 +114,7 @@ export function CreateProjectAgentSheet({
 	path,
 	repositorySetupNeeded = false,
 	repositorySetupWarning = null,
+	shake = false,
 }: CreateProjectAgentSheetProps) {
 	const { t } = useTranslation();
 	const [isExiting, setIsExiting] = useState(false);
@@ -134,6 +137,13 @@ export function CreateProjectAgentSheet({
 				["authorized", "not_applicable"].includes(agent.authentication.state),
 			),
 		[agentOptions],
+	);
+	// This sheet creates local projects only (cloud uses CloudProjectCard),
+	// so local session history is the inference signal.
+	const workspacesQuery = useQuery({ ...workspaceQueryOptions, enabled: open });
+	const sessionHistory = useMemo(
+		() => (workspacesQuery.data ?? []).flatMap((workspace) => workspace.sessions),
+		[workspacesQuery.data],
 	);
 	const isLoadingAgents = agents === undefined && agentsQuery.isFetching;
 	const agentsError = agentsQuery.isError
@@ -181,10 +191,13 @@ export function CreateProjectAgentSheet({
 
 	useEffect(() => {
 		if (!open) return;
-		const defaultAgent = defaultAuthorizedAgent(authorizedAgents);
-		if (!workerAgentTouched) setWorkerAgent(defaultAgent);
-		if (!orchestratorAgentTouched) setOrchestratorAgent(defaultAgent);
-	}, [authorizedAgents, open, orchestratorAgentTouched, workerAgentTouched]);
+		if (!workerAgentTouched) {
+			setWorkerAgent(defaultAuthorizedAgentForRole(authorizedAgents, sessionHistory, "worker"));
+		}
+		if (!orchestratorAgentTouched) {
+			setOrchestratorAgent(defaultAuthorizedAgentForRole(authorizedAgents, sessionHistory, "orchestrator"));
+		}
+	}, [authorizedAgents, open, orchestratorAgentTouched, sessionHistory, workerAgentTouched]);
 
 	return (
 		<Dialog.Root
@@ -197,7 +210,7 @@ export function CreateProjectAgentSheet({
 		>
 			<Dialog.Portal>
 				<Dialog.Content
-					className="fixed left-1/2 top-1/2 z-overlay w-dialog-lg -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-popover p-0 text-popover-foreground shadow-xl data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none"
+					className={cn("fixed left-1/2 top-1/2 z-overlay w-dialog-lg -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-popover p-0 text-popover-foreground shadow-xl data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none", shake && "modal-shake")}
 					onAnimationEnd={(event) => {
 						if (!open && event.target === event.currentTarget) setIsExiting(false);
 					}}
@@ -326,7 +339,10 @@ export function CreateProjectAgentSheet({
 											? t("createProject.createWorkspaceAndStart")
 											: t("createProject.createAndStart")
 						}
-						submitClassName="h-control-form rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/80"
+						submitClassName={cn(
+							"inline-flex h-control-form items-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/80",
+							(isCreating || isInitializing) && "before:size-3.5 before:shrink-0 before:animate-spin before:rounded-full before:border-2 before:border-current before:border-r-transparent before:content-['']",
+						)}
 					/>
 				</Dialog.Content>
 			</Dialog.Portal>
@@ -553,14 +569,3 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 		</div>
 	);
 });
-
-export function defaultAuthorizedAgent(authorizedAgents: AgentInfo[]): string {
-	return [...authorizedAgents]
-		.sort(
-			(a, b) =>
-				agentUsageCompare(a, b) ||
-				(DEFAULT_AGENT_PRIORITY_RANK.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
-					(DEFAULT_AGENT_PRIORITY_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
-				agentLabelCompare(a, b),
-		)[0]?.id ?? "";
-}

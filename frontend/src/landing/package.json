@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "icons:generate": "node scripts/generate-favicons.mjs",
+    "icons:check": "node scripts/generate-favicons.mjs --check",
     "dev": "next dev",
     "build": "next build",
     "postbuild": "node scripts/generate-markdown-twins.mjs",
@@ -56,6 +58,7 @@
     "@types/three": "^0.181.0",
     "cheerio": "1.2.0",
     "node-html-markdown": "2.0.0",
+    "sharp": "0.34.5",
     "tailwindcss": "4.2.2",
     "three": "^0.181.2",
     "typescript": "6.0.3"

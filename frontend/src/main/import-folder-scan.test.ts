@@ -103,6 +103,27 @@ describe("scanImportFolder", () => {
 		]);
 	});
 
+	it("distinguishes an unborn repository from a plain folder", async () => {
+		const root = await tempDir();
+		const parent = path.join(root, "workspace");
+		const repo = path.join(parent, "app");
+		await mkdir(parent);
+		await git(["init", "-b", "main", repo]);
+		await git(["remote", "add", "origin", "https://example.com/repo.git"], repo);
+
+		const scan = await scanImportFolder(parent, "workspace");
+
+		expect(scan.repos).toEqual([
+			expect.objectContaining({
+				name: "app",
+				isRepo: true,
+				hasCommit: false,
+				hasRemote: true,
+				needsGitInit: false,
+			}),
+		]);
+	});
+
 	it("leaves a plain non-nested project folder setup-ready", async () => {
 		const root = await tempDir();
 		const selected = path.join(root, "plain");

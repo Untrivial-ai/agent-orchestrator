@@ -531,6 +531,95 @@ func TestMobileEnableStartsTheTunnelOnTheBoundPort(t *testing.T) {
 	}
 }
 
+type stopErrorLAN struct {
+	fakeLAN
+	err          error
+	stillRunning bool
+}
+
+func (f *stopErrorLAN) Stop(context.Context) error {
+	f.stopCalls++
+	f.running = f.stillRunning
+	return f.err
+}
+
+func TestMobileDisableFinishesCleanupAfterStopErrorWhenListenerStopped(t *testing.T) {
+	stopErr := errors.New("shutdown deadline exceeded")
+	path := filepath.Join(t.TempDir(), "mobile.json")
+	if err := mobilebridge.Save(path, mobilebridge.State{
+		Enabled:       true,
+		Password:      "paired-password",
+		LastPort:      3011,
+		SecurePairing: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleared := 0
+	lan := &stopErrorLAN{
+		fakeLAN: fakeLAN{running: true, hash: mobilebridge.HashPassword("paired-password")},
+		err:     stopErr,
+	}
+	bridge := &BridgeService{
+		LAN:         lan,
+		ConfigPath:  path,
+		ClearServe:  func() error { cleared++; return nil },
+		DefaultPort: 3011,
+	}
+
+	if err := bridge.Disable(); !errors.Is(err, stopErr) {
+		t.Fatalf("Disable error = %v, want %v", err, stopErr)
+	}
+	state, err := mobilebridge.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Enabled {
+		t.Fatal("persisted bridge remained enabled after the listener stopped")
+	}
+	if cleared != 1 {
+		t.Fatalf("owned secure-pairing proxy cleared %d times, want 1", cleared)
+	}
+}
+
+func TestMobileDisablePreservesEnabledStateWhenStopErrorLeavesListenerRunning(t *testing.T) {
+	stopErr := errors.New("listener still running")
+	path := filepath.Join(t.TempDir(), "mobile.json")
+	if err := mobilebridge.Save(path, mobilebridge.State{
+		Enabled:       true,
+		Password:      "paired-password",
+		LastPort:      3011,
+		SecurePairing: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleared := 0
+	lan := &stopErrorLAN{
+		fakeLAN:      fakeLAN{running: true, hash: mobilebridge.HashPassword("paired-password")},
+		err:          stopErr,
+		stillRunning: true,
+	}
+	bridge := &BridgeService{
+		LAN:         lan,
+		ConfigPath:  path,
+		ClearServe:  func() error { cleared++; return nil },
+		DefaultPort: 3011,
+	}
+
+	if err := bridge.Disable(); !errors.Is(err, stopErr) {
+		t.Fatalf("Disable error = %v, want %v", err, stopErr)
+	}
+	state, err := mobilebridge.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Enabled {
+		t.Fatal("persisted bridge was disabled while the listener remained running")
+	}
+	if cleared != 0 {
+		t.Fatalf("secure-pairing proxy cleared %d times while listener remained live", cleared)
+	}
+}
+
 func TestMobileDisableStopsTheTunnel(t *testing.T) {
 	// Leaving a public tunnel up after the user turned Connect Mobile off would
 	// keep the machine reachable from the internet with the UI saying it is not.
@@ -673,7 +762,7 @@ func TestMobileAdvertisesNothingWhileTheBridgeIsOff(t *testing.T) {
 // access then stayed silently off — the UI showed the bridge enabled while the
 // tunnel never came back — until the user toggled it off and on.
 //
-// A restart does not go through enableWithPassword (there is no password to
+// A restart does not go through enableWithPasswordLocked (there is no password to
 // rotate), so RestoreOnBoot has to mirror its post-Start work.
 func TestMobileRestoreOnBootStartsTheTunnel(t *testing.T) {
 	tun := &fakeTunnel{}
@@ -853,5 +942,26 @@ func TestStartRemoteAccessWhileDisabledDoesNothing(t *testing.T) {
 	}
 	if tun.startedOn != 0 {
 		t.Fatal("connector started while the bridge is disabled")
+	}
+}
+
+type startErrorLAN struct {
+	fakeLAN
+	err error
+}
+
+func (f *startErrorLAN) Start(int) (int, error) { return 0, f.err }
+
+func TestMobileRestoreOnBootRollsBackHashWhenStartFails(t *testing.T) {
+	startErr := errors.New("bind failed")
+	lan := &startErrorLAN{fakeLAN: fakeLAN{hash: "previous-hash"}, err: startErr}
+	bridge := &BridgeService{LAN: lan}
+
+	err := bridge.RestoreOnBoot(mobilebridge.State{Enabled: true, Password: "restored-password", LastPort: 3011})
+	if !errors.Is(err, startErr) {
+		t.Fatalf("RestoreOnBoot error = %v, want %v", err, startErr)
+	}
+	if got := lan.PasswordHash(); got != "previous-hash" {
+		t.Fatalf("password hash after failed restore = %q, want previous-hash", got)
 	}
 }

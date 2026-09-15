@@ -96,11 +96,13 @@ test("untouched Chat reports interface refusal and can dismiss and retry @T0", a
 	await page.getByRole("button", { name: "Session actions", exact: true }).click();
 	await page.getByRole("menuitem", { name: "Switch to terminal UI" }).click();
 	const notice = page.getByRole("alert").filter({ hasText: "Could not switch interfaces" });
-	await expect(notice).toContainText("NATIVE_SESSION_MISSING");
+	await expect(notice).toContainText("The agent has not exposed a native conversation that can resume in the other interface");
+	await expect(notice).not.toContainText("NATIVE_SESSION_MISSING");
 	await expect(page.getByRole("dialog")).toHaveCount(0);
 	await page.getByRole("button", { name: "Dismiss interface switch error" }).click();
 	await expect(notice).toHaveCount(0);
 	await page.getByRole("button", { name: "Session actions", exact: true }).click();
 	await page.getByRole("menuitem", { name: "Switch to terminal UI" }).click();
-	await expect(notice).toContainText("NATIVE_SESSION_MISSING");
+	await expect(notice).toContainText("The agent has not exposed a native conversation that can resume in the other interface");
+	await expect(notice).not.toContainText("NATIVE_SESSION_MISSING");
 });

@@ -133,6 +133,10 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	rec.Metadata.NativeTranscriptPath = "/ao/transcripts/claude/session.jsonl"
 	rec.Metadata.AgentSessionID = "native-session-1"
 	rec.Metadata.AgentSessionIDLaunchID = "launch-1"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	rec.Metadata.ConversationCheckpointGeneration = "launch-1"
+	rec.Metadata.ConversationCheckpointNativeID = "native-session-1"
+	rec.Metadata.ConversationCheckpointUnsettled = true
 
 	created, err := s.CreateSession(ctx, rec)
 	if err != nil {
@@ -146,7 +150,11 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 		!got.Metadata.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
 		got.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
 		got.Metadata.NativeTranscriptPath != rec.Metadata.NativeTranscriptPath ||
-		got.Metadata.AgentSessionIDLaunchID != rec.Metadata.AgentSessionIDLaunchID {
+		got.Metadata.AgentSessionIDLaunchID != rec.Metadata.AgentSessionIDLaunchID ||
+		got.Metadata.ConversationCheckpointState != rec.Metadata.ConversationCheckpointState ||
+		got.Metadata.ConversationCheckpointGeneration != rec.Metadata.ConversationCheckpointGeneration ||
+		got.Metadata.ConversationCheckpointNativeID != rec.Metadata.ConversationCheckpointNativeID ||
+		got.Metadata.ConversationCheckpointUnsettled != rec.Metadata.ConversationCheckpointUnsettled {
 		t.Fatalf("handoff inputs after create = %+v", got.Metadata)
 	}
 
@@ -155,6 +163,10 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	got.Metadata.LatestAssistantUpdate = "The regression test has been added."
 	got.Metadata.NativeTranscriptPath = "/ao/transcripts/codex/session.jsonl"
 	got.Metadata.AgentSessionIDLaunchID = "launch-2"
+	got.Metadata.ConversationCheckpointState = domain.ConversationCheckpointPrompt
+	got.Metadata.ConversationCheckpointGeneration = "launch-2"
+	got.Metadata.ConversationCheckpointNativeID = "native-session-1"
+	got.Metadata.ConversationCheckpointUnsettled = false
 	got.UpdatedAt = got.UpdatedAt.Add(time.Second)
 	if err := s.UpdateSession(ctx, got); err != nil {
 		t.Fatalf("update session: %v", err)
@@ -167,13 +179,18 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 		!updated.Metadata.LatestUserPromptAt.Equal(got.Metadata.LatestUserPromptAt) ||
 		updated.Metadata.LatestAssistantUpdate != got.Metadata.LatestAssistantUpdate ||
 		updated.Metadata.NativeTranscriptPath != got.Metadata.NativeTranscriptPath ||
-		updated.Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID {
+		updated.Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID ||
+		updated.Metadata.ConversationCheckpointState != got.Metadata.ConversationCheckpointState ||
+		updated.Metadata.ConversationCheckpointGeneration != got.Metadata.ConversationCheckpointGeneration ||
+		updated.Metadata.ConversationCheckpointNativeID != got.Metadata.ConversationCheckpointNativeID ||
+		updated.Metadata.ConversationCheckpointUnsettled != got.Metadata.ConversationCheckpointUnsettled {
 		t.Fatalf("handoff inputs after update = %+v", updated.Metadata)
 	}
 	listed, err := s.ListSessions(ctx, created.ProjectID)
 	if err != nil || len(listed) != 1 || listed[0].Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
 		!listed[0].Metadata.LatestUserPromptAt.Equal(got.Metadata.LatestUserPromptAt) ||
-		listed[0].Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID {
+		listed[0].Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID ||
+		listed[0].Metadata.ConversationCheckpointState != got.Metadata.ConversationCheckpointState {
 		t.Fatalf("listed handoff inputs = %+v err=%v", listed, err)
 	}
 }
@@ -191,6 +208,10 @@ func TestRecordSessionLatestUserPromptIsNarrowAndMonotonic(t *testing.T) {
 	created.Harness = domain.HarnessCodex
 	created.Metadata.RuntimeLaunchID = "target-generation"
 	created.Metadata.LatestAssistantUpdate = "target already owns this row"
+	created.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	created.Metadata.ConversationCheckpointGeneration = "target-generation"
+	created.Metadata.ConversationCheckpointNativeID = "target-native"
+	created.Metadata.ConversationCheckpointUnsettled = true
 	created.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: ownerAt}
 	created.UpdatedAt = ownerAt
 	if err := s.UpdateSession(ctx, created); err != nil {
@@ -214,8 +235,12 @@ func TestRecordSessionLatestUserPromptIsNarrowAndMonotonic(t *testing.T) {
 	}
 	current, _, _ = s.GetSession(ctx, created.ID)
 	if current.Metadata.LatestUserPrompt != "continue the target work" || !current.Metadata.LatestUserPromptAt.Equal(promptAt) || current.Harness != domain.HarnessCodex ||
-		current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestAssistantUpdate != "target already owns this row" {
-		t.Fatalf("narrow prompt write changed unrelated facts: %+v", current)
+		current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestAssistantUpdate != "" ||
+		current.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy ||
+		current.Metadata.ConversationCheckpointGeneration != "" ||
+		current.Metadata.ConversationCheckpointNativeID != "" ||
+		!current.Metadata.ConversationCheckpointUnsettled {
+		t.Fatalf("pane prompt checkpoint or owner facts = %+v", current)
 	}
 
 	current.IsTerminated = true
@@ -295,7 +320,7 @@ func TestBrowserCapabilityRotationIsNarrowAndControllerOwnerFenced(t *testing.T)
 		t.Fatalf("UpdateSession concurrent facts: %v", err)
 	}
 	applied, err := s.UpdateBrowserCapabilityVerifier(
-		ctx, created.ID, expected, "verifier-2", created.UpdatedAt.Add(time.Second),
+		ctx, created.ID, expected, "verifier-2",
 	)
 	if err != nil || !applied {
 		t.Fatalf("UpdateBrowserCapabilityVerifier: applied=%v err=%v", applied, err)
@@ -311,11 +336,11 @@ func TestBrowserCapabilityRotationIsNarrowAndControllerOwnerFenced(t *testing.T)
 	}
 
 	if err := s.ClaimChatControllerGeneration(
-		ctx, created.ID, "generation-2", concurrent.UpdatedAt.Add(time.Second)); err != nil {
+		ctx, created.ID, "generation-2"); err != nil {
 		t.Fatalf("ClaimChatControllerGeneration: %v", err)
 	}
 	applied, err = s.UpdateBrowserCapabilityVerifier(
-		ctx, created.ID, expected, "stale-verifier", concurrent.UpdatedAt.Add(2*time.Second),
+		ctx, created.ID, expected, "stale-verifier",
 	)
 	if err != nil || applied {
 		t.Fatalf("stale owner verifier update: applied=%v err=%v", applied, err)
@@ -511,6 +536,118 @@ func TestSessionCreateAssignsPerProjectID(t *testing.T) {
 	}
 	if all, _ := s.ListAllSessions(ctx); len(all) != 3 {
 		t.Fatalf("list all = %d, want 3", len(all))
+	}
+}
+
+func TestSessionCreateAssignsStandaloneIDsWithoutProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	first, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != "standalone-1" || second.ID != "standalone-2" {
+		t.Fatalf("standalone ids = %q, %q", first.ID, second.ID)
+	}
+	if first.ProjectID != "" || !first.IsStandalone() {
+		t.Fatalf("standalone project = %q", first.ProjectID)
+	}
+	conversation, err := s.CreateConversation(
+		ctx,
+		"conversation-standalone-1",
+		domain.ConversationScopeSession,
+		"",
+		first.ID,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("create standalone conversation: %v", err)
+	}
+	if conversation.ProjectID != "" {
+		t.Fatalf("standalone conversation project = %q", conversation.ProjectID)
+	}
+	notification, inserted, err := s.CreateNotification(ctx, domain.NotificationRecord{
+		ID:        "notification-standalone-1",
+		SessionID: first.ID,
+		Type:      domain.NotificationNeedsInput,
+		Title:     "Input needed",
+		Status:    domain.NotificationUnread,
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil || !inserted {
+		t.Fatalf("create standalone notification: inserted=%v err=%v", inserted, err)
+	}
+	if notification.ProjectID != "" {
+		t.Fatalf("standalone notification project = %q", notification.ProjectID)
+	}
+	events, err := s.EventsAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("read standalone change log: %v", err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("standalone change log has %d events, want session creates", len(events))
+	}
+	for _, event := range events {
+		if event.ProjectID != "" {
+			t.Fatalf("standalone change event project = %q", event.ProjectID)
+		}
+	}
+	rows, err := s.ListSessions(ctx, "")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ListSessions(empty) = %d rows, err=%v", len(rows), err)
+	}
+}
+
+func TestSessionCreateAvoidsStandaloneProjectCollisionAfterProjectSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "standalone")
+
+	projectSession, err := s.CreateSession(ctx, sampleRecord("standalone"))
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	standaloneSession, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatalf("create standalone session: %v", err)
+	}
+	if projectSession.ID != "standalone-1" {
+		t.Fatalf("project session id = %q, want standalone-1", projectSession.ID)
+	}
+	if standaloneSession.ID != "standalone-2" {
+		t.Fatalf("standalone session id = %q, want standalone-2", standaloneSession.ID)
+	}
+	if standaloneSession.ProjectID != "" || !standaloneSession.IsStandalone() {
+		t.Fatalf("standalone project = %q", standaloneSession.ProjectID)
+	}
+}
+
+func TestSessionCreateAvoidsStandaloneProjectCollisionAfterStandaloneSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "standalone")
+
+	standaloneSession, err := s.CreateSession(ctx, sampleRecord(""))
+	if err != nil {
+		t.Fatalf("create standalone session: %v", err)
+	}
+	projectSession, err := s.CreateSession(ctx, sampleRecord("standalone"))
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	if standaloneSession.ID != "standalone-1" {
+		t.Fatalf("standalone session id = %q, want standalone-1", standaloneSession.ID)
+	}
+	if projectSession.ID != "standalone-2" {
+		t.Fatalf("project session id = %q, want standalone-2", projectSession.ID)
+	}
+	if projectSession.ProjectID != "standalone" || projectSession.IsStandalone() {
+		t.Fatalf("project session project = %q", projectSession.ProjectID)
 	}
 }
 
@@ -1678,7 +1815,11 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
+		if tc.saved == "" {
+			row.Revision++ // Pinning permissions writes even without changing updated_at.
+		}
 		rows = append(rows, row)
 	}
 	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeBypassPermissions); err != nil || !ok {
@@ -1704,5 +1845,27 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 		if got.Metadata.Permissions != want.Metadata.Permissions {
 			t.Fatalf("repinned existing session: %q", got.Metadata.Permissions)
 		}
+	}
+}
+
+func TestClaimChatControllerGenerationPreservesRecency(t *testing.T) {
+	st := newTestStore(t)
+	seedProject(t, st, "restart")
+	rec := sampleRecord("restart")
+	rec.Mode = domain.SessionModeChat
+	rec.Metadata.ControllerGeneration = "before"
+	before, err := st.CreateSession(context.Background(), rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClaimChatControllerGeneration(context.Background(), before.ID, "after"); err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := st.GetSession(context.Background(), before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Metadata.ControllerGeneration != "after" || !after.UpdatedAt.Equal(before.UpdatedAt) || after.Activity != before.Activity {
+		t.Fatalf("claim changed user-visible facts: before=%+v after=%+v", before, after)
 	}
 }

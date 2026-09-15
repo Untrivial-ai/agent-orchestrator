@@ -302,18 +302,25 @@ type fakeRestoringReviewer struct {
 	gotRestore  ports.ReviewInvocation
 	restoreSpec ports.ReviewCommandSpec
 	restoreOK   bool
+	restoreErr  error
 }
 
 func (f *fakeRestoringReviewer) ReviewRestoreCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
 	f.restored = true
 	f.gotRestore = inv
+	if f.restoreErr != nil {
+		return ports.ReviewCommandSpec{}, false, f.restoreErr
+	}
 	if !f.restoreOK {
 		return ports.ReviewCommandSpec{}, false, nil
 	}
-	if len(f.restoreSpec.Argv) > 0 || f.restoreSpec.InitialMessage != "" || f.restoreSpec.AgentSessionID != "" {
+	if len(f.restoreSpec.Argv) > 0 || f.restoreSpec.InitialMessage != "" || f.restoreSpec.AgentSessionID != "" || f.restoreSpec.NativeResumed {
 		return f.restoreSpec, true, nil
 	}
-	return ports.ReviewCommandSpec{Argv: []string{"agent", "resume", inv.AgentSessionID}}, true, nil
+	return ports.ReviewCommandSpec{
+		Argv:          []string{"agent", "resume", inv.AgentSessionID},
+		NativeResumed: true,
+	}, true, nil
 }
 
 func (f *fakeCancellableReviewer) ReviewCancel(context.Context) (ports.ReviewCancelSpec, error) {
@@ -597,6 +604,7 @@ func TestLauncherRestoreTerminalUsesReviewerRestoreCommandWhenAvailable(t *testi
 		restoreSpec: ports.ReviewCommandSpec{
 			Argv:           []string{"agent", "resume", "native-reviewer-1"},
 			Env:            map[string]string{"PATH": "/restore/bin"},
+			NativeResumed:  true,
 			InitialMessage: "restored task",
 		},
 	}
@@ -619,6 +627,9 @@ func TestLauncherRestoreTerminalUsesReviewerRestoreCommandWhenAvailable(t *testi
 	}
 	if launch.HandleID != "review-mer-1" {
 		t.Fatalf("handle = %q, want review-mer-1", launch.HandleID)
+	}
+	if !launch.NativeResumed {
+		t.Fatal("native reviewer restore was not reported")
 	}
 	if !reviewer.restored {
 		t.Fatal("restore command was not used")
@@ -649,7 +660,8 @@ func TestLauncherRestoreTerminalFallsBackToFreshCommand(t *testing.T) {
 	rt := &fakeRuntime{}
 	l := newTestLauncher(t, reviewer, rt)
 
-	if _, err := l.RestoreTerminal(context.Background(), launchSpec()); err != nil {
+	launch, err := l.RestoreTerminal(context.Background(), launchSpec())
+	if err != nil {
 		t.Fatalf("RestoreTerminal: %v", err)
 	}
 	if !reviewer.restored {
@@ -657,6 +669,74 @@ func TestLauncherRestoreTerminalFallsBackToFreshCommand(t *testing.T) {
 	}
 	if got := rt.createCfg.Argv; len(got) != 2 || got[0] != "greptile" || got[1] != "review" {
 		t.Fatalf("fallback argv = %#v", got)
+	}
+	if launch.NativeResumed {
+		t.Fatal("fresh-command fallback reported a native resume")
+	}
+}
+
+func TestLauncherSpawnResumesRecordedNativeConversationWithNewTask(t *testing.T) {
+	reviewer := &fakeRestoringReviewer{
+		restoreOK: true,
+		restoreSpec: ports.ReviewCommandSpec{
+			Argv:           []string{"agent", "resume", "native-reviewer-1", "--", "new task"},
+			AgentSessionID: "native-reviewer-1",
+			NativeResumed:  true,
+		},
+	}
+	rt := &fakeRuntime{}
+	l := newTestLauncher(t, reviewer, rt)
+	spec := launchSpec()
+	spec.AgentSessionID = "native-reviewer-1"
+
+	launch, err := l.Spawn(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !reviewer.restored || !launch.NativeResumed {
+		t.Fatalf("recorded conversation was not resumed: reviewer=%+v launch=%+v", reviewer, launch)
+	}
+	if reviewer.gotRestore.RunID != spec.RunID || !strings.HasPrefix(reviewer.gotRestore.Prompt, reviewerTaskMessagePrefix) {
+		t.Fatalf("restore invocation lost new review task: %+v", reviewer.gotRestore)
+	}
+	if got := strings.Join(rt.createCfg.Argv, " "); got != "agent resume native-reviewer-1 -- new task" {
+		t.Fatalf("runtime argv = %q", got)
+	}
+}
+
+func TestLauncherSpawnWithoutNativeConversationUsesFreshCommand(t *testing.T) {
+	reviewer := &fakeRestoringReviewer{restoreOK: true}
+	rt := &fakeRuntime{}
+	l := newTestLauncher(t, reviewer, rt)
+
+	launch, err := l.Spawn(context.Background(), launchSpec())
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if reviewer.restored {
+		t.Fatal("first launch attempted a native restore")
+	}
+	if launch.NativeResumed {
+		t.Fatal("first launch reported a native resume")
+	}
+	if got := rt.createCfg.Argv; len(got) != 2 || got[0] != "greptile" || got[1] != "review" {
+		t.Fatalf("fresh argv = %#v", got)
+	}
+}
+
+func TestLauncherSpawnPropagatesRestoreErrorWithoutFreshFallback(t *testing.T) {
+	reviewer := &fakeRestoringReviewer{restoreErr: errors.New("Session ID is already in use")}
+	rt := &fakeRuntime{}
+	l := newTestLauncher(t, reviewer, rt)
+	spec := launchSpec()
+	spec.AgentSessionID = "native-reviewer-1"
+
+	_, err := l.Spawn(context.Background(), spec)
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("Spawn error = %v, want live-duplicate error", err)
+	}
+	if rt.created {
+		t.Fatal("restore error was masked by a fresh reviewer launch")
 	}
 }
 

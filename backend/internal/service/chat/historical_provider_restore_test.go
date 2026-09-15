@@ -81,6 +81,7 @@ func seedHistoricalProviderFixture(t *testing.T) historicalProviderFixture {
 			ID: historicalTransitionID, SessionID: target.ID,
 			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
 			Policy:               domain.SessionInterfaceTransitionDrain,
+			HistoryPolicy:        domain.SessionInterfaceTransitionHistoryProvider,
 			Phase:                domain.SessionInterfaceTransitionRequested,
 			NativeConversationID: historicalTargetThread,
 			CreatedAt:            now.Add(3 * time.Second), UpdatedAt: now.Add(3 * time.Second),

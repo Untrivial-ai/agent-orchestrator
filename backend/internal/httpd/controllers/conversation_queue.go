@@ -58,7 +58,7 @@ func (c *ConversationsController) editQueuedTurn(w http.ResponseWriter, r *http.
 		r.Context(),
 		domain.SessionID(chi.URLParam(r, "sessionId")),
 		chi.URLParam(r, "turnId"),
-		chatsvc.QueuedMessageEdit{Text: req.Text, Content: content,
+		chatsvc.QueuedMessageEdit{Text: req.Text, Content: content, ClientMessageID: req.ClientMessageID,
 			RetainedContent: req.RetainedContent, ExpectedRevision: req.ExpectedRevision},
 	)
 	if err != nil {
@@ -99,6 +99,9 @@ func writeQueuedTurnMutationError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, chatsvc.ErrQueuedContentInvalid):
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_QUEUED_CONTENT_INVALID", "queued message attachments are invalid", nil)
+	case errors.Is(err, store.ErrQueuedEditDeliveryConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_QUEUED_EDIT_IDEMPOTENCY_CONFLICT", "queued edit recovery key belongs to a different request", nil)
 	case errors.Is(err, chatsvc.ErrQueuedEditConflict):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_QUEUED_EDIT_CONFLICT", "that queued message changed; reopen it before editing", nil)

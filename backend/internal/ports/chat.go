@@ -79,6 +79,61 @@ var (
 	ErrChatCapabilityUnavailable = errors.New("chat model capability unavailable")
 )
 
+// ChatHistoryMismatchDimension identifies the exact durable checkpoint fact a
+// provider replay has not reached. Callers may offer provider-history recovery
+// only when every dimension is legacy hook text; trusted text and AO high-water
+// facts remain hard gates.
+type ChatHistoryMismatchDimension string
+
+// Chat history mismatch dimensions.
+const (
+	ChatHistoryMismatchUntrustedUserText      ChatHistoryMismatchDimension = "untrusted_user_text"
+	ChatHistoryMismatchUntrustedAssistantText ChatHistoryMismatchDimension = "untrusted_assistant_text"
+	ChatHistoryMismatchTrustedUserText        ChatHistoryMismatchDimension = "trusted_user_text"
+	ChatHistoryMismatchTrustedTurn            ChatHistoryMismatchDimension = "trusted_turn_boundary"
+	ChatHistoryMismatchTrustedAssistantText   ChatHistoryMismatchDimension = "trusted_assistant_text"
+	ChatHistoryMismatchNativeIdentity         ChatHistoryMismatchDimension = "native_identity"
+	ChatHistoryMismatchAOHighWater            ChatHistoryMismatchDimension = "ao_high_water"
+	ChatHistoryMismatchUnsettledBoundary      ChatHistoryMismatchDimension = "unsettled_turn_boundary"
+)
+
+// ChatHistoryUnsettledError preserves mismatch dimensions while unwrapping to
+// ErrChatHistoryUnsettled for existing admission and API handling.
+type ChatHistoryUnsettledError struct {
+	Dimensions []ChatHistoryMismatchDimension
+}
+
+func (e *ChatHistoryUnsettledError) Error() string {
+	return fmt.Sprintf("%s: checkpoint mismatches %v", ErrChatHistoryUnsettled, e.Dimensions)
+}
+
+func (e *ChatHistoryUnsettledError) Unwrap() error { return ErrChatHistoryUnsettled }
+
+// ChatHistoryMismatchDimensions returns a copy of typed checkpoint dimensions.
+func ChatHistoryMismatchDimensions(err error) []ChatHistoryMismatchDimension {
+	var mismatch *ChatHistoryUnsettledError
+	if !errors.As(err, &mismatch) {
+		return nil
+	}
+	return append([]ChatHistoryMismatchDimension(nil), mismatch.Dimensions...)
+}
+
+// ChatHistoryMismatchOnlyUntrustedText reports whether an explicit provider-
+// history recovery may safely waive every mismatch in err.
+func ChatHistoryMismatchOnlyUntrustedText(err error) bool {
+	dimensions := ChatHistoryMismatchDimensions(err)
+	if len(dimensions) == 0 {
+		return false
+	}
+	for _, dimension := range dimensions {
+		if dimension != ChatHistoryMismatchUntrustedUserText &&
+			dimension != ChatHistoryMismatchUntrustedAssistantText {
+			return false
+		}
+	}
+	return true
+}
+
 // ChatCapabilityError reports why a harness cannot satisfy one session's Chat
 // admission policy. It unwraps to ErrChatUnsupported so existing callers keep
 // their stable error code while typed clients can render a safe recovery action
@@ -223,6 +278,10 @@ type ChatStartConfig struct {
 	// shell commands the agent runs. AO passes a HookPATH-augmented copy so the
 	// agent can invoke `ao` — that is how an orchestrator delegates.
 	Env map[string]string
+	// PrepareEnv rotates launch-only credentials. Persistent drivers defer it
+	// until they know a new provider process is required; live adoption must keep
+	// the verifier for the bearer already held by the surviving process.
+	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty defers to the provider's configured default.
 	Model string
 	// Effort is an optional provider-advertised model tuning value.
@@ -242,12 +301,6 @@ type ChatStartConfig struct {
 	// MCPServers are client-supplied tool servers for this provider conversation.
 	// User/provider configuration still loads normally; these are additive.
 	MCPServers []ChatMCPServerConfig
-	// AllowConcurrentHostReplacement is set only by the idle branch-handoff
-	// coordinator, which deliberately stages a replacement before destroying the
-	// source. Ordinary startup/reconciliation must leave this false so a second
-	// daemon can never mistake an attached persistent host for permission to
-	// launch a competing provider.
-	AllowConcurrentHostReplacement bool
 }
 
 // ChatResumeConfig reattaches to a provider conversation after a restart.
@@ -257,6 +310,8 @@ type ChatResumeConfig struct {
 	DataDir                string
 	WorkspacePath          string
 	Env                    map[string]string
+	// See ChatStartConfig.PrepareEnv.
+	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty keeps the provider conversation's current model.
 	Model string
 	// Effort is optional; empty keeps the provider conversation's current effort.
@@ -270,8 +325,6 @@ type ChatResumeConfig struct {
 	ProviderScopeID       string
 	AdditionalDirectories []string
 	MCPServers            []ChatMCPServerConfig
-	// See ChatStartConfig.AllowConcurrentHostReplacement.
-	AllowConcurrentHostReplacement bool
 }
 
 // ChatMCPServerConfig is the provider-neutral session-setup shape for a tool
@@ -819,6 +872,9 @@ const (
 // bumps its revision; it never allocates a new timeline position per token.
 type ChatEvent struct {
 	Kind ChatEventKind
+	// NativeUserMessageID is an adapter-proven native user record identity.
+	// Unlike ProviderItemID, it is never synthesized or namespaced by AO.
+	NativeUserMessageID string
 	// ProviderEventID is an identity for this exact native event, when the
 	// provider supplies one. It is deliberately distinct from ProviderItemID:
 	// start, delta and completion events commonly share one item id.
@@ -957,6 +1013,18 @@ type ChatProviderTerminator interface {
 // process, as distinct from native resume in a replacement process.
 type ChatLiveReconnector interface {
 	ReconnectedLive() bool
+}
+
+// ChatLiveReconnectActivator releases provider replay only after the service
+// has restored the durable active-turn correlation for the same live process.
+type ChatLiveReconnectActivator interface {
+	ActivateLiveReconnect(ctx context.Context, providerTurnID string) error
+}
+
+// ChatProviderEventAcknowledger lets a persistent provider discard replay
+// state only after the controller commits the matching event.
+type ChatProviderEventAcknowledger interface {
+	AcknowledgeProviderEvent(ctx context.Context, providerEventID string) error
 }
 
 // ChatHistoryReader is optionally implemented by a conversation whose native

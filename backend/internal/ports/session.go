@@ -9,6 +9,10 @@ import (
 // ErrSessionNotFound reports an observation for an unknown session id.
 var ErrSessionNotFound = errors.New("session not found")
 
+// ErrActivityProjectionContention means no signal projection committed after
+// retrying concurrent session writes. The same hook payload may be retried.
+var ErrActivityProjectionContention = errors.New("activity projection contention")
+
 // SpawnConfig is the request to start a new session: which project/issue, which
 // agent harness, and the branch/prompt the agent launches with.
 type SpawnConfig struct {

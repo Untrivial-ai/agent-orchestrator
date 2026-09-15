@@ -214,7 +214,7 @@ describe("createEventTransport", () => {
 		expect(setTransportHealthyMock).toHaveBeenCalledWith("history", false);
 	});
 
-	it("debounces workspace and session invalidation after a status change", () => {
+	it("flushes workspace and session invalidation immediately on the leading edge after a status change", () => {
 		vi.useFakeTimers();
 		try {
 			const queryClient = fakeQueryClient();
@@ -222,12 +222,13 @@ describe("createEventTransport", () => {
 			const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
 
 			onStatusHandler();
-			expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
-			vi.advanceTimersByTime(200);
+			// The first refresh after a quiet period does not wait out the window:
+			// it flushes on the leading edge so a reconnect recovers immediately.
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["workspaces"] }, { cancelRefetch: false });
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-agent-switches"] }, { cancelRefetch: false });
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-scm-summary"] }, { cancelRefetch: false });
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-usage"] }, { cancelRefetch: false });
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["editor-handoff"] }, { cancelRefetch: false });
 		} finally {
 			vi.useRealTimers();
 		}
@@ -284,7 +285,75 @@ describe("createEventTransport", () => {
 			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
 				queryKey: ["session-scm-summary"],
 			});
+			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+				queryKey: ["editor-handoff", "chat-1"],
+			}, { cancelRefetch: false });
 		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("invalidates editor-handoff readiness for a durable session update", () => {
+		vi.useFakeTimers();
+		try {
+			const queryClient = fakeQueryClient();
+			createEventTransport(queryClient).connect();
+			cdcSources()[0].emit(
+				"session_updated",
+				JSON.stringify({
+					seq: 44,
+					projectId: "proj-1",
+					sessionId: "session-1",
+					type: "session_updated",
+					payload: { id: "session-1", activity: "idle", isTerminated: false },
+					createdAt: "2026-08-27T02:31:38Z",
+				}),
+			);
+
+			vi.advanceTimersByTime(200);
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+				queryKey: ["editor-handoff", "session-1"],
+			}, { cancelRefetch: false });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("refetches cached unavailable state after the post-spawn session update", async () => {
+		vi.useFakeTimers();
+		let disconnect: (() => void) | undefined;
+		let unsubscribe: (() => void) | undefined;
+		try {
+			const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+			const queryKey = ["editor-handoff", "agent-orchestrator-260"] as const;
+			const queryFn = vi
+				.fn()
+				.mockResolvedValueOnce({ workspaceAvailable: false })
+				.mockResolvedValue({ workspaceAvailable: true });
+			await queryClient.fetchQuery({ queryKey, queryFn, staleTime: 10_000 });
+			const observer = new QueryObserver(queryClient, { queryKey, queryFn, staleTime: 10_000 });
+			unsubscribe = observer.subscribe(() => {});
+			disconnect = createEventTransport(queryClient).connect();
+
+			expect(queryClient.getQueryData(queryKey)).toEqual({ workspaceAvailable: false });
+			cdcSources()[0].emit(
+				"session_updated",
+				JSON.stringify({
+					seq: 667762,
+					projectId: "agent-orchestrator",
+					sessionId: "agent-orchestrator-260",
+					type: "session_updated",
+					payload: { id: "agent-orchestrator-260" },
+					createdAt: "2026-08-29T07:55:18.913484Z",
+				}),
+			);
+
+			await vi.advanceTimersByTimeAsync(200);
+			expect(queryFn).toHaveBeenCalledTimes(2);
+			expect(queryClient.getQueryData(queryKey)).toEqual({ workspaceAvailable: true });
+		} finally {
+			unsubscribe?.();
+			disconnect?.();
 			vi.useRealTimers();
 		}
 	});
@@ -487,12 +556,17 @@ describe("bounded live refresh", () => {
 		vi.useFakeTimers();
 		const client = fakeQueryClient();
 		const disconnect = createEventTransport(client).connect();
-		for (let elapsed = 0; elapsed < 2_000; elapsed += 100) {
+		// The first event flushes immediately (leading edge); the rest are paced
+		// to one flush per window, so a busy stream keeps updating throughout.
+		emit();
+		expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+		for (let elapsed = 100; elapsed < 2_000; elapsed += 100) {
 			emit();
 			await vi.advanceTimersByTimeAsync(100);
-			if (elapsed >= 100) expect(client.invalidateQueries).toHaveBeenCalled();
+			expect(client.invalidateQueries).toHaveBeenCalled();
 		}
-		expect(client.invalidateQueries).toHaveBeenCalledTimes(10);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(client.invalidateQueries).toHaveBeenCalledTimes(14);
 		disconnect();
 	});
 
@@ -500,14 +574,17 @@ describe("bounded live refresh", () => {
 		vi.useFakeTimers();
 		const client = fakeQueryClient();
 		const disconnect = createEventTransport(client).connect();
-		emit("a"); emit("a"); emit("b");
+		emit("a"); // leading edge flushes immediately
+		expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+		emit("a"); emit("b"); // coalesced into the trailing window
 		await vi.advanceTimersByTimeAsync(150);
-		expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+		// Within the window the repeated "a" and the new "b" flush once each.
+		expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
 		emit("c");
 		disconnect();
 		emit("late");
 		await vi.advanceTimersByTimeAsync(500);
-		expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+		expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
 	});
 
 	it("lets slow fetches finish and catches up once for events during the fetch", async () => {

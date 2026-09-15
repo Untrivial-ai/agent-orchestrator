@@ -22,7 +22,7 @@ import {
 	type ProjectInfo,
 	type SessionMode,
 } from "./api";
-import { isConfigured, loadConfig, type ServerConfig } from "./config";
+import { isConfigured, loadConfig, machineIdentity, type ServerConfig } from "./config";
 import { resolveActiveConfig, runtimeResolveDeps } from "./resolveConfig";
 import { pollIntervalFor } from "./pollInterval";
 import type { Endpoint } from "./endpoints";
@@ -30,10 +30,12 @@ import { activeHost, loadHosts } from "./hosts";
 import { shouldReRace } from "./reRace";
 import { shouldRaceForUpgrade, UPGRADE_RACE_CHECK_MS } from "./upgradeRace";
 import { sameServerConfig } from "./sameConfig";
+import { keepUnchanged } from "./keepUnchanged";
 import { shouldShowLoading } from "./configLoading";
 import { shouldKeepPolling } from "./connectionError";
 import { primeInstallId } from "./installId";
 import { collectPRs } from "./prView";
+import { ALL_PROJECTS, NO_PROJECTS_KNOWN, projectsForMachine, resolveActiveProject, retainProjects, type KnownProjects } from "./projectFilter";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry, trackFeature } from "./telemetry/runtime";
 import { useConversationEventTransport } from "./chat/conversationEvents";
@@ -63,6 +65,10 @@ type AppState = {
 	 *  rotated tunnel hostname apart from being simply out of range. */
 	activeEndpoints: Endpoint[];
 	projects: ProjectInfo[];
+	/** Whether `projects` is a list this machine actually answered with, rather
+	 *  than the empty array that stands in before the first one lands. Callers
+	 *  that judge a project id against the list need it — see resolveActiveProject. */
+	projectsKnown: boolean;
 	sessions: DashboardSession[];
 	orchestrators: OrchestratorLink[];
 	orchestratorId: string | null;
@@ -100,7 +106,7 @@ export function useApp(): AppState {
 export function useVisibleSessions(): DashboardSession[] {
 	const { sessions, activeProjectId } = useApp();
 	return useMemo(
-		() => (activeProjectId === "all" ? sessions : sessions.filter((s) => s.projectId === activeProjectId)),
+		() => (activeProjectId === ALL_PROJECTS ? sessions : sessions.filter((s) => s.projectId === activeProjectId)),
 		[sessions, activeProjectId],
 	);
 }
@@ -118,12 +124,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// yet" from "no machine paired" — identical as state, opposite to the user.
 	const [configResolved, setConfigResolved] = useState(false);
 	const [activeEndpoints, setActiveEndpoints] = useState<Endpoint[]>([]);
-	const [projects, setProjects] = useState<ProjectInfo[]>([]);
+	// The last project list a machine answered with, plus whether that answer
+	// ever came. Held together because retainProjects decides all of it from one
+	// tick's result, and split apart they could disagree — see that helper for
+	// why a failed /projects must not read as "this daemon has no projects".
+	const [knownProjects, setKnownProjects] = useState<KnownProjects>(NO_PROJECTS_KNOWN);
 	const [sessions, setSessions] = useState<DashboardSession[]>([]);
 	const [orchestrators, setOrchestrators] = useState<OrchestratorLink[]>([]);
 	const [orchestratorId, setOrchestratorId] = useState<string | null>(null);
 	const [stats, setStats] = useState<DashboardStats>({});
-	const [activeProjectId, setActiveProjectId] = useState<string>("all");
+	// The filter as chosen — from storage at launch, then from the picker. What
+	// consumers see is `activeProjectId` below: this checked against the list.
+	const [chosenProjectId, setChosenProjectId] = useState<string>(ALL_PROJECTS);
 	const [connection, setConnection] = useState<ConnStatus>("closed");
 	const [notificationsUnread, setNotificationsUnread] = useState(0);
 	const [loading, setLoading] = useState(true);
@@ -184,7 +196,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// Load persisted active project once.
 	useEffect(() => {
 		AsyncStorage.getItem(ACTIVE_PROJECT_KEY).then((v) => {
-			if (v) setActiveProjectId(v);
+			if (v) setChosenProjectId(v);
 		});
 	}, []);
 
@@ -221,7 +233,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// Read alongside the config so a failure can be explained: a stored
 			// tunnel that no longer answers is a rotated hostname, not a machine
 			// that is merely out of range.
-			setActiveEndpoints((await activeHost())?.endpoints ?? []);
+			const endpoints = (await activeHost())?.endpoints ?? [];
+			setActiveEndpoints((current) => keepUnchanged(current, endpoints));
 		} finally {
 			setConfigResolved(true);
 		}
@@ -291,11 +304,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// getSessions returns projects, so don't fetch /projects again alongside
 			// it — that duplicate doubled the auth attempts spent per failing tick.
 			const sess = await getSessions(c, "all");
-			setProjects(sess.projects);
-			setSessions(sess.sessions);
-			setOrchestrators(sess.orchestrators);
+			// Most ticks bring back the fleet exactly as it was; keep the previous
+			// value so React bails out of the render — see keepUnchanged.
+			//
+			// Keyed on which machine answered AND checked against the machine the
+			// app is on now: fetchAll has no staleness guard, so a request already
+			// in flight when the user re-pairs still lands here, and folding it in
+			// would displace the list the current machine had just given us. Only
+			// the project write is guarded, deliberately — guarding every write in
+			// this function would also swallow the connection and loading state on
+			// a re-pair, which is a different change. retainProjects holds identity
+			// when it keeps what it has, but a successful tick builds a fresh
+			// object, so it goes through keepUnchanged like everything else.
+			setKnownProjects((prev) =>
+				keepUnchanged(
+					prev,
+					retainProjects(
+						prev,
+						{ machine: machineIdentity(c), projects: sess.projects },
+						machineIdentity(cfgRef.current ?? c),
+					),
+				),
+			);
+			setSessions((prev) => keepUnchanged(prev, sess.sessions));
+			setOrchestrators((prev) => keepUnchanged(prev, sess.orchestrators));
 			setOrchestratorId(sess.orchestratorId);
-			setStats(sess.stats);
+			setStats((prev) => keepUnchanged(prev, sess.stats));
 			setError(null);
 			setErrorStatus(null);
 			setConnection("open");
@@ -410,44 +444,73 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	}, [config, fetchAll, appActive, reloadConfig, configResolved]);
 
 	const setActiveProject = useCallback((id: string) => {
-		setActiveProjectId(id);
+		setChosenProjectId(id);
 		AsyncStorage.setItem(ACTIVE_PROJECT_KEY, id).catch(() => {});
 	}, []);
 
+	// Only this machine's answers are visible as this machine's projects; see
+	// projectsForMachine for the re-pair window that makes the read side its own
+	// guard rather than a consequence of the write side.
+	const { projects, known: projectsKnown } = projectsForMachine(
+		knownProjects,
+		config && isConfigured(config) ? machineIdentity(config) : "",
+	);
+
+	// A filter whose project the daemon no longer lists applies as "all" (#4843).
+	// Derived on every list rather than reset and written back: the project can
+	// disappear while the app is open and the stored value can land after the
+	// first list does, storage is then only ever written by a tap, a late
+	// response from a machine the user just left cannot discard the filter they
+	// picked on the new one, and the choice comes back if the project does.
+	const activeProjectId = useMemo(
+		() => resolveActiveProject(chosenProjectId, projects, projectsKnown),
+		[chosenProjectId, projects, projectsKnown],
+	);
+
 	// Pick a sensible project for actions that need one (spawn / conductor).
 	const targetProject = useCallback((): string | null => {
-		if (activeProjectId !== "all") return activeProjectId;
+		if (activeProjectId !== ALL_PROJECTS) return activeProjectId;
 		if (projects.length === 1) return projects[0].id;
 		return null;
 	}, [activeProjectId, projects]);
 
 	const spawn = useCallback(
-		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) =>
-			trackFeature("spawn", async () => {
-				const c = cfgRef.current;
-				const proj = projectId ?? targetProject();
-				if (!c || !proj) throw new Error("Pick a project first");
-				const session = await delegateTask(c, {
-					projectId: proj,
-					brief: prompt ?? "",
-					agent: harness,
-					model,
-					mode: mode ?? "chat",
-				});
-				await fetchAll();
-				return session;
-			}),
+		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) => {
+			const resolvedMode = mode ?? "chat";
+			return trackFeature(
+				"spawn",
+				async () => {
+					const c = cfgRef.current;
+					const proj = projectId ?? targetProject();
+					if (!c || !proj) throw new Error("Pick a project first");
+					const session = await delegateTask(c, {
+						projectId: proj,
+						brief: prompt ?? "",
+						agent: harness,
+						model,
+						mode: resolvedMode,
+					});
+					await fetchAll();
+					return session;
+				},
+				{ mode: resolvedMode },
+			);
+		},
 		[targetProject, fetchAll],
 	);
 
 	const launchConductor = useCallback(
 		async (projectId: string, clean = false, mode: SessionMode = "chat") =>
-			trackFeature("conductor", async () => {
-				const c = cfgRef.current!;
-				const link = await apiLaunchOrchestrator(c, projectId, clean, mode);
-				await fetchAll();
-				return link;
-			}),
+			trackFeature(
+				"conductor",
+				async () => {
+					const c = cfgRef.current!;
+					const link = await apiLaunchOrchestrator(c, projectId, clean, mode);
+					await fetchAll();
+					return link;
+				},
+				{ mode },
+			),
 		[fetchAll],
 	);
 
@@ -493,6 +556,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			configured: !!config && isConfigured(config),
 			activeEndpoints,
 			projects,
+			projectsKnown,
 			sessions,
 			orchestrators,
 			orchestratorId,
@@ -515,7 +579,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		}),
 		[
 			config,
+			activeEndpoints,
 			projects,
+			projectsKnown,
 			sessions,
 			orchestrators,
 			orchestratorId,

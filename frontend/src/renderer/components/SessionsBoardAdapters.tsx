@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -7,6 +7,7 @@ import {
 	SessionCardView,
 	SessionUsageMetricView,
 	type BoardPullRequestLabels,
+	type BoardPullRequestProgress,
 	type BoardSessionPresentation,
 	type BoardColumnLabels,
 	type BoardUsagePresentation,
@@ -15,6 +16,8 @@ import {
 import { Check, Copy, GitBranch, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
 import type { MessageKey } from "../i18n";
 import { aoBridge } from "../lib/bridge";
+import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { formatTimeCompact } from "../lib/format-time";
 import { formatEstimatedCost } from "../lib/format-cost";
 import { formatTokenCount } from "../lib/format-token-count";
@@ -47,8 +50,10 @@ export function toBoardSessionPresentation(
 		activity: session.activity,
 		branch: session.branch,
 		id: session.id,
+		isTerminated: session.isTerminated,
 		kanbanColumn: session.kanbanColumn,
 		displayStatus: session.displayStatus,
+		statusReadiness: session.statusReadiness,
 		provider: session.provider,
 		status: session.status,
 		statusPresentation:
@@ -150,6 +155,15 @@ function DesktopSessionCard({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const retryStatus = useMutation({
+		mutationFn: async () => {
+			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
+				params: { path: { sessionId: session.id } },
+			});
+			if (error) throw new Error(apiErrorMessage(error, t("session.statusUnavailable")));
+		},
+		onSettled: () => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+	});
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const summaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
 	const termination = useTerminateSessionState(session.id);
@@ -211,9 +225,26 @@ function DesktopSessionCard({
 			action={action}
 			branchAction={branchAction}
 			branchIcon={<GitBranch aria-hidden="true" className="size-icon-2xs shrink-0" />}
-			error={termination.error ?? undefined}
+			error={termination.error ?? retryStatus.error?.message ?? undefined}
 			externalLink={ProductExternalLink}
-			footer={footer}
+			footer={
+				<>
+					{footer}
+					{interactive && session.statusReadiness === "unavailable" && (
+						<button
+							type="button"
+							disabled={retryStatus.isPending}
+							className="px-3 py-2 text-xs text-secondary hover:text-primary disabled:opacity-50"
+							onClick={(event) => {
+								event.stopPropagation();
+								retryStatus.mutate();
+							}}
+						>
+							{retryStatus.isPending ? t("session.statusChecking") : t("session.retryStatus")}
+						</button>
+					)}
+				</>
+			}
 			interactive={interactive}
 			labels={{
 				formatTime: formatTimeCompact,
@@ -256,6 +287,7 @@ function DesktopSessionCard({
 
 function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	return {
+		progress: (progress) => pullRequestProgressLabel(progress, t),
 		short: t("pr.short"),
 		states: {
 			closed: t("pr.state.closed"),
@@ -264,6 +296,20 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 			open: t("pr.state.open"),
 		},
 	};
+}
+
+function pullRequestProgressLabel(
+	{ closed, draft, merged, open, total }: BoardPullRequestProgress,
+	t: TFunction,
+): string {
+	return [
+		t("pr.progress.merged", { count: total, merged }),
+		open > 0 ? t("pr.progress.open", { count: open }) : undefined,
+		draft > 0 ? t("pr.progress.draft", { count: draft }) : undefined,
+		closed > 0 ? t("pr.progress.closed", { count: closed }) : undefined,
+	]
+		.filter((part): part is string => part !== undefined)
+		.join(" · ");
 }
 
 // Keep the board metric scannable by showing cost only. The full cost/token
