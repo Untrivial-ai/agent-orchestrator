@@ -1448,7 +1448,7 @@ func TestSpawn_InheritsChatOrchestratorPermissions(t *testing.T) {
 		ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator,
 	}
 	st.conversations["mer-0"] = domain.ConversationRecord{
-		SessionID: "mer-0", Settings: domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto},
+		SessionID: "mer-0", Settings: domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions},
 	}
 
 	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
@@ -1460,14 +1460,17 @@ func TestSpawn_InheritsChatOrchestratorPermissions(t *testing.T) {
 	if got := rec.Harness; got != domain.HarnessClaudeCode {
 		t.Fatalf("harness = %q, want claude-code", got)
 	}
-	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeAuto) {
-		t.Fatalf("worker permission environment = %q, want %q", got, domain.PermissionModeAuto)
+	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeBypassPermissions) {
+		t.Fatalf("worker permission environment = %q, want %q", got, domain.PermissionModeBypassPermissions)
 	}
 }
 
 func TestSpawn_IgnoresNonOrchestratorParent(t *testing.T) {
 	m, st, rt, _ := newManager()
 	st.sessions["mer-0"] = domain.SessionRecord{ID: "mer-0", ProjectID: "mer", Kind: domain.KindWorker}
+	st.conversations["mer-0"] = domain.ConversationRecord{
+		SessionID: "mer-0", Settings: domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions},
+	}
 
 	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
 		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
