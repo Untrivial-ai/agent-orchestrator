@@ -10,6 +10,9 @@
  *   on the live border — never a second drag/clamp state machine.
  * - Callers MUST pass `getBorderElement` (scoped to their panel), not global
  *   document.querySelector, so nested/preview shells cannot pick the wrong node.
+ * - Ancestor refs attach after descendant layout effects — getters live in refs and
+ *   we re-bind observers once the border node appears (inspector close/reopen).
+ * - Drag follow is scoped to *this* handle (not every `is-resizing-x` peer).
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -36,10 +39,16 @@ export function ResizeHandle({
 	side,
 	getBorderElement,
 	getObserveElements,
+	onPointerDown,
 	...props
 }: ResizeHandleProps) {
 	const hitRef = useRef<HTMLDivElement>(null);
 	const gripRef = useRef<HTMLSpanElement>(null);
+	const getBorderElementRef = useRef(getBorderElement);
+	const getObserveElementsRef = useRef(getObserveElements);
+	const draggingRef = useRef(false);
+	getBorderElementRef.current = getBorderElement;
+	getObserveElementsRef.current = getObserveElements;
 	const [edgeX, setEdgeX] = useState<number | null>(null);
 	// Sidebar handle paints on the panel's right edge; inspector on its left.
 	const borderEdge: "left" | "right" = side === "right" ? "right" : "left";
@@ -59,15 +68,14 @@ export function ResizeHandle({
 				place(null);
 				return;
 			}
-			const el = getBorderElement();
+			const el = getBorderElementRef.current();
 			place(el ? borderCenterX(el, borderEdge) : null);
 		};
 
-		// While useResizable is dragging, follow the painted border every move
-		// (no local clamp math — the hook owns width).
+		// Only this handle follows during its own drag — not peer `is-resizing-x`.
 		let dragMoveAttached = false;
 		const onDragMove = () => {
-			if (!document.body.classList.contains("is-resizing-x")) return;
+			if (!draggingRef.current) return;
 			sync();
 		};
 		const attachDragMove = () => {
@@ -81,44 +89,87 @@ export function ResizeHandle({
 			window.removeEventListener("pointermove", onDragMove);
 			sync();
 		};
+		const endLocalDrag = () => {
+			draggingRef.current = false;
+			detachDragMove();
+		};
 		const onBodyClass = () => {
-			if (document.body.classList.contains("is-resizing-x")) attachDragMove();
-			else detachDragMove();
+			if (!document.body.classList.contains("is-resizing-x")) endLocalDrag();
+			else if (draggingRef.current) attachDragMove();
 		};
 
+		const observed = new Set<Element>();
+		const ro = new ResizeObserver(sync);
+		const observe = (el: Element | null | undefined) => {
+			if (!el || observed.has(el)) return;
+			observed.add(el);
+			ro.observe(el);
+		};
+		const refreshObserved = () => {
+			observe(hit);
+			if (hit.parentElement) observe(hit.parentElement);
+			for (const el of getObserveElementsRef.current?.() ?? []) observe(el);
+			observe(getBorderElementRef.current());
+		};
+
+		// Idle-only style MO — during drag, pointermove owns sync so the width
+		// write does not force a second layout read per move.
+		let borderMoTarget: HTMLElement | null = null;
+		const mo = new MutationObserver(() => {
+			if (draggingRef.current) return;
+			refreshObserved();
+			const border = getBorderElementRef.current();
+			if (border !== borderMoTarget) bindBorderMo();
+			sync();
+		});
+		const bindBorderMo = () => {
+			const border = getBorderElementRef.current();
+			mo.disconnect();
+			borderMoTarget = border;
+			mo.observe(hit, { attributes: true, attributeFilter: ["class", "hidden"] });
+			if (border) {
+				mo.observe(border, {
+					attributes: true,
+					attributeFilter: ["data-state", "hidden", "class", "style"],
+				});
+			}
+		};
+
+		refreshObserved();
+		bindBorderMo();
 		sync();
 
-		const ro = new ResizeObserver(sync);
-		ro.observe(hit);
-		if (hit.parentElement) ro.observe(hit.parentElement);
-		const refreshObserved = () => {
-			for (const el of getObserveElements?.() ?? []) {
-				if (el) ro.observe(el);
+		// Ancestor refs attach after this descendant layout effect — retry until
+		// the border node exists (inspector mount / close+reopen).
+		let borderPollRaf = 0;
+		let borderPollAttempts = 0;
+		const pollForBorder = () => {
+			borderPollRaf = 0;
+			refreshObserved();
+			bindBorderMo();
+			sync();
+			if (!getBorderElementRef.current() && borderPollAttempts++ < 120) {
+				borderPollRaf = requestAnimationFrame(pollForBorder);
 			}
-			const border = getBorderElement();
-			if (border) ro.observe(border);
 		};
-		refreshObserved();
-
-		const mo = new MutationObserver(sync);
-		mo.observe(hit, { attributes: true, attributeFilter: ["class", "hidden"] });
-		const border = getBorderElement();
-		if (border) {
-			mo.observe(border, { attributes: true, attributeFilter: ["data-state", "hidden", "class", "style"] });
+		if (!getBorderElementRef.current()) {
+			borderPollRaf = requestAnimationFrame(pollForBorder);
 		}
+
 		const bodyMo = new MutationObserver(onBodyClass);
 		bodyMo.observe(document.body, { attributes: true, attributeFilter: ["class"] });
 		onBodyClass();
 
 		window.addEventListener("resize", sync);
 		return () => {
+			if (borderPollRaf) cancelAnimationFrame(borderPollRaf);
 			ro.disconnect();
 			mo.disconnect();
 			bodyMo.disconnect();
-			detachDragMove();
+			endLocalDrag();
 			window.removeEventListener("resize", sync);
 		};
-	}, [borderEdge, getBorderElement, getObserveElements]);
+	}, [borderEdge]);
 
 	return (
 		<div
@@ -132,6 +183,11 @@ export function ResizeHandle({
 				side === "left" && "left-[calc(-1*var(--size-resize-handle-offset))]",
 				className,
 			)}
+			onPointerDown={(event) => {
+				// Mark local drag before useResizable adds `is-resizing-x`.
+				draggingRef.current = true;
+				onPointerDown?.(event);
+			}}
 			{...props}
 		>
 			{edgeX !== null ? (

@@ -507,6 +507,13 @@ export function Sidebar({
 			resizeAuxiliaryTargetRef?.current ?? null,
 		];
 	}, [resizeAuxiliaryTargetRef]);
+	// Stable getter — ResizeHandle keeps callbacks in refs; an inline arrow would
+	// rebuild observers on every Sidebar render (daemon ticks / activity).
+	const getSidebarBorderElement = useCallback(
+		() =>
+			resizeScopeRef.current?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null,
+		[],
+	);
 	const {
 		onPointerDown: onResizePointerDown,
 		onCollapsedPointerDown: onCollapsedResizePointerDown,
@@ -673,15 +680,16 @@ export function Sidebar({
 			<SidebarHeader className="gap-0 p-0 px-3 pt-2 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:pt-2">
 				{/*
 				 * Brand → home. Design contracts (do not regress):
-				 * - Click navigates home; do NOT add hover/focus fill (styles.css
+				 * - Click navigates home; do NOT add hover/focus *fill* (styles.css
 				 *   opts `[data-sidebar-brand]` out of `.sidebar-focusless` wash).
+				 * - Keyboard focus uses the dedicated outline rule in styles.css —
+				 *   never `focus-visible:outline-none` (global kill would leave it blind).
 				 * - No separate "home" affordance on the mark — the whole brand is the control.
 				 */}
 				<button
 					aria-label={t("shell.goHome")}
 					className={cn(
 						"group/brand flex w-full shrink-0 items-center gap-1.5 rounded-md px-0.5 text-left",
-						"focus-visible:outline-none",
 						"group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
@@ -954,9 +962,7 @@ export function Sidebar({
 			{/* Grip follows the painted sidebar-container edge; useResizable owns clamp. */}
 			<ResizeHandle
 				className="group-data-[state=collapsed]:hidden"
-				getBorderElement={() =>
-					resizeScopeRef.current?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null
-				}
+				getBorderElement={getSidebarBorderElement}
 				getObserveElements={getResizeTargets}
 				onDoubleClick={onResizeDoubleClick}
 				onPointerDown={onResizePointerDown}
