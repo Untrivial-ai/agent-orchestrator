@@ -33,7 +33,6 @@ func TestUpgrade_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 
 	sw, err := sse.Upgrade(rec, req,
-		sse.WithHeader("X-Custom", "custom-val"),
 		sse.WithWriteTimeout(100*time.Millisecond),
 	)
 	if err != nil {
@@ -55,9 +54,6 @@ func TestUpgrade_Success(t *testing.T) {
 	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
 		t.Errorf("X-Accel-Buffering = %q, want no", got)
 	}
-	if got := rec.Header().Get("X-Custom"); got != "custom-val" {
-		t.Errorf("X-Custom = %q, want custom-val", got)
-	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -76,55 +72,6 @@ func TestUpgrade_UnsupportedFlusher(t *testing.T) {
 	}
 	if sw != nil {
 		t.Fatal("expected nil writer on failure")
-	}
-}
-
-func TestWriter_WriteEvent(t *testing.T) {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/events", nil)
-
-	sw, err := sse.Upgrade(rec, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.Body.Reset()
-
-	err = sw.WriteEvent(sse.Event{
-		ID:    "42",
-		Event: "test_event",
-		Data:  []byte("hello world"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := "id: 42\nevent: test_event\ndata: hello world\n\n"
-	if got := rec.Body.String(); got != want {
-		t.Fatalf("WriteEvent got %q, want %q", got, want)
-	}
-}
-
-func TestWriter_WriteEventMultiline(t *testing.T) {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/events", nil)
-
-	sw, err := sse.Upgrade(rec, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.Body.Reset()
-
-	err = sw.WriteEvent(sse.Event{
-		Event: "multiline",
-		Data:  []byte("line1\nline2"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := "event: multiline\ndata: line1\ndata: line2\n\n"
-	if got := rec.Body.String(); got != want {
-		t.Fatalf("WriteEvent got %q, want %q", got, want)
 	}
 }
 

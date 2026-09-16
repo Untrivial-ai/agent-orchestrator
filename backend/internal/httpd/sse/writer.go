@@ -21,13 +21,6 @@ const (
 // ErrUnsupported is returned when the ResponseWriter does not support flushing.
 var ErrUnsupported = errors.New("sse: streaming unsupported by server")
 
-// Event represents an individual Server-Sent Event frame.
-type Event struct {
-	ID    string
-	Event string
-	Data  []byte
-}
-
 // Option configures the SSE Writer.
 type Option func(*Writer)
 
@@ -35,13 +28,6 @@ type Option func(*Writer)
 func WithWriteTimeout(d time.Duration) Option {
 	return func(w *Writer) {
 		w.writeTimeout = d
-	}
-}
-
-// WithHeader adds a response header prior to writing HTTP 200 OK.
-func WithHeader(key, val string) Option {
-	return func(w *Writer) {
-		w.w.Header().Set(key, val)
 	}
 }
 
@@ -94,60 +80,30 @@ func Upgrade(w http.ResponseWriter, r *http.Request, opts ...Option) (*Writer, e
 	return sw, nil
 }
 
-// SetWriteTimeout updates the rolling write deadline duration.
-func (w *Writer) SetWriteTimeout(d time.Duration) {
-	w.writeTimeout = d
-}
-
-// Header returns the response header map.
-func (w *Writer) Header() http.Header {
-	return w.w.Header()
-}
-
-// ResponseWriter returns the underlying http.ResponseWriter.
-func (w *Writer) ResponseWriter() http.ResponseWriter {
-	return w.w
-}
-
-// WriteEvent writes an SSE event frame with checked flushing and a rolling write deadline.
-func (w *Writer) WriteEvent(e Event) error {
-	var buf bytes.Buffer
-	if e.ID != "" {
-		buf.WriteString("id: ")
-		buf.WriteString(e.ID)
-		buf.WriteByte('\n')
-	}
-	if e.Event != "" {
-		buf.WriteString("event: ")
-		buf.WriteString(e.Event)
-		buf.WriteByte('\n')
-	}
-	if len(e.Data) > 0 {
-		lines := bytes.Split(e.Data, []byte("\n"))
-		for _, line := range lines {
-			buf.WriteString("data: ")
-			buf.Write(line)
-			buf.WriteByte('\n')
-		}
-	} else {
-		buf.WriteString("data:\n")
-	}
-	buf.WriteByte('\n')
-
-	return w.writeFrame(buf.Bytes())
-}
-
 // WriteJSON marshals v as JSON and writes it as an SSE event frame.
 func (w *Writer) WriteJSON(id, event string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return w.WriteEvent(Event{
-		ID:    id,
-		Event: event,
-		Data:  data,
-	})
+
+	var buf bytes.Buffer
+	if id != "" {
+		buf.WriteString("id: ")
+		buf.WriteString(id)
+		buf.WriteByte('\n')
+	}
+	if event != "" {
+		buf.WriteString("event: ")
+		buf.WriteString(event)
+		buf.WriteByte('\n')
+	}
+	buf.WriteString("data: ")
+	buf.Write(data)
+	buf.WriteByte('\n')
+	buf.WriteByte('\n')
+
+	return w.writeFrame(buf.Bytes())
 }
 
 // WriteComment writes an SSE comment frame (e.g. ": keepalive\n\n" or ":\n\n").
