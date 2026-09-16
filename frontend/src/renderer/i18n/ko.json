@@ -2172,5 +2172,18 @@
 	"workflow.task.roleInfo": "Role Information",
 	"workflow.task.providerSource.taskOverride": "Task Override",
 	"workflow.task.providerSource.roleDefault": "Role Default",
-	"workflow.task.providerSource.systemDefault": "System Default"
+	"workflow.task.providerSource.systemDefault": "System Default",
+	"status.task.pending": "Pending",
+	"status.task.ready": "Ready",
+	"status.task.running": "Running",
+	"status.task.passed": "Passed",
+	"status.task.blocked": "Blocked",
+	"status.task.cancelled": "Cancelled",
+	"status.run.pending": "Pending",
+	"status.run.running": "Running",
+	"status.run.succeeded": "Succeeded",
+	"status.run.failed": "Failed",
+	"status.run.cancelled": "Cancelled",
+	"status.role.enabled": "Enabled",
+	"status.role.disabled": "Disabled"
 }

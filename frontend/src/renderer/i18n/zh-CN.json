@@ -2154,5 +2154,18 @@
 	"workflow.task.roleInfo": "角色信息",
 	"workflow.task.providerSource.taskOverride": "任务覆盖",
 	"workflow.task.providerSource.roleDefault": "角色默认",
-	"workflow.task.providerSource.systemDefault": "系统默认"
+	"workflow.task.providerSource.systemDefault": "系统默认",
+	"status.task.pending": "待开始",
+	"status.task.ready": "就绪",
+	"status.task.running": "运行中",
+	"status.task.passed": "已通过",
+	"status.task.blocked": "已阻塞",
+	"status.task.cancelled": "已取消",
+	"status.run.pending": "待启动",
+	"status.run.running": "运行中",
+	"status.run.succeeded": "成功",
+	"status.run.failed": "失败",
+	"status.run.cancelled": "已取消",
+	"status.role.enabled": "已启用",
+	"status.role.disabled": "已禁用"
 }
