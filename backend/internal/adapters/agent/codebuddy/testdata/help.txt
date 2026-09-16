@@ -1,0 +1,15 @@
+Usage: codebuddy|cbc [options] [command] [prompt]
+
+Options:
+  -V, --version                                    output the version number
+  --permission-mode <mode>                         Default permission mode for this process (TUI, --serve Web, ACP). Choices: acceptEdits, bypassPermissions, default, plan, dontAsk, auto. Does not write settings.
+  --allowedTools <tools...>                        Comma or space-separated list of tool names to allow
+  --disallowedTools <tools...>                     Comma or space-separated list of tool names to deny
+  -c, --continue                                   Continue the most recent conversation
+  -r, --resume [sessionId]                         Resume a conversation - provide a session ID or interactively select a conversation to resume
+  --model <model>                                  Model for the current session
+  --session-id <uuid>                              Use a specific session ID for the conversation
+  --acp                                            Start in ACP (Agent Client Protocol) mode
+  --system-prompt <prompt>                         Override the system prompt for this session
+  --append-system-prompt <prompt>                  Append additional content to the system prompt
+  -h, --help                                       display help for command

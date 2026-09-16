@@ -1,0 +1,10 @@
+{
+  "name": "@tencent-ai/codebuddy-code",
+  "version": "2.151.0",
+  "distIntegrity": "sha512-Y9xoUX4nsEsG5oz/AbRNH3ZmghmxCuB6dFAZC6xStLOnoxntPco2g4TtYuBi5c/POYQVLYs/ZbpsMx6zc99vFg==",
+  "bin": {
+    "codebuddy-code": "./bin/codebuddy",
+    "codebuddy": "./bin/codebuddy",
+    "cbc": "./bin/codebuddy"
+  }
+}

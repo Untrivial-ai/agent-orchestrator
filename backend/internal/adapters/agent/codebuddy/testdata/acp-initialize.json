@@ -1,0 +1,27 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "promptCapabilities": {
+        "image": true,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "loadSession": true,
+      "delegateToolsSupport": true,
+      "mainAgentSupport": false,
+      "multitaskSupport": true
+    },
+    "authMethods": [
+      { "id": "iOA", "name": "Login with iOA", "description": null },
+      { "id": "external", "name": "Login with Google/Github", "description": null },
+      { "id": "internal", "name": "Login with WeChat", "description": null },
+      { "id": "selfhosted", "name": "Login with Enterprise Domain", "description": null }
+    ]
+  }
+}
