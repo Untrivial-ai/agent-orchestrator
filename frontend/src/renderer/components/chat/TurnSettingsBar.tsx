@@ -56,11 +56,9 @@ const APPROVAL_ORDER: ApprovalMode[] = [
 	"bypass-permissions",
 ];
 
-// Codex has three distinct permission profiles. Its default is already full
-// access in AO's isolated worktree posture, so expose it as that rather than a
-// fourth, ambiguous "default" option.
+// Default inherits Codex configuration; bypass remains an explicit choice.
 const CODEX_APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
-	default: { label: "Full access" },
+	default: { label: "Default approvals" },
 	"accept-edits": { label: "Ask for approval" },
 	auto: { label: "Approve for me" },
 	"bypass-permissions": { label: "Bypass permissions" },

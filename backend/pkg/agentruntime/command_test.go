@@ -235,3 +235,81 @@ func TestClaudeNativeSessionIDValidation(t *testing.T) {
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
+
+// Codex Default must not fall through to the bypass flag: only an explicit
+// Bypass Permissions choice may disable approvals and the sandbox. The old
+// mapping used a catch-all default branch, so Default -- and the Read Only
+// session mode, which maps onto Default -- silently launched Codex with
+// --dangerously-bypass-approvals-and-sandbox.
+func TestCodexPermissionArgsOnlyBypassesWhenAsked(t *testing.T) {
+	bypass := "--dangerously-bypass-approvals-and-sandbox"
+	for _, tc := range []struct {
+		name   string
+		policy PermissionPolicy
+		want   []string
+	}{
+		{"default", PermissionDefault, nil},
+		{"unknown", PermissionPolicy("nonsense"), nil},
+		{"empty", PermissionPolicy(""), nil},
+		{"accept-edits", PermissionAcceptEdits, []string{"--ask-for-approval", "on-request"}},
+		{"auto", PermissionAuto, []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}},
+		{"bypass", PermissionBypassPermissions, []string{bypass}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CodexPermissionArgs(tc.policy)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("CodexPermissionArgs(%q) = %#v, want %#v", tc.policy, got, tc.want)
+			}
+		})
+	}
+
+	if reflect.DeepEqual(CodexPermissionArgs(PermissionDefault), CodexPermissionArgs(PermissionBypassPermissions)) {
+		t.Error("Default and Bypass Permissions produce the same flags; Default must not imply bypass")
+	}
+}
+
+// Both TUI launch surfaces -- fresh launch and resume -- carry the same rule.
+func TestCodexLaunchAndRestoreOnlyBypassWhenAsked(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy PermissionPolicy
+		args   []string
+	}{
+		{"default", PermissionDefault, nil},
+		{"empty", "", nil},
+		{"unknown", PermissionPolicy("nonsense"), nil},
+		{"read-only", PermissionPolicyForMode(SessionModeReadOnly), nil},
+		{"unknown execution mode", PermissionPolicyForMode("nonsense"), nil},
+		{"accept-edits", PermissionAcceptEdits, []string{"--ask-for-approval", "on-request"}},
+		{"auto", PermissionAuto, []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}},
+		{"bypass", PermissionBypassPermissions, []string{"--dangerously-bypass-approvals-and-sandbox"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := []string{
+				"-c", "check_for_update_on_startup=false",
+				"-c", "notice.hide_rate_limit_model_nudge=true",
+				"--dangerously-bypass-hook-trust",
+			}
+			base = append(base, tc.args...)
+			launch, err := BuildLaunchCommand(LaunchConfig{Harness: HarnessCodex, Binary: "codex", Permission: tc.policy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := append([]string{"codex"}, base...); !reflect.DeepEqual(launch, want) {
+				t.Errorf("launch = %#v, want %#v", launch, want)
+			}
+			restore, ok, err := BuildRestoreCommand(RestoreConfig{
+				Harness: HarnessCodex, Binary: "codex", Permission: tc.policy,
+				Metadata: map[string]string{MetadataKeyAgentSessionID: "thread-1"},
+			})
+			if err != nil || !ok {
+				t.Fatalf("restore: ok=%v err=%v", ok, err)
+			}
+			want := append([]string{"codex", "resume"}, base...)
+			want = append(want, "thread-1")
+			if !reflect.DeepEqual(restore, want) {
+				t.Errorf("restore = %#v, want %#v", restore, want)
+			}
+		})
+	}
+}
