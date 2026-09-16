@@ -740,6 +740,109 @@ func TestMobileStatusCarriesTheHostIdentity(t *testing.T) {
 // so every endpoint was advertised as host:0. A phone would dutifully race
 // addresses that cannot work. Nothing is reachable until the bridge is up, so
 // the honest answer is an empty list.
+// Issue #3852: iOS blocks cleartext to 100.64.0.0/10, so the plaintext
+// Tailscale entry can never win on an iPhone. Secure pairing fronts the bridge
+// with TLS on the MagicDNS name — but the pairing code and the refresh route
+// never carried it, so the phone had no way to learn the one tailnet address
+// it can use. Both lists must advertise it, identically and in place of the
+// plaintext address, whenever the proxy is actually serving this bridge.
+func TestMobileAdvertisesTheSecurePairingProxy(t *testing.T) {
+	b := newSecureBridge(t, tsUp, func() int { return 3011 })
+	b.PickLANHosts = func() []string { return []string{"192.168.1.42"} }
+	b.PickTailscaleHosts = func() []string { return []string{"100.72.46.7"} }
+	if _, err := b.SetSecurePairing(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Enable(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []mobilebridge.Endpoint{
+		{Kind: mobilebridge.KindLAN, Host: "192.168.1.42", Port: 3011},
+		{Kind: mobilebridge.KindTailscale, Host: "prasads-macbook-pro.tail057d04.ts.net", Port: 443, Secure: true},
+	}
+	for _, list := range []struct {
+		name string
+		got  []mobilebridge.Endpoint
+	}{
+		{"status", b.Status().Endpoints},
+		{"refresh", b.AdvertisedEndpoints()},
+	} {
+		if len(list.got) != len(want) {
+			t.Fatalf("%s: got %d endpoints %+v, want %d", list.name, len(list.got), list.got, len(want))
+		}
+		for i := range want {
+			if list.got[i] != want[i] {
+				t.Errorf("%s: endpoint %d: got %+v want %+v", list.name, i, list.got[i], want[i])
+			}
+		}
+	}
+	// The legacy singular field keeps naming the address, not the proxy.
+	if got := b.Status().TailscaleHost; got != "100.72.46.7" {
+		t.Errorf("TailscaleHost = %q, want the tailnet address", got)
+	}
+}
+
+// Every way the proxy can fail to front this bridge must keep it out of the
+// list — the same conditions that keep SecurePairing.Active false. A name on
+// :443 that proxies some other port is not a route to AO. And while the mode
+// is on, the plaintext address must not stand in for it: the list cannot tell
+// a broken proxy from a CLI call that timed out, and a plaintext entry would
+// replace the TLS entry a phone already holds. With the mode off the plaintext
+// address is the tailnet candidate, as before.
+func TestMobileAdvertisesTheTailnetByTheStateOfSecurePairing(t *testing.T) {
+	lan := mobilebridge.Endpoint{Kind: mobilebridge.KindLAN, Host: "192.168.1.42", Port: 3011}
+	plain := mobilebridge.Endpoint{Kind: mobilebridge.KindTailscale, Host: "100.72.46.7", Port: 3011}
+	cases := []struct {
+		name   string
+		info   mobilebridge.TailscaleInfo
+		target func() int
+		serve  func(int) error
+		on     bool
+		want   []mobilebridge.Endpoint
+	}{
+		{"secure pairing off", tsUp, func() int { return 3011 }, nil, false, []mobilebridge.Endpoint{lan, plain}},
+		{"no cli", mobilebridge.TailscaleInfo{}, func() int { return 3011 }, nil, true, []mobilebridge.Endpoint{lan}},
+		{"no certs", mobilebridge.TailscaleInfo{Name: tsUp.Name}, func() int { return 3011 }, nil, true, []mobilebridge.Endpoint{lan}},
+		{"serve failed", tsUp, func() int { return 0 }, func(int) error { return errors.New("port 443 in use") }, true, []mobilebridge.Endpoint{lan}},
+		{"port mismatch", tsUp, func() int { return 9999 }, nil, true, []mobilebridge.Endpoint{lan}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newSecureBridge(t, tc.info, tc.target)
+			b.PickLANHosts = func() []string { return []string{"192.168.1.42"} }
+			b.PickTailscaleHosts = func() []string { return []string{"100.72.46.7"} }
+			if tc.serve != nil {
+				b.ApplyServe = tc.serve
+			}
+			if tc.on {
+				if _, err := b.SetSecurePairing(true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := b.Enable(); err != nil {
+				t.Fatal(err)
+			}
+			for _, list := range []struct {
+				name string
+				got  []mobilebridge.Endpoint
+			}{
+				{"status", b.Status().Endpoints},
+				{"refresh", b.AdvertisedEndpoints()},
+			} {
+				if len(list.got) != len(tc.want) {
+					t.Fatalf("%s: got %+v, want %+v", list.name, list.got, tc.want)
+				}
+				for i := range tc.want {
+					if list.got[i] != tc.want[i] {
+						t.Errorf("%s: endpoint %d: got %+v want %+v", list.name, i, list.got[i], tc.want[i])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMobileAdvertisesNothingWhileTheBridgeIsOff(t *testing.T) {
 	b := &BridgeService{
 		LAN:                &fakeLAN{running: false},
