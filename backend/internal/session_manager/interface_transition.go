@@ -638,9 +638,10 @@ func (m *Manager) nativeConversationID(
 // nativeConversationNotStarted is the only evidence that may turn a missing
 // provider history into an intentional fresh handoff. A missing file or a
 // reserved native id is not enough: both are also observable when persistence
-// is lagging or broken after real work. Chat requires a durable empty root
-// conversation; TUI requires an untouched initial composer. AO must have no
-// hook-derived conversation facts that contradict either proof.
+// is lagging or broken after real work. Chat requires durable emptiness — an
+// empty root conversation, or no conversation at all; TUI requires an
+// untouched initial composer. AO must have no hook-derived conversation facts
+// that contradict either proof.
 func (m *Manager) nativeConversationNotStarted(
 	ctx context.Context,
 	rec domain.SessionRecord,
@@ -687,7 +688,15 @@ func (m *Manager) nativeConversationNotStarted(
 		// Zero proves no message or activity was ever accepted; an empty visible
 		// timeline would not. Startup settings do not consume this sequence.
 		conversation, err := store.ConversationForSession(ctx, rec.ID)
-		if err != nil || conversation.SessionID != rec.ID || conversation.LatestSequence != 0 {
+		switch {
+		case errors.Is(err, domain.ErrNoConversation):
+			// The Chat lifecycle never began: no conversation row means no
+			// branches, turns, or provider history could exist for this
+			// session. A switch into Chat materializes that row only once the
+			// controller starts, so its absence is fresh, not broken. Any other
+			// read failure stays fail-closed below.
+			return true
+		case err != nil || conversation.SessionID != rec.ID || conversation.LatestSequence != 0:
 			return false
 		}
 		branch, err := store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
