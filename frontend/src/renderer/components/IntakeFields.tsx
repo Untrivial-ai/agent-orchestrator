@@ -1,3 +1,4 @@
+import { AppLink } from "./AppLink";
 import { TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
@@ -34,10 +35,13 @@ export function intakeNeedsRule(form: IntakeForm): boolean {
 // buildIntake produces the payload field, scrubbing empties so a disabled or
 // blank intake serializes to `undefined` (omit) rather than an empty object the
 // daemon would persist.
-export function buildIntake(form: IntakeForm): TrackerIntakeConfig | undefined {
+export function buildIntake(
+	form: IntakeForm,
+	existing?: TrackerIntakeConfig,
+): TrackerIntakeConfig | undefined {
 	const next: TrackerIntakeConfig = {
+		...existing,
 		enabled: form.enabled || undefined,
-		provider: undefined,
 		repo: form.repo.trim() || undefined,
 		assignee: form.assignee.trim() || undefined,
 	};
@@ -134,14 +138,14 @@ export function IntakeFields({
 						{repoPreview && (
 							<SettingsRow label={t("settings.project.repository")}>
 								{repoPreview.value ? (
-									<a
+									<AppLink
 										href={`https://${repoPreview.host ?? "github.com"}/${repoPreview.value}`}
 										target="_blank"
 										rel="noopener noreferrer"
 										className="settings-row-value text-settings-accent hover:underline"
 									>
 										{repoPreview.value}
-									</a>
+									</AppLink>
 								) : (
 									<span className="settings-row-value">
 										{t("settings.project.repoNotDetected")}
@@ -201,14 +205,14 @@ export function IntakeFields({
 					{repoPreview && (
 						<IntakeField label={t("settings.project.repository")} labelClassName={labelClassName}>
 							{repoPreview.value ? (
-								<a
+								<AppLink
 									href={`https://${repoPreview.host ?? "github.com"}/${repoPreview.value}`}
 									target="_blank"
 									rel="noopener noreferrer"
 									className="text-control text-accent hover:underline"
 								>
 									{repoPreview.value}
-								</a>
+								</AppLink>
 							) : (
 								<span className="text-control text-muted-foreground">
 									{t("settings.project.repoNotDetected")}

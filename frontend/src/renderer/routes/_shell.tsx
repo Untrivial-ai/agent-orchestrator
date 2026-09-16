@@ -1,3 +1,5 @@
+import { AppBrowserLinkContext } from "../components/AppLink";
+import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { isCancelledError, useQueryClient } from "@tanstack/react-query";
 import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +20,7 @@ import { ShellTopbar } from "../components/ShellTopbar";
 import { SessionTopbarProvider } from "../components/SessionTopbarPortal";
 import { OrchestratorReplacementDialog } from "../components/OrchestratorReplacementDialog";
 import { RestartToUpdateDialog } from "../components/RestartToUpdateDialog";
+import { TelemetryConsentRenewalDialog } from "../components/TelemetryConsentRenewalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { TitlebarNav } from "../components/TitlebarNav";
@@ -27,7 +30,7 @@ import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
-import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions, workspaceStatusesChecking } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
@@ -49,7 +52,7 @@ import {
 } from "../lib/platform";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { sessionIsActive, toProjectKind, type WorkspaceSummary } from "../types/workspace";
+import { sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 
@@ -123,11 +126,17 @@ const ShellCenter = memo(function ShellCenter({
 	selfFramedCenterPanel: boolean;
 }) {
 	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
+	// Only frameless session chrome needs this strip. On macOS and Linux the
+	// session tabs sit flush against the top edge with no OS titlebar, so without
+	// it there is no window-drag target. Windows must stay excluded: WindowTitlebar
+	// already paints a full-width drag region above every route, and adding the
+	// strip there would duplicate that region and leave a dead 8px band below it.
+	const draggableSessionFrame = isSessionRoute && !isWindows;
 	if (hideShellTopbar) {
 		return selfFramedCenterPanel ? (
 			<Outlet />
 		) : (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
 				</div>
@@ -136,7 +145,7 @@ const ShellCenter = memo(function ShellCenter({
 	}
 	if (framedAppTopbar) {
 		return (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				{isSessionRoute ? null : <ShellTopbar />}
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
@@ -145,7 +154,7 @@ const ShellCenter = memo(function ShellCenter({
 		);
 	}
 	return (
-		<CenterPanelShell className={panelClassName}>
+		<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 			<div className="flex min-h-0 flex-1 flex-col">
 				<Outlet />
 			</div>
@@ -173,6 +182,7 @@ function ShellLayout() {
 	const daemonStatus = useDaemonStatus(queryClient);
 	const [workspaceStartupState, setWorkspaceStartupState] = useState<"loading" | "ready" | "error">("loading");
 	const workspaceStartupBaselineRef = useRef(0);
+	const sidebarDragStripRef = useRef<HTMLDivElement>(null);
 	const themePreference = useUiStore((state) => state.themePreference);
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
 	const themeStyle = useUiStore((state) => state.themeStyle);
@@ -181,7 +191,6 @@ function ShellLayout() {
 	const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
 	const syncSystemTheme = useUiStore((state) => state.syncSystemTheme);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const requestCreateProject = useUiStore((state) => state.requestCreateProject);
 	const requestCreateProjectFromPath = useUiStore((state) => state.requestCreateProjectFromPath);
 	const requestNewShellTerminal = useUiStore((state) => state.requestNewShellTerminal);
 	const newShellTerminalNonce = useUiStore((state) => state.newShellTerminalNonce);
@@ -218,6 +227,9 @@ function ShellLayout() {
 	const [isKeyboardShortcutsOpen, setIsKeyboardShortcutsOpen] = useState(false);
 	const [isKeyboardShortcutsSettingsOpen, setIsKeyboardShortcutsSettingsOpen] = useState(false);
 	const routeParams = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
+	const linkSession = workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === routeParams.sessionId);
+	const openBrowserLink = useSessionBrowserLink(linkSession);
+	const canOpenBrowserLink = linkSession?.kind === "worker" && sessionIsActive(linkSession);
 	useEffect(() => {
 		document.addEventListener("click", handleModifierLinkClick);
 		return () => document.removeEventListener("click", handleModifierLinkClick);
@@ -286,6 +298,9 @@ function ShellLayout() {
 		: routeParams.sessionId
 			? workspaces.find((workspace) => workspace.sessions.some((session) => session.id === routeParams.sessionId))?.id
 			: undefined;
+	const scopedSession = routeParams.sessionId
+		? workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === routeParams.sessionId)
+		: undefined;
 	// Warms the New Task composer's model-catalog cache while the user is just
 	// looking at the project, so the picker never shows a loading flash the
 	// first time they actually open the dialog.
@@ -358,6 +373,10 @@ function ShellLayout() {
 					: (currentIndex + direction + sessions.length) % sessions.length;
 			const session = sessions[nextIndex];
 			if (!session || session.id === routeParams.sessionId) return;
+			if (scopedProjectId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
+				return;
+			}
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
 				params: { projectId: scopedProjectId, sessionId: session.id },
@@ -683,7 +702,7 @@ function ShellLayout() {
 
 	// A daemon port is not enough to render a trustworthy empty state: the
 	// route loader may have cached [] before Electron reported the port. Fetch
-	// once against each ready daemon before allowing the board to decide
+	// against each ready daemon, then wait for session recovery before the board decides
 	// between projects and the first-run import flow.
 	useEffect(() => {
 		let active = true;
@@ -707,8 +726,8 @@ function ShellLayout() {
 		setWorkspaceStartupState("loading");
 		void queryClient
 			.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 })
-			.then(() => {
-				if (active) setWorkspaceStartupState("ready");
+			.then((workspaces) => {
+				if (active && !workspaceStatusesChecking(workspaces)) setWorkspaceStartupState("ready");
 			})
 			.catch((error) => {
 				if (active && !isCancelledError(error)) setWorkspaceStartupState("error");
@@ -729,6 +748,7 @@ function ShellLayout() {
 			daemonStatus.state !== "ready" ||
 			workspaceStartupState === "ready" ||
 			!workspaceQuery.isSuccess ||
+			workspaceStatusesChecking(workspaceQuery.data) ||
 			workspaceQuery.dataUpdatedAt <= workspaceStartupBaselineRef.current
 		) {
 			return;
@@ -737,6 +757,7 @@ function ShellLayout() {
 	}, [
 		daemonStatus.state,
 		workspaceQuery.dataUpdatedAt,
+		workspaceQuery.data,
 		workspaceQuery.isSuccess,
 		workspaceStartupState,
 	]);
@@ -774,7 +795,10 @@ function ShellLayout() {
 				return;
 			}
 			if (matchesRendererShortcut("open-project", event)) {
-				const workspace = workspacesRef.current[Number(event.key) - 1];
+				const workspacesWithoutStandalone = workspacesRef.current.filter(
+					(workspace) => workspace.id !== STANDALONE_WORKSPACE_ID,
+				);
+				const workspace = workspacesWithoutStandalone[Number(event.key) - 1];
 				if (workspace) {
 					event.preventDefault();
 					void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
@@ -788,17 +812,17 @@ function ShellLayout() {
 	// New session (⌘N / Ctrl+Shift+N) is detected in the main process and
 	// delivered here, so it fires even when focus is inside xterm or a native
 	// Browser-preview view. The shell owns the routing: open the New Task flow
-	// for the in-scope project, else fall back to create-project.
+	// for the in-scope project, or a standalone agent when no project is in scope.
 	useEffect(
 		() =>
 			aoBridge.app.onNewSessionShortcut(() => {
 				if (scopedProjectId) {
 					requestNewTask(scopedProjectId);
 				} else {
-					requestCreateProject();
+					requestNewTask(STANDALONE_WORKSPACE_ID);
 				}
 			}),
-		[scopedProjectId, requestNewTask, requestCreateProject],
+		[scopedProjectId, requestNewTask],
 	);
 
 	useEffect(() => aoBridge.app.onKeyboardShortcutsHelp(() => setIsKeyboardShortcutsOpen(true)), []);
@@ -841,7 +865,7 @@ function ShellLayout() {
 		if (handledShellNonceRef.current === newShellTerminalNonce) return;
 		handledShellNonceRef.current = newShellTerminalNonce;
 		const shell = openShellTerminal.open(
-			{ projectId: scopedProjectId, sessionId: routeParams.sessionId },
+			{ projectId: scopedProjectId, sessionId: routeParams.sessionId, cloud: scopedSession?.cloud },
 			{
 				onSuccess: (openedShell) => {
 					setActiveShellTerminal(openedShell.handleId);
@@ -857,6 +881,7 @@ function ShellLayout() {
 		newShellTerminalNonce,
 		openShellTerminal,
 		scopedProjectId,
+		scopedSession?.cloud,
 		routeParams.sessionId,
 		navigate,
 		setActiveShellTerminal,
@@ -917,6 +942,7 @@ function ShellLayout() {
 		<ShellProvider
 			value={shellContextValue}
 		>
+			<AppBrowserLinkContext.Provider value={canOpenBrowserLink ? openBrowserLink : undefined}>
 			<SessionTopbarProvider>
 				<NotificationRuntime />
 				<TrayRuntime />
@@ -940,6 +966,7 @@ function ShellLayout() {
 				<GlobalToast />
 				<SettingsDialog />
 				<RestartToUpdateDialog />
+				<TelemetryConsentRenewalDialog />
 				<KeyboardShortcutsDialog
 					open={isKeyboardShortcutsOpen}
 					onOpenChange={setIsKeyboardShortcutsOpen}
@@ -980,8 +1007,8 @@ function ShellLayout() {
 				{/* App routes render their topbar inside the framed panel, matching the board chrome across platforms while leaving OS titlebars native. */}
 				{!framedAppTopbar && !hideShellTopbar && !routeParams.sessionId ? <ShellTopbar /> : null}
 				{/* Controlled by the ui-store so TitlebarNav / Topbar toggles (which
-            call the store directly) stay in sync. --sidebar-width chains to
-            the drag-resizable --ao-sidebar-w set on :root by useResizable. */}
+			    call the store directly) stay in sync. Direct dragging scopes its
+			    width override to the sidebar's layout consumers. */}
 				<SidebarProvider
 					className="min-h-0 flex-1 flex-col overflow-x-hidden"
 					keyboardShortcut={false}
@@ -991,26 +1018,27 @@ function ShellLayout() {
 					open={!isStartupLoading && isSidebarOpen}
 					style={
 						{
-							"--sidebar-width": "var(--ao-sidebar-w, var(--size-sidebar-default))",
+							"--sidebar-width": "var(--size-sidebar-default)",
 							"--sidebar-width-icon": "var(--size-sidebar-icon)",
 						} as CSSProperties
 					}
 				>
-				<div
-					className="flex min-h-0 w-full flex-1 overflow-x-hidden"
-					data-testid="shell-content-row"
-				>
-				{/* macOS + Linux reserve a titlebar band for the fixed TitlebarNav
-              cluster above a full-height sidebar; Windows hangs the sidebar
-              below its custom titlebar. */}
-				<Sidebar
-					hideEdgeBorder={isHomeRoute}
-					underTopbar={isMac || isWindows || isLinux}
+					<div
+						className="flex min-h-0 w-full flex-1 overflow-x-hidden"
+						data-testid="shell-content-row"
+					>
+						{/* macOS + Linux reserve a titlebar band for the fixed TitlebarNav
+			      cluster above a full-height sidebar; Windows hangs the sidebar
+			      below its custom titlebar. */}
+					<Sidebar
+						hideEdgeBorder={isHomeRoute}
+						underTopbar={isMac || isWindows || isLinux}
 						topbarOffset={isWindows ? "titlebar" : hideShellTopbar ? "trafficLights" : "toolbar"}
 						onCloneProject={cloneProject}
 						onCreateProject={createProject}
 						onInitializeProject={initializeProjectRepository}
 						onRemoveProject={removeProject}
+						resizeAuxiliaryTargetRef={sidebarDragStripRef}
 						workspaceError={workspaceQuery.isError ? errorMessage(workspaceQuery.error) : undefined}
 						workspaces={workspaces}
 					/>
@@ -1023,7 +1051,7 @@ function ShellLayout() {
 								selfFramedCenterPanel={selfFramedCenterPanel}
 							/>
 						</div>
-					</main>
+						</main>
 					</div>
 					<DaemonFailureBanner status={daemonStatus} />
 					{/* When ShellTopbar is hidden, keep a macOS window-drag strip over
@@ -1036,6 +1064,7 @@ function ShellLayout() {
 								"fixed top-0 left-0 z-chrome w-(--ao-sidebar-w,var(--size-sidebar-default)) transition-[height] duration-200 ease-out motion-reduce:transition-none",
 								isFullScreen ? "pointer-events-none h-0" : "h-traffic-light-clearance",
 							)}
+							ref={sidebarDragStripRef}
 							style={trafficLightDragActive ? ({ WebkitAppRegion: "drag" } as CSSProperties) : undefined}
 						/>
 					) : null}
@@ -1070,6 +1099,7 @@ function ShellLayout() {
 				</div>
 				</TerminalCacheProvider>
 			</SessionTopbarProvider>
+			</AppBrowserLinkContext.Provider>
 		</ShellProvider>
 	);
 }

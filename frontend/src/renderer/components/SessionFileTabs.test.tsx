@@ -24,10 +24,11 @@ describe("SessionFileTabs", () => {
 		const tab = screen.getByRole("tab", { name: "App.tsx" });
 		const languageIcon = tab.querySelector('[aria-hidden="true"]');
 		expect(languageIcon).toBeInTheDocument();
+		expect(languageIcon).not.toHaveClass("group-hover:opacity-0", "group-focus-within:opacity-0");
 		const closeButton = screen.getByRole("button", { name: "Close App.tsx" });
 		const feedbackButton = screen.getByRole("button", { name: "Add feedback for file src/App.tsx" });
-		expect(closeButton.parentElement).toHaveClass("left-2");
-		expect(feedbackButton.parentElement).toHaveClass("right-1");
+		expect(feedbackButton.parentElement).toHaveClass("pl-1");
+		expect(closeButton.parentElement).toHaveClass("pr-1");
 		expect(tab.closest("[data-terminal-tab-frame]")).toHaveClass("max-w-shell-tab-max");
 		expect(tab.closest("[data-terminal-tab-frame]")).not.toHaveClass(
 			"session-tab-icon-floor",
@@ -41,5 +42,24 @@ describe("SessionFileTabs", () => {
 		expect(onAddFeedback).toHaveBeenCalledWith("src/App.tsx");
 		await userEvent.click(closeButton);
 		expect(onCloseFile).toHaveBeenCalledWith("src/App.tsx");
+	});
+
+	it("replaces the file icon with a visible dirty dot until the file is saved", () => {
+		render(
+			<TooltipProvider>
+				<div role="tablist">
+					<SessionFileTabs
+						dirtyPaths={new Set(["src/App.tsx"])}
+						state={{ openPaths: ["src/App.tsx"], activePath: "src/App.tsx" }}
+						onAddFeedback={vi.fn()}
+						onActivateFile={vi.fn()}
+						onCloseFile={vi.fn()}
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		expect(screen.getByTestId("unsaved-tab-indicator")).toHaveClass("rounded-full", "bg-foreground");
+		expect(screen.getByRole("button", { name: "Close App.tsx" })).toHaveClass("opacity-100");
 	});
 });

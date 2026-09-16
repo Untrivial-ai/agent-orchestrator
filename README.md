@@ -17,7 +17,7 @@ Give every coding task its own agent, workspace, and feedback loop.<br />
 Plan and delegate larger outcomes with a project-aware orchestrator.<br />
 Follow every worker, pull request, CI run, and review in a live Kanban.
 
-[**Download AO**](#install) &nbsp;&bull;&nbsp; [Documentation](https://useao.dev/docs) &nbsp;&bull;&nbsp; [Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contributing](CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**Download AO**](#install) &nbsp;&bull;&nbsp; [Documentation](https://orchestrator.inc/docs) &nbsp;&bull;&nbsp; [Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contributing](CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 **English** · [简体中文](translations/README.zh-CN.md) · [日本語](translations/README.ja.md) · [한국어](translations/README.ko.md) · [Español](translations/README.es.md) · [Français](translations/README.fr.md) · [Deutsch](translations/README.de.md) · [Português (Brasil)](translations/README.pt-BR.md)
 
@@ -47,7 +47,7 @@ Download the latest AO desktop app for your platform. AO checks for updates auto
 | Linux (Debian/Ubuntu) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://useao.dev/docs/installation) for agent CLI setup and troubleshooting.
+Open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://orchestrator.inc/docs/installation) for agent CLI setup and troubleshooting.
 
 <img src="docs/assets/readme/tui.png" alt="Agent Orchestrator workspace showing a coding agent's native terminal UI" width="100%" />
 
@@ -86,7 +86,7 @@ Each card keeps the task, agent, branch, activity, pull request, and status toge
 
 1. **Start at the right level.** Give a clear task directly to a worker, or develop a larger outcome with the project orchestrator and let it shape the plan.
 2. **Delegate focused work.** Start workers yourself or have the orchestrator create them with the context and ownership they need.
-3. **Build in isolation.** Every Git-backed worker gets its own branch and worktree; Scratch workers get AO-managed branchless directories.
+3. **Build in isolation.** Every Git-backed worker gets its own branch and worktree; standalone agents get AO-managed branchless directories without requiring a project or repository.
 4. **Supervise live state.** AO follows agent activity, pull requests, CI, review feedback, and merge conflicts, then reflects those facts on the Kanban.
 5. **Close the feedback loop.** Inspect any worker directly, make project-level decisions with the orchestrator, and return actionable failures or review comments to the agent that owns the work.
 
@@ -176,7 +176,7 @@ AO works with the coding agents and source-control workflow you already use. Age
   </tr>
 </table>
 
-[Browse agent setup guides →](https://useao.dev/docs/plugins/agents)
+[Browse agent setup guides →](https://orchestrator.inc/docs/plugins/agents)
 
 **Use the interface that fits the moment: structured Chat or the agent's native terminal UI.**
 
@@ -203,7 +203,8 @@ Start with the [development guide](docs/development.md) for prerequisites, local
 
 | Document                                                         | Start here when you need                                                                     |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [Product documentation](https://useao.dev/docs)                  | Installation, agent setup, and day-to-day product usage.                                     |
+| [Product documentation](https://orchestrator.inc/docs)                  | Installation, agent setup, and day-to-day product usage.                                     |
+| [docs/documentation-map.md](docs/documentation-map.md)           | Which docs are human-facing, which are machine-readable contracts, and which wins on drift.  |
 | [docs/architecture.md](docs/architecture.md)                     | Backend mental model, lifecycle, persistence, CDC, status derivation, and daemon boundaries. |
 | [docs/backend-code-structure.md](docs/backend-code-structure.md) | Package ownership and where each backend concern belongs.                                    |
 | [docs/cli/README.md](docs/cli/README.md)                         | CLI behavior and daemon route mapping.                                                       |

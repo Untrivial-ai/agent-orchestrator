@@ -331,7 +331,7 @@ func (s *Store) SetProjectPermissions(ctx context.Context, id string, permission
 			orchestrator = domain.PermissionModeDefault
 		}
 		for kind, mode := range map[domain.SessionKind]domain.PermissionMode{domain.KindWorker: worker, domain.KindOrchestrator: orchestrator} {
-			if err := q.PinProjectSessionPermissions(ctx, gen.PinProjectSessionPermissionsParams{ProjectID: domain.ProjectID(id), Kind: kind, Permissions: string(mode)}); err != nil {
+			if err := q.PinProjectSessionPermissions(ctx, gen.PinProjectSessionPermissionsParams{ProjectID: optionalProjectID(domain.ProjectID(id)), Kind: kind, Permissions: string(mode)}); err != nil {
 				return err
 			}
 		}

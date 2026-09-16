@@ -102,6 +102,35 @@ afterEach(() => {
 });
 
 describe("TaskComposer", () => {
+	it("starts a standalone worker without loading or sending a project", async () => {
+		const onCreated = vi.fn();
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="__standalone__" onCreated={onCreated} />
+			</Wrap>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Agent"));
+		fireEvent.change(task(), { target: { value: "Research release options" } });
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("standalone-1"));
+		expect(h.post).toHaveBeenCalledWith(
+			"/api/v1/sessions",
+			expect.objectContaining({
+				body: expect.objectContaining({
+					kind: "worker",
+					harness: "codex",
+					prompt: "Research release options",
+				}),
+			}),
+		);
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("projectId");
+		expect(h.get.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(false);
+	});
+
 	it("ensures display readiness for every harness when the composer opens", async () => {
 		render(
 			<Wrap>
@@ -467,6 +496,53 @@ describe("TaskComposer", () => {
 		});
 	});
 
+	it("waits for both rapidly selected file batches before delegating", async () => {
+		h.post.mockResolvedValueOnce({ data: { workerId: "sess-1" } });
+		const pendingReads: Array<() => void> = [];
+		class SlowFileReader {
+			error: Error | null = null;
+			result: string | ArrayBuffer | null = null;
+			onerror: (() => void) | null = null;
+			onload: (() => void) | null = null;
+
+			readAsDataURL(file: File) {
+				pendingReads.push(() => {
+					this.result = `data:${file.type};base64,${file.name === "first.txt" ? "AQ==" : "Ag=="}`;
+					this.onload?.();
+				});
+			}
+		}
+		vi.stubGlobal("FileReader", SlowFileReader);
+		const { container } = render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+		fireEvent.change(input, {
+			target: { files: [new File([new Uint8Array([1])], "first.txt", { type: "text/plain" })] },
+		});
+		fireEvent.change(input, {
+			target: { files: [new File([new Uint8Array([2])], "second.txt", { type: "text/plain" })] },
+		});
+		fireEvent.change(task(), { target: { value: "Use both files" } });
+		fireEvent.click(screen.getByText("Start task"));
+		expect(h.post).not.toHaveBeenCalled();
+
+		await act(async () => pendingReads.shift()?.());
+		await waitFor(() => expect(pendingReads).toHaveLength(1));
+		expect(h.post).not.toHaveBeenCalled();
+		await act(async () => pendingReads.shift()?.());
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		expect(h.post.mock.calls[0][1].body).toMatchObject({
+			attachments: [
+				{ mimeType: "text/plain", data: "AQ==" },
+				{ mimeType: "text/plain", data: "Ag==" },
+			],
+		});
+	});
+
 	it("removes a selected file before submitting", async () => {
 		h.post.mockResolvedValueOnce({ data: { workerId: "sess-1" } });
 
@@ -660,6 +736,28 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 	});
 
+	it("does not expose Codex effort controls for Claude Code", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "claude-code",
+						selectionMode: "catalog",
+						models: [{ id: "sonnet", label: "Sonnet", isDefault: true, efforts: ["low", "high"] }],
+						allowCustom: true,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "claude-code", config: {} } } };
+		});
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Sonnet");
+		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
+	});
+
 	it("preselects the agent's default model when the project configures none", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
@@ -841,5 +939,55 @@ describe("TaskComposer", () => {
 				}),
 			),
 		);
+	});
+
+	it("inherits worker effort visually but sends only explicit task overrides", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "catalog",
+						models: [{
+							id: "gpt-test",
+							label: "GPT Test",
+							isDefault: true,
+							efforts: ["low", "high"],
+						}],
+						allowCustom: true,
+						refreshRecommended: false,
+					},
+				};
+			}
+			return {
+				data: { status: "ok", project: { config: { worker: { agent: "codex", agentConfig: {
+					model: "gpt-test", effort: "high",
+				} } } } },
+			};
+		});
+		h.post.mockResolvedValue({ data: { workerId: "sess-tuned" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("GPT Test · High");
+		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
+
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Low" }));
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
+		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
+
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Provider default" }));
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
+		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));
 	});
 });

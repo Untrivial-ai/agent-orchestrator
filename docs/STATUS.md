@@ -101,6 +101,10 @@ surface (`npm run sqlc`, `npm run api`).
   ([#75](https://github.com/aoagents/agent-orchestrator/issues/75),
   [#108](https://github.com/aoagents/agent-orchestrator/issues/108),
   [#109](https://github.com/aoagents/agent-orchestrator/issues/109)).
+- User-opened standalone and session side shells reconnect across daemon and
+  desktop restarts while their runtimes live. Explicit close, confirmed exit,
+  and session/worktree teardown remain cleanup boundaries; new trusted command
+  and authentication terminals remain scoped to their originating app launch.
 - Terminal mux over WebSocket (`/mux`): detached native PTY host for new macOS
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.
@@ -115,10 +119,12 @@ surface (`npm run sqlc`, `npm run api`).
   device-global Codex identity, adds file-backed accounts through an inline
   native login terminal, and shows structured authentication, capacity, usage,
   and confirmed reset-credit facts without parsing credentials. A manual global
-  switch fences input, stops and resumes only the affected AO-owned Codex
-  controllers with the same native thread IDs, and leaves native history in the
-  normal Codex home. Users can sign accounts out and delete inactive signed-out
-  accounts; external Codex clients are not controlled.
+  switch atomically changes the device credential while briefly fencing new
+  Codex mutations. Running AO Codex controllers and reviewers are never
+  interrupted or restarted by account switching; new controllers use the
+  selected account, and an existing session can be resumed manually when the
+  user wants it relaunched. Native history remains in the normal Codex home.
+  Users can sign accounts out and delete inactive signed-out accounts.
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 

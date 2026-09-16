@@ -264,19 +264,23 @@ func (c *Coordinator) readAuthority(ctx context.Context) authorityRead {
 			generation: c.bootToken,
 		}
 	}
+	storedEnabled := snapshot.EventsEnabled && (!c.productionEnabled() || snapshot.ConsentProductionEnabled)
 	return authorityRead{
-		valid: true, eventsEnabled: snapshot.EventsEnabled && c.options.TelemetryEventsExplicit && c.options.TelemetryEvents,
+		valid: true, eventsEnabled: storedEnabled && c.options.TelemetryEventsExplicit && c.options.TelemetryEvents,
 		generation: snapshot.ConsentGeneration,
 	}
 }
 
+func (c *Coordinator) productionEnabled() bool {
+	if c.options.ProductionEnabled != nil {
+		return *c.options.ProductionEnabled
+	}
+	return agentSwitchFailureProductionEnabled
+}
+
 func (c *Coordinator) desiredAuthorization(authority authorityRead) domain.AgentSwitchReportingAuthorization {
 	authorization := domain.AgentSwitchReportingAuthorization{ConsentGeneration: authority.generation}
-	productionEnabled := agentSwitchFailureProductionEnabled
-	if c.options.ProductionEnabled != nil {
-		productionEnabled = *c.options.ProductionEnabled
-	}
-	if authority.valid && authority.eventsEnabled && c.metadataReady && productionEnabled && !c.options.StreamKillSwitched && c.options.DestinationFingerprint != "" {
+	if authority.valid && authority.eventsEnabled && c.metadataReady && c.productionEnabled() && !c.options.StreamKillSwitched && c.options.DestinationFingerprint != "" {
 		authorization.Enabled = true
 		authorization.DestinationFingerprint = c.options.DestinationFingerprint
 	}

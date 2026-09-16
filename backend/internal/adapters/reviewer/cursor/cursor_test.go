@@ -153,6 +153,27 @@ func TestReviewMessageReturnsTaskPrompt(t *testing.T) {
 	}
 }
 
+func TestReviewRestoreCommandRelaunchDoesNotReportNativeResume(t *testing.T) {
+	agent := &captureAgent{}
+	got, ok, err := (&Reviewer{agent: agent}).ReviewRestoreCommand(context.Background(), ports.ReviewInvocation{
+		ReviewerID:       "review-w1",
+		WorkspacePath:    "/ws/w1",
+		DataDir:          t.TempDir(),
+		Prompt:           "complete the AO review task in `/ao/task.md`.",
+		SystemPromptFile: "/ao/prompts/reviewer/system.md",
+		TaskPromptRoot:   "/ao/prompts/reviewer",
+	})
+	if err != nil {
+		t.Fatalf("ReviewRestoreCommand: %v", err)
+	}
+	if !ok {
+		t.Fatal("ReviewRestoreCommand ok = false, want true")
+	}
+	if got.NativeResumed {
+		t.Fatal("ReviewRestoreCommand reported native resume for a relaunch")
+	}
+}
+
 func TestReviewCancelUsesTwoInterrupts(t *testing.T) {
 	got, err := (&Reviewer{}).ReviewCancel(context.Background())
 	if err != nil {

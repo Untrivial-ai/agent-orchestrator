@@ -34,38 +34,53 @@ import (
 )
 
 type fakeSessionService struct {
-	sessions             map[domain.SessionID]domain.Session
-	sent                 string
-	sentAttachment       *ports.SpawnAttachment
-	delegationInput      sessionsvc.DelegateTaskInput
-	delegationErr        error
-	cleanupProjects      []domain.ProjectID
-	cleanupResult        []domain.SessionID
-	cleanupSkipped       []sessionsvc.CleanupSkipped
-	workspaceFiles       sessionsvc.WorkspaceFiles
-	workspaceFile        sessionsvc.WorkspaceFileDetail
-	workspaceFileSection sessionsvc.WorkspaceFileSection
-	workspaceBlob        sessionsvc.WorkspaceFileBlob
-	workspaceTree        sessionsvc.WorkspaceTree
-	workspaceTreePath    string
-	workspacePaths       []string
-	spawnErr             error
-	lastSpawn            ports.SpawnConfig
-	orchestratorMode     domain.SessionMode
-	claimErr             error
-	listPRErr            error
-	workspaceErr         error
-	staged               []ports.SpawnAttachment
-	stagedPaths          []string
-	stageErr             error
-	agentSwitches        map[domain.AgentSwitchID]domain.AgentSwitch
-	switchConfig         sessionsvc.SwitchAgentInput
-	switchErr            error
-	recoveredSwitch      domain.AgentSwitchID
-	handoff              json.RawMessage
-	handoffSource        domain.AgentGenerationID
-	autoInjectCISession  domain.SessionID
-	autoInjectCIEnabled  bool
+	sessions                   map[domain.SessionID]domain.Session
+	sent                       string
+	sentAttachment             *ports.SpawnAttachment
+	delegationInput            sessionsvc.DelegateTaskInput
+	delegationErr              error
+	cleanupProjects            []domain.ProjectID
+	cleanupResult              []domain.SessionID
+	cleanupSkipped             []sessionsvc.CleanupSkipped
+	workspaceFiles             sessionsvc.WorkspaceFiles
+	workspaceFile              sessionsvc.WorkspaceFileDetail
+	workspaceFileSection       sessionsvc.WorkspaceFileSection
+	workspaceFileCommitSHA     string
+	workspaceFileUpdate        sessionsvc.UpdateWorkspaceFileInput
+	workspaceBlob              sessionsvc.WorkspaceFileBlob
+	workspaceDiffs             sessionsvc.WorkspaceDiffs
+	workspaceDiffInput         sessionsvc.WorkspaceDiffInput
+	workspaceRevision          sessionsvc.WorkspaceFileRevision
+	workspaceRevisionPath      string
+	workspaceRevisionScope     sessionsvc.WorkspaceDiffScope
+	workspaceRevisionSide      sessionsvc.WorkspaceFileBlobSide
+	workspaceRevisionVersion   string
+	workspaceExpectedRevision  string
+	workspaceRevisionCommitSHA string
+	workspaceSearch            sessionsvc.WorkspaceFileSearch
+	workspaceSearchQuery       string
+	workspaceSearchCursor      string
+	workspaceSearchLimit       int
+	workspaceTree              sessionsvc.WorkspaceTree
+	workspaceTreePath          string
+	workspacePaths             []string
+	spawnErr                   error
+	lastSpawn                  ports.SpawnConfig
+	orchestratorMode           domain.SessionMode
+	claimErr                   error
+	listPRErr                  error
+	workspaceErr               error
+	staged                     []ports.SpawnAttachment
+	stagedPaths                []string
+	stageErr                   error
+	agentSwitches              map[domain.AgentSwitchID]domain.AgentSwitch
+	switchConfig               sessionsvc.SwitchAgentInput
+	switchErr                  error
+	recoveredSwitch            domain.AgentSwitchID
+	handoff                    json.RawMessage
+	handoffSource              domain.AgentGenerationID
+	autoInjectCISession        domain.SessionID
+	autoInjectCIEnabled        bool
 }
 
 type fakeInterfaceTransitionSessionService struct {
@@ -73,6 +88,10 @@ type fakeInterfaceTransitionSessionService struct {
 	transition             domain.SessionInterfaceTransition
 	acknowledgedSessionID  domain.SessionID
 	acknowledgedTransition string
+	startedSessionID       domain.SessionID
+	startedTarget          domain.SessionMode
+	startedPolicy          domain.SessionInterfaceTransitionPolicy
+	startedHistoryPolicy   domain.SessionInterfaceTransitionHistoryPolicy
 }
 
 func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
@@ -83,11 +102,16 @@ func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
 }
 
 func (f *fakeInterfaceTransitionSessionService) StartInterfaceTransition(
-	context.Context,
-	domain.SessionID,
-	domain.SessionMode,
-	domain.SessionInterfaceTransitionPolicy,
+	_ context.Context,
+	sessionID domain.SessionID,
+	target domain.SessionMode,
+	policy domain.SessionInterfaceTransitionPolicy,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (domain.SessionInterfaceTransition, error) {
+	f.startedSessionID = sessionID
+	f.startedTarget = target
+	f.startedPolicy = policy
+	f.startedHistoryPolicy = historyPolicy
 	return f.transition, nil
 }
 
@@ -586,6 +610,20 @@ func (f *fakeSessionService) GetWorkspaceFile(_ context.Context, id domain.Sessi
 	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
 }
 
+func (f *fakeSessionService) GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, path, commitSHA string) (sessionsvc.WorkspaceFileDetail, error) {
+	f.workspaceFileCommitSHA = commitSHA
+	return f.GetWorkspaceFile(ctx, id, path, sessionsvc.WorkspaceFileSectionCommitted)
+}
+
+func (f *fakeSessionService) UpdateWorkspaceFile(_ context.Context, id domain.SessionID, input sessionsvc.UpdateWorkspaceFileInput) (sessionsvc.WorkspaceFileDetail, error) {
+	f.workspaceFileUpdate = input
+	file := f.workspaceFile
+	file.SessionID = id
+	file.Path = input.Path
+	file.Content = input.Content
+	return file, f.workspaceErr
+}
+
 func (f *fakeSessionService) GetWorkspaceFileBlob(_ context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileBlob, error) {
 	if f.workspaceErr != nil {
 		return sessionsvc.WorkspaceFileBlob{}, f.workspaceErr
@@ -599,6 +637,59 @@ func (f *fakeSessionService) GetWorkspaceFileBlob(_ context.Context, id domain.S
 		return blob, nil
 	}
 	return sessionsvc.WorkspaceFileBlob{Path: path, Side: side, MediaType: "image/png"}, nil
+}
+
+func (f *fakeSessionService) GetWorkspaceDiffs(_ context.Context, id domain.SessionID, input sessionsvc.WorkspaceDiffInput) (sessionsvc.WorkspaceDiffs, error) {
+	f.workspaceDiffInput = input
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceDiffs{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceDiffs{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceDiffs.SessionID != "" {
+		return f.workspaceDiffs, nil
+	}
+	return sessionsvc.WorkspaceDiffs{SessionID: id}, nil
+}
+
+func (f *fakeSessionService) GetWorkspaceFileRevision(_ context.Context, id domain.SessionID, path string, scope sessionsvc.WorkspaceDiffScope, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision string) (sessionsvc.WorkspaceFileRevision, error) {
+	f.workspaceRevisionPath = path
+	f.workspaceRevisionScope = scope
+	f.workspaceRevisionSide = side
+	f.workspaceRevisionVersion = workspaceVersion
+	f.workspaceExpectedRevision = expectedRevision
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceFileRevision{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceFileRevision{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceRevision.SessionID != "" {
+		return f.workspaceRevision, nil
+	}
+	return sessionsvc.WorkspaceFileRevision{SessionID: id, Path: path, Side: side, Revision: expectedRevision, Exists: true}, nil
+}
+
+func (f *fakeSessionService) GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error) {
+	f.workspaceRevisionCommitSHA = commitSHA
+	return f.GetWorkspaceFileRevision(ctx, id, path, sessionsvc.WorkspaceDiffCommitted, side, workspaceVersion, expectedRevision)
+}
+
+func (f *fakeSessionService) SearchWorkspaceFiles(_ context.Context, id domain.SessionID, query, cursor string, limit int) (sessionsvc.WorkspaceFileSearch, error) {
+	f.workspaceSearchQuery = query
+	f.workspaceSearchCursor = cursor
+	f.workspaceSearchLimit = limit
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceFileSearch{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceFileSearch{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceSearch.SessionID != "" {
+		return f.workspaceSearch, nil
+	}
+	return sessionsvc.WorkspaceFileSearch{SessionID: id, Query: query}, nil
 }
 
 func (f *fakeSessionService) ListWorkspaceTree(_ context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error) {
@@ -960,6 +1051,75 @@ func TestSessionsAPI_AcknowledgeInterfaceTransitionNotice(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_StartInterfaceTransitionCarriesExplicitHistoryPolicy(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-provider-history", SessionID: "ao-1",
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Policy:        domain.SessionInterfaceTransitionDrain,
+			HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
+			Phase:         domain.SessionInterfaceTransitionRequested, CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/interface-transition",
+		`{"targetMode":"chat","policy":"drain","historyPolicy":"provider_history"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("start transition = %d, want 202; body=%s", status, body)
+	}
+	if svc.startedSessionID != "ao-1" || svc.startedTarget != domain.SessionModeChat ||
+		svc.startedPolicy != domain.SessionInterfaceTransitionDrain ||
+		svc.startedHistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("start input = session:%q target:%q policy:%q history:%q", svc.startedSessionID,
+			svc.startedTarget, svc.startedPolicy, svc.startedHistoryPolicy)
+	}
+	var response controllers.StartSessionInterfaceTransitionResponse
+	mustJSON(t, body, &response)
+	if response.Transition.HistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("response history policy = %q", response.Transition.HistoryPolicy)
+	}
+}
+
+func TestSessionsAPI_StartInterfaceTransitionDefaultsOmittedHistoryPolicyToStrict(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-strict", SessionID: "ao-1",
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Policy: domain.SessionInterfaceTransitionDrain, Phase: domain.SessionInterfaceTransitionRequested,
+			CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/interface-transition", `{"targetMode":"chat","policy":"drain"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("start transition = %d, want 202; body=%s", status, body)
+	}
+	if svc.startedHistoryPolicy != domain.SessionInterfaceTransitionHistoryStrict {
+		t.Fatalf("omitted history policy = %q, want strict", svc.startedHistoryPolicy)
+	}
+	var response controllers.StartSessionInterfaceTransitionResponse
+	mustJSON(t, body, &response)
+	if response.Transition.HistoryPolicy != domain.SessionInterfaceTransitionHistoryStrict {
+		t.Fatalf("response history policy = %q, want strict", response.Transition.HistoryPolicy)
+	}
+}
+
 func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	svc := newFakeSessionService()
 	s := svc.sessions["ao-1"]
@@ -1307,6 +1467,20 @@ func TestSessionsAPI_SpawnsOMPChat(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnsStandaloneWorkerWithoutProjectID(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"kind":"worker","harness":"codex","prompt":"research","displayName":"Research"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn standalone = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.ProjectID != "" || svc.lastSpawn.Kind != domain.KindWorker || svc.lastSpawn.Harness != domain.HarnessCodex {
+		t.Fatalf("spawn config = %#v, want projectless codex worker", svc.lastSpawn)
+	}
+}
+
 func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -1318,6 +1492,20 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	}
 	if svc.lastSpawn.AgentConfig.Model != "sonnet" {
 		t.Fatalf("service AgentConfig.Model = %q, want sonnet", svc.lastSpawn.AgentConfig.Model)
+	}
+}
+
+func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"claude-code","parentSessionId":"ao-1","prompt":"fix"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.ParentSessionID != "ao-1" {
+		t.Fatalf("service ParentSessionID = %q, want ao-1", svc.lastSpawn.ParentSessionID)
 	}
 }
 
@@ -2264,7 +2452,7 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 		CompareBaseRef: "main",
 		CompareMode:    sessionsvc.WorkspaceCompareBase,
 		Files: []sessionsvc.WorkspaceFileSummary{
-			{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 2, Deletions: 1, Size: 48},
+			{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 2, Deletions: 1, Size: 48, Editable: true},
 			{Path: "notes.txt", PreviousPath: "old-notes.txt", Status: sessionsvc.WorkspaceFileRenamed, Additions: 1, Size: 11},
 		},
 	}
@@ -2287,6 +2475,7 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 			Additions    int    `json:"additions"`
 			Deletions    int    `json:"deletions"`
 			Size         int64  `json:"size"`
+			Editable     bool   `json:"editable"`
 		} `json:"files"`
 	}
 	mustJSON(t, body, &got)
@@ -2298,6 +2487,9 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 	}
 	if got.Files[0].Path != "README.md" || got.Files[0].Status != "modified" || got.Files[0].Additions != 2 || got.Files[0].Deletions != 1 {
 		t.Fatalf("first file = %#v", got.Files[0])
+	}
+	if !got.Files[0].Editable {
+		t.Fatal("first file editable = false, want true")
 	}
 	if got.Files[1].Path != "notes.txt" || got.Files[1].PreviousPath != "old-notes.txt" || got.Files[1].Status != "renamed" {
 		t.Fatalf("second file = %#v", got.Files[1])
@@ -2319,6 +2511,7 @@ func TestSessionsAPI_GetWorkspaceFile(t *testing.T) {
 		CompareBaseSHA: "base-sha",
 		CompareBaseRef: "main",
 		CompareMode:    sessionsvc.WorkspaceCompareBase,
+		Editable:       true,
 	}
 	srv := newSessionTestServer(t, svc)
 
@@ -2336,6 +2529,7 @@ func TestSessionsAPI_GetWorkspaceFile(t *testing.T) {
 		CompareBaseSHA string `json:"compareBaseSha"`
 		CompareBaseRef string `json:"compareBaseRef"`
 		CompareMode    string `json:"compareMode"`
+		Editable       bool   `json:"editable"`
 	}
 	mustJSON(t, body, &got)
 	if got.SessionID != "ao-1" || got.Path != "README.md" || got.Content == "" || got.Diff == "" {
@@ -2343,6 +2537,9 @@ func TestSessionsAPI_GetWorkspaceFile(t *testing.T) {
 	}
 	if got.PreviousPath != "README.old.md" || got.CompareMode != "base" || got.CompareBaseSHA != "base-sha" || got.CompareBaseRef != "main" {
 		t.Fatalf("workspace file metadata = %#v", got)
+	}
+	if !got.Editable {
+		t.Fatal("editable = false, want true")
 	}
 }
 
@@ -2366,12 +2563,136 @@ func TestSessionsAPI_GetWorkspaceFileSection(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_GetWorkspaceFileAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/workspace/file?path=README.md&section=committed&commitSha=abc123", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace commit file = %d, want 200; body=%s", status, body)
+	}
+	if svc.workspaceFileCommitSHA != "abc123" {
+		t.Fatalf("commitSha = %q, want abc123", svc.workspaceFileCommitSHA)
+	}
+}
+
 func TestSessionsAPI_GetWorkspaceFileRequiresPath(t *testing.T) {
 	srv := newSessionTestServer(t, newFakeSessionService())
 
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/workspace/file", "")
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "WORKSPACE_PATH_REQUIRED")
+}
+
+func TestSessionsAPI_UpdateWorkspaceFile(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceFile = sessionsvc.WorkspaceFileDetail{Status: sessionsvc.WorkspaceFileModified, FileFingerprint: "next-fingerprint"}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodPut, "/api/v1/sessions/ao-1/workspace/file", `{"path":"README.md","content":"updated\n","expectedFileFingerprint":"file-1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("PUT workspace file = %d, want 200; body=%s", status, body)
+	}
+	if svc.workspaceFileUpdate.Path != "README.md" || svc.workspaceFileUpdate.Content != "updated\n" || svc.workspaceFileUpdate.ExpectedFileFingerprint != "file-1" {
+		t.Fatalf("update input = %#v", svc.workspaceFileUpdate)
+	}
+	var got controllers.WorkspaceFileResponse
+	mustJSON(t, body, &got)
+	if got.Path != "README.md" || got.Content != "updated\n" || got.FileFingerprint != "next-fingerprint" {
+		t.Fatalf("response = %#v", got)
+	}
+}
+
+func TestSessionsAPI_UpdateWorkspaceFileRequiresPath(t *testing.T) {
+	srv := newSessionTestServer(t, newFakeSessionService())
+	body, status, headers := doRequest(t, srv, http.MethodPut, "/api/v1/sessions/ao-1/workspace/file", `{"content":"updated"}`)
+	assertJSON(t, headers)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "WORKSPACE_PATH_REQUIRED")
+}
+
+func TestSessionsAPI_GetWorkspaceDiffs(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceDiffs = sessionsvc.WorkspaceDiffs{
+		SessionID: "ao-1", WorkspaceVersion: "version-1",
+		Groups: []sessionsvc.WorkspaceDiffGroup{{Repository: "frontend", Patch: "diff --git a/App.tsx b/App.tsx\n", IncludedPaths: []string{"frontend/App.tsx"}}},
+	}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/workspace/diffs", `{"scope":"staged","paths":["frontend/App.tsx"],"contextLines":5,"ignoreWhitespace":true,"workspaceVersion":"version-1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("POST workspace diffs = %d body=%s", status, body)
+	}
+	if svc.workspaceDiffInput.Scope != sessionsvc.WorkspaceDiffStaged || len(svc.workspaceDiffInput.Paths) != 1 || svc.workspaceDiffInput.ContextLines != 5 || !svc.workspaceDiffInput.IgnoreWhitespace {
+		t.Fatalf("service input = %#v", svc.workspaceDiffInput)
+	}
+	var got controllers.WorkspaceDiffsResponse
+	mustJSON(t, body, &got)
+	if got.WorkspaceVersion != "version-1" || len(got.Groups) != 1 || got.Groups[0].Repository != "frontend" {
+		t.Fatalf("response = %#v", got)
+	}
+}
+
+func TestSessionsAPI_GetWorkspaceDiffsAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/workspace/diffs", `{"scope":"committed","paths":["README.md"],"contextLines":3,"commitSha":"abc123"}`)
+	if status != http.StatusOK {
+		t.Fatalf("POST workspace commit diffs = %d body=%s", status, body)
+	}
+	if svc.workspaceDiffInput.CommitSHA != "abc123" || svc.workspaceDiffInput.Scope != sessionsvc.WorkspaceDiffCommitted {
+		t.Fatalf("commit diff input = %#v", svc.workspaceDiffInput)
+	}
+}
+
+func TestSessionsAPI_GetWorkspaceFileRevision(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceRevision = sessionsvc.WorkspaceFileRevision{SessionID: "ao-1", Path: "README.md", Side: sessionsvc.WorkspaceBlobBefore, Revision: "rev-1", WorkspaceVersion: "version-1", Exists: true, Encoding: "utf-8", Content: "hello\n", Size: 6}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/file/revision?path=README.md&scope=unstaged&side=before&workspaceVersion=version-1&expectedRevision=rev-1", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace revision = %d body=%s", status, body)
+	}
+	if headers.Get("Cache-Control") != "no-store" || headers.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("security headers = %#v", headers)
+	}
+	if svc.workspaceRevisionPath != "README.md" || svc.workspaceRevisionScope != sessionsvc.WorkspaceDiffUnstaged || svc.workspaceRevisionSide != sessionsvc.WorkspaceBlobBefore || svc.workspaceRevisionVersion != "version-1" || svc.workspaceExpectedRevision != "rev-1" {
+		t.Fatalf("service args = path:%q scope:%q side:%q version:%q expected:%q", svc.workspaceRevisionPath, svc.workspaceRevisionScope, svc.workspaceRevisionSide, svc.workspaceRevisionVersion, svc.workspaceExpectedRevision)
+	}
+}
+
+func TestSessionsAPI_GetWorkspaceFileRevisionAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/file/revision?path=README.md&scope=committed&side=after&commitSha=abc123", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace commit revision = %d body=%s", status, body)
+	}
+	if svc.workspaceRevisionCommitSHA != "abc123" || svc.workspaceRevisionScope != sessionsvc.WorkspaceDiffCommitted {
+		t.Fatalf("commit revision args = sha:%q scope:%q", svc.workspaceRevisionCommitSHA, svc.workspaceRevisionScope)
+	}
+}
+
+func TestSessionsAPI_SearchWorkspaceFiles(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceSearch = sessionsvc.WorkspaceFileSearch{SessionID: "ao-1", Query: "read", Results: []sessionsvc.WorkspaceFileSearchResult{{Path: "README.md", Status: sessionsvc.WorkspaceFileModified}}, NextCursor: "1"}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/search?query=read&cursor=0&limit=20", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace search = %d body=%s", status, body)
+	}
+	if svc.workspaceSearchQuery != "read" || svc.workspaceSearchCursor != "0" || svc.workspaceSearchLimit != 20 {
+		t.Fatalf("service args = query:%q cursor:%q limit:%d", svc.workspaceSearchQuery, svc.workspaceSearchCursor, svc.workspaceSearchLimit)
+	}
+	var got controllers.WorkspaceFileSearchResponse
+	mustJSON(t, body, &got)
+	if len(got.Results) != 1 || got.Results[0].Path != "README.md" || got.NextCursor != "1" {
+		t.Fatalf("response = %#v", got)
+	}
 }
 
 func TestSessionsAPI_GetWorkspaceFileBlob(t *testing.T) {
@@ -2580,7 +2901,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
 	if status != http.StatusAccepted {
 		t.Fatalf("delegate = %d, want 202; body=%s", status, body)
 	}
@@ -2593,7 +2914,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	if !got.OK || got.WorkerID != "ao-worker" || got.OrchestratorID != "ao-orch" {
 		t.Fatalf("response = %#v", got)
 	}
-	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
+	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
 		t.Fatalf("delegation input = %#v", svc.delegationInput)
 	}
 	if len(svc.delegationInput.Attachments) != 1 {
@@ -2993,11 +3314,14 @@ func TestSessionsAPI_ClaimPRErrors(t *testing.T) {
 			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/pr/claim", tc.body)
 			assertErrorCode(t, body, status, tc.code, tc.want)
 			if tc.want == "PR_PROJECT_MISMATCH" {
-				for _, hint := range []string{"canonicalRepoURL", "--canonical-repo-url", "--config-json", "Git remotes"} {
+				for _, hint := range []string{"registered workspace child origin", "ao project get", "full PR/MR URL", "valid root origin", "For single-repo forks", "canonicalRepoURL", "--canonical-repo-url", "--config-json", "Git remotes"} {
 					if !strings.Contains(string(body), hint) {
 						t.Fatalf("mismatch missing %q guidance: %s", hint, body)
 					}
 				}
+			}
+			if tc.want == "INVALID_PR_REF" && !strings.Contains(string(body), "For a workspace child repository, pass its full PR/MR URL") {
+				t.Fatalf("invalid ref missing workspace guidance: %s", body)
 			}
 		})
 	}
