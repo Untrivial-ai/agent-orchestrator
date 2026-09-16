@@ -2966,6 +2966,28 @@ describe("ChatWorkspace reviewer tabs", () => {
 		expect(onOpenReviewerTerminal).toHaveBeenCalledWith(reviewerTerminal);
 	});
 
+	it("removes the active highlight from the reviewer while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				reviewerTarget={reviewerTarget}
+				reviewerTerminal={reviewerTerminal}
+				session={chatSession}
+				snapshot={idleSnapshot()}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
 	it("keeps the chat draft, attachments, edit, and scroll state mounted while Reviewer is selected", async () => {
 		const user = userEvent.setup();
 		const common = {
@@ -3388,6 +3410,27 @@ describe("ChatWorkspace shell tabs", () => {
 		expect(closeShellTerminalShortcutStates.at(-1)).toBe(true);
 		act(() => [...closeShellTerminalListeners][0]?.());
 		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	it("removes the active highlight from a shell while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				shellTerminals={shells}
+				shellTarget={shellTarget("shell-2")}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "second shell" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
 	});
 });
 

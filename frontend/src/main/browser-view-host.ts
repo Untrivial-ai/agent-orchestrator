@@ -573,13 +573,19 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const tabsByWebContentsId = new Map<number, BrowserEntry>();
 	const ipcDisposers: Array<() => void> = [];
 	let disposePromise: Promise<void> | null = null;
-	// viewId of the panel that most recently held focus; cleared when it is hidden or destroyed.
+	// viewId of the panel that most recently held native focus; cleared when the
+	// native surface is hidden or destroyed (menu Edit/DevTools targeting).
 	let lastFocusedViewId: string | null = null;
 	// Separate from native focus: the address bar and tab strip live in the shell
-	// renderer, but browser shortcuts must continue to target their panel.
+	// renderer, but browser shortcuts must continue to target their panel. Do NOT
+	// clear this when the native page is merely hidden (blank tab / measure blip) —
+	// that is exactly when ⌘T/⌘W must keep creating/closing browser tabs instead
+	// of falling through to new/close terminal.
 	let lastUsedViewId: string | null = null;
-	const forgetIfFocused = (viewId: string): void => {
+	const forgetNativeFocus = (viewId: string): void => {
 		if (lastFocusedViewId === viewId) lastFocusedViewId = null;
+	};
+	const forgetBrowserShortcutTarget = (viewId: string): void => {
 		if (lastUsedViewId === viewId) lastUsedViewId = null;
 	};
 	const setAgentBrowserActivity = (
@@ -1126,14 +1132,29 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!tab) throw browserError("TAB_NOT_FOUND", `Browser tab ${tabId} does not exist`);
 		const closedTab = tabResult(tab, false);
 		const wasActive = tabId === session.activeTabId;
+		// Activate the replacement BEFORE destroying the closed view. Destroying
+		// the focused view first leaves OS focus in limbo until the async close
+		// resolves — a second ⌘W in that window bypasses every before-input-event
+		// handler and hits the menu's Close item, killing the app window.
+		const nextTabId = wasActive ? [...session.tabs.keys()].filter((id) => id !== tabId).at(-1)! : undefined;
+		if (nextTabId) activateTab(session, nextTabId, false);
 		disposeNetworkCapture(tab, "tab-closed");
 		if (session.networkTabId === tabId) session.networkTabId = undefined;
 		session.tabs.delete(tabId);
 		tabsByWebContentsId.delete(tab.view.webContents.id);
 		destroyTabView(tab);
-		if (wasActive) {
-			const nextTabId = [...session.tabs.keys()].at(-1)!;
-			activateTab(session, nextTabId, false);
+		if (wasActive && nextTabId) {
+			const replacement = session.tabs.get(nextTabId);
+			if (replacement) {
+				lastUsedViewId = session.viewId;
+				lastFocusedViewId = session.viewId;
+				if (isBlankBrowserEntry(replacement)) {
+					focusLocation(session);
+				} else {
+					applySessionBounds(session, replacement);
+					replacement.view.webContents.focus();
+				}
+			}
 		}
 		const state = listTabs(session, { kind: "closed", tabId, tab: closedTab });
 		shellContents(options).send("browser:tabsState", state);
@@ -1183,7 +1204,13 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 
 	const focusLocation = (session: BrowserSessionEntry): void => {
 		lastUsedViewId = session.viewId;
-		shellWebContents.focus();
+		if (typeof shellWebContents.isFocused === "function") {
+			if (!shellWebContents.isFocused()) {
+				shellWebContents.focus();
+			}
+		} else {
+			shellWebContents.focus();
+		}
 		shellWebContents.send("browser:focusLocation", session.viewId);
 	};
 	const reopenClosedTab = (session: BrowserSessionEntry): void => {
@@ -1195,12 +1222,15 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		isNativePage: boolean,
 	): void {
 		contents.on("before-input-event", (event, input) => {
-			if (input.type !== "keyDown" || input.isAutoRepeat || options.isKeybindingRecording?.()) return;
+			if (input.type !== "keyDown" || options.isKeybindingRecording?.()) return;
 			const action = browserShortcutAction(input, Boolean(options.isMac));
 			if (!action) return;
 			const session = getSession();
 			if (!session) return;
 			event.preventDefault();
+			// Consume repeats without re-firing: a held ⌘W must not fall through
+			// to the menu's Close item and kill the app window.
+			if (input.isAutoRepeat) return;
 			lastUsedViewId = session.viewId;
 			if (action === "focus-location") {
 				focusLocation(session);
@@ -1211,7 +1241,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				return;
 			}
 			if (action === "new-tab") {
-				void openUserTab(session).then(() => focusLocation(session)).catch(() => undefined);
+				void openUserTab(session)
+					.then(() => {
+						// Blank tabs have no page to focus; omnibox is correct. Keep the
+						// browser shortcut target so a second ⌘T cannot open a terminal.
+						lastUsedViewId = session.viewId;
+						focusLocation(session);
+					})
+					.catch(() => undefined);
 				return;
 			}
 			if (action === "reopen-tab") {
@@ -1219,13 +1256,22 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				return;
 			}
 			const closingTabId = session.activeTabId;
-			void closeUserTab(session, closingTabId)
-				.then(() => {
-					if (isNativePage && session.tabs.has(session.activeTabId)) {
-						activeEntry(session).view.webContents.focus();
-					}
-				})
-				.catch(() => undefined);
+			if (isNativePage && session.tabs.size > 1) {
+				// The focused view is about to be destroyed asynchronously. Move OS
+				// focus to its replacement synchronously — making it visible first
+				// so the focus sticks — or a fast second ⌘W lands in focus limbo
+				// and hits the menu's Close item, killing the app window.
+				const replacementId = [...session.tabs.keys()].filter((id) => id !== closingTabId).at(-1);
+				const replacement = replacementId ? session.tabs.get(replacementId) : undefined;
+				if (replacement) {
+					lastUsedViewId = session.viewId;
+					lastFocusedViewId = session.viewId;
+					applySessionBounds(session, replacement);
+					if (isBlankBrowserEntry(replacement)) focusLocation(session);
+					else replacement.view.webContents.focus();
+				}
+			}
+			void closeUserTab(session, closingTabId).catch(() => undefined);
 		});
 	}
 
@@ -1434,7 +1480,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			session.bounds = OFFSCREEN_BOUNDS;
 			session.visible = false;
 			if (!session.profileSwitching && session.tabs.size > 0) applySessionBounds(session, activeEntry(session));
-			forgetIfFocused(viewId);
+			// Hiding the native surface (blank tab, transient measure) must not drop
+			// the browser shortcut target — the panel chrome is still the context.
+			forgetNativeFocus(viewId);
 			return;
 		}
 		// The renderer measures the slot in page-zoomed CSS pixels, while
@@ -1501,7 +1549,8 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			session.visible = false;
 			session.bounds = OFFSCREEN_BOUNDS;
 			applySessionBounds(session, entry);
-			forgetIfFocused(viewId);
+			forgetNativeFocus(viewId);
+			forgetBrowserShortcutTarget(viewId);
 			entry.ready = entry.view.webContents.loadURL("about:blank");
 			await entry.ready;
 			entry.view.webContents.clearHistory();
@@ -1550,7 +1599,8 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		entries.delete(viewId);
 		viewIdsBySessionId.delete(session.sessionId);
 		rendererOwnersByViewId.delete(viewId);
-		forgetIfFocused(viewId);
+		forgetNativeFocus(viewId);
+		forgetBrowserShortcutTarget(viewId);
 		// When the window is already gone (dispose fired from mainWindow "closed"),
 		// Electron has torn down contentView and the child WebContentsViews. Touching
 		// them throws "Object has been destroyed", so just drop our reference.
@@ -2128,7 +2178,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (isRendererOwned(event, viewId) && entries.has(viewId)) lastUsedViewId = viewId;
 	});
 	on("browser:panelBlur", (event, viewId: string) => {
-		if (isRendererOwned(event, viewId) && lastUsedViewId === viewId) lastUsedViewId = null;
+		if (isRendererOwned(event, viewId)) forgetBrowserShortcutTarget(viewId);
 	});
 	handle("browser:devtools", (event, input: BrowserDevToolsInput) => {
 		if (!input || typeof input.viewId !== "string" || !isRendererOwned(event, input.viewId)) {

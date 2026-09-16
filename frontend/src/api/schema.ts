@@ -158,17 +158,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/agents/codex/account-switches/{switchId}/recover": {
+    "/api/v1/agents/codex/account-switches/{switchId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Read one durable Codex account switch */
+        get: operations["getCodexAccountSwitch"];
         put?: never;
-        /** Retry incomplete restarts for one Codex account switch */
-        post: operations["recoverCodexAccountSwitch"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2720,7 +2720,7 @@ export interface components {
             reason: string;
             reasonCode: string;
             /** @enum {string} */
-            status: "pending" | "verifying" | "unauthorized" | "unverified" | "completed" | "cancelled" | "failed" | "expired";
+            status: "pending" | "verifying" | "unauthorized" | "retryable" | "completed" | "cancelled" | "failed" | "expired";
         };
         CodexAccountLoginTerminalResponse: {
             /** Format: date-time */
@@ -2746,7 +2746,6 @@ export interface components {
             usageSummary?: components["schemas"]["CodexAccountUsageSummaryResponse"];
         };
         CodexAccountSwitchResponse: {
-            canRecover: boolean;
             /** Format: date-time */
             completedAt?: null | string;
             /** Format: date-time */
@@ -2756,25 +2755,13 @@ export interface components {
             failureCode?: string;
             id: string;
             /** @enum {string} */
-            phase: "requested" | "stopping_sessions" | "sessions_stopped" | "checkpointing_source" | "activating_target" | "verifying_target" | "restarting_sessions" | "rollback_required" | "recovery_required" | "completed" | "failed";
-            sessions: components["schemas"]["CodexAccountSwitchSessionResponse"][];
-            sourceAccountId: string;
+            phase: "requested" | "checkpointing_source" | "activating_target" | "recovery_required" | "completed" | "failed";
+            sourceAccountId?: string;
+            /** @enum {string} */
+            sourceKind: "managed" | "device" | "none";
             targetAccountId: string;
             /** Format: date-time */
             updatedAt: string;
-        };
-        CodexAccountSwitchSessionResponse: {
-            errorCode?: string;
-            /** @enum {string} */
-            interfaceMode: "tui" | "chat";
-            restartState: string;
-            /** Format: date-time */
-            restartedAt?: null | string;
-            sessionId: string;
-            stopState: string;
-            /** Format: date-time */
-            stoppedAt?: null | string;
-            wasRunning: boolean;
         };
         CodexAccountUsageSummaryResponse: {
             currentStreakDays?: null | number;
@@ -2795,7 +2782,7 @@ export interface components {
             activeLogin?: components["schemas"]["CodexActiveLoginResponse"];
             capabilities: components["schemas"]["CodexAccountCapabilitiesResponse"];
             currentSwitch?: components["schemas"]["CodexAccountSwitchResponse"];
-            unmanagedGlobalAccount?: components["schemas"]["CodexUnmanagedGlobalAccountResponse"];
+            deviceReconciliation: components["schemas"]["CodexDeviceReconciliationResponse"];
         };
         CodexActiveLoginResponse: {
             accountId?: string;
@@ -2806,7 +2793,7 @@ export interface components {
             reasonCode: string;
             shellTerminal: components["schemas"]["CodexAccountLoginTerminalResponse"];
             /** @enum {string} */
-            status: "pending" | "verifying" | "unauthorized" | "unverified" | "completed" | "cancelled" | "failed" | "expired";
+            status: "pending" | "verifying" | "unauthorized" | "retryable" | "completed" | "cancelled" | "failed" | "expired";
         };
         CodexAuthenticationResponse: {
             /** Format: date-time */
@@ -2840,19 +2827,24 @@ export interface components {
             usedPercent: number;
             windowDurationMinutes?: null | number;
         };
+        CodexDeviceReconciliationResponse: {
+            activeAccountVerified: boolean;
+            /** Format: date-time */
+            attemptedAt?: null | string;
+            /** Format: date-time */
+            nextRetryAt?: null | string;
+            reasonCode: string;
+            retryable: boolean;
+            /** @enum {string} */
+            status: "not_checked" | "checking" | "verified" | "temporarily_unavailable" | "blocked";
+            /** Format: date-time */
+            verifiedAt?: null | string;
+        };
         CodexResetCreditsSummaryResponse: {
             /** Format: int64 */
             availableCount: number;
             /** Format: date-time */
             nearestExpiresAt?: null | string;
-        };
-        CodexUnmanagedGlobalAccountResponse: {
-            accountEmail?: null | string;
-            /** @enum {string} */
-            authMethod: "chatgpt" | "api_key" | "other" | "unknown";
-            label: string;
-            reason: string;
-            reasonCode: string;
         };
         CompactConversationResponse: {
             /** Format: int64 */
@@ -3295,6 +3287,8 @@ export interface components {
         };
         EnsureCodexAccountsRequest: {
             accountIds?: string[];
+            forceAuthentication?: boolean;
+            forceDeviceReconciliation?: boolean;
             includeUsage?: boolean;
         };
         EstimatedCostResponse: {
@@ -4041,6 +4035,11 @@ export interface components {
             latestUserPrompt?: string;
             /** @description AO process generation that produced the signal. */
             launchId?: string;
+            /**
+             * Format: date-time
+             * @description Time the local hook process observed the event, before delivery to the daemon.
+             */
+            observedAt?: string;
             /** @description Native main-turn identity reported by the hook, when supported. */
             providerTurnId?: string;
             /**
@@ -4212,8 +4211,8 @@ export interface components {
             operation?: "install" | "reinstall";
         };
         StartCodexAccountSwitchRequest: {
-            /** Format: int64 */
-            expectedAccountRevision: number;
+            /** @deprecated */
+            expectedAccountRevision?: null | number;
             idempotencyKey: string;
             targetAccountId: string;
         };
@@ -5042,7 +5041,7 @@ export interface operations {
             };
         };
     };
-    recoverCodexAccountSwitch: {
+    getCodexAccountSwitch: {
         parameters: {
             query?: never;
             header?: never;
@@ -5072,8 +5071,17 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
-            /** @description Conflict */
-            409: {
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

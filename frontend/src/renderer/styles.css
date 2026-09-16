@@ -1153,6 +1153,18 @@ button.settings-row-bar {
 		color: var(--color-text-settings-row);
 		outline: none;
 	}
+
+	/* The clear affordance is secondary to the query itself, so it recedes
+	   until pointed at. */
+	&::-webkit-search-cancel-button {
+		opacity: 0.4;
+		cursor: pointer;
+		transition: opacity var(--duration-fast) ease-out;
+	}
+
+	&::-webkit-search-cancel-button:hover {
+		opacity: 1;
+	}
 }
 
 @utility settings-row-value {
@@ -3660,7 +3672,7 @@ html.sidebar-reordering * {
 }
 
 .session-inspector__topbar--browser:has(.browser-panel__address-bar--editing) {
-	grid-template-columns: minmax(0, 1fr) clamp(240px, 58cqw, 640px) minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr) clamp(240px, 52cqw, 560px) minmax(0, 1fr);
 }
 
 .session-inspector__topbar--browser > .session-inspector__tablist {
@@ -3671,6 +3683,10 @@ html.sidebar-reordering * {
 .session-inspector__topbar > .browser-panel__topbar-host {
 	grid-column: 2;
 	width: 100%;
+}
+
+.session-inspector__topbar > .browser-panel__topbar-host > .browser-panel__address-bar {
+	transform: translateX(clamp(32px, 6cqw, 48px));
 }
 
 .session-inspector__topbar--browser > .session-inspector-actions-spacer {
@@ -3704,6 +3720,12 @@ html.sidebar-reordering * {
 		width: 180px;
 		justify-self: center;
 		transition: width var(--duration-fast) ease;
+	}
+
+	.session-inspector__topbar--browser
+		> .browser-panel__topbar-host
+		> .browser-panel__address-bar {
+		transform: none;
 	}
 
 	.session-inspector__topbar--browser:has(.browser-panel__address-bar--editing)

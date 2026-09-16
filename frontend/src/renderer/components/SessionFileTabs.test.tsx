@@ -24,6 +24,7 @@ describe("SessionFileTabs", () => {
 		const tab = screen.getByRole("tab", { name: "App.tsx" });
 		const languageIcon = tab.querySelector('[aria-hidden="true"]');
 		expect(languageIcon).toBeInTheDocument();
+		expect(languageIcon).not.toHaveClass("group-hover:opacity-0", "group-focus-within:opacity-0");
 		const closeButton = screen.getByRole("button", { name: "Close App.tsx" });
 		const feedbackButton = screen.getByRole("button", { name: "Add feedback for file src/App.tsx" });
 		expect(feedbackButton.parentElement).toHaveClass("pl-1");
