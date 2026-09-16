@@ -108,12 +108,22 @@ If any recovery-ref step fails, cleanup is blocked. AO does not delete the workt
 
 Restore recreates the worktree from the preserved ref, then relaunches the session using the existing provider/session metadata. Dependencies such as `node_modules` are regenerable and are not part of the recovery snapshot. A project setup command or explicit package-manager install restores them when needed.
 
-Dirty worktrees are never removed completely, so their uncommitted source remains on disk. Dependency-only pruning does not change tracked or untracked source files.
+#### Why AO preserves dirty worktrees
 
-**Remove** and a future **Delete session** action remain separate:
+A Git recovery ref records a commit; it does not capture the worktree's current uncommitted state. A dirty worktree may contain modified tracked files, staged-but-uncommitted changes, deleted files, or new untracked files that exist nowhere else. Deleting that directory could therefore destroy user work that the recovery ref cannot restore.
 
-- **Remove:** reclaims workspace storage while retaining session history and recovery metadata.
-- **Delete session:** would permanently remove the session/history and is outside this design. If added later, it should use a recoverable trash period rather than sharing Remove's endpoint or copy.
+AO never removes a dirty worktree completely. It preserves tracked and untracked source files and may prune only validated, regenerable `node_modules` directories. A user who wants complete workspace removal can first commit the changes or save them with a Git stash that explicitly includes any required untracked files, then retry Remove.
+
+Dependency-only pruning does not change tracked or untracked source files.
+
+#### Remove workspace versus permanent session deletion
+
+These actions remain separate because they preserve different recovery guarantees:
+
+- **Remove workspace:** reclaims local workspace storage while retaining the session record, conversation history, provider metadata, attachments, and verified recovery ref. Restore remains supported.
+- **Delete session:** would remove the durable session record and history. A Git recovery ref alone cannot reconstruct the deleted conversation or complete session metadata, so Delete cannot promise the same Restore behavior.
+
+Permanent session deletion is outside this design. If it is added later, it should use a separate endpoint, explicit confirmation copy, and a recoverable trash or grace period instead of sharing Remove's endpoint or recovery promise.
 
 ### Automatic cleanup policy
 
