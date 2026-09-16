@@ -126,11 +126,14 @@ const ShellCenter = memo(function ShellCenter({
 	selfFramedCenterPanel: boolean;
 }) {
 	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
+	// macOS and Linux both use frameless session chrome. Windows supplies its
+	// own drag region through WindowTitlebar.
+	const draggableSessionFrame = isSessionRoute && !isWindows;
 	if (hideShellTopbar) {
 		return selfFramedCenterPanel ? (
 			<Outlet />
 		) : (
-			<CenterPanelShell className={panelClassName} draggableSessionFrame={isSessionRoute && isMac}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
 				</div>
@@ -139,7 +142,7 @@ const ShellCenter = memo(function ShellCenter({
 	}
 	if (framedAppTopbar) {
 		return (
-			<CenterPanelShell className={panelClassName} draggableSessionFrame={isSessionRoute && isMac}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				{isSessionRoute ? null : <ShellTopbar />}
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
@@ -148,7 +151,7 @@ const ShellCenter = memo(function ShellCenter({
 		);
 	}
 	return (
-		<CenterPanelShell className={panelClassName} draggableSessionFrame={isSessionRoute && isMac}>
+		<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 			<div className="flex min-h-0 flex-1 flex-col">
 				<Outlet />
 			</div>

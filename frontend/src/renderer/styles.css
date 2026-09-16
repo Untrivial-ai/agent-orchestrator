@@ -520,7 +520,7 @@
 
 /* Keep the session card intact: this strip belongs to its slate outer frame,
  * above the complete card (tabs and inspector alike), so it is a native macOS
- * drag target without introducing a seam inside session content. */
+ * or Linux drag target without introducing a seam inside session content. */
 .center-panel-shell--draggable-session-frame {
 	flex-direction: column;
 }

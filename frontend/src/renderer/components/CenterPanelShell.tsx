@@ -25,7 +25,7 @@ export function CenterPanelShell({
 	children: ReactNode;
 	/** When false, keep the default panel insets (Settings). */
 	titlebarAlign?: boolean;
-	/** Adds a macOS window-drag strip outside the session surface. */
+	/** Adds a macOS/Linux window-drag strip outside the session surface. */
 	draggableSessionFrame?: boolean;
 }) {
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
