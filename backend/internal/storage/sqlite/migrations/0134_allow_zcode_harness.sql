@@ -3,6 +3,11 @@
 -- surgical sqlite_master rewrite used by the earlier harness migrations
 -- (e.g. 0095_allow_omp_harness.sql). writable_schema changes run outside a
 -- transaction; RESET forces SQLite to reparse the schema.
+--
+-- Like 0095, both deployed schema variants are rewritten: the normal
+-- ... 'omp', 'fake' ... definition and the legacy ... 'omp', 'qm', 'fake' ...
+-- one preserved by 0095's second statement. A variant left unrewritten would
+-- make this migration a silent no-op on installs that took that branch.
 
 -- +goose NO TRANSACTION
 -- +goose Up
@@ -15,6 +20,15 @@ SET sql = replace(
     sql,
     'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''fake''))',
     'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''zcode'', ''fake''))'
+)
+WHERE type = 'table' AND name = 'sessions';
+-- +goose StatementEnd
+-- +goose StatementBegin
+UPDATE sqlite_master
+SET sql = replace(
+    sql,
+    'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''qm'', ''fake''))',
+    'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''qm'', ''zcode'', ''fake''))'
 )
 WHERE type = 'table' AND name = 'sessions';
 -- +goose StatementEnd
@@ -32,6 +46,15 @@ SET sql = replace(
     sql,
     'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''zcode'', ''fake''))',
     'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''fake''))'
+)
+WHERE type = 'table' AND name = 'sessions';
+-- +goose StatementEnd
+-- +goose StatementBegin
+UPDATE sqlite_master
+SET sql = replace(
+    sql,
+    'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''qm'', ''zcode'', ''fake''))',
+    'CHECK (harness IN ('''', ''claude-code'', ''codex'', ''aider'', ''opencode'', ''grok'', ''droid'', ''amp'', ''agy'', ''crush'', ''cursor'', ''qwen'', ''copilot'', ''goose'', ''auggie'', ''continue'', ''devin'', ''cline'', ''kimi'', ''muse'', ''kiro'', ''kilocode'', ''vibe'', ''pi'', ''kimchi'', ''prime-agent'', ''autohand'', ''omp'', ''qm'', ''fake''))'
 )
 WHERE type = 'table' AND name = 'sessions';
 -- +goose StatementEnd

@@ -104,7 +104,9 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	}
 
 	cmd = []string{binary}
-	appendModeFlags(&cmd, cfg.Permissions, cfg.Config.Mode)
+	if err := appendModeFlags(&cmd, cfg.Permissions, cfg.Config.Mode); err != nil {
+		return nil, err
+	}
 	if err := appendDisallowedTools(&cmd, cfg.DisallowedTools); err != nil {
 		return nil, err
 	}
@@ -160,7 +162,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 
 	cmd = make([]string, 0, 4)
 	cmd = append(cmd, binary)
-	appendModeFlags(&cmd, cfg.Permissions, cfg.Config.Mode)
+	if err := appendModeFlags(&cmd, cfg.Permissions, cfg.Config.Mode); err != nil {
+		return nil, false, err
+	}
 	if err := appendDisallowedTools(&cmd, cfg.DisallowedTools); err != nil {
 		return nil, false, err
 	}
@@ -201,16 +205,25 @@ func (p *Plugin) zcodeBinary(ctx context.Context) (string, error) {
 	return binary, nil
 }
 
+// zcodeModes are the --mode values the real zcode binary accepts (0.16.5:
+// "Supported modes: build, edit, plan, yolo"). A persisted config mode outside
+// this set would otherwise be passed straight to argv and kill the terminal
+// session at launch; validating here turns it into a clean input error.
+var zcodeModes = map[string]bool{"build": true, "edit": true, "plan": true, "yolo": true}
+
 // appendModeFlags maps AO permission modes onto zcode's --mode values. An
 // explicit per-session mode config (build|edit|plan|yolo) wins; otherwise the
 // permission mode is mapped — acceptEdits→edit, auto→build (zcode's internal
 // "auto" mode is reserved but unimplemented), bypassPermissions→yolo. With
 // neither, no flag is emitted so ZCode's own config governs (interactive
 // default: build).
-func appendModeFlags(cmd *[]string, permissions ports.PermissionMode, configMode string) {
+func appendModeFlags(cmd *[]string, permissions ports.PermissionMode, configMode string) error {
 	if mode := strings.TrimSpace(configMode); mode != "" {
+		if !zcodeModes[mode] {
+			return fmt.Errorf("invalid zcode mode %q: supported modes are build, edit, plan, yolo", mode)
+		}
 		*cmd = append(*cmd, "--mode", mode)
-		return
+		return nil
 	}
 	switch ports.NormalizePermissionMode(permissions) {
 	case ports.PermissionModeDefault:
@@ -222,6 +235,7 @@ func appendModeFlags(cmd *[]string, permissions ports.PermissionMode, configMode
 	case ports.PermissionModeBypassPermissions:
 		*cmd = append(*cmd, "--mode", "yolo")
 	}
+	return nil
 }
 
 // appendDisallowedTools emits the deny list as a single comma-joined

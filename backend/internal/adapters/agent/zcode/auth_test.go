@@ -10,7 +10,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestAuthStatusAuthorizedWithConfiguredProvider(t *testing.T) {
+func TestAuthStatusStructuralOnly(t *testing.T) {
+	// A persisted apiKey proves the credential exists on disk, not that it is
+	// valid — zcode OAuth tokens expire while remaining in config.json
+	// (observed live). The checker must report unknown, never authorized.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeZcodeConfig(t, filepath.Join(home, ".zcode", "cli", "config.json"), `{
@@ -26,8 +29,8 @@ func TestAuthStatusAuthorizedWithConfiguredProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want authorized", status)
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want unknown (structural inspection cannot prove authorization)", status)
 	}
 }
 

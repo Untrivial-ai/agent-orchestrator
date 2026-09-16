@@ -115,6 +115,23 @@ func TestGetLaunchCommandConfigModeWins(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandRejectsInvalidConfigMode(t *testing.T) {
+	// The real binary rejects unknown --mode values at launch ("Unsupported
+	// --mode value"); a bad persisted config must fail here as a clean input
+	// error, not later as a dead terminal session.
+	plugin := &Plugin{resolvedBinary: "zcode"}
+	_, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Permissions: ports.PermissionModeBypassPermissions,
+		Config:      ports.AgentConfig{Mode: "nope"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid mode")
+	}
+	if !strings.Contains(err.Error(), "invalid zcode mode") {
+		t.Fatalf("err = %v, want invalid zcode mode", err)
+	}
+}
+
 func TestGetLaunchCommandForwardsDisallowedTools(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "zcode"}
 	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{

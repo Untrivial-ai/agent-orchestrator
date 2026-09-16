@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -52,11 +51,12 @@ func zcodeLocalAuthStatus() (ports.AgentAuthStatus, bool, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
-	for _, provider := range config.Provider {
-		if strings.TrimSpace(provider.Options.APIKey) != "" {
-			return ports.AgentAuthStatusAuthorized, true, nil
-		}
-	}
+	// This is a structural inspection only: a persisted apiKey string proves
+	// the credential exists on disk, not that it is valid. zcode's OAuth
+	// tokens can expire while remaining in config.json (observed live), and
+	// reporting "authorized" on a stale key misleads spawn decisions. Report
+	// unknown; a bounded native auth probe can upgrade this when zcode
+	// grows one.
 	return ports.AgentAuthStatusUnknown, false, nil
 }
 
