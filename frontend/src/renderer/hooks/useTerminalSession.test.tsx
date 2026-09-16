@@ -1122,3 +1122,66 @@ describe("cloud connect breaker (issue #4668)", () => {
 		expect(view.result.current.error).toBeUndefined();
 	});
 });
+
+// Reconnect backoff must keep growing across a bounce, not reset to
+// RETRY_BASE_MS on every "opened" — otherwise a socket that opens and dies
+// again within STABLE_CONNECTION_MS (e.g. reconnecting into a worker epoch
+// that is about to be superseded) reconnects in a flat, ever-repeating loop
+// instead of backing off. See STABLE_CONNECTION_MS.
+describe("reconnect backoff survives a bounce (stable-connection reset)", () => {
+	const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+
+	function latest(muxes: FakeMux[]) {
+		return muxes[muxes.length - 1];
+	}
+
+	it("does not reset the backoff for a connection that dies before it proves stable", () => {
+		const { muxes } = setup({ attachedSession: cloudSession, coverInitialReplay: false });
+
+		// First attach opens, then immediately bounces (well under
+		// STABLE_CONNECTION_MS) before it can be trusted as a real recovery.
+		act(() => latest(muxes).emitOpened("handle-1"));
+		act(() => latest(muxes).emitConnection("closed"));
+		expect(muxes).toHaveLength(1);
+
+		// First failure ever: r.attempts was 0, so the flat 500ms base delay
+		// applies regardless of the bug — this leg does not distinguish.
+		act(() => void vi.advanceTimersByTime(500));
+		expect(muxes).toHaveLength(2);
+
+		// Second bounce: open then immediately die again, still well under
+		// STABLE_CONNECTION_MS.
+		act(() => latest(muxes).emitOpened("handle-1"));
+		act(() => latest(muxes).emitConnection("closed"));
+
+		// The buggy behavior reset r.attempts to 0 on the "opened" event above,
+		// which would reconnect again after another flat 500ms. The fix keeps
+		// r.attempts at 1, so the next retry must back off to 1000ms: advancing
+		// only the old flat delay must NOT yet produce a third mux.
+		act(() => void vi.advanceTimersByTime(500));
+		expect(muxes).toHaveLength(2);
+
+		// The remaining half of the grown (1000ms) delay fires the reconnect.
+		act(() => void vi.advanceTimersByTime(500));
+		expect(muxes).toHaveLength(3);
+	});
+
+	it("resets the backoff once a connection stays open past STABLE_CONNECTION_MS", () => {
+		const { muxes } = setup({ attachedSession: cloudSession, coverInitialReplay: false });
+
+		act(() => latest(muxes).emitOpened("handle-1"));
+		act(() => latest(muxes).emitConnection("closed"));
+		act(() => void vi.advanceTimersByTime(500));
+		expect(muxes).toHaveLength(2);
+
+		// This time the connection survives long enough to prove itself stable.
+		act(() => latest(muxes).emitOpened("handle-1"));
+		act(() => void vi.advanceTimersByTime(3_000));
+		act(() => latest(muxes).emitConnection("closed"));
+
+		// r.attempts was legitimately reset to 0 by the stable-connection timer,
+		// so the next retry is back at the flat base delay.
+		act(() => void vi.advanceTimersByTime(500));
+		expect(muxes).toHaveLength(3);
+	});
+});
