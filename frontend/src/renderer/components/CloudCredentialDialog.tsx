@@ -27,11 +27,15 @@ import { useCloudOrg } from "../hooks/useCloudOrg";
 import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
+import { aoBridge } from "../lib/bridge";
+
+const BROWSER_LOGIN = "browser_login";
 
 // The coding-agent providers the control plane accepts, with the credential
-// types each one validates (see cloud validAgentCredentialType). The first
-// credential type is the default and matches the "setup token" a developer
-// normally pastes.
+// types each one validates (see cloud validAgentCredentialType). Codex's
+// ChatGPT-subscription path deliberately has no secret field: the desktop app
+// performs the browser login locally, then securely sends Codex's native auth
+// document to the control plane. A session token is never pasted or displayed.
 const AGENTS = [
 	{
 		agent: "claude-code",
@@ -39,14 +43,15 @@ const AGENTS = [
 		creds: [
 			{ value: "oauth_token", label: "Setup token" },
 			{ value: "api_key", label: "API key" },
+			{ value: BROWSER_LOGIN, label: "Log in with Anthropic" },
 		],
 	},
 	{
 		agent: "codex",
 		label: "Codex",
 		creds: [
-			{ value: "access_token", label: "Access token" },
 			{ value: "api_key", label: "API key" },
+			{ value: BROWSER_LOGIN, label: "Log in with ChatGPT" },
 		],
 	},
 	{
@@ -64,7 +69,7 @@ type Phase = "idle" | "submitting" | "success";
 // same PUT /orgs/{org}/provider-connections/agents/{agent}, in the app.
 export function CloudCredentialDialog() {
 	const { t } = useTranslation();
-	const { client } = useCloudCp();
+	const { client, baseUrl } = useCloudCp();
 	const { org } = useCloudOrg();
 	const queryClient = useQueryClient();
 	const open = useCredentialDialogStore((s) => s.open);
@@ -84,6 +89,7 @@ export function CloudCredentialDialog() {
 	);
 	const selectedAgent = AGENTS.find((entry) => entry.agent === agent);
 	const selectedCredential = creds.find((entry) => entry.value === credentialType);
+	const needsSecret = credentialType !== BROWSER_LOGIN;
 
 	// Reset the whole form each time the dialog opens so a reopen never shows a
 	// stale secret or a previous error/success.
@@ -100,10 +106,11 @@ export function CloudCredentialDialog() {
 		const agentValue = (AGENTS.find((a) => a.agent === next) ?? AGENTS[0]).agent;
 		setAgent(agentValue);
 		setCredentialType(AGENTS.find((a) => a.agent === agentValue)?.creds[0]?.value ?? "api_key");
+		setSecret("");
 		setError(null);
 	};
 
-	const canSubmit = phase !== "submitting" && secret.trim() !== "" && org !== undefined;
+	const canSubmit = phase !== "submitting" && needsSecret && secret.trim() !== "" && org !== undefined;
 	const busy = phase === "submitting";
 
 	const submit = async () => {
@@ -123,6 +130,20 @@ export function CloudCredentialDialog() {
 			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
 			setPhase("success");
 			setSecret("");
+		} catch (err) {
+			setPhase("idle");
+			setError(err instanceof Error ? err.message : t("cloudCredential.failed"));
+		}
+	};
+
+	const loginWithBrowser = async () => {
+		if (org === undefined || phase === "submitting") return;
+		setPhase("submitting");
+		setError(null);
+		try {
+			await aoBridge.cloud.connectProviderAuth({ baseUrl, orgId: org.id, provider: agent });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			setPhase("success");
 		} catch (err) {
 			setPhase("idle");
 			setError(err instanceof Error ? err.message : t("cloudCredential.failed"));
@@ -189,7 +210,11 @@ export function CloudCredentialDialog() {
 								options={credentialOptions}
 								disabled={busy || creds.length === 1}
 								menuAlign="start"
-								onChange={setCredentialType}
+								onChange={(val) => {
+									setCredentialType(val);
+									setSecret("");
+									setError(null);
+								}}
 								triggerClassName="composer-chip composer-toolbar-option h-control-form w-full justify-between"
 								renderTrigger={() => (
 									<span className="min-w-0 truncate text-control text-foreground" title={selectedCredential?.label}>
@@ -199,7 +224,8 @@ export function CloudCredentialDialog() {
 							/>
 						</div>
 
-						<div className="space-y-2">
+						{needsSecret ? (
+							<div className="space-y-2">
 							<Label htmlFor="cloud-cred-secret" className={onboardingFormLabelClass}>
 								{t("cloudCredential.tokenLabel")}
 							</Label>
@@ -219,6 +245,13 @@ export function CloudCredentialDialog() {
 							/>
 							<p className={onboardingFieldHintClass}>{t("cloudCredential.tokenHint")}</p>
 						</div>
+						) : (
+							<p className={onboardingFieldHintClass}>
+								{agent === "claude-code"
+									? t("cloudCredential.anthropicLoginDescription")
+									: t("cloudCredential.chatgptLoginDescription")}
+							</p>
+						)}
 
 						{error ? (
 							<p role="alert" className={onboardingFieldErrorClass}>
@@ -229,14 +262,25 @@ export function CloudCredentialDialog() {
 				)}
 
 				<div className={cn(onboardingFooterActionsEndClass, "px-4 pb-4")}>
-					<DialogClose asChild>
-						<Button type="button" variant="outline" disabled={busy}>
-							{phase === "success" ? t("cloudCredential.done") : t("cloudCredential.cancel")}
+					{phase === "submitting" && !needsSecret ? (
+						<Button type="button" variant="outline" onClick={() => void aoBridge.cloud.cancelProviderAuth()}>
+							{t("cloudCredential.cancel")}
 						</Button>
-					</DialogClose>
-					{phase !== "success" ? (
+					) : (
+						<DialogClose asChild>
+							<Button type="button" variant="outline" disabled={busy}>
+								{phase === "success" ? t("cloudCredential.done") : t("cloudCredential.cancel")}
+							</Button>
+						</DialogClose>
+					)}
+					{phase !== "success" && needsSecret ? (
 						<Button type="button" variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
 							{phase === "submitting" ? t("cloudCredential.connecting") : t("cloudCredential.connect")}
+						</Button>
+					) : null}
+					{phase !== "success" && !needsSecret ? (
+						<Button type="button" variant="primary" disabled={org === undefined || phase === "submitting"} onClick={() => void loginWithBrowser()}>
+							{phase === "submitting" ? t("cloudCredential.connecting") : (agent === "claude-code" ? t("cloudCredential.loginWithAnthropic") : t("cloudCredential.loginWithChatGPT"))}
 						</Button>
 					) : null}
 				</div>

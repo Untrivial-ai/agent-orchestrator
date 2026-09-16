@@ -249,6 +249,10 @@ export const aoBridge: AoBridge =
 			getSession: async () => null,
 			signIn: async () => undefined,
 			signOut: async () => undefined,
+			cancelProviderAuth: async () => undefined,
+			connectProviderAuth: async () => {
+				throw new Error("Cloud provider sign-in requires the desktop app.");
+			},
 			localAuthAvailable: async () => false,
 			localRegister: async () => {
 				throw new Error("AO Cloud sign-in requires the desktop app.");

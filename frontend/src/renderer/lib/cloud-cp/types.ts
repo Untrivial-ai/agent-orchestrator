@@ -333,7 +333,8 @@ export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor";
 /**
  * Credential types by provider (`validAgentCredentialType`):
  * claude-code accepts "api_key" | "oauth_token"; codex accepts
- * "api_key" | "access_token"; cursor accepts "api_key".
+ * "api_key" | "access_token" | "auth_json" (the opaque result of a
+ * ChatGPT subscription login); cursor accepts "api_key".
  */
 export interface CloudCpPutAgentConnectionRequest {
 	credentialType: string;
