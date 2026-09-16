@@ -3075,6 +3075,35 @@ func TestApplyReviewBatchSuppressedByJITGuardIsNotDelivered(t *testing.T) {
 	}
 }
 
+func TestApplyReviewBatchSuppressedByToggleRaceIsNotDelivered(t *testing.T) {
+	// The worker has AutoInjectReview=true at ApplyReviewBatch's entry guard (read #1)
+	// but the user flips it to false before sendOnce's just-in-time re-read (read #2).
+	// The nudge must be SUPPRESSED, and the outcome must be ReviewDeliveryNoop.
+	st := newFakeStore()
+	st.sessions["mer-1"] = working("mer-1")
+	bst := &disableReviewOnNthGetStore{fakeStore: st, id: "mer-1", flipAt: 2}
+	msg := &fakeMessenger{}
+	m := New(bst, msg)
+	result := ReviewResult{
+		RunID: "run-1", BatchID: "batch-1", WorkerID: "mer-1", PRURL: "https://github.com/o/r/pull/1",
+		TargetSHA: "sha1", Verdict: domain.VerdictChangesRequested, Body: "fix the bug",
+	}
+
+	outcome, err := m.ApplyReviewBatch(ctx, "mer-1", "batch-1", []ReviewResult{result})
+	if err != nil {
+		t.Fatalf("ApplyReviewBatch: %v", err)
+	}
+	if outcome != ReviewDeliveryNoop {
+		t.Fatalf("outcome = %q, want no_op (suppressed nudge must not be stamped delivered)", outcome)
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("nudge pasted into a session with review disabled before send: %v", msg.msgs)
+	}
+	if st.signatures[result.PRURL] != "" {
+		t.Fatal("suppressed nudge must not persist a sendOnce signature")
+	}
+}
+
 func TestApplyReviewBatchSendsCombinedAndDedups(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = working("mer-1")
@@ -3226,7 +3255,7 @@ func TestLifecycleNudgeUsesLateBoundSessionInputLease(t *testing.T) {
 	m.SetSessionInputLease(fixedLifecycleInputLease(false))
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", Activity: domain.Activity{State: domain.ActivityIdle}}
 
-	outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0, false)
+	outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0, nudgePolicyStandard)
 	if err != nil {
 		t.Fatalf("sendOnce: %v", err)
 	}
@@ -3260,7 +3289,7 @@ func TestLifecycleNudgeStartupGateUsesAdapterCapability(t *testing.T) {
 				Activity: domain.Activity{State: domain.ActivityIdle},
 			}
 
-			outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0, false)
+			outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0, nudgePolicyStandard)
 			if err != nil {
 				t.Fatalf("sendOnce: %v", err)
 			}
@@ -3731,6 +3760,27 @@ func (s *blockOnNthGetStore) GetSession(ctx context.Context, id domain.SessionID
 	if s.reads == s.flipAt {
 		if rec, ok := s.sessions[s.id]; ok {
 			rec.Activity.State = domain.ActivityBlocked
+			s.sessions[s.id] = rec
+		}
+	}
+	return s.fakeStore.GetSession(ctx, id)
+}
+
+// disableReviewOnNthGetStore wraps fakeStore and flips AutoInjectReview to false
+// on the Nth GetSession call, reproducing the race condition where a user disables
+// the review toggle just before the actual paste.
+type disableReviewOnNthGetStore struct {
+	*fakeStore
+	id     domain.SessionID
+	reads  int
+	flipAt int
+}
+
+func (s *disableReviewOnNthGetStore) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	s.reads++
+	if s.reads == s.flipAt {
+		if rec, ok := s.sessions[s.id]; ok {
+			rec.AutoInjectReview = false
 			s.sessions[s.id] = rec
 		}
 	}

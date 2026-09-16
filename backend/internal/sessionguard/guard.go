@@ -72,6 +72,9 @@ const (
 	// server approval) leave the row idle with FirstSignalAt unset; writing
 	// there consumes input on the dialog instead of the agent composer.
 	SuppressedStartupPending
+	// SuppressedReviewDisabled means the session has AutoInjectReview disabled.
+	// This ensures review nudges are not sent when the feature is turned off.
+	SuppressedReviewDisabled
 )
 
 // String names the outcome for logs.
@@ -93,6 +96,8 @@ func (o Outcome) String() string {
 		return "suppressed_input_gated"
 	case SuppressedStartupPending:
 		return "suppressed_startup_pending"
+	case SuppressedReviewDisabled:
+		return "suppressed_review_disabled"
 	default:
 		return "suppressed_unknown"
 	}
@@ -334,6 +339,18 @@ func (g *Guard) NudgeCoordination(ctx context.Context, id domain.SessionID, msg 
 			return SuppressedBusy, steersActiveTurn == nil || !steersActiveTurn(rec.Harness)
 		}
 		return SuppressedUnknown, false
+	})
+}
+
+// NudgeReview behaves like Nudge but additionally refuses to send if the
+// session's AutoInjectReview toggle is false. This enforces the policy at the
+// final read boundary, preventing races with concurrent toggle updates.
+func (g *Guard) NudgeReview(ctx context.Context, id domain.SessionID, msg string) (Outcome, error) {
+	return g.send(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
+		if !rec.AutoInjectReview {
+			return SuppressedReviewDisabled, true
+		}
+		return g.refuseNudge(rec)
 	})
 }
 
