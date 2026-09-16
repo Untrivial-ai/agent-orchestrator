@@ -35,6 +35,7 @@ export function CenterPanelShell({
 	const align = titlebarAlign && isMac;
 	const titlebarClearance = align && !isSidebarOpen;
 	const linuxTitlebarClearance = titlebarAlign && isLinux && !isSidebarOpen;
+	const showDraggableSessionFrame = draggableSessionFrame && !isFullScreen;
 
 	return (
 		<div
@@ -45,11 +46,11 @@ export function CenterPanelShell({
 				titlebarClearance && isFullScreen && "center-panel-shell--titlebar-clearance-fullscreen",
 				linuxTitlebarClearance && "center-panel-shell--titlebar-clearance-linux",
 				align && isFullScreen && "center-panel-shell--fullscreen",
-				draggableSessionFrame && "center-panel-shell--draggable-session-frame",
+				showDraggableSessionFrame && "center-panel-shell--draggable-session-frame",
 				className,
 			)}
 		>
-			{draggableSessionFrame ? <div aria-hidden="true" className="center-panel-session-drag-strip" /> : null}
+			{showDraggableSessionFrame ? <div aria-hidden="true" className="center-panel-session-drag-strip" /> : null}
 			<div className="center-panel-surface">{children}</div>
 		</div>
 	);
