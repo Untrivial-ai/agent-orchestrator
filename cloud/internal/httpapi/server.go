@@ -93,6 +93,7 @@ type Store interface {
 	QueueTerminalResize(context.Context, domain.TerminalSession, uint16, uint16) error
 	CloseTerminal(context.Context, domain.TerminalSession) error
 	AppendTerminalOutput(context.Context, string, string, string, string, int64, []byte) (int64, error)
+	AppendTerminalOutputAt(context.Context, string, string, string, string, int64, int64, []byte) (int64, error)
 	ClaimTerminalInput(context.Context, string, string, string, int64, string, time.Duration) (domain.WorkerRequest, bool, error)
 	MarkTerminalExited(context.Context, string, string, string, string, int64, int) error
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
@@ -161,6 +162,7 @@ type Server struct {
 	credentialValidator     credentialValidator
 	webhookMaxBody          int64
 	terminalStreamEnabled   bool
+	terminalRelayEnabled    bool
 	terminalStreams         *terminalStreams
 	workWaiters             *workWaiters
 	// workerBinariesBySHA serves the content-addressed worker/helper binaries
@@ -195,6 +197,7 @@ type Options struct {
 	CredentialValidator       credentialValidator
 	WebhookMaxBody            int64
 	TerminalStreamEnabled     bool
+	TerminalRelayEnabled      bool
 }
 
 func New(options Options) *Server {
@@ -264,6 +267,7 @@ func New(options Options) *Server {
 		credentialValidator:       options.CredentialValidator,
 		webhookMaxBody:            webhookMaxBody,
 		terminalStreamEnabled:     options.TerminalStreamEnabled,
+		terminalRelayEnabled:      options.TerminalRelayEnabled,
 		terminalStreams:           newTerminalStreams(),
 		workWaiters:               newWorkWaiters(),
 	}

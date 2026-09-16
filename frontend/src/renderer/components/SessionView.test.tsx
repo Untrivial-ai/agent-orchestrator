@@ -39,8 +39,6 @@ const chatSurfaceWorkState = vi.hoisted(() => ({
 	hasRunningTurn: false,
 	queuedTurnCount: 0,
 }));
-const codexAccountsQueryState = vi.hoisted(() => ({ data: undefined as unknown }));
-const recoverCodexAccountSwitchMock = vi.hoisted(() => vi.fn());
 
 async function chooseSessionAction(name: string) {
 	const user = userEvent.setup();
@@ -99,18 +97,6 @@ vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 		acknowledgeNotice: interfaceTransitionMock.acknowledgeNotice,
 		acknowledgingNotice: false,
 		acknowledgeNoticeError: undefined,
-	}),
-}));
-
-vi.mock("../hooks/useCodexAccountsQuery", () => ({
-	useCodexAccountsQuery: () => ({ data: codexAccountsQueryState.data, isLoading: false }),
-}));
-
-vi.mock("../hooks/useCodexAccountActions", () => ({
-	useCodexAccountActions: () => ({
-		error: null,
-		recoverPending: false,
-		recoverSwitch: recoverCodexAccountSwitchMock,
 	}),
 }));
 
@@ -737,8 +723,6 @@ describe("SessionView", () => {
 		chatSurfaceWorkState.controllerBusy = false;
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
-		codexAccountsQueryState.data = undefined;
-		recoverCodexAccountSwitchMock.mockReset();
 		reviewGetMock.mockReset();
 		reviewGetMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
@@ -756,37 +740,6 @@ describe("SessionView", () => {
 			}
 			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
 		});
-	});
-
-	it("offers recovery directly from a Codex session blocked by a failed account switch", async () => {
-		const session = workerSession("sess-1");
-		session.provider = "codex";
-		codexAccountsQueryState.data = {
-			currentSwitch: {
-				id: "switch-1",
-				sourceAccountId: "account-a",
-				targetAccountId: "account-b",
-				phase: "recovery_required",
-				canRecover: true,
-				sessions: [{
-					sessionId: "sess-1",
-					interfaceMode: "tui",
-					wasRunning: true,
-					stopState: "stopped",
-					restartState: "failed",
-				}],
-				createdAt: "2026-09-02T00:00:00Z",
-				updatedAt: "2026-09-02T00:01:00Z",
-			},
-		};
-		recoverCodexAccountSwitchMock.mockResolvedValue(undefined);
-
-		render(<SessionView sessionId="sess-1" />);
-
-		const retry = screen.getByRole("button", { name: "Retry recovery" });
-		expect(retry).toBeEnabled();
-		await userEvent.click(retry);
-		expect(recoverCodexAccountSwitchMock).toHaveBeenCalledWith("switch-1");
 	});
 
 	// Regression: shell terminals are an app-wide list, so without a per-session
@@ -2988,7 +2941,7 @@ describe("SessionView", () => {
 
 	it("mounts the inspector in sync when navigating from an orchestrator session", () => {
 		const { rerender } = render(<SessionView sessionId="sess-orch" />);
-		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
 
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		rerender(<SessionView sessionId="sess-1" />);
@@ -3003,7 +2956,7 @@ describe("SessionView", () => {
 
 		act(() => useUiStore.getState().setInspectorOpen("sess-2", false));
 		rerender(<SessionView sessionId="sess-orch" />);
-		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
 
 		act(() => useUiStore.getState().setInspectorOpen("sess-2", false));
 		rerender(<SessionView sessionId="sess-2" />);
@@ -3015,16 +2968,57 @@ describe("SessionView", () => {
 		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("data-state", "expanded");
 	});
 
-	it("renders no inspector panel or handle for orchestrator sessions", () => {
+	it("starts the orchestrator Browser closed and opens it with the inspector shortcut", () => {
 		render(<SessionView sessionId="sess-orch" />);
-
-		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
-		expect(screen.queryByTestId("inspector-resize-handle")).not.toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
 		expect(screen.queryByTestId("inspector-collapsed-rail")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open Browser" })).toHaveAttribute("aria-pressed", "false");
+		fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true });
+		expect(inspectorOpen("sess-orch")).toBe(true);
+		expect(screen.getByRole("button", { name: "Close Browser" })).toHaveAttribute("aria-pressed", "true");
+		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
+	});
 
-		// The shortcut is inactive without an inspector.
-		fireEvent.keyDown(window, { key: "B", metaKey: true, shiftKey: true });
-		expect(useUiStore.getState().inspectorSessions["sess-orch"]).toBeUndefined();
+	it("opens orchestrator chat files in the center without revealing Browser", async () => {
+		workerSession("sess-orch").mode = "chat";
+		render(<SessionView sessionId="sess-orch" />);
+		fireEvent.click(screen.getByRole("button", { name: "open chat basename" }));
+		await waitFor(() => expect(screen.getByTestId("session-file-workspace")).toBeInTheDocument());
+		expect(inspectorOpen("sess-orch")).toBe(false);
+		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
+	});
+
+	it("reveals the orchestrator Browser on new preview work and respects closing it", () => {
+		const orchestrator = workerSession("sess-orch");
+		const { rerender } = render(<SessionView sessionId="sess-orch" />);
+		orchestrator.previewUrl = "https://example.com";
+		orchestrator.previewRevision = 1;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(true);
+		fireEvent.click(screen.getByRole("button", { name: "Close Browser" }));
+		orchestrator.previewRevision = 2;
+		browserViewState.agentBrowserActive = true;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(false);
+		const indicator = screen.getByTestId("orchestrator-browser-unseen-indicator");
+		expect(indicator).not.toHaveClass("animate-ping");
+		browserViewState.agentBrowserActive = false;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(screen.getByTestId("orchestrator-browser-unseen-indicator")).toBe(indicator);
+		rerender(<SessionView sessionId="sess-1" />);
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(false);
+		expect(screen.getByTestId("orchestrator-browser-unseen-indicator")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Open Browser" }));
+		expect(screen.queryByTestId("orchestrator-browser-unseen-indicator")).not.toBeInTheDocument();
+		expect(browserUnseen("sess-orch")).toBe(false);
+	});
+
+	it("reveals the orchestrator Browser when the agent first uses it", () => {
+		const { rerender } = render(<SessionView sessionId="sess-orch" />);
+		browserViewState.agentBrowserActive = true;
+		rerender(<SessionView sessionId="sess-orch" />);
+		expect(inspectorOpen("sess-orch")).toBe(true);
 	});
 
 	it("switches the browser between its dock and the whole app window immediately", () => {

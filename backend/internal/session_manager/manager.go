@@ -297,12 +297,6 @@ type ReviewerTerminator interface {
 	RestoreReviewer(ctx context.Context, workerID domain.SessionID) error
 }
 
-type codexReviewerLifecycle interface {
-	SnapshotCodexReviewer(ctx context.Context, workerID domain.SessionID) (ports.CodexReviewerControllerSnapshot, error)
-	SuspendCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedHandleID, expectedNativeSessionID string) (bool, error)
-	RestoreCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedNativeSessionID string) error
-}
-
 type runtimeController interface {
 	Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error)
 	Destroy(ctx context.Context, handle ports.RuntimeHandle) error
@@ -389,8 +383,11 @@ type Manager struct {
 	// defaults resolves the daemon-owned default session interface for a spawn
 	// that names no mode. Nil falls back to the compatibility default, so a build
 	// without it behaves exactly as before.
-	defaults                    SessionModeDefaults
-	chat                        ChatLauncher
+	defaults     SessionModeDefaults
+	chat         ChatLauncher
+	modelCatalog interface {
+		Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
+	}
 	lcm                         lifecycleRecorder
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
@@ -414,25 +411,20 @@ type Manager struct {
 	// executable resolves the daemon's own binary (os.Executable in
 	// production); its directory is prepended to spawned sessions' PATH so the
 	// workspace hook commands resolve back to this daemon. Tests inject a stub.
-	executable                      func() (string, error)
-	newLaunchID                     func() string
-	codexOperationGate              ports.CodexOperationGate
-	codexAccountSwitchMu            sync.Mutex
-	codexAccountSwitchWorkerRunning bool
-	codexAccountSwitchLease         ports.CodexOperationLease
-	codexAccountSwitchObserverMu    sync.Mutex
-	codexAccountSwitchObserver      func()
-	startupBackgroundReconcileDone  chan struct{}
-	startupBackgroundReconcileOnce  sync.Once
-	statusRecoveryMu                sync.RWMutex
-	statusRecoveryFailed            bool
-	statusRecoveryRevision          uint64
-	statusRecoveries                map[domain.SessionID]statusRecovery
-	statusVerificationLimit         time.Duration
-	agentOpMu                       sync.Mutex
-	agentOperations                 map[domain.SessionID]agentOperationKind
-	interfaceRecoveryMu             sync.Mutex
-	deferredInterfaceRecovery       map[domain.SessionID]string
+	executable                     func() (string, error)
+	newLaunchID                    func() string
+	codexOperationGate             ports.CodexOperationGate
+	startupBackgroundReconcileDone chan struct{}
+	startupBackgroundReconcileOnce sync.Once
+	statusRecoveryMu               sync.RWMutex
+	statusRecoveryFailed           bool
+	statusRecoveryRevision         uint64
+	statusRecoveries               map[domain.SessionID]statusRecovery
+	statusVerificationLimit        time.Duration
+	agentOpMu                      sync.Mutex
+	agentOperations                map[domain.SessionID]agentOperationKind
+	interfaceRecoveryMu            sync.Mutex
+	deferredInterfaceRecovery      map[domain.SessionID]string
 	// switchDecisionInput opens a narrow human-only terminal lane while the
 	// source is blocked on permission during a mandatory switch.
 	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
@@ -515,6 +507,13 @@ func (m *Manager) beginHarnessUse(harness domain.AgentHarness) (func(), error) {
 	return release, nil
 }
 
+// SetModelCatalog late-binds the catalog service after daemon construction.
+func (m *Manager) SetModelCatalog(catalog interface {
+	Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
+}) {
+	m.modelCatalog = catalog
+}
+
 // latestUserPromptRecorder narrows the post-delivery write to the pane prompt's
 // coherent fallback checkpoint. A full SessionRecord update here could race a
 // provider switch and resurrect stale harness/runtime ownership read before the
@@ -545,24 +544,6 @@ func (m *Manager) SetTerminalInputGate(gate TerminalInputGate) {
 // SetAgentReadiness completes daemon wiring before request handling begins.
 func (m *Manager) SetAgentReadiness(provider ports.AgentReadinessProvider) {
 	m.agentReadiness = provider
-}
-
-// SetCodexAccountSwitchObserver connects durable switch transitions to the
-// account service's one provider-wide display stream. The callback carries no
-// credential or provider data and must remain non-blocking.
-func (m *Manager) SetCodexAccountSwitchObserver(observer func()) {
-	m.codexAccountSwitchObserverMu.Lock()
-	m.codexAccountSwitchObserver = observer
-	m.codexAccountSwitchObserverMu.Unlock()
-}
-
-func (m *Manager) publishCodexAccountSwitchChanged() {
-	m.codexAccountSwitchObserverMu.Lock()
-	observer := m.codexAccountSwitchObserver
-	m.codexAccountSwitchObserverMu.Unlock()
-	if observer != nil {
-		observer()
-	}
 }
 
 func (m *Manager) beginTerminalInputDrain(rec domain.SessionRecord) (lastInputAt time.Time, release func()) {
@@ -606,13 +587,6 @@ func (m *Manager) SetReviewerTerminator(terminator ReviewerTerminator) {
 	m.reviewersMu.Lock()
 	defer m.reviewersMu.Unlock()
 	m.reviewers = terminator
-}
-
-func (m *Manager) codexReviewerLifecycle() codexReviewerLifecycle {
-	m.reviewersMu.Lock()
-	defer m.reviewersMu.Unlock()
-	reviewer, _ := m.reviewers.(codexReviewerLifecycle)
-	return reviewer
 }
 
 func (m *Manager) terminateReviewer(ctx context.Context, id domain.SessionID, body string) error {
@@ -920,6 +894,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 				"harness", cfg.Harness, "error", err)
 			mode = domain.SessionModeTUI
 		}
+		if mode == domain.SessionModeChat {
+			resolved, err := m.resolveChatAgentConfig(ctx, cfg, project.Config)
+			if err != nil {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			}
+			cfg.AgentConfig = resolved
+			cfg.AgentConfigResolved = true
+		}
 	}
 	cfg.RequestedMode = mode
 
@@ -1132,6 +1114,72 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, err
 	}
 	return rec, promptBytes, systemPromptBytes, nil
+}
+
+func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
+	base := effectiveAgentConfig(cfg.Kind, project)
+	requested := cfg.AgentConfig
+	resolved := applySpawnAgentConfig(base, requested)
+	if cfg.EffortOverride {
+		resolved.Effort = requested.Effort
+	}
+	if cfg.Harness != domain.HarnessCodex {
+		resolved.Effort = ""
+		return resolved, nil
+	}
+	if m.modelCatalog == nil {
+		return resolved, nil
+	}
+	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
+	if err != nil {
+		if resolved.Effort != "" {
+			return ports.AgentConfig{}, fmt.Errorf("%w: %w", ports.ErrModelCapabilitiesUnavailable, err)
+		}
+		return resolved, nil
+	}
+	modelID := resolved.Model
+	if modelID == "" {
+		for _, item := range catalog.Models {
+			if item.IsDefault {
+				modelID = item.ID
+				break
+			}
+		}
+	}
+	var selected *ports.AgentModelInfo
+	for i := range catalog.Models {
+		if catalog.Models[i].ID == modelID {
+			selected = &catalog.Models[i]
+			break
+		}
+	}
+	if requested.Model != "" && requested.Model != base.Model {
+		if !cfg.EffortOverride && requested.Effort == "" && (selected == nil || !containsString(selected.Efforts, base.Effort)) {
+			resolved.Effort = ""
+		}
+	}
+	if resolved.Effort == "" {
+		return resolved, nil
+	}
+	if catalog.Stale || selected == nil {
+		return ports.AgentConfig{}, fmt.Errorf("%w for model %q", ports.ErrModelCapabilitiesUnavailable, modelID)
+	}
+	if resolved.Effort != "" && !containsString(selected.Efforts, resolved.Effort) {
+		return ports.AgentConfig{}, fmt.Errorf("%w %q for model %q", ports.ErrUnsupportedEffort, resolved.Effort, modelID)
+	}
+	return resolved, nil
+}
+
+func containsString(values []string, value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 // loadProject loads the project record so spawn can resolve its per-project
@@ -1456,6 +1504,9 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	if override.Model != "" {
 		merged.Model = override.Model
 	}
+	if override.Effort != "" {
+		merged.Effort = override.Effort
+	}
 	if override.Mode != "" {
 		merged.Mode = override.Mode
 	}
@@ -1476,6 +1527,9 @@ func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) por
 func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	if override.Model != "" {
 		base.Model = override.Model
+	}
+	if override.Effort != "" {
+		base.Effort = override.Effort
 	}
 	if override.Mode != "" {
 		base.Mode = override.Mode
@@ -1701,9 +1755,6 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	}
 	if !ok {
 		return false, nil // already gone: benign race
-	}
-	if (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex) && m.codexAccountSwitchIsActive() {
-		return false, fmt.Errorf("kill %s: %w", id, ErrCodexAccountSwitchInProgress)
 	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)
@@ -2027,9 +2078,6 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
 	}
 	defer releaseHarness()
-	if (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex) && m.codexAccountSwitchIsActive() {
-		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if !rec.IsTerminated {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrNotRestorable)
 	}
@@ -2094,9 +2142,6 @@ func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.Se
 	}
 	if !ok {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrNotFound)
-	}
-	if rec.Harness == domain.HarnessCodex && m.codexAccountSwitchIsActive() {
-		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrCodexAccountSwitchInProgress)
 	}
 	if rec.IsTerminated {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrTerminated)
@@ -2187,9 +2232,6 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
 	defer releaseHarness()
-	if rec.Harness == domain.HarnessCodex && m.codexAccountSwitchIsActive() {
-		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if rec.IsTerminated {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrTerminated)
 	}
@@ -2813,9 +2855,6 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 // ReconcileStartupSafety closes interrupted operations or quarantines ambiguous
 // interface targets and agent switches with a restored input fence before the API accepts input.
 func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
-	if err := m.ReconcileCodexAccountSwitches(ctx); err != nil {
-		return fmt.Errorf("reconcile: Codex account-switch pass: %w", err)
-	}
 	// A daemon restart destroys the in-memory input fence. Close any durable
 	// non-terminal switch before adopting runtimes so the API never implies an
 	// unconfirmed continuation was delivered.
@@ -3419,13 +3458,6 @@ func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, rows []por
 // the session is active or the budget is exhausted. Confirmation never fails
 // the send: it only decides whether to nudge again.
 func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error {
-	if m.codexAccountSwitchIsActive() {
-		if rec, ok, err := m.store.GetSession(ctx, id); err != nil {
-			return fmt.Errorf("send %s: %w", id, err)
-		} else if ok && rec.Harness == domain.HarnessCodex {
-			return fmt.Errorf("send %s: %w", id, ErrCodexAccountSwitchInProgress)
-		}
-	}
 	if attachment != nil {
 		// Reuses StageAttachments rather than a bespoke writer: it already owns the
 		// empty-workspace guard (refusing beats writing under the daemon's cwd),

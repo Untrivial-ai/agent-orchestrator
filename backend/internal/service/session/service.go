@@ -1108,9 +1108,6 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrAgentExitInProgress):
 		return apierr.Conflict("AGENT_EXIT_IN_PROGRESS",
 			"The agent is already exiting", nil)
-	case errors.Is(err, ports.ErrCodexAccountSwitchInProgress):
-		return apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS",
-			"AO is switching the global Codex account; Codex session mutations are temporarily blocked", nil)
 	case errors.Is(err, sessionmanager.ErrInterfaceTransitionInProgress):
 		return apierr.Conflict("INTERFACE_TRANSITION_IN_PROGRESS",
 			"This session is already switching interfaces", nil)
@@ -1238,6 +1235,10 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
+	case errors.Is(err, ports.ErrUnsupportedEffort):
+		return apierr.Invalid("UNSUPPORTED_EFFORT", err.Error(), nil)
+	case errors.Is(err, ports.ErrModelCapabilitiesUnavailable):
+		return apierr.Invalid("MODEL_CAPABILITIES_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimeWorkspaceCwdMismatch):
 		return apierr.Conflict("WORKSPACE_CWD_MISMATCH", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceLocked):

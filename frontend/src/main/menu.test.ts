@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./menu";
+import {
+	buildLinuxAppMenuTemplate,
+	buildMacAppMenuTemplate,
+	buildWindowsAppMenuTemplate,
+} from "./menu";
 
 type MenuItem = ReturnType<typeof buildWindowsAppMenuTemplate>[number];
 type SubmenuItem = NonNullable<Extract<MenuItem["submenu"], readonly unknown[]>>[number];
 
-function viewSubmenu(): readonly SubmenuItem[] {
-	const viewMenu = buildWindowsAppMenuTemplate().find((item) => item.label === "View");
+function viewSubmenu(template: MenuItem[] = buildWindowsAppMenuTemplate()): readonly SubmenuItem[] {
+	const viewMenu = template.find((item) => item.label === "View");
 	if (!viewMenu || !Array.isArray(viewMenu.submenu)) {
 		throw new Error("View menu not found");
 	}
@@ -28,6 +32,38 @@ describe("buildWindowsAppMenuTemplate", () => {
 		expect(viewSubmenu()).toContainEqual(expect.objectContaining({ accelerator: "Ctrl+-", role: "zoomOut" }));
 	});
 });
+
+describe("buildLinuxAppMenuTemplate", () => {
+	it("registers zoom and standard accelerators matching Linux expectations", () => {
+		const zoomInItems = viewSubmenu(buildLinuxAppMenuTemplate()).filter((item) => item.role === "zoomIn");
+
+		expect(zoomInItems).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ accelerator: "Ctrl+=", role: "zoomIn" }),
+				expect.objectContaining({ accelerator: "Ctrl+Plus", role: "zoomIn", visible: false }),
+			]),
+		);
+		expect(viewSubmenu(buildLinuxAppMenuTemplate())).toContainEqual(
+			expect.objectContaining({ accelerator: "Ctrl+-", role: "zoomOut" }),
+		);
+	});
+
+	it("uses a guarded click handler for DevTools when provided", () => {
+		const onToggleDevTools = vi.fn();
+		const template = buildLinuxAppMenuTemplate(onToggleDevTools);
+		const devtoolsItem = viewSubmenu(template).find(
+			(item) => item.label === "Toggle DevTools",
+		);
+
+		expect(devtoolsItem).toMatchObject({
+			accelerator: "Ctrl+Shift+I",
+			label: "Toggle DevTools",
+		});
+		devtoolsItem?.click?.(undefined as never, undefined as never, undefined as never);
+		expect(onToggleDevTools).toHaveBeenCalledOnce();
+	});
+});
+
 
 describe("buildMacAppMenuTemplate", () => {
 	function macViewSubmenu(onToggleDevTools = () => undefined): readonly SubmenuItem[] {

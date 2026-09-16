@@ -266,6 +266,9 @@ if (typeof window !== "undefined") {
 			}),
 			destroy: () => undefined,
 			setAnnotationMode: async () => undefined,
+			completeAnnotation: async () => undefined,
+			discardAnnotations: async () => undefined,
+			annotationAction: async () => undefined,
 			onNavState: () => () => undefined,
 			onPageFocus: () => () => undefined,
 			onTabsState: () => () => undefined,
@@ -275,6 +278,7 @@ if (typeof window !== "undefined") {
 			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+			onAnnotationState: () => () => undefined,
 		},
 		browserProfiles: {
 			list: async () => ({ profiles: [] }),

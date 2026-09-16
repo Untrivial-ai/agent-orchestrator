@@ -8,6 +8,14 @@ import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBa
 // that teaches readers to ignore the row.
 
 describe("ReauthBanner", () => {
+	it.each(["Unauthorized (401)", "Authentication failed", "OAuth token has been revoked"])(
+		"offers sign-in based on account state for %s",
+		(reason) => {
+			render(<ReauthBanner account={{ reauthRequiredAt: "2026-09-14T00:00:00Z", reauthReason: reason }} harness="claude-code" />);
+			expect(screen.getByRole("alert")).toHaveTextContent(reason);
+			expect(screen.getByText("claude auth login")).toBeInTheDocument();
+		},
+	);
 	it("names the command, because re-authenticating is not something AO can do", () => {
 		render(
 			<ReauthBanner

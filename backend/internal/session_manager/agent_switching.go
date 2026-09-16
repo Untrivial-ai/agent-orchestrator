@@ -241,9 +241,6 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 	if !ok {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrNotFound)
 	}
-	if (rec.Harness == domain.HarnessCodex || cfg.TargetHarness == domain.HarnessCodex) && m.codexAccountSwitchIsActive() {
-		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if rec.IsTerminated {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrTerminated)
 	}
