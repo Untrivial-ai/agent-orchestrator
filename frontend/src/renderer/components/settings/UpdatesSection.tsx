@@ -547,7 +547,9 @@ function UpdateActions({
 				aria-live="polite"
 				aria-atomic="true"
 				aria-busy={checking}
-				className="flex min-w-0 flex-col gap-1"
+				// Keep the status slot's height while the button owns the checking
+				// feedback, so notices and last-checked metadata below do not jump up.
+				className="flex min-h-5 min-w-0 flex-col gap-1"
 			>
 				{showStatusState && <UpdateStatusLine state={displayState} status={status} />}
 				{status.state === "downloading" && status.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={status.percent} className="h-1 w-full" />}

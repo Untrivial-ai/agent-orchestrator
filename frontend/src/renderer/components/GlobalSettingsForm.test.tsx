@@ -498,6 +498,7 @@ describe("GlobalSettingsForm", () => {
 		const statusLine = screen.getByTestId("update-status-line");
 		expect(statusLine).not.toHaveTextContent("Checking for updates…");
 		expect(statusLine.querySelector("svg")).toBeNull();
+		expect(statusLine).toHaveClass("min-h-5");
 
 		act(() => finishCheck());
 		await waitFor(() => expect(button).toBeEnabled(), { timeout: 1_500 });
