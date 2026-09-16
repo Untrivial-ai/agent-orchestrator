@@ -126,8 +126,11 @@ const ShellCenter = memo(function ShellCenter({
 	selfFramedCenterPanel: boolean;
 }) {
 	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
-	// macOS and Linux both use frameless session chrome. Windows supplies its
-	// own drag region through WindowTitlebar.
+	// Only frameless session chrome needs this strip. On macOS and Linux the
+	// session tabs sit flush against the top edge with no OS titlebar, so without
+	// it there is no window-drag target. Windows must stay excluded: WindowTitlebar
+	// already paints a full-width drag region above every route, and adding the
+	// strip there would duplicate that region and leave a dead 8px band below it.
 	const draggableSessionFrame = isSessionRoute && !isWindows;
 	if (hideShellTopbar) {
 		return selfFramedCenterPanel ? (
