@@ -2,62 +2,84 @@ package zcode
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 
-// AuthStatus returns the plugin's local authentication status. ZCode stores
-// provider credentials (apiKey) in the user-global ~/.zcode/cli/config.json;
-// only the structure is inspected — that at least one provider entry carries
-// a non-empty options.apiKey — never the key values themselves.
+// AuthStatus returns the plugin's local authentication status.
+//
+// The credential that actually governs model access is zcode's OAuth token in
+// ~/.zcode/v2/credentials.json (the apiKey strings in cli/config.json stay
+// populated even after the OAuth session expires). The access token is a JWT;
+// its exp claim is decoded locally — no network call, no signature
+// verification (expiry is a sufficient local signal; the daemon rejects
+// stale tokens on first real use anyway).
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := zcodeLocalAuthStatus(); err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
-	}
-	return ports.AgentAuthStatusUnknown, nil
+	return zcodeCredentialsAuthStatus(), nil
 }
 
-func zcodeLocalAuthStatus() (ports.AgentAuthStatus, bool, error) {
+func zcodeCredentialsAuthStatus() ports.AgentAuthStatus {
 	zcodeHome, err := zcodeConfigDir()
 	if err != nil || zcodeHome == "" {
-		return ports.AgentAuthStatusUnknown, false, err
+		return ports.AgentAuthStatusUnknown
 	}
-	path := filepath.Join(zcodeHome, "cli", "config.json")
-	data, err := os.ReadFile(path) //nolint:gosec // fixed user-config path
+	data, err := os.ReadFile(filepath.Join(zcodeHome, "v2", "credentials.json")) //nolint:gosec // fixed user-credentials path
 	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
+		return ports.AgentAuthStatusUnauthorized
 	}
 	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+		return ports.AgentAuthStatusUnknown
 	}
 
-	var config struct {
-		Provider map[string]struct {
-			Options struct {
-				APIKey string `json:"apiKey"`
-			} `json:"options"`
-		} `json:"provider"`
+	var creds struct {
+		OAuthZaiAccessToken string `json:"oauth:zai:access_token"`
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return ports.AgentAuthStatusUnknown
 	}
-	// This is a structural inspection only: a persisted apiKey string proves
-	// the credential exists on disk, not that it is valid. zcode's OAuth
-	// tokens can expire while remaining in config.json (observed live), and
-	// reporting "authorized" on a stale key misleads spawn decisions. Report
-	// unknown; a bounded native auth probe can upgrade this when zcode
-	// grows one.
-	return ports.AgentAuthStatusUnknown, false, nil
+	token := strings.TrimSpace(creds.OAuthZaiAccessToken)
+	if token == "" {
+		return ports.AgentAuthStatusUnauthorized
+	}
+	exp, ok := jwtExpiry(token)
+	if !ok {
+		return ports.AgentAuthStatusUnknown
+	}
+	if time.Now().After(time.Unix(exp, 0)) {
+		return ports.AgentAuthStatusUnauthorized
+	}
+	return ports.AgentAuthStatusAuthorized
+}
+
+// jwtExpiry decodes the unverified exp claim of a JWT. It returns ok=false
+// for malformed tokens rather than guessing.
+func jwtExpiry(token string) (int64, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return 0, false
+	}
+	return claims.Exp, true
 }
 
 func zcodeConfigDir() (string, error) {

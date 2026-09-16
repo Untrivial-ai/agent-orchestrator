@@ -2,79 +2,109 @@ package zcode
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestAuthStatusStructuralOnly(t *testing.T) {
-	// A persisted apiKey proves the credential exists on disk, not that it is
-	// valid — zcode OAuth tokens expire while remaining in config.json
-	// (observed live). The checker must report unknown, never authorized.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeZcodeConfig(t, filepath.Join(home, ".zcode", "cli", "config.json"), `{
-		"provider": {
-			"builtin:zai-coding-plan": {
-				"kind": "anthropic",
-				"options": {"apiKey": "redacted-not-read"}
-			}
-		}
-	}`)
-	plugin := &Plugin{resolvedBinary: "zcode"}
-	status, err := plugin.AuthStatus(context.Background())
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = %q, want unknown (structural inspection cannot prove authorization)", status)
-	}
-}
-
-func TestAuthStatusUnknownWithoutConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	plugin := &Plugin{resolvedBinary: "zcode"}
-	status, err := plugin.AuthStatus(context.Background())
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = %q, want unknown", status)
-	}
-}
-
-func TestAuthStatusUnknownWithEmptyProviders(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeZcodeConfig(t, filepath.Join(home, ".zcode", "cli", "config.json"), `{
-		"provider": {
-			"builtin:zai-coding-plan": {
-				"kind": "anthropic",
-				"options": {}
-			}
-		},
-		"model": {"main": "builtin:zai-coding-plan/GLM-5.3-Flash"}
-	}`)
-	plugin := &Plugin{resolvedBinary: "zcode"}
-	status, err := plugin.AuthStatus(context.Background())
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = %q, want unknown (model config is not auth)", status)
-	}
-}
-
-func writeZcodeConfig(t *testing.T, path, content string) {
+func writeZcodeCredentials(t *testing.T, home, body string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+	dir := filepath.Join(home, ".zcode", "v2")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir credentials dir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(strings.TrimSpace(content)), 0o600); err != nil {
-		t.Fatal(err)
+	if err := os.WriteFile(filepath.Join(dir, "credentials.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+}
+
+// testJWT builds a minimal unsigned JWT with the given exp claim.
+func testJWT(t *testing.T, exp int64) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": "none", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	claims, err := json.Marshal(map[string]any{"exp": exp})
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	enc := base64.RawURLEncoding
+	return enc.EncodeToString(header) + "." + enc.EncodeToString(claims) + ".sig"
+}
+
+func TestAuthStatusAuthorizedWithUnexpiredToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeZcodeCredentials(t, home, `{"oauth:zai:access_token": "`+testJWT(t, time.Now().Add(time.Hour).Unix())+`"}`)
+	plugin := &Plugin{resolvedBinary: "zcode"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want authorized", status)
+	}
+}
+
+func TestAuthStatusUnauthorizedWithExpiredToken(t *testing.T) {
+	// The live incident: OAuth expired while apiKey strings stayed in
+	// cli/config.json. The checker must read the real credential's exp.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeZcodeCredentials(t, home, `{"oauth:zai:access_token": "`+testJWT(t, time.Now().Add(-time.Hour).Unix())+`"}`)
+	plugin := &Plugin{resolvedBinary: "zcode"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("status = %q, want unauthorized", status)
+	}
+}
+
+func TestAuthStatusUnauthorizedWithoutCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plugin := &Plugin{resolvedBinary: "zcode"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("status = %q, want unauthorized", status)
+	}
+}
+
+func TestAuthStatusUnauthorizedWithEmptyToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeZcodeCredentials(t, home, `{"oauth:zai:access_token": ""}`)
+	plugin := &Plugin{resolvedBinary: "zcode"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("status = %q, want unauthorized", status)
+	}
+}
+
+func TestAuthStatusUnknownWithMalformedToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeZcodeCredentials(t, home, `{"oauth:zai:access_token": "not-a-jwt"}`)
+	plugin := &Plugin{resolvedBinary: "zcode"}
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want unknown (malformed token is not evidence either way)", status)
 	}
 }

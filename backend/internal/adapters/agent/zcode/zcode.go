@@ -12,9 +12,12 @@
 // with `--resume <sessionId>`.
 //
 // ZCode's hook, skill, and plugin configuration lives in the user-global
-// ~/.zcode/cli/config.json — including provider credentials — and ZCode 0.16.5
-// has no workspace-scoped hook file. AO therefore installs no hooks; session
-// metadata is only surfaced when it already exists under the normalized keys.
+// ~/.zcode/cli/config.json — including provider credentials. ZCode does
+// support workspace-scoped hook files (<workspace>/zcode.json or
+// <workspace>/.zcode/config.json), but it gates them behind an interactive
+// workspace-hook trust review that an orchestrator cannot complete
+// unattended. AO therefore installs no hooks; session metadata is only
+// surfaced when it already exists under the normalized keys.
 //
 // Model selection is pinned in ZCode's own config (model.main); zcode 0.16.5
 // exposes no --model launch flag. Users can still pin the permission mode
@@ -124,16 +127,21 @@ func (p *Plugin) GetPromptDeliveryStrategy(ctx context.Context, _ ports.LaunchCo
 }
 
 // PromptReadinessHints waits for ZCode's composer before AO injects the
-// worker's first task. The pattern is the empty composer's placeholder text in
-// the shipped @zcode/tui bundle (verified against 0.16.5). Timeout falls back
-// to delivery so a changed placeholder cannot permanently block spawning.
+// worker's first task. Patterns are any-match terminal lines: the empty
+// composer's welcome banner from the @zcode/tui bundle and the always-on
+// footer, so a localized or content-carrying UI still matches (the banner
+// only mounts for an empty session). Timeout falls back to delivery so a
+// changed placeholder cannot permanently block spawning.
 func (p *Plugin) PromptReadinessHints(ctx context.Context, _ ports.LaunchConfig) (ports.PromptReadinessHints, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.PromptReadinessHints{}, err
 	}
 	return ports.PromptReadinessHints{
 		InitialDelay: 750 * time.Millisecond,
-		Patterns:     []string{"Ask a task about this workspace"},
+		// "Ask a task about this workspace" is a hardcoded (non-localized)
+		// English literal in SessionWelcome.render; "/help commands" is the
+		// persistent footer. Either matching is sufficient.
+		Patterns:     []string{"Ask a task about this workspace", "/help commands"},
 		PollInterval: 200 * time.Millisecond,
 		Timeout:      10 * time.Second,
 		Lines:        80,
@@ -239,15 +247,15 @@ func appendModeFlags(cmd *[]string, permissions ports.PermissionMode, configMode
 }
 
 // appendDisallowedTools emits the deny list as a single comma-joined
-// --disallowed-tools value, matching the flag's documented "comma or
-// space-separated list" syntax. Zcode 0.16.5 has no --allowed-tools flag, so
-// allow lists are not forwarded. A rule containing a comma is rejected: the
-// comma is the list separator, so a literal comma would silently split the
-// rule and weaken the deny list.
+// --disallowed-tools value. Zcode 0.16.5 has no --allowed-tools flag, so
+// allow lists are not forwarded. A rule containing a comma or whitespace is
+// rejected: the flag's parser splits on BOTH separators ("Comma or
+// space-separated list"), so a literal separator inside a rule would
+// silently split it and weaken the deny list.
 func appendDisallowedTools(cmd *[]string, disallowed []string) error {
 	for _, rule := range disallowed {
-		if strings.Contains(rule, ",") {
-			return fmt.Errorf("zcode: disallowed tool rule %q contains a comma; tool rules are comma-joined into a single flag value so a literal comma would silently split the rule", rule)
+		if strings.ContainsAny(rule, ", 	") {
+			return fmt.Errorf("zcode: disallowed tool rule %q contains a comma or whitespace; tool rules are joined into a single flag value whose parser splits on both, so a literal separator would silently split the rule", rule)
 		}
 	}
 	if len(disallowed) > 0 {

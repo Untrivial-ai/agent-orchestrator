@@ -65,7 +65,7 @@ func TestPromptReadinessHints(t *testing.T) {
 	if hints.InitialDelay != 750*time.Millisecond || hints.PollInterval != 200*time.Millisecond || hints.Timeout != 10*time.Second || hints.Lines != 80 {
 		t.Fatalf("hints = %#v", hints)
 	}
-	if !reflect.DeepEqual(hints.Patterns, []string{"Ask a task about this workspace"}) {
+	if !reflect.DeepEqual(hints.Patterns, []string{"Ask a task about this workspace", "/help commands"}) {
 		t.Fatalf("patterns = %#v, want the shipped composer placeholder", hints.Patterns)
 	}
 }
@@ -136,12 +136,12 @@ func TestGetLaunchCommandForwardsDisallowedTools(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "zcode"}
 	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		Prompt:          "fix it",
-		DisallowedTools: []string{"Bash(git push *)", "WebFetch"},
+		DisallowedTools: []string{"Bash(git-push*)", "WebFetch"},
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	want := []string{"zcode", "--disallowed-tools", "Bash(git push *),WebFetch"}
+	want := []string{"zcode", "--disallowed-tools", "Bash(git-push*),WebFetch"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
