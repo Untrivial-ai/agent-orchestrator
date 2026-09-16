@@ -5184,3 +5184,92 @@ func TestEmitTelemetryStampsRequestID(t *testing.T) {
 		})
 	}
 }
+
+// TestRuntimeObservation_OrchestratorRequiresConsecutiveDeadProbes is the
+// focused regression test for #2501's first root cause: a single stale idle +
+// ProbeDead sample must not silently end a long-running orchestrator session.
+// Orchestrators require two consecutive dead readings; workers still terminate
+// after one, and an intervening alive probe resets the counter entirely.
+func TestRuntimeObservation_OrchestratorRequiresConsecutiveDeadProbes(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	staleIdle := domain.Activity{
+		State:          domain.ActivityIdle,
+		LastActivityAt: now.Add(-90 * time.Second),
+	}
+
+	cases := []struct {
+		name  string
+		kind  domain.SessionKind
+		steps []ports.RuntimeFacts
+		want  bool
+	}{
+		{
+			name: "orchestrator one stale dead sample does not terminate",
+			kind: domain.KindOrchestrator,
+			steps: []ports.RuntimeFacts{
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+			},
+			want: false,
+		},
+		{
+			name: "orchestrator two consecutive stale dead samples terminate",
+			kind: domain.KindOrchestrator,
+			steps: []ports.RuntimeFacts{
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now.Add(5 * time.Second)},
+			},
+			want: true,
+		},
+		{
+			name: "orchestrator dead then alive then dead resets the counter",
+			kind: domain.KindOrchestrator,
+			steps: []ports.RuntimeFacts{
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+				{Runtime: ports.ProbeAlive, LaunchID: "launch-1", ObservedAt: now.Add(5 * time.Second)},
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now.Add(10 * time.Second)},
+			},
+			want: false,
+		},
+		{
+			name: "orchestrator dead then alive with recent activity resets the counter",
+			kind: domain.KindOrchestrator,
+			steps: []ports.RuntimeFacts{
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+				{Runtime: ports.ProbeAlive, Workload: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now.Add(5 * time.Second)},
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now.Add(10 * time.Second)},
+			},
+			want: false,
+		},
+		{
+			name: "worker one stale dead sample terminates immediately",
+			kind: domain.KindWorker,
+			steps: []ports.RuntimeFacts{
+				{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _ := newManager()
+			m.clock = func() time.Time { return now }
+			rec := working("mer-1")
+			rec.Kind = tc.kind
+			rec.Activity = staleIdle
+			rec.Metadata.RuntimeLaunchID = "launch-1"
+			st.sessions["mer-1"] = rec
+
+			var lastErr error
+			for _, step := range tc.steps {
+				lastErr = m.ApplyRuntimeObservation(ctx, "mer-1", step)
+			}
+			if lastErr != nil {
+				t.Fatalf("ApplyRuntimeObservation: %v", lastErr)
+			}
+			if got := st.sessions["mer-1"].IsTerminated; got != tc.want {
+				t.Fatalf("IsTerminated = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

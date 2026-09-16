@@ -264,6 +264,14 @@ type Manager struct {
 	// adapter via WithUrgentNudgeGate; the default answers false, so an unknown
 	// harness never takes an urgent write while waiting_input.
 	urgentNudgeWaitingInputSafe func(domain.AgentHarness) bool
+	// consecutiveDeadProbes tracks, per session, how many reaper observations in a
+	// row reported ProbeDead alongside a stale-activity window. The count is
+	// reset to zero on any non-dead probe or a launch mismatch. Orchestrator-kind
+	// sessions require two consecutive dead readings before the reaper path is
+	// allowed to flip IsTerminated; every other kind keeps the historical
+	// single-sample verdict so short-lived workers are not artificially prolonged.
+	// The counter is memory only: a daemon restart clears it. Guarded by mu.
+	consecutiveDeadProbes map[domain.SessionID]int
 }
 
 // New builds a Lifecycle Manager over the session store it writes and the messenger it uses for agent nudges.
@@ -280,6 +288,7 @@ func New(store sessionStore, messenger ports.AgentMessenger, opts ...Option) *Ma
 		react:                       newReactionState(),
 		flights:                     map[domain.SessionID]*toolFlight{},
 		pendingLaunches:             map[domain.SessionID]pendingLaunch{},
+		consecutiveDeadProbes:       map[domain.SessionID]int{},
 		steerActive:                 func(domain.AgentHarness) bool { return false },
 		startupSignalGatesInput:     func(domain.AgentHarness) bool { return false },
 		urgentNudgeWaitingInputSafe: func(domain.AgentHarness) bool { return false },
@@ -447,10 +456,12 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 	)
 	if err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
 		if cur.IsTerminated || !matchesLaunch(cur) {
+			delete(m.consecutiveDeadProbes, id)
 			return cur, false
 		}
 		currentLaunch := cur.Metadata.RuntimeLaunchID
 		if currentLaunch != "" && f.Runtime == ports.ProbeAlive && f.Workload == ports.ProbeDead {
+			delete(m.consecutiveDeadProbes, id)
 			if cur.Activity.State == domain.ActivityExited {
 				return cur, false
 			}
@@ -460,9 +471,14 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 			return next, true
 		}
 		if !runtimeClearlyDead(f, cur.Activity, now, m.window) {
+			delete(m.consecutiveDeadProbes, id)
 			return cur, false
 		}
 		if m.sessionMutationInProgress(id) {
+			return cur, false
+		}
+		m.consecutiveDeadProbes[id]++
+		if cur.Kind == domain.KindOrchestrator && m.consecutiveDeadProbes[id] < orchestratorDeadProbeThreshold {
 			return cur, false
 		}
 		finalizer = m.usageFinalizer
@@ -492,6 +508,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		// (later observations return early on cur.IsTerminated). Runs under
 		// m.mu — mutate holds it across this callback.
 		delete(m.flights, id)
+		delete(m.consecutiveDeadProbes, id)
 		terminated = true
 		return next, true
 	})
@@ -513,6 +530,16 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 // number of times so the signal is reduced against the facts that actually won
 // instead of overwriting them with a stale full projection.
 const maxActivitySignalProjectionRetries = 3
+
+// orchestratorDeadProbeThreshold is the number of consecutive ProbeDead
+// observations that must land for an orchestrator-kind session before the
+// reaper path is allowed to flip IsTerminated. Worker and other session kinds
+// keep the historical single-sample verdict: their lifetimes are short and a
+// false-negative stuck session is worse than a spurious termination. Orchestrators
+// are long-lived, high-value, and mid-turn tool calls produce no AO-visible
+// signal between hook boundaries; a transient tmux glitch that reads as dead
+// for one sample must not silently end a multi-day session.
+const orchestratorDeadProbeThreshold = 2
 
 // ApplyActivitySignal records an authoritative agent activity signal and any
 // native agent session id carried alongside it. Metadata-only hooks leave the
