@@ -9,7 +9,7 @@ AO already tears down eligible workspaces for terminated sessions, but the curre
 
 This change adds an explicit **Remove** action to archived session cards and an opt-in automatic cleanup policy. Clean archived worktrees are removed through the daemon's existing workspace adapter. Dirty worktrees keep all source changes, but AO may remove validated, regenerable `node_modules` directories after the retention period. AO reports orphaned storage instead of silently deleting unverifiable source trees.
 
-The archived session record, conversation history, and branch remain available. Restoring an archived session recreates its workspace through the existing restore path.
+Before removing a complete worktree, AO creates or verifies a durable Git recovery ref using the existing `session_worktrees.preserved_ref` boundary. The archived session record, conversation history, and recovery ref remain available. Restoring an archived session recreates its workspace through the existing restore path.
 
 ## Terminology
 
@@ -55,6 +55,7 @@ The existing behavior is safe but incomplete as storage management:
 4. **Orphans are invisible.** Directories that no longer map to a valid session/worktree record are outside the current session-cleanup candidate set.
 5. **Cleanup reporting is operational, not storage-oriented.** Users cannot see the logical bytes removed, remaining storage, or why a large directory survived.
 6. **Logical size differs from physical space.** APFS clones, hard links, and shared objects mean deleting 10 GiB reported by `du` may increase free disk space by much less. AO must not promise exact physical bytes reclaimed.
+7. **Recovery is not a visible contract.** AO has preserved-ref machinery, but cleanup does not currently present a user-facing guarantee that a removed archived workspace has a verified recovery point before its files disappear.
 
 The local cleanup that motivated this design demonstrated the gap: `~/.ao` fell from roughly 22 GiB to 11 GiB only after combining whole-worktree removal with dependency pruning in preserved dirty/orphaned worktrees.
 
@@ -66,7 +67,7 @@ The local cleanup that motivated this design demonstrated the gap: `~/.ao` fell 
 - Preserve uncommitted source changes while reclaiming regenerable dependencies.
 - Exclude running, non-terminated, pinned, locked, and otherwise unsafe workspaces.
 - Surface orphaned storage and cleanup outcomes clearly.
-- Keep archived session history and restore capability.
+- Keep archived session history and restore capability through a durable recovery ref.
 
 ## Non-goals
 
@@ -85,12 +86,34 @@ Each archived session card gains a button labeled **Remove** beside Restore.
 
 Selecting Remove opens a confirmation dialog based on a daemon-provided preview:
 
-- **Clean workspace:** explain that AO will remove the local worktree, including dependencies and build output, while preserving the branch, session, and conversation history.
+- **Clean workspace:** explain that AO will save a recovery point and remove the local worktree, including dependencies and build output, while preserving the session and conversation history.
 - **Dirty workspace:** explain that AO cannot remove source files with uncommitted changes and will remove only validated `node_modules` directories.
 - **Already removed:** show the card as having no local workspace and do not offer another destructive action.
 - **Locked or in use:** disable confirmation and show the reason.
 
 After a successful removal, the card remains in Archive and displays **Workspace removed**. Restore remains available and recreates the workspace using the existing restore path.
+
+### Recovery snapshot and restore contract
+
+AO follows the same core safety idea documented by Codex: removing a managed worktree must not remove the associated session's recoverability.
+
+Before complete worktree removal, the daemon must:
+
+1. Resolve the exact checked-out commit.
+2. Create or update a durable AO-owned recovery ref and persist it in `session_worktrees.preserved_ref`.
+3. Verify that the ref resolves to the expected commit.
+4. Only then invoke the workspace reclaimer.
+
+If any recovery-ref step fails, cleanup is blocked. AO does not delete the worktree and returns `recovery_snapshot_failed`.
+
+Restore recreates the worktree from the preserved ref, then relaunches the session using the existing provider/session metadata. Dependencies such as `node_modules` are regenerable and are not part of the recovery snapshot. A project setup command or explicit package-manager install restores them when needed.
+
+Dirty worktrees are never removed completely, so their uncommitted source remains on disk. Dependency-only pruning does not change tracked or untracked source files.
+
+**Remove** and a future **Delete session** action remain separate:
+
+- **Remove:** reclaims workspace storage while retaining session history and recovery metadata.
+- **Delete session:** would permanently remove the session/history and is outside this design. If added later, it should use a recoverable trash period rather than sharing Remove's endpoint or copy.
 
 ### Automatic cleanup policy
 
@@ -129,6 +152,20 @@ Add a durable session termination timestamp rather than deriving retention from 
 
 Filesystem mtimes are not authoritative because dependency installs and Git maintenance can change them without representing user activity.
 
+The retention calculation is:
+
+```text
+cleanup_eligible_at = terminated_at + 14 days
+eligible = automatic_cleanup_enabled
+  AND is_terminated
+  AND now_utc >= cleanup_eligible_at
+  AND NOT is_pinned
+```
+
+Runtime, terminal, lock, ownership, dirtiness, and recovery-ref checks still run after the database candidate query and immediately before mutation. A failed or unknown runtime probe never proves that a session is safe to delete.
+
+Persist `last_cleanup_at`, `last_cleanup_outcome`, and the next retry time for blocked/transient outcomes. The daily sweep does not repeatedly rescan dependency trees that were already pruned successfully. Pinning blocks cleanup without resetting `terminated_at`; if the user later unpins an already-eligible session, the next sweep evaluates it immediately.
+
 ### Dependency pruning safety
 
 Dependency pruning is deliberately narrow:
@@ -153,6 +190,22 @@ The daemon scans only configured AO worktree roots and compares directories agai
 
 This keeps orphan handling visible without weakening the existing no-force-delete rule.
 
+## What AO learns from other products
+
+The comparison below reflects current public documentation and, for T3 Code, its public source at commit `ccf220be205f0e509021dbc8cbda90daa638e20d`.
+
+| Product | Observed behavior | AO adopts | AO deliberately does not copy |
+| --- | --- | --- | --- |
+| [Codex](https://learn.chatgpt.com/docs/environments/git-worktrees) | Keeps the most recent 15 managed worktrees by default, allows the limit or automatic deletion to be changed, protects pinned/in-progress/permanent worktrees, deletes a managed worktree when its chat is archived or the cap is exceeded, and saves a snapshot that can be restored. | Snapshot/recovery ref before removal; protect pinned and running work; keep session history separate from workspace files; keep a visible Restore path. | Immediate deletion merely because a chat is archived. AO retains its lifecycle cleanup and adds the more conservative 14-day fallback policy. |
+| [Cursor 3.5+](https://cursor.com/docs/configuration/worktrees) | Runs periodic cleanup, catches up after restart, and keeps a configurable machine-wide maximum (25 by default). It also exposes an explicit `/delete-worktree` action. Cursor's cloud-agent API separates reversible [Archive](https://cursor.com/docs/cloud-agent/api/endpoints.md#archive-an-agent) from irreversible [Delete](https://cursor.com/docs/cloud-agent/api/endpoints.md#delete-an-agent-permanently). | Daemon-owned periodic scheduling with restart catch-up; explicit per-workspace Remove action; clear separation between reversible archive/removal and permanent session deletion. | Treating arbitrary externally-created worktrees as automatic-deletion candidates. AO automatically mutates only AO-owned, durably matched worktrees. A count cap is deferred until age-based cleanup is validated. |
+| [T3 Code](https://github.com/pingdotgg/t3code/blob/ccf220be205f0e509021dbc8cbda90daa638e20d/apps/web/src/hooks/useThreadActions.ts) | Settle/archive keeps the conversation and is reversible. Delete permanently clears conversation history. When the deleted thread is the sole owner of a worktree, T3 asks whether to delete that worktree too; shared worktrees are excluded. Its current cleanup call uses forced worktree removal and reports cleanup failure separately after thread deletion. | Detect shared ownership; keep archive/remove/delete as distinct user concepts; report workspace-cleanup failure separately and truthfully. | Forced deletion and coupling worktree cleanup to irreversible conversation deletion. AO never force-deletes dirty worktrees. |
+
+### Product decisions for AO
+
+1. **Adopt now:** durable recovery ref, Remove button, 14-day opt-in sweep, restart catch-up, pinned/running/locked/shared protections, dependency-only pruning for dirty worktrees, and outcome reporting.
+2. **Consider later:** an optional maximum managed-worktree count, after age-based cleanup has shipped and its safety data is understood.
+3. **Reject:** automatic deletion of arbitrary external worktrees, forced dirty-worktree removal, or permanent session deletion hidden behind the Remove action.
+
 ## API changes
 
 Add daemon-owned operations; the frontend must not access the filesystem directly.
@@ -167,7 +220,8 @@ Response includes:
 - cleanup mode: `remove_workspace`, `prune_dependencies`, `already_removed`, or `blocked`;
 - logical workspace bytes;
 - logical dependency bytes;
-- dirty, locked, pinned, and in-use indicators.
+- dirty, locked, pinned, shared, and in-use indicators;
+- recovery-ref status and whether Restore will remain available.
 
 ### Remove one archived workspace
 
@@ -180,6 +234,7 @@ Response includes:
 - outcome;
 - logical bytes removed;
 - workspace disposition;
+- verified recovery ref for complete workspace removal;
 - a stable skip/error code suitable for UI copy.
 
 The existing batch endpoint remains for CLI compatibility. Its implementation should share the same candidate evaluation and execution service as the new per-session endpoint and automatic worker.
@@ -189,8 +244,9 @@ The existing batch endpoint remains for CLI compatibility. Its implementation sh
 Persist:
 
 - `automaticArchivedWorkspaceCleanupEnabled` (default `false`);
+- `terminated_at` on sessions;
 - the last completed sweep timestamp;
-- per-session cleanup outcome and logical bytes removed.
+- per-session `last_cleanup_at`, cleanup outcome, retry time, logical bytes removed, and recovery-ref evidence.
 
 The initial retention period is fixed at 14 days. A configurable duration can be added later if users need it.
 
@@ -199,10 +255,11 @@ The initial retention period is fixed at 14 days. A configurable duration can be
 Keep policy and filesystem ownership in the daemon:
 
 1. A cleanup-candidate evaluator reads durable session/worktree facts and produces a reasoned preview.
-2. A cleanup executor performs either normal workspace teardown or dependency pruning.
-3. Manual single-session, manual batch, and scheduled cleanup call the same evaluator/executor.
-4. The scheduler invokes the service on startup and daily when enabled.
-5. SQLite records durable timestamps, settings, and outcomes; filesystem scans do not become an alternative source of session truth.
+2. A recovery-ref service creates and verifies the durable restore point before complete workspace teardown.
+3. A cleanup executor performs either normal workspace teardown or dependency pruning.
+4. Manual single-session, manual batch, and scheduled cleanup call the same evaluator/recovery/executor path.
+5. The scheduler invokes the service on startup and daily when enabled, with durable last-run catch-up behavior.
+6. SQLite records durable timestamps, settings, outcomes, and recovery evidence; filesystem scans do not become an alternative source of session truth.
 
 The existing `ports.WorkspaceReclaimer` remains the boundary for complete worktree removal. Dependency pruning should be added as an explicit workspace capability rather than implemented in an HTTP controller or Electron.
 
@@ -230,7 +287,9 @@ Backend tests cover:
 
 - 14-day boundary and termination timestamp reset on restore;
 - clean, dirty, locked, pinned, in-use, missing, and malformed workspaces;
+- shared-worktree ownership exclusion;
 - symlink/path-containment attacks;
+- recovery-ref creation, verification failure, and restore after removal;
 - whole-worktree removal and dependency-only pruning;
 - startup/daily scheduling and disabled-by-default behavior;
 - per-session and batch endpoint parity;
@@ -249,15 +308,17 @@ Frontend tests cover:
 ## Rollout
 
 1. Ship the manual per-session Remove action and improved result reporting.
-2. Ship the automatic worker behind an opt-in setting, default off.
-3. Observe skip/failure categories locally through structured diagnostics.
-4. Consider enabling the policy by default only after the safety behavior has been validated in real installations.
+2. Require verified recovery refs before complete worktree removal.
+3. Ship the automatic worker behind an opt-in setting, default off.
+4. Observe skip/failure categories locally through structured diagnostics.
+5. Consider a configurable count cap or enabling age-based cleanup by default only after the safety behavior has been validated in real installations.
 
 ## Decisions captured
 
 - The archived-card action is named **Remove**.
 - Remove reclaims workspace storage; it does not delete session history.
+- Complete removal requires a verified durable recovery ref and retains Restore.
 - Clean terminated worktrees may be removed completely.
 - Dirty worktrees retain source changes and may have only `node_modules` pruned.
 - Automatic cleanup uses a 14-day terminated retention period and is initially opt-in.
-- Active, pinned, locked, and unverifiable workspaces are never automatically deleted.
+- Active, pinned, locked, shared, and unverifiable workspaces are never automatically deleted.
