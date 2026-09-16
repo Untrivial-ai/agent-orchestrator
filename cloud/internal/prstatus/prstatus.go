@@ -34,8 +34,7 @@ const DefaultInterval = 30 * time.Second
 
 // Scanner periodically refreshes every open pull request's status.
 type Scanner struct {
-	store   Store
-	github  GitHub
+	scan    func(context.Context) error
 	options Options
 	log     *slog.Logger
 }
@@ -48,7 +47,22 @@ func New(store Store, github GitHub, options Options) *Scanner {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	return &Scanner{store: store, github: github, options: options, log: options.Logger}
+	scanner := &Scanner{options: options, log: options.Logger}
+	scanner.scan = func(ctx context.Context) error { return scanOpenPullRequests(ctx, store, github, scanner.log) }
+	return scanner
+}
+
+// NewFunc creates a scanner that runs scan on the same schedule. It carries
+// trackers, such as the PAT pull request tracker, that are not shaped as a
+// Store/GitHub pair.
+func NewFunc(scan func(context.Context) error, options Options) *Scanner {
+	if options.Interval <= 0 {
+		options.Interval = DefaultInterval
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
+	return &Scanner{scan: scan, options: options, log: options.Logger}
 }
 
 // Run scans on Options.Interval until ctx is canceled.
@@ -70,15 +84,20 @@ func (s *Scanner) Run(ctx context.Context) error {
 	}
 }
 
-// ScanOnce refreshes every currently open pull request once.
+// ScanOnce runs one scan.
 func (s *Scanner) ScanOnce(ctx context.Context) error {
-	refs, err := s.store.OpenPullRequestRefs(ctx)
+	return s.scan(ctx)
+}
+
+// scanOpenPullRequests refreshes every currently open pull request once.
+func scanOpenPullRequests(ctx context.Context, store Store, github GitHub, log *slog.Logger) error {
+	refs, err := store.OpenPullRequestRefs(ctx)
 	if err != nil {
 		return err
 	}
 	for _, ref := range refs {
-		if _, err := s.github.RefreshPullRequestStatus(ctx, ref); err != nil {
-			s.log.Error("pull request status refresh failed",
+		if _, err := github.RefreshPullRequestStatus(ctx, ref); err != nil {
+			log.Error("pull request status refresh failed",
 				"pull_request_id", ref.ID, "org_id", ref.OrgID, "err", err)
 			continue
 		}

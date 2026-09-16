@@ -56,6 +56,16 @@ type PullRequestRef struct {
 	Number     int
 }
 
+// PullRequestTrackingSession is a live session whose branch the PAT pull
+// request tracker watches. Active is false for a paused or stopped sandbox: its
+// tracked PRs still refresh, but no new PR can be opened from it.
+type PullRequestTrackingSession struct {
+	OrgID     string
+	SessionID string
+	Branch    string
+	Active    bool
+}
+
 // PullRequestObservation is a freshly fetched lifecycle and status snapshot.
 type PullRequestObservation struct {
 	State        contract.PRState

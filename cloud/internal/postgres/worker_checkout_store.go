@@ -84,47 +84,75 @@ func (s *Store) WorkerGitHubPAT(
 		if err := requireCurrentWorker(ctx, tx, orgID, sessionID, workerID, epoch); err != nil {
 			return err
 		}
-		var ownerUserID *string
-		if err := tx.QueryRow(ctx,
-			`SELECT project.repository_url, session.created_by_user_id::text
-			FROM ao_sessions session
-			JOIN ao_projects project
-			  ON project.org_id = session.org_id AND project.id = session.project_id
-			WHERE session.org_id = $1 AND session.id = $2
-			  AND session.is_terminated = false`,
-			orgID, sessionID,
-		).Scan(&credential.CloneURL, &ownerUserID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound
-			}
-			return fmt.Errorf("resolve worker GitHub repository: %w", err)
-		}
-		if ownerUserID == nil {
-			return ErrNotFound
-		}
-		credential.OwnerUserID = *ownerUserID
-		if _, err := tx.Exec(ctx, `SELECT set_config('ao.user_id', $1, true)`, credential.OwnerUserID); err != nil {
-			return err
-		}
-		err := tx.QueryRow(ctx,
-			`SELECT encrypted_secret, secret_nonce
-			FROM ao_user_provider_connections
-			WHERE user_id = $1
-			  AND provider = 'github'
-			  AND label = 'default'
-			  AND validation_state = 'valid'`,
-			credential.OwnerUserID,
-		).Scan(&credential.EncryptedSecret, &credential.Nonce)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("resolve worker GitHub PAT: %w", err)
-		}
-		return nil
+		var err error
+		credential, err = sessionGitHubPAT(ctx, tx, orgID, sessionID)
+		return err
 	})
 	if err != nil {
 		return domain.WorkerGitHubPAT{}, err
+	}
+	return credential, nil
+}
+
+// SessionGitHubPAT resolves the same credential as WorkerGitHubPAT for
+// control-plane background work (the PAT pull request tracker), where there is
+// no worker identity to check.
+func (s *Store) SessionGitHubPAT(
+	ctx context.Context,
+	orgID, sessionID string,
+) (domain.WorkerGitHubPAT, error) {
+	var credential domain.WorkerGitHubPAT
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		credential, err = sessionGitHubPAT(ctx, tx, orgID, sessionID)
+		return err
+	})
+	if err != nil {
+		return domain.WorkerGitHubPAT{}, err
+	}
+	return credential, nil
+}
+
+// sessionGitHubPAT reads the encrypted PAT of the user who created a live
+// session, together with the session's repository clone URL.
+func sessionGitHubPAT(ctx context.Context, tx pgx.Tx, orgID, sessionID string) (domain.WorkerGitHubPAT, error) {
+	var credential domain.WorkerGitHubPAT
+	var ownerUserID *string
+	if err := tx.QueryRow(ctx,
+		`SELECT project.repository_url, session.created_by_user_id::text
+		FROM ao_sessions session
+		JOIN ao_projects project
+		  ON project.org_id = session.org_id AND project.id = session.project_id
+		WHERE session.org_id = $1 AND session.id = $2
+		  AND session.is_terminated = false`,
+		orgID, sessionID,
+	).Scan(&credential.CloneURL, &ownerUserID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.WorkerGitHubPAT{}, ErrNotFound
+		}
+		return domain.WorkerGitHubPAT{}, fmt.Errorf("resolve worker GitHub repository: %w", err)
+	}
+	if ownerUserID == nil {
+		return domain.WorkerGitHubPAT{}, ErrNotFound
+	}
+	credential.OwnerUserID = *ownerUserID
+	if _, err := tx.Exec(ctx, `SELECT set_config('ao.user_id', $1, true)`, credential.OwnerUserID); err != nil {
+		return domain.WorkerGitHubPAT{}, err
+	}
+	err := tx.QueryRow(ctx,
+		`SELECT encrypted_secret, secret_nonce
+		FROM ao_user_provider_connections
+		WHERE user_id = $1
+		  AND provider = 'github'
+		  AND label = 'default'
+		  AND validation_state = 'valid'`,
+		credential.OwnerUserID,
+	).Scan(&credential.EncryptedSecret, &credential.Nonce)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.WorkerGitHubPAT{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.WorkerGitHubPAT{}, fmt.Errorf("resolve worker GitHub PAT: %w", err)
 	}
 	return credential, nil
 }

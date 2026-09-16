@@ -26,22 +26,37 @@ func (s *Service) RefreshPullRequestStatus(
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	detail, err := s.client.GetPullRequest(ctx, access.Token, owner, repo, ref.Number)
+	observation, err := observePullRequest(ctx, s.client, access.Token, owner, repo, ref.Number)
 	if err != nil {
 		return domain.PullRequest{}, err
+	}
+	return s.store.UpdatePullRequestObservation(ctx, ref.OrgID, ref.ID, observation)
+}
+
+// observePullRequest fetches one pull request's lifecycle, CI, review, and
+// mergeability with any token that can read it (installation or PAT).
+func observePullRequest(
+	ctx context.Context,
+	client *Client,
+	token, owner, repo string,
+	number int,
+) (domain.PullRequestObservation, error) {
+	detail, err := client.GetPullRequest(ctx, token, owner, repo, number)
+	if err != nil {
+		return domain.PullRequestObservation{}, err
 	}
 	var checks []CheckRun
 	if detail.Head.SHA != "" {
-		checks, err = s.client.ListCheckRuns(ctx, access.Token, owner, repo, detail.Head.SHA)
+		checks, err = client.ListCheckRuns(ctx, token, owner, repo, detail.Head.SHA)
 		if err != nil {
-			return domain.PullRequest{}, err
+			return domain.PullRequestObservation{}, err
 		}
 	}
-	reviews, err := s.client.ListPullRequestReviews(ctx, access.Token, owner, repo, ref.Number)
+	reviews, err := client.ListPullRequestReviews(ctx, token, owner, repo, number)
 	if err != nil {
-		return domain.PullRequest{}, err
+		return domain.PullRequestObservation{}, err
 	}
-	observation := domain.PullRequestObservation{
+	return domain.PullRequestObservation{
 		State:        pullRequestLifecycleState(detail),
 		Draft:        detail.Draft,
 		HeadSHA:      detail.Head.SHA,
@@ -51,8 +66,7 @@ func (s *Service) RefreshPullRequestStatus(
 		CIState:      aggregateCIState(checks),
 		ReviewState:  aggregateReviewState(reviews),
 		Mergeability: mapMergeability(detail),
-	}
-	return s.store.UpdatePullRequestObservation(ctx, ref.OrgID, ref.ID, observation)
+	}, nil
 }
 
 func pullRequestLifecycleState(detail PullRequestDetail) contract.PRState {

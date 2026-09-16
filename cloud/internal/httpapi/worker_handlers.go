@@ -44,7 +44,7 @@ func (s *Server) workerGitHubPATGrant(ctx context.Context, claims worker.Claims)
 		s.logger.Warn("reject worker GitHub personal access token for non-GitHub repository", "session_id", claims.SessionID)
 		return worker.CheckoutGrantResponse{}, false
 	}
-	secret, err := s.secretCipher.Decrypt(credential.EncryptedSecret, credential.Nonce, providerSecretAssociatedData("user:"+credential.OwnerUserID, githubPATProvider))
+	secret, err := s.secretCipher.Decrypt(credential.EncryptedSecret, credential.Nonce, GitHubPATAssociatedData(credential.OwnerUserID))
 	if err != nil {
 		s.logger.Error("decrypt worker GitHub personal access token", "error", err)
 		return worker.CheckoutGrantResponse{}, false

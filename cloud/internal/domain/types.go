@@ -85,15 +85,52 @@ type Session struct {
 	UpdatedAt   time.Time
 }
 
-// Status derives the session's display status from runtime and pull request facts.
-func (s Session) Status(now time.Time, prs []contract.PRFacts) contract.SessionStatus {
-	return contract.DeriveStatus(contract.SessionFacts{
+// sessionNoSignalGrace is how long a silent session keeps its last activity
+// before status derivation reports it as having no signal.
+const sessionNoSignalGrace = 2 * time.Minute
+
+func (s Session) facts() contract.SessionFacts {
+	return contract.SessionFacts{
 		Activity:       s.ActivityState,
 		LastActivityAt: s.UpdatedAt,
 		HasSignal:      s.RuntimeConnected,
 		SignalExpected: s.RuntimeState != "",
 		IsTerminated:   s.IsTerminated,
-	}, prs, now, 2*time.Minute)
+	}
+}
+
+// Status derives the session's display status from runtime and pull request facts.
+func (s Session) Status(now time.Time, prs []contract.PRFacts) contract.SessionStatus {
+	return contract.DeriveStatus(s.facts(), prs, now, sessionNoSignalGrace)
+}
+
+// KanbanPresentation derives the session's board column and display phrase
+// with the same reducer the local daemon uses. Cloud sessions have no
+// follow-up auto-injection or per-head review runs yet, so those loops are
+// always a person's turn, and the aggregate review decision stands in for
+// the external verdicts.
+func (s Session) KanbanPresentation(now time.Time, prs []PullRequest) contract.KanbanPresentation {
+	facts := make([]contract.KanbanPRFacts, 0, len(prs))
+	for _, pr := range prs {
+		facts = append(facts, contract.KanbanPRFacts{
+			URL:          pr.URL,
+			Draft:        pr.Draft,
+			Merged:       pr.State == contract.PRStateMerged,
+			Closed:       pr.State == contract.PRStateClosed,
+			CI:           pr.CIState,
+			Review:       pr.ReviewState,
+			Mergeability: pr.Mergeability,
+			UpdatedAt:    pr.UpdatedAt,
+			ExternalReview: contract.KanbanExternalReviewFacts{
+				Approved:         pr.ReviewState == contract.ReviewApproved,
+				ChangesRequested: pr.ReviewState == contract.ReviewChangesRequest,
+			},
+		})
+	}
+	return contract.DeriveKanbanPresentation(
+		contract.KanbanSessionFacts{SessionFacts: s.facts()},
+		facts, now, sessionNoSignalGrace,
+	)
 }
 
 type CreateSession struct {
