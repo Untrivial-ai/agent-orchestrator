@@ -119,6 +119,9 @@ func LastPromptComposerState(output, marker string, chromeLabels ...string) Comp
 			if horizontalRuleWidth(continuation) > 0 {
 				return ComposerEmpty
 			}
+			if isPromptChromeLabel(strings.TrimSpace(styledString(continuation)), chromeLabels) {
+				continue
+			}
 			for _, r := range continuation {
 				if unicode.IsSpace(r.value) {
 					continue
@@ -216,6 +219,9 @@ func LastBorderedPromptComposerState(output, marker string, chromeLabels ...stri
 			}
 		}
 		for _, continuation := range lines[i+1 : lowerIndex] {
+			if isPromptChromeLabel(strings.TrimSpace(styledString(continuation)), chromeLabels) {
+				continue
+			}
 			for _, r := range continuation {
 				if !unicode.IsSpace(r.value) && !r.dim {
 					return ComposerDraft
