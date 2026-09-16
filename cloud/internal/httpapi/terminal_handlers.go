@@ -57,6 +57,10 @@ func (s *Server) createTerminalTicket(w http.ResponseWriter, r *http.Request) {
 	token, scopes, err := s.store.IssueTerminalTicket(
 		r.Context(), principalFrom(r), orgID, sessionID, input.Kind, terminalTicketTTL,
 	)
+	if errors.Is(err, postgres.ErrTerminalSessionExited) {
+		writeError(w, r, http.StatusGone, "TERMINAL_SESSION_EXITED", "The coding-agent terminal has exited. Start a new session to continue.")
+		return
+	}
 	if errors.Is(err, postgres.ErrForbidden) {
 		writeError(w, r, http.StatusForbidden, "TERMINAL_POLICY_DENIED", "Terminal access is not allowed for this session.")
 		return
@@ -297,6 +301,10 @@ func (s *Server) readTerminalInput(
 			// Delivered in memory. The open terminal WebSocket already refreshes
 			// the interaction lease on its own timer, so no durable row is
 			// needed to keep the session from idle-pausing.
+			if s.terminalRelayEnabled && s.logger != nil {
+				s.logger.Debug("terminal relay input forwarded",
+					"terminal_id", terminal.ID, "bytes", len(data))
+			}
 		} else if err := retryTerminalRequest(ctx, func() error {
 			return s.store.QueueTerminalInput(ctx, terminal, message.InputID, data)
 		}); err != nil {
@@ -360,77 +368,93 @@ func (s *Server) writeTerminalOutput(
 		wake, cancelWake = s.terminalStreams.subscribeOutput(terminal.ID)
 		defer cancelWake()
 	}
+	// The relay subscription is deliberately established before replay begins:
+	// frames produced while Postgres is returning scrollback are buffered here
+	// and compared against the same durable sequence before being written.
+	var live chan terminalRelayOutput
+	if s.terminalRelayEnabled && s.terminalStreams != nil {
+		var cancelLive func()
+		live, cancelLive = s.terminalStreams.subscribeRelayOutput(terminal.ID)
+		defer cancelLive()
+	}
 	replayComplete := false
 	startingSent := false
 	ready := false
+	// Poll once to establish state and replay existing output. Once relay mode
+	// is live, only the ticker/NOTIFY fallback asks Postgres again; a hot output
+	// frame must not wait behind a database round trip.
+	pollDurable := true
 	for {
-		frames, state, err := s.store.ListTerminalOutput(ctx, terminal, after, 100)
-		if err != nil {
-			return err
-		}
-		if structured && !ready && (!startingSent || state == "open") {
-			writeMu.Lock()
-			messageType := "starting"
-			if state == "open" {
-				messageType = "ready"
-				ready = true
-				if s.logger != nil {
-					s.logger.Info("browser terminal ready",
-						"session_id", terminal.SessionID,
-						"terminal_id", terminal.ID,
-						"kind", terminal.Kind,
-						"worker_epoch", terminal.WorkerEpoch,
-					)
+		if pollDurable {
+			frames, state, err := s.store.ListTerminalOutput(ctx, terminal, after, 100)
+			if err != nil {
+				return err
+			}
+			pollDurable = len(frames) == 100
+			if structured && !ready && (!startingSent || state == "open") {
+				writeMu.Lock()
+				messageType := "starting"
+				if state == "open" {
+					messageType = "ready"
+					ready = true
+					if s.logger != nil {
+						s.logger.Info("browser terminal ready",
+							"session_id", terminal.SessionID,
+							"terminal_id", terminal.ID,
+							"kind", terminal.Kind,
+							"worker_epoch", terminal.WorkerEpoch,
+						)
+					}
+				} else {
+					startingSent = true
 				}
-			} else {
-				startingSent = true
-			}
-			err := writeTerminalMessage(ctx, connection, terminalServerMessage{
-				Type:     messageType,
-				Sequence: after,
-			})
-			writeMu.Unlock()
-			if err != nil {
-				return err
-			}
-		}
-		for _, frame := range frames {
-			var err error
-			writeMu.Lock()
-			if structured {
-				err = writeTerminalMessage(ctx, connection, terminalServerMessage{
-					Type:     "output",
-					Data:     base64.StdEncoding.EncodeToString(frame.Data),
-					Sequence: frame.Sequence,
+				err := writeTerminalMessage(ctx, connection, terminalServerMessage{
+					Type:     messageType,
+					Sequence: after,
 				})
-			} else {
-				// PTY reads are arbitrary byte chunks and can split a multi-byte
-				// UTF-8 sequence. Legacy clients receive binary frames so partial
-				// code points never make the WebSocket library reject the output.
-				err = connection.Write(ctx, websocket.MessageBinary, frame.Data)
-			}
-			writeMu.Unlock()
-			if err != nil {
-				return err
-			}
-			after = frame.Sequence
-		}
-		if structured && ready && !replayComplete {
-			writeMu.Lock()
-			if err := writeTerminalMessage(ctx, connection, terminalServerMessage{
-				Type: "replay_complete", Sequence: after,
-			}); err != nil {
 				writeMu.Unlock()
-				return err
+				if err != nil {
+					return err
+				}
 			}
-			writeMu.Unlock()
-			replayComplete = true
-		}
-		if state == "failed" {
-			return errTerminalProcessUnavailable
-		}
-		if state == "closed" {
-			return connection.Close(websocket.StatusNormalClosure, "terminal process exited")
+			for _, frame := range frames {
+				var err error
+				writeMu.Lock()
+				if structured {
+					err = writeTerminalMessage(ctx, connection, terminalServerMessage{
+						Type:     "output",
+						Data:     base64.StdEncoding.EncodeToString(frame.Data),
+						Sequence: frame.Sequence,
+					})
+				} else {
+					// PTY reads are arbitrary byte chunks and can split a multi-byte
+					// UTF-8 sequence. Legacy clients receive binary frames so partial
+					// code points never make the WebSocket library reject the output.
+					err = connection.Write(ctx, websocket.MessageBinary, frame.Data)
+				}
+				writeMu.Unlock()
+				if err != nil {
+					return err
+				}
+				after = frame.Sequence
+			}
+			if structured && ready && !replayComplete {
+				writeMu.Lock()
+				if err := writeTerminalMessage(ctx, connection, terminalServerMessage{
+					Type: "replay_complete", Sequence: after,
+				}); err != nil {
+					writeMu.Unlock()
+					return err
+				}
+				writeMu.Unlock()
+				replayComplete = true
+			}
+			if state == "failed" {
+				return errTerminalProcessUnavailable
+			}
+			if state == "closed" {
+				return connection.Close(websocket.StatusNormalClosure, "terminal process exited")
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -439,8 +463,42 @@ func (s *Server) writeTerminalOutput(
 			if !ready {
 				return errTerminalProcessUnavailable
 			}
+		case frame := <-live:
+			// A direct frame uses the same sequence that the ordered durable
+			// mirror will commit. Never jump a gap: the next durable replay pass
+			// fills it, preserving the terminal's byte order after a saturated
+			// live-client buffer.
+			if frame.sequence <= after {
+				continue
+			}
+			if frame.sequence != after+1 {
+				pollDurable = true
+				continue
+			}
+			writeMu.Lock()
+			var writeErr error
+			if structured {
+				writeErr = writeTerminalMessage(ctx, connection, terminalServerMessage{
+					Type: "output", Data: base64.StdEncoding.EncodeToString(frame.data),
+					Sequence: frame.sequence,
+				})
+			} else {
+				writeErr = connection.Write(ctx, websocket.MessageBinary, frame.data)
+			}
+			writeMu.Unlock()
+			if writeErr != nil {
+				return writeErr
+			}
+			after = frame.sequence
+			if s.logger != nil {
+				s.logger.Debug("terminal relay output delivered",
+					"terminal_id", terminal.ID, "sequence", frame.sequence,
+					"bytes", len(frame.data))
+			}
 		case <-wake:
+			pollDurable = true
 		case <-ticker.C:
+			pollDurable = true
 		}
 	}
 }

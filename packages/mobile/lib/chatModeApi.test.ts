@@ -71,6 +71,19 @@ describe("mobile Chat API boundaries", () => {
 		});
 	});
 
+	it("maps a standalone session (no projectId on the wire) to an empty project id", async () => {
+		// The daemon omits projectId for standalone agent sessions. Leaving it
+		// undefined crashed SessionCard's shortLabel() in render on the store build.
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ sessions: [{ id: "s-1", mode: "chat" }] }))
+			.mockResolvedValueOnce(response({ sessions: [] }))
+			.mockResolvedValueOnce(response({ projects: [] }));
+
+		const result = await getSessions(cfg);
+
+		expect(result.sessions[0].projectId).toBe("");
+	});
+
 	it("delegates an optional empty task with explicit interface and model", async () => {
 		vi.mocked(fetch)
 			.mockResolvedValueOnce(response({ ok: true, workerId: "w-2" }, 202))

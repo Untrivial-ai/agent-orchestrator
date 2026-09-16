@@ -20,7 +20,9 @@ import { trackFeature } from "../telemetry/runtime";
 export {
 	interfaceSwitchAlert,
 	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsBusy,
 	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 } from "./interfaceTransition";
 export type { InterfaceSwitchRecheck } from "./interfaceTransition";
 
@@ -227,6 +229,8 @@ export function useInterfaceTransition(
 		pollable,
 		refresh,
 		sessionId,
+		status?.transition?.id,
+		status?.transition?.errorCode,
 		status?.transition?.phase,
 		status?.reasonCode,
 	]);

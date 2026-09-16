@@ -39,6 +39,8 @@ export interface CloudTerminalMuxOptions {
 	subscribeAgentReady?: (onReady: () => void) => () => void;
 	/** Keep the pane in its connecting state until an agent-ready event arrives. */
 	waitForAgentReady?: boolean;
+	/** Maximum grace period for agent.ready before checking its terminal state. */
+	agentReadyGraceMs?: number;
 	WebSocketImpl?: typeof WebSocket;
 }
 
@@ -68,6 +70,7 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	let activeKind: "agent" | "workspace" | null = options.waitForAgentReady ? null : options.kind;
 	let agentUpgradeRequested = false;
 	let agentRetryTimer: ReturnType<typeof setTimeout> | null = null;
+	let agentReadyGraceTimer: ReturnType<typeof setTimeout> | null = null;
 	let disposed = false;
 	let exited = false;
 	let connectionState: MuxConnectionState | undefined;
@@ -78,6 +81,17 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		if (disposed || connectionState === next) return;
 		connectionState = next;
 		connectionListeners.forEach((listener) => listener(next));
+	};
+
+	const terminalExited = (error: unknown): boolean =>
+		typeof error === "object" && error !== null && (error as { code?: unknown }).code === "TERMINAL_SESSION_EXITED";
+
+	const reportTerminalExited = () => {
+		if (disposed || exited) return;
+		exited = true;
+		errorListeners.forEach((listener) =>
+			listener("The coding-agent terminal has exited. Start a new session to continue."),
+		);
 	};
 
 	const sendJSON = (message: unknown): boolean => {
@@ -163,8 +177,12 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		let ticket: string;
 		try {
 			ticket = await options.mintTicket(kind);
-		} catch {
+		} catch (error) {
 			if (disposed) return;
+			if (terminalExited(error)) {
+				reportTerminalExited();
+				return;
+			}
 			// A freshly created session's worker may not be connected yet while its
 			// sandbox provisions; the control plane reports that as 409
 			// WORKER_UNAVAILABLE on the ticket request. Report this as "waiting",
@@ -199,8 +217,12 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 				}
 				activeKind = "agent";
 				openSocket("agent", ticket);
-			} catch {
+			} catch (error) {
 				if (disposed) return;
+				if (terminalExited(error)) {
+					reportTerminalExited();
+					return;
+				}
 				agentUpgradeRequested = false;
 				agentRetryTimer = setTimeout(upgradeToAgent, 100);
 			}
@@ -208,7 +230,19 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	};
 
 	const unsubscribeAgentReady = options.subscribeAgentReady?.(upgradeToAgent);
-	if (!options.waitForAgentReady) void connect(options.kind);
+	if (!options.waitForAgentReady) {
+		void connect(options.kind);
+	} else {
+		// agent.ready is the best path: it avoids attaching to a transient shell
+		// before the coding-agent TUI has drawn. It is not guaranteed for an
+		// already-exited worker, though. After a short grace period, minting a
+		// ticket lets the control plane distinguish an exited agent (terminal
+		// error, no retry) from a cold worker (409, retry as before).
+		agentReadyGraceTimer = setTimeout(() => {
+			agentReadyGraceTimer = null;
+			if (activeKind === null && !agentUpgradeRequested) void connect("agent");
+		}, options.agentReadyGraceMs ?? 2_000);
+	}
 
 	return {
 		open: (_id, cols, rows) => {
@@ -255,6 +289,7 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 			if (disposed) return;
 			disposed = true;
 			if (agentRetryTimer) clearTimeout(agentRetryTimer);
+			if (agentReadyGraceTimer) clearTimeout(agentReadyGraceTimer);
 			unsubscribeAgentReady?.();
 			dataListeners.clear();
 			exitListeners.clear();

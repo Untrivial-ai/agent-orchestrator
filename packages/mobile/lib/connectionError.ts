@@ -48,6 +48,16 @@ export function shouldKeepPolling(status: number | undefined): boolean {
 }
 
 /**
+ * Whether a failed request is the daemon's word that the session no longer
+ * exists. Only a 404 or 410 says that. A timeout, a refused connection or a 5xx
+ * is a fact about the link, not the session, and a link comes back — so none of
+ * those may be shown or acted on as "not found".
+ */
+export function isSessionGone(status: number | undefined): boolean {
+	return status === 404 || status === 410;
+}
+
+/**
  * True for addresses on the phone's own LAN — the ones iOS gates behind the
  * Local Network permission prompt.
  *

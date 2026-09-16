@@ -30,7 +30,7 @@ import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
-import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions, workspaceStatusesChecking } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
@@ -52,7 +52,7 @@ import {
 } from "../lib/platform";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { sessionIsActive, toProjectKind, type WorkspaceSummary } from "../types/workspace";
+import { sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 
@@ -126,11 +126,17 @@ const ShellCenter = memo(function ShellCenter({
 	selfFramedCenterPanel: boolean;
 }) {
 	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
+	// Only frameless session chrome needs this strip. On macOS and Linux the
+	// session tabs sit flush against the top edge with no OS titlebar, so without
+	// it there is no window-drag target. Windows must stay excluded: WindowTitlebar
+	// already paints a full-width drag region above every route, and adding the
+	// strip there would duplicate that region and leave a dead 8px band below it.
+	const draggableSessionFrame = isSessionRoute && !isWindows;
 	if (hideShellTopbar) {
 		return selfFramedCenterPanel ? (
 			<Outlet />
 		) : (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
 				</div>
@@ -139,7 +145,7 @@ const ShellCenter = memo(function ShellCenter({
 	}
 	if (framedAppTopbar) {
 		return (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				{isSessionRoute ? null : <ShellTopbar />}
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
@@ -148,7 +154,7 @@ const ShellCenter = memo(function ShellCenter({
 		);
 	}
 	return (
-		<CenterPanelShell className={panelClassName}>
+		<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 			<div className="flex min-h-0 flex-1 flex-col">
 				<Outlet />
 			</div>
@@ -185,7 +191,6 @@ function ShellLayout() {
 	const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
 	const syncSystemTheme = useUiStore((state) => state.syncSystemTheme);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const requestCreateProject = useUiStore((state) => state.requestCreateProject);
 	const requestCreateProjectFromPath = useUiStore((state) => state.requestCreateProjectFromPath);
 	const requestNewShellTerminal = useUiStore((state) => state.requestNewShellTerminal);
 	const newShellTerminalNonce = useUiStore((state) => state.newShellTerminalNonce);
@@ -368,6 +373,10 @@ function ShellLayout() {
 					: (currentIndex + direction + sessions.length) % sessions.length;
 			const session = sessions[nextIndex];
 			if (!session || session.id === routeParams.sessionId) return;
+			if (scopedProjectId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
+				return;
+			}
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
 				params: { projectId: scopedProjectId, sessionId: session.id },
@@ -693,7 +702,7 @@ function ShellLayout() {
 
 	// A daemon port is not enough to render a trustworthy empty state: the
 	// route loader may have cached [] before Electron reported the port. Fetch
-	// once against each ready daemon before allowing the board to decide
+	// against each ready daemon, then wait for session recovery before the board decides
 	// between projects and the first-run import flow.
 	useEffect(() => {
 		let active = true;
@@ -717,8 +726,8 @@ function ShellLayout() {
 		setWorkspaceStartupState("loading");
 		void queryClient
 			.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 })
-			.then(() => {
-				if (active) setWorkspaceStartupState("ready");
+			.then((workspaces) => {
+				if (active && !workspaceStatusesChecking(workspaces)) setWorkspaceStartupState("ready");
 			})
 			.catch((error) => {
 				if (active && !isCancelledError(error)) setWorkspaceStartupState("error");
@@ -739,6 +748,7 @@ function ShellLayout() {
 			daemonStatus.state !== "ready" ||
 			workspaceStartupState === "ready" ||
 			!workspaceQuery.isSuccess ||
+			workspaceStatusesChecking(workspaceQuery.data) ||
 			workspaceQuery.dataUpdatedAt <= workspaceStartupBaselineRef.current
 		) {
 			return;
@@ -747,6 +757,7 @@ function ShellLayout() {
 	}, [
 		daemonStatus.state,
 		workspaceQuery.dataUpdatedAt,
+		workspaceQuery.data,
 		workspaceQuery.isSuccess,
 		workspaceStartupState,
 	]);
@@ -784,7 +795,10 @@ function ShellLayout() {
 				return;
 			}
 			if (matchesRendererShortcut("open-project", event)) {
-				const workspace = workspacesRef.current[Number(event.key) - 1];
+				const workspacesWithoutStandalone = workspacesRef.current.filter(
+					(workspace) => workspace.id !== STANDALONE_WORKSPACE_ID,
+				);
+				const workspace = workspacesWithoutStandalone[Number(event.key) - 1];
 				if (workspace) {
 					event.preventDefault();
 					void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
@@ -798,17 +812,17 @@ function ShellLayout() {
 	// New session (⌘N / Ctrl+Shift+N) is detected in the main process and
 	// delivered here, so it fires even when focus is inside xterm or a native
 	// Browser-preview view. The shell owns the routing: open the New Task flow
-	// for the in-scope project, else fall back to create-project.
+	// for the in-scope project, or a standalone agent when no project is in scope.
 	useEffect(
 		() =>
 			aoBridge.app.onNewSessionShortcut(() => {
 				if (scopedProjectId) {
 					requestNewTask(scopedProjectId);
 				} else {
-					requestCreateProject();
+					requestNewTask(STANDALONE_WORKSPACE_ID);
 				}
 			}),
-		[scopedProjectId, requestNewTask, requestCreateProject],
+		[scopedProjectId, requestNewTask],
 	);
 
 	useEffect(() => aoBridge.app.onKeyboardShortcutsHelp(() => setIsKeyboardShortcutsOpen(true)), []);

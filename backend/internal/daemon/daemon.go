@@ -427,7 +427,7 @@ func Run() error {
 		Log:      log,
 		NewID:    uuid.NewString,
 		OnAccountChanged: func(sessionID domain.SessionID, generation string, harness domain.AgentHarness) {
-			if harness != domain.HarnessCodex || agentSvc == nil || sessMgr == nil || sessMgr.CodexAccountSwitchInProgress() {
+			if harness != domain.HarnessCodex || agentSvc == nil || agentSvc.CodexAccountSwitchInProgress() {
 				return
 			}
 			rec, ok, readErr := store.GetSession(ctx, sessionID)
@@ -436,7 +436,7 @@ func Run() error {
 			}
 		},
 		OnCodexCapacityChanged: func(sessionID domain.SessionID, generation string, observation ports.CodexCapacityObservation) {
-			if agentSvc == nil || sessMgr == nil || sessMgr.CodexAccountSwitchInProgress() {
+			if agentSvc == nil || agentSvc.CodexAccountSwitchInProgress() {
 				return
 			}
 			rec, ok, readErr := store.GetSession(ctx, sessionID)
@@ -484,7 +484,8 @@ func Run() error {
 		CodexAccountRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "accounts"),
 		CodexPendingRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "pending-accounts"),
 		CodexSwitchStagingRoot: filepath.Join(cfg.StateDir, "harnesses", "codex", "switch-staging"),
-		CodexGlobalHome:        codexHome, CodexAccountState: store,
+		CodexGlobalHome:        codexHome,
+		CodexAccountSwitches:   store,
 		CodexAccounts: codexappserver.NewAccountFactoryWithResolver(func(resolveCtx context.Context) (string, error) {
 			return codexagent.New().ResolveBinary(resolveCtx)
 		}, log),
@@ -504,26 +505,23 @@ func Run() error {
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
+	if tunable, ok := sessMgr.(interface {
+		SetModelCatalog(interface {
+			Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
+		})
+	}); ok {
+		tunable.SetModelCatalog(agentSvc)
+	}
 
 	// servers isn't clobbered. See preview_wiring.go (issue #4500).
 	wireManagedPreviewExit(managedPreview, sessionSvc, log)
 	sessMgr.SetTerminalInputGate(termMgr)
-	agentSvc.SetCodexAccountSwitchCoordinator(sessMgr)
-	sessMgr.SetCodexAccountSwitchObserver(agentSvc.PublishCodexAccounts)
 	lifecycleMessenger.Bind(sessionLifecycleMessenger{sessMgr})
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
 	lcStack.LCM.SetSessionInputLease(sessMgr)
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log})
-	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
-		stop()
-		lcStack.Stop()
-		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
-			log.Error("cdc pipeline shutdown", "err", cdcErr)
-		}
-		return err
-	}
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, tracker, log)
 
 	hostCommands := systemexec.New(cfg.DataDir)
@@ -550,7 +548,6 @@ func Run() error {
 		agentSvc.InvalidateAgentInstallation(harness)
 		agentSvc.RecheckAgent(harness)
 	})
-	agentSvc.WarmReadiness()
 
 	// Connect Mobile: the bridge service needs the LAN listener, but the LAN
 	// listener needs the built router's handler, which only exists once srv is
@@ -644,10 +641,16 @@ func Run() error {
 		log.Warn("pr action service disabled: no usable SCM provider")
 	}
 
+	// Codex switch recovery is best effort and never blocks unrelated daemon
+	// startup. Its own credential gate still protects any local mutation.
+	if reconcileErr := agentSvc.ReconcileCodexAccountSwitches(ctx); reconcileErr != nil {
+		log.Warn("Codex account switch recovery deferred", "err", reconcileErr)
+	}
+
 	// Durable agent-switch and interface-transition recovery is the startup
 	// safety boundary. The in-memory input fence disappeared with the previous
-	// daemon; if AO cannot prove and close every active saga, do not bind a
-	// usable API with user input accidentally reopened. Runtime/worktree
+	// daemon; every active saga must be closed or explicitly quarantined before
+	// binding a usable API, without accidentally reopening input. Runtime/worktree
 	// restoration follows in the background after the listener is live.
 	if reconcileErr := sessMgr.ReconcileStartupSafety(ctx); reconcileErr != nil {
 		stop()
@@ -849,6 +852,11 @@ func Run() error {
 
 	var startupReconcileDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
+		// Agent-readiness warming is advisory and idempotent, and request paths
+		// lazily Ensure on demand. Kick it here, after the listener is live, so its
+		// bounded subprocess probes no longer contend with the synchronous
+		// migration and fencing reconcile that gate the port bind.
+		agentSvc.WarmReadiness()
 		done := make(chan struct{})
 		startupReconcileDone = done
 		go func() {
@@ -903,6 +911,11 @@ func Run() error {
 		log.Error("agent switch worker shutdown", "err", err)
 	}
 	switchCancel()
+	codexSwitchStopCtx, codexSwitchCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	if err := agentSvc.WaitCodexAccountSwitchWorkers(codexSwitchStopCtx); err != nil {
+		log.Error("Codex account switch worker shutdown", "err", err)
+	}
+	codexSwitchCancel()
 	managedPreview.Close()
 	<-previewDone
 	// Detach chat controllers before stopping the lifecycle stack. Persistent
@@ -959,16 +972,6 @@ func usagePipelineWatchRoots(roots usagesvc.SourceRoots) []string {
 		roots.CodexArchived,
 		roots.KimiHome,
 	}
-}
-
-func seedScratchProjectOnBoot(ctx context.Context, cfg config.Config, projects *projectsvc.Service) error {
-	if projects == nil {
-		return nil
-	}
-	if _, err := projects.EnsureDefaultScratchProject(ctx, filepath.Join(cfg.DataDir, "scratch", "default")); err != nil {
-		return fmt.Errorf("seed scratch project: %w", err)
-	}
-	return nil
 }
 
 // newLogger returns the daemon's slog logger. It writes to stderr so supervisors

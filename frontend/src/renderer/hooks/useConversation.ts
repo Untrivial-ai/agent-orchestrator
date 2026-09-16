@@ -17,9 +17,10 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import type {
 	ActivityKind,
@@ -1335,6 +1336,7 @@ export function useConversationSkills(sessionId: string | undefined, enabled: bo
  * complete list.
  */
 export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: boolean) {
+	const queryClient = useQueryClient();
 	const query = useQuery({
 		queryKey: ["workspace-file-paths", sessionId ?? ""],
 		enabled: Boolean(sessionId) && enabled,
@@ -1358,6 +1360,10 @@ export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: bo
 			};
 		},
 	});
+	useEffect(() => {
+		if (!sessionId || !enabled) return;
+		return subscribeWorkspaceFileChanges(sessionId, queryClient);
+	}, [enabled, queryClient, sessionId]);
 	return {
 		paths: query.data?.paths ?? [],
 		truncated: query.data?.truncated ?? false,

@@ -18,8 +18,14 @@ var (
 	ErrIdempotencyMismatch  = errors.New("idempotency key belongs to a different operation")
 	ErrSandboxQuotaExceeded = errors.New("sandbox quota exceeded")
 	ErrWorkerUnavailable    = errors.New("worker unavailable")
-	ErrTransportExpired     = errors.New("worker request expired")
-	ErrWorkspaceReadOnly    = errors.New("workspace is read-only")
+	// ErrTerminalSessionExited means an agent terminal finished and there is no
+	// live worker terminal to attach to. It is deliberately distinct from
+	// ErrWorkerUnavailable: the latter is expected while a sandbox is booting
+	// and callers should retry it, while this one is terminal for this agent
+	// session.
+	ErrTerminalSessionExited = errors.New("terminal session exited")
+	ErrTransportExpired      = errors.New("worker request expired")
+	ErrWorkspaceReadOnly     = errors.New("workspace is read-only")
 )
 
 type Store struct {
