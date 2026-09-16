@@ -65,7 +65,11 @@ Product telemetry is designed not to include:
 
 The GitHub owner segment described under "What AO sends" is the one
 GitHub-derived value AO does send. It is limited to the owning
-organization or account and never includes the repository, path, or URL.
+organization or account and never includes the repository, path, or URL. It is
+read only from `github.com` remotes: a remote on a self-hosted GitHub
+Enterprise host names a different, private namespace, so its owner is not
+recorded at all. A remote that embeds a token or username — as credential
+helpers write them — still contributes nothing but the owner segment.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address, company role, and social profile there, they are used to manage

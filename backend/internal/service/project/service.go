@@ -646,33 +646,6 @@ func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord
 	}()
 }
 
-// githubOwner extracts the owner segment from a GitHub remote URL, or "" if the
-// remote is empty or not a github.com remote. It returns only that segment,
-// never the repo name or full path, so telemetry can attribute usage without
-// shipping the repository identity.
-func githubOwner(remote string) string {
-	r := strings.TrimSpace(remote)
-	if r == "" {
-		return "" //nolint:nlreturn // guard clause; a leading blank line adds no clarity
-	}
-	if rest, ok := strings.CutPrefix(r, "git@github.com:"); ok {
-		return firstSegment(rest)
-	}
-	for _, p := range []string{"https://github.com/", "http://github.com/", "ssh://git@github.com/", "git://github.com/"} {
-		if rest, ok := strings.CutPrefix(r, p); ok {
-			return firstSegment(rest)
-		}
-	}
-	return ""
-}
-
-func firstSegment(s string) string {
-	if i := strings.IndexByte(s, '/'); i > 0 {
-		return s[:i]
-	}
-	return ""
-}
-
 // UpdateSettings atomically replaces the project's stored display name and
 // config. Both values are validated before a single database update.
 func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error) {
