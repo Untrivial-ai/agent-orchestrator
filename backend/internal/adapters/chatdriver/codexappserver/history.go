@@ -113,6 +113,12 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 	}, &resp); err != nil {
 		return nil, asRefusal(fmt.Errorf("thread/read history: %w", err))
 	}
+	if resp.Thread.ID != c.threadID {
+		return nil, fmt.Errorf("thread/read returned %q, requested %q", resp.Thread.ID, c.threadID)
+	}
+	c.mu.Lock()
+	c.historyParentID = deref(resp.Thread.ForkedFromID)
+	c.mu.Unlock()
 	for _, turn := range resp.Thread.Turns {
 		state := turnStateFrom(string(turn.Status))
 		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
@@ -186,10 +192,13 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 			ProviderTurnID:  turn.ID,
 			TurnState:       state,
 		}
-		if turn.Error != nil && turn.Error.Message != "" {
-			completed.Err = errors.New(turn.Error.Message)
+		if turn.Error != nil {
+			completed.Err = codexProviderFailure(*turn.Error)
 		}
 		events = append(events, completed)
+	}
+	for i := range events {
+		events[i] = c.scopedEvent(events[i])
 	}
 	return events, nil
 }
@@ -199,6 +208,42 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 // settle polling can observe provider progress here.
 func (c *conversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
 	return c.ReadHistory(ctx)
+}
+
+// InheritedHistory only translates IDs after Codex proves the parent chain.
+// A missing/archived ancestor leaves the replay independent and fully visible.
+func (c *conversation) InheritedHistory(ctx context.Context, ancestor domain.ConversationBranch, events []ports.ChatEvent) ([]ports.ChatEvent, error) {
+	c.mu.Lock()
+	parent := c.historyParentID
+	c.mu.Unlock()
+	seen := map[string]bool{c.threadID: true}
+	for parent != "" && parent != ancestor.ProviderConversationID {
+		if seen[parent] || len(seen) >= 64 {
+			return nil, nil
+		}
+		seen[parent] = true
+		var response codexproto.ThreadReadResponse
+		if err := c.conn.request(ctx, codexproto.MethodThreadRead, codexproto.ThreadReadParams{ThreadID: parent}, &response); err != nil {
+			return nil, ctx.Err()
+		}
+		if response.Thread.ID != parent {
+			return nil, nil
+		}
+		parent = deref(response.Thread.ForkedFromID)
+	}
+	if parent == "" {
+		return nil, nil
+	}
+	previous := conversation{}
+	if ancestor.ProviderIDsScoped {
+		previous.providerScopeID = ancestor.ProviderScopeID
+	}
+	mapped := append([]ports.ChatEvent(nil), events...)
+	for i := range mapped {
+		mapped[i].ProviderTurnID = previous.scopedID(c.nativeID(mapped[i].ProviderTurnID))
+		mapped[i].ProviderItemID = previous.scopedID(c.nativeID(mapped[i].ProviderItemID))
+	}
+	return mapped, nil
 }
 
 func historyEventID(parts ...string) string {
@@ -254,6 +299,7 @@ func historicalUserText(item codexproto.ThreadItem) string {
 // It changes what the agent remembers. AO's rows have to follow, and that is the
 // caller's job — see the Chat controller.
 func (c *conversation) Rollback(ctx context.Context, providerTurnID string) error {
+	providerTurnID = c.nativeID(providerTurnID)
 	if strings.TrimSpace(providerTurnID) == "" {
 		return errors.New("rollback needs a provider turn id")
 	}
@@ -324,7 +370,7 @@ func (c *conversation) Fork(ctx context.Context, lastProviderTurnID *string) (st
 
 	params := codexproto.ThreadForkParams{ThreadID: c.threadID}
 	if lastProviderTurnID != nil {
-		anchor := strings.TrimSpace(*lastProviderTurnID)
+		anchor := c.nativeID(strings.TrimSpace(*lastProviderTurnID))
 		if anchor == "" {
 			return "", errors.New("fork anchor must not be blank")
 		}

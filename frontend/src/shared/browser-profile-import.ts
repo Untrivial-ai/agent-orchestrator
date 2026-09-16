@@ -79,7 +79,7 @@ export type BrowserImportResult = {
 
 export type BrowserImportProgress = {
 	requestId: string;
-	phase: "preparing" | "reading" | "importing";
+	phase: "preparing" | "permission" | "reading" | "importing";
 	completed: number;
 	total: number;
 };

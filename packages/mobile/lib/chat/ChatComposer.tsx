@@ -42,6 +42,7 @@ export function ChatComposer({
 	configOptions,
 	steerUnavailable,
 	pending,
+	disabled,
 	error,
 	onSend,
 	onSteer,
@@ -58,6 +59,7 @@ export function ChatComposer({
 	configOptions?: ChatConfigOption[];
 	steerUnavailable?: boolean;
 	pending?: boolean;
+	disabled?: boolean;
 	error?: string;
 	onSend(text: string, attachments?: ChatImage[], resources?: ChatResource[]): Promise<void>;
 	onSteer(text: string): Promise<void>;
@@ -93,7 +95,7 @@ export function ChatComposer({
 	const voice = useVoiceInput({ onTranscript: useCallback((spoken: string) => setText((old) => old ? `${old} ${spoken}` : spoken), []) });
 
 	const submit = useCallback(async () => {
-		if (submitting) return;
+		if (submitting || pending || disabled) return;
 		const trimmed = text.trim();
 		if (!trimmed && attachments.length === 0) return;
 		setLocalError(undefined);
@@ -112,7 +114,7 @@ export function ChatComposer({
 			setLocalError(cause instanceof Error ? cause.message : String(cause));
 			haptics.error();
 		} finally { setSubmitting(false); }
-	}, [text, attachments, steerEligible, onSteer, onSend, draftKey, submitting]);
+	}, [text, attachments, steerEligible, onSteer, onSend, draftKey, submitting, pending, disabled]);
 
 	const addImage = async () => {
 		setLocalError(undefined);
@@ -224,7 +226,7 @@ export function ChatComposer({
 					<Pressable accessibilityRole="button" accessibilityLabel="Turn settings" onPress={() => { haptics.tap(); onOpenSettings(); }} style={styles.settingLabel}><Feather name="cpu" size={13} color={t.textTertiary} /><Text numberOfLines={1} style={styles.settingText}>{selectedModel || "Default"}</Text></Pressable>
 					<View style={{ flex: 1 }} />
 					<MicKey state={voice.state} mode={voice.mode} onPressIn={voice.pressIn} onPressOut={voice.pressOut} />
-					{active && !text.trim() ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" onPress={() => { haptics.tap(); void onInterrupt(); }} style={styles.stop}><Feather name="square" size={14} color={t.textPrimary} /></Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={steerEligible ? "Steer turn" : active ? "Queue message" : "Send message"} accessibilityState={{ disabled: stopped || pending || submitting }} disabled={stopped || pending || submitting || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit(); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (stopped || pending || submitting || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.onAccent} /> : <Feather name={steerEligible ? "corner-up-right" : "arrow-up"} size={17} color={t.onAccent} />}</Pressable>}
+					{active && !text.trim() ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" disabled={disabled} accessibilityState={{ disabled }} onPress={() => { haptics.tap(); void onInterrupt(); }} style={styles.stop}><Feather name="square" size={14} color={t.textPrimary} /></Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={steerEligible ? "Steer turn" : active ? "Queue message" : "Send message"} accessibilityState={{ disabled: disabled || stopped || pending || submitting }} disabled={disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit(); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.onAccent} /> : <Feather name={steerEligible ? "corner-up-right" : "arrow-up"} size={17} color={t.onAccent} />}</Pressable>}
 				</View>
 			</View>
 		</View>
