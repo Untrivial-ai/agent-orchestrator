@@ -915,6 +915,7 @@ func (m *Manager) prepareSourceHandoff(
 	defer ticker.Stop()
 	idleSince := time.Time{}
 	idleSamples := 0
+	draftSamples := 0
 	unverifiedIdleSince := time.Time{}
 	for {
 		current, ok, err := m.store.GetSession(ctx, rec.ID)
@@ -966,6 +967,8 @@ func (m *Manager) prepareSourceHandoff(
 				unverifiedIdle = current.Activity.State == domain.ActivityIdle && !idleProven
 			} else if outputErr == nil {
 				observation := surfaceInspector.InspectTerminalSurface(output)
+				draftObserved := observation.Composer == ports.TerminalComposerDraft &&
+					current.Activity.State == domain.ActivityIdle
 				switch {
 				case observation.Work == ports.TerminalSurfaceWorkWaitingInput,
 					observation.Work == ports.TerminalSurfaceWorkBlocked:
@@ -977,22 +980,31 @@ func (m *Manager) prepareSourceHandoff(
 						cancelProbe()
 					}
 					return errDrainDecisionPending
-				case observation.Composer == ports.TerminalComposerDraft &&
-					current.Activity.State == domain.ActivityIdle:
-					// A positively identified draft is sufficient to preserve the
-					// source. Work markers are provider chrome heuristics and may
-					// also occur in transcript or draft text, so they cannot hide
-					// unsent input when the durable provider state is idle.
-					if cancelProbe != nil {
-						cancelProbe()
+				case draftObserved:
+					// A stable positively identified draft is sufficient to
+					// preserve the source. Work markers are provider chrome
+					// heuristics and may also occur in transcript or draft text, so
+					// they cannot hide unsent input when the durable provider state
+					// is idle. Single captures are not enough: providers repaint
+					// non-dim chrome (banner, queue, update rows) through the
+					// composer borders mid-frame, so require the same repeated
+					// evidence as the idle decision before blocking the switch.
+					draftSamples++
+					if draftSamples >= interfaceTransitionSurfaceIdleSamples {
+						if cancelProbe != nil {
+							cancelProbe()
+						}
+						return errDrainDraftPresent
 					}
-					return errDrainDraftPresent
 				case current.Activity.State == domain.ActivityIdle &&
 					observation.Work == ports.TerminalSurfaceWorkIdle &&
 					observation.Composer == ports.TerminalComposerEmpty:
 					idleProven = true
 				case observation.Work == ports.TerminalSurfaceWorkActive:
 					surfaceKnownBusy = true
+				}
+				if !draftObserved {
+					draftSamples = 0
 				}
 			}
 		}

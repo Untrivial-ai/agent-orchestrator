@@ -49,6 +49,18 @@ func TestLastPromptComposerState(t *testing.T) {
 		{name: "dim placeholder", output: "❯ \x1b[2mAsk a question\x1b[0m", want: ComposerEmpty},
 		{name: "draft", output: "❯ keep this draft", want: ComposerDraft},
 		{name: "wrapped draft", output: "❯\nkeep this draft", want: ComposerDraft},
+		{
+			// A rule below the prompt ends the composer's content region;
+			// provider status chrome below that rule is not human input.
+			name:   "rule below prompt closes the footer-free scan",
+			output: "❯ \x1b[7m \x1b[0m\n" + strings.Repeat("─", 48) + "\n  glm-5.3 low 40.1k [Rate limited]",
+			want:   ComposerEmpty,
+		},
+		{
+			name:   "prompt-line draft above a rule is still a draft",
+			output: "❯ keep this draft\n" + strings.Repeat("─", 48) + "\n⏵⏵ auto mode on",
+			want:   ComposerDraft,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,5 +134,22 @@ func TestLastBorderedPromptComposerState(t *testing.T) {
 				t.Fatalf("LastBorderedPromptComposerState() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLastBorderedPromptComposerStateIgnoresProviderChromeLabels(t *testing.T) {
+	rule := strings.Repeat("─", 48)
+	output := rule + "\n❯  Claude Code\n" + rule + "\n  glm-5.3 low [Rate limited]"
+	if got := LastBorderedPromptComposerState(output, "❯"); got != ComposerDraft {
+		t.Fatalf("provider label without chrome list = %v, want draft (unchanged default)", got)
+	}
+	if got := LastBorderedPromptComposerState(output, "❯", "Claude Code"); got != ComposerEmpty {
+		t.Fatalf("provider label with chrome list = %v, want empty", got)
+	}
+	if got := LastBorderedPromptComposerState(output, "❯", "OpenAI Codex"); got != ComposerDraft {
+		t.Fatalf("unrelated chrome label = %v, want draft", got)
+	}
+	if got := LastPromptComposerState(output, "❯", "Claude Code"); got != ComposerEmpty {
+		t.Fatalf("footer-free fallback with chrome list = %v, want empty (rule closes the region)", got)
 	}
 }
