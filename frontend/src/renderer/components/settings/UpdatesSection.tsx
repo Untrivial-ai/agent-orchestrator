@@ -406,9 +406,10 @@ function UpdateActions({
 	// updater operations, so the manual check simply queues behind it.
 	const busy = manualCheckPending || downloading;
 	// The minimum-spinner window keeps "checking" on screen briefly after the
-	// updater has already answered, so the status line and the primary action
-	// read from the live state and only the button's own label follows `checking`.
+	// updater has already answered. The button is the single visible in-progress
+	// indicator; the status row resumes with the updater's terminal result.
 	const displayState: UpdateState = checking && !downloading && status.state !== "error" && status.state !== "downloaded" ? "checking" : status.state;
+	const showStatusState = displayState !== "checking";
 
 	const [now, setNow] = useState(Date.now());
 	useEffect(() => {
@@ -520,7 +521,7 @@ function UpdateActions({
 					<Button
 						type="button"
 						aria-label={checking ? t("settings.updates.checking") : t("settings.updates.check")}
-						aria-describedby="update-status-line"
+						aria-describedby={showStatusState ? "update-status-line" : undefined}
 						variant="outline"
 						size="sm"
 						onClick={() => void checkNow()}
@@ -548,10 +549,7 @@ function UpdateActions({
 				aria-busy={checking}
 				className="flex min-w-0 flex-col gap-1"
 			>
-				<UpdateStatusLine
-					state={displayState}
-					status={status}
-				/>
+				{showStatusState && <UpdateStatusLine state={displayState} status={status} />}
 				{status.state === "downloading" && status.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={status.percent} className="h-1 w-full" />}
 				{status.transferred !== undefined && status.total !== undefined && <p className="text-xs tabular-nums text-settings-muted">{t("settings.updates.bytes", { downloaded: (status.transferred / 1_000_000).toFixed(1), total: (status.total / 1_000_000).toFixed(1) })}</p>}
 				{channelSwitchMessage && <p className="text-xs leading-4 text-settings-muted">{channelSwitchMessage}</p>}
