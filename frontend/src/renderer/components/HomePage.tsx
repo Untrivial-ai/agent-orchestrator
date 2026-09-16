@@ -128,13 +128,11 @@ function ProjectRow({ project, onClick, emptyTimeLabel, justNowLabel }: { projec
 }
 
 function HomeActionCard({
-	ariaLabel,
 	disabled,
 	icon,
 	label,
 	onClick,
 }: {
-	ariaLabel: string;
 	disabled?: boolean;
 	icon: ReactNode;
 	label: string;
@@ -142,7 +140,6 @@ function HomeActionCard({
 }) {
 	return (
 		<button
-			aria-label={ariaLabel}
 			className={`${HOME_BUTTON_CLASS} disabled:pointer-events-none disabled:opacity-50`}
 			disabled={disabled}
 			onClick={onClick}
@@ -222,25 +219,21 @@ export function HomePage() {
 						{/* 2×2 action grid; standalone agent is a cell here, not a hero CTA above. */}
 						<div className="grid grid-cols-2 gap-3">
 							<HomeActionCard
-								ariaLabel={t("createProject.cloneFromGit")}
 								icon={<GitFork strokeWidth={1.8} />}
 								label={t("createProject.cloneFromGit")}
 								onClick={() => requestSource("clone")}
 							/>
 							<HomeActionCard
-								ariaLabel={t("createProject.openLocal")}
 								icon={<FolderOpen strokeWidth={1.8} />}
 								label={t("createProject.openLocal")}
 								onClick={() => requestSource("local")}
 							/>
 							<HomeActionCard
-								ariaLabel={t("createProject.addWorkspace")}
 								icon={<Folders strokeWidth={1.8} />}
 								label={t("createProject.addWorkspace")}
 								onClick={() => requestSource("workspace")}
 							/>
 							<HomeActionCard
-								ariaLabel={t("home.newStandaloneAgent")}
 								icon={<Bot strokeWidth={1.8} />}
 								label={t("home.newStandaloneAgent")}
 								onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}

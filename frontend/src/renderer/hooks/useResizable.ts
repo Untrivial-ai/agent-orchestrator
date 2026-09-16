@@ -1,5 +1,4 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
-import { resolveSessionInspectorMaxWidthPx, resolveUsedMaxWidthPx } from "../lib/resolve-used-max-width";
 
 type ResizableConstraint = number | (() => number);
 
@@ -36,12 +35,13 @@ interface UseResizableOptions {
  * to the nearest consuming layout elements. Keeping a high-frequency custom
  * property off :root avoids invalidating unrelated renderer subtrees.
  *
- * Inspector clamp contracts (do not regress):
- * - `apply` MUST also respect each target's computed CSS `max-width` (e.g.
- *   `--session-inspector-max-width`). Prop/`rangeRef` max alone is not enough —
- *   the var can grow past the painted panel and desync ResizeHandle.
- * - On pointerdown, seed `widthRef` from the painted box when it disagrees with
- *   the custom property (same CSS max-width desync).
+ * Single owner of clamped width (do not regress):
+ * - `apply` is write-only: clamp with `min`/`max` only. Callers (esp. inspector)
+ *   must pass a live `max` callback — never cache a loose placeholder like
+ *   `defaultWidth * 2` as the drag ceiling.
+ * - On pointerdown, seed from the painted box when it disagrees with the var
+ *   (CSS max-width can hold paint below the custom property).
+ * - Drag applies synchronously so ResizeHandle can follow the painted border 1:1.
  * - Dragging never auto-collapses: clamp at `min`; collapse stays on explicit UI.
  */
 export function useResizable({
@@ -73,16 +73,10 @@ export function useResizable({
 
 	const apply = useCallback(
 		(next: number) => {
-			// Prop max ∩ used CSS max-width. Must use resolveUsedMaxWidthPx — bare
-			// parseFloat misses unresolved min() (inspector leftmost overshoot).
-			let max = maxValue();
-			for (const target of cssTargets()) {
-				const usedMax = resolveUsedMaxWidthPx(target);
-				if (usedMax !== null) max = Math.min(max, usedMax);
-			}
-			const clamped = Math.min(max, Math.max(minValue(), next));
+			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
 			widthRef.current = clamped;
-			for (const target of cssTargets()) {
+			const targets = cssTargets();
+			for (const target of targets) {
 				target.style.setProperty(cssVar, `${clamped}px`);
 				appliedTargetsRef.current.add(target);
 			}
@@ -137,22 +131,11 @@ export function useResizable({
 			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
 			// Seed from the painted box when CSS max-width holds width below the var.
-			const targets = cssTargets();
-			const visualWidth = targets
+			const visualWidth = cssTargets()
 				.map((target) => target.getBoundingClientRect().width)
 				.find((width) => width > 0);
 			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
 				apply(visualWidth);
-			}
-			// Resolve used max-width once per drag. Prefer the session-split CSS
-			// variable formula — unresolved min() is why leftmost overshot.
-			let usedMax: number | null = null;
-			for (const target of targets) {
-				const resolved =
-					resolveSessionInspectorMaxWidthPx(target) ?? resolveUsedMaxWidthPx(target);
-				if (resolved !== null) {
-					usedMax = usedMax === null ? resolved : Math.min(usedMax, resolved);
-				}
 			}
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
@@ -172,12 +155,10 @@ export function useResizable({
 			const onEnd = (e: PointerEvent) => {
 				if (e.pointerId === pointerId) finish();
 			};
-			// Dragging never collapses the panel: `apply` clamps at `min`, so the
-			// drag simply stops at the floor. Collapse stays on explicit controls.
+			// Sync apply during drag so the grip (following the painted border) stays 1:1.
+			// Collapse stays on explicit controls — `apply` clamps at `min`.
 			const onMove = (e: PointerEvent) => {
-				const raw = startWidth + sign * (e.clientX - startX);
-				const max = usedMax === null ? maxValue() : Math.min(maxValue(), usedMax);
-				applyOnFrame(Math.min(max, Math.max(minValue(), raw)));
+				apply(startWidth + sign * (e.clientX - startX));
 			};
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onEnd);
@@ -185,7 +166,7 @@ export function useResizable({
 			window.addEventListener("blur", finish);
 			activeDragCleanupRef.current = finish;
 		},
-		[apply, applyOnFrame, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
+		[apply, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(

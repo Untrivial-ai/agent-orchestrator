@@ -2048,8 +2048,10 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	}
 }
 
-/* Keep keyboard focus visible without adding a ring to the sidebar chrome. */
-.sidebar-focusless :focus-visible {
+/* Keep keyboard focus visible without adding a ring to the sidebar chrome.
+   Opt out elements that own their own fill (icon actions, brand, folder toggle,
+   NavRowHighlight hosts) so each new control does not need another !important. */
+.sidebar-focusless :focus-visible:not(.sidebar-icon-action):not([data-sidebar-brand]):not([data-project-folder]) {
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
 	box-shadow: none !important;
@@ -2058,12 +2060,6 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 /* Icon-only trailing controls (project kebab/orchestrator, session pin/kill,
    Projects "+") tint the glyph only — never pick up the focus fill above. */
 .sidebar-focusless .sidebar-icon-action:focus-visible {
-	background-color: transparent !important;
-}
-
-/* Brand → home: no focus/hover fill. The control is quiet on purpose —
-   do not let `.sidebar-focusless :focus-visible` paint a slab behind the mark. */
-.sidebar-focusless [data-sidebar-brand]:focus-visible {
 	background-color: transparent !important;
 }
 

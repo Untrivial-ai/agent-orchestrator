@@ -951,11 +951,13 @@ export function Sidebar({
 				</div>
 			</SidebarFooter>
 
-			{/* min/max MUST match useResizable above — ResizeHandle has no unclamped fallback. */}
+			{/* Grip follows the painted sidebar-container edge; useResizable owns clamp. */}
 			<ResizeHandle
 				className="group-data-[state=collapsed]:hidden"
-				maxWidth={SIDEBAR_MAX_WIDTH}
-				minWidth={SIDEBAR_MIN_WIDTH}
+				getBorderElement={() =>
+					resizeScopeRef.current?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null
+				}
+				getObserveElements={getResizeTargets}
 				onDoubleClick={onResizeDoubleClick}
 				onPointerDown={onResizePointerDown}
 				side="right"
