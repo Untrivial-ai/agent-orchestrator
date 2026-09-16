@@ -399,7 +399,7 @@ func TestSpawnResolvesProjectFromAOSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
 	}
-	if req.ProjectID != "demo" || req.Harness != "codex" {
+	if req.ProjectID != "demo" || req.Harness != "codex" || req.ParentSessionID != "demo-1" {
 		t.Fatalf("spawn request = %#v", req)
 	}
 	want := []string{"GET /api/v1/sessions/demo-1", "GET /api/v1/projects/demo", "POST /api/v1/agents/readiness/ensure", "POST /api/v1/sessions"}

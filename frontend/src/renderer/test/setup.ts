@@ -330,6 +330,7 @@ if (typeof window !== "undefined") {
 			download: async () => undefined,
 			install: async () => undefined,
 			isPostUpdateRelaunch: async () => false,
+			relaunch: async () => undefined,
 			onStatus: () => () => undefined,
 		onTelemetry: () => () => undefined,
 		},

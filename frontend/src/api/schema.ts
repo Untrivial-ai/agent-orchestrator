@@ -1526,6 +1526,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/conversation/steer-or-send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Steer the active turn or send a new turn when idle */
+        post: operations["steerOrSendSessionConversationTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation/title": {
         parameters: {
             query?: never;
@@ -4177,6 +4194,7 @@ export interface components {
             /** @enum {string} */
             mode?: "chat" | "tui";
             model?: string;
+            parentSessionId?: string;
             projectId?: string;
             prompt?: string;
             /** @enum {string} */
@@ -4242,6 +4260,16 @@ export interface components {
         SteerConversationResponse: {
             activityId?: string;
             providerTurnId: string;
+        };
+        SteerOrSendConversationResponse: {
+            activityId?: string;
+            duplicate: boolean;
+            /** @enum {string} */
+            outcome: "steered" | "sent";
+            providerTurnId?: string;
+            /** @enum {string} */
+            state?: "queued" | "running" | "completed" | "recovered" | "interrupted" | "failed";
+            turnId?: string;
         };
         SubmitAgentHandoffRequest: {
             /** @description Structured, source-agent-authored handoff enrichment. */
@@ -9578,6 +9606,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SteerConversationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    steerOrSendSessionConversationTurn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SteerConversationRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SteerOrSendConversationResponse"];
                 };
             };
             /** @description Bad Request */

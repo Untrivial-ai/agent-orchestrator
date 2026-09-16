@@ -591,6 +591,7 @@ const api = {
 		// True only when this boot is a genuine post-update relaunch; lets the
 		// startup loader swap "Connecting" copy for "Updating / Restarting".
 		isPostUpdateRelaunch: () => ipcRenderer.invoke("updates:isPostUpdateRelaunch") as Promise<boolean>,
+		relaunch: () => ipcRenderer.invoke("updates:relaunch") as Promise<void>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);

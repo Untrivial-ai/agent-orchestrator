@@ -2487,4 +2487,10 @@ describe("Sidebar", () => {
 			document.documentElement.classList.remove("dark");
 		}
 	});
+
+	it("marks the brand with a dev badge in dev builds so the unpackaged window is distinguishable", () => {
+		renderSidebar();
+
+		expect(screen.getByTestId("sidebar-dev-badge")).toHaveTextContent("dev");
+	});
 });

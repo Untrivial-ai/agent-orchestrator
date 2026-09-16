@@ -126,11 +126,17 @@ const ShellCenter = memo(function ShellCenter({
 	selfFramedCenterPanel: boolean;
 }) {
 	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
+	// Only frameless session chrome needs this strip. On macOS and Linux the
+	// session tabs sit flush against the top edge with no OS titlebar, so without
+	// it there is no window-drag target. Windows must stay excluded: WindowTitlebar
+	// already paints a full-width drag region above every route, and adding the
+	// strip there would duplicate that region and leave a dead 8px band below it.
+	const draggableSessionFrame = isSessionRoute && !isWindows;
 	if (hideShellTopbar) {
 		return selfFramedCenterPanel ? (
 			<Outlet />
 		) : (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
 				</div>
@@ -139,7 +145,7 @@ const ShellCenter = memo(function ShellCenter({
 	}
 	if (framedAppTopbar) {
 		return (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 				{isSessionRoute ? null : <ShellTopbar />}
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
@@ -148,7 +154,7 @@ const ShellCenter = memo(function ShellCenter({
 		);
 	}
 	return (
-		<CenterPanelShell className={panelClassName}>
+		<CenterPanelShell className={panelClassName} draggableSessionFrame={draggableSessionFrame}>
 			<div className="flex min-h-0 flex-1 flex-col">
 				<Outlet />
 			</div>
