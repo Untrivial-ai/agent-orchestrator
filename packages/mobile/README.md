@@ -157,8 +157,13 @@ gitignored** — the run commands prebuild them for you.
 Cleartext HTTP to the bridge works on Android everywhere via `usesCleartextTraffic` in
 `app.json`. On iOS, `NSAllowsLocalNetworking` in the prebuilt `Info.plist` only permits
 cleartext to link-local, `.local`, and RFC 1918 (LAN) addresses — Tailscale's
-`100.64.0.0/10` range is RFC 6598, so iOS blocks plaintext to it. Tailscale pairing on iOS
-requires the desktop's secure-pairing mode (TLS via `tailscale serve`).
+`100.64.0.0/10` range is RFC 6598, so since iOS 17 it would be blocked. `app.json` therefore
+declares two `NSExceptionDomains` entries, `100.64.0.0/10` and `ts.net`, so plaintext to a
+tailnet address or MagicDNS name works on iOS as it does on Android (the traffic is inside
+WireGuard either way). The desktop's secure-pairing mode (TLS via `tailscale serve`) is
+still preferred when the tailnet can issue certificates, and is what builds before that
+exception need. Changing the ATS block changes the native fingerprint, so it needs a new
+store build, not an OTA update.
 
 > **On `expo-dev-client`:** this package doesn't depend on it today, so the debug build
 > connects straight to Metro and has no in-app launcher or URL switcher. If you want the

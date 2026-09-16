@@ -320,11 +320,13 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 	});
 
 	// TLS turns itself on wherever Tailscale exists — it is not a switch, and it
-	// is deliberately not tied to the connection picker. iOS refuses cleartext
-	// to a 100.x address, so a Tailscale pairing without it works on Android and
-	// fails on iPhone with nothing on either side to say why. Keying this to a
-	// UI mode would mean hiding that picker also silently disables TLS, which is
-	// the opposite of what a hidden control should do.
+	// is deliberately not tied to the connection picker. iPhone builds before
+	// the app's ATS exception for 100.64.0.0/10 refuse cleartext to a 100.x
+	// address, so a Tailscale pairing without TLS works on Android and fails on
+	// those iPhones with nothing on either side to say why; with the exception
+	// it is still preferred, as end-to-end TLS rather than WireGuard alone.
+	// Keying this to a UI mode would mean hiding that picker also silently
+	// disables TLS, which is the opposite of what a hidden control should do.
 	//
 	// secureAttempted keeps it to one attempt per panel session: a tailnet with
 	// no certificates fails every time, and retrying on each status poll would
