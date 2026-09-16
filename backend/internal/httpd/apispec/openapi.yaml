@@ -9807,17 +9807,21 @@ components:
         command:
           description: Shell command for a command cue. At most 4096 bytes; cleared
             when saving agent cues.
+          maxLength: 4096
           type: string
         description:
           description: Optional human note about the cue, at most 240 bytes.
+          maxLength: 240
           type: string
         name:
           description: Short cue name, unique within the project. Trimmed; must be
             non-empty and at most 64 bytes.
+          maxLength: 64
           type: string
         prompt:
           description: Agent instruction for an agent cue. At most 16384 bytes; cleared
             when saving command cues.
+          maxLength: 16384
           type: string
         type:
           description: 'Cue kind: command asks an agent to run a shell command; agent
@@ -12936,17 +12940,21 @@ components:
         command:
           description: Shell command for a command cue. At most 4096 bytes; cleared
             when saving agent cues.
+          maxLength: 4096
           type: string
         description:
           description: Optional human note about the cue, at most 240 bytes.
+          maxLength: 240
           type: string
         name:
           description: Short cue name, unique within the project. Trimmed; must be
             non-empty and at most 64 bytes.
+          maxLength: 64
           type: string
         prompt:
           description: Agent instruction for an agent cue. At most 16384 bytes; cleared
             when saving command cues.
+          maxLength: 16384
           type: string
         type:
           description: 'Cue kind: command asks an agent to run a shell command; agent

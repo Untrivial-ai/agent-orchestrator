@@ -5,6 +5,13 @@ export type CueDTO = components["schemas"]["CueResponse"];
 export type CreateCueInput = components["schemas"]["CreateCueRequest"];
 export type UpdateCueInput = components["schemas"]["UpdateCueRequest"];
 
+export const CUE_LIMITS = {
+	name: 64,
+	description: 240,
+	command: 4096,
+	prompt: 16384,
+} as const;
+
 export const projectCuesQueryKey = (projectId: string) => ["cues", projectId] as const;
 
 export async function fetchProjectCues(projectId: string): Promise<CueDTO[]> {
