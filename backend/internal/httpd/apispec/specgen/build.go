@@ -1177,7 +1177,7 @@ func cueOperations() []operation {
 			method: http.MethodPost, path: "/api/v1/cues/{cueId}/invoke", id: "invokeCue", tag: "cues",
 			summary:    "Dispatch a cue to the specified session; create a worker only when sessionId is omitted",
 			pathParams: []any{controllers.CueIDParam{}},
-			reqBody:    controllers.InvokeCueRequest{},
+			reqBody:    controllers.InvokeCueRequest{}, optionalReqBody: true,
 			resps: []respUnit{
 				{http.StatusOK, controllers.InvokeCueResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
