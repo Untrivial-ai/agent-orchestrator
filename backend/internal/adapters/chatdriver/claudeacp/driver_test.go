@@ -119,6 +119,19 @@ func TestClaudeACPLaunchEnvAddsSelectedProviderModelAsCustomOption(t *testing.T)
 	}
 }
 
+func TestClaudeACPLaunchEnvDoesNotAddNativeAliasesAsCustomOptions(t *testing.T) {
+	t.Setenv("CLAUDE_MODEL_CONFIG", "")
+	t.Setenv("ANTHROPIC_CUSTOM_MODEL_OPTION", "")
+	for _, alias := range []string{"default", "sonnet", "opus", "haiku", "fable", "opus[1m]"} {
+		t.Run(alias, func(t *testing.T) {
+			env := claudeACPLaunchEnv(nil, "/opt/claude", alias, []ports.AgentModelInfo{{ID: alias}})
+			if got := env["ANTHROPIC_CUSTOM_MODEL_OPTION"]; got != "" {
+				t.Fatalf("ANTHROPIC_CUSTOM_MODEL_OPTION = %q, want native alias omitted", got)
+			}
+		})
+	}
+}
+
 func TestClaudeACPLaunchEnvPreservesExplicitCustomModelOption(t *testing.T) {
 	t.Setenv("ANTHROPIC_CUSTOM_MODEL_OPTION", "")
 	env := claudeACPLaunchEnv(

@@ -34,7 +34,7 @@ func (v *Validator) bedrockRequest(ctx context.Context, cred Credential) (reques
 	}
 
 	switch cred.Kind {
-	case KindAuthToken, KindOAuthToken, KindAPIKey:
+	case KindAuthToken:
 		// AWS_BEARER_TOKEN_BEDROCK: a pre-signed bearer, no signing needed.
 		secret := strings.TrimSpace(cred.Secret)
 		if secret == "" {

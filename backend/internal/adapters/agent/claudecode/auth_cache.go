@@ -7,7 +7,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
-const defaultAuthCacheTTL = 5 * time.Minute
+const (
+	defaultAuthCacheTTL  = 5 * time.Minute
+	negativeAuthCacheTTL = 30 * time.Second
+)
 
 type authCacheEntry struct {
 	result   agentcreds.Result
@@ -28,21 +31,28 @@ func newAuthCache(ttl time.Duration) *authCache {
 	return &authCache{ttl: ttl, now: time.Now}
 }
 
-func (c *authCache) get(fingerprint string) (agentcreds.Result, bool) {
+func (c *authCache) get(fingerprint string, provider agentcreds.Provider) (agentcreds.Result, bool) {
 	if c == nil || fingerprint == "" {
 		return agentcreds.Result{}, false
 	}
 	c.mu.RLock()
 	entry := c.entry
 	c.mu.RUnlock()
-	if entry == nil || entry.result.Fingerprint != fingerprint || c.now().Sub(entry.storedAt) > c.ttl {
+	if entry == nil || entry.result.Fingerprint != fingerprint || entry.result.Provider != provider {
+		return agentcreds.Result{}, false
+	}
+	ttl := c.ttl
+	if entry.result.State != agentcreds.StateValid {
+		ttl = negativeAuthCacheTTL
+	}
+	if c.now().Sub(entry.storedAt) > ttl {
 		return agentcreds.Result{}, false
 	}
 	return entry.result, true
 }
 
 func (c *authCache) put(result agentcreds.Result) {
-	if c == nil || result.State == agentcreds.StateUnknown || result.Fingerprint == "" {
+	if c == nil || result.Fingerprint == "" {
 		return
 	}
 	c.mu.Lock()

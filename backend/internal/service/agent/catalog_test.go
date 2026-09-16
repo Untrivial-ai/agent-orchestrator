@@ -1128,10 +1128,12 @@ func TestClaudeModelsKeepProviderCacheWhenRefreshFallsBackToStaticAliases(t *tes
 		t.Fatal(err)
 	}
 	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
-		"claude-code\x00": {AgentID: "claude-code", CatalogJSON: string(data)},
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+		},
 	}}
 	discoverer := &fakeModelDiscoverer{
-		version: "same-incomplete-fingerprint",
+		version: "same-fingerprint",
 		catalog: ports.AgentModelCatalog{
 			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
 			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
@@ -1149,6 +1151,39 @@ func TestClaudeModelsKeepProviderCacheWhenRefreshFallsBackToStaticAliases(t *tes
 	}
 	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || !got.Stale {
 		t.Fatalf("catalog = %#v, want stale provider cache", got)
+	}
+}
+
+func TestClaudeModelsRejectProviderCacheWhenDiscoveryFingerprintChanges(t *testing.T) {
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1"}}, Source: "provider",
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "credential-a", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "credential-b",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 2 || got.Models[0].ID != "sonnet" || got.Source != "catalog" {
+		t.Fatalf("catalog = %#v, want newly discovered aliases after fingerprint change", got)
 	}
 }
 

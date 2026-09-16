@@ -34,6 +34,36 @@ func TestProviderGateNeverProbesTheWrongHost(t *testing.T) {
 	}
 }
 
+func TestBedrockAcceptsOnlyBearerAndSigV4CredentialKinds(t *testing.T) {
+	tests := []struct {
+		name    string
+		cred    Credential
+		wantErr bool
+	}{
+		{name: "bearer", cred: Credential{Kind: KindAuthToken, Secret: "token"}},
+		{name: "sigv4", cred: Credential{Kind: KindAWSSigV4, Secret: "access\nsecret\nsession"}},
+		{name: "oauth token", cred: Credential{Kind: KindOAuthToken, Secret: "token"}, wantErr: true},
+		{name: "api key", cred: Credential{Kind: KindAPIKey, Secret: "key"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cred.Provider = ProviderBedrock
+			tc.cred.Region = "us-east-1"
+			spec, err := New(nil).bedrockRequest(context.Background(), tc.cred)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("bedrockRequest() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			authorization := spec.request.Header.Get("Authorization")
+			if authorization == "" {
+				t.Fatal("supported Bedrock credential did not add authorization")
+			}
+		})
+	}
+}
+
 // Every probe must hit a model-listing endpoint. A generic identity endpoint
 // would confirm the credential authenticates and say nothing about whether it
 // can reach Claude.

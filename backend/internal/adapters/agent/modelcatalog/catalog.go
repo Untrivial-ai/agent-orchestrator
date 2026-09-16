@@ -526,10 +526,9 @@ func BinaryVersion(ctx context.Context, binary string) string {
 	return fmt.Sprintf("%x", hash.Sum(nil)[:8])
 }
 
-// CatalogFingerprint hashes stable discovery inputs for adapters whose cache
-// can be validated locally. Claude provider catalogs are always revalidated by
-// the service because account and credential-chain state is not fully
-// fingerprintable.
+// CatalogFingerprint hashes every stable discovery input for an agent: the
+// resolved executable plus the configuration and credentials its discovery
+// reads. Only the digest is returned or persisted.
 func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string, env map[string]string) string {
 	binaryVersion := BinaryVersion(ctx, binary)
 	config := discoveryConfigInputs(agentID, workingDir, env)
@@ -548,10 +547,53 @@ func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string,
 // discoveryConfigInputs returns the configuration an agent's discovery consults,
 // or "" when the catalog depends on the binary alone.
 func discoveryConfigInputs(agentID, workingDir string, env map[string]string) string {
+	if agentID == "claude-code" {
+		return "config=" + claudeCodeDiscoveryFingerprint(workingDir, env)
+	}
 	if config := configDiscoveryFingerprint(agentID, workingDir, env); config != "" {
 		return "config=" + config
 	}
 	return ""
+}
+
+func claudeCodeDiscoveryFingerprint(workingDir string, env map[string]string) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("model\x00" + claudeCodeResolvedModel(workingDir, env) + "\x00"))
+	keys := []string{
+		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+		"ANTHROPIC_BASE_URL", "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE",
+		"AWS_REGION", "AWS_DEFAULT_REGION",
+		"ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "CLOUD_ML_REGION", "GOOGLE_CLOUD_REGION",
+		"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+		"AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+		"GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
+	}
+	for _, key := range keys {
+		value, present := env[key]
+		if !present {
+			value = os.Getenv(key)
+		}
+		_, _ = hash.Write([]byte(key + "\x00" + strings.TrimSpace(value) + "\x00"))
+	}
+	for _, path := range claudeCodeSettingsPaths(workingDir) {
+		raw, err := readModelConfig(path)
+		if err != nil {
+			continue
+		}
+		_, _ = hash.Write([]byte(path))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(raw)
+		_, _ = hash.Write([]byte{0})
+	}
+	credentialPath, present := env["GOOGLE_APPLICATION_CREDENTIALS"]
+	if !present {
+		credentialPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	}
+	if raw, err := readModelConfig(strings.TrimSpace(credentialPath)); err == nil {
+		_, _ = hash.Write(raw)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)[:8])
 }
 
 func catalog(agentID, source string, entryMode ports.CustomModelEntryMode, at time.Time, models ...ports.AgentModelInfo) ports.AgentModelCatalog {

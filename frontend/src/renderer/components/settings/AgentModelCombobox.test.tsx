@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,6 +56,30 @@ describe("AgentModelCombobox", () => {
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
 		expect(picker).toHaveTextContent("Plain · Low");
 		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
+	});
+
+	it("closes only the effort submenu on Escape", async () => {
+		renderCombobox(
+			[{ id: "capable", label: "Capable", efforts: ["low", "high"] }],
+			{
+				value: "capable",
+				compact: true,
+				tuning: { effort: "high", onEffortChange: vi.fn() },
+			},
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const effortTrigger = screen.getByRole("menuitem", { name: /Reasoning effort/ });
+		await userEvent.click(effortTrigger);
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+
+		await userEvent.keyboard("{Escape}");
+
+		await waitFor(() => {
+			expect(screen.queryByRole("menuitemradio", { name: "Low" })).not.toBeInTheDocument();
+		});
+		expect(screen.getByRole("menuitem", { name: "Capable" })).toBeInTheDocument();
+		expect(effortTrigger).toHaveFocus();
 	});
 
 	it("closes immediately after selecting a model without effort choices", async () => {

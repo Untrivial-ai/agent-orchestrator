@@ -287,13 +287,15 @@ func TestUnknownProbeResultIsNeverVerified(t *testing.T) {
 // contradicted it.
 func TestInvalidateAuthCacheClearsTheStoredVerdict(t *testing.T) {
 	fingerprint := (agentcreds.Credential{Secret: "k"}).Fingerprint()
-	result := agentcreds.Result{State: agentcreds.StateValid, Fingerprint: fingerprint}
+	result := agentcreds.Result{
+		State: agentcreds.StateValid, Provider: agentcreds.ProviderFirstParty, Fingerprint: fingerprint,
+	}
 	claudeAuthCache.put(result)
-	if _, ok := claudeAuthCache.get(fingerprint); !ok {
+	if _, ok := claudeAuthCache.get(fingerprint, agentcreds.ProviderFirstParty); !ok {
 		t.Fatal("expected the verdict to be cached")
 	}
 	InvalidateAuthCache()
-	if _, ok := claudeAuthCache.get(fingerprint); ok {
+	if _, ok := claudeAuthCache.get(fingerprint, agentcreds.ProviderFirstParty); ok {
 		t.Fatal("a runtime rejection must clear the cached verdict")
 	}
 }
@@ -400,7 +402,7 @@ func TestProbeAnswersFromCacheWithoutReprobing(t *testing.T) {
 	t.Cleanup(InvalidateAuthCache)
 
 	claudeAuthCache.put(agentcreds.Result{
-		State: agentcreds.StateValid, Source: "ANTHROPIC_API_KEY",
+		State: agentcreds.StateValid, Provider: agentcreds.ProviderFirstParty, Source: "ANTHROPIC_API_KEY",
 		Fingerprint: (agentcreds.Credential{
 			Kind: agentcreds.KindAPIKey, Secret: "sk-ant-cached", Provider: agentcreds.ProviderFirstParty,
 		}).Fingerprint(),
@@ -454,6 +456,98 @@ func TestProviderModelsReuseTheValidatedAuthResponse(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("provider requests = %d, want one validation response reused for discovery", requests)
+	}
+}
+
+func TestProviderModelsRefreshesAnAuthOnlyCacheEntry(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-auth-only")
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+	requests := 0
+	server := withStubValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-5"}]}`))
+	})
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+	credential := agentcreds.Credential{
+		Kind: agentcreds.KindAPIKey, Secret: "sk-ant-auth-only", Provider: agentcreds.ProviderGateway,
+		BaseURL: server.URL,
+	}
+	claudeAuthCache.put(agentcreds.Result{
+		State: agentcreds.StateValid, Provider: agentcreds.ProviderGateway,
+		Fingerprint: credential.Fingerprint(),
+	})
+
+	models, err := ProviderModels(context.Background(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || requests != 1 {
+		t.Fatalf("models/requests = %+v/%d, want one fresh provider model", models, requests)
+	}
+}
+
+func TestProviderModelsResolvesProjectCredentialBeforeCLIAndCachesSuccess(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+
+	requests := 0
+	server := withStubValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-5"}]}`))
+	})
+	env := map[string]string{
+		"ANTHROPIC_API_KEY":  "project-key",
+		"ANTHROPIC_BASE_URL": server.URL,
+	}
+	cliReports := 0
+	previous := claudeModelAuthReport
+	claudeModelAuthReport = func(context.Context, string, string, map[string]string) (claudeAuthReport, bool) {
+		cliReports++
+		return claudeAuthReport{APIProvider: "gateway"}, true
+	}
+	t.Cleanup(func() { claudeModelAuthReport = previous })
+
+	for range 2 {
+		models, err := ProviderModels(context.Background(), "/opt/claude", "/workspace", env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(models) != 1 || models[0].ID != "claude-opus-5" {
+			t.Fatalf("models = %+v, want cached provider catalog", models)
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("provider requests = %d, want one", requests)
+	}
+	if cliReports != 1 {
+		t.Fatalf("claude auth status calls = %d, want one", cliReports)
+	}
+}
+
+func TestProviderModelsCachesInconclusiveResultBriefly(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+
+	requests := 0
+	server := withStubValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	env := map[string]string{
+		"ANTHROPIC_API_KEY":  "project-key",
+		"ANTHROPIC_BASE_URL": server.URL,
+	}
+	for range 2 {
+		if _, err := ProviderModels(context.Background(), "", "/workspace", env); err == nil {
+			t.Fatal("inconclusive provider response should fail discovery")
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("provider requests = %d, want one cached inconclusive probe", requests)
 	}
 }
 

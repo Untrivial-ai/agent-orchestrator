@@ -163,6 +163,7 @@ export function AgentModelCombobox({
 	const noOverrideLabel = emptyLabel ?? t("settings.models.agentDefault");
 	const currentLabel = (triggerLabel ?? selected?.label ?? value) || noOverrideLabel;
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const effortTriggerRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
 	const updateScrollCue = useCallback(() => {
 		const element = scrollRef.current;
@@ -378,8 +379,14 @@ export function AgentModelCombobox({
 						<OptionMenuSub open={effortMenuOpen} onOpenChange={(open) => {
 							if (open || !awaitingEffort) setEffortMenuOpen(open);
 						}}>
-							<OptionMenuSubTrigger label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
-							<OptionMenuSubContent>
+							<OptionMenuSubTrigger ref={effortTriggerRef} label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
+							<OptionMenuSubContent onEscapeKeyDown={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								setAwaitingEffort(false);
+								setEffortMenuOpen(false);
+								effortTriggerRef.current?.focus();
+							}}>
 								{["", ...(effortModel?.efforts ?? [])].map((effort) => (
 									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === tuning.effort}
 										active={effort === tuning.effort} onSelect={() => {

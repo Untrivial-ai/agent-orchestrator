@@ -150,7 +150,10 @@ func (p *Plugin) probeVerdict(ctx context.Context, report claudeAuthReport, cliO
 	// credential's fingerprint: a verdict about a credential the agent no
 	// longer uses is not evidence about anything.
 	if found {
-		if cached, hit := p.authCache().get(cred.Fingerprint()); hit {
+		if cached, hit := p.authCache().get(cred.Fingerprint(), provider); hit {
+			if cached.State == agentcreds.StateUnknown {
+				return authVerdict{}, false
+			}
 			return verdictFromResult(cached), true
 		}
 	}
@@ -423,37 +426,45 @@ func ProviderModels(ctx context.Context, binary, workingDir string, env map[stri
 		}
 	}
 
-	reported := ""
-	if strings.TrimSpace(binary) != "" {
-		if report, ok := claudeModelAuthReport(ctx, binary, workingDir, env); ok {
-			reported = report.APIProvider
-		}
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, agentcreds.DefaultTimeout)
 	defer cancel()
+	reported := ""
 	result := agentcreds.Result{}
-	if provider, ok := agentcreds.ResolveProvider(reported, opts); ok {
-		if cred, found := agentcreds.ResolveLocal(probeCtx, provider, opts); found {
-			if cached, hit := claudeAuthCache.get(cred.Fingerprint()); hit &&
-				cached.State == agentcreds.StateValid && len(cached.Models) > 0 {
-				result = cached
+	provider, providerOK := agentcreds.ResolveProvider("", opts)
+	cred, found := agentcreds.Credential{}, false
+	if providerOK {
+		cred, found = agentcreds.ResolveLocal(probeCtx, provider, opts)
+	}
+	if found {
+		if cached, hit := claudeAuthCache.get(cred.Fingerprint(), provider); hit &&
+			(cached.State != agentcreds.StateValid || len(cached.Models) > 0) {
+			result = cached
+		}
+	}
+	if result.State == "" && strings.TrimSpace(binary) != "" {
+		if report, ok := claudeModelAuthReport(ctx, binary, workingDir, env); ok {
+			reported = report.APIProvider
+			provider, providerOK = agentcreds.ResolveProvider(reported, opts)
+			if providerOK {
+				cred, found = agentcreds.ResolveLocal(probeCtx, provider, opts)
+				if found {
+					if cached, hit := claudeAuthCache.get(cred.Fingerprint(), provider); hit &&
+						(cached.State != agentcreds.StateValid || len(cached.Models) > 0) {
+						result = cached
+					}
+				}
 			}
 		}
 	}
 	if result.State == "" {
 		result = claudeValidator().ValidateLocal(probeCtx, reported, opts)
+		claudeAuthCache.put(result)
 	}
 	if result.State != agentcreds.StateValid && (result.Provider != agentcreds.ProviderBedrock || len(result.Models) == 0) {
 		return nil, fmt.Errorf("claude-code: model discovery: %s", result.Detail)
 	}
 	if len(result.Models) == 0 {
 		return nil, errors.New("claude-code: provider reported no Claude models")
-	}
-
-	// Cache only a verified auth verdict. Bedrock's control-plane list is useful
-	// catalog data but does not prove that the principal may invoke a model.
-	if result.State == agentcreds.StateValid {
-		claudeAuthCache.put(result)
 	}
 
 	models := make([]ports.AgentModelInfo, 0, len(result.Models))

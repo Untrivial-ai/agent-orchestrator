@@ -175,7 +175,8 @@ func claudeACPLaunchEnv(
 	env["CLAUDE_CODE_EXECUTABLE"] = binary
 	selected := strings.TrimSpace(selectedModel)
 	if _, configured := input["ANTHROPIC_CUSTOM_MODEL_OPTION"]; selected != "" &&
-		!configured && strings.TrimSpace(os.Getenv("ANTHROPIC_CUSTOM_MODEL_OPTION")) == "" {
+		!isClaudeNativeModelAlias(selected) && !configured &&
+		strings.TrimSpace(os.Getenv("ANTHROPIC_CUSTOM_MODEL_OPTION")) == "" {
 		// availableModels restricts Claude Code's built-in picker but does not
 		// make every provider-discovered API ID a selectable SDK model. The
 		// custom option is the supported bridge for the one API model AO is
@@ -220,6 +221,15 @@ func claudeACPLaunchEnv(
 	}
 	env["CLAUDE_MODEL_CONFIG"] = string(encodedConfig)
 	return env
+}
+
+func isClaudeNativeModelAlias(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "default", "sonnet", "opus", "haiku", "fable", "opus[1m]":
+		return true
+	default:
+		return false
+	}
 }
 
 // claudeACPModelConfig returns a mergeable user configuration. preserve is
