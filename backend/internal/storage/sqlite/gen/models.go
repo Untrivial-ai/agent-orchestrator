@@ -159,46 +159,17 @@ type ChangeLog struct {
 }
 
 type CodexAccountSwitch struct {
-	ID                      string
-	SourceAccountID         string
-	TargetAccountID         string
-	IdempotencyKey          string
-	RequestFingerprint      string
-	ExpectedAccountRevision int64
-	Phase                   string
-	FailureCode             string
-	CredentialsCommittedAt  sql.NullTime
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
-	CompletedAt             sql.NullTime
-}
-
-type CodexAccountSwitchSession struct {
-	SwitchID                string
-	SessionID               string
-	NativeSessionID         string
-	InterfaceMode           string
-	SourceHandleID          string
-	SourceGeneration        string
-	WasRunning              bool
-	StopState               string
-	RestartState            string
-	ReviewerWasRunning      bool
-	ReviewerSourceHandleID  string
-	ReviewerNativeSessionID string
-	ReviewerStopState       string
-	ReviewerRestartState    string
-	ErrorCode               string
-	StoppedAt               sql.NullTime
-	RestartedAt             sql.NullTime
-}
-
-type CodexActiveAccount struct {
-	SingletonID int64
-	AccountID   string
-	Revision    int64
-	ActivatedAt time.Time
-	UpdatedAt   time.Time
+	ID                     string
+	SourceAccountID        string
+	TargetAccountID        string
+	IdempotencyKey         string
+	Phase                  string
+	FailureCode            string
+	CredentialsCommittedAt sql.NullTime
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	CompletedAt            sql.NullTime
+	SourceKind             string
 }
 
 type Conversation struct {

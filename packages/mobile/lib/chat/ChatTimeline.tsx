@@ -5,14 +5,21 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	FlatList,
+	Image,
+	Modal,
 	Pressable,
+	ScrollView,
 	StyleSheet,
 	Switch,
 	Text,
 	TextInput,
 	View,
+	useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { authHeaders, httpBase } from "../config";
 import { haptics } from "../haptics";
+import { useApp } from "../store";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -28,6 +35,8 @@ import {
 	toggleInputValue,
 	validateInput,
 } from "./elicitationModel";
+import { previewFilePath } from "../api";
+import { attachmentName, attachmentTileSize, isImageAttachment, isSameAttachmentLoad, stagedAttachmentParts, type AttachmentImageSource } from "./messageAttachments";
 import type {
 	ConversationActivity,
 	ConversationItem,
@@ -175,19 +184,21 @@ function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending,
 	const rows = activityRuns(group.items);
 	return <View>{rows.map((row) => row.kind === "activities"
 		? <ActivityRun key={row.key} activities={row.items} />
-		: <TimelineItem key={row.key} item={row.items[0]} approvalPending={approvalPending} inputPending={inputPending} onDecide={onDecide} onResolveInput={onResolveInput} />)}
+		: <TimelineItem key={row.key} item={row.items[0]} sessionId={snapshot.sessionId} approvalPending={approvalPending} inputPending={inputPending} onDecide={onDecide} onResolveInput={onResolveInput} />)}
 		{group.turn ? <TurnSummary turn={group.turn} onRollback={canRollbackTurn(snapshot, group.turn) ? onRollback : undefined} /> : null}
 	</View>;
 }
 
 const TimelineItem = memo(function TimelineItem({
 	item,
+	sessionId,
 	approvalPending,
 	inputPending,
 	onDecide,
 	onResolveInput,
 }: {
 	item: ConversationItem;
+	sessionId: string;
 	approvalPending: boolean;
 	inputPending: boolean;
 	onDecide(requestId: string, decisionId: string): Promise<void>;
@@ -197,10 +208,12 @@ const TimelineItem = memo(function TimelineItem({
 	if (item.kind === "message") {
 		if (item.role === "user" && item.origin === "human") {
 			const delivery = deliveryCopy(item.delivery);
+			const { body, attachments } = stagedAttachmentParts(item.text);
 			return (
 				<View style={styles.userRow}>
 					<View style={styles.userBubble}>
-						<Text selectable style={styles.userText}>{item.text}</Text>
+						{body ? <Text selectable style={styles.userText}>{body}</Text> : null}
+						{attachments.length > 0 ? <StagedAttachments sessionId={sessionId} paths={attachments} spaced={Boolean(body)} /> : null}
 						{delivery ? <Text style={styles.delivery}>{delivery}</Text> : null}
 					</View>
 				</View>
@@ -228,7 +241,8 @@ const TimelineItem = memo(function TimelineItem({
 		return <CompactionMarker activity={item} />;
 	}
 	if (item.activityKind === "system" && item.detail?.event === "steer") {
-		return <View style={styles.userRow}><View style={[styles.userBubble, styles.steerBubble]}><Text style={styles.steerLabel}>STEERED</Text><Text selectable style={styles.userText}>{item.detail.text || item.summary}</Text></View></View>;
+		const { body, attachments } = stagedAttachmentParts(item.detail.text || item.summary);
+		return <View style={styles.userRow}><View style={[styles.userBubble, styles.steerBubble]}><Text style={styles.steerLabel}>STEERED</Text>{body ? <Text selectable style={styles.userText}>{body}</Text> : null}{attachments.length > 0 ? <StagedAttachments sessionId={sessionId} paths={attachments} spaced={Boolean(body)} /> : null}</View></View>;
 	}
 	if (item.detail?.event === "model.rerouted") return <SystemSignal icon="shuffle" title={`Answered by ${item.detail.toModel || "another model"}`} detail={item.detail.fromModel ? `Instead of ${item.detail.fromModel}${item.detail.reason ? ` · ${item.detail.reason}` : ""}` : item.detail.reason} />;
 	if (item.detail?.event === "auth.reauth_required") return <SystemSignal icon="key" danger title="The provider asked you to sign in again" detail={item.detail.reason} />;
@@ -240,6 +254,71 @@ function SystemSignal({ icon, title, detail, danger }: { icon: keyof typeof Feat
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <View style={[styles.systemSignal, danger && { borderColor: t.red }]}><Feather name={icon} size={14} color={danger ? t.red : t.textTertiary} /><View style={{ flex: 1 }}><Text style={[styles.systemTitle, danger && { color: t.red }]}>{title}</Text>{detail ? <Text style={styles.systemDetail}>{String(detail)}</Text> : null}</View></View>;
+}
+
+/**
+ * Files AO staged into the worktree for a human message. Images load through the
+ * daemon's preview-files route with the connection's Bearer header, the same
+ * credential every other mobile request uses; anything else stays a name chip.
+ * Images sit in the bubble as center-cropped tiles and open full-screen on tap.
+ * Render it only for messages that carry attachments: it subscribes to the app
+ * store, and doing that for every bubble would defeat TimelineItem's memo.
+ */
+function StagedAttachments({ sessionId, paths, spaced }: { sessionId: string; paths: string[]; spaced: boolean }) {
+	const { config } = useApp();
+	const styles = useThemedStyles(makeStyles);
+	const tileSize = attachmentTileSize(paths.filter(isImageAttachment).length);
+	return <View style={[styles.attachments, spaced && styles.attachmentsSpaced]}>
+		{paths.map((path) => {
+			const source = config && isImageAttachment(path)
+				? { uri: `${httpBase(config)}${previewFilePath(sessionId, path)}`, headers: authHeaders(config) }
+				: undefined;
+			return <StagedAttachment key={path} name={attachmentName(path)} source={source} tileSize={tileSize} />;
+		})}
+	</View>;
+}
+
+function StagedAttachment({ name, source, tileSize }: { name: string; source?: AttachmentImageSource; tileSize: number }) {
+	const t = useTheme();
+	const styles = useThemedStyles(makeStyles);
+	// The failure belongs to the load that failed, so a reconnect to another address
+	// or a rotated password retries on its own; tapping the chip retries in place.
+	const [failedLoad, setFailedLoad] = useState<AttachmentImageSource>();
+	const [viewerOpen, setViewerOpen] = useState(false);
+	if (!source) {
+		return <View style={styles.attachmentChip}><Feather name="file-text" size={12} color={t.textTertiary} /><Text numberOfLines={1} style={styles.attachmentName}>{name}</Text></View>;
+	}
+	if (!isSameAttachmentLoad(failedLoad, source)) {
+		// Cover-cropping a square reads as a deliberate thumbnail; the viewer shows the whole image.
+		return <>
+			<Pressable accessibilityRole="imagebutton" accessibilityLabel={`Open ${name}`} onPress={() => { haptics.tap(); setViewerOpen(true); }} style={[styles.attachmentTile, { width: tileSize, height: tileSize }]}>
+				<Image accessibilityIgnoresInvertColors source={source} resizeMode="cover" onError={() => setFailedLoad(source)} style={styles.attachmentTileImage} />
+			</Pressable>
+			<AttachmentViewer visible={viewerOpen} name={name} source={source} onClose={() => setViewerOpen(false)} />
+		</>;
+	}
+	return <Pressable accessibilityRole="button" accessibilityLabel={`Retry loading ${name}`} hitSlop={6} onPress={() => { haptics.tap(); setFailedLoad(undefined); }} style={styles.attachmentChip}>
+		<Feather name="refresh-cw" size={12} color={t.textTertiary} />
+		<Text numberOfLines={1} style={styles.attachmentName}>{name}</Text>
+		<Text style={styles.attachmentRetry}>Tap to retry</Text>
+	</Pressable>;
+}
+
+/** Full-screen image at its own aspect ratio; pinch-zoom where the platform scroll view supports it. */
+function AttachmentViewer({ visible, name, source, onClose }: { visible: boolean; name: string; source: AttachmentImageSource; onClose(): void }) {
+	const styles = useThemedStyles(makeStyles);
+	const insets = useSafeAreaInsets();
+	const { width, height } = useWindowDimensions();
+	return <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
+		<View style={styles.viewer}>
+			<ScrollView maximumZoomScale={4} minimumZoomScale={1} centerContent bouncesZoom showsHorizontalScrollIndicator={false} showsVerticalScrollIndicator={false}>
+				<Image accessibilityLabel={name} accessibilityIgnoresInvertColors source={source} resizeMode="contain" style={{ width, height }} />
+			</ScrollView>
+			<Pressable accessibilityRole="button" accessibilityLabel="Close image" hitSlop={10} onPress={() => { haptics.tap(); onClose(); }} style={[styles.viewerClose, { top: insets.top + 12 }]}>
+				<Feather name="x" size={20} color="#fff" />
+			</Pressable>
+		</View>
+	</Modal>;
 }
 
 function deliveryCopy(state?: string): string | undefined {
@@ -798,6 +877,17 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	userBubble: { maxWidth: "86%", backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 17, borderBottomRightRadius: 5, paddingHorizontal: 14, paddingVertical: 10 },
 	userText: { color: t.textPrimary, fontSize: 16, lineHeight: 22 },
 	delivery: { marginTop: 5, color: t.amber, fontSize: 10 },
+	attachments: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+	attachmentsSpaced: { marginTop: 8 },
+	attachmentTile: { overflow: "hidden", borderRadius: 10, backgroundColor: t.bgColumn },
+	attachmentTileImage: { width: "100%", height: "100%" },
+	viewer: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.94)" },
+	viewerClose: { position: "absolute", right: 16, width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255, 255, 255, 0.16)" },
+	// alignSelf keeps a chip its own height next to a tile: the row container's
+	// default stretch would otherwise blow it up to the tile's 104/160px.
+	attachmentChip: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: t.borderSubtle, paddingHorizontal: 8, paddingVertical: 6 },
+	attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: 12 },
+	attachmentRetry: { color: t.blue, fontSize: 11, fontWeight: "600" },
 	originMessage: { marginVertical: 8, borderLeftWidth: 2, borderLeftColor: t.borderStrong, paddingLeft: 10, gap: 5 },
 	originHeader: { flexDirection: "row", alignItems: "center", gap: 5 },
 	originLabel: { color: t.textTertiary, fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.7 },

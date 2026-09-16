@@ -54,6 +54,18 @@ describe("mobile Chat timeline model", () => {
 		]);
 	});
 
+	it("titles a marker with the human's words rather than AO's staged attachment list", () => {
+		const value = snapshot();
+		const [first, second] = value.items;
+		if (first.kind !== "message" || second.kind !== "message") throw new Error("fixture");
+		first.text = "See screenshot\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-a.png";
+		second.text = "Attached files (read these files in the workspace):\n- .ao/attachments/attachment-b.png\n- .ao/attachments/attachment-c.png";
+		expect(conversationMarkers(value)).toMatchObject([
+			{ sequence: 1, title: "See screenshot" },
+			{ sequence: 2, title: "2 attachments" },
+		]);
+	});
+
 	it("keys a loaded turn by durable identity rather than its current page boundary", () => {
 		const value = snapshot();
 		value.items = value.items.filter((item) => item.id !== "u1");

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL } from "../shared/shortcuts";
 import { attachAppShortcuts } from "./app-shortcuts";
+import { toggleAppDevTools } from "./app-devtools";
 
 type InputEvent = {
 	key: string;
@@ -42,6 +43,24 @@ function fakeTarget() {
 }
 
 describe("attachAppShortcuts", () => {
+	it("routes Ctrl+Shift+I to shell DevTools when no Browser view is available", async () => {
+		const source = fakeSource();
+		const target = { ...fakeTarget(), toggleDevTools: vi.fn() };
+		const browserHost = { toggleDevToolsForLastFocused: vi.fn().mockResolvedValue(null) };
+		let toggle: Promise<void> | undefined;
+		attachAppShortcuts(source, false, target, false, () => ({}), () => false, () => true, (id) => {
+			if (id === "toggle-browser-devtools") toggle = toggleAppDevTools(browserHost, () => target);
+		});
+
+		const event = source.emit({ key: "I", control: true, shift: true });
+		source.emit({ key: "I", control: true, shift: true, type: "keyUp" });
+		await toggle;
+
+		expect(event.preventDefault).toHaveBeenCalledOnce();
+		expect(target.toggleDevTools).toHaveBeenCalledOnce();
+		expect(target.send).not.toHaveBeenCalled();
+	});
+
 	it("forwards and prevents default on the main-window chord", () => {
 		const source = fakeSource();
 		const target = fakeTarget();

@@ -150,7 +150,7 @@ var shippedMigrations = map[int64]string{
 	143: "0143_conversation_checkpoint_turn.sql",
 	144: "0144_session_revision.sql",
 	145: "0145_native_checkpoint_evidence.sql",
-	146: "0146_cues.sql",
+146: "0146_codex_account_management_simplification.sql",
 	147: "0147_cues.sql",
 }
 

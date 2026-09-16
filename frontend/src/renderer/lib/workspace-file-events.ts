@@ -84,6 +84,7 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient): Wor
 	const invalidate = () => {
 		if (stream.debounce) clearTimeout(stream.debounce);
 		stream.debounce = setTimeout(() => {
+			void queryClient.invalidateQueries({ queryKey: ["workspace-file-paths", sessionId] });
 			void queryClient.invalidateQueries({ queryKey: ["session-workspace-files", sessionId] });
 			void queryClient.invalidateQueries({ queryKey: ["session-workspace-file", sessionId] });
 			void queryClient.invalidateQueries({ queryKey: ["session-workspace-file-revision", sessionId] });

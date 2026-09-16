@@ -13,6 +13,7 @@ type TabsListener = (state: import("../../main/browser-view-host").BrowserTabsSt
 type DevToolsListener = (state: import("../../main/browser-view-host").BrowserDevToolsState) => void;
 type ActivityListener = (state: import("../../main/browser-view-host").BrowserAgentActivityState) => void;
 type ProfileListener = (state: import("../../shared/browser-profiles").BrowserProfileViewState) => void;
+type AnnotationStateListener = (state: import("../../shared/browser-annotations").BrowserAnnotationStatePayload) => void;
 
 function createSlot(rect: Partial<DOMRect> = {}) {
 	const slot = document.createElement("div");
@@ -38,6 +39,7 @@ function setupBridge() {
 	const devtoolsListeners = new Set<DevToolsListener>();
 	const activityListeners = new Set<ActivityListener>();
 	const profileListeners = new Set<ProfileListener>();
+	const annotationStateListeners = new Set<AnnotationStateListener>();
 	const bridge = {
 		nativeCompositionEnabled: false,
 		stateFor(viewId: string): BrowserNavState {
@@ -142,6 +144,9 @@ function setupBridge() {
 		},
 		destroy: vi.fn(),
 		setAnnotationMode: vi.fn(async () => undefined),
+		completeAnnotation: vi.fn(async () => undefined),
+		discardAnnotations: vi.fn(async () => undefined),
+		annotationAction: vi.fn(async () => undefined),
 		onNavState: vi.fn((listener: Listener) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -166,6 +171,10 @@ function setupBridge() {
 		onProfileManage: vi.fn(() => () => undefined),
 		onAnnotationSubmit: vi.fn(() => () => undefined),
 		onAnnotationCancel: vi.fn(() => () => undefined),
+		onAnnotationState: vi.fn((listener: AnnotationStateListener) => {
+			annotationStateListeners.add(listener);
+			return () => annotationStateListeners.delete(listener);
+		}),
 		emit(state: BrowserNavState) {
 			listeners.forEach((listener) => listener(state));
 		},
@@ -180,6 +189,9 @@ function setupBridge() {
 		},
 		emitProfile(state: Parameters<ProfileListener>[0]) {
 			profileListeners.forEach((listener) => listener(state));
+		},
+		emitAnnotationState(state: Parameters<AnnotationStateListener>[0]) {
+			annotationStateListeners.forEach((listener) => listener(state));
 		},
 	};
 	window.ao = { ...window.ao!, browser: bridge };
@@ -336,6 +348,37 @@ describe("useBrowserView", () => {
 
 		expect(bridge.navigate).toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:5173/" });
 		expect(bridge.openTab).not.toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:5173/" });
+	});
+
+	it("selects an existing matching tab instead of opening a duplicate", async () => {
+		const bridge = setupBridge();
+		const { result } = renderHook(() => useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }));
+
+		await waitFor(() => expect(result.current.tabs.map((tab) => tab.id)).toEqual(["t1"]));
+		act(() => bridge.emitTabs({
+			viewId: "42:sess-1",
+			activeTabId: "t2",
+			tabs: [
+				{ id: "t1", url: "https://instagram.com/", title: "Instagram", active: false },
+				{ id: "t2", url: "https://example.com/", title: "Example", active: true },
+			],
+			change: { kind: "popup", tabId: "t2" },
+		}));
+		bridge.getTabs.mockResolvedValue({
+			viewId: "42:sess-1",
+			activeTabId: "t2",
+			tabs: [
+				{ id: "t1", url: "https://instagram.com/", title: "Instagram", active: false },
+				{ id: "t2", url: "https://example.com/", title: "Example", active: true },
+			],
+		});
+
+		await act(() => result.current.openLink("https://www.instagram.com/#inbox"));
+		expect(bridge.selectTab).toHaveBeenCalledWith({ viewId: "42:sess-1", tabId: "t1" });
+		expect(bridge.openTab).not.toHaveBeenCalledWith({
+			viewId: "42:sess-1",
+			url: "https://www.instagram.com/#inbox",
+		});
 	});
 
 	it("remembers a closed tab so it can be reopened, and forgets it once reopened", async () => {

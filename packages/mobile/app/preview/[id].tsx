@@ -53,3 +53,5 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	retry: { marginTop: 5, minHeight: 40, justifyContent: "center", borderRadius: 10, backgroundColor: t.blue, paddingHorizontal: 14 },
 	retryText: { color: t.onAccent, fontSize: 12, fontWeight: "700" },
 });
+
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

@@ -25,6 +25,9 @@ const (
 type AgentConfig struct {
 	// Model overrides the agent's default model (e.g. claude-opus-4-5).
 	Model string `json:"model,omitempty"`
+	// Effort selects a model-advertised reasoning level. Empty defers to the
+	// provider/model default.
+	Effort string `json:"effort,omitempty"`
 	// Mode selects an agent-owned operating mode when the adapter exposes modes
 	// instead of raw model ids (currently Amp: low|medium|high|ultra).
 	Mode string `json:"mode,omitempty"`

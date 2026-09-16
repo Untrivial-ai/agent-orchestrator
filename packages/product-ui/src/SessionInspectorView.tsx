@@ -113,7 +113,9 @@ export function SessionInspectorShellView({
 					activeView === "browser" && "session-inspector__topbar--browser",
 				)}
 			>
-				{isVisible ? (
+				{isVisible && tabs.length === 1 ? (
+					<span className="min-w-0 flex-1 px-2 text-sm text-passive">{tabs[0].label}</span>
+				) : isVisible ? (
 					<div
 						className={cn(
 							"session-inspector__tablist flex min-w-0 items-center justify-start gap-1",

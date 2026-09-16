@@ -8,7 +8,12 @@ import type {
 	BrowserTabState,
 	BrowserTabsState,
 } from "../../main/browser-view-host";
-import type { BrowserAnnotationCancelPayload, BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
+import type {
+	BrowserAnnotationActionInput,
+	BrowserAnnotationCancelPayload,
+	BrowserAnnotationStatePayload,
+	BrowserAnnotationSubmitPayload,
+} from "../../shared/browser-annotations";
 import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
 
@@ -29,6 +34,20 @@ const MAX_CLOSED_TABS = 5;
 // check on `url` treats that as "real" content worth remembering.
 function isBlankTabUrl(url: string): boolean {
 	return !url || url === "about:blank";
+}
+
+function sameBrowserURL(left: string, right: string): boolean {
+	try {
+		const normalize = (value: string) => {
+			const parsed = new URL(value);
+			parsed.hostname = parsed.hostname.replace(/^www\./i, "");
+			parsed.hash = "";
+			return parsed.href;
+		};
+		return normalize(left) === normalize(right);
+	} catch {
+		return left === right;
+	}
 }
 
 type UseBrowserViewOptions = {
@@ -83,7 +102,9 @@ export type BrowserViewModel = {
 	agentBrowserActivity: BrowserAgentActivityState | null;
 	destroy: () => void;
 	annotationMode: boolean;
+	annotationState?: Pick<BrowserAnnotationStatePayload, "count" | "screenshotCount" | "hasDraft">;
 	setAnnotationMode: (enabled: boolean) => Promise<void>;
+	annotationAction?: (action: BrowserAnnotationActionInput["action"]) => Promise<void>;
 };
 
 const EMPTY_NAV_STATE: BrowserNavState = {
@@ -205,6 +226,7 @@ export function useBrowserView({
 	const [viewId, setViewId] = useState("");
 	const [navState, setNavState] = useState<BrowserNavState>(EMPTY_NAV_STATE);
 	const [annotationMode, setAnnotationModeState] = useState(false);
+	const [annotationState, setAnnotationState] = useState({ count: 0, screenshotCount: 0, hasDraft: false });
 	const [tabsState, setTabsState] = useState<BrowserTabsState>(EMPTY_TABS_STATE);
 	// Display-only tab order (drag-to-reorder). Re-projected onto every incoming
 	// tabsState push below, since the main process's own tab order is not
@@ -646,8 +668,31 @@ export function useBrowserView({
 				setAnnotationModeState(false);
 				return;
 			}
-			await window.ao!.browser.setAnnotationMode({ viewId: id, enabled });
+			const styles = getComputedStyle(document.documentElement);
+			await window.ao!.browser.setAnnotationMode({
+				viewId: id,
+				enabled,
+				theme: {
+					background: styles.getPropertyValue("--background").trim(),
+					foreground: styles.getPropertyValue("--foreground").trim(),
+					muted: styles.getPropertyValue("--muted").trim(),
+					mutedForeground: styles.getPropertyValue("--muted-foreground").trim(),
+					border: styles.getPropertyValue("--border").trim(),
+					accent: styles.getPropertyValue("--primary").trim(),
+					accentForeground: styles.getPropertyValue("--primary-foreground").trim(),
+					destructive: styles.getPropertyValue("--destructive").trim(),
+				},
+			});
 			setAnnotationModeState(enabled);
+		},
+		[hasNativeBrowser],
+	);
+
+	const annotationAction = useCallback(
+		async (action: BrowserAnnotationActionInput["action"]) => {
+			const id = viewIdRef.current;
+			if (!id || !hasNativeBrowser) return;
+			await window.ao!.browser.annotationAction({ viewId: id, action });
 		},
 		[hasNativeBrowser],
 	);
@@ -740,10 +785,21 @@ export function useBrowserView({
 				setNavState(ensured);
 			}
 			let tabs = tabsStateRef.current.tabs;
-			if (tabs.length === 0) {
+			// The native tab host is authoritative. The renderer cache can lag after
+			// navigation/title updates, so refresh it before deciding whether this URL
+			// already has a tab and should be selected instead of duplicated.
+			try {
 				const next = await window.ao!.browser.getTabs(id);
 				tabs = next.tabs;
 				if (viewIdRef.current === id) setTabsState(next);
+			} catch {
+				// Keep the last known tabs as a fallback if the native host is briefly
+				// unavailable; opening the link remains better than dropping the click.
+			}
+			const existingTab = tabs.find((tab) => !isBlankTabUrl(tab.url) && sameBrowserURL(tab.url, url));
+			if (existingTab) {
+				await selectTab(existingTab.id);
+				return;
 			}
 			const activeTab = tabs.find((tab) => tab.active);
 			if (activeTab && isBlankTabUrl(activeTab.url)) {
@@ -753,7 +809,7 @@ export function useBrowserView({
 			}
 			await openTab(url);
 		},
-		[hasNativeBrowser, openTab, sessionId],
+		[hasNativeBrowser, openTab, selectTab, sessionId],
 	);
 
 	const reopenClosedTab = useCallback(
@@ -804,6 +860,18 @@ export function useBrowserView({
 			offSubmit?.();
 			offCancel?.();
 		};
+	}, []);
+
+	useEffect(() => {
+		const offState = window.ao?.browser.onAnnotationState((payload) => {
+			if (payload.viewId !== viewIdRef.current) return;
+			setAnnotationState({
+				count: payload.count,
+				screenshotCount: payload.screenshotCount,
+				hasDraft: payload.hasDraft,
+			});
+		});
+		return () => offState?.();
 	}, []);
 
 	useEffect(() => {
@@ -925,6 +993,8 @@ export function useBrowserView({
 		agentBrowserActivity: stateBelongsToSession ? agentBrowserActivity : null,
 		destroy,
 		annotationMode,
+		annotationState,
 		setAnnotationMode,
+		annotationAction,
 	};
 }

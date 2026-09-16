@@ -98,7 +98,7 @@ for (const platform of PLATFORMS) {
 			.getByRole("button", { name: /Project actions for fake-proj/ })
 			.first()
 			.click({ force: true });
-		await page.getByRole("menuitem", { name: /New session/ }).click();
+		await page.getByRole("menuitem", { name: /New task/ }).click();
 		const prompt = page.getByRole("dialog").getByLabel("Task");
 		await expect(prompt).toBeVisible();
 		await page.keyboard.type("caret is here");

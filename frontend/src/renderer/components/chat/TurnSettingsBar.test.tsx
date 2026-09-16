@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatConfigOption } from "../../types/conversation";
@@ -51,6 +51,186 @@ const OPTIONS: ChatConfigOption[] = [
 		choices: [{ value: "reviewer", name: "Code reviewer" }],
 	},
 ];
+
+describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model search", (path) => {
+	function setup(count = 100) {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		const onComposerClick = vi.fn();
+		const models = Array.from({ length: count }, (_, index) => ({
+			id: `provider-${index % 2}/model-${index}`,
+			displayName: `Model ${index}`,
+			default: index === 0,
+			efforts: ["high"],
+		}));
+		const modelOption: ChatConfigOption = {
+			id: "model",
+			name: "Model",
+			category: "model",
+			type: "select",
+			currentValue: models[0].id,
+			choices: models.map((model, index) => ({
+				value: model.id,
+				name: model.displayName,
+				group: `provider-${index % 2}`,
+				groupName: `Provider ${index % 2}`,
+			})),
+		};
+		render(
+			<div onClick={onComposerClick}>
+				<TurnSettingsBar
+					models={path === "native" ? models : []}
+					settings={{ model: models[0].id, reasoningEffort: "high", approvalMode: "accept-edits" }}
+					onChange={path === "native" ? onChange : undefined}
+					configOptions={path === "native" ? undefined : path === "ACP submenu" ? [modelOption, OPTIONS[1]] : [modelOption]}
+					onChangeConfigOption={path === "native" ? undefined : onChange}
+				/>
+			</div>,
+		);
+		const open = async () => {
+			await user.click(screen.getByRole("button", {
+				name: path === "ACP standalone" ? "Model" : "Model and reasoning effort for the next turn",
+			}));
+			if (path !== "ACP standalone") await user.keyboard("{ArrowDown}{ArrowRight}");
+		};
+		return { user, onChange, onComposerClick, open };
+	}
+
+	it.each([9, 10])("shows search only for catalogs with at least 10 models (%i)", async (count) => {
+		const { open } = setup(count);
+		await open();
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(count);
+		if (count === 10) {
+			expect(screen.getByRole("searchbox", { name: "Search models" })).toBeInTheDocument();
+			expect(screen.getByText("Showing 10 of 10 matching models", { exact: true })).toBeInTheDocument();
+		} else {
+			expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+		}
+	});
+
+	it("searches the full catalog by model ID and preserves selection semantics", async () => {
+		const { user, onChange, onComposerClick, open } = setup();
+		await open();
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(100);
+		expect(screen.getByRole("menuitemradio", { name: "Model 0" })).toHaveAttribute("aria-checked", "true");
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		onComposerClick.mockClear();
+		await user.type(search, "  PROVIDER-1/MODEL-99  ");
+		expect(search).toHaveFocus();
+		expect(onComposerClick).not.toHaveBeenCalled();
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
+		await user.click(screen.getByRole("menuitemradio", { name: "Model 99" }));
+		if (path === "native") {
+			expect(onChange).toHaveBeenCalledWith({ model: "provider-1/model-99", reasoningEffort: undefined, approvalMode: "accept-edits" });
+		} else {
+			expect(onChange).toHaveBeenCalledWith("model", { value: "provider-1/model-99" });
+		}
+		expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+		await open();
+		expect(screen.getByRole("searchbox")).toHaveValue("");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(100);
+	});
+
+	it("matches names fuzzily and supports keyboard selection", async () => {
+		const { user, onChange, open } = setup();
+		await open();
+		if (path === "ACP standalone") {
+			await user.keyboard("{Escape}{Enter}");
+		}
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		expect(search).toHaveFocus();
+		await user.keyboard("Md99");
+		expect(search).toHaveValue("Md99");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
+		await user.keyboard("{ArrowDown}");
+		expect(screen.getByRole("menuitemradio", { name: "Model 99" })).toHaveFocus();
+		await user.keyboard("{Enter}");
+		expect(onChange).toHaveBeenCalledOnce();
+	});
+
+	it.each(["ArrowUp", "Shift+Tab"])("returns to the query with %s so it can be refined", async (key) => {
+		const { user, open } = setup();
+		await open();
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		await user.type(search, "Model");
+		const results = screen.getAllByRole("menuitemradio");
+		await user.keyboard("{ArrowDown}{ArrowDown}");
+		expect(results[1]).toHaveFocus();
+		if (key === "ArrowUp") {
+			await user.keyboard("{ArrowUp}");
+			expect(results[0]).toHaveFocus();
+			await user.keyboard("{ArrowUp}");
+		} else {
+			await user.tab({ shift: true });
+		}
+		expect(search).toHaveFocus();
+		expect(search).toHaveValue("Model");
+		await user.keyboard(" 99");
+		expect(search).toHaveValue("Model 99");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
+		await user.keyboard("{ArrowDown}");
+		expect(screen.getByRole("menuitemradio", { name: "Model 99" })).toHaveFocus();
+	});
+
+	it("narrows the query when typing on a focused result instead of jumping rows", async () => {
+		const { user, open } = setup();
+		await open();
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		await user.type(search, "Model 9");
+		await user.keyboard("{ArrowDown}");
+		expect(screen.getAllByRole("menuitemradio")[0]).toHaveFocus();
+		await user.keyboard("9");
+		expect(search).toHaveFocus();
+		expect(search).toHaveValue("Model 99");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
+	});
+
+	it("keeps Space as the select key on a focused result", async () => {
+		const { user, onChange, open } = setup();
+		await open();
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		await user.type(search, "Model 99");
+		await user.keyboard("{ArrowDown}");
+		expect(screen.getByRole("menuitemradio", { name: "Model 99" })).toHaveFocus();
+		await user.keyboard(" ");
+		expect(onChange).toHaveBeenCalledOnce();
+		expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+	});
+
+	it.each(["ArrowUp", "ArrowDown"])("keeps %s available for input-method candidate selection", async (key) => {
+		const { user, onChange, open } = setup();
+		await open();
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		await user.click(search);
+		fireEvent.compositionStart(search);
+		expect(fireEvent.keyDown(search, { key, isComposing: true })).toBe(true);
+		expect(search).toHaveFocus();
+		expect(onChange).not.toHaveBeenCalled();
+		fireEvent.compositionEnd(search);
+		await user.keyboard("{ArrowDown}");
+		expect(screen.getByRole("menuitemradio", { name: "Model 0" })).toHaveFocus();
+	});
+
+	it("filters providers and restores all models after clearing or dismissing search", async () => {
+		const { user, open } = setup();
+		await open();
+		const search = screen.getByRole("searchbox", { name: "Search models" });
+		await user.type(search, path === "native" ? "provider-1" : "Provider 1");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(50);
+		expect(screen.queryByRole("menuitemradio", { name: "Model 0" })).not.toBeInTheDocument();
+		if (path !== "native") expect(screen.getByText("Provider 1")).toBeInTheDocument();
+		await user.clear(search);
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(100);
+		await user.type(search, "zzzz-no-such-model");
+		expect(screen.getByText("No matching models.")).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio")).not.toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+		await open();
+		expect(screen.getByRole("searchbox")).toHaveValue("");
+		expect(screen.getAllByRole("menuitemradio")).toHaveLength(100);
+	});
+});
 
 describe("ACP session config options", () => {
 	it.each(["ao-plan-project-1", "agents/plan-reviewer", "my_plan_agent"])(
