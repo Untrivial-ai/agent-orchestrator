@@ -3607,7 +3607,7 @@ export interface components {
             updatedAt?: null | string;
         };
         InvokeCueRequest: {
-            /** @description Session to message. Omit to create a worker in the cue's project. An explicit unavailable or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB. */
+            /** @description Session to message. Omit the field to create a worker in the cue's project. A supplied id must be non-blank and reachable; an explicit blank, null, unavailable, or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB. */
             sessionId?: string;
         };
         InvokeCueResponse: {

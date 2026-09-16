@@ -1740,7 +1740,7 @@ type ListCuesResponse struct {
 
 // InvokeCueRequest is the optional body of POST /api/v1/cues/{cueId}/invoke.
 type InvokeCueRequest struct {
-	SessionID string `json:"sessionId,omitempty" description:"Session to message. Omit to create a worker in the cue's project. An explicit unavailable or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB."`
+	SessionID string `json:"sessionId,omitempty" description:"Session to message. Omit the field to create a worker in the cue's project. A supplied id must be non-blank and reachable; an explicit blank, null, unavailable, or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB."`
 }
 
 // InvokeCueResponse is the body of POST /api/v1/cues/{cueId}/invoke.

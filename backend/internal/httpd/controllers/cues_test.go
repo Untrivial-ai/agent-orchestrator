@@ -342,8 +342,56 @@ func TestCuesAPI_InvokeSurfacesServiceErrors(t *testing.T) {
 	}
 }
 
-// A daemon built without the cue service must answer the locked 501 envelope,
-// not panic on a nil interface.
+func TestCuesAPI_InvokeRejectsPresentBlankSessionID(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"null", `{"sessionId": null}`},
+		{"empty string", `{"sessionId": ""}`},
+		{"whitespace", `{"sessionId": "   "}`},
+		{"non-string", `{"sessionId": 42}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fakeCueService{}
+			srv := newCueTestServer(t, svc)
+
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", tc.body)
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", status, body)
+			}
+			if !strings.Contains(string(body), "INVALID_SESSION_ID") {
+				t.Fatalf("missing INVALID_SESSION_ID envelope: %s", body)
+			}
+			if svc.gotCueID != "" || svc.gotSession != "" {
+				t.Fatalf("invalid body dispatched: cue=%q session=%q", svc.gotCueID, svc.gotSession)
+			}
+		})
+	}
+}
+
+func TestCuesAPI_InvokeOmittedSessionIDSpawnsWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"empty body", ""},
+		{"empty object", `{}`},
+		{"null body", `null`},
+		{"unrelated field", `{"unused":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fakeCueService{invoked: "sess-worker"}
+			srv := newCueTestServer(t, svc)
+
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", tc.body)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", status, body)
+			}
+			if svc.gotSession != "" {
+				t.Fatalf("session = %q, want empty (worker spawn)", svc.gotSession)
+			}
+		})
+	}
+}
 func TestCuesAPI_NotImplementedWithoutService(t *testing.T) {
 	srv := newCueTestServer(t, nil)
 
