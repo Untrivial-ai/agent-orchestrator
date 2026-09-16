@@ -151,7 +151,14 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 	"ao.onboarding.first_project_added": {
 		"has_git_remote": {},
 		"kind":           {},
-		"github_org":     {},
+		// repo_owner is the owner segment of the project's git remote, and
+		// repo_owner_type says whether GitHub calls that owner a User or an
+		// Organization. github_org is the deprecated former name for
+		// repo_owner: it never made that distinction despite the name, and is
+		// kept for one release so existing dashboards keep resolving.
+		"repo_owner":      {},
+		"repo_owner_type": {},
+		"github_org":      {},
 	},
 	"ao.onboarding.first_session_spawned": {
 		"harness":                {},
@@ -183,7 +190,11 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 	"ao.projects.created": {
 		"has_git_remote": {},
 		"kind":           {},
-		"github_org":     {},
+		// See ao.onboarding.first_project_added: both events carry the same
+		// payload, github_org being the deprecated former name for repo_owner.
+		"repo_owner":      {},
+		"repo_owner_type": {},
+		"github_org":      {},
 	},
 	"ao.session.spawn_failed": {
 		"component":   {},
@@ -230,6 +241,12 @@ type PostHogSink struct {
 	ch         chan ports.TelemetryEvent
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
+	// closeMu guards the send on ch against Close. Telemetry is emitted from
+	// background goroutines that outlive the call that started them, so a send
+	// can genuinely race shutdown; without this a late Emit would panic on a
+	// closed channel and take the process down during exit.
+	closeMu sync.RWMutex
+	closed  bool
 	// ctx bounds every in-flight send and its retry backoff. Close cancels it
 	// when the caller's shutdown context is done, so pending retry work stops
 	// promptly instead of outliving shutdown on an uncancellable sleep or a
@@ -274,6 +291,11 @@ func NewPostHogSink(dataDir, apiKey, host, appVersion, defaultAgent string, clie
 
 // Emit enqueues an event for best-effort export.
 func (s *PostHogSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	if s.closed {
+		return
+	}
 	select {
 	case s.ch <- ev:
 	default:
@@ -283,7 +305,12 @@ func (s *PostHogSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
 
 // Close drains the exporter until completion or context cancellation.
 func (s *PostHogSink) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() { close(s.ch) })
+	s.closeOnce.Do(func() {
+		s.closeMu.Lock()
+		s.closed = true
+		close(s.ch)
+		s.closeMu.Unlock()
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

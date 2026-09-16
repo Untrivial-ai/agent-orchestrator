@@ -158,15 +158,44 @@ type fakeProjectTeardowner struct {
 	err      error
 }
 
+// captureSink records emitted events. Project-added telemetry can be emitted
+// from a background goroutine (see emitProjectAdded's owner classification), so
+// the fake is mutex-guarded and exposes waitFor rather than a bare slice.
 type captureSink struct {
+	mu     sync.Mutex
 	events []ports.TelemetryEvent
 }
 
 func (s *captureSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.events = append(s.events, ev)
 }
 
 func (*captureSink) Close(context.Context) error { return nil }
+
+// snapshot returns the events recorded so far.
+func (s *captureSink) snapshot() []ports.TelemetryEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ports.TelemetryEvent(nil), s.events...)
+}
+
+// waitFor blocks until at least n events have been recorded, failing the test
+// if they never arrive.
+func (s *captureSink) waitFor(t *testing.T, n int) []ports.TelemetryEvent {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := s.snapshot(); len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d telemetry events, got %#v", n, s.snapshot())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 func (f *fakeProjectTeardowner) TeardownProject(_ context.Context, project domain.ProjectID) error {
 	f.projects = append(f.projects, project)
@@ -496,16 +525,17 @@ func TestManager_AddEmitsProjectAndFirstProjectTelemetry(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if len(sink.events) != 2 {
-		t.Fatalf("events = %#v, want projects.created + first_project_added", sink.events)
+	events := sink.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want projects.created + first_project_added", events)
 	}
-	if sink.events[0].Name != "ao.projects.created" || sink.events[1].Name != "ao.onboarding.first_project_added" {
-		t.Fatalf("event names = %#v", []string{sink.events[0].Name, sink.events[1].Name})
+	if events[0].Name != "ao.projects.created" || events[1].Name != "ao.onboarding.first_project_added" {
+		t.Fatalf("event names = %#v", []string{events[0].Name, events[1].Name})
 	}
 	// The emit path detaches from the request context on purpose; the request id
 	// must still be carried so the rows join to the HTTP request that added the
 	// project.
-	for _, ev := range sink.events {
+	for _, ev := range events {
 		if ev.RequestID != "req-1" {
 			t.Fatalf("%s RequestID = %q, want req-1", ev.Name, ev.RequestID)
 		}
@@ -529,7 +559,7 @@ func TestManager_AddDoesNotRepeatFirstProjectTelemetry(t *testing.T) {
 		t.Fatalf("Add second: %v", err)
 	}
 	var firstProjectCount int
-	for _, ev := range sink.events {
+	for _, ev := range sink.snapshot() {
 		if ev.Name == "ao.onboarding.first_project_added" {
 			firstProjectCount++
 		}

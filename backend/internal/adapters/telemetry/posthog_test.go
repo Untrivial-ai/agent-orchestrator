@@ -333,3 +333,62 @@ func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
 		t.Fatalf("pr_url survived sanitization: %#v", got)
 	}
 }
+
+// The project-added payload is the only place AO attributes usage to a repo
+// owner, and a property missing from this allowlist is dropped silently. Both
+// events carry the same payload, so both entries have to stay in step.
+func TestProjectPayloadAllowlistCoversRepoOwnerAttribution(t *testing.T) {
+	want := []string{"has_git_remote", "kind", "repo_owner", "repo_owner_type", "github_org"}
+	for _, name := range []string{"ao.projects.created", "ao.onboarding.first_project_added"} {
+		allowed, ok := remotePayloadAllowlist[name]
+		if !ok {
+			t.Errorf("%s has no allowlist entry, so it would export with no properties", name)
+			continue
+		}
+		for _, key := range want {
+			if _, ok := allowed[key]; !ok {
+				t.Errorf("%s is missing allowlisted key %q", name, key)
+			}
+		}
+		if len(allowed) != len(want) {
+			t.Errorf("%s allowlist has %d keys, want exactly %d (%v)", name, len(allowed), len(want), want)
+		}
+	}
+}
+
+// Only the owner segment of the remote is ever attributed. The repository
+// identity — its name, its URL, the local path it was added from — must not be
+// allowlisted on either project event.
+func TestProjectPayloadAllowlistRejectsRepositoryIdentity(t *testing.T) {
+	forbidden := []string{"repo", "repo_name", "repo_url", "remote", "remote_url", "path", "display_name", "url"}
+	for _, name := range []string{"ao.projects.created", "ao.onboarding.first_project_added"} {
+		for _, key := range forbidden {
+			if _, ok := remotePayloadAllowlist[name][key]; ok {
+				t.Errorf("%s allowlists repository-identifying key %q", name, key)
+			}
+		}
+	}
+}
+
+func TestSanitizeRemotePayloadKeepsRepoOwnerAndDropsTheRemote(t *testing.T) {
+	got := sanitizeRemotePayload("ao.projects.created", map[string]any{
+		"kind":            "single_repo",
+		"has_git_remote":  true,
+		"repo_owner":      "aoagents",
+		"repo_owner_type": "Organization",
+		"github_org":      "aoagents",
+		"repo_url":        "https://github.com/aoagents/agent-orchestrator.git",
+	})
+	for key, want := range map[string]any{
+		"repo_owner":      "aoagents",
+		"repo_owner_type": "Organization",
+		"github_org":      "aoagents",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s = %#v, want %#v", key, got[key], want)
+		}
+	}
+	if _, ok := got["repo_url"]; ok {
+		t.Fatalf("repo_url survived sanitization: %#v", got)
+	}
+}

@@ -25,6 +25,13 @@ AO sends structured events in a few broad categories:
   user's own GitHub username, so this particular value is not anonymous. We use
   it to understand which organizations and developers get the most value from
   AO, so we can prioritize improvements and reach out for feedback
+- Whether that owner is a personal account or an organization, sent alongside
+  it as `User` or `Organization`. When telemetry is enabled, the daemon asks
+  GitHub's public `GET /users/{owner}` endpoint for that classification as a
+  project is added. The request carries no credentials and no repository
+  information, and only the account type is read from the response. If it
+  fails for any reason the classification is simply left off the event; nothing
+  else changes. When telemetry is disabled, the request is never made
 - Reliability data, such as an error type and context, a crash message and
   stack trace after path redaction, an HTTP status, or an agent waiting for
   input

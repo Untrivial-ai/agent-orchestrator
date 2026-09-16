@@ -33,8 +33,14 @@ type LocalSQLiteSink struct {
 	ch        chan ports.TelemetryEvent
 	wg        sync.WaitGroup
 	closeOnce sync.Once
-	now       func() time.Time
-	newID     func() string
+	// closeMu guards the send on ch against Close. Telemetry is emitted from
+	// background goroutines that outlive the call that started them, so a send
+	// can genuinely race shutdown; without this a late Emit would panic on a
+	// closed channel and take the process down during exit.
+	closeMu sync.RWMutex
+	closed  bool
+	now     func() time.Time
+	newID   func() string
 
 	pruneMu   sync.Mutex
 	lastPrune time.Time
@@ -56,6 +62,11 @@ func NewLocalSQLiteSink(store localStore, log *slog.Logger) *LocalSQLiteSink {
 
 // Emit enqueues an event for best-effort persistence.
 func (s *LocalSQLiteSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	if s.closed {
+		return
+	}
 	select {
 	case s.ch <- ev:
 	default:
@@ -65,7 +76,12 @@ func (s *LocalSQLiteSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
 
 // Close drains the worker until completion or context cancellation.
 func (s *LocalSQLiteSink) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() { close(s.ch) })
+	s.closeOnce.Do(func() {
+		s.closeMu.Lock()
+		s.closed = true
+		close(s.ch)
+		s.closeMu.Unlock()
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

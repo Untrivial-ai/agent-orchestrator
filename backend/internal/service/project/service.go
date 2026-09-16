@@ -70,6 +70,7 @@ type Service struct {
 	sessions       SessionTeardowner
 	clock          func() time.Time
 	telemetry      ports.EventSink
+	repoOwners     RepoOwnerClassifier
 	defaultHarness domain.AgentHarness
 	logger         *slog.Logger
 	// addMu serialises the whole body of Add. Workspace registration performs
@@ -92,6 +93,11 @@ type Deps struct {
 	Sessions       SessionTeardowner
 	Clock          func() time.Time
 	Telemetry      ports.EventSink
+	// RepoOwners classifies a project's remote owner as a personal account or
+	// an organization for the ao.projects.created telemetry payload. Left nil,
+	// the repo_owner_type property is simply omitted and the project-added
+	// events are emitted inline as before.
+	RepoOwners RepoOwnerClassifier
 	// Logger receives structured logs. Left nil, the service falls back to
 	// slog.Default, keeping service-focused tests logger-free.
 	Logger *slog.Logger
@@ -113,6 +119,7 @@ func NewWithDeps(d Deps) *Service {
 		sessions:       d.Sessions,
 		clock:          d.Clock,
 		telemetry:      d.Telemetry,
+		repoOwners:     d.RepoOwners,
 		defaultHarness: defaultHarness,
 		logger:         d.Logger,
 	}
@@ -554,48 +561,95 @@ func nestedGitRepositoryPaths(root string) ([]string, error) {
 	return nested, nil
 }
 
+// RepoOwnerClassifier reports whether the owner segment of a project's GitHub
+// remote names a personal account or an organization. Implementations must be
+// safe for concurrent use and must return an error — never a guess — when they
+// cannot answer, so the caller omits the property instead of exporting a
+// fabricated classification.
+type RepoOwnerClassifier interface {
+	ClassifyRepoOwner(ctx context.Context, owner string) (string, error)
+}
+
+// repoOwnerLookupTimeout bounds the off-path owner classification. It exists
+// to stop a hung GitHub request from keeping the pending project-added events
+// unsent indefinitely, not to protect Add, which never waits on it.
+const repoOwnerLookupTimeout = 5 * time.Second
+
 func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord, firstProject bool) {
 	if m.telemetry == nil {
 		return
 	}
 	projectID := domain.ProjectID(row.ID)
 	at := m.clock().UTC()
+	requestID := reqid.FromContext(ctx)
 	payload := map[string]any{
 		"kind":           string(row.Kind.WithDefault()),
 		"has_git_remote": row.RepoOriginURL != "",
 	}
-	// Tag the GitHub org so usage can be attributed/ranked by organisation. Only
-	// the owner is derived — never the repo name or full URL.
-	if owner := githubOwner(row.RepoOriginURL); owner != "" {
+	// Tag the owner segment of the remote so usage can be attributed and
+	// ranked. Only that segment is derived — never the repo name or full URL.
+	owner := githubOwner(row.RepoOriginURL)
+	if owner != "" {
+		payload["repo_owner"] = owner
+		// Deprecated: github_org is the former name for repo_owner. It never
+		// distinguished a personal account from an organisation despite the
+		// name, which is what repo_owner_type now answers. Emitted in parallel
+		// for one release so existing PostHog queries keep resolving; drop it
+		// once the dashboards read repo_owner/repo_owner_type.
 		payload["github_org"] = owner
 	}
-	m.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.projects.created",
-		Source:     "project_service",
-		OccurredAt: at,
-		Level:      ports.TelemetryLevelInfo,
-		ProjectID:  &projectID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
-	if !firstProject {
+	emit := func() {
+		m.telemetry.Emit(context.Background(), ports.TelemetryEvent{
+			Name:       "ao.projects.created",
+			Source:     "project_service",
+			OccurredAt: at,
+			Level:      ports.TelemetryLevelInfo,
+			ProjectID:  &projectID,
+			RequestID:  requestID,
+			Payload:    payload,
+		})
+		if !firstProject {
+			return
+		}
+		m.telemetry.Emit(context.Background(), ports.TelemetryEvent{
+			Name:       "ao.onboarding.first_project_added",
+			Source:     "project_service",
+			OccurredAt: at,
+			Level:      ports.TelemetryLevelInfo,
+			ProjectID:  &projectID,
+			RequestID:  requestID,
+			Payload:    payload,
+		})
+	}
+	if owner == "" || m.repoOwners == nil {
+		emit()
 		return
 	}
-	m.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.onboarding.first_project_added",
-		Source:     "project_service",
-		OccurredAt: at,
-		Level:      ports.TelemetryLevelInfo,
-		ProjectID:  &projectID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
+	// Classifying the owner is a GitHub round trip, so it runs off the
+	// project-add path entirely: Add returns without waiting, and a slow or
+	// unreachable GitHub costs the property rather than registration latency.
+	// OccurredAt is stamped above, so the delayed send still reports when the
+	// project was actually added.
+	// WithoutCancel, not Background: the lookup has to outlive the HTTP request
+	// that added the project (whose context is cancelled the moment the handler
+	// returns) while still carrying that request's values.
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), repoOwnerLookupTimeout)
+	go func() {
+		defer cancel()
+		ownerType, err := m.repoOwners.ClassifyRepoOwner(lookupCtx, owner)
+		if err != nil {
+			m.logger.Debug("project: repo owner classification unavailable", "error", err)
+		} else {
+			payload["repo_owner_type"] = ownerType
+		}
+		emit()
+	}()
 }
 
-// githubOwner extracts the owner/org from a GitHub remote URL, or "" if the
-// remote is empty or not a github.com remote. It returns only the org segment,
-// never the repo name or full path, so telemetry can rank by organisation
-// without shipping the repository identity.
+// githubOwner extracts the owner segment from a GitHub remote URL, or "" if the
+// remote is empty or not a github.com remote. It returns only that segment,
+// never the repo name or full path, so telemetry can attribute usage without
+// shipping the repository identity.
 func githubOwner(remote string) string {
 	r := strings.TrimSpace(remote)
 	if r == "" {

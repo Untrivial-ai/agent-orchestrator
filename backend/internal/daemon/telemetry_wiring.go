@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/repoowner"
 	telemetryadapter "github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	agentswitchobs "github.com/aoagents/agent-orchestrator/backend/internal/observe/agentswitch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
@@ -84,4 +87,21 @@ func newTelemetrySink(cfg config.Config, store *sqlite.Store, log *slog.Logger) 
 	// export. Local storage is unaffected, so silenced events stay debuggable.
 	denied := telemetryadapter.NewDenylistSink(aggregated, cfg.Telemetry.DisabledEvents)
 	return telemetryadapter.NewFanoutSink(local, denied)
+}
+
+// newRepoOwnerClassifier returns the classifier that stamps repo_owner_type on
+// project-added telemetry, or nil when event telemetry is off. The nil case is
+// the point: without it, a user who declined telemetry would still have their
+// machine call GitHub on every project add to resolve a property that would
+// never be exported. cfg must be the consent-resolved config the sinks are
+// built from, not the raw boot config.
+func newRepoOwnerClassifier(cfg config.Config) projectsvc.RepoOwnerClassifier {
+	if !cfg.Telemetry.Events {
+		return nil
+	}
+	var userAgent string
+	if v := strings.TrimSpace(cfg.Telemetry.AppVersion); v != "" {
+		userAgent = "ao-agent-orchestrator/" + v
+	}
+	return repoowner.NewGitHubClassifier(repoowner.Options{UserAgent: userAgent})
 }
