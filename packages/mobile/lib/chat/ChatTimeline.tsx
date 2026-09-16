@@ -883,7 +883,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	attachmentTileImage: { width: "100%", height: "100%" },
 	viewer: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.94)" },
 	viewerClose: { position: "absolute", right: 16, width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255, 255, 255, 0.16)" },
-	attachmentChip: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: t.borderSubtle, paddingHorizontal: 8, paddingVertical: 6 },
+	// alignSelf keeps a chip its own height next to a tile: the row container's
+	// default stretch would otherwise blow it up to the tile's 104/160px.
+	attachmentChip: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: t.borderSubtle, paddingHorizontal: 8, paddingVertical: 6 },
 	attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: 12 },
 	attachmentRetry: { color: t.blue, fontSize: 11, fontWeight: "600" },
 	originMessage: { marginVertical: 8, borderLeftWidth: 2, borderLeftColor: t.borderStrong, paddingLeft: 10, gap: 5 },
