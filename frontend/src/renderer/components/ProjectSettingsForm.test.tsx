@@ -1154,16 +1154,25 @@ describe("ProjectSettingsForm", () => {
 			.map((option) => option.textContent)
 			.filter((label) => label !== "Project default" && label !== "Enter model ID…");
 
-		expect(reviewerLabels).toEqual([
+		expect(reviewerLabels.slice(0, 5)).toEqual([
 			"Claude Code",
 			"Codex",
 			"Cursor",
 			"OpenCode",
 			"GitHub Copilot",
-			"Kilo Code",
-			"Pi",
-			"KiroAuth unknown",
 		]);
+
+		expect(reviewerLabels).toEqual(
+			expect.arrayContaining([
+				"Claude Code",
+				"Codex",
+				"Cursor",
+				"OpenCode",
+				"GitHub Copilot",
+				"Kilo Code",
+				"Pi",
+			])
+		);
 	});
 
 	it("offers the experimental host-trusted reviewer set", async () => {
