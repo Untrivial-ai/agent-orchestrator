@@ -102,4 +102,18 @@ describe("buildMacAppMenuTemplate", () => {
 		expect(macViewSubmenu()).toContainEqual(expect.objectContaining({ role: "forceReload" }));
 	});
 
+	it("binds Close Window to Shift+Command+W so Cmd+W cannot kill the application window", () => {
+		const template = buildMacAppMenuTemplate(() => undefined);
+		const fileMenu = template.find((item) => item.role === "fileMenu");
+		expect(fileMenu).toBeDefined();
+		const submenu = fileMenu?.submenu;
+		expect(Array.isArray(submenu)).toBe(true);
+		expect(submenu).toContainEqual(
+			expect.objectContaining({
+				role: "close",
+				accelerator: "Shift+Command+W",
+			}),
+		);
+	});
+
 });

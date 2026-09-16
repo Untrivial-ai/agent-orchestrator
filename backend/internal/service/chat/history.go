@@ -324,6 +324,7 @@ func (s *Service) EditMessage(
 						Model: cfg.Model, Effort: cfg.Effort,
 						Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 						ProviderScopeID:       sourceBranch.ProviderScopeID,
+						ProviderIDsScoped:     sourceBranch.ProviderIDsScoped,
 						AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 					})
 				}
@@ -362,7 +363,7 @@ func (s *Service) EditMessage(
 					Env: launchEnv, Model: cfg.Model, Effort: cfg.Effort,
 					Permissions:  cfg.Permissions,
 					SystemPrompt: cfg.SystemPrompt, AdditionalDirectories: cfg.AdditionalDirectories,
-					MCPServers: cfg.MCPServers, ProviderScopeID: providerScopeID,
+					MCPServers: cfg.MCPServers, ProviderScopeID: providerScopeID, ProviderIDsScoped: true,
 				})
 				if err == nil {
 					providerConversationID = provider.ProviderConversationID()
@@ -419,7 +420,8 @@ func (s *Service) EditMessage(
 		ProviderConversationID: providerConversationID, ParentBranchID: anchor.SourceBranchID,
 		ReplacedTurnID: anchor.ReplacedTurnID, ForkAfterSequence: anchor.ForkAfterSequence,
 		CreatedAt: s.now(), Strategy: domain.ConversationBranchStrategyNative,
-		ProviderScopeID: providerScopeID,
+		ProviderScopeID:   providerScopeID,
+		ProviderIDsScoped: providerScopeID != "" || sourceBranch.ProviderIDsScoped,
 	}
 	if replayContent.Type != "" {
 		branch.Strategy = domain.ConversationBranchStrategyApproximateContext
@@ -903,6 +905,7 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 		Model: cfg.Model, Effort: cfg.Effort,
 		Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID:       branch.ProviderScopeID,
+		ProviderIDsScoped:     branch.ProviderIDsScoped,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
 	if err != nil {
@@ -1002,6 +1005,7 @@ func (s *Service) restoreClosedSourceController(
 		Model: cfg.Model, Effort: cfg.Effort,
 		Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID:       branch.ProviderScopeID,
+		ProviderIDsScoped:     branch.ProviderIDsScoped,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
 	if err != nil {

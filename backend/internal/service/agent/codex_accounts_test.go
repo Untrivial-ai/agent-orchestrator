@@ -1441,6 +1441,69 @@ func TestEnsureCodexAccountsReconcilesRecentlyRemovedGlobalCredentialBeforeAccou
 	}
 }
 
+func TestEnsureCodexAccountsTargetedRefreshDoesNotReconcileDeviceCredential(t *testing.T) {
+	root := t.TempDir()
+	globalHome := filepath.Join(root, "global-codex")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	credential := testOAuthCredential("provider-account", "access-token")
+	var opened []ports.CodexAccountContext
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(account ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			opened = append(opened, account)
+			return &fakeCodexAccountClient{
+				read:     ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT},
+				capacity: ports.CodexCapacityObservation{},
+			}, nil
+		},
+	}
+	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, factory, nil)
+	manager.catalog.newID = func() string { return testAccountID }
+	record := commitTestAccountWithCredential(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", credential, ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+	})
+	if err := writeGlobalCredentialAtomic(manager.globalCredentialPath(), credential); err != nil {
+		t.Fatal(err)
+	}
+	manager.accountStoreReady = true
+	attemptedAt := time.Now().UTC().Add(-time.Minute)
+	manager.reconciliation = domain.CodexDeviceReconciliation{
+		Status:                domain.CodexDeviceReconciliationVerified,
+		ActiveAccountVerified: true,
+		ReasonCode:            "verified",
+		AttemptedAt:           &attemptedAt,
+		VerifiedAt:            &attemptedAt,
+	}
+	manager.deviceAccountID = record.Snapshot.ID
+	manager.deviceCredentialPresent = true
+	readiness := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{harnessAgent(string(domain.HarnessCodex), "Codex", nil)},
+	})
+	service := &Service{codexAccounts: manager, readiness: readiness}
+
+	view, err := service.EnsureCodexAccounts(context.Background(), []string{record.Snapshot.ID}, CodexAccountEnsureOptions{IncludeUsage: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.DeviceReconciliation.AttemptedAt == nil || !view.DeviceReconciliation.AttemptedAt.Equal(attemptedAt) {
+		t.Fatalf("targeted metadata refresh reconciled device credential: before=%v after=%v", attemptedAt, view.DeviceReconciliation.AttemptedAt)
+	}
+	if view.ActiveAccountID != record.Snapshot.ID || len(view.Accounts) != 1 || !view.Accounts[0].Active {
+		t.Fatalf("targeted metadata refresh changed active presentation: %#v", view)
+	}
+	if len(opened) == 0 {
+		t.Fatal("targeted metadata refresh did not check the saved account")
+	}
+	for _, account := range opened {
+		if !account.Managed || canonicalPath(account.Home) != canonicalPath(record.Home) {
+			t.Fatalf("targeted metadata refresh used device-global home: %#v", account)
+		}
+	}
+}
+
 func TestEnsureCodexAccountsRetriesSavedAccountWhenGlobalCredentialDisappearsDuringCheck(t *testing.T) {
 	root := t.TempDir()
 	globalHome := filepath.Join(root, "global-codex")
@@ -2087,23 +2150,28 @@ func TestAuthenticationRequestCancellationDoesNotCancelSharedRead(t *testing.T) 
 		done <- err
 	}()
 	<-started
+	manager.mu.Lock()
+	shared := manager.auth[record.Snapshot.ID].call
+	manager.mu.Unlock()
+	if shared == nil {
+		t.Fatal("shared authentication read was not in flight")
+	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait error = %v", err)
 	}
 	close(release)
-	deadline := time.After(time.Second)
-	for {
-		latest, _ := manager.catalog.record(record.Snapshot.ID)
-		if latest.Snapshot.Authentication.State == domain.AgentAuthenticationAuthorized {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("shared authentication read did not finish")
-		default:
-			time.Sleep(time.Millisecond)
-		}
+	// Wait on the shared call itself, not on the snapshot. The snapshot flips to
+	// authorized before the verified descriptor is persisted under the account
+	// home, so polling the snapshot lets TempDir cleanup race that write.
+	select {
+	case <-shared.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared authentication read did not finish")
+	}
+	latest, _ := manager.catalog.record(record.Snapshot.ID)
+	if latest.Snapshot.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("shared authentication state = %v", latest.Snapshot.Authentication.State)
 	}
 }
 

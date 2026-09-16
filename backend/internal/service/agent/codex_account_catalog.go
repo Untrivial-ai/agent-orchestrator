@@ -48,6 +48,7 @@ type codexAccountRecord struct {
 	ProviderAccountID string
 	CreatedAt         time.Time
 	VerifiedAt        time.Time
+	useSavedHome      bool
 }
 
 type codexAccountCatalog struct {

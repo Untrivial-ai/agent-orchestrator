@@ -186,9 +186,9 @@ func TestInterfaceTransitionUnpromptedChatRoundTrip(t *testing.T) {
 				t.Fatalf("return = %s (%s): %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
 			}
 			if settled.NativeConversationID != wantNativeID || chat.start.ProviderConversationID != wantNativeID ||
-				chat.start.RequireNativeHistory != tc.terminalTurn {
+				(chat.start.HistoryMode == ports.ChatHistoryRequired) != tc.terminalTurn {
 				t.Fatalf("return identity=%q, target=%q, requireHistory=%v; want identity=%q, requireHistory=%v",
-					settled.NativeConversationID, chat.start.ProviderConversationID, chat.start.RequireNativeHistory, wantNativeID, tc.terminalTurn)
+					settled.NativeConversationID, chat.start.ProviderConversationID, (chat.start.HistoryMode == ports.ChatHistoryRequired), wantNativeID, tc.terminalTurn)
 			}
 			if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui stop:tui:h1 start:chat]" {
 				t.Fatalf("round-trip controller order = %s", got)

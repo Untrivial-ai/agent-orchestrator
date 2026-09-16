@@ -1096,7 +1096,7 @@ func TestInterfaceTransitionTUIToChatStopsBeforeStartingAndReusesNativeConversat
 	if chat.start.ProviderConversationID != "native-1" {
 		t.Fatalf("provider conversation = %q, want native-1", chat.start.ProviderConversationID)
 	}
-	if !chat.start.RequireNativeHistory {
+	if chat.start.HistoryMode != ports.ChatHistoryRequired {
 		t.Fatal("TUI to Chat handoff did not require native history replay")
 	}
 	if got := chat.start.Env[EnvBrowserCapability]; got != "transition-chat-token" {

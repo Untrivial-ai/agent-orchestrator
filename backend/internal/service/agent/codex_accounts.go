@@ -288,6 +288,9 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 func (m *codexAccountManager) cached() CodexAccounts { result, _ := m.view(nil); return result }
 
 func (m *codexAccountManager) accountContext(record codexAccountRecord) ports.CodexAccountContext {
+	if record.useSavedHome {
+		return ports.CodexAccountContext{Home: record.Home, Managed: true}
+	}
 	home := record.Home
 	m.mu.Lock()
 	active, associated := m.deviceAccountID, m.reconciliation.ActiveAccountVerified
@@ -317,6 +320,10 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	}
 	eligible := make([]codexAccountRecord, 0, len(records))
 	for _, record := range records {
+		// A targeted metadata refresh belongs to the saved account, not the
+		// device-global credential. Keeping it isolated avoids turning a row
+		// expansion into a device-account state transition.
+		record.useSavedHome = len(ids) > 0
 		if !m.deferAccountRead(record.Snapshot.ID) {
 			eligible = append(eligible, record)
 		}
@@ -353,6 +360,7 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	// pointer whose device ownership has not been established.
 	eligible = eligible[:0]
 	for _, record := range records {
+		record.useSavedHome = len(ids) > 0
 		if !m.deferAccountRead(record.Snapshot.ID) {
 			eligible = append(eligible, record)
 		}

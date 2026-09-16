@@ -129,13 +129,12 @@ func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, options
 	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccounts{}, err
 	}
-	// Reconciliation is local-only, so every Settings refresh can cheaply wait
-	// for the current device credential to be associated before any Codex client
-	// is opened. This prevents a recently removed or externally changed global
-	// auth.json from being checked through the last-known active account slot.
-	// A local reconciliation failure must not hide the saved catalog; the
-	// response carries its safe, retryable reconciliation state instead.
-	_ = s.codexAccounts.reconcileGlobalWithPolicy(ctx, options.ForceDeviceReconciliation)
+	// Full Settings refreshes establish the current device account before any
+	// global-home checks. A targeted row refresh stays in that saved account's
+	// isolated home, so it must not publish a transient device reconciliation.
+	if len(ids) == 0 || options.ForceDeviceReconciliation {
+		_ = s.codexAccounts.reconcileGlobalWithPolicy(ctx, options.ForceDeviceReconciliation)
+	}
 	installation, err := s.readiness.EnsureInstallation(ctx, []string{string(domain.HarnessCodex)}, domain.AgentReadinessPurposeDisplay)
 	if err != nil {
 		return CodexAccounts{}, err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,15 @@ func (g controllerGate) lock(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (g controllerGate) tryLock() bool {
+	select {
+	case g <- struct{}{}:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -139,62 +149,12 @@ func (s *Service) controllerGate(id domain.SessionID) controllerGate {
 }
 
 // StartConfig opens a controller for a session.
-type StartConfig struct {
-	SessionID             domain.SessionID
-	ProjectID             domain.ProjectID
-	Kind                  domain.SessionKind
-	Harness               domain.AgentHarness
-	DataDir               string
-	WorkspacePath         string
-	Env                   map[string]string
-	Model                 string
-	Effort                string
-	Permissions           ports.PermissionMode
-	SystemPrompt          string
-	AdditionalDirectories []string
-	MCPServers            []ports.ChatMCPServerConfig
-	// ExpectedControllerOwner is the durable controller identity observed before
-	// this launch. PrepareControllerEnv uses it as a compare-and-swap fence.
-	ExpectedControllerOwner domain.SessionControllerOwner
-	// PrepareControllerEnv rotates launch-only credentials inside the per-session
-	// controller gate. The returned environment is never retained in startConfigs.
-	PrepareControllerEnv func(context.Context, domain.SessionControllerOwner) (map[string]string, error)
-	// ProviderConversationID resumes an existing provider conversation when set.
-	ProviderConversationID string
-	// ProviderScopeID reserves the opaque-id namespace for a provider boundary
-	// that ControllerReady will commit. Empty derives the namespace from the
-	// active branch, which is the ordinary initial-start and resume path.
-	ProviderScopeID string
-	// ControllerGeneration is supplied by a durable replacement saga that must
-	// fence the target before starting it. Ordinary starts leave it empty.
-	ControllerGeneration string
-	// RequireNativeHistory makes a missing typed provider replay fatal. Interface
-	// handoff sets it because provider context without a visible transcript would
-	// make completed Terminal work disappear from Chat.
-	RequireNativeHistory bool
-	// HistoryPolicy carries explicit, attempt-scoped consent to ignore only
-	// legacy/untrusted hook text during a TUI-to-Chat replay. Trusted checkpoints
-	// and AO high-water facts remain mandatory.
-	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy
-	// SkipNativeHistoryImport resumes provider context without projecting its old
-	// events before ControllerReady. Agent switching uses this because its atomic
-	// provider boundary does not exist until ControllerReady commits; AO already
-	// retains the unified timeline and the finalized continuation separately.
-	SkipNativeHistoryImport bool
-	// ControllerReady commits the controller's durable generation before event
-	// consumption starts. A controller that exits immediately must report after
-	// the launch has been marked live, so its exited signal cannot be overwritten
-	// by a later launch-completion write.
-	ControllerReady func(StartResult) (ControllerCommit, error)
-}
+type StartConfig = ports.ChatControllerStart
 
 // ControllerCommit is the conversation state committed by ControllerReady.
 // Carrying it back across the callback avoids a fallible database read after an
 // irreversible ownership transfer.
-type ControllerCommit struct {
-	Conversation    domain.ConversationRecord
-	ControllerOwner domain.SessionControllerOwner
-}
+type ControllerCommit = ports.ChatControllerCommit
 
 func conversationReconnectedLive(conv ports.ChatConversation) bool {
 	reconnected, ok := conv.(ports.ChatLiveReconnector)
@@ -288,10 +248,21 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		return nil, err
 	}
 	defer gate.unlock()
+	if cfg.HistoryMode > ports.ChatHistoryDeferred {
+		return nil, errors.New("invalid Chat history mode")
+	}
+	if handoff := cfg.ProviderHandoff; handoff != nil {
+		if handoff.BoundaryID == "" || cfg.ProviderConversationID == "" || cfg.ControllerReady == nil ||
+			(cfg.HistoryMode == ports.ChatHistoryDeferred) || (cfg.ProviderScopeID != "" && cfg.ProviderScopeID != handoff.BoundaryID) {
+			return nil, errors.New("incomplete native Chat handoff reservation")
+		}
+		cfg.ProviderScopeID = handoff.BoundaryID
+		cfg.HistoryMode = ports.ChatHistoryRequired
+	}
 
 	replayCheckpoint := nativeHistoryCheckpoint{}
 	nativeEvidence := ""
-	if cfg.RequireNativeHistory {
+	if cfg.HistoryMode == ports.ChatHistoryRequired {
 		if s.sessions == nil {
 			return nil, errors.New("native history replay requires a session reader")
 		}
@@ -303,6 +274,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, ports.ErrSessionNotFound
 		}
 		nativeEvidence = rec.Metadata.NativeCheckpointEvidence
+		replayCheckpoint.latestUserPromptAt = rec.Metadata.LatestUserPromptAt
+		replayCheckpoint.latestAssistantUpdateAt = rec.Metadata.LatestAssistantUpdateAt
 		checkpointState := rec.Metadata.ConversationCheckpointState
 		if checkpointState == "" {
 			checkpointState = domain.ConversationCheckpointLegacy
@@ -448,7 +421,16 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	conversationID := s.newID()
 	var conversation domain.ConversationRecord
-	if freshProjectContext {
+	if cfg.ProviderHandoff != nil {
+		// Read the observed owner without rebinding it. Provider I/O can fail;
+		// ownership changes only with the prepared history's lifecycle commit.
+		handoff := cfg.ProviderHandoff
+		conversation, err = s.store.ConversationForSession(ctx, handoff.PreviousSessionID)
+		if err == nil && (conversation.ID != handoff.ConversationID ||
+			conversation.ActiveBranchID != handoff.PreviousBranchID || conversation.LatestSequence != handoff.PreviousSequence) {
+			err = errors.New("native Chat handoff conversation changed")
+		}
+	} else if freshProjectContext {
 		conversation, err = s.store.CreateProjectConversationWithContextReset(
 			ctx, conversationID, cfg.ProjectID, cfg.SessionID, resetBoundary, now)
 	} else if scope == domain.ConversationScopeProject &&
@@ -458,6 +440,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		// Require the durable current_session_id proof the coordinator observed;
 		// ControllerReady/CommitChatSpawn rechecks it after provider I/O.
 		conversation, err = s.store.ConversationForSession(ctx, cfg.SessionID)
+	} else if cfg.ProviderConversationID != "" {
+		conversation, err = s.store.OpenNativeConversation(
+			ctx, conversationID, scope, cfg.ProjectID, cfg.SessionID, now)
 	} else {
 		conversation, err = s.store.CreateConversation(
 			ctx, conversationID, scope, cfg.ProjectID, cfg.SessionID, now)
@@ -465,10 +450,14 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, fmt.Errorf("open conversation: %w", err)
 	}
-	repairedBranch, restoredProviderOwner, err := s.store.RepairIncompleteConversationEdit(
-		ctx, cfg.SessionID, conversation.ID, s.now())
-	if err != nil {
-		return nil, fmt.Errorf("repair incomplete conversation edit: %w", err)
+	var repairedBranch domain.ConversationBranch
+	var restoredProviderOwner bool
+	if cfg.ProviderHandoff == nil {
+		repairedBranch, restoredProviderOwner, err = s.store.RepairIncompleteConversationEdit(
+			ctx, cfg.SessionID, conversation.ID, s.now())
+		if err != nil {
+			return nil, fmt.Errorf("repair incomplete conversation edit: %w", err)
+		}
 	}
 	if repairedBranch.ID != "" {
 		conversation.ActiveBranchID = repairedBranch.ID
@@ -558,11 +547,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Permissions:            cfg.Permissions,
 			SystemPrompt:           cfg.SystemPrompt,
 			ProviderScopeID:        providerScopeID,
+			ProviderIDsScoped:      providerBoundaryID != "" || activeBranch.ProviderIDsScoped,
 			AdditionalDirectories:  cfg.AdditionalDirectories,
 			MCPServers:             cfg.MCPServers,
 		})
 	} else {
 		conv, err = driver.Start(ctx, ports.ChatStartConfig{
+			ProviderIDsScoped:     providerBoundaryID != "" || activeBranch.ProviderIDsScoped,
 			SessionID:             cfg.SessionID,
 			DataDir:               cfg.DataDir,
 			WorkspacePath:         cfg.WorkspacePath,
@@ -593,7 +584,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
 		liveReconnect = reconnected.ReconnectedLive()
 	}
-	if cfg.RequireNativeHistory && liveReconnect {
+	if (cfg.HistoryMode == ports.ChatHistoryRequired) && liveReconnect {
 		// A TUI handoff needs a fresh, verified native-history admission. A host
 		// left alive by an unpublished target is not an established Chat owner,
 		// and adopting it must not take the ordinary live-reconnect fast path.
@@ -659,7 +650,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			ID: providerBoundaryID, ConversationID: conversation.ID, SessionID: cfg.SessionID,
 			ProviderConversationID: conv.ProviderConversationID(), ParentBranchID: activeBranch.ID,
 			ForkAfterSequence: conversation.LatestSequence, ProviderScopeID: providerScopeID,
-			CreatedAt: s.now(),
+			ProviderIDsScoped: true,
+			CreatedAt:         s.now(),
 		}
 	}
 	// Whatever the previous controller left in flight is not this controller's, and
@@ -671,7 +663,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// behind a controller that no longer existed. Nothing would ever have corrected
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
-	if !liveReconnect {
+	if !liveReconnect && cfg.ProviderHandoff == nil {
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
 	// A fresh generation per launch, so events from the controller this one
@@ -688,7 +680,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			}
 		}
 	}
-	if cfg.ProviderConversationID != "" && !cfg.SkipNativeHistoryImport && !liveReconnect {
+	if cfg.ProviderConversationID != "" && cfg.HistoryMode != ports.ChatHistoryDeferred && !liveReconnect {
 		// The provider's native thread is the continuity authority across TUI and
 		// Chat. Import it before the live projector starts so the first notification
 		// cannot appear ahead of the older prompt, tool work, and answer it follows.
@@ -706,29 +698,86 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 				return nil, fmt.Errorf("load conversation before native history import: %w", err)
 			}
 		}
-		if cfg.RequireNativeHistory {
+		retained := existing
+		if cfg.ProviderHandoff != nil {
+			// Independent context: retain only the current Terminal hook proof.
+			existing = ConversationRows{}
+		} else {
+			existing, err = s.nativeReplayRows(ctx, activeBranch, existing)
+			if err != nil {
+				_ = cleanupUnpublishedConversation(conv, false)
+				return nil, err
+			}
+			// Older builds carried legacy hook text across edits. Trusted native
+			// checkpoints always retain their identity and content requirements.
+			// The edit's timestamp proves those facts predate this continuation;
+			// newer or undated hooks still gate replay, as does its AO high-water mark.
+			if activeBranch.ReplacedTurnID != "" {
+				if replayCheckpoint.userMismatch == ports.ChatHistoryMismatchUntrustedUserText &&
+					!replayCheckpoint.latestUserPromptAt.IsZero() && replayCheckpoint.latestUserPromptAt.Before(activeBranch.CreatedAt) {
+					replayCheckpoint.latestUserPrompt = ""
+				}
+				if replayCheckpoint.assistantMismatch == ports.ChatHistoryMismatchUntrustedAssistantText &&
+					!replayCheckpoint.latestAssistantUpdateAt.IsZero() && replayCheckpoint.latestAssistantUpdateAt.Before(activeBranch.CreatedAt) {
+					replayCheckpoint.latestAssistantUpdate = ""
+				}
+			}
+		}
+		if cfg.HistoryMode == ports.ChatHistoryRequired {
 			replayCheckpoint.captureAOHighWater(
 				cfg.SessionID, existing.Turns, existing.Messages, existing.Activities,
 			)
 		}
 		events, historyErr := controller.readNativeHistory(
 			ctx, existing.Turns, existing.Messages, existing.Activities,
-			cfg.RequireNativeHistory, replayCheckpoint,
+			(cfg.HistoryMode == ports.ChatHistoryRequired), replayCheckpoint,
 		)
 		if historyErr != nil {
-			if cleanupErr := cleanupUnpublishedConversation(conv, false); cleanupErr != nil && cfg.RequireNativeHistory {
+			if cleanupErr := cleanupUnpublishedConversation(conv, false); cleanupErr != nil && (cfg.HistoryMode == ports.ChatHistoryRequired) {
 				return nil, fmt.Errorf("%w: failed history target shutdown: %w",
 					ports.ErrChatRecoveryInconclusive, errors.Join(historyErr, cleanupErr))
 			}
 			return nil, historyErr
 		}
+		events, err = s.withoutInheritedHistory(ctx, conv, activeBranch, retained, events)
+		if err != nil {
+			_ = cleanupUnpublishedConversation(conv, false)
+			return nil, err
+		}
+		events = reconcileNativeHistory(events, existing.Turns, existing.Messages, existing.Activities)
 		if providerBoundary != nil {
+			if cfg.ProviderHandoff != nil {
+				// Visible, boundary-keyed provenance: earlier rows are retained but
+				// are not represented as context inherited by this native provider.
+				events = append([]ports.ChatEvent{{
+					Kind:            ports.ChatEventActivityCompleted,
+					ProviderEventID: providerBoundary.ID + ":context-boundary",
+					ProviderItemID:  providerBoundary.ID + ":context-boundary",
+					ActivityKind:    domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusCompleted,
+					Summary: "Native conversation changed. Earlier messages are retained; continuity with this agent's context is not verified.",
+					Detail:  []byte(`{"event":"context.boundary","reason":"native_terminal_handoff"}`),
+				}}, events...)
+			}
 			// The pending branch does not exist yet. Carry its stable replay into
 			// ControllerReady so SQLite can insert/activate the boundary, stage the
 			// generation, project every event onto that branch, and publish the
 			// live session as one transaction. Until then the terminated target is
 			// not exposed to input and no event can be attributed to the old root.
 			commitProviderHistory = func(commitCtx context.Context) error {
+				if handoff := cfg.ProviderHandoff; handoff != nil {
+					// Settle the retired owner's work in the publication transaction.
+					// A failed replay must leave it untouched; a successful handoff
+					// must not dispatch its queue into an independent native context.
+					if err := s.store.SettleOrphanedTurns(commitCtx, handoff.PreviousSessionID, s.now()); err != nil {
+						return err
+					}
+					if err := s.store.FailPendingApprovals(commitCtx, conversation.ID, s.now()); err != nil {
+						return err
+					}
+					if err := s.store.FailPendingInputs(commitCtx, conversation.ID, s.now()); err != nil {
+						return err
+					}
+				}
 				return controller.projectNativeHistory(commitCtx, events)
 			}
 		} else if err := controller.projectNativeHistory(ctx, events); err != nil {
@@ -786,6 +835,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	s.mu.Lock()
 	s.controllers[cfg.SessionID] = controller
+	// A committed reservation is consumed. Internal controller restarts must
+	// resume the now-current branch, not retry its old ownership snapshot.
+	cfg.ProviderHandoff = nil
+	cfg.ProviderScopeID = ""
+	cfg.HistoryMode = ports.ChatHistoryImport
 	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
@@ -1036,18 +1090,51 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 // StopAll closes every controller, for daemon shutdown.
 func (s *Service) StopAll(ctx context.Context) {
 	s.mu.Lock()
-	controllers := make([]*Controller, 0, len(s.controllers))
+	type shutdownTarget struct {
+		id         domain.SessionID
+		controller *Controller
+	}
+	targets := make([]shutdownTarget, 0, len(s.controllers))
 	for id, controller := range s.controllers {
-		controllers = append(controllers, controller)
-		delete(s.controllers, id)
-		delete(s.startConfigs, id)
+		targets = append(targets, shutdownTarget{id: id, controller: controller})
 	}
 	s.mu.Unlock()
+	slices.SortFunc(targets, func(a, b shutdownTarget) int {
+		return strings.Compare(string(a.id), string(b.id))
+	})
 
-	for _, controller := range controllers {
-		if err := controller.Close(ctx); err != nil {
-			s.log.Error("failed to close chat controller", "error", err)
+	for _, target := range targets {
+		gate := s.controllerGate(target.id)
+		// Take an uncontended gate immediately so an expired shared shutdown
+		// context cannot skip Close. If Start/Stop/edit/branch already holds it,
+		// wait only until the original deadline — never past ShutdownTimeout.
+		if !gate.tryLock() {
+			if err := gate.lock(ctx); err != nil {
+				s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
+				continue
+			}
 		}
+		s.mu.RLock()
+		current, ok := s.controllers[target.id]
+		s.mu.RUnlock()
+		if !ok || current != target.controller {
+			gate.unlock()
+			continue
+		}
+		if err := target.controller.Close(ctx); err != nil {
+			s.log.Error("failed to close chat controller", "session", target.id, "error", err)
+		}
+		select {
+		case <-target.controller.stopped:
+			s.mu.Lock()
+			if current, ok := s.controllers[target.id]; ok && current == target.controller {
+				delete(s.controllers, target.id)
+				delete(s.startConfigs, target.id)
+			}
+			s.mu.Unlock()
+		default:
+		}
+		gate.unlock()
 	}
 }
 
@@ -1335,61 +1422,16 @@ func (s *Service) driverCapabilities(
 }
 
 // StartChat launches the controller for a freshly created session.
-func (s *Service) StartChat(ctx context.Context, cfg StartRequest) (StartResult, error) {
-	controller, err := s.Start(ctx, StartConfig(cfg))
+func (s *Service) StartChat(ctx context.Context, cfg StartConfig) (StartResult, error) {
+	controller, err := s.Start(ctx, cfg)
 	if err != nil {
 		return StartResult{}, err
 	}
 	return controllerStartResult(controller, nil, nil), nil
 }
 
-// StartRequest mirrors session_manager.ChatStart. Duplicated rather than
-// imported so the manager and this service do not depend on each other's types.
-type StartRequest struct {
-	SessionID               domain.SessionID
-	ProjectID               domain.ProjectID
-	Kind                    domain.SessionKind
-	Harness                 domain.AgentHarness
-	DataDir                 string
-	WorkspacePath           string
-	Env                     map[string]string
-	Model                   string
-	Effort                  string
-	Permissions             ports.PermissionMode
-	SystemPrompt            string
-	AdditionalDirectories   []string
-	MCPServers              []ports.ChatMCPServerConfig
-	ExpectedControllerOwner domain.SessionControllerOwner
-	PrepareControllerEnv    func(context.Context, domain.SessionControllerOwner) (map[string]string, error)
-	// ProviderConversationID resumes a stored conversation. Empty starts fresh.
-	ProviderConversationID  string
-	ProviderScopeID         string
-	ControllerGeneration    string
-	RequireNativeHistory    bool
-	HistoryPolicy           domain.SessionInterfaceTransitionHistoryPolicy
-	SkipNativeHistoryImport bool
-	// ControllerReady runs after the provider and generation exist but before
-	// live event projection starts.
-	ControllerReady func(StartResult) (ControllerCommit, error)
-}
-
 // StartResult is the durable outcome of a launch.
-type StartResult struct {
-	// LiveReconnect is true only when the driver attached to the same running
-	// provider process. A native-history resume in a new process is a spawn.
-	LiveReconnect          bool
-	ProviderConversationID string
-	ControllerGeneration   string
-	Conversation           domain.ConversationRecord
-	// ProviderBoundary is non-nil when this launch owns a provider namespace
-	// that is not active yet. ControllerReady must commit it atomically with the
-	// session's provider handle and controller generation.
-	ProviderBoundary *domain.ConversationBranch
-	// CommitProviderHistory projects a reconciled native replay inside the
-	// provider-boundary lifecycle transaction. It must never be invoked outside
-	// that transaction: the pending branch and generation do not exist yet.
-	CommitProviderHistory func(context.Context) error
-}
+type StartResult = ports.ChatControllerStarted
 
 // StartChatTurn delivers the initial prompt as a normal turn.
 //
