@@ -546,8 +546,8 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 		Prompt:    turn.prompt,
 	})
 
-	completed = true
 	c.finishPrompt(turn.id, resp, err)
+	completed = true
 }
 
 func (c *conversation) finishPrompt(

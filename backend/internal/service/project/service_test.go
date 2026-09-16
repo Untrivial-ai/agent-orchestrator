@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -959,7 +960,6 @@ func TestManager_Add_DisplayNameValidationAndTruncation(t *testing.T) {
 	m := newManager(t)
 	repo := gitRepo(t)
 
-	// Explicit name exceeding maxDisplayNameLen is rejected.
 	tooLong := strings.Repeat("a", 101)
 	_, err := m.Add(ctx, project.AddInput{
 		Path: repo,
@@ -967,7 +967,6 @@ func TestManager_Add_DisplayNameValidationAndTruncation(t *testing.T) {
 	})
 	wantCode(t, err, "DISPLAY_NAME_TOO_LONG")
 
-	// 24-character repo name (like yandex-direct-mcp-plugin) is accepted cleanly.
 	valid24 := "yandex-direct-mcp-plugin"
 	p24, err := m.Add(ctx, project.AddInput{
 		Path: repo,
@@ -978,6 +977,35 @@ func TestManager_Add_DisplayNameValidationAndTruncation(t *testing.T) {
 	}
 	if p24.Name != valid24 {
 		t.Fatalf("Add name = %q, want %q", p24.Name, valid24)
+	}
+
+	base := t.TempDir()
+	longName := strings.Repeat("r", 101)
+	longPath := filepath.Join(base, longName)
+	if err := os.Mkdir(longPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "-b", "main", longPath).CombinedOutput(); err != nil {
+		t.Fatalf("git unavailable: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", longPath, "config", "user.email", "test@example.com").CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", longPath, "config", "user.name", "test").CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", longPath, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v (%s)", err, out)
+	}
+	ptrunc, err := m.Add(ctx, project.AddInput{Path: longPath})
+	if err != nil {
+		t.Fatalf("Add with no explicit name and long basename: %v", err)
+	}
+	if got, want := utf8.RuneCountInString(ptrunc.Name), 100; got != want {
+		t.Fatalf("truncated name runes = %d, want %d (name=%q)", got, want, ptrunc.Name)
+	}
+	if want := string([]rune(longName)[:100]); ptrunc.Name != want {
+		t.Fatalf("truncated name = %q, want %q", ptrunc.Name, want)
 	}
 }
 
