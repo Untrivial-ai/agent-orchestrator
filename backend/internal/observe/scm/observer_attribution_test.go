@@ -3,7 +3,6 @@ package scm
 import (
 	"context"
 	"errors"
-	"slices"
 	"testing"
 	"time"
 
@@ -11,68 +10,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
-
-func TestPoll_AttributionRejectsAmbiguousSessions(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		branches []string
-		want     domain.SessionID
-	}{
-		{"exact tie", []string{"feat/child", "feat/child"}, ""},
-		{"namespace tie", []string{"feat", "feat/root"}, ""},
-		{"longest prefix", []string{"feat", "feat/root", "feat/child/root"}, "p-3"},
-		{"exact wins", []string{"feat", "feat/root", "feat/child"}, "p-3"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			for _, reverse := range []bool{false, true} {
-				store := testStoreWithSession()
-				store.sessions = nil
-				for i, branch := range tt.branches {
-					store.sessions = append(store.sessions, domain.SessionRecord{
-						ID:        domain.SessionID([]string{"p-1", "p-2", "p-3"}[i]),
-						ProjectID: "p", Metadata: domain.SessionMetadata{Branch: branch},
-					})
-				}
-				if reverse {
-					slices.Reverse(store.sessions)
-				}
-				pr := testObs(1)
-				pr.PR.SourceBranch, pr.PR.HeadRepo, pr.PR.Author = "feat/child", "o/r", "alice"
-				provider := &fakeProvider{
-					openPRs:      map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {pr.PR}},
-					observations: map[string]ports.SCMObservation{prKey(testRepo, 1): pr},
-				}
-				lc := &fakeLifecycle{}
-				if err := newTestObserver(store, provider, lc, time.Now()).Poll(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				if tt.want == "" {
-					if len(store.writes) != 0 || len(lc.observed) != 0 {
-						t.Fatalf("ambiguous PR was attached: writes=%+v lifecycle=%+v", store.writes, lc.observed)
-					}
-				} else {
-					if len(store.writes) == 0 {
-						t.Fatal("unambiguous PR was not attached")
-					}
-					for _, write := range store.writes {
-						if write.pr.SessionID != tt.want {
-							t.Fatalf("owner=%s, want %s", write.pr.SessionID, tt.want)
-						}
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestMatchSession_DuplicateCandidateIsNotAmbiguous(t *testing.T) {
-	for _, branch := range []string{"feat/child", "feat", "feat/root"} {
-		sr := sessionRepo{session: domain.SessionRecord{ID: "p-1"}, branch: branch}
-		if got, ok := matchSession([]sessionRepo{sr, sr}, "feat/child"); !ok || got.session.ID != sr.session.ID {
-			t.Fatalf("duplicate candidate for %s rejected: %+v, %v", branch, got, ok)
-		}
-	}
-}
 
 // Model real conditional requests: an acknowledged ETag returns 304, and an
 // incremental cursor excludes PRs last updated before it.

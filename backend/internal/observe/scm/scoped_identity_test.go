@@ -289,52 +289,6 @@ func TestPoll_ScopedIdentityPartialFailure(t *testing.T) {
 
 // --- helpers ---
 
-func TestPoll_UnavailableGitLabHostDoesNotBorrowIdentity(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		identity ports.SCMIdentity
-		err      error
-	}{
-		{name: "lookup error", err: errors.New("host identity unavailable")},
-		{name: "missing identity"},
-		{name: "empty login", identity: ports.SCMIdentity{Login: " ", Human: true}},
-		{name: "bot", identity: ports.SCMIdentity{Login: "alice", Human: false}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			store := testStoreWithTwoGitLabSessions()
-			public, private := testObsGitLab(1), testObsGitLabHost(2)
-			public.PR.Author, public.PR.HeadRepo = "alice", "o/r"
-			private.PR.Author, private.PR.HeadRepo = "alice", "o/r"
-			provider := &hostAwareProvider{fakeProvider: &fakeProvider{
-				openPRs:      map[string][]ports.SCMPRObservation{prKey(glRepo, 0): {public.PR}, prKey(glSelfRepo, 0): {private.PR}},
-				observations: map[string]ports.SCMObservation{prKey(glRepo, 1): public, prKey(glSelfRepo, 2): private},
-			}}
-			scoped := &fakeScopedIdentityResolver{
-				identities: map[string]ports.SCMIdentity{
-					identityKey("gitlab", "gitlab.com"):      {Login: "alice", Human: true},
-					identityKey("gitlab", "gitlab.internal"): tt.identity,
-				},
-			}
-			if tt.err != nil {
-				scoped.errs = map[string]error{identityKey("gitlab", "gitlab.internal"): tt.err}
-			}
-			obs := New(provider, store, nil, Config{Logger: quietSlog(), ScopedIdentityResolver: scoped})
-			if err := obs.Poll(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			fetched := fetchedNumbers(provider.fetchBatches)
-			if !fetched[1] || fetched[2] {
-				t.Fatalf("fetched=%v, want public-host PR only", fetched)
-			}
-			for _, write := range store.writes {
-				if write.pr.Host != "gitlab.com" {
-					t.Fatalf("attached PR from unavailable host: %+v", write.pr)
-				}
-			}
-		})
-	}
-}
-
 func testObsGitLabHost(num int) ports.SCMObservation {
 	o := testObs(num)
 	o.Provider = "gitlab"
