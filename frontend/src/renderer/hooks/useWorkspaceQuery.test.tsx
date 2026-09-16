@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { appI18n } from "../i18n";
-import type { WorkspaceSummary } from "../types/workspace";
+import { toKanbanColumn, type WorkspaceSummary } from "../types/workspace";
 
 const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
@@ -589,7 +589,7 @@ describe("useWorkspaceQuery", () => {
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
 	});
 
-	it("maps a cloud session's prs and board presentation like a local session", async () => {
+	it("maps a cloud session's prs and SCM status like a local session", async () => {
 		cloudState.ready = true;
 		cloudState.org = { id: "org-1" };
 		listProjectsMock.mockResolvedValue({ items: [{ id: "cp-1", displayName: "cloud-app" }], page: { hasMore: false } });
@@ -606,8 +606,6 @@ describe("useWorkspaceQuery", () => {
 					isTerminated: false,
 					updatedAt: "2026-08-01T00:00:00Z",
 					scmStatus: "ci_failed",
-					kanbanColumn: "needs_review",
-					displayStatus: "CI failing",
 					prs: [
 						{
 							url: "https://github.com/acme/cloud-app/pull/7",
@@ -634,8 +632,7 @@ describe("useWorkspaceQuery", () => {
 		expect(result.current.data?.[1]?.sessions[0]).toMatchObject({
 			status: "ci_failed",
 			scmStatus: "ci_failed",
-			kanbanColumn: "needs_review",
-			displayStatus: "CI failing",
+			kanbanColumn: toKanbanColumn(undefined, "ci_failed"),
 			prs: [
 				{
 					url: "https://github.com/acme/cloud-app/pull/7",

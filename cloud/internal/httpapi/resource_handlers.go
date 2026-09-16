@@ -123,11 +123,9 @@ type sessionPRFactsResponse struct {
 type sessionChildResponse struct {
 	sessionResponse
 	PRs []sessionPRFactsResponse `json:"prs"`
-	// SCMStatus, KanbanColumn, and DisplayStatus are derived exactly as the
-	// local daemon derives them, so cloud and local sessions present alike.
-	SCMStatus     string `json:"scmStatus,omitempty"`
-	KanbanColumn  string `json:"kanbanColumn"`
-	DisplayStatus string `json:"displayStatus"`
+	// SCMStatus is derived exactly as the local daemon derives it, so cloud
+	// and local sessions present alike.
+	SCMStatus string `json:"scmStatus,omitempty"`
 }
 
 func toSessionChildResponse(
@@ -153,13 +151,10 @@ func toSessionChildResponse(
 			UpdatedAt:    pr.UpdatedAt,
 		})
 	}
-	presentation := session.KanbanPresentation(time.Now().UTC(), prs)
 	return sessionChildResponse{
 		sessionResponse: toSessionResponse(session, facts),
 		PRs:             rendered,
 		SCMStatus:       string(contract.DeriveSCMStatus(facts)),
-		KanbanColumn:    string(presentation.Column),
-		DisplayStatus:   string(presentation.DisplayStatus),
 	}
 }
 

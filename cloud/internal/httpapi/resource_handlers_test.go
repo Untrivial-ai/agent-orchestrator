@@ -20,8 +20,8 @@ func TestSessionResponseIncludesSandboxLifecycleContract(t *testing.T) {
 	}
 }
 
-// A cloud session with a PR presents the same PR list, SCM status, and board
-// placement the local daemon would give it.
+// A cloud session with a PR presents the same PR list and SCM status the
+// local daemon would give it.
 func TestSessionChildResponseDerivesPRPresentation(t *testing.T) {
 	pr := domain.PullRequest{
 		URL: "https://github.com/octo/widgets/pull/7", Number: 7,
@@ -42,14 +42,11 @@ func TestSessionChildResponseDerivesPRPresentation(t *testing.T) {
 	if response.SCMStatus != string(contract.StatusCIFailed) {
 		t.Fatalf("scmStatus = %q, want %q", response.SCMStatus, contract.StatusCIFailed)
 	}
-	if response.KanbanColumn != string(contract.KanbanNeedsReview) || response.DisplayStatus == "" {
-		t.Fatalf("kanban = %q / %q", response.KanbanColumn, response.DisplayStatus)
-	}
 }
 
-func TestSessionChildResponseWithoutPRsIsBuilding(t *testing.T) {
+func TestSessionChildResponseWithoutPRsHasNoSCMStatus(t *testing.T) {
 	response := toSessionChildResponse(domain.Session{ID: "session-1", UpdatedAt: time.Now()}, nil, nil)
-	if response.SCMStatus != "" || response.KanbanColumn != string(contract.KanbanBuilding) || len(response.PRs) != 0 {
+	if response.SCMStatus != "" || len(response.PRs) != 0 {
 		t.Fatalf("response = %+v", response)
 	}
 }

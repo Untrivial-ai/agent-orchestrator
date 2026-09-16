@@ -213,10 +213,8 @@ export interface CloudCpSession {
 	updatedAt: string;
 	/** The session's pull requests; absent from control planes that predate it. */
 	prs?: CloudCpSessionPullRequest[];
-	/** PR-derived status, board column, and phrase, derived as the local daemon does. */
+	/** PR-derived status, derived as the local daemon does. */
 	scmStatus?: string;
-	kanbanColumn?: string;
-	displayStatus?: string;
 }
 
 export interface CloudCpSessionResponse {

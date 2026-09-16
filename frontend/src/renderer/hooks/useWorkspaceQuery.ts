@@ -303,8 +303,9 @@ function toCloudWorkspaceSession(
 		branch: session.branch || undefined,
 		status,
 		scmStatus: session.scmStatus ? toSessionStatus(session.scmStatus) : undefined,
-		kanbanColumn: toKanbanColumn(session.kanbanColumn, status),
-		displayStatus: session.displayStatus || undefined,
+		// The control plane sends no column, so place the card from its status,
+		// as the local mapping does when the daemon omits one.
+		kanbanColumn: toKanbanColumn(undefined, status),
 		isTerminated: session.isTerminated,
 		runtimeConnected: session.runtimeConnected,
 		createdAt: session.createdAt,
