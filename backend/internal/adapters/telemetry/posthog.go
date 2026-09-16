@@ -133,6 +133,9 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"agent": {},
 		"port":  {},
 	},
+	"ao.github.account_observed": {
+		"github_login": {},
+	},
 	"ao.http.5xx": {
 		"component":     {},
 		"duration":      {},
@@ -156,9 +159,14 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		// Organization. github_org is the deprecated former name for
 		// repo_owner: it never made that distinction despite the name, and is
 		// kept for one release so existing dashboards keep resolving.
-		"repo_owner":      {},
-		"repo_owner_type": {},
-		"github_org":      {},
+		// repo_owner_count is the number of distinct owners across a workspace's
+		// child repositories — a bare count, never the owners themselves, so a
+		// workspace whose children disagree stays countable without repo_owner
+		// having to invent a single owner.
+		"repo_owner":       {},
+		"repo_owner_type":  {},
+		"repo_owner_count": {},
+		"github_org":       {},
 	},
 	"ao.onboarding.first_session_spawned": {
 		"harness":                {},
@@ -192,9 +200,10 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"kind":           {},
 		// See ao.onboarding.first_project_added: both events carry the same
 		// payload, github_org being the deprecated former name for repo_owner.
-		"repo_owner":      {},
-		"repo_owner_type": {},
-		"github_org":      {},
+		"repo_owner":       {},
+		"repo_owner_type":  {},
+		"repo_owner_count": {},
+		"github_org":       {},
 	},
 	"ao.session.spawn_failed": {
 		"component":   {},

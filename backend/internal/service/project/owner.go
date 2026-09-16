@@ -1,6 +1,11 @@
 package project
 
-import "strings"
+import (
+	"sort"
+	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+)
 
 // maxGitHubOwnerLen is GitHub's limit on a login (user or organization name).
 // A longer first path segment is not an owner, so it is not reported.
@@ -141,4 +146,26 @@ func isGitHubLogin(s string) bool {
 		}
 	}
 	return true
+}
+
+// workspaceRepoOwners returns the distinct owners across a workspace's child
+// repositories, sorted so the result never depends on enumeration order.
+// Ownership comes from githubOwner, so children without a remote, or with a
+// remote on a host it does not match, contribute nothing.
+func workspaceRepoOwners(repos []domain.WorkspaceRepoRecord) []string {
+	seen := make(map[string]struct{}, len(repos))
+	owners := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		owner := githubOwner(repo.RepoOriginURL)
+		if owner == "" {
+			continue
+		}
+		if _, dup := seen[owner]; dup {
+			continue
+		}
+		seen[owner] = struct{}{}
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+	return owners
 }

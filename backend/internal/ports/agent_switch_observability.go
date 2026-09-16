@@ -14,6 +14,7 @@ type AgentSwitchFailureAuthoritySnapshot struct {
 	EventsEnabled            bool
 	ConsentGeneration        string
 	ConsentProductionEnabled bool
+	ConsentIdentityEnabled   bool
 }
 
 // AgentSwitchFailureAuthorityReader isolates durable-authority I/O from policy

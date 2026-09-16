@@ -2190,3 +2190,140 @@ func TestEmptyCloneOnboardingCreatesFirstWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// workspaceOwnerFixture registers a workspace whose children carry the given
+// origins (child name -> origin URL, "" for a child without a remote) and
+// returns the telemetry payload of the resulting ao.projects.created event
+// together with the stored project record.
+func workspaceOwnerFixture(t *testing.T, id string, origins map[string]string) (map[string]any, domain.ProjectRecord) {
+	t.Helper()
+	configureCommitter(t)
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sink := &captureSink{}
+	m := project.NewWithDeps(project.Deps{Store: store, Telemetry: sink})
+
+	parent := t.TempDir()
+	for name, origin := range origins {
+		gitRepoWithCommitWithOrigin(t, filepath.Join(parent, name), origin)
+	}
+	if _, err := m.Add(ctx, project.AddInput{Path: parent, ProjectID: ptr(id), AsWorkspace: true}); err != nil {
+		t.Fatalf("Add workspace: %v", err)
+	}
+	row, ok, err := store.GetProject(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("GetProject(%q) = %v, ok=%v", id, err, ok)
+	}
+	for _, ev := range sink.events {
+		if ev.Name == "ao.projects.created" {
+			return ev.Payload, row
+		}
+	}
+	t.Fatalf("no ao.projects.created event in %#v", sink.events)
+	return nil, domain.ProjectRecord{}
+}
+
+// A workspace root is a container directory AO initializes without a remote, so
+// the org has to come from the children. Deriving it must not disturb
+// RepoOriginURL, which session spawn and tracker intake read.
+func TestManager_AddWorkspaceDerivesRepoOwnerFromChildren(t *testing.T) {
+	payload, row := workspaceOwnerFixture(t, "ws-same-owner", map[string]string{
+		"api": "https://github.com/aoagents/api.git",
+		"web": "git@github.com:aoagents/web.git",
+	})
+	if payload["repo_owner"] != "aoagents" {
+		t.Fatalf("repo_owner = %#v, want aoagents", payload["repo_owner"])
+	}
+	// The deprecated alias has to carry the derived owner too, or the one
+	// release of compatibility it buys would silently skip workspaces.
+	if payload["github_org"] != "aoagents" {
+		t.Fatalf("github_org = %#v, want aoagents", payload["github_org"])
+	}
+	if payload["repo_owner_count"] != 1 {
+		t.Fatalf("repo_owner_count = %#v, want 1", payload["repo_owner_count"])
+	}
+	if row.RepoOriginURL != "" {
+		t.Fatalf("workspace RepoOriginURL = %q, want it left untouched", row.RepoOriginURL)
+	}
+	if payload["has_git_remote"] != false {
+		t.Fatalf("has_git_remote = %#v, want false (the root still has no remote)", payload["has_git_remote"])
+	}
+}
+
+// Children in different orgs give the workspace no single honest owner, so the
+// field is omitted rather than a winner being picked; the count stays so the
+// case is still countable.
+func TestManager_AddWorkspaceOmitsRepoOwnerWhenChildrenDisagree(t *testing.T) {
+	payload, _ := workspaceOwnerFixture(t, "ws-mixed-owner", map[string]string{
+		"api": "https://github.com/aoagents/api.git",
+		"web": "git@github.com:othercorp/web.git",
+	})
+	for _, key := range []string{"repo_owner", "github_org"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("%s = %#v, want it omitted for a mixed-owner workspace", key, payload[key])
+		}
+	}
+	if payload["repo_owner_count"] != 2 {
+		t.Fatalf("repo_owner_count = %#v, want 2", payload["repo_owner_count"])
+	}
+}
+
+// A child without a remote and a child on another host contribute no owner;
+// the single GitHub child still does.
+func TestManager_AddWorkspaceIgnoresChildrenWithoutGitHubRemotes(t *testing.T) {
+	payload, _ := workspaceOwnerFixture(t, "ws-partial-owner", map[string]string{
+		"api":   "https://github.com/aoagents/api.git",
+		"docs":  "",
+		"infra": "git@gitlab.com:group/infra.git",
+	})
+	if payload["repo_owner"] != "aoagents" || payload["github_org"] != "aoagents" {
+		t.Fatalf("repo_owner/github_org = %#v/%#v, want aoagents", payload["repo_owner"], payload["github_org"])
+	}
+	if payload["repo_owner_count"] != 1 {
+		t.Fatalf("repo_owner_count = %#v, want 1", payload["repo_owner_count"])
+	}
+}
+
+func TestManager_AddWorkspaceWithoutGitHubChildrenReportsZeroOwners(t *testing.T) {
+	payload, _ := workspaceOwnerFixture(t, "ws-no-owner", map[string]string{
+		"api": "https://example.com/api.git",
+		"web": "",
+	})
+	for _, key := range []string{"repo_owner", "github_org"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("%s = %#v, want it omitted", key, payload[key])
+		}
+	}
+	if payload["repo_owner_count"] != 0 {
+		t.Fatalf("repo_owner_count = %#v, want 0", payload["repo_owner_count"])
+	}
+}
+
+// Single-repo projects keep their existing payload: the owner still comes from
+// the project's own remote, and the workspace-only count is absent.
+func TestManager_AddSingleRepoOwnerPayloadUnchanged(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sink := &captureSink{}
+	m := project.NewWithDeps(project.Deps{Store: store, Telemetry: sink})
+
+	repo := gitRepoWithOrigin(t, "git@github.com:aoagents/agent-orchestrator.git")
+	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("solo")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	payload := sink.events[0].Payload
+	if payload["repo_owner"] != "aoagents" || payload["github_org"] != "aoagents" {
+		t.Fatalf("repo_owner/github_org = %#v/%#v, want aoagents", payload["repo_owner"], payload["github_org"])
+	}
+	if _, ok := payload["repo_owner_count"]; ok {
+		t.Fatalf("repo_owner_count = %#v, want it absent for single-repo projects", payload["repo_owner_count"])
+	}
+}

@@ -266,7 +266,7 @@ describe("GlobalSettingsForm", () => {
 		setTelemetryEvents.mockResolvedValue({ eventsEnabled: false, consentGeneration: "generation-off-2", updatedAt: "2026-08-28T10:15:31.000Z", acknowledged: false, consentRenewalRequired: false, state: "cleanup_pending", environmentVeto: false, durabilitySupported: true, reason: "daemon_cleanup_pending" });
 		useTelemetryPolicyStore.setState({ view: { eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true }, loaded: true });
 		const user = userEvent.setup(); renderForm();
-		await user.click(await screen.findByRole("switch", { name: "Share error events" }));
+		await user.click(await screen.findByRole("switch", { name: "Share diagnostics and GitHub identity" }));
 		expect(await screen.findByText("Telemetry is off locally. Daemon cleanup is still pending.")).toBeInTheDocument();
 	});
 

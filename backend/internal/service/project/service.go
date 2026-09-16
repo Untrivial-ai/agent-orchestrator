@@ -302,7 +302,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		if in.ClonePreparationID != "" {
 			removeClonePreparationMarker(path)
 		}
-		m.emitProjectAdded(ctx, row, projectCountBefore == 0)
+		m.emitProjectAdded(ctx, row, projectCountBefore == 0, repos)
 		p := m.projectFromRow(ctx, row)
 		p.WorkspaceRepos = workspaceReposFromRecords(row.Path, repos)
 		return p, nil
@@ -350,7 +350,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if in.ClonePreparationID != "" {
 		removeClonePreparationMarker(path)
 	}
-	m.emitProjectAdded(ctx, row, projectCountBefore == 0)
+	m.emitProjectAdded(ctx, row, projectCountBefore == 0, nil)
 	return m.projectFromRow(ctx, row), nil
 }
 
@@ -575,7 +575,10 @@ type RepoOwnerClassifier interface {
 // unsent indefinitely, not to protect Add, which never waits on it.
 const repoOwnerLookupTimeout = 5 * time.Second
 
-func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord, firstProject bool) {
+// emitProjectAdded records the creation events for a freshly registered
+// project. workspaceRepos carries the child repository records for workspace
+// projects and is nil for single-repo ones; it is read for telemetry only.
+func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord, firstProject bool, workspaceRepos []domain.WorkspaceRepoRecord) {
 	if m.telemetry == nil {
 		return
 	}
@@ -589,6 +592,25 @@ func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord
 	// Tag the owner segment of the remote so usage can be attributed and
 	// ranked. Only that segment is derived — never the repo name or full URL.
 	owner := githubOwner(row.RepoOriginURL)
+	if row.Kind.WithDefault() == domain.ProjectKindWorkspace {
+		// A workspace root is normally a plain container directory that AO
+		// initializes without a remote, so its own RepoOriginURL yields no owner.
+		// The child repositories already carry resolved remotes, so read those
+		// instead. RepoOriginURL itself is deliberately left alone: session spawn
+		// and tracker intake consume it, and pointing it at a child would change
+		// what they see.
+		owners := workspaceRepoOwners(workspaceRepos)
+		payload["repo_owner_count"] = len(owners)
+		// Children can belong to different owners, and such a workspace has no
+		// one honest owner. Report the distinct count and leave repo_owner unset
+		// rather than crowning a winner; the root's own remote, when it has one,
+		// still wins because it is an explicit statement of ownership. A derived
+		// owner is an owner like any other, so it flows into the classification
+		// below and is reported as a user or an organization the same way.
+		if owner == "" && len(owners) == 1 {
+			owner = owners[0]
+		}
+	}
 	if owner != "" {
 		payload["repo_owner"] = owner
 		// Deprecated: github_org is the former name for repo_owner. It never

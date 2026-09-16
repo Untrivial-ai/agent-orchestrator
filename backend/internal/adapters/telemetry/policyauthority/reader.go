@@ -47,7 +47,7 @@ func (r *Reader) ReadAgentSwitchFailureAuthority(ctx context.Context) (ports.Age
 	decoder := json.NewDecoder(io.LimitReader(file, 4097))
 	decoder.DisallowUnknownFields()
 	var keys map[string]json.RawMessage
-	if err := decoder.Decode(&keys); err != nil || (len(keys) != 4 && len(keys) != 5) || keys["schema_version"] == nil || keys["events_enabled"] == nil || keys["consent_generation"] == nil || keys["updated_at"] == nil {
+	if err := decoder.Decode(&keys); err != nil || (len(keys) != 4 && len(keys) != 5 && len(keys) != 6) || keys["schema_version"] == nil || keys["events_enabled"] == nil || keys["consent_generation"] == nil || keys["updated_at"] == nil {
 		return ports.AgentSwitchFailureAuthoritySnapshot{}, errors.New("telemetry policy authority is malformed")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -65,6 +65,7 @@ func (r *Reader) ReadAgentSwitchFailureAuthority(ctx context.Context) (ports.Age
 	}
 	return ports.AgentSwitchFailureAuthoritySnapshot{
 		Present: true, EventsEnabled: record.EventsEnabled, ConsentGeneration: record.ConsentGeneration,
+		ConsentIdentityEnabled:   record.ConsentIdentityEnabled != nil && *record.ConsentIdentityEnabled,
 		ConsentProductionEnabled: record.ConsentProductionEnabled != nil && *record.ConsentProductionEnabled,
 	}, nil
 }
@@ -74,15 +75,18 @@ type diskRecord struct {
 	EventsEnabled            bool   `json:"events_enabled"`
 	ConsentGeneration        string `json:"consent_generation"`
 	ConsentProductionEnabled *bool  `json:"consent_production_enabled"`
+	ConsentIdentityEnabled   *bool  `json:"consent_identity_enabled"`
 	UpdatedAt                string `json:"updated_at"`
 }
 
 func (r diskRecord) versionShapeValid() bool {
 	switch r.SchemaVersion {
 	case 1:
-		return r.ConsentProductionEnabled == nil
+		return r.ConsentProductionEnabled == nil && r.ConsentIdentityEnabled == nil
 	case 2:
-		return r.ConsentProductionEnabled != nil
+		return r.ConsentProductionEnabled != nil && r.ConsentIdentityEnabled == nil
+	case 3:
+		return r.ConsentProductionEnabled != nil && r.ConsentIdentityEnabled != nil
 	default:
 		return false
 	}

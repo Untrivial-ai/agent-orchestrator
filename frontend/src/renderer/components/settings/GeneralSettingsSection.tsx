@@ -249,7 +249,7 @@ export function GeneralSettingsSection({
 	);
 }
 
-function TelemetryEventsRow() {
+export function TelemetryEventsRow() {
 	const { t } = useTranslation();
 	const view = useTelemetryPolicyStore((state) => state.view);
 	const saving = useTelemetryPolicyStore((state) => state.saving);
@@ -270,7 +270,8 @@ function TelemetryEventsRow() {
 			<Switch aria-label={t("settings.telemetryEvents.label")} checked={checked} disabled={saving || !view || blockedEnable} onCheckedChange={(enabled) => { void setEnabled(enabled); }} />
 		</SettingsRow>
 		<p className={cn("pb-2 text-xs leading-relaxed", status === "failed" ? "text-destructive" : "text-muted-foreground")} role={status === "failed" ? "alert" : undefined}>
-			{t(status ? `settings.telemetryEvents.${status}` : "settings.telemetryEvents.description")}
+			{t("settings.telemetryEvents.description")}
+			{status && <span className="block pt-1">{t(`settings.telemetryEvents.${status}`)}</span>}
 		</p>
 	</div>;
 }

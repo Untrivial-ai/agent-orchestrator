@@ -264,7 +264,7 @@ func (c *Coordinator) readAuthority(ctx context.Context) authorityRead {
 			generation: c.bootToken,
 		}
 	}
-	storedEnabled := snapshot.EventsEnabled && (!c.productionEnabled() || snapshot.ConsentProductionEnabled)
+	storedEnabled := snapshot.EventsEnabled && (!domain.GitHubIdentityTelemetryEnabled || snapshot.ConsentIdentityEnabled) && (!c.productionEnabled() || snapshot.ConsentProductionEnabled)
 	return authorityRead{
 		valid: true, eventsEnabled: storedEnabled && c.options.TelemetryEventsExplicit && c.options.TelemetryEvents,
 		generation: snapshot.ConsentGeneration,

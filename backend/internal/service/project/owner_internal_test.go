@@ -1,6 +1,11 @@
 package project
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+)
 
 func TestGithubOwner(t *testing.T) {
 	t.Parallel()
@@ -140,4 +145,72 @@ func longName(n int) string {
 		b[i] = 'a'
 	}
 	return string(b)
+}
+func TestWorkspaceRepoOwners(t *testing.T) {
+	t.Parallel()
+	repo := func(origin string) domain.WorkspaceRepoRecord {
+		return domain.WorkspaceRepoRecord{RepoOriginURL: origin}
+	}
+	cases := []struct {
+		name  string
+		repos []domain.WorkspaceRepoRecord
+		want  []string
+	}{
+		{"no-children", nil, []string{}},
+		{
+			"same-owner-deduped",
+			[]domain.WorkspaceRepoRecord{
+				repo("git@github.com:aoagents/api.git"),
+				repo("https://github.com/aoagents/web.git"),
+			},
+			[]string{"aoagents"},
+		},
+		{
+			"mixed-owners-sorted",
+			[]domain.WorkspaceRepoRecord{
+				repo("https://github.com/zulu/api.git"),
+				repo("https://github.com/aoagents/web.git"),
+			},
+			[]string{"aoagents", "zulu"},
+		},
+		{
+			"missing-and-non-github-remotes-ignored",
+			[]domain.WorkspaceRepoRecord{
+				repo(""),
+				repo("git@gitlab.com:group/repo.git"),
+				repo("https://github.com/aoagents/web.git"),
+			},
+			[]string{"aoagents"},
+		},
+		{
+			"no-github-remotes",
+			[]domain.WorkspaceRepoRecord{repo(""), repo("https://example.com/api.git")},
+			[]string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := workspaceRepoOwners(tc.repos); !slices.Equal(got, tc.want) {
+				t.Fatalf("workspaceRepoOwners() = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Enumeration order must not leak into the payload: the same workspace has to
+// produce the same owner list however the child records happen to be ordered.
+func TestWorkspaceRepoOwnersIsOrderIndependent(t *testing.T) {
+	t.Parallel()
+	forward := workspaceRepoOwners([]domain.WorkspaceRepoRecord{
+		{RepoOriginURL: "https://github.com/zulu/api.git"},
+		{RepoOriginURL: "https://github.com/alpha/web.git"},
+	})
+	reverse := workspaceRepoOwners([]domain.WorkspaceRepoRecord{
+		{RepoOriginURL: "https://github.com/alpha/web.git"},
+		{RepoOriginURL: "https://github.com/zulu/api.git"},
+	})
+	if !slices.Equal(forward, reverse) {
+		t.Fatalf("owners depend on child order: %#v vs %#v", forward, reverse)
+	}
 }

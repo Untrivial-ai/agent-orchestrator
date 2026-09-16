@@ -18,6 +18,9 @@ import (
 // rollout's consent, privacy, and provider-configuration gates are complete.
 const AgentSwitchFailureProductionEnabled = false
 
+// GitHubIdentityTelemetryEnabled requires the separate schema-v3 affirmative grant.
+const GitHubIdentityTelemetryEnabled = true
+
 const agentSwitchStackMaxBytes = 16 << 10
 
 // AgentSwitchReportKind is the stable remote incident class.

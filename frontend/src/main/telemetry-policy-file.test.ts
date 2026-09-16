@@ -23,14 +23,15 @@ describe("TelemetryPolicyAuthority", () => {
 		const snapshot = await authority.load();
 		const policyPath = path.join(dataDir, "telemetry_policy.json");
 		const mode = (await lstat(policyPath)).mode & 0o777;
-		expect(snapshot.eventsEnabled).toBe(true);
+		expect(snapshot.eventsEnabled).toBe(false);
 		expect(snapshot.acknowledged).toBe(true);
 		expect(mode).toBe(0o600);
 		expect(JSON.parse(await readFile(policyPath, "utf8"))).toEqual({
-			schema_version: 2,
+			schema_version: 3,
 			events_enabled: true,
 			consent_generation: snapshot.consentGeneration,
 			consent_production_enabled: false,
+			consent_identity_enabled: false,
 			updated_at: snapshot.updatedAt,
 		});
 	});
@@ -38,7 +39,7 @@ describe("TelemetryPolicyAuthority", () => {
 	it("records whether the release gate was open when a choice is written", async () => {
 		const dataDir = await makeDir();
 		const policyPath = path.join(dataDir, "telemetry_policy.json");
-		const gated = new TelemetryPolicyAuthority({ dataDir, packagedDefault: false, platform: "linux", productionEnabled: false });
+		const gated = new TelemetryPolicyAuthority({ dataDir, packagedDefault: false, platform: "linux", productionEnabled: false, identityEnabled: false });
 		await gated.load();
 		await gated.setEventsEnabled(true);
 		expect(JSON.parse(await readFile(policyPath, "utf8"))).toMatchObject({ events_enabled: true, consent_production_enabled: false });
@@ -60,7 +61,7 @@ describe("TelemetryPolicyAuthority", () => {
 		});
 		await writeFile(policyPath, raw, { mode: 0o600 });
 
-		const closed = await new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: false }).load();
+		const closed = await new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: false, identityEnabled: false }).load();
 		expect(closed).toMatchObject({ eventsEnabled: true, acknowledged: true });
 
 		const opened = await new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: true }).load();
@@ -151,4 +152,25 @@ it("resolves one absolute data directory against the daemon launch cwd", () => {
 	expect(resolveDesktopDataDir({ AO_DATA_DIR: "relative-data" }, "/home/ao", "/work/checkout", false)).toBe("/work/checkout/relative-data");
 	expect(resolveDesktopDataDir({}, "/home/ao", "/work/checkout", true)).toBe("/home/ao/.ao/data");
 	expect(resolveDesktopDataDir({}, "/home/ao", "/work/checkout", false)).toBe("/home/ao/.ao/dev/data");
+});
+
+it.each([1, 2])("requires explicit identity renewal for schema v%s", async (version) => {
+	const dataDir = await makeDir();
+	const file = path.join(dataDir, "telemetry_policy.json");
+	const old = { schema_version: version, events_enabled: true, consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca", updated_at: "2026-08-28T10:15:30.000Z", ...(version === 2 ? {consent_production_enabled: true} : {}) };
+	await writeFile(file, JSON.stringify(old), { mode: 0o600 });
+	const authority = new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux" });
+	expect(await authority.load()).toMatchObject({eventsEnabled: false, consentRenewalRequired: true});
+	expect(JSON.parse(await readFile(file, "utf8"))).toEqual(old);
+	expect(await authority.setEventsEnabled(true)).toMatchObject({eventsEnabled: true, consentRenewalRequired: false});
+	expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({schema_version: 3, consent_identity_enabled: true});
+	await authority.setEventsEnabled(false);
+	expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({consent_identity_enabled: false});
+});
+
+it("does not grant identity consent from the packaged default", async () => {
+	const dataDir = await makeDir();
+	const authority = new TelemetryPolicyAuthority({dataDir, packagedDefault: true, platform: "linux"});
+	expect(await authority.load()).toMatchObject({eventsEnabled: false, consentRenewalRequired: true});
+	expect(JSON.parse(await readFile(path.join(dataDir, "telemetry_policy.json"), "utf8"))).toMatchObject({consent_identity_enabled: false});
 });

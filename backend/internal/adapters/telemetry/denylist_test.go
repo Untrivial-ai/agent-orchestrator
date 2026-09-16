@@ -79,3 +79,16 @@ func TestDenylistSinkIgnoresEmptyEntries(t *testing.T) {
 		t.Fatalf("names = %v, want the event forwarded", forwardedNames(next))
 	}
 }
+
+func TestEventDenylistMatchesSink(t *testing.T) {
+	for _, names := range [][]string{nil, {"", "*"}, {" AO.GITHUB.* "}, {"ao.v2.app.active"}, {"ao.github.account_observed"}} {
+		matcher := NewEventDenylist(names)
+		for _, name := range []string{"ao.github.account_observed", "ao.app.active", "ao.session.spawned"} {
+			next := &recordingSink{}
+			NewDenylistSink(next, names).Emit(t.Context(), ports.TelemetryEvent{Name: name})
+			if got := matcher.Blocks(name); got != (len(next.events) == 0) {
+				t.Fatalf("names=%v event=%s matcher=%v forwarded=%d", names, name, got, len(next.events))
+			}
+		}
+	}
+}

@@ -72,6 +72,50 @@ func TestPostHogSinkCapturesEvent(t *testing.T) {
 	}
 }
 
+func TestPostHogAccountObservationUsesInstallationIdentity(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	sink, err := NewPostHogSink(t.TempDir(), "phc_test", "https://example.test", "0.12.12", "codex", roundTripClient(func(req *http.Request) (*http.Response, error) {
+		defer req.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		requests <- body
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ao.github.account_observed", "ao.session.spawned"} {
+		sink.Emit(t.Context(), ports.TelemetryEvent{
+			Name: name, Source: "daemon", OccurredAt: time.Now(), Level: ports.TelemetryLevelInfo,
+			Payload: map[string]any{"github_login": "octocat", "email": "private@example.com", "token": "secret"},
+		})
+	}
+	if err := sink.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("captured %d events, want account observation and spawn", len(requests))
+	}
+	account, spawn := <-requests, <-requests
+	if account["distinct_id"] != spawn["distinct_id"] || !strings.HasPrefix(account["distinct_id"].(string), "ins_") {
+		t.Fatal("account observation must use the same anonymous installation key as spawns")
+	}
+	props := account["properties"].(map[string]any)
+	if props["github_login"] != "octocat" || props["app_version"] != "0.12.12" || props["$process_person_profile"] != false {
+		t.Fatalf("unexpected account properties: %#v", props)
+	}
+	for _, key := range []string{"email", "token"} {
+		if _, ok := props[key]; ok {
+			t.Fatalf("unexpected account field: %s", key)
+		}
+	}
+	if _, ok := spawn["properties"].(map[string]any)["github_login"]; ok {
+		t.Fatal("account identity must only be exported on the dedicated observation event")
+	}
+}
+
 func TestPostHogSinkSanitizesPayloads(t *testing.T) {
 	requests := make(chan map[string]any, 1)
 	sink, err := NewPostHogSink(t.TempDir(), "phc_test", "https://us.i.posthog.com", "", "", roundTripClient(func(req *http.Request) (*http.Response, error) {
@@ -338,7 +382,7 @@ func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
 // owner, and a property missing from this allowlist is dropped silently. Both
 // events carry the same payload, so both entries have to stay in step.
 func TestProjectPayloadAllowlistCoversRepoOwnerAttribution(t *testing.T) {
-	want := []string{"has_git_remote", "kind", "repo_owner", "repo_owner_type", "github_org"}
+	want := []string{"has_git_remote", "kind", "repo_owner", "repo_owner_type", "repo_owner_count", "github_org"}
 	for _, name := range []string{"ao.projects.created", "ao.onboarding.first_project_added"} {
 		allowed, ok := remotePayloadAllowlist[name]
 		if !ok {
@@ -390,5 +434,33 @@ func TestSanitizeRemotePayloadKeepsRepoOwnerAndDropsTheRemote(t *testing.T) {
 	}
 	if _, ok := got["repo_url"]; ok {
 		t.Fatalf("repo_url survived sanitization: %#v", got)
+	}
+}
+
+// The workspace owner-count property has to survive the allowlist on both
+// project events, while anything resembling a repository identity still does
+// not.
+func TestSanitizeRemotePayloadKeepsWorkspaceOwnerCount(t *testing.T) {
+	for _, name := range []string{"ao.projects.created", "ao.onboarding.first_project_added"} {
+		got := sanitizeRemotePayload(name, map[string]any{
+			"kind":             "workspace",
+			"has_git_remote":   false,
+			"repo_owner":       "aoagents",
+			"repo_owner_count": 1,
+			"github_org":       "aoagents",
+			"repo_name":        "secret-repo",
+			"repo_origin_url":  "git@github.com:acme/secret-repo.git",
+		})
+		if got["repo_owner_count"] != int64(1) {
+			t.Errorf("%s: repo_owner_count = %#v, want 1", name, got["repo_owner_count"])
+		}
+		if got["repo_owner"] != "aoagents" || got["github_org"] != "aoagents" {
+			t.Errorf("%s: repo_owner/github_org = %#v/%#v, want aoagents", name, got["repo_owner"], got["github_org"])
+		}
+		for _, key := range []string{"repo_name", "repo_origin_url"} {
+			if _, ok := got[key]; ok {
+				t.Errorf("%s: %s survived sanitization: %#v", name, key, got)
+			}
+		}
 	}
 }

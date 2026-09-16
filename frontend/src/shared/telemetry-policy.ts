@@ -1,10 +1,12 @@
 export const AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED = false;
+export const GITHUB_IDENTITY_TELEMETRY_ENABLED = true;
 
 export type TelemetryPolicyDiskRecord = {
-	schema_version: 2;
+	schema_version: 3;
 	events_enabled: boolean;
 	consent_generation: string;
 	consent_production_enabled: boolean;
+	consent_identity_enabled: boolean;
 	updated_at: string;
 };
 
@@ -50,6 +52,8 @@ const GENERATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 const RECORD_KEYS_V1 = ["consent_generation", "events_enabled", "schema_version", "updated_at"];
 const RECORD_KEYS_V2 = ["consent_generation", "consent_production_enabled", "events_enabled", "schema_version", "updated_at"];
 
+const RECORD_KEYS_V3 = ["consent_generation", "consent_identity_enabled", "consent_production_enabled", "events_enabled", "schema_version", "updated_at"];
+
 export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyParseResult {
 	if (raw.length === 0 || raw.length > 4096) return { ok: false, reason: "invalid_record" };
 	let value: unknown;
@@ -60,7 +64,7 @@ export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyPars
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "invalid_record" };
 	const record = value as Record<string, unknown>;
-	const expectedKeys = record.schema_version === 1 ? RECORD_KEYS_V1 : record.schema_version === 2 ? RECORD_KEYS_V2 : null;
+	const expectedKeys = record.schema_version === 1 ? RECORD_KEYS_V1 : record.schema_version === 2 ? RECORD_KEYS_V2 : record.schema_version === 3 ? RECORD_KEYS_V3 : null;
 	const keys = Object.keys(record).sort();
 	if (!expectedKeys || keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
 		return { ok: false, reason: "invalid_record" };
@@ -68,9 +72,10 @@ export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyPars
 	if (typeof record.events_enabled !== "boolean") {
 		return { ok: false, reason: "invalid_record" };
 	}
-	if (record.schema_version === 2 && typeof record.consent_production_enabled !== "boolean") {
+	if ((record.schema_version === 2 || record.schema_version === 3) && typeof record.consent_production_enabled !== "boolean") {
 		return { ok: false, reason: "invalid_record" };
 	}
+	if (record.schema_version === 3 && typeof record.consent_identity_enabled !== "boolean") return { ok: false, reason: "invalid_record" };
 	if (typeof record.consent_generation !== "string" || !GENERATION.test(record.consent_generation)) {
 		return { ok: false, reason: "invalid_record" };
 	}
@@ -78,10 +83,11 @@ export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyPars
 		return { ok: false, reason: "invalid_record" };
 	}
 	return { ok: true, record: {
-		schema_version: 2,
+		schema_version: 3,
 		events_enabled: record.events_enabled,
 		consent_generation: record.consent_generation,
-		consent_production_enabled: record.schema_version === 2 ? record.consent_production_enabled as boolean : false,
+		consent_production_enabled: record.schema_version !== 1 ? record.consent_production_enabled as boolean : false,
+		consent_identity_enabled: record.schema_version === 3 ? record.consent_identity_enabled as boolean : false,
 		updated_at: record.updated_at,
 	} };
 }
@@ -91,10 +97,10 @@ function isCanonicalTimestamp(value: string): boolean {
 	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, acknowledged: boolean, productionEnabled: boolean): TelemetryPolicySnapshot {
+export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, acknowledged: boolean, productionEnabled: boolean, identityEnabled = GITHUB_IDENTITY_TELEMETRY_ENABLED): TelemetryPolicySnapshot {
 	return {
-		eventsEnabled: record.events_enabled && (!productionEnabled || record.consent_production_enabled),
-		consentRenewalRequired: record.events_enabled && productionEnabled && !record.consent_production_enabled,
+		eventsEnabled: record.events_enabled && (!productionEnabled || record.consent_production_enabled) && (!identityEnabled || record.consent_identity_enabled),
+		consentRenewalRequired: record.events_enabled && ((productionEnabled && !record.consent_production_enabled) || (identityEnabled && !record.consent_identity_enabled)),
 		consentGeneration: record.consent_generation,
 		updatedAt: record.updated_at,
 		acknowledged,

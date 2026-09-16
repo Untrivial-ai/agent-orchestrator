@@ -51,7 +51,9 @@ describe("DesktopTelemetryController", () => {
 		try {
 			const enabledGeneration = "7f80c8a9-ec67-4a16-a067-a444ffcc5cca";
 			await writeFile(path.join(dataDir, "telemetry_policy.json"), `${JSON.stringify({
-				schema_version: 1,
+				schema_version: 3,
+				consent_identity_enabled: true,
+				consent_production_enabled: true,
 				events_enabled: true,
 				consent_generation: enabledGeneration,
 				updated_at: "2026-08-28T10:15:30.000Z",
@@ -261,12 +263,14 @@ describe("DesktopTelemetryController", () => {
 		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending", acknowledged: false });
 	});
 
-	it("asks again for an opt-in given while the release gate was closed once a release opens it", async () => {
+	it("asks again for identity consent and persists the affirmative grant across restart", async () => {
 		const dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-controller-gate-opens-"));
 		try {
 			const gatedGeneration = "7f80c8a9-ec67-4a16-a067-a444ffcc5cca";
 			await writeFile(path.join(dataDir, "telemetry_policy.json"), `${JSON.stringify({
-				schema_version: 1,
+				schema_version: 3,
+				consent_identity_enabled: false,
+				consent_production_enabled: true,
 				events_enabled: true,
 				consent_generation: gatedGeneration,
 				updated_at: "2026-08-28T10:15:30.000Z",
@@ -308,7 +312,9 @@ describe("DesktopTelemetryController", () => {
 		try {
 			const gatedGeneration = "7f80c8a9-ec67-4a16-a067-a444ffcc5cca";
 			await writeFile(path.join(dataDir, "telemetry_policy.json"), `${JSON.stringify({
-				schema_version: 1,
+				schema_version: 3,
+				consent_identity_enabled: false,
+				consent_production_enabled: true,
 				events_enabled: true,
 				consent_generation: gatedGeneration,
 				updated_at: "2026-08-28T10:15:30.000Z",

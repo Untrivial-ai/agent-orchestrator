@@ -10,7 +10,8 @@ describe("telemetry policy wire record", () => {
 			consent_production_enabled: true,
 			updated_at: "2026-08-28T10:15:30.000Z",
 		}))).toEqual({ ok: true, record: {
-			schema_version: 2,
+			consent_identity_enabled: false,
+			schema_version: 3,
 			events_enabled: false,
 			consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
 			consent_production_enabled: true,
@@ -25,7 +26,8 @@ describe("telemetry policy wire record", () => {
 			consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
 			updated_at: "2026-08-28T10:15:30.000Z",
 		}))).toEqual({ ok: true, record: {
-			schema_version: 2,
+			consent_identity_enabled: false,
+			schema_version: 3,
 			events_enabled: true,
 			consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
 			consent_production_enabled: false,
@@ -50,7 +52,8 @@ describe("telemetry policy wire record", () => {
 
 describe("telemetryPolicySnapshot", () => {
 	const record = (eventsEnabled: boolean, consentProductionEnabled: boolean): TelemetryPolicyDiskRecord => ({
-		schema_version: 2,
+		schema_version: 3,
+		consent_identity_enabled: true,
 		events_enabled: eventsEnabled,
 		consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
 		consent_production_enabled: consentProductionEnabled,
@@ -111,5 +114,24 @@ describe("telemetryPolicyRetryable", () => {
 	it("keys on durabilitySupported rather than the reason label", () => {
 		expect(telemetryPolicyRetryable({ ...base, state: "cleanup_failed", durabilitySupported: false, reason: "cleanup_failed" })).toBe(false);
 		expect(telemetryPolicyRetryable({ ...base, state: "cleanup_failed", durabilitySupported: false, reason: "invalid_authority" })).toBe(false);
+	});
+});
+
+describe("identity consent gate", () => {
+	it.each([false, true])("requires a v3 identity grant independently of the production gate: %s", (granted) => {
+		const record: TelemetryPolicyDiskRecord = {
+			schema_version: 3, events_enabled: true, consent_identity_enabled: granted,
+			consent_production_enabled: false,
+			consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
+			updated_at: "2026-08-28T10:15:30.000Z",
+		};
+		expect(parseTelemetryPolicyDiskRecord(JSON.stringify(record))).toEqual({ ok: true, record });
+		expect(telemetryPolicySnapshot(record, true, false)).toMatchObject({
+			eventsEnabled: granted, consentRenewalRequired: !granted,
+		});
+		expect(telemetryPolicySnapshot(record, true, false, false).eventsEnabled).toBe(true);
+		for (const invalid of [undefined, null, "true", 1]) {
+			expect(parseTelemetryPolicyDiskRecord(JSON.stringify({ ...record, consent_identity_enabled: invalid })).ok).toBe(false);
+		}
 	});
 });

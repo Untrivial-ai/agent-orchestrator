@@ -19,7 +19,13 @@ import (
 // Wrap only the remote (billed) sink. Local SQLite storage should keep every
 // event so a stream silenced in production is still debuggable locally.
 type DenylistSink struct {
-	next     ports.EventSink
+	next ports.EventSink
+	EventDenylist
+}
+
+// EventDenylist matches remote stream names before collection or export.
+// It includes exported aliases and the same exact/prefix rules used by the sink.
+type EventDenylist struct {
 	denied   map[string]struct{}
 	prefixes []string
 }
@@ -35,7 +41,16 @@ func NewDenylistSink(next ports.EventSink, names []string) ports.EventSink {
 	if next == nil || len(names) == 0 {
 		return next
 	}
-	s := &DenylistSink{next: next, denied: make(map[string]struct{}, len(names))}
+	matcher := NewEventDenylist(names)
+	if len(matcher.denied) == 0 && len(matcher.prefixes) == 0 {
+		return next
+	}
+	return &DenylistSink{next: next, EventDenylist: matcher}
+}
+
+// NewEventDenylist compiles the case-insensitive exact and prefix denylist.
+func NewEventDenylist(names []string) EventDenylist {
+	s := EventDenylist{denied: make(map[string]struct{}, len(names))}
 	for _, raw := range names {
 		name := strings.ToLower(strings.TrimSpace(raw))
 		if name == "" {
@@ -49,15 +64,12 @@ func NewDenylistSink(next ports.EventSink, names []string) ports.EventSink {
 		}
 		s.denied[name] = struct{}{}
 	}
-	if len(s.denied) == 0 && len(s.prefixes) == 0 {
-		return next
-	}
 	return s
 }
 
 // Emit forwards the event unless its name is denied.
 func (s *DenylistSink) Emit(ctx context.Context, ev ports.TelemetryEvent) {
-	if s.blocks(ev.Name) {
+	if s.Blocks(ev.Name) {
 		return
 	}
 	s.next.Emit(ctx, ev)
@@ -69,11 +81,11 @@ func (s *DenylistSink) Close(ctx context.Context) error {
 	return s.next.Close(ctx)
 }
 
-// blocks reports whether an event name is silenced. Both the internal name and
+// Blocks reports whether an event name is silenced. Both the internal name and
 // the exported PostHog alias are checked, so an operator can type either the
 // name they see in PostHog ("ao.v2.app.active") or the one in the source
 // ("ao.app.active") and get the result they expect.
-func (s *DenylistSink) blocks(name string) bool {
+func (s EventDenylist) Blocks(name string) bool {
 	for _, candidate := range []string{name, remoteEventName(name)} {
 		lowered := strings.ToLower(strings.TrimSpace(candidate))
 		if lowered == "" {

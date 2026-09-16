@@ -22,9 +22,12 @@ AO sends structured events in a few broad categories:
 - The GitHub organization or account that owns a project's configured remote,
   recorded on project-add events. Only the owner segment is sent, never the
   repository name, path, or URL. For a personal repository this owner is the
-  user's own GitHub username, so this particular value is not anonymous. We use
-  it to understand which organizations and developers get the most value from
-  AO, so we can prioritize improvements and reach out for feedback
+  user's own GitHub username, so this particular value is not anonymous. A
+  workspace project holds several repositories: AO sends their owner only when
+  every one of them shares it, along with a count of how many distinct owners
+  the workspace spans. We use this to understand which organizations and
+  developers get the most value from AO, so we can prioritize improvements and
+  reach out for feedback
 - Whether that owner is a personal account or an organization, sent alongside
   it as `User` or `Organization`. When telemetry is enabled, the daemon asks
   GitHub's public `GET /users/{owner}` endpoint for that classification as a
@@ -32,6 +35,12 @@ AO sends structured events in a few broad categories:
   information, and only the account type is read from the response. If it
   fails for any reason the classification is simply left off the event; nothing
   else changes. When telemetry is disabled, the request is never made
+- The authenticated GitHub account login, when the active credentials belong to
+  a user account. AO observes it at daemon startup and daily while remote
+  telemetry is enabled and you have explicitly granted identity consent. This links an installation to a GitHub account so we can
+  attribute usage and agent spawns and reach out for feedback. It is not anonymous.
+  Bot accounts and failed lookups are skipped; credentials and email addresses
+  are never included
 - Reliability data, such as an error type and context, a crash message and
   stack trace after path redaction, an HTTP status, or an agent waiting for
   input
@@ -61,15 +70,20 @@ Product telemetry is designed not to include:
 - Shell command arguments, command history, or environment variables
 - Repository names, project names, branch names, or plain-text file paths
 - API keys, access tokens, passwords, or other credentials
-- Names, email addresses, or account identities
+- Real names, email addresses, or account identities other than the GitHub values
+  disclosed above
 
-The GitHub owner segment described under "What AO sends" is the one
-GitHub-derived value AO does send. It is limited to the owning
-organization or account and never includes the repository, path, or URL. It is
-read only from `github.com` remotes: a remote on a self-hosted GitHub
-Enterprise host names a different, private namespace, so its owner is not
-recorded at all. A remote that embeds a token or username — as credential
-helpers write them — still contributes nothing but the owner segment.
+The GitHub owner segment described under "What AO sends", the owner type sent
+alongside it, and the workspace owner count are GitHub-derived values
+AO sends in project events. They are limited to the owning organization or account, whether
+that owner is a user or an organization, and how many distinct owners a
+workspace spans; none of them include the repository, path, or URL. The owner is
+read only from `github.com` remotes: a remote on a self-hosted GitHub Enterprise
+host names a different, private namespace, so its owner is not recorded at all.
+A remote that embeds a token or username — as credential helpers write them —
+still contributes nothing but the owner segment.
+The authenticated account login is also sent as disclosed above, without email
+or credentials. A repository owner is not proof of who is using AO.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address, company role, and social profile there, they are used to manage
@@ -78,8 +92,9 @@ that waitlist as described in the [privacy policy](https://orchestrator.inc/priv
 ## How AO limits the data
 
 - AO generates a random installation identifier on first run. It is stored at
-  `~/.ao/data/telemetry_install_id` (or under `AO_DATA_DIR`) and is not linked to
-  a personal account.
+  `~/.ao/data/telemetry_install_id` (or under `AO_DATA_DIR`). Account-observation
+  events link it to the authenticated GitHub login; PostHog person profiles
+  remain disabled.
 - Project and session identifiers included in telemetry are one-way hashed.
   Hashing hides the plain text but still allows related events to be grouped.
 - Absolute local paths and local application URLs detected in desktop events
@@ -203,3 +218,45 @@ For the broader data policy, retention information, and contact options, see
 the [AO privacy policy](https://orchestrator.inc/privacy). You can report a problem
 with this documentation in the
 [GitHub repository](https://github.com/Untrivial-ai/agent-orchestrator).
+
+## GitHub account attribution
+
+`ao.github.account_observed` carries `github_login`, the account returned by
+GitHub's authenticated `/user` endpoint using the daemon's active credentials.
+It uses the same `distinct_id` as daemon and desktop usage events. The exporter
+also adds the usual AO version properties. No `identify()` call or person
+profile is created. Keeping `$process_person_profile: false` is deliberate:
+attribution stays a time-stamped event association, not a persistent person
+profile or an automatic merge of installations. The event is also recorded in
+local telemetry storage.
+
+Join observations to `ao.session.spawned`, `ao.v2.app.active`, or
+`ao.v2.renderer.loaded` by `distinct_id`. Keep the observation timestamp: the
+login identifies an account observed on that installation at that time, not a
+verified person or permanent owner. Accounts may be shared or switched; a
+failed lookup must not be treated as confirmation of a previous account. The
+daily refresh detects successful sign-ins and account switches without a
+daemon restart. A token supplied through the environment takes precedence over
+GitHub CLI credentials, following the daemon's existing authentication rules.
+
+Collection requires an affirmative identity opt-in in the desktop renewal dialog
+or the explicitly disclosed telemetry setting. Schema-v1/v2 policies and new
+packaged defaults do not grant identity consent. Schema v3 persists
+`consent_identity_enabled`; declining or disabling clears it. The separate
+identity module gate does not change the agent-switch production gate, and
+`consent_generation` remains a fresh UUID per policy write.
+
+Before both the authenticated lookup and event capture, the daemon reads the
+owner-only durable policy. Missing, invalid, revoked, or changed consent prevents
+capture; without a current identity grant it never performs the lookup. A grant
+is picked up by a local one-second policy poll without restarting; disabled
+policy polls never call GitHub. Subsequent lookup attempts are daily. Normal
+and identity events share one lazily initialized export pipeline and tenure
+tracker. Events observed before consent are dropped, not replayed on opt-in. On Windows, the
+existing durable-policy replacement limitation keeps identity consent disabled.
+Remote PostHog must
+also be configured and events enabled. Denying `ao.github.account_observed` (or a matching prefix) also prevents
+the lookup. Each lookup has a five-second timeout and does not block startup.
+Historical installations cannot be assigned a login until an observation is
+received; older activity must not automatically be attributed to a newly
+observed account.

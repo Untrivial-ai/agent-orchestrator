@@ -44,7 +44,8 @@ it("asks again and turns sharing on when the user agrees", async () => {
 	const user = userEvent.setup();
 	render(<TelemetryConsentRenewalDialog />);
 
-	expect(await screen.findByRole("dialog", { name: "Share error events?" })).toBeInTheDocument();
+	expect(await screen.findByRole("dialog", { name: "Share usage linked to your GitHub account?" })).toBeInTheDocument();
+	expect(screen.getByText(/authenticated GitHub handle/)).toBeInTheDocument();
 	await user.click(screen.getByRole("button", { name: "Turn on" }));
 
 	expect(setEventsEnabled).toHaveBeenCalledWith(true);
@@ -66,7 +67,7 @@ it("treats closing without choosing as not answered", async () => {
 	const user = userEvent.setup();
 	render(<TelemetryConsentRenewalDialog />);
 
-	await screen.findByRole("dialog", { name: "Share error events?" });
+	await screen.findByRole("dialog", { name: "Share usage linked to your GitHub account?" });
 	await user.keyboard("{Escape}");
 
 	await waitFor(() => expect(screen.queryByTestId("telemetry-renewal-dialog")).toBeNull());

@@ -251,7 +251,16 @@ func Run() error {
 
 	telemetryCfg := cfg
 	telemetryCfg.Telemetry.Events = policyCoordinator.EventsEnabled()
-	telemetrySink := newTelemetrySink(telemetryCfg, store, log)
+	telemetrySink := newLazyTelemetrySink(policyCoordinator.EventsEnabled, func() (ports.EventSink, error) {
+		// Called only after effective policy enables events. Reuse this single
+		// pipeline across all normal and identity events and later renewals.
+		resolved := cfg
+		resolved.Telemetry.Events = policyCoordinator.EventsEnabled()
+		if !resolved.Telemetry.Events {
+			return nil, errors.New("telemetry consent revoked before initialization")
+		}
+		return newTelemetrySink(resolved, store, log), nil
+	})
 	defer func() { _ = telemetrySink.Close(context.Background()) }()
 	// Daemon Sentry: captures genuine 5xx/panics with their Go stack. Gated on
 	// Initialize the transport once so a later policy opt-in works without a
@@ -280,6 +289,16 @@ func Run() error {
 	// graceful shutdown inside Server.Run and stops the background goroutines.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	stopGitHubAccountTelemetry := startGitHubAccountTelemetry(ctx, cfg.Telemetry, telemetrySink, policyCoordinator.EventsEnabled, func(ctx context.Context) (ports.SCMIdentity, error) {
+		// A fresh provider also refreshes its token and identity caches, so an
+		// account switch is reflected at the next observation.
+		provider, err := newGitHubSCMProvider(log)
+		if err != nil {
+			return ports.SCMIdentity{}, err
+		}
+		return provider.AuthenticatedIdentity(ctx)
+	}, policyauthority.New(filepath.Join(cfg.DataDir, agentswitchobs.PolicyFileName)))
+	defer stopGitHubAccountTelemetry()
 	policyCoordinator.StartWatcher(ctx)
 	defer func() { _ = policyCoordinator.CloseAndDrain(context.Background()) }()
 	// Constructing the synchronous sender performs no I/O. The hard production

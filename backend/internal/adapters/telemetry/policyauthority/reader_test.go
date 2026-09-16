@@ -2,6 +2,7 @@ package policyauthority
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,7 @@ func TestReaderTreatsVersionOneAsConsentGivenWhileGated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Present || !got.EventsEnabled || got.ConsentProductionEnabled || got.ConsentGeneration != generation {
+	if !got.Present || !got.EventsEnabled || got.ConsentIdentityEnabled || got.ConsentProductionEnabled || got.ConsentGeneration != generation {
 		t.Fatalf("snapshot = %+v", got)
 	}
 }
@@ -41,7 +42,7 @@ func TestReaderReadsVersionTwoConsentProductionState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !got.Present || !got.EventsEnabled || got.ConsentProductionEnabled != want {
+		if !got.Present || !got.EventsEnabled || got.ConsentIdentityEnabled || got.ConsentProductionEnabled != want {
 			t.Fatalf("consent_production_enabled=%s: snapshot = %+v", value, got)
 		}
 	}
@@ -49,17 +50,43 @@ func TestReaderReadsVersionTwoConsentProductionState(t *testing.T) {
 
 func TestReaderRejectsRecordsWhoseShapeDoesNotMatchTheirVersion(t *testing.T) {
 	for name, raw := range map[string]string{
-		"version 2 without gate state": `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","updated_at":"2026-08-28T10:15:30.000Z"}`,
-		"version 1 with gate state":    `{"schema_version":1,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":true,"updated_at":"2026-08-28T10:15:30.000Z"}`,
-		"version 2 null gate state":    `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":null,"updated_at":"2026-08-28T10:15:30.000Z"}`,
-		"version 2 string gate state":  `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":"yes","updated_at":"2026-08-28T10:15:30.000Z"}`,
-		"unknown version":              `{"schema_version":3,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":true,"updated_at":"2026-08-28T10:15:30.000Z"}`,
-		"unknown extra key":            `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":true,"updated_at":"2026-08-28T10:15:30.000Z","extra":1}`,
+		"version 2 without gate state":       `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","updated_at":"2026-08-28T10:15:30.000Z"}`,
+		"version 1 with gate state":          `{"schema_version":1,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":true,"updated_at":"2026-08-28T10:15:30.000Z"}`,
+		"version 2 null gate state":          `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":null,"updated_at":"2026-08-28T10:15:30.000Z"}`,
+		"version 2 string gate state":        `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":"yes","updated_at":"2026-08-28T10:15:30.000Z"}`,
+		"version 3 without identity consent": `{"schema_version":3,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":true,"updated_at":"2026-08-28T10:15:30.000Z"}`,
+		"unknown extra key":                  `{"schema_version":2,"events_enabled":true,"consent_generation":"` + generation + `","consent_production_enabled":true,"updated_at":"2026-08-28T10:15:30.000Z","extra":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := readRaw(t, raw); err == nil {
 				t.Fatalf("accepted %s: %+v", name, got)
 			}
 		})
+	}
+}
+
+func TestIdentityConsentV3(t *testing.T) {
+	for _, granted := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "telemetry_policy.json")
+		raw := fmt.Sprintf(`{"schema_version":3,"events_enabled":true,"consent_generation":"7f80c8a9-ec67-4a16-a067-a444ffcc5cca","consent_production_enabled":false,"consent_identity_enabled":%t,"updated_at":"2026-09-15T00:00:00.000Z"}`, granted)
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := New(path).ReadAgentSwitchFailureAuthority(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.ConsentIdentityEnabled != granted {
+			t.Fatalf("identity consent = %v, want %v", snapshot.ConsentIdentityEnabled, granted)
+		}
+	}
+}
+
+func TestIdentityConsentRejectsInvalidV3Flags(t *testing.T) {
+	for _, value := range []string{"null", "\"\"", "1", "\"true\""} {
+		raw := fmt.Sprintf(`{"schema_version":3,"events_enabled":true,"consent_generation":"%s","consent_production_enabled":false,"consent_identity_enabled":%s,"updated_at":"2026-09-15T00:00:00.000Z"}`, generation, value)
+		if _, err := readRaw(t, raw); err == nil {
+			t.Fatalf("accepted invalid identity consent %s", value)
+		}
 	}
 }

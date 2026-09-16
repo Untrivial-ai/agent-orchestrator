@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
 	AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED,
+	GITHUB_IDENTITY_TELEMETRY_ENABLED,
 	parseTelemetryPolicyDiskRecord,
 	telemetryPolicySnapshot,
 	type TelemetryPolicyDiskRecord,
@@ -62,6 +63,7 @@ export class TelemetryPolicyAuthority {
 		packagedDefault: boolean;
 		platform?: NodeJS.Platform;
 		productionEnabled?: boolean;
+		identityEnabled?: boolean;
 		fs?: TelemetryPolicyFileSystem;
 		now?: () => Date;
 		newGeneration?: () => string;
@@ -110,7 +112,7 @@ export class TelemetryPolicyAuthority {
 			throw new Error("telemetry policy durable replacement is unsupported on Windows");
 		}
 		if (!this.writable) throw new Error("telemetry policy authority is unsafe and cannot be replaced");
-		const record = this.newRecord(eventsEnabled);
+		const record = this.newRecord(eventsEnabled, true);
 		this.record = record;
 		this.current = this.snapshotOf(record, false);
 		await this.replace(record);
@@ -128,12 +130,13 @@ export class TelemetryPolicyAuthority {
 		return this.snapshot();
 	}
 
-	private newRecord(eventsEnabled: boolean): TelemetryPolicyDiskRecord {
+	private newRecord(eventsEnabled: boolean, affirmative = false): TelemetryPolicyDiskRecord {
 		return {
-			schema_version: 2,
+			schema_version: 3,
 			events_enabled: eventsEnabled,
 			consent_generation: (this.options.newGeneration ?? randomUUID)(),
 			consent_production_enabled: this.productionEnabled(),
+			consent_identity_enabled: affirmative && eventsEnabled && (this.options.identityEnabled ?? GITHUB_IDENTITY_TELEMETRY_ENABLED),
 			updated_at: (this.options.now?.() ?? new Date()).toISOString(),
 		};
 	}
@@ -143,7 +146,7 @@ export class TelemetryPolicyAuthority {
 	}
 
 	private snapshotOf(record: TelemetryPolicyDiskRecord, acknowledged: boolean): TelemetryPolicySnapshot {
-		return telemetryPolicySnapshot(record, acknowledged, this.productionEnabled());
+		return telemetryPolicySnapshot(record, acknowledged, this.productionEnabled(), this.options.identityEnabled ?? GITHUB_IDENTITY_TELEMETRY_ENABLED);
 	}
 
 	private async replace(record: TelemetryPolicyDiskRecord): Promise<void> {
