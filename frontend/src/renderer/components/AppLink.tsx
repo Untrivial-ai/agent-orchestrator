@@ -1,5 +1,5 @@
 import { createContext, useContext, type ComponentProps } from "react";
-import { Copy, ExternalLink, Globe } from "lucide-react";
+import { Copy, ExternalLink, FileText, Globe } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { aoBridge } from "../lib/bridge";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
@@ -14,9 +14,11 @@ import {
 export const AppBrowserLinkContext = createContext<((url: string) => void) | undefined>(undefined);
 
 /** Shared web-link behavior; native fragments and special schemes retain their handlers. */
-export function AppLink({ href, onClick, onBrowserOpen, inAppLink, ...props }: ComponentProps<"a"> & {
+export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onFileOpen, ...props }: ComponentProps<"a"> & {
 	onBrowserOpen?: (url: string) => void;
 	inAppLink?: (url: string) => boolean;
+	filePath?: string;
+	onFileOpen?: (path: string) => void;
 }) {
 	const { t } = useTranslation();
 	const sessionBrowserOpen = useContext(AppBrowserLinkContext);
@@ -31,29 +33,37 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, ...props }: C
 				onClick?.(event);
 				if (event.defaultPrevented || !href || !browserLink) return;
 				event.preventDefault();
-				if (openBrowser && !event.ctrlKey && !event.metaKey && !event.altKey) openBrowser(href);
+				if (openBrowser && (!webLink || (!event.ctrlKey && !event.metaKey && !event.altKey))) openBrowser(href);
 				else void openLinkInSystemBrowser(href);
 			}}
 		/>
 	);
-	if (!href || href.startsWith("#") || href.startsWith("/")) return anchor;
+	if (!href || href.startsWith("#") || (href.startsWith("/") && !browserLink && !filePath)) return anchor;
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-52">
-				{webLink && (
+				{browserLink && (
 					<>
 						<ContextMenuItem disabled={!openBrowser} onSelect={() => openBrowser?.(href)}>
 							<Globe aria-hidden="true" />
 							{t("link.openInAOBrowser")}
 						</ContextMenuItem>
-						<ContextMenuItem onSelect={() => void openLinkInSystemBrowser(href)}>
-							<ExternalLink aria-hidden="true" />
-							{t("link.openInExternalBrowser")}
-						</ContextMenuItem>
-						<ContextMenuSeparator />
 					</>
 				)}
+				{filePath && onFileOpen && (
+					<ContextMenuItem onSelect={() => onFileOpen(filePath)}>
+						<FileText aria-hidden="true" />
+						{t("link.openInFiles")}
+					</ContextMenuItem>
+				)}
+				{webLink && (
+					<ContextMenuItem onSelect={() => void openLinkInSystemBrowser(href)}>
+						<ExternalLink aria-hidden="true" />
+						{t("link.openInExternalBrowser")}
+					</ContextMenuItem>
+				)}
+				{(browserLink || (filePath && onFileOpen) || webLink) && <ContextMenuSeparator />}
 				<ContextMenuItem onSelect={() => void aoBridge.clipboard.writeText(href)}>
 					<Copy aria-hidden="true" />
 					{t("link.copy")}

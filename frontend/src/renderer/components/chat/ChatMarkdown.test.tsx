@@ -19,9 +19,14 @@ beforeEach(() => {
 // The point of these is that the SYNTAX stops being visible. Every case here is a
 // shape agents actually emit, and the assertion is that structure replaced markup.
 
-function renderWithLinkHandler(text: string, onLinkOpen: (url: string) => void, workspacePaths: string[] = []) {
+function renderWithLinkHandler(
+	text: string,
+	onLinkOpen: (url: string) => void,
+	workspacePaths: string[] = [],
+	onFileOpen?: (path: string) => void,
+) {
 	return render(
-		<ChatLinkProvider onLinkOpen={onLinkOpen} workspacePaths={workspacePaths}>
+		<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onFileOpen} workspacePaths={workspacePaths}>
 			<ChatMarkdown text={text} />
 		</ChatLinkProvider>,
 	);
@@ -152,6 +157,37 @@ describe("ChatMarkdown", () => {
 		expect(onLinkOpen).toHaveBeenCalledWith("test-ui-2.html");
 		expect(openExternal).not.toHaveBeenCalled();
 		openExternal.mockRestore();
+	});
+
+	it("routes a newly reported local file through AO even before Files has indexed it", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [new report](reports/new-report.html)", onLinkOpen);
+
+		await user.click(screen.getByRole("link", { name: "new report" }));
+
+		expect(onLinkOpen).toHaveBeenCalledWith("reports/new-report.html");
+		expect(openExternal).not.toHaveBeenCalled();
+	});
+
+	it("preserves Windows workspace paths and offers the verified file in Files", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const onFileOpen = vi.fn();
+		renderWithLinkHandler(
+			"see [final report](C:\\worktree\\reports\\final.html)",
+			onLinkOpen,
+			["reports/final.html"],
+			onFileOpen,
+		);
+		const link = screen.getByRole("link", { name: "final report" });
+
+		fireEvent.contextMenu(link);
+		await user.click(await screen.findByRole("menuitem", { name: "Open in Files" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("reports/final.html");
+		expect(onLinkOpen).not.toHaveBeenCalled();
 	});
 
 	it("opens a web link in the system browser on Option/Alt-click", () => {

@@ -609,6 +609,30 @@ describe("BrowserPanel", () => {
 		openExternal.mockRestore();
 	});
 
+	it("copies the full current URL from the address bar and confirms it", async () => {
+		const url = "https://www.google.com/search?q=agent+orchestrator";
+		hookState.navState = { ...hookState.navState, url };
+		const writeText = vi.spyOn(window.ao!.clipboard, "writeText").mockResolvedValue(undefined);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		// The compact address bar displays only the host, but copy must retain the
+		// path and query from the underlying navigation state.
+		expect(screen.getByRole("textbox", { name: /browser url/i })).toHaveValue("google.com");
+		await userEvent.click(screen.getByRole("button", { name: "Copy URL" }));
+
+		expect(writeText).toHaveBeenCalledExactlyOnceWith(url);
+		expect(screen.getByRole("button", { name: "URL copied" })).toBeInTheDocument();
+		expect(useUiStore.getState().globalToast).toBeNull();
+		writeText.mockRestore();
+	});
+
+	it("does not show URL actions on a blank browser tab", () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		expect(screen.queryByRole("button", { name: "Copy URL" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /open in system browser/i })).not.toBeInTheDocument();
+	});
+
 	it("keeps secondary browser controls compact until device presets are requested", async () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 

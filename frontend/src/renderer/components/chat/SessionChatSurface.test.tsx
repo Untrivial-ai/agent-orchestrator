@@ -11,6 +11,7 @@ import { workspaceQueryKey } from "../../hooks/useWorkspaceQuery";
 import { useConversationConfigOptions, useConversationModels, useConversationSkills } from "../../hooks/useConversation";
 
 const LINK = "http://localhost:5173";
+const REPORT_LINK = "reports/new-report.html";
 
 function snapshotFor(sessionId: string): ConversationSnapshot & { capabilities: string[] } {
 	return {
@@ -149,6 +150,9 @@ vi.mock("./ChatWorkspace", async () => {
 					{sessionTabAction}
 					<button type="button" onClick={() => onLinkOpen?.(LINK)}>
 						Open chat link
+					</button>
+					<button type="button" onClick={() => onLinkOpen?.(REPORT_LINK)}>
+						Open report link
 					</button>
 					{shellTarget ? <div data-testid="shell-target">{shellTarget.handleId}</div> : null}
 				</div>
@@ -414,6 +418,25 @@ describe("SessionChatSurface link routing", () => {
 			body: { url: LINK },
 		});
 		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: workspaceQueryKey }));
+	});
+
+	it("asks the confined preview resolver to open a report that Files has not indexed yet", async () => {
+		const user = userEvent.setup();
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+
+		render(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={vi.fn()} />
+			</Wrapper>,
+		);
+		await user.click(screen.getByRole("button", { name: "Open report link" }));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+			params: { path: { sessionId: session.id } },
+			body: { url: REPORT_LINK },
+		});
 	});
 
 	it("opens a plain Chat link from an active orchestrator in its Browser panel", async () => {
