@@ -211,6 +211,12 @@ export interface CloudCpSession {
 	workerEpoch?: number;
 	createdAt: string;
 	updatedAt: string;
+	/** The session's pull requests; absent from control planes that predate it. */
+	prs?: CloudCpSessionPullRequest[];
+	/** PR-derived status, board column, and phrase, derived as the local daemon does. */
+	scmStatus?: string;
+	kanbanColumn?: string;
+	displayStatus?: string;
 }
 
 export interface CloudCpSessionResponse {
@@ -235,6 +241,49 @@ export interface CloudCpSessionPullRequest {
 	sourceBranch?: string;
 	targetBranch?: string;
 	updatedAt: string;
+}
+
+/** One failing check on a pull request summary. */
+export interface CloudCpPullRequestFailingCheck {
+	name: string;
+	status: string;
+	conclusion: string;
+	url: string;
+}
+
+/**
+ * One pull request as GET .../sessions/{id}/pull-requests renders it. Mirrors
+ * the local daemon's SessionPRSummary so the inspector renders both alike.
+ */
+export interface CloudCpPullRequestSummary {
+	url: string;
+	htmlUrl?: string;
+	number: number;
+	title: string;
+	state: "draft" | "open" | "merged" | "closed";
+	provider: string;
+	repository: string;
+	author: string;
+	sourceBranch: string;
+	targetBranch: string;
+	headSha: string;
+	additions: number;
+	deletions: number;
+	changedFiles: number;
+	ci: { state: string; failingChecks: CloudCpPullRequestFailingCheck[] };
+	review: { decision: string; hasUnresolvedHumanComments: boolean };
+	mergeability: { state: string; reasons: string[]; pullRequestUrl: string };
+	stateChangedAt?: string;
+	createdAt?: string;
+	updatedAt: string;
+	observedAt?: string;
+	ciObservedAt?: string;
+	reviewObservedAt?: string;
+}
+
+export interface CloudCpSessionPullRequestsResponse {
+	sessionId: string;
+	pullRequests: CloudCpPullRequestSummary[];
 }
 
 /** A child session as listed under its orchestrator, with its pull requests. */

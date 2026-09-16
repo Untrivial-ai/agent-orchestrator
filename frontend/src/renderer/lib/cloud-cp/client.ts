@@ -36,6 +36,7 @@ import type {
 	CloudCpSessionChildrenResponse,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
+	CloudCpSessionPullRequestsResponse,
 	CloudCpResumeSessionResponse,
 	CloudCpRestoreSessionResponse,
 	CloudCpSessionResponse,
@@ -129,6 +130,12 @@ export interface CloudCpClient {
 		query?: CloudCpListQuery,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpSessionChildrenResponse>;
+	/** Lists a session's pull requests with CI, review, and mergeability detail. */
+	listSessionPullRequests(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionPullRequestsResponse>;
 	deleteSession(
 		orgId: string,
 		sessionId: string,
@@ -395,6 +402,8 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				query: { limit: query?.limit, cursor: query?.cursor },
 				signal: o?.signal,
 			}),
+		listSessionPullRequests: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/pull-requests`, { signal: o?.signal }),
 		deleteSession: (orgId, sessionId, o) =>
 			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
 		resumeSession: (orgId, sessionId, o) =>

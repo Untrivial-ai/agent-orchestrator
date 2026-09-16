@@ -34,7 +34,7 @@ export type OrchestratorChildView = {
 	prs: PullRequestFacts[];
 };
 
-function toPullRequestFacts(pr: CloudCpSessionPullRequest): PullRequestFacts {
+export function toCloudPullRequestFacts(pr: CloudCpSessionPullRequest): PullRequestFacts {
 	return {
 		url: pr.url,
 		number: pr.number,
@@ -56,7 +56,7 @@ export function toOrchestratorChildView(child: CloudCpSessionChild): Orchestrato
 		activity: toSessionActivity({ state: child.activityState }) ?? null,
 		isTerminated: child.isTerminated,
 		updatedAt: child.updatedAt,
-		prs: child.prs.map(toPullRequestFacts),
+		prs: child.prs.map(toCloudPullRequestFacts),
 	};
 }
 
