@@ -892,11 +892,22 @@ export function BrowserPanelView({
 									type="button"
 									variant="ghost"
 								>
-									{urlCopied ? (
-										<Check aria-hidden="true" className="size-icon-base" />
-									) : (
-										<Copy aria-hidden="true" className="size-icon-base" />
-									)}
+									<span className="relative size-icon-base">
+										<Copy
+											aria-hidden="true"
+											className={cn(
+												"absolute inset-0 size-icon-base transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												urlCopied ? "scale-75 opacity-0" : "scale-100 opacity-100",
+											)}
+										/>
+										<Check
+											aria-hidden="true"
+											className={cn(
+												"absolute inset-0 size-icon-base text-success transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												urlCopied ? "scale-100 opacity-100" : "scale-75 opacity-0",
+											)}
+										/>
+									</span>
 								</Button>
 							</BrowserControlTooltip>
 						) : null}
