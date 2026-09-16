@@ -888,6 +888,8 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 // Items arrive already ordered by sequence, so nothing is re-sorted here.
 func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotResponse {
 	out := ConversationSnapshotResponse{
+		LiveGeneration:                   s.LiveGeneration,
+		LiveSequence:                     s.LiveSequence,
 		ConversationID:                   s.Conversation.ID,
 		ActiveBranchID:                   s.Conversation.ActiveBranchID,
 		BranchedFromEarlierMessage:       s.BranchedFromEarlierMessage,
@@ -935,16 +937,17 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, msg := range s.Messages {
 		message := ConversationMessageResponse{
-			Kind:      "message",
-			ID:        msg.ID,
-			TurnID:    msg.TurnID,
-			Sequence:  msg.Sequence,
-			Revision:  msg.Revision,
-			Role:      string(msg.Role),
-			Origin:    string(msg.Origin),
-			Text:      msg.Text,
-			Streaming: msg.Streaming,
-			CreatedAt: msg.CreatedAt.UTC().Format(time.RFC3339),
+			ProviderItemID: msg.ProviderItemID,
+			Kind:           "message",
+			ID:             msg.ID,
+			TurnID:         msg.TurnID,
+			Sequence:       msg.Sequence,
+			Revision:       msg.Revision,
+			Role:           string(msg.Role),
+			Origin:         string(msg.Origin),
+			Text:           msg.Text,
+			Streaming:      msg.Streaming,
+			CreatedAt:      msg.CreatedAt.UTC().Format(time.RFC3339),
 		}
 		message.Content, message.EditAvailable = conversationContentSummary(msg)
 		message.EditAvailable = message.EditAvailable && msg.Sequence > s.EditFloorSequence

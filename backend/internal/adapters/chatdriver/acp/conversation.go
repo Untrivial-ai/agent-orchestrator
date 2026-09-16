@@ -88,11 +88,14 @@ type conversation struct {
 	log             *slog.Logger
 	providerScopeID string
 
-	mu                 sync.Mutex
-	sessionID          string
-	capabilities       ports.ChatCapabilities
-	prepared           *preparedTurn
-	activeTurn         string
+	mu           sync.Mutex
+	sessionID    string
+	capabilities ports.ChatCapabilities
+	prepared     *preparedTurn
+	activeTurn   string
+	// freshTurn is set only for a prompt this client dispatched. Older hosts
+	// without a replay watermark can still prove freshness after that boundary.
+	freshTurn          bool
 	settlingTurn       string
 	turnCancel         context.CancelFunc
 	interrupt          *interruptAttempt
@@ -350,6 +353,7 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 	c.mu.Lock()
 	if durableBusy {
 		c.activeTurn = providerTurnID
+		c.freshTurn = false
 		if c.liveState.ActiveCompaction {
 			c.compactingTurnID = providerTurnID
 			c.compactionBefore = c.contextTokens
@@ -505,6 +509,7 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 	turn := *c.prepared
 	c.prepared = nil
 	c.activeTurn = turn.id
+	c.freshTurn = true
 	c.settlingTurn = ""
 	turnCtx, cancel := context.WithCancel(context.Background())
 	c.turnCancel = cancel
@@ -627,6 +632,7 @@ func (c *conversation) finishPrompt(
 	c.mu.Lock()
 	if c.activeTurn == turnID {
 		c.activeTurn = ""
+		c.freshTurn = false
 		c.settlingTurn = ""
 		c.turnCancel = nil
 		c.providerFailure = nil

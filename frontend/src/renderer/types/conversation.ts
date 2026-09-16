@@ -162,6 +162,10 @@ export interface QueuedMessageEditOptions {
 }
 
 export interface ConversationMessage {
+	providerItemId?: string;
+	/** Checkpoint of the page that supplied this row; history pages may differ. */
+	liveGeneration?: string;
+	liveSequence?: number;
 	kind: "message";
 	id: string;
 	turnId?: string;
@@ -723,6 +727,9 @@ export interface McpServer {
 }
 
 export interface ConversationSnapshot {
+	/** Provider observations already processed by this durable snapshot. */
+	liveGeneration?: string;
+	liveSequence?: number;
 	conversationId: string;
 	sessionId: string;
 	harness: string;

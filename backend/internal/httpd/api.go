@@ -209,6 +209,7 @@ func (a *API) Register(root chi.Router) {
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
 		a.notifications.RegisterStream(r)
+		a.conversations.RegisterStreams(r)
 		a.codexAccounts.RegisterStreams(r)
 		a.sessions.RegisterStreams(r)
 		a.events.Register(r)
