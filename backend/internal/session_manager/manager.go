@@ -429,43 +429,8 @@ type Manager struct {
 	statusRecoveryRevision         uint64
 	statusRecoveries               map[domain.SessionID]statusRecovery
 	statusVerificationLimit        time.Duration
-	agentOpMu                      sync.Mutex
-	agentOperations                map[domain.SessionID]agentOperationKind
 	interfaceRecoveryMu            sync.Mutex
 	deferredInterfaceRecovery      map[domain.SessionID]string
-	// switchDecisionInput opens a narrow human-only terminal lane while the
-	// source is blocked on permission during a mandatory switch.
-	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
-	// retainedSwitches marks switch gates intentionally kept closed after an
-	// ambiguous external side effect (for example a target runtime that could
-	// not be removed). A later reconciliation pass may reclaim exactly these
-	// gates; an actively-running switch remains non-reentrant.
-	retainedSwitches map[domain.SessionID]struct{}
-	inputLeases      map[domain.SessionID]int
-	inputDrained     map[domain.SessionID]chan struct{}
-	// handoffWait bounds optional source-agent enrichment. Time spent waiting
-	// for a human permission decision is paused and charged only against the
-	// separate switchPermissionDecisionWait budget below.
-	handoffWait time.Duration
-	// switchPermissionDecisionWait is a separate human-response budget used only
-	// while the source agent is blocked on a permission prompt. The semantic
-	// handoff budget is paused while this budget is active.
-	switchPermissionDecisionWait time.Duration
-	// switchTargetStartWait bounds proof that the newly-created supervised
-	// provider generation is actually alive before durable ownership transfers.
-	switchTargetStartWait time.Duration
-	// switchPostStopWait bounds aggregate target setup after source ownership is
-	// conclusively stopped. Tests shorten it to exercise phase-budget isolation.
-	switchPostStopWait time.Duration
-	// switchDeliveryAckWait bounds the target generation's prompt-submit hook.
-	// Timeout is an explicit failed/ambiguous delivery, never implicit success.
-	switchDeliveryAckWait time.Duration
-	// backgroundContext owns asynchronous agent-switch execution independently
-	// of the admitting request. The daemon cancels it before waiting for workers.
-	backgroundContext        context.Context
-	agentSwitchWorkers       sync.WaitGroup
-	agentSwitchWorkerMu      sync.Mutex
-	agentSwitchWorkersClosed bool
 
 	// Saga execution state, grouped by owner (see state.go). The groups are
 	// embedded so existing m.<field> selectors keep working via promotion.
