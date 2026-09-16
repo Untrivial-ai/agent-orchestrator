@@ -9225,6 +9225,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - zcode
           - fake
           type: string
         approvalMode:
@@ -11768,6 +11769,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - zcode
           type: string
         issueId:
           type: string
