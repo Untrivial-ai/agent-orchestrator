@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +83,351 @@ func TestSend_Success(t *testing.T) {
 	}
 	if req.Message != "hello agent" {
 		t.Errorf("captured message = %q, want %q", req.Message, "hello agent")
+	}
+}
+
+func TestSend_SteerActiveTurnUsesProviderSteeringWithoutQueueing(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "source-2")
+	cfg := setConfigEnv(t)
+	var paths, bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"outcome":"steered","providerTurnId":"provider-turn-1","activityId":"activity-1"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--message", "correct course")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if len(paths) != 1 || paths[0] != "/api/v1/sessions/demo-1/conversation/steer-or-send" {
+		t.Fatalf("paths = %v, want one atomic steer-or-send request", paths)
+	}
+	var req conversationMessageAPIRequest
+	if err := json.Unmarshal([]byte(bodies[0]), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Text != "[from source-2] correct course" || req.ClientMessageID == "" {
+		t.Errorf("request = %+v", req)
+	}
+	if !strings.Contains(out, "accepted by provider") || !strings.Contains(out, "action is not confirmed") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestSend_SteerIdleStartsOneNormalChatTurn(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
+	cfg := setConfigEnv(t)
+	var paths, ids []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		var req struct {
+			Text string `json:"text"`
+			ID   string `json:"clientMessageId"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		ids = append(ids, req.ID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"outcome":"sent","turnId":"turn-2","state":"running","duplicate":false}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--message", "next work")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	wantPaths := []string{
+		"/api/v1/sessions/demo-1/conversation/steer-or-send",
+	}
+	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
+		t.Fatalf("paths = %v, want %v", paths, wantPaths)
+	}
+	if len(ids) != 1 || ids[0] == "" {
+		t.Fatalf("delivery ids = %v, want one stable non-empty id", ids)
+	}
+	if !strings.Contains(out, "normal Chat turn in running state") || !strings.Contains(out, "not confirmed") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestSend_SteerStateChangeRaceUsesOneAtomicRequest(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
+	cfg := setConfigEnv(t)
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"outcome":"steered","providerTurnId":"provider-running"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--message", "race correction")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	wantPaths := []string{
+		"/api/v1/sessions/demo-1/conversation/steer-or-send",
+	}
+	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
+		t.Fatalf("paths = %v, want %v", paths, wantPaths)
+	}
+	if !strings.Contains(out, "accepted by provider for active turn provider-running") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestSend_SteerFailureDoesNotSilentlyQueue(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		code   string
+	}{
+		{name: "unsupported", status: http.StatusConflict, code: "CHAT_STEER_UNSUPPORTED"},
+		{name: "provider failure", status: http.StatusBadGateway, code: "CHAT_PROVIDER_FAILED"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/internal/") {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = fmt.Fprintf(w, `{"error":"failure","code":%q,"message":"steer failed"}`, tt.code)
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+
+			_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+				"send", "--session", "demo-1", "--steer", "--message", "correction")
+			if err == nil || !strings.Contains(err.Error(), tt.code) {
+				t.Fatalf("err = %v, want %s", err, tt.code)
+			}
+			if calls != 1 {
+				t.Fatalf("calls = %d, failed steer must not queue", calls)
+			}
+		})
+	}
+}
+
+func TestSend_SteerUncertainExposesHandleForRecovery(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var req conversationMessageAPIRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"conflict","code":"CHAT_STEER_UNCERTAIN","message":"delivery uncertain"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--message", "correction")
+	if err == nil || !strings.Contains(err.Error(), "CHAT_STEER_UNCERTAIN") {
+		t.Fatalf("err = %v, want uncertain steering error", err)
+	}
+	if req.ClientMessageID == "" {
+		t.Fatal("clientMessageId is empty")
+	}
+	wantRecovery := "--steer --recover-only --client-message-id " + req.ClientMessageID
+	if !strings.Contains(err.Error(), wantRecovery) {
+		t.Fatalf("err = %q, want recovery command containing %q", err, wantRecovery)
+	}
+}
+
+func TestSend_SteerTransportFailureExposesRetryHandle(t *testing.T) {
+	cfg := setConfigEnv(t)
+	captured := make(chan conversationMessageAPIRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var req conversationMessageAPIRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		captured <- req
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack response: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--message", "correction")
+	req := <-captured
+	if err == nil || req.ClientMessageID == "" {
+		t.Fatalf("err = %v clientMessageId = %q", err, req.ClientMessageID)
+	}
+	if !strings.Contains(err.Error(), "outcome is unknown") ||
+		!strings.Contains(err.Error(), "--client-message-id "+req.ClientMessageID) {
+		t.Fatalf("err = %q, want safe retry handle %q", err, req.ClientMessageID)
+	}
+}
+
+func TestSend_SteerMalformedSuccessExposesRetryHandle(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing body"},
+		{name: "truncated body", body: `{"outcome":"steered"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var req conversationMessageAPIRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/internal/") {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+
+			_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+				"send", "--session", "demo-1", "--steer", "--message", "correction")
+			if err == nil || req.ClientMessageID == "" {
+				t.Fatalf("err = %v clientMessageId = %q", err, req.ClientMessageID)
+			}
+			if !strings.Contains(err.Error(), "outcome is unknown") ||
+				!strings.Contains(err.Error(), "--client-message-id "+req.ClientMessageID) {
+				t.Fatalf("err = %q, want safe retry handle %q", err, req.ClientMessageID)
+			}
+		})
+	}
+}
+
+func TestSend_SteerServerFailureExposesRetryHandle(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var req conversationMessageAPIRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"internal","code":"INTERNAL","message":"server failed"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--message", "correction")
+	if err == nil || req.ClientMessageID == "" {
+		t.Fatalf("err = %v clientMessageId = %q", err, req.ClientMessageID)
+	}
+	if !strings.Contains(err.Error(), "outcome is unknown") ||
+		!strings.Contains(err.Error(), "--client-message-id "+req.ClientMessageID) {
+		t.Fatalf("err = %q, want safe retry handle %q", err, req.ClientMessageID)
+	}
+}
+
+func TestSend_SteerRecoverOnlyReusesHandleWithoutMessage(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var req conversationMessageAPIRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"outcome":"steered","providerTurnId":"provider-turn-1"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--recover-only", "--client-message-id", "steer-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if req.ClientMessageID != "steer-1" || !req.RecoverOnly || req.Text != "" {
+		t.Fatalf("request = %+v, want recover-only request with original handle and no message", req)
+	}
+	if !strings.Contains(out, "Recovered steering receipt") || !strings.Contains(out, "steer-1") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestSend_SteerRecoverOnlyRequiresHandle(t *testing.T) {
+	_, _, err := executeCLI(t, Deps{},
+		"send", "--session", "demo-1", "--steer", "--recover-only")
+	var usage usageError
+	if !errors.As(err, &usage) || !strings.Contains(err.Error(), "--client-message-id") {
+		t.Fatalf("err = %v, want client message id usage error", err)
+	}
+}
+
+func TestSend_SteerRecoverOnlyNeverFallsBackToNewMessage(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"conflict","code":"CHAT_NO_ACTIVE_TURN","message":"idle"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "demo-1", "--steer", "--recover-only", "--client-message-id", "steer-1")
+	if err == nil || !strings.Contains(err.Error(), "CHAT_NO_ACTIVE_TURN") {
+		t.Fatalf("err = %v, want recovered no-active-turn result", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, recovery must never start a new delivery", calls)
 	}
 }
 

@@ -15,22 +15,39 @@ import (
 
 const activateConversationBranchSession = `-- name: ActivateConversationBranchSession :execrows
 UPDATE sessions
-SET provider_conversation_id = ?, controller_generation = ?, updated_at = ?
-WHERE id = ? AND session_mode = 'chat' AND is_terminated = 0
+SET updated_at = ?1,
+    latest_user_prompt = CASE WHEN provider_conversation_id = ?2 THEN latest_user_prompt ELSE '' END,
+    latest_assistant_update = CASE WHEN provider_conversation_id = ?2 THEN latest_assistant_update ELSE '' END,
+    latest_assistant_update_at = CASE WHEN provider_conversation_id = ?2 THEN latest_assistant_update_at ELSE NULL END,
+    conversation_checkpoint_state = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_state ELSE 'empty' END,
+    conversation_checkpoint_generation = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_generation ELSE '' END,
+    conversation_checkpoint_native_id = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_native_id ELSE '' END,
+    conversation_checkpoint_turn_id = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_turn_id ELSE '' END,
+    conversation_checkpoint_unsettled = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_unsettled ELSE 0 END,
+    native_checkpoint_evidence = CASE WHEN provider_conversation_id = ?2 THEN native_checkpoint_evidence ELSE '' END,
+    native_transcript_path = CASE WHEN provider_conversation_id = ?2 THEN native_transcript_path ELSE '' END,
+    agent_session_id = ?2,
+    agent_session_id_launch_id = '',
+    native_identity_observed_at = ?1,
+    provider_conversation_id = ?2,
+    controller_generation = ?3
+WHERE id = ?4 AND session_mode = 'chat' AND is_terminated = 0
 `
 
 type ActivateConversationBranchSessionParams struct {
+	UpdatedAt              time.Time
 	ProviderConversationID string
 	ControllerGeneration   string
-	UpdatedAt              time.Time
 	ID                     domain.SessionID
 }
 
+// The branch and its native-history checkpoint have the same owner. A fork or
+// branch activation cannot retain the previous native conversation's hook facts.
 func (q *Queries) ActivateConversationBranchSession(ctx context.Context, arg ActivateConversationBranchSessionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, activateConversationBranchSession,
+		arg.UpdatedAt,
 		arg.ProviderConversationID,
 		arg.ControllerGeneration,
-		arg.UpdatedAt,
 		arg.ID,
 	)
 	if err != nil {
@@ -41,21 +58,21 @@ func (q *Queries) ActivateConversationBranchSession(ctx context.Context, arg Act
 
 const claimChatControllerGeneration = `-- name: ClaimChatControllerGeneration :execrows
 UPDATE sessions
-SET controller_generation = ?, updated_at = ?
+SET controller_generation = ?
 WHERE id = ? AND session_mode = 'chat'
 `
 
 type ClaimChatControllerGenerationParams struct {
 	ControllerGeneration string
-	UpdatedAt            time.Time
 	ID                   domain.SessionID
 }
 
 // A Chat controller claims ownership before its event goroutine starts. Provider
 // projections compare against this value in the same transaction as their write,
 // so an older controller cannot mutate a session after a replacement takes over.
+// Ownership changes are not activity and must not advance the board's recency.
 func (q *Queries) ClaimChatControllerGeneration(ctx context.Context, arg ClaimChatControllerGenerationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, claimChatControllerGeneration, arg.ControllerGeneration, arg.UpdatedAt, arg.ID)
+	result, err := q.db.ExecContext(ctx, claimChatControllerGeneration, arg.ControllerGeneration, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -64,27 +81,35 @@ func (q *Queries) ClaimChatControllerGeneration(ctx context.Context, arg ClaimCh
 
 const commitSessionControllerEpoch = `-- name: CommitSessionControllerEpoch :execrows
 UPDATE sessions
-SET session_mode = ?,
+SET session_mode = ?1,
     runtime_handle_id = '',
     runtime_launch_id = '',
-    agent_session_id = ?,
+    agent_session_id = ?2,
     agent_session_id_launch_id = '',
-    provider_conversation_id = ?,
+    provider_conversation_id = ?3,
     controller_generation = '',
+    latest_user_prompt = CASE WHEN ?1 = 'tui' THEN '' ELSE latest_user_prompt END,
+    latest_assistant_update = CASE WHEN ?1 = 'tui' THEN '' ELSE latest_assistant_update END,
+    conversation_checkpoint_state = CASE WHEN ?1 = 'tui' THEN 'empty' ELSE conversation_checkpoint_state END,
+    conversation_checkpoint_generation = CASE WHEN ?1 = 'tui' THEN '' ELSE conversation_checkpoint_generation END,
+    conversation_checkpoint_native_id = CASE WHEN ?1 = 'tui' THEN '' ELSE conversation_checkpoint_native_id END,
+    conversation_checkpoint_unsettled = CASE WHEN ?1 = 'tui' THEN 0 ELSE conversation_checkpoint_unsettled END,
+    conversation_checkpoint_turn_id = CASE WHEN ?1 = 'tui' THEN '' ELSE conversation_checkpoint_turn_id END,
+    native_checkpoint_evidence = CASE WHEN ?1 = 'tui' THEN '' ELSE native_checkpoint_evidence END,
     activity_state = 'idle',
-    activity_last_at = ?,
-    updated_at = ?
-WHERE id = ? AND session_mode = ? AND is_terminated = 0
+    activity_last_at = ?4,
+    updated_at = ?5
+WHERE id = ?6 AND session_mode = ?7 AND is_terminated = 0
 `
 
 type CommitSessionControllerEpochParams struct {
-	SessionMode            domain.SessionMode
+	TargetMode             domain.SessionMode
 	AgentSessionID         string
 	ProviderConversationID string
 	ActivityLastAt         time.Time
 	UpdatedAt              time.Time
 	ID                     domain.SessionID
-	SessionMode_2          domain.SessionMode
+	SourceMode             domain.SessionMode
 }
 
 // Lifecycle Manager owns this controller-epoch fact. The source-mode CAS keeps
@@ -93,13 +118,13 @@ type CommitSessionControllerEpochParams struct {
 // other's writer identity.
 func (q *Queries) CommitSessionControllerEpoch(ctx context.Context, arg CommitSessionControllerEpochParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, commitSessionControllerEpoch,
-		arg.SessionMode,
+		arg.TargetMode,
 		arg.AgentSessionID,
 		arg.ProviderConversationID,
 		arg.ActivityLastAt,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.SessionMode_2,
+		arg.SourceMode,
 	)
 	if err != nil {
 		return 0, err
@@ -110,61 +135,73 @@ func (q *Queries) CommitSessionControllerEpoch(ctx context.Context, arg CommitSe
 const getSession = `-- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?
 `
 
 type GetSessionRow struct {
-	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
-	Num                       int64
-	IssueID                   domain.IssueID
-	Kind                      domain.SessionKind
-	Harness                   domain.AgentHarness
-	ActivityState             domain.ActivityState
-	ActivityLastAt            time.Time
-	IsTerminated              bool
-	Branch                    string
-	WorkspacePath             string
-	RuntimeHandleID           string
-	AgentSessionID            string
-	AgentSessionIDLaunchID    string
-	Prompt                    string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	DisplayName               string
-	FirstSignalAt             sql.NullTime
-	PreviewURL                string
-	PreviewRevision           int64
-	CleanupGeneration         int64
-	RuntimeLaunchID           string
-	WorkspaceRepoPath         string
-	TerminateOnPRMerge        bool
-	DiffBaseSha               string
-	DiffBaseRef               string
-	ReviewerHarness           domain.ReviewerHarness
-	ReviewerAgentConfig       string
-	IsPinned                  bool
-	PinnedAt                  sql.NullTime
-	SessionMode               domain.SessionMode
-	ProviderConversationID    string
-	ControllerGeneration      string
-	BrowserCapabilityVerifier string
-	LatestUserPrompt          string
-	LatestUserPromptAt        sql.NullTime
-	LatestAssistantUpdate     string
-	NativeTranscriptPath      string
-	AutoInjectReview          bool
-	AutoInjectCI              bool
-	AutoReviewEnabled         bool
-	Model                     string
-	SessionPermissions        string
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	RuntimeHandleID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	Revision                         int64
+	DisplayName                      string
+	FirstSignalAt                    sql.NullTime
+	PreviewURL                       string
+	PreviewRevision                  int64
+	CleanupGeneration                int64
+	RuntimeLaunchID                  string
+	WorkspaceRepoPath                string
+	TerminateOnPRMerge               bool
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	BrowserCapabilityVerifier        string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
+	AutoReviewEnabled                bool
+	Model                            string
+	SessionPermissions               string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -185,9 +222,11 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.RuntimeHandleID,
 		&i.AgentSessionID,
 		&i.AgentSessionIDLaunchID,
+		&i.NativeIdentityObservedAt,
 		&i.Prompt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Revision,
 		&i.DisplayName,
 		&i.FirstSignalAt,
 		&i.PreviewURL,
@@ -209,6 +248,13 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.LatestUserPrompt,
 		&i.LatestUserPromptAt,
 		&i.LatestAssistantUpdate,
+		&i.LatestAssistantUpdateAt,
+		&i.ConversationCheckpointState,
+		&i.ConversationCheckpointGeneration,
+		&i.ConversationCheckpointNativeID,
+		&i.ConversationCheckpointUnsettled,
+		&i.ConversationCheckpointTurnID,
+		&i.NativeCheckpointEvidence,
 		&i.NativeTranscriptPath,
 		&i.AutoInjectReview,
 		&i.AutoInjectCI,
@@ -224,64 +270,72 @@ INSERT INTO sessions (
     id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
-    runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
+    runtime_launch_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
 type InsertSessionParams struct {
-	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
-	Num                       int64
-	IssueID                   domain.IssueID
-	Kind                      domain.SessionKind
-	Harness                   domain.AgentHarness
-	ReviewerHarness           domain.ReviewerHarness
-	ReviewerAgentConfig       string
-	AutoReviewEnabled         bool
-	DisplayName               string
-	ActivityState             domain.ActivityState
-	ActivityLastAt            time.Time
-	FirstSignalAt             sql.NullTime
-	IsTerminated              bool
-	Branch                    string
-	WorkspacePath             string
-	WorkspaceRepoPath         string
-	DiffBaseSha               string
-	DiffBaseRef               string
-	RuntimeHandleID           string
-	RuntimeLaunchID           string
-	AgentSessionID            string
-	AgentSessionIDLaunchID    string
-	Prompt                    string
-	LatestUserPrompt          string
-	LatestUserPromptAt        sql.NullTime
-	LatestAssistantUpdate     string
-	NativeTranscriptPath      string
-	PreviewURL                string
-	PreviewRevision           int64
-	TerminateOnPRMerge        bool
-	CleanupGeneration         int64
-	BrowserCapabilityVerifier string
-	SessionMode               domain.SessionMode
-	ProviderConversationID    string
-	ControllerGeneration      string
-	Model                     string
-	SessionPermissions        string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	IsPinned                  bool
-	PinnedAt                  sql.NullTime
-	AutoInjectReview          bool
-	AutoInjectCI              bool
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	AutoReviewEnabled                bool
+	DisplayName                      string
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	FirstSignalAt                    sql.NullTime
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	WorkspaceRepoPath                string
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	RuntimeHandleID                  string
+	RuntimeLaunchID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	PreviewURL                       string
+	PreviewRevision                  int64
+	TerminateOnPRMerge               bool
+	CleanupGeneration                int64
+	BrowserCapabilityVerifier        string
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	Model                            string
+	SessionPermissions               string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -309,10 +363,18 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.RuntimeLaunchID,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.Prompt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
+		arg.ConversationCheckpointState,
+		arg.ConversationCheckpointGeneration,
+		arg.ConversationCheckpointNativeID,
+		arg.ConversationCheckpointUnsettled,
+		arg.ConversationCheckpointTurnID,
+		arg.NativeCheckpointEvidence,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,
@@ -337,61 +399,73 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 const listAllSessions = `-- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num
 `
 
 type ListAllSessionsRow struct {
-	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
-	Num                       int64
-	IssueID                   domain.IssueID
-	Kind                      domain.SessionKind
-	Harness                   domain.AgentHarness
-	ActivityState             domain.ActivityState
-	ActivityLastAt            time.Time
-	IsTerminated              bool
-	Branch                    string
-	WorkspacePath             string
-	RuntimeHandleID           string
-	AgentSessionID            string
-	AgentSessionIDLaunchID    string
-	Prompt                    string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	DisplayName               string
-	FirstSignalAt             sql.NullTime
-	PreviewURL                string
-	PreviewRevision           int64
-	CleanupGeneration         int64
-	RuntimeLaunchID           string
-	WorkspaceRepoPath         string
-	TerminateOnPRMerge        bool
-	DiffBaseSha               string
-	DiffBaseRef               string
-	ReviewerHarness           domain.ReviewerHarness
-	ReviewerAgentConfig       string
-	IsPinned                  bool
-	PinnedAt                  sql.NullTime
-	SessionMode               domain.SessionMode
-	ProviderConversationID    string
-	ControllerGeneration      string
-	BrowserCapabilityVerifier string
-	LatestUserPrompt          string
-	LatestUserPromptAt        sql.NullTime
-	LatestAssistantUpdate     string
-	NativeTranscriptPath      string
-	AutoInjectReview          bool
-	AutoInjectCI              bool
-	AutoReviewEnabled         bool
-	Model                     string
-	SessionPermissions        string
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	RuntimeHandleID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	Revision                         int64
+	DisplayName                      string
+	FirstSignalAt                    sql.NullTime
+	PreviewURL                       string
+	PreviewRevision                  int64
+	CleanupGeneration                int64
+	RuntimeLaunchID                  string
+	WorkspaceRepoPath                string
+	TerminateOnPRMerge               bool
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	BrowserCapabilityVerifier        string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
+	AutoReviewEnabled                bool
+	Model                            string
+	SessionPermissions               string
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -418,9 +492,11 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.RuntimeHandleID,
 			&i.AgentSessionID,
 			&i.AgentSessionIDLaunchID,
+			&i.NativeIdentityObservedAt,
 			&i.Prompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Revision,
 			&i.DisplayName,
 			&i.FirstSignalAt,
 			&i.PreviewURL,
@@ -442,6 +518,13 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.LatestUserPrompt,
 			&i.LatestUserPromptAt,
 			&i.LatestAssistantUpdate,
+			&i.LatestAssistantUpdateAt,
+			&i.ConversationCheckpointState,
+			&i.ConversationCheckpointGeneration,
+			&i.ConversationCheckpointNativeID,
+			&i.ConversationCheckpointUnsettled,
+			&i.ConversationCheckpointTurnID,
+			&i.NativeCheckpointEvidence,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
@@ -465,64 +548,76 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 const listSessionsByProject = `-- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, agent_session_id_launch_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
-FROM sessions WHERE project_id = ? ORDER BY num
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
 type ListSessionsByProjectRow struct {
-	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
-	Num                       int64
-	IssueID                   domain.IssueID
-	Kind                      domain.SessionKind
-	Harness                   domain.AgentHarness
-	ActivityState             domain.ActivityState
-	ActivityLastAt            time.Time
-	IsTerminated              bool
-	Branch                    string
-	WorkspacePath             string
-	RuntimeHandleID           string
-	AgentSessionID            string
-	AgentSessionIDLaunchID    string
-	Prompt                    string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	DisplayName               string
-	FirstSignalAt             sql.NullTime
-	PreviewURL                string
-	PreviewRevision           int64
-	CleanupGeneration         int64
-	RuntimeLaunchID           string
-	WorkspaceRepoPath         string
-	TerminateOnPRMerge        bool
-	DiffBaseSha               string
-	DiffBaseRef               string
-	ReviewerHarness           domain.ReviewerHarness
-	ReviewerAgentConfig       string
-	IsPinned                  bool
-	PinnedAt                  sql.NullTime
-	SessionMode               domain.SessionMode
-	ProviderConversationID    string
-	ControllerGeneration      string
-	BrowserCapabilityVerifier string
-	LatestUserPrompt          string
-	LatestUserPromptAt        sql.NullTime
-	LatestAssistantUpdate     string
-	NativeTranscriptPath      string
-	AutoInjectReview          bool
-	AutoInjectCI              bool
-	AutoReviewEnabled         bool
-	Model                     string
-	SessionPermissions        string
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	RuntimeHandleID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	Revision                         int64
+	DisplayName                      string
+	FirstSignalAt                    sql.NullTime
+	PreviewURL                       string
+	PreviewRevision                  int64
+	CleanupGeneration                int64
+	RuntimeLaunchID                  string
+	WorkspaceRepoPath                string
+	TerminateOnPRMerge               bool
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	BrowserCapabilityVerifier        string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
+	AutoReviewEnabled                bool
+	Model                            string
+	SessionPermissions               string
 }
 
-func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
+func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionsByProject, projectID)
 	if err != nil {
 		return nil, err
@@ -546,9 +641,11 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.RuntimeHandleID,
 			&i.AgentSessionID,
 			&i.AgentSessionIDLaunchID,
+			&i.NativeIdentityObservedAt,
 			&i.Prompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Revision,
 			&i.DisplayName,
 			&i.FirstSignalAt,
 			&i.PreviewURL,
@@ -570,6 +667,13 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.LatestUserPrompt,
 			&i.LatestUserPromptAt,
 			&i.LatestAssistantUpdate,
+			&i.LatestAssistantUpdateAt,
+			&i.ConversationCheckpointState,
+			&i.ConversationCheckpointGeneration,
+			&i.ConversationCheckpointNativeID,
+			&i.ConversationCheckpointUnsettled,
+			&i.ConversationCheckpointTurnID,
+			&i.NativeCheckpointEvidence,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
@@ -594,8 +698,19 @@ const nextSessionNum = `-- name: NextSessionNum :one
 SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?
 `
 
-func (q *Queries) NextSessionNum(ctx context.Context, projectID domain.ProjectID) (int64, error) {
+func (q *Queries) NextSessionNum(ctx context.Context, projectID *domain.ProjectID) (int64, error) {
 	row := q.db.QueryRowContext(ctx, nextSessionNum, projectID)
+	var next int64
+	err := row.Scan(&next)
+	return next, err
+}
+
+const nextStandaloneSessionNum = `-- name: NextStandaloneSessionNum :one
+SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id IS NULL
+`
+
+func (q *Queries) NextStandaloneSessionNum(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextStandaloneSessionNum)
 	var next int64
 	err := row.Scan(&next)
 	return next, err
@@ -605,6 +720,11 @@ const recordSessionHumanMessage = `-- name: RecordSessionHumanMessage :execrows
 UPDATE sessions SET
     latest_user_prompt = ?1,
     latest_user_prompt_at = ?2,
+    latest_assistant_update = '',
+    conversation_checkpoint_state = 'legacy',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = MAX(updated_at, ?2)
 WHERE id = ?3
   AND is_terminated = 0
@@ -632,6 +752,11 @@ const recordSessionLatestUserPrompt = `-- name: RecordSessionLatestUserPrompt :e
 UPDATE sessions SET
     latest_user_prompt = ?1,
     latest_user_prompt_at = ?2,
+    latest_assistant_update = '',
+    conversation_checkpoint_state = 'legacy',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = ?2
 WHERE id = ?3
   AND is_terminated = 0
@@ -670,6 +795,61 @@ func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) (i
 	return result.RowsAffected()
 }
 
+const restoreSessionControllerEpoch = `-- name: RestoreSessionControllerEpoch :execrows
+UPDATE sessions
+SET session_mode = ?1,
+    runtime_handle_id = '',
+    runtime_launch_id = '',
+    agent_session_id = ?2,
+    agent_session_id_launch_id = '',
+    provider_conversation_id = ?3,
+    controller_generation = '',
+    activity_state = 'idle',
+    activity_last_at = ?4,
+    updated_at = ?5
+WHERE id = ?6 AND session_mode = ?7 AND is_terminated = 0
+`
+
+type RestoreSessionControllerEpochParams struct {
+	TargetMode             domain.SessionMode
+	AgentSessionID         string
+	ProviderConversationID string
+	ActivityLastAt         time.Time
+	UpdatedAt              time.Time
+	ID                     domain.SessionID
+	SourceMode             domain.SessionMode
+}
+
+// Rollback owns the same controller/activity facts but retains the source replay
+// checkpoint: the failed target never accepted it, so a later strict retry must
+// prove the same checkpoint again.
+func (q *Queries) RestoreSessionControllerEpoch(ctx context.Context, arg RestoreSessionControllerEpochParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, restoreSessionControllerEpoch,
+		arg.TargetMode,
+		arg.AgentSessionID,
+		arg.ProviderConversationID,
+		arg.ActivityLastAt,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.SourceMode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const sessionIDExists = `-- name: SessionIDExists :one
+SELECT COUNT(*) > 0 FROM sessions WHERE id = ?
+`
+
+func (q *Queries) SessionIDExists(ctx context.Context, id domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, sessionIDExists, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sessionIsSeed = `-- name: SessionIsSeed :one
 SELECT EXISTS(
     SELECT 1 FROM sessions
@@ -680,6 +860,7 @@ SELECT EXISTS(
       AND agent_session_id = ''
       AND prompt = ''
       AND latest_user_prompt = ''
+      AND latest_user_prompt_at IS NULL
       AND latest_assistant_update = ''
       AND native_transcript_path = ''
 ) AS is_seed
@@ -840,22 +1021,20 @@ func (q *Queries) SetSessionTerminateOnPRMerge(ctx context.Context, arg SetSessi
 
 const updateBrowserCapabilityVerifier = `-- name: UpdateBrowserCapabilityVerifier :execrows
 UPDATE sessions SET
-    browser_capability_verifier = ?1,
-    updated_at = MAX(updated_at, ?2)
-WHERE id = ?3
-  AND harness = ?4
-  AND session_mode = ?5
-  AND is_terminated = ?6
-  AND runtime_launch_id = ?7
-  AND agent_session_id = ?8
-  AND agent_session_id_launch_id = ?9
-  AND provider_conversation_id = ?10
-  AND controller_generation = ?11
+    browser_capability_verifier = ?1
+WHERE id = ?2
+  AND harness = ?3
+  AND session_mode = ?4
+  AND is_terminated = ?5
+  AND runtime_launch_id = ?6
+  AND agent_session_id = ?7
+  AND agent_session_id_launch_id = ?8
+  AND provider_conversation_id = ?9
+  AND controller_generation = ?10
 `
 
 type UpdateBrowserCapabilityVerifierParams struct {
 	BrowserCapabilityVerifier      string
-	UpdatedAt                      interface{}
 	ID                             domain.SessionID
 	ExpectedHarness                domain.AgentHarness
 	ExpectedSessionMode            domain.SessionMode
@@ -869,11 +1048,10 @@ type UpdateBrowserCapabilityVerifierParams struct {
 
 // Rotate only the browser credential for the exact controller owner observed by
 // the launcher. This must not replay a stale SessionRecord over newer lifecycle,
-// activity, termination, or provider ownership facts.
+// activity, termination, provider ownership, or user-visible recency facts.
 func (q *Queries) UpdateBrowserCapabilityVerifier(ctx context.Context, arg UpdateBrowserCapabilityVerifierParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateBrowserCapabilityVerifier,
 		arg.BrowserCapabilityVerifier,
-		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedHarness,
 		arg.ExpectedSessionMode,
@@ -895,8 +1073,11 @@ UPDATE sessions SET
     issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, native_identity_observed_at = ?, prompt = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, latest_assistant_update_at = ?,
+    conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
+    conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?, native_checkpoint_evidence = ?,
+    native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
@@ -905,45 +1086,53 @@ WHERE id = ?
 `
 
 type UpdateSessionParams struct {
-	IssueID                   domain.IssueID
-	Kind                      domain.SessionKind
-	Harness                   domain.AgentHarness
-	ReviewerHarness           domain.ReviewerHarness
-	ReviewerAgentConfig       string
-	AutoReviewEnabled         bool
-	DisplayName               string
-	ActivityState             domain.ActivityState
-	ActivityLastAt            time.Time
-	FirstSignalAt             sql.NullTime
-	IsTerminated              bool
-	Branch                    string
-	WorkspacePath             string
-	WorkspaceRepoPath         string
-	DiffBaseSha               string
-	DiffBaseRef               string
-	RuntimeHandleID           string
-	RuntimeLaunchID           string
-	AgentSessionID            string
-	AgentSessionIDLaunchID    string
-	Prompt                    string
-	LatestUserPrompt          string
-	LatestUserPromptAt        sql.NullTime
-	LatestAssistantUpdate     string
-	NativeTranscriptPath      string
-	PreviewURL                string
-	PreviewRevision           int64
-	TerminateOnPRMerge        bool
-	CleanupGeneration         int64
-	BrowserCapabilityVerifier string
-	ProviderConversationID    string
-	ControllerGeneration      string
-	Model                     string
-	UpdatedAt                 time.Time
-	IsPinned                  bool
-	PinnedAt                  sql.NullTime
-	AutoInjectReview          bool
-	AutoInjectCI              bool
-	ID                        domain.SessionID
+	IssueID                          domain.IssueID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	AutoReviewEnabled                bool
+	DisplayName                      string
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	FirstSignalAt                    sql.NullTime
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	WorkspaceRepoPath                string
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	RuntimeHandleID                  string
+	RuntimeLaunchID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	PreviewURL                       string
+	PreviewRevision                  int64
+	TerminateOnPRMerge               bool
+	CleanupGeneration                int64
+	BrowserCapabilityVerifier        string
+	ProviderConversationID           string
+	ControllerGeneration             string
+	Model                            string
+	UpdatedAt                        time.Time
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
+	ID                               domain.SessionID
 }
 
 func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) error {
@@ -968,10 +1157,18 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.RuntimeLaunchID,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.Prompt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
+		arg.ConversationCheckpointState,
+		arg.ConversationCheckpointGeneration,
+		arg.ConversationCheckpointNativeID,
+		arg.ConversationCheckpointUnsettled,
+		arg.ConversationCheckpointTurnID,
+		arg.NativeCheckpointEvidence,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,

@@ -1,10 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { editorHandoffQueryKey } from "../hooks/useEditorHandoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { useUiStore } from "../stores/ui-store";
 import { NewTaskDialog } from "./NewTaskDialog";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 // App-level New Task surface. Lives in the shell (always mounted, on every
 // route and platform, unlike ShellTopbar which unmounts on Linux boards) so a
@@ -33,10 +33,11 @@ export function GlobalNewTaskDialog() {
 
 	const handleCreated = async (sessionId: string) => {
 		if (!projectId) return;
-		await Promise.all([
-			queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
-			queryClient.invalidateQueries({ queryKey: editorHandoffQueryKey(sessionId) }),
-		]);
+		await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		if (projectId === STANDALONE_WORKSPACE_ID) {
+			void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+			return;
+		}
 		void navigate({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId, sessionId },

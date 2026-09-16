@@ -4,24 +4,28 @@ import { useShell } from "../lib/shell-context";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
 import { WelcomePanel } from "./WelcomePanel";
+import { useUiStore } from "../stores/ui-store";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 // Board empty states: first-launch welcome (`BoardWelcome`) and project board
 // with no worker sessions yet (`ProjectBoardEmpty`).
 export function BoardWelcome() {
 	const { cloneProject, createProject, initializeProjectRepository } = useShell();
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<WelcomePanel>
 			<div
 				className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-8"
 				data-testid="board-welcome"
 			>
-				<div className="flex w-full flex-col items-center gap-3">
+				<div className="flex w-full max-w-preview-content flex-col items-center gap-4">
 					<CreateProjectFlow
 						embedded
 						mode="choose"
 						onCloneProject={cloneProject}
 						onCreateProject={createProject}
 						onInitializeProject={initializeProjectRepository}
+						onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 					/>
 					<GitHubOnboardingNotice />
 				</div>

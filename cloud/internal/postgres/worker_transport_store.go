@@ -348,6 +348,33 @@ func (s *Store) IssueTerminalTicket(
 	orgID, sessionID, kind string,
 	ttl time.Duration,
 ) (string, []string, error) {
+	// Do this before waking a paused sandbox. Reopening an already-finished
+	// coding-agent terminal cannot succeed, and treating it as an interactive
+	// request would needlessly resume compute just for the browser to retry.
+	if kind == "agent" {
+		var exited bool
+		err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
+			return tx.QueryRow(ctx,
+				`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
+					SELECT 1 FROM ao_terminal_sessions terminal
+					WHERE terminal.org_id = session.org_id
+					  AND terminal.session_id = session.id
+					  AND terminal.kind = 'agent'
+					  AND terminal.state IN ('closed', 'failed')
+				)
+				FROM ao_sessions session
+				WHERE session.org_id = $1 AND session.id = $2`,
+				orgID, sessionID,
+			).Scan(&exited)
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		if exited {
+			return "", nil, ErrTerminalSessionExited
+		}
+	}
+
 	// Terminal access is an explicit proof of life. Wake an idle-paused sandbox
 	// and reserve a short interaction lease in a committed transaction before
 	// checking worker readiness so the idle scanner cannot immediately undo the
@@ -438,6 +465,31 @@ func (s *Store) IssueTerminalTicket(
 			orgID, sessionID,
 		).Scan(&epoch, &mode, &terminated, &deniedCommands)
 		if errors.Is(err, pgx.ErrNoRows) || terminated {
+			// A missing worker is normally a transient provisioning condition. For
+			// the coding-agent terminal, however, a completed terminal is durable
+			// evidence that retrying cannot reconnect it. Preserve the distinction
+			// so the browser does not spin on "Connecting…" forever.
+			if kind == "agent" {
+				var exited bool
+				lookupErr := tx.QueryRow(ctx,
+					`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
+						SELECT 1 FROM ao_terminal_sessions terminal
+						WHERE terminal.org_id = session.org_id
+						  AND terminal.session_id = session.id
+						  AND terminal.kind = 'agent'
+						  AND terminal.state IN ('closed', 'failed')
+					)
+					FROM ao_sessions session
+					WHERE session.org_id = $1 AND session.id = $2`,
+					orgID, sessionID,
+				).Scan(&exited)
+				if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+					return lookupErr
+				}
+				if exited {
+					return ErrTerminalSessionExited
+				}
+			}
 			return ErrWorkerUnavailable
 		}
 		if err != nil {
@@ -950,6 +1002,31 @@ func (s *Store) AppendTerminalOutput(
 	epoch int64,
 	data []byte,
 ) (int64, error) {
+	return s.appendTerminalOutput(ctx, orgID, sessionID, workerID, terminalID, epoch, 0, data)
+}
+
+// AppendTerminalOutputAt persists a relay frame at its worker-assigned,
+// terminal-local cursor. The cursor makes a direct browser frame and a later
+// replay frame refer to the same bytes even if the relay has not finished its
+// background mirror when the browser disconnects.
+func (s *Store) AppendTerminalOutputAt(
+	ctx context.Context,
+	orgID, sessionID, workerID, terminalID string,
+	epoch, sequence int64,
+	data []byte,
+) (int64, error) {
+	if sequence <= 0 {
+		return 0, fmt.Errorf("terminal output sequence must be positive")
+	}
+	return s.appendTerminalOutput(ctx, orgID, sessionID, workerID, terminalID, epoch, sequence, data)
+}
+
+func (s *Store) appendTerminalOutput(
+	ctx context.Context,
+	orgID, sessionID, workerID, terminalID string,
+	epoch, expectedSequence int64,
+	data []byte,
+) (int64, error) {
 	var sequence int64
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		current, err := workerConnectionCurrent(ctx, tx, orgID, sessionID, workerID, epoch)
@@ -959,8 +1036,7 @@ func (s *Store) AppendTerminalOutput(
 		if !current {
 			return ErrStaleWorker
 		}
-		err = tx.QueryRow(ctx,
-			`UPDATE ao_terminal_sessions
+		query := `UPDATE ao_terminal_sessions
 			SET next_output_sequence = next_output_sequence + 1,
 				output_bytes = output_bytes + $1,
 				updated_at = now()
@@ -968,9 +1044,21 @@ func (s *Store) AppendTerminalOutput(
 			  AND worker_epoch = $5 AND state IN ('opening', 'open')
 			  AND expires_at > now()
 			  AND output_bytes + $1 <= $6
-			RETURNING next_output_sequence - 1`,
-			len(data), orgID, sessionID, terminalID, epoch, maxTerminalOutputBytes,
-		).Scan(&sequence)
+			RETURNING next_output_sequence - 1`
+		args := []any{len(data), orgID, sessionID, terminalID, epoch, maxTerminalOutputBytes}
+		if expectedSequence > 0 {
+			query = `UPDATE ao_terminal_sessions
+				SET next_output_sequence = next_output_sequence + 1,
+					output_bytes = output_bytes + $1,
+					updated_at = now()
+				WHERE org_id = $2 AND session_id = $3 AND id = $4
+				  AND worker_epoch = $5 AND state IN ('opening', 'open')
+				  AND expires_at > now() AND output_bytes + $1 <= $6
+				  AND next_output_sequence = $7
+				RETURNING next_output_sequence - 1`
+			args = append(args, expectedSequence)
+		}
+		err = tx.QueryRow(ctx, query, args...).Scan(&sequence)
 		if errors.Is(err, pgx.ErrNoRows) {
 			_, _ = tx.Exec(ctx,
 				`UPDATE ao_terminal_sessions

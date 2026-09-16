@@ -189,9 +189,9 @@ if (typeof window !== "undefined") {
 				canGoForward: false,
 				isLoading: false,
 			}),
-			setBounds: () => undefined,
-			setOverlayOpen: () => undefined,
-			navigate: async ({ viewId }: { viewId: string }) => ({
+		setBounds: () => undefined,
+		setOverlayOpen: () => undefined,
+		navigate: async ({ viewId }: { viewId: string }) => ({
 				viewId,
 				url: "",
 				title: "",
@@ -200,6 +200,7 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 			historySuggestions: async () => [],
+			historyFavicon: async () => undefined,
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",
@@ -265,6 +266,9 @@ if (typeof window !== "undefined") {
 			}),
 			destroy: () => undefined,
 			setAnnotationMode: async () => undefined,
+			completeAnnotation: async () => undefined,
+			discardAnnotations: async () => undefined,
+			annotationAction: async () => undefined,
 			onNavState: () => () => undefined,
 			onPageFocus: () => () => undefined,
 			onTabsState: () => () => undefined,
@@ -274,6 +278,7 @@ if (typeof window !== "undefined") {
 			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+			onAnnotationState: () => () => undefined,
 		},
 		browserProfiles: {
 			list: async () => ({ profiles: [] }),
@@ -324,6 +329,7 @@ if (typeof window !== "undefined") {
 			returnHome: async () => undefined,
 			download: async () => undefined,
 			install: async () => undefined,
+			isPostUpdateRelaunch: async () => false,
 			onStatus: () => () => undefined,
 		onTelemetry: () => () => undefined,
 		},

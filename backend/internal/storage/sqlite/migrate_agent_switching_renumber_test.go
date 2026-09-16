@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -11,6 +10,7 @@ import (
 )
 
 func TestMigrateRepairsLegacyAgentSwitchSchemas(t *testing.T) {
+	fixture := migrationFixture(t, 79)
 	tests := []struct {
 		name        string
 		migrateTo   int64
@@ -43,22 +43,16 @@ func TestMigrateRepairsLegacyAgentSwitchSchemas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := openAgentSwitchMigrationTestDB(t)
+			db, err := sql.Open("sqlite", databaseURI(fixture(t))+pragmas)
+			if err != nil {
+				t.Fatalf("open sqlite: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
 			upTo(t, db, tt.migrateTo)
 			applyLegacyAgentSwitchMigrations(t, db, tt.switchPath, tt.handoffPath)
 			assertAgentSwitchMigrationHistoryRepaired(t, db)
 		})
 	}
-}
-
-func openAgentSwitchMigrationTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
 }
 
 func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, handoffPath string) {

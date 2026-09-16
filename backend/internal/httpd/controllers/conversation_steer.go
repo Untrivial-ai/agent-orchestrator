@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -16,13 +17,63 @@ import (
 // steerPath is the one route this file owns, named once so the not-implemented
 // answer and the spec cannot drift apart.
 const steerPath = "/api/v1/sessions/{sessionId}/conversation/steer"
+const steerOrSendPath = "/api/v1/sessions/{sessionId}/conversation/steer-or-send"
 const queuedTurnSteerPath = "/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/steer"
+
+type steerOrSendService interface {
+	SteerOrSend(context.Context, domain.SessionID, ports.ChatUserMessage, bool) (chatsvc.SteerOrSendResult, error)
+}
 
 // PromoteQueuedTurnResponse reports where one durable queued turn landed.
 type PromoteQueuedTurnResponse struct {
 	SourceTurnID   string `json:"sourceTurnId"`
 	ProviderTurnID string `json:"providerTurnId"`
 	ActivityID     string `json:"activityId"`
+}
+
+func (c *ConversationsController) steerOrSend(w http.ResponseWriter, r *http.Request) {
+	svc, ok := c.Svc.(steerOrSendService)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", steerOrSendPath)
+		return
+	}
+	var req SteerConversationRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	content, attachmentErr := conversationContent(SendConversationMessageRequest{
+		Attachments: req.Attachments,
+	})
+	if attachmentErr != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			attachmentErr.code, attachmentErr.message, nil)
+		return
+	}
+	result, err := svc.SteerOrSend(
+		r.Context(),
+		domain.SessionID(chi.URLParam(r, "sessionId")),
+		ports.ChatUserMessage{
+			Text: req.Text, Content: content, ClientMessageID: req.ClientMessageID,
+			Origin: domain.MessageOriginHuman,
+		},
+		req.RecoverOnly,
+	)
+	if err != nil {
+		writeSteerError(w, r, err)
+		return
+	}
+	response := SteerOrSendConversationResponse{Duplicate: result.Duplicate}
+	if result.Steered {
+		response.Outcome = "steered"
+		response.ProviderTurnID = result.Steer.ProviderTurnID
+		response.ActivityID = result.Steer.ActivityID
+	} else {
+		response.Outcome = "sent"
+		response.TurnID = result.Turn.ID
+		response.ProviderTurnID = result.Turn.ProviderTurnID
+		response.State = result.Turn.State
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, response)
 }
 
 // steer sends guidance into the in-flight turn.

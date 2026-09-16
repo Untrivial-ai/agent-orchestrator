@@ -130,3 +130,5 @@ const makeStyles = (t: Theme) =>
 	},
 	divider: { height: 1, backgroundColor: t.borderSubtle, marginLeft: 43 },
 });
+
+export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";

@@ -403,6 +403,12 @@ describe("createEventTransport", () => {
 			accountRevision: 2,
 			accounts: [{ id: "account-1", active: true }],
 			capabilities: {},
+			deviceReconciliation: {
+				status: "verified",
+				activeAccountVerified: true,
+				reasonCode: "verified",
+				retryable: false,
+			},
 		}));
 
 		expect(cached).toMatchObject({ activeAccountId: "account-1", accountRevision: 2 });

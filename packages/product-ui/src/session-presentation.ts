@@ -9,6 +9,8 @@ import type {
 } from "./session-models";
 
 export type SessionPresentationMessageKey =
+	| "session.statusChecking"
+	| "session.statusUnavailable"
 	| `activity.${SessionActivityState}`
 	| `status.${SessionStatus}`
 	| `zone.${AttentionZone}`
@@ -22,6 +24,8 @@ export type ProductUITranslator = (
 ) => string;
 
 const englishLabels: Record<SessionPresentationMessageKey, string> = {
+	"session.statusChecking": "Checking…",
+	"session.statusUnavailable": "Unable to verify",
 	"activity.active": "Working",
 	"activity.idle": "Idle",
 	"activity.waiting_input": "Input Needed",

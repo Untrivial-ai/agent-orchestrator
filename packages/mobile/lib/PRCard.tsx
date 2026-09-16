@@ -59,7 +59,7 @@ export function PRCard({
 				<Text style={[styles.state, { color: state.color }]}>{state.label}</Text>
 				<View style={{ flex: 1 }} />
 				<Text style={styles.project} numberOfLines={1}>
-					{shortLabel(summary?.repo || session.projectId)}
+					{shortLabel(summary?.repo || session.projectId || "Standalone")}
 				</Text>
 			</View>
 

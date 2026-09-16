@@ -28,6 +28,7 @@ import { subscribeConversationEvents } from "./conversationEvents";
 import { conversationPollIntervalFor } from "./conversationPoll";
 import { createAsyncValueCache } from "./asyncValueCache";
 import { createRequestGate } from "./requestGate";
+import { withAttachmentReferences } from "./messageAttachments";
 import { loadTurnOptionCatalog } from "./turnOptionsCatalog";
 
 const REFRESH_DEBOUNCE_MS = 120;
@@ -433,10 +434,4 @@ function classifyConversationError(error: unknown): { permanent: boolean; code?:
 
 function conversationPageCacheKey(cfg: ServerConfig, sessionId: string): string {
 	return `${cfg.secure ? "https" : "http"}://${cfg.host}:${cfg.httpPort}/${cfg.password}/${sessionId}`;
-}
-
-function withAttachmentReferences(text: string, paths: string[]): string {
-	if (paths.length === 0) return text;
-	const references = paths.map((path) => `- ${path}`).join("\n");
-	return `${text.trim()}${text.trim() ? "\n\n" : ""}Attached files are available in the worktree:\n${references}`;
 }

@@ -1,5 +1,6 @@
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
+import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
 	app,
 	BaseWindow,
@@ -71,6 +72,7 @@ import {
 	refreshSlowDaemonStartupDetails,
 	slowDaemonStartupStatus,
 } from "./shared/daemon-startup-status";
+import { toggleAppDevTools } from "./main/app-devtools";
 import { attachAppShortcuts } from "./main/app-shortcuts";
 import {
 	KEYBOARD_SHORTCUTS_HELP_CHANNEL,
@@ -156,7 +158,7 @@ import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
 import { dockBounceType, shouldReplaceBounce, shouldSignalAttention, shouldToast } from "./main/notification-signals";
-import { buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
+import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
 import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-observability";
@@ -180,7 +182,9 @@ process.stdout.on("error", ignoreStdStreamError);
 process.stderr.on("error", ignoreStdStreamError);
 
 // Must run before app ready so the About panel and default-menu role labels use it.
-app.setName("Agent Orchestrator");
+// Unpackaged runs get a distinct name so the dev window, dock menu, and About
+// panel never impersonate the installed app (#3642).
+app.setName(app.isPackaged ? "Agent Orchestrator" : "Agent Orchestrator (dev)");
 
 // Windows shows native toasts only when the app declares an AppUserModelID that
 // matches its installer shortcut (the NSIS maker's appId). Without it,
@@ -339,7 +343,7 @@ const MAC_WINDOW_BUTTON_Y = 12;
 const RENDERER_SCHEME = "app";
 const RENDERER_HOST = "renderer";
 const RENDERER_ORIGIN = `${RENDERER_SCHEME}://${RENDERER_HOST}`;
-const NATIVE_WINDOW_BACKGROUND_DARK = "#0f1014";
+const NATIVE_WINDOW_BACKGROUND_DARK = "#0c0c0e";
 const NATIVE_WINDOW_BACKGROUND_LIGHT = "#fbfbfb";
 
 function getShellWebContents(): WebContents | null {
@@ -440,21 +444,23 @@ function annotatePreloadPath(): string {
 
 // Runtime window/taskbar icon for Linux and Windows. macOS ignores this and
 // uses the .app bundle's .icns instead. Packaged: shipped via extraResource to
-// resources/icon.png; dev: the source asset under frontend/assets.
+// resources/icon.png.
+// Unpackaged runs return undefined so the dev window keeps Electron's default
+// icon and never impersonates the installed app's taskbar/dock icon (#3642).
 function windowIconPath(): string | undefined {
+	if (!app.isPackaged) return undefined;
 	const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
-	const candidate = app.isPackaged
-		? path.join(process.resourcesPath, iconFile)
-		: path.join(__dirname, `../../assets/${iconFile}`);
+	const candidate = path.join(process.resourcesPath, iconFile);
 	if (existsSync(candidate)) return candidate;
-	const fallback = app.isPackaged
-		? path.join(process.resourcesPath, "icon.png")
-		: path.join(__dirname, "../../assets/icon.png");
+	const fallback = path.join(process.resourcesPath, "icon.png");
 	return existsSync(fallback) ? fallback : undefined;
 }
 
 function applyRuntimeAppIcon(): void {
 	if (process.platform !== "darwin") return;
+	// Unpackaged runs keep Electron's default dock icon so the dev window is
+	// visually distinct from the installed app (#3642).
+	if (!app.isPackaged) return;
 	const iconPath = windowIconPath();
 	if (!iconPath) return;
 	const icon = nativeImage.createFromPath(iconPath);
@@ -501,6 +507,17 @@ function buildWindowsAppMenu(): Menu {
 			void browserViewHost?.toggleDevToolsForLastFocused().then((state) => {
 				if (!state) fallback();
 			}).catch(fallback);
+		}),
+	);
+}
+
+// Menu installed on Linux where the native menu bar is hidden by default.
+// The role-based menu preserves standard accelerators (Reload, DevTools, zoom,
+// full screen, edit commands) while routing DevTools through AO's guarded handler.
+function buildLinuxAppMenu(): Menu {
+	return Menu.buildFromTemplate(
+		buildLinuxAppMenuTemplate(() => {
+			void toggleAppDevTools(browserViewHost, getShellWebContents);
 		}),
 	);
 }
@@ -578,12 +595,12 @@ async function createWindowInternal(): Promise<void> {
 		height: 860,
 		minWidth: 960,
 		minHeight: 640,
-		title: "Agent Orchestrator",
+		title: app.isPackaged ? "Agent Orchestrator" : "Agent Orchestrator (dev)",
 		icon: windowIconPath(),
 		backgroundColor: NATIVE_WINDOW_BACKGROUND_DARK,
 		// Windows goes frameless and the renderer paints the whole titlebar,
-		// including custom min/max/close controls. macOS/Linux keep the inset
-		// traffic-light chrome.
+		// including custom min/max/close controls. macOS keeps the inset
+		// traffic-light chrome, and Linux uses standard frame decorations.
 		...(process.platform === "win32"
 			? {
 					titleBarStyle: "hidden" as const,
@@ -591,11 +608,17 @@ async function createWindowInternal(): Promise<void> {
 					// accelerators) below; the visible menu is painted by WindowTitlebar.
 					autoHideMenuBar: true,
 				}
-			: {
-					titleBarStyle: "hiddenInset" as const,
-					// Fixed natural titlebar position — never moved on sidebar toggle.
-					trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_WINDOW_BUTTON_Y },
-				}),
+			: process.platform === "linux"
+				? {
+						// Auto-hide the native menu bar strip. Accelerators stay active
+						// via the application menu; pressing Alt reveals the menu bar.
+						autoHideMenuBar: true,
+					}
+				: {
+						titleBarStyle: "hiddenInset" as const,
+						// Fixed natural titlebar position — never moved on sidebar toggle.
+						trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_WINDOW_BUTTON_Y },
+					}),
 	};
 	mainWindow = new BaseWindow(windowOptions);
 	const composition = createWindowComposition({
@@ -620,7 +643,8 @@ async function createWindowInternal(): Promise<void> {
 	// installed so its accelerators keep working and act on the focused pane;
 	// setMenuBarVisibility(false) keeps the strip itself out of view. macOS gets
 	// an explicit menu so DevTools avoids Electron's unsafe built-in role; Linux
-	// keeps its native menu.
+	// installs the role-based menu so accelerators and guarded DevTools work,
+	// while autoHideMenuBar and setMenuBarVisibility(false) hide the menu strip.
 	if (process.platform === "win32") {
 		Menu.setApplicationMenu(buildWindowsAppMenu());
 		mainWindow.setMenuBarVisibility(false);
@@ -640,6 +664,9 @@ async function createWindowInternal(): Promise<void> {
 				}),
 			),
 		);
+	} else if (process.platform === "linux") {
+		Menu.setApplicationMenu(buildLinuxAppMenu());
+		mainWindow.setMenuBarVisibility(false);
 	}
 
 	// Harden navigation: never let renderer/terminal content open in-app windows or
@@ -701,7 +728,7 @@ async function createWindowInternal(): Promise<void> {
 			shouldHandleAppShortcutInBrowserContext(id, chord, isMac),
 		(id) => {
 			if (id !== "toggle-browser-devtools") return;
-			void browserViewHost?.toggleDevToolsForLastFocused().catch(() => undefined);
+			void toggleAppDevTools(browserViewHost, getShellWebContents);
 		},
 		() => terminalFocused,
 	);
@@ -2324,6 +2351,25 @@ ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 });
 ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
 
+// Whether THIS boot is a post-update relaunch, so the startup loader can show
+// "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
+// marker is written on the quitAndInstall path (auto-updater.ts) on every OS and
+// consumed exactly once here; a corrupt/stale/mismatched marker reads as false
+// (see consumeUpdateRelaunchFlag). Cached so every renderer that asks during the
+// same boot gets the same answer and the marker is deleted only once.
+let postUpdateRelaunchPromise: Promise<boolean> | undefined;
+function detectPostUpdateRelaunch(): Promise<boolean> {
+	if (!postUpdateRelaunchPromise) {
+		const runFile = runFilePath();
+		postUpdateRelaunchPromise =
+			app.isPackaged && runFile
+				? consumeUpdateRelaunchFlag({ stateDir: path.dirname(runFile), version: app.getVersion() }).catch(() => false)
+				: Promise.resolve(false);
+	}
+	return postUpdateRelaunchPromise;
+}
+ipcMain.handle("updates:isPostUpdateRelaunch", () => detectPostUpdateRelaunch());
+
 function cancelDockBounce(): void {
 	if (pendingBounce === null) return;
 	const { id } = pendingBounce;
@@ -2704,6 +2750,46 @@ app.whenReady().then(async () => {
 		await writeAppStateOnLaunch();
 	} catch (err) {
 		console.error("failed to write app-state marker:", err);
+	}
+
+	// A pre-fix bundle cannot be patched retroactively. After the maintained
+	// /Applications build runs, offer to retire older AO copies that can still
+	// overwrite it if Finder, Spotlight, or an old Dock tile launches them.
+	try {
+		const { formatStaleAppCopies, retireStaleMacAppCopies } = await import("./main/stale-app-copies");
+		await retireStaleMacAppCopies({
+			platform: process.platform,
+			isPackaged: app.isPackaged,
+			runningPath: resolveBundlePath(),
+			runningVersion: app.getVersion(),
+			confirm: async (copies) => {
+				const result = await dialog.showMessageBox({
+					type: "warning",
+					buttons: ["Move old copies to Trash", "Not now"],
+					defaultId: 0,
+					cancelId: 1,
+					title: "Remove old AO copies",
+					message: "Old copies of Agent Orchestrator can replace your updated app.",
+					detail: `${formatStaleAppCopies(copies)}\n\nMove these copies to Trash to prevent another downgrade. Your AO projects and sessions will not be removed.`,
+					noLink: true,
+				});
+				return result.response === 0;
+			},
+			trashItem: (candidate) => shell.trashItem(candidate),
+			reportFailures: async (paths) => {
+				await dialog.showMessageBox({
+					type: "warning",
+					buttons: ["OK"],
+					defaultId: 0,
+					title: "Some old copies could not be removed",
+					message: "Move these copies to Trash manually before launching AO again.",
+					detail: paths.join("\n"),
+					noLink: true,
+				});
+			},
+		});
+	} catch (err) {
+		console.warn("stale AO copy cleanup failed:", err);
 	}
 
 	const keybindingRunFile = runFilePath();

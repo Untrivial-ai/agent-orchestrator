@@ -27,7 +27,7 @@ type Control interface {
 	FailTurn(context.Context, string, int, string) error
 	CompleteTransport(context.Context, string, int, any) error
 	FailTransport(context.Context, string, int, string, string) error
-	PublishTerminalOutput(context.Context, string, []byte) error
+	PublishTerminalOutput(context.Context, string, int64, []byte) error
 	PublishTerminalExit(context.Context, string, int) error
 }
 
@@ -92,6 +92,10 @@ type terminalProcess struct {
 	pty     *os.File
 	cleanup func()
 	stream  atomic.Pointer[terminalStream]
+	// outputID belongs to the terminal rather than a WebSocket connection. A
+	// stream redial must continue its sequence so direct relay frames and the
+	// durable replay log use the same cursor.
+	outputID atomic.Int64
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
@@ -431,9 +435,11 @@ func (s *Supervisor) copyTerminalOutput(
 		count, err := terminal.pty.Read(buffer)
 		if count > 0 {
 			data := append([]byte(nil), buffer[:count]...)
-			if stream := terminal.stream.Load(); stream != nil && stream.sendOutput(data) {
-				// Persisted (and acked) by the control plane over the stream.
-			} else if outputErr := s.Control.PublishTerminalOutput(ctx, terminalID, data); outputErr != nil &&
+			id := terminal.outputID.Add(1)
+			if stream := terminal.stream.Load(); stream != nil && stream.sendOutput(id, data) {
+				// Sent over the persistent stream. The control plane acknowledges it
+				// after its durable mirror has accepted the same sequence.
+			} else if outputErr := s.Control.PublishTerminalOutput(ctx, terminalID, id, data); outputErr != nil &&
 				ctx.Err() == nil {
 				s.Logger.Warn("publish terminal output", "error", outputErr, "terminal_id", terminalID)
 			}
