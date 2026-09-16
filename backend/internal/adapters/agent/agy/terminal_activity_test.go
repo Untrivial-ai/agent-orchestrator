@@ -83,6 +83,32 @@ thinking about it...
 			expectedState: domain.ActivityIdle,
 			expectedValid: true,
 		},
+		{
+			name: "busy frame with thinking marker above prompt is not idle",
+			output: `thinking...
+> 
+? for shortcuts`,
+			expectedState: "",
+			expectedValid: false,
+		},
+		{
+			name: "footer with stale transcript prompt separated by output fails closed",
+			output: `> previous user prompt from transcript
+some output line from tool
+another output line
+? for shortcuts`,
+			expectedState: "",
+			expectedValid: false,
+		},
+		{
+			name: "prompt with blank cursor line above footer is idle",
+			output: `⌊ Interrupted · What should Antigravity CLI do instead?
+> 
+
+? for shortcuts`,
+			expectedState: domain.ActivityIdle,
+			expectedValid: true,
+		},
 	}
 
 	for _, tt := range tests {

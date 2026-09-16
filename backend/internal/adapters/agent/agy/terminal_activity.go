@@ -9,6 +9,15 @@ import (
 // DetectTerminalActivity parses the Agy CLI terminal output to determine if the
 // agent is currently idle, allowing the observer to reconcile sessions whose
 // turn was aborted (e.g. via Escape) without emitting a stop hook.
+//
+// The detector scans the bottommost lines of the terminal capture in two passes:
+//  1. Locate the footer ("? for shortcuts") and check for active execution
+//     markers anywhere in the candidate frame. Lines beginning with ">" are
+//     user-typed transcript entries and are excluded from the active-marker
+//     scan so transcript text cannot spoof the check.
+//  2. Require the composer prompt (">") to be structurally adjacent to the
+//     footer—within maxPromptFooterGap lines—so an older transcript prompt
+//     separated by output content does not satisfy the idle proof.
 func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
 	lines := strings.Split(strings.TrimRight(output, "\r\n "), "\n")
 	if len(lines) == 0 {
@@ -18,34 +27,57 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 	// We only look at the bottom-most lines (the newest frame) to prevent old
 	// transcript lines or user input like "> explain why it says thinking..."
 	// from spoofing the detection.
-	searchDepth := 10
+	const searchWindow = 10
+	searchDepth := searchWindow
 	if len(lines) < searchDepth {
 		searchDepth = len(lines)
 	}
+	searchStart := len(lines) - searchDepth
 
-	for i := len(lines) - 1; i >= len(lines)-searchDepth; i-- {
+	// Pass 1: scan the full candidate frame to find the footer and detect
+	// active execution chrome. Active markers must veto idle regardless of
+	// whether they appear above or below the footer. Lines starting with ">"
+	// are user-typed transcript entries whose text must not trigger the
+	// active-marker check (e.g. "> explain why it says (esc to interrupt)").
+	footerIdx := -1
+	hasActiveChrome := false
+	for i := len(lines) - 1; i >= searchStart; i-- {
 		line := strings.TrimSpace(lines[i])
-
-		// If we encounter an active execution marker at the bottom before finding
-		// a footer, the agent is actively working. We fail closed (return no signal)
-		// rather than returning Active, to respect the hook-driven staleAfter grace period.
-		if strings.Contains(line, "(esc to interrupt)") ||
-			strings.Contains(line, "(ctrl+c to cancel)") ||
-			strings.Contains(line, "thinking...") {
-			return "", false
-		}
-
-		// If we find the footer, check if this frame has a prompt.
-		if strings.Contains(line, "? for shortcuts") {
-			for j := i; j >= len(lines)-searchDepth && j >= 0; j-- {
-				if strings.HasPrefix(strings.TrimSpace(lines[j]), ">") {
-					return domain.ActivityIdle, true
-				}
+		if !strings.HasPrefix(line, ">") {
+			if strings.Contains(line, "(esc to interrupt)") ||
+				strings.Contains(line, "(ctrl+c to cancel)") ||
+				strings.Contains(line, "thinking...") {
+				hasActiveChrome = true
 			}
-			// Found footer but no prompt within depth; incomplete frame.
-			return "", false
+		}
+		if footerIdx < 0 && strings.Contains(line, "? for shortcuts") {
+			footerIdx = i
 		}
 	}
 
+	if footerIdx < 0 || hasActiveChrome {
+		return "", false
+	}
+
+	// Pass 2: require the composer prompt to sit directly above the footer.
+	// In Agy's idle frame the ">" composer is on the line immediately before
+	// "? for shortcuts", or separated by at most one blank cursor line.
+	// Older transcript prompts further up must not satisfy this structural
+	// check.
+	const maxPromptFooterGap = 2
+	promptBound := footerIdx - maxPromptFooterGap
+	if promptBound < searchStart {
+		promptBound = searchStart
+	}
+	if promptBound < 0 {
+		promptBound = 0
+	}
+	for j := footerIdx - 1; j >= promptBound; j-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[j]), ">") {
+			return domain.ActivityIdle, true
+		}
+	}
+
+	// Footer present but no adjacent prompt; incomplete or partial frame.
 	return "", false
 }
