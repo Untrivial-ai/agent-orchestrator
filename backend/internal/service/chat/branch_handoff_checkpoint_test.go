@@ -98,7 +98,7 @@ func TestOriginalBranchTUIRoundtripDoesNotInheritEditedBranchCheckpoint(t *testi
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	cfg := chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-fresh", RequireNativeHistory: true,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-fresh", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 	}
 	if _, err := svc.Start(ctx, cfg); err != nil {
@@ -108,9 +108,9 @@ func TestOriginalBranchTUIRoundtripDoesNotInheritEditedBranchCheckpoint(t *testi
 		t.Fatalf("activate original branch: %v", err)
 	}
 	before, found, err := h.st.GetSession(ctx, testSession)
-	if err != nil || !found || before.Metadata.ConversationCheckpointNativeID != "thread-fresh" ||
-		before.Metadata.LatestUserPrompt != "edited terminal" || before.Metadata.LatestAssistantUpdate != "reply to edited terminal" {
-		t.Fatalf("missing source-TUI checkpoint before roundtrip: %+v, found=%v err=%v", before.Metadata, found, err)
+	if err != nil || !found || before.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
+		before.Metadata.LatestUserPrompt != "" || before.Metadata.LatestAssistantUpdate != "" {
+		t.Fatalf("edited-branch checkpoint survived activation of original branch: %+v, found=%v err=%v", before.Metadata, found, err)
 	}
 	if err := svc.Stop(ctx, testSession); err != nil {
 		t.Fatal(err)

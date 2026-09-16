@@ -64,7 +64,10 @@ it("shows what the build changes", async () => {
 		releaseNotes: "Fixed the re-stage loop\nRebuilt the Updates page",
 	});
 	expect(await screen.findByText(/Fixed the re-stage loop/)).toBeVisible();
-	expect(screen.getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
+	const expected = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(
+		new Date(Date.UTC(2026, 8, 2, 17, 13)),
+	);
+	expect(screen.getByText(`Nightly 0.12.11 · ${expected}`)).toBeVisible();
 	expect(screen.queryByText(/Leave AO closed until it reopens/)).toBeNull();
 });
 

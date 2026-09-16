@@ -146,7 +146,24 @@ describe("attachAppShortcuts", () => {
 		expect(event.preventDefault).toHaveBeenCalledOnce();
 	});
 
-	it("preserves the close chord when no shell terminal is closeable", () => {
+	it("consumes auto-repeat chords without re-firing so held ⌘W cannot reach menu Close", () => {
+		const source = fakeSource();
+		const target = fakeTarget();
+		attachAppShortcuts(source, false, target);
+
+		const handledRepeat = source.emit({ key: "w", control: true, isAutoRepeat: true });
+		expect(handledRepeat.preventDefault).toHaveBeenCalledOnce();
+		expect(target.send).not.toHaveBeenCalled();
+
+		const rejectedSource = fakeSource();
+		const rejectedTarget = fakeTarget();
+		attachAppShortcuts(rejectedSource, false, rejectedTarget, false, () => ({}), () => false, (id) => id !== "close-shell-terminal");
+		const rejectedRepeat = rejectedSource.emit({ key: "w", control: true, isAutoRepeat: true });
+		expect(rejectedRepeat.preventDefault).toHaveBeenCalledOnce();
+		expect(rejectedTarget.send).not.toHaveBeenCalled();
+	});
+
+	it("consumes terminal tab chords when a browser context rejects them", () => {
 		const source = fakeSource();
 		const target = fakeTarget();
 		attachAppShortcuts(source, false, target, false, () => ({}), () => false, (id) => id !== "close-shell-terminal");
@@ -154,7 +171,9 @@ describe("attachAppShortcuts", () => {
 		const event = source.emit({ key: "w", control: true });
 
 		expect(target.send).not.toHaveBeenCalled();
-		expect(event.preventDefault).not.toHaveBeenCalled();
+		// Still preventDefault so a racing listener cannot open/close a terminal,
+		// and so Chromium does not treat the chord as an unhandled accelerator.
+		expect(event.preventDefault).toHaveBeenCalledOnce();
 	});
 
 	it("forwards keyboard-shortcut help on each platform", () => {

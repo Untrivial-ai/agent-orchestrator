@@ -1216,6 +1216,7 @@
 	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Neue Aufgabe",
 	"shell.nightly": "nightly",
+	"shell.dev": "dev",
 	"shell.openInspector": "Inspektor-Panel öffnen",
 	"shell.openInspectorTitle": "Inspektor öffnen · ⌘⇧B",
 	"shell.openAllSessions": "Alle Sitzungen öffnen",
