@@ -383,6 +383,10 @@ func (m *Manager) executeChatAgentSwitch(
 	} else {
 		recorder.boundary(domain.AgentSwitchFailureChatProviderStart)
 	}
+	historyMode := ports.ChatHistoryImport
+	if resumable {
+		historyMode = ports.ChatHistoryDeferred
+	}
 	_, err = m.chat.StartChat(ctx, ChatStart{
 		SessionID:               id,
 		ProjectID:               rec.ProjectID,
@@ -408,10 +412,10 @@ func (m *Manager) executeChatAgentSwitch(
 			m.augmentAgentRuntimeEnv(targetAgent, launchEnv)
 			return launchEnv, nil
 		},
-		ProviderConversationID:  providerConversationID,
-		ProviderScopeID:         chatSwitchProviderBoundaryID(result.ID),
-		ControllerGeneration:    string(targetGeneration),
-		SkipNativeHistoryImport: resumable,
+		ProviderConversationID: providerConversationID,
+		ProviderScopeID:        chatSwitchProviderBoundaryID(result.ID),
+		ControllerGeneration:   string(targetGeneration),
+		HistoryMode:            historyMode,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			emptyCommit := ChatControllerCommit{}
 			targetControllerOwner := chatControllerOwner(

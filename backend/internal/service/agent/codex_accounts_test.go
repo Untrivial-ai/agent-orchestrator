@@ -2150,23 +2150,28 @@ func TestAuthenticationRequestCancellationDoesNotCancelSharedRead(t *testing.T) 
 		done <- err
 	}()
 	<-started
+	manager.mu.Lock()
+	shared := manager.auth[record.Snapshot.ID].call
+	manager.mu.Unlock()
+	if shared == nil {
+		t.Fatal("shared authentication read was not in flight")
+	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait error = %v", err)
 	}
 	close(release)
-	deadline := time.After(time.Second)
-	for {
-		latest, _ := manager.catalog.record(record.Snapshot.ID)
-		if latest.Snapshot.Authentication.State == domain.AgentAuthenticationAuthorized {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("shared authentication read did not finish")
-		default:
-			time.Sleep(time.Millisecond)
-		}
+	// Wait on the shared call itself, not on the snapshot. The snapshot flips to
+	// authorized before the verified descriptor is persisted under the account
+	// home, so polling the snapshot lets TempDir cleanup race that write.
+	select {
+	case <-shared.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared authentication read did not finish")
+	}
+	latest, _ := manager.catalog.record(record.Snapshot.ID)
+	if latest.Snapshot.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("shared authentication state = %v", latest.Snapshot.Authentication.State)
 	}
 }
 

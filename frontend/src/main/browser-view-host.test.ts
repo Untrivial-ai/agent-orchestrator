@@ -16,6 +16,7 @@ import { browserProfilePartition, type BrowserProfile } from "../shared/browser-
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import {
+	CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL,
 	FOCUS_TERMINAL_SHORTCUT_CHANNEL,
 	NEW_SESSION_SHORTCUT_CHANNEL,
 	NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL,
@@ -465,7 +466,8 @@ describe("browser shortcut routing", () => {
 		expect(shellSend).not.toHaveBeenCalledWith(FOCUS_TERMINAL_SHORTCUT_CHANNEL);
 
 		const openEvent = emitBeforeInput({ key: "t", control: true });
-		expect(openEvent.preventDefault).toHaveBeenCalledOnce();
+		// App-shortcut rejection + browser new-tab handler both consume the chord.
+		expect(openEvent.preventDefault).toHaveBeenCalled();
 		await vi.waitFor(async () => {
 			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
 			expect(tabs.tabs).toHaveLength(2);
@@ -493,6 +495,170 @@ describe("browser shortcut routing", () => {
 		emitBeforeInput({ key: "w", control: true });
 		await Promise.resolve();
 		expect(webContents.close).toHaveBeenCalledOnce();
+	});
+
+	it("keeps browser shortcuts targeted after a blank-tab hide clears native focus", async () => {
+		const { emit, emitBeforeInput, emitShellBeforeInput, host, invoke, send, shellSend } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+		send("browser:panelUsed", 1, state.viewId);
+		expect(host.isLastUsedBrowser()).toBe(true);
+
+		emitBeforeInput({ key: "t", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(2);
+		});
+		expect(host.isLastUsedBrowser()).toBe(true);
+
+		// Blank tabs hide the native surface via setBounds(visible:false). That must
+		// not drop the shortcut target or the next ⌘T opens a shell terminal instead.
+		emit("browser:setBounds", 1, {
+			viewId: state.viewId,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: false,
+		});
+		expect(host.getLastFocusedPanelContents()).toBeNull();
+		expect(host.isLastUsedBrowser()).toBe(true);
+
+		shellSend.mockClear();
+		emitShellBeforeInput({ key: "t", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(3);
+		});
+		expect(shellSend).not.toHaveBeenCalledWith(NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL);
+	});
+
+	it("keeps ⌘W closing browser tabs through the full open-focus-close sequence", async () => {
+		const { emit, emitBeforeInput, emitShellBeforeInput, host, invoke, send, shellSend } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+		// Click into the browser view.
+		send("browser:panelUsed", 1, state.viewId);
+
+		// ⌘T from the native page opens a tab and focuses the omnibox.
+		emitBeforeInput({ key: "t", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(2);
+		});
+		// Blank-tab hide must not drop the shortcut target.
+		emit("browser:setBounds", 1, {
+			viewId: state.viewId,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: false,
+		});
+		expect(host.isLastUsedBrowser()).toBe(true);
+
+		// First ⌘W from the shell omnibox closes the browser tab (not a terminal).
+		shellSend.mockClear();
+		emitShellBeforeInput({ key: "w", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(1);
+		});
+		expect(shellSend).not.toHaveBeenCalledWith(CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL);
+		expect(host.isLastUsedBrowser()).toBe(true);
+
+		// Second ⌘W with one tab left is a safe no-op — still browser-owned, so
+		// main.ts keeps suppressing the terminal/window close chord.
+		shellSend.mockClear();
+		const secondClose = emitShellBeforeInput({ key: "w", control: true });
+		expect(secondClose.preventDefault).toHaveBeenCalled();
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(1);
+		});
+		expect(shellSend).not.toHaveBeenCalledWith(CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL);
+		expect(host.isLastUsedBrowser()).toBe(true);
+
+		// Same from the native page: no-op, target retained.
+		emitBeforeInput({ key: "w", control: true });
+		await Promise.resolve();
+		expect(host.isLastUsedBrowser()).toBe(true);
+		const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+		expect(tabs.tabs).toHaveLength(1);
+	});
+
+	it("consumes auto-repeat browser chords without re-firing", async () => {
+		const { emitBeforeInput, invoke, shellSend } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+
+		// Both native listeners (app-shortcut rejection + browser handler) consume.
+		const repeatClose = emitBeforeInput({ key: "w", control: true, isAutoRepeat: true });
+		expect(repeatClose.preventDefault).toHaveBeenCalled();
+		const repeatNewTab = emitBeforeInput({ key: "t", control: true, isAutoRepeat: true });
+		expect(repeatNewTab.preventDefault).toHaveBeenCalled();
+		await Promise.resolve();
+		const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+		expect(tabs.tabs).toHaveLength(1);
+		expect(shellSend).not.toHaveBeenCalledWith("browser:focusLocation", state.viewId);
+	});
+
+	it("moves focus to the replacement tab synchronously on keyboard close", async () => {
+		const { emitBeforeInput, invoke, shellSend, webContents } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+		emitBeforeInput({ key: "t", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(2);
+		});
+		vi.mocked(webContents.focus).mockClear();
+
+		// The focused view is destroyed asynchronously; focus must already have
+		// moved before the close resolves or a fast second ⌘W hits menu Close.
+		// Harness tabs are always blank (hidden native surface), so the fallback
+		// goes to the omnibox synchronously — still a handled surface.
+		shellSend.mockClear();
+		emitBeforeInput({ key: "w", control: true });
+		expect(shellSend).toHaveBeenCalledWith("browser:focusLocation", state.viewId);
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(1);
+		});
+	});
+
+	it("focuses a live replacement tab synchronously on keyboard close", async () => {
+		const { emitBeforeInput, invoke, webContents } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+		emitBeforeInput({ key: "t", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(2);
+		});
+		// The harness shares one webContents mock across tabs, so navigate the
+		// active tab to get a non-blank read for the replacement branch.
+		await invoke("browser:navigate", { viewId: state.viewId, url: "https://example.test/" });
+		vi.mocked(webContents.focus).mockClear();
+
+		// Focus moves before the async close resolves, so it is never stranded
+		// on the dying view where a fast second ⌘W would hit menu Close.
+		emitBeforeInput({ key: "w", control: true });
+		expect(webContents.focus).toHaveBeenCalled();
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(1);
+		});
+	});
+
+	it("closes tab from shell shortcut and keeps focus on browser replacement", async () => {
+		const { emitShellBeforeInput, host, invoke, send, shellSend } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+		send("browser:panelUsed", 1, state.viewId);
+		emitShellBeforeInput({ key: "t", control: true });
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(2);
+		});
+		shellSend.mockClear();
+		const closeEvent = emitShellBeforeInput({ key: "w", control: true });
+		expect(closeEvent.preventDefault).toHaveBeenCalled();
+		expect(host.isLastUsedBrowser()).toBe(true);
+		await vi.waitFor(async () => {
+			const tabs = (await invoke("browser:getTabs", state.viewId)) as unknown as BrowserTabsState;
+			expect(tabs.tabs).toHaveLength(1);
+			expect(shellSend).toHaveBeenCalledWith("browser:focusLocation", state.viewId);
+		});
+		expect(host.isLastUsedBrowser()).toBe(true);
 	});
 
 	it("routes shell key input to the browser only while its panel is last used", async () => {

@@ -109,7 +109,7 @@ func TestStartNativeCheckpointAdmission(t *testing.T) {
 			defer cancel()
 			_, err = svc.Start(startCtx, chatsvc.StartConfig{
 				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
-				ProviderConversationID: "thread-1", RequireNativeHistory: true, HistoryPolicy: policy,
+				ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired, HistoryPolicy: policy,
 			})
 			if (err == nil) != test.wantPass {
 				t.Fatalf("Start error=%v", err)

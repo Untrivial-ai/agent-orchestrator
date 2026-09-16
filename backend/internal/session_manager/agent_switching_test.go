@@ -1362,7 +1362,7 @@ func TestSwitchAgentChatSwitchBackResumesVerifiedNativeConversation(t *testing.T
 		t.Fatalf("resumed Chat target scope = %q, want reserved boundary %q",
 			launcher.started[0].ProviderScopeID, chatSwitchProviderBoundaryID(sw.ID))
 	}
-	if !launcher.started[0].SkipNativeHistoryImport {
+	if launcher.started[0].HistoryMode != ports.ChatHistoryDeferred {
 		t.Fatal("switch-back projected target-native history into the source provider branch before activation")
 	}
 	if got := store.native[prior.ID]; got.LastGenerationID != sw.TargetGenerationID {

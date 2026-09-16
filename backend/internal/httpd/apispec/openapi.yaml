@@ -11767,6 +11767,11 @@ components:
         launchId:
           description: AO process generation that produced the signal.
           type: string
+        observedAt:
+          description: Time the local hook process observed the event, before delivery
+            to the daemon.
+          format: date-time
+          type: string
         providerTurnId:
           description: Native main-turn identity reported by the hook, when supported.
           type: string
@@ -12126,6 +12131,8 @@ components:
           type: string
         model:
           maxLength: 256
+          type: string
+        parentSessionId:
           type: string
         projectId:
           type: string

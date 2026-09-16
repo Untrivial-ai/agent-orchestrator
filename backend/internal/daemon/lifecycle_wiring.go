@@ -518,53 +518,7 @@ func (c chatLauncher) PreflightChat(
 }
 
 func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStart) (sessionmanager.ChatStarted, error) {
-	out, err := c.svc.StartChat(ctx, chatsvc.StartRequest{
-		SessionID:               cfg.SessionID,
-		ProjectID:               cfg.ProjectID,
-		Kind:                    cfg.Kind,
-		Harness:                 cfg.Harness,
-		DataDir:                 cfg.DataDir,
-		WorkspacePath:           cfg.WorkspacePath,
-		Env:                     cfg.Env,
-		Model:                   cfg.Model,
-		Effort:                  cfg.Effort,
-		Permissions:             cfg.Permissions,
-		SystemPrompt:            cfg.SystemPrompt,
-		AdditionalDirectories:   cfg.AdditionalDirectories,
-		ExpectedControllerOwner: cfg.ExpectedControllerOwner,
-		PrepareControllerEnv:    cfg.PrepareControllerEnv,
-		ProviderConversationID:  cfg.ProviderConversationID,
-		ProviderScopeID:         cfg.ProviderScopeID,
-		ControllerGeneration:    cfg.ControllerGeneration,
-		RequireNativeHistory:    cfg.RequireNativeHistory,
-		HistoryPolicy:           cfg.HistoryPolicy,
-		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
-		ControllerReady: func(out chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
-			if cfg.ControllerReady == nil {
-				return chatsvc.ControllerCommit{}, nil
-			}
-			commit, err := cfg.ControllerReady(sessionmanager.ChatStarted{
-				LiveReconnect:          out.LiveReconnect,
-				ProviderConversationID: out.ProviderConversationID,
-				ControllerGeneration:   out.ControllerGeneration,
-				Conversation:           out.Conversation,
-				ProviderBoundary:       out.ProviderBoundary,
-				CommitProviderHistory:  out.CommitProviderHistory,
-			})
-			return chatsvc.ControllerCommit{
-				Conversation:    commit.Conversation,
-				ControllerOwner: commit.ControllerOwner,
-			}, err
-		},
-	})
-	if err != nil {
-		return sessionmanager.ChatStarted{}, err
-	}
-	return sessionmanager.ChatStarted{
-		LiveReconnect:          out.LiveReconnect,
-		ProviderConversationID: out.ProviderConversationID,
-		ControllerGeneration:   out.ControllerGeneration,
-	}, nil
+	return c.svc.StartChat(ctx, cfg)
 }
 
 func (c chatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {
