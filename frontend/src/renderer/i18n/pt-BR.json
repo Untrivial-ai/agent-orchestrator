@@ -1280,6 +1280,7 @@
 	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "Nova tarefa",
 	"shell.nightly": "nightly",
+	"shell.dev": "dev",
 	"shell.openInspector": "Abrir painel do inspetor",
 	"shell.openInspectorTitle": "Abrir inspetor · ⌘⇧B",
 	"shell.openAllSessions": "Abrir todas as sessões",

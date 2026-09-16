@@ -1975,6 +1975,17 @@ type SteerConversationResponse struct {
 	ActivityID string `json:"activityId,omitempty"`
 }
 
+// SteerOrSendConversationResponse reports the single durable outcome selected by
+// the atomic steer-or-send operation.
+type SteerOrSendConversationResponse struct {
+	Outcome        string           `json:"outcome" enum:"steered,sent"`
+	TurnID         string           `json:"turnId,omitempty"`
+	ProviderTurnID string           `json:"providerTurnId,omitempty"`
+	ActivityID     string           `json:"activityId,omitempty"`
+	State          domain.TurnState `json:"state,omitempty" enum:"queued,running,completed,recovered,interrupted,failed"`
+	Duplicate      bool             `json:"duplicate"`
+}
+
 // EditConversationMessageRequest changes the readable text of one durable human
 // prompt. Structured content is intentionally absent: the service reuses the
 // server-side blocks recorded with the original message.

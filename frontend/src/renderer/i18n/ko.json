@@ -1259,6 +1259,7 @@
 	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "새 작업",
 	"shell.nightly": "nightly",
+	"shell.dev": "dev",
 	"shell.openInspector": "인스펙터 패널 열기",
 	"shell.openInspectorTitle": "인스펙터 열기 · ⌘⇧B",
 	"shell.openAllSessions": "모든 세션 열기",

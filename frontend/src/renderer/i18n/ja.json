@@ -1259,6 +1259,7 @@
 	"shell.openNewAgent": "Open a new agent",
 	"shell.newTask": "新しいタスク",
 	"shell.nightly": "nightly",
+	"shell.dev": "dev",
 	"shell.openInspector": "インスペクターパネルを開く",
 	"shell.openInspectorTitle": "インスペクターを開く · ⌘⇧B",
 	"shell.openAllSessions": "すべてのセッションを開く",
