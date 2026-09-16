@@ -67,6 +67,19 @@ beforeEach(() => {
 });
 
 describe("useWorkspaceQuery", () => {
+	it.each(["checking", "unavailable"] as const)("does not expose unverified activity while %s", async (statusReadiness) => {
+		respondWith({
+			projects: { data: { projects: [{ id: "p1", name: "Project", path: "/tmp/project" }] } },
+			sessions: { data: { sessions: [{ id: "s1", projectId: "p1", harness: "codex", status: "working", statusReadiness,
+				activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" }, updatedAt: "2026-01-01T00:00:00Z", prs: [] }] } },
+		});
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(result.current.data?.[0].sessions[0]).toMatchObject({ status: "unknown", statusReadiness });
+		expect(result.current.data?.[0].sessions[0].activity).toBeUndefined();
+		expect(captureRendererEventMock).not.toHaveBeenCalled();
+	});
+
 	it("rejects workspace reads while the daemon base URL is untrusted", async () => {
 		hasTrustedApiBaseUrlMock.mockReturnValue(false);
 
@@ -321,6 +334,44 @@ describe("useWorkspaceQuery", () => {
 		});
 	});
 
+	it("groups projectless sessions as ad hoc agents after projects", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+		expect(result.current.data?.map((workspace) => workspace.id)).toEqual(["proj-1", "__standalone__"]);
+		expect(result.current.data?.[1]).toMatchObject({
+			id: "__standalone__",
+			name: "Ad hoc agents",
+			kind: "standalone",
+		});
+		expect(result.current.data?.[1].sessions[0]).toMatchObject({
+			id: "standalone-1",
+			workspaceId: "__standalone__",
+			workspaceName: "Ad hoc agents",
+			title: "Research",
+			branch: undefined,
+		});
+	});
+
 	it("maps each session's prs straight from the session list", async () => {
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
@@ -475,10 +526,25 @@ describe("useWorkspaceQuery", () => {
 		});
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
 		});
 
 		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
-		await waitFor(() => expect(result.current.data).toHaveLength(2));
+		await waitFor(() => expect(result.current.data).toHaveLength(3));
 
 		expect(result.current.data?.[0]).toMatchObject({ id: "proj-1", name: "my-app", path: "/p" });
 		expect(result.current.data?.[1]).toEqual({
@@ -488,6 +554,7 @@ describe("useWorkspaceQuery", () => {
 			path: "",
 			sessions: [],
 		});
+		expect(result.current.data?.[2]).toMatchObject({ id: "__standalone__", name: "Ad hoc agents" });
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
 	});
 

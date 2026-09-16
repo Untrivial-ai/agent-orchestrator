@@ -9,3 +9,5 @@ export default function ComposerPickerRoute() {
 	if (entry?.kind !== "composer-picker") return null;
 	return <ComposerPickerSheet catalog={entry.catalog} initialQuery={entry.initialQuery} truncated={entry.truncated} onSelect={(value) => { router.back(); entry.onSelect(value); }} />;
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

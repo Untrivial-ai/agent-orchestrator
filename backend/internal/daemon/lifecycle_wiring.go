@@ -184,11 +184,6 @@ type sessionLifecycle interface {
 	// SessionMutationInProgress suppresses observation-driven termination while
 	// Session Manager deliberately replaces or relaunches a provider process.
 	SessionMutationInProgress(id domain.SessionID) bool
-	CodexAccountSwitchInProgress() bool
-	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
-	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
-	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
-	SetCodexAccountSwitchObserver(func())
 	// SetTerminalInputGate prevents mux input from racing a TUI-to-Chat handoff.
 	SetTerminalInputGate(gate sessionmanager.TerminalInputGate)
 	// SetReviewerTerminator late-binds worker lifecycle teardown to the review
@@ -532,6 +527,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		WorkspacePath:           cfg.WorkspacePath,
 		Env:                     cfg.Env,
 		Model:                   cfg.Model,
+		Effort:                  cfg.Effort,
 		Permissions:             cfg.Permissions,
 		SystemPrompt:            cfg.SystemPrompt,
 		AdditionalDirectories:   cfg.AdditionalDirectories,
@@ -541,12 +537,14 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		ProviderScopeID:         cfg.ProviderScopeID,
 		ControllerGeneration:    cfg.ControllerGeneration,
 		RequireNativeHistory:    cfg.RequireNativeHistory,
+		HistoryPolicy:           cfg.HistoryPolicy,
 		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
 		ControllerReady: func(out chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if cfg.ControllerReady == nil {
 				return chatsvc.ControllerCommit{}, nil
 			}
 			commit, err := cfg.ControllerReady(sessionmanager.ChatStarted{
+				LiveReconnect:          out.LiveReconnect,
 				ProviderConversationID: out.ProviderConversationID,
 				ControllerGeneration:   out.ControllerGeneration,
 				Conversation:           out.Conversation,
@@ -563,6 +561,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		return sessionmanager.ChatStarted{}, err
 	}
 	return sessionmanager.ChatStarted{
+		LiveReconnect:          out.LiveReconnect,
 		ProviderConversationID: out.ProviderConversationID,
 		ControllerGeneration:   out.ControllerGeneration,
 	}, nil

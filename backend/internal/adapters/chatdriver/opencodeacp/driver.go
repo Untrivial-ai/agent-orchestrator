@@ -40,10 +40,21 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 }
 
 func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {
-	if settings.Model == "" {
+	options := make([]acpdriver.SessionOption, 0, 2)
+	if settings.Model != "" {
+		options = append(options, acpdriver.SessionOption{ID: "model", Value: settings.Model})
+	}
+	// OpenCode advertises effort as id "effort" (category "thought_level") with
+	// the model's variant names as values. The model setter resets the variant
+	// to "default" else the first variant when no explicit variant is given,
+	// so the model must be applied first and the effort second.
+	if settings.Effort != "" {
+		options = append(options, acpdriver.SessionOption{ID: "effort", Value: settings.Effort})
+	}
+	if len(options) == 0 {
 		return nil
 	}
-	return []acpdriver.SessionOption{{ID: "model", Value: settings.Model}}
+	return options
 }
 
 // OpenCode parses model overrides as provider/model. A provider display name is

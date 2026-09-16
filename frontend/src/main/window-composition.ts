@@ -49,9 +49,9 @@ export function createWindowComposition(options: {
 	};
 	options.mainWindow.contentView.on("bounds-changed", resize);
 
-	// Forces the compositor to rebuild the shell's surface. Identical bounds are
-	// ignored, so shrink by a pixel and restore on the next tick — the two calls
-	// would otherwise coalesce into a single no-op resize.
+	// Force Chromium to rebuild the shell surface after reordering it. Identical
+	// bounds are ignored, so nudge by one pixel and restore on the next tick.
+	// The shell stays visible throughout; hiding either native view causes a flash.
 	const forceSurfaceRefresh = (): void => {
 		if (options.mainWindow.isDestroyed?.()) return;
 		const bounds = options.mainWindow.contentView.getBounds();
@@ -80,10 +80,8 @@ export function createWindowComposition(options: {
 		// geometry change rebuilds it. (Symptom: blank on a fresh launch, but
 		// correct at every size once the window has been resized or fullscreened
 		// even once.) Re-applying identical bounds is a no-op, so nudge the height
-		// by a pixel and restore it on the next tick to force a real resize. Keep
-		// that workaround macOS-only: on Windows, resizing the transparent shell while a
-		// maximized native browser view is underneath can invalidate that shell
-		// to opaque black for the lifetime of the overlay.
+		// by a pixel and restore it. Keep that repaint macOS-only: the stale
+		// compositor surface has only been observed there.
 		if (open && options.platform === "darwin") forceSurfaceRefresh();
 	};
 

@@ -665,12 +665,13 @@ func (c *client) FailTransport(
 func (c *client) PublishTerminalOutput(
 	ctx context.Context,
 	terminalID string,
+	id int64,
 	data []byte,
 ) error {
 	return c.do(
 		ctx,
 		"/worker/terminals/"+url.PathEscape(terminalID)+"/output",
-		worker.TerminalOutputRequest{Data: data},
+		worker.TerminalOutputRequest{ID: id, Data: data},
 		nil,
 	)
 }

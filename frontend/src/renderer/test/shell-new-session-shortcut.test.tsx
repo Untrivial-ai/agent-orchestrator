@@ -148,7 +148,8 @@ vi.mock("../lib/bridge", () => ({
 	},
 }));
 
-vi.mock("../hooks/useWorkspaceQuery", () => ({
+vi.mock("../hooks/useWorkspaceQuery", async (importOriginal) => ({
+	workspaceStatusesChecking: (await importOriginal<typeof import("../hooks/useWorkspaceQuery")>()).workspaceStatusesChecking,
 	useWorkspaceQuery: () => shellMocks.state.workspaceQuery,
 	useWorkspaceTraySessions: () => ({ data: [] }),
 	workspaceQueryKey: ["workspaces"],
@@ -502,6 +503,27 @@ describe("shell workspace startup", () => {
 		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")).toBeInTheDocument();
 	});
 
+	it("waits for session recovery and then reveals ready or unavailable cards", async () => {
+		const checking: WorkspaceSummary[] = workspaces.map((workspace) => ({ ...workspace,
+			sessions: workspace.sessions.map((session) => ({ ...session, statusReadiness: "checking" })),
+		}));
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		shellMocks.state.workspaceQuery = { data: checking, dataUpdatedAt: 100, isError: false, isSuccess: true };
+		shellMocks.queryClient.getQueryState.mockReturnValue({ dataUpdatedAt: 100 });
+		shellMocks.queryClient.fetchQuery.mockResolvedValueOnce(checking);
+		const view = await renderShell();
+		await act(async () => {});
+		expect(screen.getByTestId("daemon-startup-loader")).toBeInTheDocument();
+		expect(screen.queryByTestId("sidebar-provider")).not.toBeInTheDocument();
+		const settled = checking.map((workspace) => ({ ...workspace,
+			sessions: workspace.sessions.map((session, index) => ({ ...session, statusReadiness: index === 0 ? "ready" as const : "unavailable" as const })),
+		}));
+		shellMocks.state.workspaceQuery = { data: settled, dataUpdatedAt: 101, isError: false, isSuccess: true };
+		view.rerender(<Suspense fallback={null}><ShellRoute /></Suspense>);
+		await waitFor(() => expect(shellMocks.state.shellValue?.workspaceStartupState).toBe("ready"));
+		view.unmount();
+	});
+
 	it("forces a confirmed fetch and preserves a collapsed sidebar preference", async () => {
 		let resolveFetch: ((value: WorkspaceSummary[]) => void) | undefined;
 		useUiStore.setState({ isSidebarOpen: false });
@@ -750,13 +772,13 @@ describe("shell new-session shortcut subscription", () => {
 		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "proj-1");
 	});
 
-	it("opens the create-project flow when no project is in scope", async () => {
+	it("opens the standalone new-task flow when no project is in scope", async () => {
 		await renderShell();
 
 		emitShortcut();
 
-		expect(screen.getByTestId("create-project-flow")).toBeInTheDocument();
-		expect(screen.queryByTestId("new-task-flow")).not.toBeInTheDocument();
+		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "__standalone__");
+		expect(screen.queryByTestId("create-project-flow")).not.toBeInTheDocument();
 	});
 });
 
@@ -791,6 +813,35 @@ describe("shell application shortcut subscriptions", () => {
 		expect(shellMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "sess-3" },
+		});
+	});
+
+	it("moves between standalone sessions without constructing a project route", async () => {
+		const standalone = {
+			id: "__standalone__",
+			name: "Standalone agents",
+			kind: "standalone",
+			path: "",
+			sessions: [
+				{ id: "standalone-1", workspaceId: "", status: "working" },
+				{ id: "standalone-2", workspaceId: "", status: "idle" },
+			],
+		} as unknown as WorkspaceSummary;
+		shellMocks.state.routeParams = { sessionId: "standalone-1" };
+		shellMocks.state.workspaces = [...workspaces, standalone];
+		shellMocks.state.workspaceQuery = {
+			data: shellMocks.state.workspaces,
+			dataUpdatedAt: 0,
+			isError: false,
+			isSuccess: true,
+		};
+		await renderShell();
+
+		act(() => shellMocks.state.nextSessionListener?.());
+
+		expect(shellMocks.navigate).toHaveBeenCalledWith({
+			to: "/sessions/$sessionId",
+			params: { sessionId: "standalone-2" },
 		});
 	});
 
