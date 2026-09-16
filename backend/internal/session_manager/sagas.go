@@ -21,8 +21,6 @@ package sessionmanager
 //     shared policy: switchengine.Outcome. Interface: SwitchEngine.
 //   - Transition saga: interface_transition.go. State:
 //     transitionExecutionState (state.go). Interface: TransitionCoordinator.
-//   - Codex-accounts saga: codex_account_switch.go + codex_operation_gate.go.
-//     Interface: CodexAccounts.
 //   - Messaging saga: session_input.go + message_delivery.go + Send paths.
 //     State: sagaOperationState (state.go). Interface: MessengerFacade.
 //
@@ -69,17 +67,9 @@ type SwitchEngine interface {
 // TransitionCoordinator owns TUI↔Chat handoffs and their durable outbox.
 type TransitionCoordinator interface {
 	InterfaceTransitionStatus(ctx context.Context, id domain.SessionID) (InterfaceTransitionStatus, error)
-	StartInterfaceTransition(ctx context.Context, id domain.SessionID, target domain.SessionMode, policy domain.SessionInterfaceTransitionPolicy) (domain.SessionInterfaceTransition, error)
+	StartInterfaceTransition(ctx context.Context, id domain.SessionID, target domain.SessionMode, policy domain.SessionInterfaceTransitionPolicy, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy) (domain.SessionInterfaceTransition, error)
 	CancelInterfaceTransition(ctx context.Context, id domain.SessionID) error
 	AcknowledgeInterfaceTransitionNotice(ctx context.Context, id domain.SessionID, transitionID string) (domain.SessionInterfaceTransition, error)
-}
-
-// CodexAccounts owns the device-global Codex account switch saga.
-type CodexAccounts interface {
-	StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
-	RecoverCodexAccountSwitch(ctx context.Context, id string) (domain.CodexAccountSwitch, error)
-	GetActiveCodexAccountSwitch(ctx context.Context) (domain.CodexAccountSwitch, bool, error)
-	CodexAccountSwitchInProgress() bool
 }
 
 // MessengerFacade owns message delivery and input-lease gating.
@@ -97,6 +87,5 @@ var (
 	_ Terminator            = (*Manager)(nil)
 	_ SwitchEngine          = (*Manager)(nil)
 	_ TransitionCoordinator = (*Manager)(nil)
-	_ CodexAccounts         = (*Manager)(nil)
 	_ MessengerFacade       = (*Manager)(nil)
 )

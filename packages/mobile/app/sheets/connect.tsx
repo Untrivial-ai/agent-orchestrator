@@ -22,3 +22,5 @@ export default function ConnectSheetRoute() {
 		/>
 	);
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

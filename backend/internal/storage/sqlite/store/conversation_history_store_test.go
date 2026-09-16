@@ -74,6 +74,19 @@ func TestAppendUserMessageTracksOnlyLatestHumanMessage(t *testing.T) {
 	s, sessionID, conversationID := conversationFixture(t)
 	ctx := context.Background()
 	humanAt := histClock.Add(time.Minute)
+	before, ok, err := s.GetSession(ctx, sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session before human message: ok=%v err=%v", ok, err)
+	}
+	before.Metadata.LatestUserPrompt = "stale terminal prompt"
+	before.Metadata.LatestUserPromptAt = histClock
+	before.Metadata.LatestAssistantUpdate = "stale terminal answer"
+	before.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
+	before.Metadata.ConversationCheckpointGeneration = "terminal-generation"
+	before.Metadata.ConversationCheckpointNativeID = "terminal-native"
+	if err := s.UpdateSession(ctx, before); err != nil {
+		t.Fatalf("seed stale checkpoint: %v", err)
+	}
 
 	created, err := s.AppendUserMessage(ctx, conversationID, sessionID, "gen-1", domain.ConversationMessage{
 		ID: "human-message", Text: "please tighten the sidebar", Origin: domain.MessageOriginHuman,
@@ -88,6 +101,12 @@ func TestAppendUserMessageTracksOnlyLatestHumanMessage(t *testing.T) {
 	if rec.Metadata.LatestUserPrompt != "please tighten the sidebar" || !rec.Metadata.LatestUserPromptAt.Equal(humanAt) {
 		t.Fatalf("latest human message = %q at %s", rec.Metadata.LatestUserPrompt, rec.Metadata.LatestUserPromptAt)
 	}
+	if rec.Metadata.LatestAssistantUpdate != "" ||
+		rec.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy ||
+		rec.Metadata.ConversationCheckpointGeneration != "" ||
+		rec.Metadata.ConversationCheckpointNativeID != "" {
+		t.Fatalf("human message retained stale checkpoint pairing: %+v", rec.Metadata)
+	}
 
 	automationAt := humanAt.Add(time.Minute)
 	created, err = s.AppendUserMessage(ctx, conversationID, sessionID, "gen-1", domain.ConversationMessage{
@@ -99,6 +118,9 @@ func TestAppendUserMessageTracksOnlyLatestHumanMessage(t *testing.T) {
 	rec, _, _ = s.GetSession(ctx, sessionID)
 	if rec.Metadata.LatestUserPrompt != "please tighten the sidebar" || !rec.Metadata.LatestUserPromptAt.Equal(humanAt) {
 		t.Fatalf("automation replaced latest human message = %q at %s", rec.Metadata.LatestUserPrompt, rec.Metadata.LatestUserPromptAt)
+	}
+	if rec.Metadata.LatestAssistantUpdate != "" || rec.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy {
+		t.Fatalf("automation changed human checkpoint state: %+v", rec.Metadata)
 	}
 }
 

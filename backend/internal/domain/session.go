@@ -22,6 +22,51 @@ const (
 	KindOrchestrator SessionKind = "orchestrator"
 )
 
+// ConversationCheckpointState records which main-turn boundaries AO has
+// durably observed for the hook-derived replay checkpoint. The legacy value is
+// intentionally distinct: rows written before owner/event scoping may still be
+// enforced by an ordinary switch, but only those text dimensions may be waived
+// by explicit provider-history consent.
+type ConversationCheckpointState string
+
+// Conversation checkpoint states, from unscoped legacy data through a fully
+// observed main-turn boundary.
+const (
+	ConversationCheckpointLegacy ConversationCheckpointState = "legacy"
+	ConversationCheckpointEmpty  ConversationCheckpointState = "empty"
+	// ConversationCheckpointCoordination records an AO-authored turn boundary.
+	// It carries across a prompt-submit/Stop pair so provider coordination can
+	// never be promoted into replay evidence, even when Stop omits the prompt.
+	ConversationCheckpointCoordination ConversationCheckpointState = "coordination"
+	ConversationCheckpointPrompt       ConversationCheckpointState = "prompt"
+	ConversationCheckpointComplete     ConversationCheckpointState = "complete"
+)
+
+// Trusted reports whether the checkpoint was collected by the scoped
+// main-turn state machine rather than inherited from pre-provenance storage.
+func (s ConversationCheckpointState) Trusted() bool {
+	return s == ConversationCheckpointPrompt || s == ConversationCheckpointComplete
+}
+
+// ConversationCheckpointOrigin classifies the main-turn boundary reported by
+// a provider hook. Empty preserves compatibility with older hook clients.
+type ConversationCheckpointOrigin string
+
+// Conversation checkpoint origins distinguish compatibility traffic, real
+// human turns, and AO-authored coordination turns.
+const (
+	ConversationCheckpointOriginUnknown      ConversationCheckpointOrigin = ""
+	ConversationCheckpointOriginHuman        ConversationCheckpointOrigin = "human"
+	ConversationCheckpointOriginCoordination ConversationCheckpointOrigin = "coordination"
+)
+
+// Valid reports whether an activity request carries a supported origin.
+func (o ConversationCheckpointOrigin) Valid() bool {
+	return o == ConversationCheckpointOriginUnknown ||
+		o == ConversationCheckpointOriginHuman ||
+		o == ConversationCheckpointOriginCoordination
+}
+
 // SessionMetadata is the typed, off-status metadata for a session: operational
 // handles and seed inputs used by Session Manager and reaper.
 type SessionMetadata struct {
@@ -40,8 +85,9 @@ type SessionMetadata struct {
 	// own AgentSessionID. Usually that proof comes from a provider hook. A
 	// coordinated Chat-to-TUI handoff may also establish it by launching the
 	// target with the exact structured provider id transferred from Chat.
-	AgentSessionIDLaunchID string `json:"-"`
-	Prompt                 string `json:"prompt,omitempty"`
+	AgentSessionIDLaunchID   string    `json:"-"`
+	NativeIdentityObservedAt time.Time `json:"-"`
+	Prompt                   string    `json:"prompt,omitempty"`
 	// LatestUserPrompt is the latest real user-authored task direction observed
 	// for this AO session. Internal AO coordination messages (for example an
 	// agent-switch handoff request) must not replace it.
@@ -52,7 +98,21 @@ type SessionMetadata struct {
 	LatestUserPromptAt time.Time `json:"-"`
 	// LatestAssistantUpdate is the latest user-facing assistant update observed
 	// before any internal agent-switch coordination turn.
-	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`
+	LatestAssistantUpdate   string    `json:"latestAssistantUpdate,omitempty"`
+	LatestAssistantUpdateAt time.Time `json:"-"`
+	// ConversationCheckpointState and its owner provenance are internal replay
+	// safety facts. They survive daemon restart but are not part of the session
+	// presentation model.
+	ConversationCheckpointState      ConversationCheckpointState `json:"-"`
+	ConversationCheckpointGeneration string                      `json:"-"`
+	ConversationCheckpointNativeID   string                      `json:"-"`
+	ConversationCheckpointTurnID     string                      `json:"-"`
+	NativeCheckpointEvidence         string                      `json:"-"`
+	// ConversationCheckpointUnsettled records a scoped Stop that could not be
+	// correlated with a prompt boundary. Without a provider turn identity there
+	// is no collision-safe way to prove native replay crossed that boundary, so a
+	// Chat handoff must fail closed until a newer canonical prompt supersedes it.
+	ConversationCheckpointUnsettled bool `json:"-"`
 	// NativeTranscriptPath is the read-only transcript path for the currently
 	// active native agent session when its provider exposes one. Retained
 	// provider-specific paths also live on AgentNativeSession records.
@@ -129,6 +189,7 @@ type SessionRecord struct {
 	// finalize started under an earlier terminal episode cannot satisfy a later
 	// one. Internal fact, not part of the API read model.
 	CleanupGeneration int64      `json:"-"`
+	Revision          int64      `json:"-"` // Database-owned row revision, independent of event timestamps.
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	IsPinned          bool       `json:"isPinned"`

@@ -1066,6 +1066,13 @@ function ChatWorkspaceContent({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
+	const reauthErrorInChat = snapshot.turns.some(
+		(entry) => entry.state === "failed" && Boolean(entry.errorMessage?.trim()) &&
+			entry.errorMessage?.trim() === snapshot.account?.reauthReason?.trim(),
+	) || snapshot.items.some(
+		(item) => item.kind === "activity" && item.activityKind === "error" &&
+			Boolean(item.summary.trim()) && item.summary.trim() === snapshot.account?.reauthReason?.trim(),
+	);
 	const editHumanMessage = onEditMessage;
 	const pendingApproval = useMemo(
 		() =>
@@ -1339,11 +1346,9 @@ function ChatWorkspaceContent({
 					}
 					role="tabpanel"
 				>
-					{/* Ordered by what blocks what. A session that needs credentials cannot make
-				    progress at all, so it is stated first; the controller's own health next;
-				    then the two that degrade a session rather than stopping it. */}
+					{/* Keep sign-in guidance available without repeating the error from chat. */}
 					{snapshot.account ? (
-						<ReauthBanner account={snapshot.account} harness={snapshot.harness} />
+						<ReauthBanner account={snapshot.account} harness={snapshot.harness} reasonInTimeline={reauthErrorInChat} />
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
@@ -1367,7 +1372,7 @@ function ChatWorkspaceContent({
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
-						<ChatLinkProvider onLinkOpen={onLinkOpen}>
+						<ChatLinkProvider onLinkOpen={onLinkOpen} workspacePaths={filePaths}>
 							<Timeline
 								key={draftScopeKey}
 								snapshot={snapshot}
@@ -1744,18 +1749,18 @@ function ChatHeader({
 										<DraggableChatTab key={tab.key} value={tab.key}>
 											{tab.kind === "reviewer" ? (
 												<button
-													aria-current={reviewerActive ? true : undefined}
+													aria-current={reviewerActive && !workspaceActiveTabKey ? true : undefined}
 													aria-label="Reviewer"
-													aria-selected={Boolean(reviewerActive)}
+													aria-selected={Boolean(reviewerActive && !workspaceActiveTabKey)}
 													className={cn(
 														"group relative inline-flex min-w-shell-tab-min max-w-shell-tab-max self-stretch cursor-pointer items-center gap-1.5 border-r border-border px-3 text-control font-medium leading-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
-														reviewerActive
+														reviewerActive && !workspaceActiveTabKey
 															? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 															: "text-muted-foreground hover:bg-raised hover:text-foreground",
 													)}
 													onClick={() => onOpenReviewerTerminal?.(tab.terminal)}
 													role="tab"
-													tabIndex={reviewerActive ? 0 : -1}
+													tabIndex={reviewerActive && !workspaceActiveTabKey ? 0 : -1}
 													title={tab.terminal.harness}
 													type="button"
 												>
@@ -1765,7 +1770,7 @@ function ChatHeader({
 											) : tab.kind === "shell" ? (
 												<ShellTerminalTab
 													appearance="connected"
-													isActive={tab.terminal.handleId === shellActiveHandleId}
+													isActive={tab.terminal.handleId === shellActiveHandleId && !workspaceActiveTabKey}
 													onClose={() => onCloseShellTerminal?.(tab.terminal.handleId)}
 													onRename={onRenameShellTerminal ? (title) => onRenameShellTerminal(tab.terminal.handleId, title) : undefined}
 													onSelect={() => onSelectShellTerminal?.(tab.terminal.handleId)}
@@ -3117,14 +3122,23 @@ const TurnGroup = memo(function TurnGroup({
 	queued: boolean;
 	newHumanMessageIds: ReadonlySet<string>;
 }) {
+	const hasTerminalFailure =
+		group.outcome?.state === "failed" && Boolean(group.outcome.error);
 	const runs = useMemo(
 		() =>
 			runsOf(
-				group.liveProviderFailure
-					? group.items.filter((item) => item.id !== group.liveProviderFailure?.id)
-					: group.items,
+				group.items.filter((item) => {
+					if (item.id === group.liveProviderFailure?.id) return false;
+					if (hasTerminalFailure && item.kind === "activity" && item.activityKind === "error" && item.summary === group.outcome?.error) return false;
+					return !(
+						hasTerminalFailure &&
+						item.kind === "activity" &&
+						item.detail?.event === "provider.failure" &&
+						item.status === "failed"
+					);
+				}),
 			),
-		[group.items, group.liveProviderFailure],
+		[group.items, group.liveProviderFailure, group.outcome?.error, hasTerminalFailure],
 	);
 	const copyableMessageId = group.outcome
 		? [...group.items]
@@ -3711,7 +3725,11 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 				turn.completedAt && turn.startedAt
 					? new Date(turn.completedAt).getTime() - new Date(turn.startedAt).getTime()
 					: undefined,
-			error: turn.errorMessage,
+			error: turn.errorMessage || (turn.state === "failed"
+				? [...group.items].reverse().find(
+					(item): item is ConversationActivity => item.kind === "activity" && item.activityKind === "error",
+				)?.summary
+				: undefined),
 		};
 	}
 

@@ -227,7 +227,7 @@ export function primaryPR(session: WorkspaceSession): PullRequestFacts | undefin
 	return sortedPRs(session)[0];
 }
 
-export function isOrchestratorSession(session: WorkspaceSession): boolean {
+export function isOrchestratorSession(session: Pick<WorkspaceSession, "id" | "kind">): boolean {
 	return session.kind === "orchestrator" || session.id.endsWith("-orchestrator");
 }
 

@@ -81,7 +81,6 @@ type commander interface {
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	RetireForReplacement(ctx context.Context, id domain.SessionID) error
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error)
-	ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
 	// Switch saga (sessionmanager.SwitchEngine).
 	SwitchAgent(ctx context.Context, id domain.SessionID, cfg sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error)
 	RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error)
@@ -90,6 +89,22 @@ type commander interface {
 	// Messaging saga (sessionmanager.MessengerFacade).
 	WaitForMessageDeliveryReady(ctx context.Context, id domain.SessionID) error
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
+}
+
+// interfaceTransitionCommander is an optional command capability. Keeping it
+// separate avoids widening every focused session-service fake while production
+// can expose the feature through the concrete Session Manager.
+type interfaceTransitionCommander interface {
+	InterfaceTransitionStatus(context.Context, domain.SessionID) (sessionmanager.InterfaceTransitionStatus, error)
+	StartInterfaceTransition(context.Context, domain.SessionID, domain.SessionMode, domain.SessionInterfaceTransitionPolicy, domain.SessionInterfaceTransitionHistoryPolicy) (domain.SessionInterfaceTransition, error)
+	CancelInterfaceTransition(context.Context, domain.SessionID) error
+	AcknowledgeInterfaceTransitionNotice(context.Context, domain.SessionID, string) (domain.SessionInterfaceTransition, error)
+}
+
+// exitAgentCommander keeps the process-only lifecycle optional for focused
+// service fakes while production delegates to Session Manager.
+type exitAgentCommander interface {
+	ExitAgent(context.Context, domain.SessionID) (domain.SessionRecord, error)
 }
 
 // RollbackOutcome reports what happened in a rollback: either the seed row was
@@ -605,7 +620,12 @@ func (s *Service) Restore(ctx context.Context, id domain.SessionID) (RestoreOutc
 // ExitAgent stops only the agent controller while preserving the AO session,
 // worktree, terminal identity, and provider-native conversation.
 func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgentOutcome, error) {
-	rec, err := s.manager.ExitAgent(ctx, id)
+	manager, ok := s.manager.(exitAgentCommander)
+	if !ok {
+		return ExitAgentOutcome{}, apierr.Conflict(
+			"AGENT_EXIT_UNSUPPORTED", "This build cannot exit an agent independently", nil)
+	}
+	rec, err := manager.ExitAgent(ctx, id)
 	if err != nil {
 		return ExitAgentOutcome{}, toAPIError(err)
 	}
@@ -633,7 +653,7 @@ func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeA
 // InterfaceTransitionStatus returns capability and progress without launching
 // a provider process or mutating the session.
 func (s *Service) InterfaceTransitionStatus(ctx context.Context, id domain.SessionID) (InterfaceTransitionStatus, error) {
-	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
+	manager, ok := s.manager.(interfaceTransitionCommander)
 	if !ok {
 		return InterfaceTransitionStatus{}, apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
@@ -655,6 +675,7 @@ func (s *Service) StartInterfaceTransition(
 	id domain.SessionID,
 	target domain.SessionMode,
 	policy domain.SessionInterfaceTransitionPolicy,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (domain.SessionInterfaceTransition, error) {
 	if !target.Valid() {
 		return domain.SessionInterfaceTransition{}, apierr.Invalid(
@@ -664,19 +685,23 @@ func (s *Service) StartInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, apierr.Invalid(
 			"INVALID_TRANSITION_POLICY", "Policy must be drain or interrupt", nil)
 	}
-	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
+	if !historyPolicy.Valid() {
+		return domain.SessionInterfaceTransition{}, apierr.Invalid(
+			"INVALID_TRANSITION_HISTORY_POLICY", "History policy must be strict or provider_history", nil)
+	}
+	manager, ok := s.manager.(interfaceTransitionCommander)
 	if !ok {
 		return domain.SessionInterfaceTransition{}, apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
 	}
-	transition, err := manager.StartInterfaceTransition(ctx, id, target, policy)
+	transition, err := manager.StartInterfaceTransition(ctx, id, target, policy, historyPolicy)
 	return transition, toAPIError(err)
 }
 
 // CancelInterfaceTransition cancels a handoff while its source controller is
 // still safe to reopen.
 func (s *Service) CancelInterfaceTransition(ctx context.Context, id domain.SessionID) error {
-	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
+	manager, ok := s.manager.(interfaceTransitionCommander)
 	if !ok {
 		return apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
@@ -691,7 +716,7 @@ func (s *Service) AcknowledgeInterfaceTransitionNotice(
 	id domain.SessionID,
 	transitionID string,
 ) (domain.SessionInterfaceTransition, error) {
-	manager, ok := s.manager.(sessionmanager.TransitionCoordinator)
+	manager, ok := s.manager.(interfaceTransitionCommander)
 	if !ok {
 		return domain.SessionInterfaceTransition{}, apierr.Conflict(
 			"INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot switch session interfaces", nil)
@@ -890,19 +915,35 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	return out, nil
 }
 
-// TeardownProject stops every live session in a project, then asks the session
-// manager to reclaim terminal workspaces. Dirty worktrees are preserved by Kill
-// and Cleanup; callers only see hard teardown failures.
+// TeardownProject stops every live session in a project concurrently, then asks
+// the session manager to reclaim terminal workspaces. The expensive per-session
+// work (agent/runtime shutdown, controller teardown) is independent, so running
+// the kills in parallel is what makes removing a many-session project fast;
+// sessions of the same project that reach the shared repository are serialized
+// by the workspace adapter's per-repo teardown lock. Dirty worktrees are
+// preserved by Kill and Cleanup; callers only see hard teardown failures.
 func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID) error {
 	recs, err := s.listRecords(ctx, project)
 	if err != nil {
 		return err
 	}
-	for _, rec := range recs {
-		if rec.IsTerminated {
+	errs := make([]error, len(recs))
+	var wg sync.WaitGroup
+	for i := range recs {
+		if recs[i].IsTerminated {
 			continue
 		}
-		if _, err := s.Kill(ctx, rec.ID); err != nil {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := s.Kill(ctx, recs[i].ID); err != nil {
+				errs[i] = err
+			}
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
 			return err
 		}
 	}
@@ -1080,9 +1121,6 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrAgentExitInProgress):
 		return apierr.Conflict("AGENT_EXIT_IN_PROGRESS",
 			"The agent is already exiting", nil)
-	case errors.Is(err, ports.ErrCodexAccountSwitchInProgress):
-		return apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS",
-			"AO is switching the global Codex account; Codex session mutations are temporarily blocked", nil)
 	case errors.Is(err, sessionmanager.ErrInterfaceTransitionInProgress):
 		return apierr.Conflict("INTERFACE_TRANSITION_IN_PROGRESS",
 			"This session is already switching interfaces", nil)
@@ -1100,6 +1138,9 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrInterfaceTransitionNoticeNotAcknowledgeable):
 		return apierr.Conflict("INTERFACE_TRANSITION_NOTICE_NOT_ACKNOWLEDGEABLE",
 			"This interface switch has no failure or recovery notice to acknowledge", nil)
+	case errors.Is(err, sessionmanager.ErrInterfaceProviderHistoryRecoveryUnavailable):
+		return apierr.Conflict("PROVIDER_HISTORY_RECOVERY_UNAVAILABLE",
+			"Provider history can be used only after AO identifies a legacy text-only mismatch", nil)
 	case errors.Is(err, sessionmanager.ErrInterfaceAlreadySelected):
 		return apierr.Conflict("INTERFACE_ALREADY_SELECTED",
 			"The session is already using the requested interface", nil)
@@ -1207,6 +1248,10 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
+	case errors.Is(err, ports.ErrUnsupportedEffort):
+		return apierr.Invalid("UNSUPPORTED_EFFORT", err.Error(), nil)
+	case errors.Is(err, ports.ErrModelCapabilitiesUnavailable):
+		return apierr.Invalid("MODEL_CAPABILITIES_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimeWorkspaceCwdMismatch):
 		return apierr.Conflict("WORKSPACE_CWD_MISMATCH", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceLocked):

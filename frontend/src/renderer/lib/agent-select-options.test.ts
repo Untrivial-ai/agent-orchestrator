@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "../../api/schema";
-import { buildRankedAgentOptions } from "./agent-select-options";
+import { buildRankedAgentOptions, defaultAuthorizedAgentForRole, type RoleSession } from "./agent-select-options";
 
 type Agent = components["schemas"]["AgentReadinessSnapshot"];
 
@@ -113,5 +113,93 @@ describe("buildRankedAgentOptions", () => {
 		});
 
 		expect(option).toMatchObject({ disabled: false, status: "" });
+	});
+});
+
+describe("defaultAuthorizedAgentForRole", () => {
+	const agents = [agent("claude-code"), agent("codex")];
+
+	function hoursAgo(hours: number): string {
+		return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+	}
+
+	function session(
+		provider: RoleSession["provider"],
+		kind: "worker" | "orchestrator" | undefined,
+		createdAt: string,
+		id = `${provider}-${kind ?? "unknown"}-${createdAt}`,
+	): RoleSession {
+		return { id, provider, kind, createdAt };
+	}
+
+	it("infers each role from its own history", () => {
+		const sessions = [
+			session("codex", "worker", hoursAgo(5)),
+			session("codex", "worker", hoursAgo(4)),
+			session("claude-code", "worker", hoursAgo(3)),
+			session("claude-code", "orchestrator", hoursAgo(2)),
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "orchestrator")).toBe("claude-code");
+	});
+
+	it("breaks equal counts by the newest session", () => {
+		const sessions = [session("claude-code", "worker", hoursAgo(2)), session("codex", "worker", hoursAgo(1))];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+	});
+
+	it("ignores sessions older than 48 hours", () => {
+		const sessions = [
+			session("codex", "worker", hoursAgo(72)),
+			session("codex", "worker", hoursAgo(100)),
+			session("codex", "worker", hoursAgo(200)),
+			session("claude-code", "worker", hoursAgo(1)),
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("claude-code");
+		expect(defaultAuthorizedAgentForRole(agents, [session("codex", "worker", hoursAgo(72))], "worker")).toBe(
+			"claude-code",
+		);
+	});
+
+	it("ignores sessions without timestamps", () => {
+		expect(
+			defaultAuthorizedAgentForRole(agents, [{ id: "w1", provider: "codex", kind: "worker" }], "worker"),
+		).toBe("claude-code");
+	});
+
+	it("counts legacy orchestrator ids and kind-less sessions like the board does", () => {
+		expect(
+			defaultAuthorizedAgentForRole(
+				agents,
+				[{ id: "abc-orchestrator", provider: "codex", createdAt: hoursAgo(2) }],
+				"orchestrator",
+			),
+		).toBe("codex");
+		expect(
+			defaultAuthorizedAgentForRole(
+				agents,
+				[session("codex", undefined, hoursAgo(2)), session("codex", undefined, hoursAgo(1))],
+				"worker",
+			),
+		).toBe("codex");
+	});
+
+	it("skips unavailable historical winners and falls back to Claude Code", () => {
+		const sessions = [
+			session("goose", "worker", hoursAgo(3)),
+			session("goose", "worker", hoursAgo(2)),
+			session("codex", "worker", hoursAgo(1)),
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole(agents, [], "worker")).toBe("claude-code");
+	});
+
+	it("stays usable when Claude Code is unavailable", () => {
+		expect(defaultAuthorizedAgentForRole([agent("codex")], [], "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole([], [], "worker")).toBe("");
 	});
 });

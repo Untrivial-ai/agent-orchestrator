@@ -40,6 +40,7 @@ const (
 // the SQLite store.
 type Store interface {
 	CreateConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
+	OpenNativeConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
 	CreateProjectConversationWithContextReset(ctx context.Context, id string, project domain.ProjectID, session domain.SessionID, reset domain.ConversationActivity, now time.Time) (domain.ConversationRecord, error)
 	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
 	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string) error
@@ -54,6 +55,7 @@ type Store interface {
 	AppendImportedUserMessage(ctx context.Context, conversationID, providerTurnID string, msg domain.ConversationMessage, now time.Time) error
 
 	AppendUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error)
+	ConversationMessageByClientID(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationMessage, bool, error)
 	AppendRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
@@ -389,12 +391,23 @@ type nativeHistoryHighWater struct {
 // completed while Chat was not attached; the AO high-water mark covers an
 // immediate round trip before a resumed TUI has emitted another hook.
 type nativeHistoryCheckpoint struct {
-	latestUserPrompt      string
-	latestAssistantUpdate string
-	aoHighWater           nativeHistoryHighWater
+	latestUserPromptAt      time.Time
+	latestAssistantUpdateAt time.Time
+	requireNewerTurn        bool
+	nativeBoundary          *ports.NativeCheckpointBoundary
+	latestUserPrompt        string
+	latestAssistantUpdate   string
+	completedUserPrompt     bool
+	providerTurnID          string
+	userMismatch            ports.ChatHistoryMismatchDimension
+	assistantMismatch       ports.ChatHistoryMismatchDimension
+	hardMismatches          []ports.ChatHistoryMismatchDimension
+	aoHighWater             nativeHistoryHighWater
+	aoHighWaterPeers        []nativeHistoryHighWater
+	replayIndex             *nativeHistoryTurnIndex
 }
 
-// dropUnsettledHookFacts retires checkpoint text that AO durably recorded on a
+// dropUnsettledHookFacts retires legacy checkpoint text that AO recorded on a
 // turn the provider never settled. A provider promises to reproduce settled work
 // during history load, but a cancelled, interrupted or failed turn carries no
 // such promise: Claude forks its next prompt from the pre-failure transcript
@@ -407,7 +420,8 @@ type nativeHistoryCheckpoint struct {
 // Evidence is required to drop a fact. A checkpoint AO cannot tie to any of its
 // own turns is left in place: absence of a row is not proof the work was
 // unsettled, and these facts are what stop a stale replay from being imported as
-// if it were current.
+// if it were current. Trusted source-TUI facts belong to a newer controller
+// epoch; matching an old Chat turn's text cannot retire that evidence.
 func (p *nativeHistoryCheckpoint) dropUnsettledHookFacts(
 	turnsByID map[string]*domain.ConversationTurn,
 	messages []domain.ConversationMessage,
@@ -430,10 +444,12 @@ func (p *nativeHistoryCheckpoint) dropUnsettledHookFacts(
 		}
 		return newest == nil || newest.State == domain.TurnStateCompleted
 	}
-	if p.latestUserPrompt != "" && !settled(p.latestUserPrompt, domain.MessageRoleUser) {
+	if p.userMismatch == ports.ChatHistoryMismatchUntrustedUserText &&
+		p.latestUserPrompt != "" && !settled(p.latestUserPrompt, domain.MessageRoleUser) {
 		p.latestUserPrompt = ""
 	}
-	if p.latestAssistantUpdate != "" && !settled(p.latestAssistantUpdate, domain.MessageRoleAssistant) {
+	if p.assistantMismatch == ports.ChatHistoryMismatchUntrustedAssistantText &&
+		p.latestAssistantUpdate != "" && !settled(p.latestAssistantUpdate, domain.MessageRoleAssistant) {
 		p.latestAssistantUpdate = ""
 	}
 }
@@ -453,17 +469,61 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	// turn. Completed turns before it belong to the previous provider: their
 	// opaque ids remain useful timeline facts, but the new provider cannot replay
 	// them and they must not gate this native-history import.
-	var providerBoundary time.Time
+	var providerBoundary *domain.ConversationTurn
+	var providerBoundarySequence int64
+	turnEvidence := make(map[string]nativeHistoryHighWater, len(turns))
+	userSequence := make(map[string]int64, len(turns))
 	for _, message := range messages {
+		kind := ports.ChatEventKind("")
+		switch message.Role {
+		case domain.MessageRoleUser:
+			kind = ports.ChatEventUserMessageCompleted
+		case domain.MessageRoleAssistant:
+			kind = ports.ChatEventMessageCompleted
+		}
+		if !message.Streaming && kind != "" && message.Sequence > turnEvidence[message.TurnID].sequence {
+			turnEvidence[message.TurnID] = nativeHistoryHighWater{
+				sequence: message.Sequence, providerItemID: message.ProviderItemID, kind: kind, text: message.Text,
+			}
+		}
+		if message.Role == domain.MessageRoleUser && message.Sequence > 0 &&
+			(userSequence[message.TurnID] == 0 || message.Sequence < userSequence[message.TurnID]) {
+			userSequence[message.TurnID] = message.Sequence
+		}
 		turn := turnsByID[message.TurnID]
-		if turn == nil || message.Role != domain.MessageRoleUser ||
+		if turn == nil || turn.RolledBackAt != nil || turn.HandledBySessionID != sessionID || message.Role != domain.MessageRoleUser ||
 			!nativeHistoryCoordinationMessage(message.Text) {
 			continue
 		}
-		if turn.RequestedAt.After(providerBoundary) {
-			providerBoundary = turn.RequestedAt
+		if providerBoundary == nil || message.Sequence > providerBoundarySequence {
+			providerBoundary = turn
+			providerBoundarySequence = message.Sequence
 		}
 	}
+	for _, activity := range activities {
+		if activity.ProviderItemID == "" || activity.Sequence <= turnEvidence[activity.TurnID].sequence {
+			continue
+		}
+		switch activity.Kind {
+		case domain.ActivityKindCommand, domain.ActivityKindFileChange, domain.ActivityKindReasoning, domain.ActivityKindMCPTool:
+		default:
+			continue // AO control-plane rows are not provider replay evidence.
+		}
+		if activity.Status == domain.ActivityStatusCompleted || activity.Status == domain.ActivityStatusFailed {
+			turnEvidence[activity.TurnID] = nativeHistoryHighWater{
+				sequence: activity.Sequence, providerItemID: activity.ProviderItemID, activityKind: activity.Kind,
+				activityStatus: activity.Status, summary: activity.Summary, detail: append([]byte(nil), activity.Detail...),
+			}
+		}
+	}
+	evidence := func(turn *domain.ConversationTurn) nativeHistoryHighWater {
+		boundary := turnEvidence[turn.ID]
+		boundary.providerTurnID = turn.ProviderTurnID
+		return boundary
+	}
+	// Queue reordering updates RequestedAt, not the message sequence. Preserve
+	// that order. Tied turns require all completed boundaries: item sequences
+	// alone cannot order an empty response after a reordered queued prompt.
 
 	var latest *domain.ConversationTurn
 	for i := range turns {
@@ -474,63 +534,75 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 		// pre-failure transcript entry, leaving the failed turn (e.g. a synthetic
 		// auth-error message) on a dead branch that session/load never replays.
 		// Requiring one of those items would make every future switch time out.
-		if turn.HandledBySessionID != sessionID || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" ||
-			(!providerBoundary.IsZero() && !turn.RequestedAt.After(providerBoundary)) {
+		if turn.HandledBySessionID != sessionID || turn.RolledBackAt != nil || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" {
 			continue
+		}
+		if providerBoundary != nil && turn.ID != providerBoundary.ID {
+			sequence := userSequence[turn.ID]
+			if sequence == 0 {
+				sequence = turnEvidence[turn.ID].sequence
+			}
+			if (sequence > 0 && sequence < providerBoundarySequence) ||
+				(sequence == 0 && !turn.RequestedAt.After(providerBoundary.RequestedAt)) {
+				continue
+			}
 		}
 		if latest == nil || turn.RequestedAt.After(latest.RequestedAt) {
 			latest = turn
+			p.aoHighWaterPeers = nil
+		} else if turn.RequestedAt.Equal(latest.RequestedAt) {
+			if turnEvidence[turn.ID].sequence > turnEvidence[latest.ID].sequence {
+				p.aoHighWaterPeers = append(p.aoHighWaterPeers, evidence(latest))
+				latest = turn
+				continue
+			}
+			p.aoHighWaterPeers = append(p.aoHighWaterPeers, evidence(turn))
 		}
 	}
 	if latest == nil {
 		return
 	}
-	p.aoHighWater.providerTurnID = latest.ProviderTurnID
-	for _, message := range messages {
-		if message.TurnID != latest.ID || message.Streaming || message.Sequence <= p.aoHighWater.sequence {
-			continue
-		}
-		kind := ports.ChatEventKind("")
-		switch message.Role {
-		case domain.MessageRoleUser:
-			kind = ports.ChatEventUserMessageCompleted
-		case domain.MessageRoleAssistant:
-			kind = ports.ChatEventMessageCompleted
-		}
-		if kind == "" {
-			continue
-		}
-		p.aoHighWater = nativeHistoryHighWater{
-			sequence: message.Sequence, providerTurnID: latest.ProviderTurnID,
-			providerItemID: message.ProviderItemID, kind: kind, text: message.Text,
-		}
-	}
-	for _, activity := range activities {
-		if activity.TurnID != latest.ID || activity.ProviderItemID == "" ||
-			activity.Sequence <= p.aoHighWater.sequence {
-			continue
-		}
-		switch activity.Kind {
-		case domain.ActivityKindCommand, domain.ActivityKindFileChange,
-			domain.ActivityKindReasoning, domain.ActivityKindMCPTool:
-		default:
-			// Approval/input/system rows are AO control-plane facts, not items
-			// the provider promises to reproduce during native history load.
-			continue
-		}
-		switch activity.Status {
-		case domain.ActivityStatusCompleted, domain.ActivityStatusFailed:
-			p.aoHighWater = nativeHistoryHighWater{
-				sequence: activity.Sequence, providerTurnID: latest.ProviderTurnID,
-				providerItemID: activity.ProviderItemID, activityKind: activity.Kind,
-				activityStatus: activity.Status, summary: activity.Summary,
-				detail: append([]byte(nil), activity.Detail...),
-			}
-		}
-	}
+	p.retireSupersededLegacyFacts(sessionID, turnsByID, messages, latest)
+	p.aoHighWater = evidence(latest)
+	p.replayIndex = indexNativeHistoryTurns(turns, messages, activities)
 }
 
-func (p nativeHistoryCheckpoint) reached(events []ports.ChatEvent) bool {
+func (p *nativeHistoryCheckpoint) retireSupersededLegacyFacts(sessionID domain.SessionID, turns map[string]*domain.ConversationTurn, messages []domain.ConversationMessage, latest *domain.ConversationTurn) {
+	retire := func(text *string, observedAt time.Time, role domain.MessageRole, trust ports.ChatHistoryMismatchDimension) {
+		if *text == "" || observedAt.IsZero() || (trust != ports.ChatHistoryMismatchUntrustedUserText && trust != ports.ChatHistoryMismatchUntrustedAssistantText) {
+			return
+		}
+		var newest *domain.ConversationTurn
+		for _, message := range messages {
+			turn := turns[message.TurnID]
+			if turn == nil || turn.HandledBySessionID != sessionID || turn.RolledBackAt != nil || message.Streaming || message.Role != role || !nativeHistoryTextMatches(*text, message.Text) {
+				continue
+			}
+			if newest == nil || turn.RequestedAt.After(newest.RequestedAt) {
+				newest = turn
+			}
+		}
+		if newest == nil || newest.State != domain.TurnStateCompleted {
+			return
+		}
+		if latest.CompletedAt != nil && observedAt.After(*latest.CompletedAt) {
+			p.requireNewerTurn = true
+			return
+		}
+		if observedAt.Before(latest.RequestedAt) && newest.RequestedAt.Before(latest.RequestedAt) {
+			*text = ""
+		}
+	}
+	retire(&p.latestUserPrompt, p.latestUserPromptAt, domain.MessageRoleUser, p.userMismatch)
+	retire(&p.latestAssistantUpdate, p.latestAssistantUpdateAt, domain.MessageRoleAssistant, p.assistantMismatch)
+}
+
+func (p nativeHistoryCheckpoint) mismatches(
+	events []ports.ChatEvent,
+	existingTurns []domain.ConversationTurn,
+	existingMessages []domain.ConversationMessage,
+	existingActivities []domain.ConversationActivity,
+) []ports.ChatHistoryMismatchDimension {
 	completedTurns := make(map[string]bool)
 	coordinationTurns := make(map[string]bool)
 	for _, event := range events {
@@ -542,56 +614,154 @@ func (p nativeHistoryCheckpoint) reached(events []ports.ChatEvent) bool {
 		}
 	}
 
-	var latestUser, latestAssistant ports.ChatEvent
+	type replayTurnText struct {
+		user      ports.ChatEvent
+		assistant ports.ChatEvent
+		nativeID  string
+	}
+	turnText := make(map[string]replayTurnText)
+	latestCompletedTurnID := ""
 	for _, event := range events {
-		if coordinationTurns[event.ProviderTurnID] || !completedTurns[event.ProviderTurnID] {
+		if event.Kind == ports.ChatEventTurnCompleted && event.ProviderTurnID != "" &&
+			!coordinationTurns[event.ProviderTurnID] {
+			latestCompletedTurnID = event.ProviderTurnID
+		}
+		if event.ProviderTurnID == "" {
 			continue
+		}
+		text := turnText[event.ProviderTurnID]
+		text.nativeID = event.NativeTurnID
+		if text.nativeID == "" {
+			text.nativeID = event.ProviderTurnID
 		}
 		switch event.Kind {
 		case ports.ChatEventUserMessageCompleted:
-			latestUser = event
+			text.user = event
 		case ports.ChatEventMessageCompleted:
-			latestAssistant = event
+			text.assistant = event
+		}
+		turnText[event.ProviderTurnID] = text
+	}
+
+	// A trusted checkpoint describes one main-thread turn. Selecting the latest
+	// user and assistant independently can splice an older repeated answer onto a
+	// newer incomplete turn and incorrectly admit a truncated provider replay.
+	// Only an exact native turn ID can match an earlier occurrence. Repeated
+	// prompt/answer pairs are not identities. Unidentified text stays latest-only.
+	latestText := turnText[latestCompletedTurnID]
+	checkpointMatched := p.latestUserPrompt == "" && p.latestAssistantUpdate == "" && p.providerTurnID == ""
+	if p.completedUserPrompt && p.providerTurnID != "" {
+		for turnID := range completedTurns {
+			if coordinationTurns[turnID] || p.providerTurnID != turnText[turnID].nativeID {
+				continue
+			}
+			text := turnText[turnID]
+			if (p.latestUserPrompt == "" || nativeHistoryTextMatches(p.latestUserPrompt, text.user.Text)) &&
+				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, text.assistant.Text)) {
+				checkpointMatched = true
+				break
+			}
+		}
+	} else {
+		// Without an identified completion, retain the latest-turn gate.
+		checkpointMatched =
+			(p.latestUserPrompt == "" || nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text)) &&
+				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text)) &&
+				(p.providerTurnID == "" || p.providerTurnID == latestText.nativeID)
+	}
+	mismatches := append([]ports.ChatHistoryMismatchDimension(nil), p.hardMismatches...)
+	if boundary := p.nativeBoundary; boundary != nil {
+		matched := false
+		for turnID, text := range turnText {
+			if completedTurns[turnID] && boundary.UserMessageID != "" &&
+				text.user.NativeUserMessageID == boundary.UserMessageID &&
+				nativeHistoryTextMatches(boundary.UserText, text.user.Text) &&
+				nativeHistoryTextMatches(boundary.AssistantText, text.assistant.Text) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			mismatches = append(mismatches, ports.ChatHistoryMismatchTrustedTurn)
 		}
 	}
-	if p.latestUserPrompt != "" &&
-		!nativeHistoryTextMatches(p.latestUserPrompt, latestUser.Text) {
-		return false
-	}
-	if p.latestAssistantUpdate != "" &&
-		!nativeHistoryTextMatches(p.latestAssistantUpdate, latestAssistant.Text) {
-		return false
+	if !checkpointMatched {
+		if p.providerTurnID != "" {
+			mismatches = append(mismatches, ports.ChatHistoryMismatchTrustedTurn)
+		}
+		if p.latestUserPrompt != "" && !nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text) {
+			mismatches = append(mismatches, p.userMismatch)
+		}
+		if p.latestAssistantUpdate != "" && !nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text) {
+			mismatches = append(mismatches, p.assistantMismatch)
+		}
 	}
 
 	highWater := p.aoHighWater
 	if highWater.providerTurnID == "" {
-		return true
+		return mismatches
 	}
-	if highWater.providerItemID == "" && highWater.kind == "" {
-		return completedTurns[highWater.providerTurnID]
+	index := p.replayIndex
+	if index == nil {
+		index = indexNativeHistoryTurns(existingTurns, existingMessages, existingActivities)
+	}
+	mappedTurns, _ := index.mapReplay(events)
+	boundaries := make(map[string]nativeHistoryHighWater, len(p.aoHighWaterPeers)+1)
+	boundaries[highWater.providerTurnID] = highWater
+	for _, peer := range p.aoHighWaterPeers {
+		boundaries[peer.providerTurnID] = peer
 	}
 	for _, event := range events {
-		if !completedTurns[event.ProviderTurnID] {
+		candidate := mappedTurns[event.ProviderTurnID]
+		if candidate == nil || !completedTurns[event.ProviderTurnID] {
 			continue
 		}
-		if event.ProviderItemID == highWater.providerItemID {
-			return true
+		boundary, required := boundaries[candidate.providerTurnID]
+		if !required {
+			continue
+		}
+		matched := boundary.providerItemID == "" && boundary.kind == "" && boundary.activityKind == ""
+		if boundary.providerItemID != "" && event.ProviderItemID == boundary.providerItemID {
+			matched = true
 		}
 		// ACP identifiers are opaque and can be reassigned by a conforming
 		// provider during load. Exact settled content is the fallback identity
 		// used by reconciliation for that same reason.
-		if highWater.kind != "" && event.Kind == highWater.kind &&
-			nativeHistoryTextMatches(highWater.text, event.Text) {
-			return true
+		if boundary.kind != "" && event.Kind == boundary.kind &&
+			nativeHistoryTextMatches(boundary.text, event.Text) {
+			matched = true
 		}
-		if highWater.kind == "" &&
-			event.ActivityKind == highWater.activityKind &&
-			event.ActivityStatus == highWater.activityStatus &&
-			event.Summary == highWater.summary && bytes.Equal(event.Detail, highWater.detail) {
-			return true
+		if boundary.activityKind != "" &&
+			event.ActivityKind == boundary.activityKind &&
+			event.ActivityStatus == boundary.activityStatus &&
+			event.Summary == boundary.summary && bytes.Equal(event.Detail, boundary.detail) {
+			matched = true
+		}
+		if matched {
+			delete(boundaries, candidate.providerTurnID)
 		}
 	}
-	return false
+	if len(boundaries) > 0 {
+		return append(mismatches, ports.ChatHistoryMismatchAOHighWater)
+	}
+	if p.requireNewerTurn {
+		pastHighWater, newer := false, false
+		for _, event := range events {
+			if event.Kind != ports.ChatEventTurnCompleted {
+				continue
+			}
+			candidate := mappedTurns[event.ProviderTurnID]
+			if candidate != nil && candidate.providerTurnID == highWater.providerTurnID {
+				pastHighWater = true
+			} else if pastHighWater && (event.TurnState == domain.TurnStateCompleted || event.TurnState == domain.TurnStateRecovered) {
+				newer = true
+			}
+		}
+		if !newer {
+			mismatches = append(mismatches, ports.ChatHistoryMismatchAOHighWater)
+		}
+	}
+	return mismatches
 }
 
 func nativeHistoryCoordinationMessage(text string) bool {
@@ -601,19 +771,10 @@ func nativeHistoryCoordinationMessage(text string) bool {
 }
 
 func nativeHistoryTextMatches(checkpoint, replayed string) bool {
-	checkpoint = strings.TrimSpace(checkpoint)
-	replayed = strings.TrimSpace(replayed)
-	if checkpoint == replayed {
-		return true
-	}
-	// Hook payloads are bounded before persistence. Preserve their head+tail
-	// evidence without requiring a provider replay to reproduce AO's marker.
-	const marker = "\n[... truncated by AO ...]\n"
-	parts := strings.Split(checkpoint, marker)
-	return len(parts) == 2 && strings.HasPrefix(replayed, parts[0]) && strings.HasSuffix(replayed, parts[1])
+	return domain.NativeCheckpointTextMatches(checkpoint, replayed)
 }
 
-// readNativeHistory loads and reconciles the settled provider thread without
+// readNativeHistory loads and validates the settled provider thread without
 // mutating AO's timeline. A pending provider boundary uses this split phase so
 // the caller can project the events inside the same transaction that publishes
 // the boundary and controller generation.
@@ -625,6 +786,12 @@ func (c *Controller) readNativeHistory(
 	required bool,
 	checkpoint nativeHistoryCheckpoint,
 ) ([]ports.ChatEvent, error) {
+	if required && len(checkpoint.hardMismatches) > 0 {
+		return nil, fmt.Errorf("native conversation history cannot satisfy durable checkpoint: %w",
+			&ports.ChatHistoryUnsettledError{
+				Dimensions: append([]ports.ChatHistoryMismatchDimension(nil), checkpoint.hardMismatches...),
+			})
+	}
 	reader, ok := c.conv.(ports.ChatHistoryReader)
 	if !ok {
 		if required {
@@ -638,21 +805,30 @@ func (c *Controller) readNativeHistory(
 	events, err := reader.ReadHistory(historyCtx)
 	refresher, refreshable := reader.(ports.ChatHistoryRefresher)
 	sawUnsettled := false
-	for err != nil || (required && !checkpoint.reached(events)) {
+	var lastUnsettled error
+	for {
+		if err == nil && required {
+			if mismatches := checkpoint.mismatches(
+				events, existingTurns, existingMessages, existingActivities,
+			); len(mismatches) > 0 {
+				err = &ports.ChatHistoryUnsettledError{Dimensions: mismatches}
+			}
+		}
 		if err == nil {
-			err = ports.ErrChatHistoryUnsettled
+			break
 		}
 		if errors.Is(err, ports.ErrChatHistoryUnavailable) && !required {
 			return nil, nil
 		}
 		if sawUnsettled && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return nil, fmt.Errorf("wait for settled native conversation history: %w: %w",
-				ports.ErrChatHistoryUnsettled, err)
+				lastUnsettled, err)
 		}
 		if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
 			return nil, fmt.Errorf("read native conversation history: %w", err)
 		}
 		sawUnsettled = true
+		lastUnsettled = err
 		if !refreshable {
 			return nil, fmt.Errorf("native conversation history snapshot is incomplete and cannot be refreshed: %w", err)
 		}
@@ -662,14 +838,11 @@ func (c *Controller) readNativeHistory(
 		case <-historyCtx.Done():
 			timer.Stop()
 			return nil, fmt.Errorf("wait for settled native conversation history: %w: %w",
-				ports.ErrChatHistoryUnsettled, historyCtx.Err())
+				lastUnsettled, historyCtx.Err())
 		case <-timer.C:
 		}
 		events, err = refresher.RefreshHistory(historyCtx)
 	}
-	events = reconcileNativeHistory(
-		events, existingTurns, existingMessages, existingActivities,
-	)
 	for _, event := range events {
 		if event.ProviderEventID == "" {
 			return nil, fmt.Errorf("native history event %s has no stable identity", event.Kind)
@@ -702,7 +875,6 @@ type nativeHistoryTurn struct {
 	text           string
 	messages       map[string]int
 	activities     map[string]int
-	used           bool
 }
 
 func nativeHistoryMessageFingerprint(role domain.MessageRole, text string) string {
@@ -729,23 +901,32 @@ func nativeHistoryActivityFingerprint(
 	return string(kind) + "\x00" + string(status) + "\x00" + summary + "\x00" + string(detail)
 }
 
-// reconcileNativeHistory maps a provider replay onto AO's existing durable
-// turns before any event is projected.
-//
-// ACP intentionally treats message ids as opaque. Well-behaved agents may echo
-// the client's id, while others persist their own user uuid. Assistant/tool item
-// ids are usually replay-stable, so they are the strongest cross-restart signal;
-// the original client id is next, and exact prompt text in conversation order is
-// the compatibility fallback. This belongs above every driver: Codex history is
-// already identity-stable, while all ACP bindings need the same reconciliation.
-func reconcileNativeHistory(
+// mapNativeHistoryTurns identifies which durable AO turn owns each raw replay
+// turn before reconciliation rewrites provider turn ids or drops duplicates.
+func mapNativeHistoryTurns(
 	events []ports.ChatEvent,
 	existingTurns []domain.ConversationTurn,
 	existingMessages []domain.ConversationMessage,
 	existingActivities []domain.ConversationActivity,
-) []ports.ChatEvent {
-	if len(events) == 0 || len(existingTurns) == 0 {
-		return events
+) (map[string]*nativeHistoryTurn, map[string]*nativeHistoryTurn) {
+	return indexNativeHistoryTurns(existingTurns, existingMessages, existingActivities).mapReplay(events)
+}
+
+// The durable snapshot is invariant during history settling. Keep its index
+// separate from per-replay matching so refreshes do not rebuild it.
+type nativeHistoryTurnIndex struct {
+	byProviderTurnID map[string]*nativeHistoryTurn
+	providerItems    map[string]*nativeHistoryTurn
+	ordered          []*nativeHistoryTurn
+}
+
+func indexNativeHistoryTurns(
+	existingTurns []domain.ConversationTurn,
+	existingMessages []domain.ConversationMessage,
+	existingActivities []domain.ConversationActivity,
+) *nativeHistoryTurnIndex {
+	if len(existingTurns) == 0 {
+		return nil
 	}
 
 	byAOTurnID := make(map[string]*nativeHistoryTurn, len(existingTurns))
@@ -766,7 +947,7 @@ func reconcileNativeHistory(
 		ordered = append(ordered, candidate)
 	}
 	if len(ordered) == 0 {
-		return events
+		return nil
 	}
 
 	// A provider item is useful only when it identifies exactly one durable turn.
@@ -807,8 +988,17 @@ func reconcileNativeHistory(
 		)]++
 		rememberProviderItem(activity.ProviderItemID, candidate)
 	}
+	return &nativeHistoryTurnIndex{byProviderTurnID: byProviderTurnID, providerItems: providerItems, ordered: ordered}
+}
 
+func (index *nativeHistoryTurnIndex) mapReplay(events []ports.ChatEvent) (map[string]*nativeHistoryTurn, map[string]*nativeHistoryTurn) {
 	mapped := make(map[string]*nativeHistoryTurn)
+	if index == nil || len(events) == 0 {
+		return mapped, nil
+	}
+	byProviderTurnID, providerItems, ordered := index.byProviderTurnID, index.providerItems, index.ordered
+	used := make(map[*nativeHistoryTurn]bool, len(ordered))
+
 	bind := func(replayTurnID string, candidate *nativeHistoryTurn) {
 		if replayTurnID == "" || candidate == nil {
 			return
@@ -820,7 +1010,7 @@ func reconcileNativeHistory(
 			return
 		}
 		mapped[replayTurnID] = candidate
-		candidate.used = true
+		used[candidate] = true
 	}
 	providerItemCandidate := func(event ports.ChatEvent) *nativeHistoryTurn {
 		var match *nativeHistoryTurn
@@ -839,21 +1029,6 @@ func reconcileNativeHistory(
 		}
 		return match
 	}
-	providerItemAliasCandidate := func(event ports.ChatEvent) *nativeHistoryTurn {
-		var match *nativeHistoryTurn
-		for _, identity := range event.ProviderItemAliases {
-			candidate := providerItems[identity]
-			if candidate == nil {
-				continue
-			}
-			if match != nil && match != candidate {
-				return nil
-			}
-			match = candidate
-		}
-		return match
-	}
-
 	// Gather mappings from the complete replay before rewriting TurnStarted, which
 	// necessarily arrives before the assistant/tool item that can identify it.
 	for _, event := range events {
@@ -877,7 +1052,7 @@ func reconcileNativeHistory(
 		clientIdentities = append(clientIdentities, event.ProviderItemAliases...)
 		if event.ClientMessageID != "" || len(event.ProviderItemAliases) > 0 {
 			for _, candidate := range ordered {
-				if candidate.used || candidate.clientMessage == "" {
+				if used[candidate] || candidate.clientMessage == "" {
 					continue
 				}
 				for _, identity := range clientIdentities {
@@ -893,7 +1068,7 @@ func reconcileNativeHistory(
 		}
 		if match == nil && event.ProviderItemID != "" {
 			for _, candidate := range ordered {
-				if !candidate.used && candidate.providerItem == event.ProviderItemID {
+				if !used[candidate] && candidate.providerItem == event.ProviderItemID {
 					match = candidate
 					break
 				}
@@ -901,7 +1076,7 @@ func reconcileNativeHistory(
 		}
 		if match == nil && event.Text != "" {
 			for _, candidate := range ordered {
-				if !candidate.used && candidate.text == event.Text {
+				if !used[candidate] && candidate.text == event.Text {
 					match = candidate
 					break
 				}
@@ -909,7 +1084,46 @@ func reconcileNativeHistory(
 		}
 		bind(event.ProviderTurnID, match)
 	}
+	return mapped, providerItems
+}
 
+// reconcileNativeHistory maps a provider replay onto AO's existing durable
+// turns before any event is projected.
+//
+// ACP intentionally treats message ids as opaque. Well-behaved agents may echo
+// the client's id, while others persist their own user uuid. Assistant/tool item
+// ids are usually replay-stable, so they are the strongest cross-restart signal;
+// the original client id is next, and exact prompt text in conversation order is
+// the compatibility fallback. This belongs above every driver: Codex history is
+// already identity-stable, while all ACP bindings need the same reconciliation.
+func reconcileNativeHistory(
+	events []ports.ChatEvent,
+	existingTurns []domain.ConversationTurn,
+	existingMessages []domain.ConversationMessage,
+	existingActivities []domain.ConversationActivity,
+) []ports.ChatEvent {
+	if len(events) == 0 || len(existingTurns) == 0 {
+		return events
+	}
+
+	mapped, providerItems := mapNativeHistoryTurns(events, existingTurns, existingMessages, existingActivities)
+	if len(mapped) == 0 {
+		return events
+	}
+	providerItemAliasCandidate := func(event ports.ChatEvent) *nativeHistoryTurn {
+		var match *nativeHistoryTurn
+		for _, identity := range event.ProviderItemAliases {
+			candidate := providerItems[identity]
+			if candidate == nil {
+				continue
+			}
+			if match != nil && match != candidate {
+				return nil
+			}
+			match = candidate
+		}
+		return match
+	}
 	// A native provider may omit persisted item ids even though its live stream
 	// supplied them. Codex does this today: a live assistant message can be
 	// `msg_...`, while thread/read later calls the same item `item-2`. Stable turn
@@ -1069,6 +1283,14 @@ func (c *Controller) Capabilities() ports.ChatCapabilities {
 func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domain.ConversationTurn, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	return c.sendLocked(ctx, msg, true)
+}
+
+func (c *Controller) sendLocked(
+	ctx context.Context,
+	msg ports.ChatUserMessage,
+	queueWhenBusy bool,
+) (domain.ConversationTurn, error) {
 	c.mu.Lock()
 	handoff := c.handoff != controllerHandoffNone
 	c.mu.Unlock()
@@ -1107,7 +1329,7 @@ func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domai
 		return domain.ConversationTurn{}, nil
 	}
 
-	if c.busy() {
+	if queueWhenBusy && c.busy() {
 		// AppendUserMessage wrote it as queued, which is exactly where it belongs
 		// until the running turn ends. drain picks it up from there.
 		return domain.ConversationTurn{
@@ -2419,14 +2641,18 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if event.Err != nil {
 			message = event.Err.Error()
 		}
-		state := event.TurnState
-		if state == "" {
-			// A completion with no status is not evidence of success.
-			state = domain.TurnStateFailed
-		}
+		state := settledTurnState(event)
 		if err := c.store.SettleTurn(
 			ctx, c.conversation.ID, event.ProviderTurnID, state, message, now); err != nil {
 			return err
+		}
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
+			if err := c.recordAccount(ctx, ports.ChatAccount{
+				ReauthRequired: true,
+				ReauthReason:   message,
+			}, now); err != nil {
+				return err
+			}
 		}
 		return nil
 
@@ -2743,6 +2969,14 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if event.Err != nil {
 			message = event.Err.Error()
 		}
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
+			if err := c.recordAccount(ctx, ports.ChatAccount{
+				ReauthRequired: true,
+				ReauthReason:   message,
+			}, now); err != nil {
+				return err
+			}
+		}
 		detail, _ := json.Marshal(map[string]string{"error": message})
 		return c.store.UpsertActivity(ctx, c.conversation.ID, event.ProviderTurnID,
 			domain.ConversationActivity{
@@ -2771,13 +3005,23 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)
 		}
 	case ports.ChatEventTurnCompleted:
+		reauthRequired := errors.Is(event.Err, ports.ErrChatAuthRequired)
+		if reauthRequired && c.onAccountChanged != nil {
+			c.onAccountChanged(c.sessionID, c.generation, c.harness)
+		}
 		if !primaryTurn {
 			return
 		}
-		c.reportActivity(ctx, domain.ActivityIdle, "chat.turn.completed", now)
+		activityState := domain.ActivityIdle
+		activityEvent := "chat.turn.completed"
+		if reauthRequired {
+			activityState = domain.ActivityWaitingInput
+			activityEvent = "chat.account.reauth"
+		}
+		c.reportActivity(ctx, activityState, activityEvent, now)
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
-		c.drainLocked(ctx, event.TurnState == domain.TurnStateCompleted)
+		c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted)
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
 	case ports.ChatEventApprovalResolved:
@@ -2801,7 +3045,27 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if event.Account != nil && event.Account.ReauthRequired {
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
 		}
+	case ports.ChatEventError:
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
+			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
+			if c.onAccountChanged != nil {
+				c.onAccountChanged(c.sessionID, c.generation, c.harness)
+			}
+		}
 	}
+}
+
+// settledTurnState resolves the only ambiguous terminal combination once. An
+// attached error is authoritative failure unless the provider explicitly says
+// the user interrupted the turn; an absent state is never evidence of success.
+func settledTurnState(event ports.ChatEvent) domain.TurnState {
+	if event.TurnState == domain.TurnStateInterrupted {
+		return domain.TurnStateInterrupted
+	}
+	if event.Err != nil || event.TurnState == "" {
+		return domain.TurnStateFailed
+	}
+	return event.TurnState
 }
 
 func (c *Controller) reportInteractionResolved(ctx context.Context, event string, now time.Time) {
@@ -2868,22 +3132,7 @@ func (c *Controller) applyAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
-	c.mu.Lock()
-	if update.AuthMode != "" {
-		c.account.AuthMode = update.AuthMode
-	}
-	if update.PlanLabel != "" {
-		c.account.PlanLabel = update.PlanLabel
-	}
-	if update.ReauthRequired {
-		at := now
-		c.account.ReauthRequiredAt = &at
-		c.account.ReauthReason = update.ReauthReason
-	}
-	account := c.account
-	c.mu.Unlock()
-
-	if err := c.store.RecordAccount(ctx, c.conversation.ID, account, now); err != nil {
+	if err := c.recordAccount(ctx, update, now); err != nil {
 		return err
 	}
 	if !update.ReauthRequired {
@@ -2904,6 +3153,33 @@ func (c *Controller) applyAccount(
 			// instead of filling the timeline with the same notice.
 			ProviderItemID: "ao-reauth-" + firstNonEmpty(update.ReauthReason, "unknown"),
 		}, now)
+}
+
+// recordAccount updates the latest account projection without creating a
+// timeline row. A terminal provider failure already occupies the turn's outcome;
+// recording recovery state here lets persistent UI explain what to do next
+// without duplicating the same provider prose as another event.
+func (c *Controller) recordAccount(
+	ctx context.Context,
+	update ports.ChatAccount,
+	now time.Time,
+) error {
+	c.mu.Lock()
+	if update.AuthMode != "" {
+		c.account.AuthMode = update.AuthMode
+	}
+	if update.PlanLabel != "" {
+		c.account.PlanLabel = update.PlanLabel
+	}
+	if update.ReauthRequired {
+		at := now
+		c.account.ReauthRequiredAt = &at
+		c.account.ReauthReason = update.ReauthReason
+	}
+	account := c.account
+	c.mu.Unlock()
+
+	return c.store.RecordAccount(ctx, c.conversation.ID, account, now)
 }
 
 // applyThreadState folds a thread report into what AO already knows.

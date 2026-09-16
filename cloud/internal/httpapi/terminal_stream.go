@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -22,6 +23,13 @@ const (
 	// terminalStreamSendBuffer bounds input frames queued toward one worker.
 	// Overflow falls back to the durable queue via the worker's poll.
 	terminalStreamSendBuffer = 64
+	// terminalRelayOutputBuffer limits data held only for a currently attached
+	// browser. Durable replay remains the recovery path after a disconnect.
+	terminalRelayOutputBuffer = 128
+	// terminalRelayAuditBuffer bounds background output mirroring. Reaching it
+	// makes the worker stream apply backpressure rather than silently losing
+	// replay/audit data.
+	terminalRelayAuditBuffer = 256
 )
 
 // terminalStreams tracks, for this control-plane replica only, which
@@ -32,6 +40,7 @@ type terminalStreams struct {
 	mu       sync.Mutex
 	workers  map[string]*workerTerminalStream
 	watchers map[string]map[chan struct{}]struct{}
+	clients  map[string]map[chan terminalRelayOutput]struct{}
 }
 
 type workerTerminalStream struct {
@@ -40,11 +49,74 @@ type workerTerminalStream struct {
 	done   chan struct{}
 }
 
+// terminalRelayOutput is the live branch of the terminal data plane. Sequence
+// is assigned by the worker and is also used by the durable replay log.
+type terminalRelayOutput struct {
+	sequence int64
+	data     []byte
+}
+
+// terminalRelayStats aggregates one worker stream's hot-path relay activity.
+// It is emitted once when the stream closes so saturation remains observable
+// without creating a CloudWatch record for every terminal frame.
+type terminalRelayStats struct {
+	forwardedFrames  atomic.Uint64
+	forwardedBytes   atomic.Uint64
+	mirroredFrames   atomic.Uint64
+	mirroredBytes    atomic.Uint64
+	saturatedClients atomic.Uint64
+}
+
 func newTerminalStreams() *terminalStreams {
 	return &terminalStreams{
 		workers:  make(map[string]*workerTerminalStream),
 		watchers: make(map[string]map[chan struct{}]struct{}),
+		clients:  make(map[string]map[chan terminalRelayOutput]struct{}),
 	}
+}
+
+// subscribeRelayOutput attaches a browser to the in-process relay. Its
+// buffered channel means a slow browser never blocks the worker's PTY read;
+// overflow is handled by the normal durable replay path after reconnect.
+func (t *terminalStreams) subscribeRelayOutput(terminalID string) (chan terminalRelayOutput, func()) {
+	output := make(chan terminalRelayOutput, terminalRelayOutputBuffer)
+	t.mu.Lock()
+	set := t.clients[terminalID]
+	if set == nil {
+		set = make(map[chan terminalRelayOutput]struct{})
+		t.clients[terminalID] = set
+	}
+	set[output] = struct{}{}
+	t.mu.Unlock()
+	return output, func() {
+		t.mu.Lock()
+		if set := t.clients[terminalID]; set != nil {
+			delete(set, output)
+			if len(set) == 0 {
+				delete(t.clients, terminalID)
+			}
+		}
+		t.mu.Unlock()
+	}
+}
+
+// relayOutput fans a worker frame straight to local browser sockets. It does
+// not persist or inspect terminal bytes; the caller mirrors the exact frame to
+// Postgres independently. It returns the count of saturated client buffers so
+// callers can make overload visible without logging terminal content.
+func (t *terminalStreams) relayOutput(terminalID string, output terminalRelayOutput) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dropped := 0
+	for client := range t.clients[terminalID] {
+		frame := terminalRelayOutput{sequence: output.sequence, data: append([]byte(nil), output.data...)}
+		select {
+		case client <- frame:
+		default:
+			dropped++
+		}
+	}
+	return dropped
 }
 
 // registerWorker installs stream as the terminal's push target, replacing
@@ -218,9 +290,10 @@ func (s *Server) pushPendingTerminalInput(
 }
 
 // workerTerminalStream is the persistent duplex terminal socket a worker
-// holds per open terminal: output frames come up and are persisted (rows
-// stay authoritative for replay) before waking client writers; input rows
-// are pushed down as they are queued.
+// holds per open terminal. In relay mode, output frames go immediately to a
+// local browser and then through an ordered background durable mirror. The
+// original persist-before-wake behavior remains available when relay mode is
+// disabled.
 func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 	if !s.terminalStreamEnabled {
 		writeError(w, r, http.StatusNotFound, "not_found", "The terminal stream is not enabled.")
@@ -254,6 +327,19 @@ func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 	}
 	deregister := s.terminalStreams.registerWorker(terminalID, stream)
 	defer deregister()
+	relayStats := &terminalRelayStats{}
+	defer func() {
+		if s.terminalRelayEnabled && s.logger != nil {
+			s.logger.Debug("terminal relay stream summary",
+				"terminal_id", terminalID,
+				"forwarded_frames", relayStats.forwardedFrames.Load(),
+				"forwarded_bytes", relayStats.forwardedBytes.Load(),
+				"mirrored_frames", relayStats.mirroredFrames.Load(),
+				"mirrored_bytes", relayStats.mirroredBytes.Load(),
+				"saturated_clients", relayStats.saturatedClients.Load(),
+			)
+		}
+	}()
 
 	var writeMu sync.Mutex
 	writeFrame := func(frame worker.TerminalStreamFrame) error {
@@ -264,6 +350,47 @@ func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return connection.Write(ctx, websocket.MessageText, encoded)
+	}
+
+	// One mirror loop preserves frame order for this terminal. The relay sends
+	// the same worker-assigned sequence to the browser first; the database uses
+	// that sequence when it records replay state.
+	type auditFrame struct {
+		frame worker.TerminalStreamFrame
+	}
+	audit := make(chan auditFrame, terminalRelayAuditBuffer)
+	if s.terminalRelayEnabled {
+		go func() {
+			for queued := range audit {
+				sequence, persistErr := s.store.AppendTerminalOutputAt(
+					ctx, claims.OrgID, claims.SessionID, claims.WorkerID,
+					terminalID, claims.Epoch, queued.frame.ID, queued.frame.Data,
+				)
+				if persistErr != nil {
+					if ctx.Err() == nil {
+						s.logger.Error("terminal relay durable mirror failed",
+							"error", persistErr, "terminal_id", terminalID,
+							"sequence", queued.frame.ID)
+					}
+					cancel()
+					return
+				}
+				if err := writeFrame(worker.TerminalStreamFrame{
+					Type: "ack", ID: queued.frame.ID, Sequence: sequence,
+				}); err != nil {
+					cancel()
+					return
+				}
+				relayStats.mirroredFrames.Add(1)
+				relayStats.mirroredBytes.Add(uint64(len(queued.frame.Data)))
+				if s.logger != nil {
+					s.logger.Debug("terminal relay output mirrored",
+						"terminal_id", terminalID, "sequence", sequence,
+						"bytes", len(queued.frame.Data))
+				}
+			}
+		}()
+		defer close(audit)
 	}
 
 	// Push pending input queued before the stream connected, then keep
@@ -299,6 +426,25 @@ func (s *Server) workerTerminalStream(w http.ResponseWriter, r *http.Request) {
 			len(frame.Data) == 0 || len(frame.Data) > maxTerminalFrame {
 			_ = connection.Close(websocket.StatusPolicyViolation, "invalid stream frame")
 			return
+		}
+		if s.terminalRelayEnabled && s.terminalStreams != nil && frame.ID > 0 {
+			dropped := s.terminalStreams.relayOutput(terminalID, terminalRelayOutput{
+				sequence: frame.ID, data: frame.Data,
+			})
+			relayStats.forwardedFrames.Add(1)
+			relayStats.forwardedBytes.Add(uint64(len(frame.Data)))
+			relayStats.saturatedClients.Add(uint64(dropped))
+			if s.logger != nil {
+				s.logger.Debug("terminal relay output forwarded",
+					"terminal_id", terminalID, "sequence", frame.ID,
+					"bytes", len(frame.Data), "saturated_clients", dropped)
+			}
+			select {
+			case audit <- auditFrame{frame: frame}:
+			case <-ctx.Done():
+				return
+			}
+			continue
 		}
 		sequence, err := s.store.AppendTerminalOutput(
 			ctx, claims.OrgID, claims.SessionID, claims.WorkerID,
