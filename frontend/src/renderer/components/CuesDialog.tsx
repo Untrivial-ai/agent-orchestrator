@@ -9,6 +9,7 @@ import {
 	useProjectCuesQuery,
 	useUpdateCueMutation,
 } from "../hooks/useCuesQuery";
+import { CUE_LIMITS } from "../lib/cues";
 import type { CreateCueInput, CueDTO } from "../lib/cues";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -25,6 +26,28 @@ type CueType = "command" | "agent";
 
 function cueType(cue: CueDTO): CueType {
 	return cue.type === "agent" ? "agent" : "command";
+}
+
+type CueDraft = {
+	name: string;
+	description: string;
+	type: CueType;
+	command: string;
+	prompt: string;
+};
+
+function emptyDraft(): CueDraft {
+	return { name: "", description: "", type: "command", command: "", prompt: "" };
+}
+
+function draftFromDTO(cue: CueDTO): CueDraft {
+	return {
+		name: cue.name,
+		description: cue.description ?? "",
+		type: cueType(cue),
+		command: cue.command ?? "",
+		prompt: cue.prompt ?? "",
+	};
 }
 
 const composerTextareaClass =
@@ -51,11 +74,7 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 
 	const [formOpen, setFormOpen] = useState<"new" | CueDTO | null>(null);
 	const [deletingCue, setDeletingCue] = useState<CueDTO | null>(null);
-	const [name, setName] = useState("");
-	const [description, setDescription] = useState("");
-	const [type, setType] = useState<CueType>("command");
-	const [command, setCommand] = useState("");
-	const [prompt, setPrompt] = useState("");
+	const [draft, setDraft] = useState<CueDraft>(emptyDraft);
 	const [formError, setFormError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [deleting, setDeleting] = useState(false);
@@ -78,50 +97,42 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 
 	const openNew = () => {
 		if (pending.current) return;
-		setName("");
-		setDescription("");
-		setType("command");
-		setCommand("");
-		setPrompt("");
+		setDraft(emptyDraft());
 		setFormError(null);
 		setFormOpen("new");
 	};
 
 	const openEdit = (cue: CueDTO) => {
 		if (pending.current) return;
-		setName(cue.name);
-		setDescription(cue.description ?? "");
-		setType(cueType(cue));
-		setCommand(cue.command ?? "");
-		setPrompt(cue.prompt ?? "");
+		setDraft(draftFromDTO(cue));
 		setFormError(null);
 		setFormOpen(cue);
 	};
 
 	const handleSave = async () => {
 		if (formOpen === null || pending.current) return;
-		const trimmedName = name.trim();
+		const trimmedName = draft.name.trim();
 		if (!trimmedName) {
 			setFormError(t("cues.nameRequired"));
 			return;
 		}
 		const input: CreateCueInput = {
 			name: trimmedName,
-			type,
-			description: description || undefined,
+			type: draft.type,
+			description: draft.description || undefined,
 		};
-		if (type === "command") {
-			input.command = command;
+		if (draft.type === "command") {
+			input.command = draft.command;
 		} else {
-			input.prompt = prompt;
+			input.prompt = draft.prompt;
 		}
-		const content = type === "command" ? command : prompt;
+		const content = draft.type === "command" ? draft.command : draft.prompt;
 		if (!content.trim()) {
-			setFormError(t(type === "command" ? "cues.commandRequired" : "cues.promptRequired"));
+			setFormError(t(draft.type === "command" ? "cues.commandRequired" : "cues.promptRequired"));
 			return;
 		}
 		const encoder = new TextEncoder();
-		for (const [value, limit, field] of [[trimmedName, 64, t("cues.nameLabel")], [description, 240, t("cues.descriptionLabel")], [content, type === "command" ? 4096 : 16384, t(type === "command" ? "cues.commandLabel" : "cues.agentLabel")]] as const) {
+		for (const [value, limit, field] of [[trimmedName, CUE_LIMITS.name, t("cues.nameLabel")], [draft.description, CUE_LIMITS.description, t("cues.descriptionLabel")], [content, draft.type === "command" ? CUE_LIMITS.command : CUE_LIMITS.prompt, t(draft.type === "command" ? "cues.commandLabel" : "cues.agentLabel")]] as const) {
 			if (encoder.encode(value).length > limit) {
 				setFormError(t("cues.fieldTooLong", { field, limit }));
 				return;
@@ -257,8 +268,8 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 				</Label>
 				<Input
 					id="cue-name"
-					value={name}
-					onChange={(event) => setName(event.target.value)}
+					value={draft.name}
+					onChange={(event) => setDraft((d) => ({ ...d, name: event.target.value }))}
 					placeholder={t("cues.namePlaceholder")}
 					autoFocus
 				/>
@@ -270,8 +281,8 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 				</Label>
 				<Input
 					id="cue-description"
-					value={description}
-					onChange={(event) => setDescription(event.target.value)}
+					value={draft.description}
+					onChange={(event) => setDraft((d) => ({ ...d, description: event.target.value }))}
 					placeholder={t("cues.descriptionPlaceholder")}
 				/>
 			</div>
@@ -279,8 +290,8 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 			<div className="flex flex-col gap-1.5">
 				<Label className="text-xs font-medium text-muted-foreground">{t("cues.typeLabel")}</Label>
 				<Select
-					value={type}
-					onValueChange={(value) => setType(value === "agent" ? "agent" : "command")}
+					value={draft.type}
+					onValueChange={(value) => setDraft((d) => ({ ...d, type: value === "agent" ? "agent" : "command" }))}
 				>
 					<SelectTrigger className="w-full">
 						<SelectValue />
@@ -298,15 +309,15 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 				</Select>
 			</div>
 
-			{type === "command" ? (
+			{draft.type === "command" ? (
 				<div className="flex flex-col gap-1.5">
 					<Label htmlFor="cue-command" className="text-xs font-medium text-muted-foreground">
 						{t("cues.commandLabel")}
 					</Label>
 					<textarea
 						id="cue-command"
-						value={command}
-						onChange={(event) => setCommand(event.target.value)}
+						value={draft.command}
+						onChange={(event) => setDraft((d) => ({ ...d, command: event.target.value }))}
 						placeholder={t("cues.commandPlaceholder")}
 						className={composerTextareaClass}
 						rows={2}
@@ -320,8 +331,8 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 					</Label>
 					<textarea
 						id="cue-prompt"
-						value={prompt}
-						onChange={(event) => setPrompt(event.target.value)}
+						value={draft.prompt}
+						onChange={(event) => setDraft((d) => ({ ...d, prompt: event.target.value }))}
 						placeholder={t("cues.promptPlaceholder")}
 						className={composerTextareaClass}
 						rows={4}

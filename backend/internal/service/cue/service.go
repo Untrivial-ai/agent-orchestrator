@@ -57,17 +57,11 @@ func (s *Service) Create(ctx context.Context, projectID domain.ProjectID, input 
 		return domain.Cue{}, apierr.Invalid("INVALID_PROJECT_ID", "Project id is required", nil)
 	}
 	now := s.now().UTC()
-	cue := domain.Cue{
-		ID:          domain.CueID(s.newID()),
-		ProjectID:   projectID,
-		Name:        strings.TrimSpace(input.Name),
-		Description: input.Description,
-		Type:        input.Type,
-		Command:     input.Command,
-		Prompt:      input.Prompt,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
+	cue := normalizeInput(input)
+	cue.ID = domain.CueID(s.newID())
+	cue.ProjectID = projectID
+	cue.CreatedAt = now
+	cue.UpdatedAt = now
 	if err := cue.Validate(); err != nil {
 		return domain.Cue{}, invalidCueError(err)
 	}
@@ -116,15 +110,9 @@ func (s *Service) Update(ctx context.Context, cueID domain.CueID, input Input) (
 	if strings.TrimSpace(string(cueID)) == "" {
 		return domain.Cue{}, apierr.Invalid("INVALID_CUE_ID", "Cue id is required", nil)
 	}
-	updated := domain.Cue{
-		ID:          cueID,
-		Name:        strings.TrimSpace(input.Name),
-		Description: input.Description,
-		Type:        input.Type,
-		Command:     input.Command,
-		Prompt:      input.Prompt,
-		UpdatedAt:   s.now().UTC(),
-	}
+	updated := normalizeInput(input)
+	updated.ID = cueID
+	updated.UpdatedAt = s.now().UTC()
 	if err := updated.Validate(); err != nil {
 		return domain.Cue{}, invalidCueError(err)
 	}
@@ -155,6 +143,16 @@ func (s *Service) Delete(ctx context.Context, cueID domain.CueID) error {
 		return apierr.NotFound("CUE_NOT_FOUND", "Unknown cue")
 	}
 	return nil
+}
+
+func normalizeInput(input Input) domain.Cue {
+	return domain.Cue{
+		Name:        strings.TrimSpace(input.Name),
+		Description: input.Description,
+		Type:        input.Type,
+		Command:     input.Command,
+		Prompt:      input.Prompt,
+	}
 }
 
 func clearInactivePayload(cue *domain.Cue) {
