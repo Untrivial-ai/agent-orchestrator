@@ -65,7 +65,7 @@ export function SessionCard({
 				</Text>
 				{showProject ? (
 					<Text style={styles.project} numberOfLines={1}>
-						{shortLabel(session.projectId)}
+						{session.projectId ? shortLabel(session.projectId) : "Standalone"}
 					</Text>
 				) : null}
 			</View>

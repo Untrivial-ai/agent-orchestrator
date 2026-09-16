@@ -9,3 +9,5 @@ export default function ConversationMapRoute() {
 	if (entry?.kind !== "conversation-map") return null;
 	return <ConversationMapSheet markers={entry.markers} onSelect={(sequence) => { router.back(); entry.onSelect(sequence); }} />;
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

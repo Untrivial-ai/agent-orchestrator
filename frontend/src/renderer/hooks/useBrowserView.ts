@@ -8,7 +8,12 @@ import type {
 	BrowserTabState,
 	BrowserTabsState,
 } from "../../main/browser-view-host";
-import type { BrowserAnnotationCancelPayload, BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
+import type {
+	BrowserAnnotationActionInput,
+	BrowserAnnotationCancelPayload,
+	BrowserAnnotationStatePayload,
+	BrowserAnnotationSubmitPayload,
+} from "../../shared/browser-annotations";
 import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
 
@@ -97,7 +102,9 @@ export type BrowserViewModel = {
 	agentBrowserActivity: BrowserAgentActivityState | null;
 	destroy: () => void;
 	annotationMode: boolean;
+	annotationState?: Pick<BrowserAnnotationStatePayload, "count" | "screenshotCount" | "hasDraft">;
 	setAnnotationMode: (enabled: boolean) => Promise<void>;
+	annotationAction?: (action: BrowserAnnotationActionInput["action"]) => Promise<void>;
 };
 
 const EMPTY_NAV_STATE: BrowserNavState = {
@@ -219,6 +226,7 @@ export function useBrowserView({
 	const [viewId, setViewId] = useState("");
 	const [navState, setNavState] = useState<BrowserNavState>(EMPTY_NAV_STATE);
 	const [annotationMode, setAnnotationModeState] = useState(false);
+	const [annotationState, setAnnotationState] = useState({ count: 0, screenshotCount: 0, hasDraft: false });
 	const [tabsState, setTabsState] = useState<BrowserTabsState>(EMPTY_TABS_STATE);
 	// Display-only tab order (drag-to-reorder). Re-projected onto every incoming
 	// tabsState push below, since the main process's own tab order is not
@@ -660,8 +668,31 @@ export function useBrowserView({
 				setAnnotationModeState(false);
 				return;
 			}
-			await window.ao!.browser.setAnnotationMode({ viewId: id, enabled });
+			const styles = getComputedStyle(document.documentElement);
+			await window.ao!.browser.setAnnotationMode({
+				viewId: id,
+				enabled,
+				theme: {
+					background: styles.getPropertyValue("--background").trim(),
+					foreground: styles.getPropertyValue("--foreground").trim(),
+					muted: styles.getPropertyValue("--muted").trim(),
+					mutedForeground: styles.getPropertyValue("--muted-foreground").trim(),
+					border: styles.getPropertyValue("--border").trim(),
+					accent: styles.getPropertyValue("--primary").trim(),
+					accentForeground: styles.getPropertyValue("--primary-foreground").trim(),
+					destructive: styles.getPropertyValue("--destructive").trim(),
+				},
+			});
 			setAnnotationModeState(enabled);
+		},
+		[hasNativeBrowser],
+	);
+
+	const annotationAction = useCallback(
+		async (action: BrowserAnnotationActionInput["action"]) => {
+			const id = viewIdRef.current;
+			if (!id || !hasNativeBrowser) return;
+			await window.ao!.browser.annotationAction({ viewId: id, action });
 		},
 		[hasNativeBrowser],
 	);
@@ -832,6 +863,18 @@ export function useBrowserView({
 	}, []);
 
 	useEffect(() => {
+		const offState = window.ao?.browser.onAnnotationState((payload) => {
+			if (payload.viewId !== viewIdRef.current) return;
+			setAnnotationState({
+				count: payload.count,
+				screenshotCount: payload.screenshotCount,
+				hasDraft: payload.hasDraft,
+			});
+		});
+		return () => offState?.();
+	}, []);
+
+	useEffect(() => {
 		if (navState.url || !annotationModeRef.current) return;
 		void setAnnotationMode(false);
 	}, [navState.url, setAnnotationMode]);
@@ -950,6 +993,8 @@ export function useBrowserView({
 		agentBrowserActivity: stateBelongsToSession ? agentBrowserActivity : null,
 		destroy,
 		annotationMode,
+		annotationState,
 		setAnnotationMode,
+		annotationAction,
 	};
 }

@@ -297,12 +297,6 @@ type ReviewerTerminator interface {
 	RestoreReviewer(ctx context.Context, workerID domain.SessionID) error
 }
 
-type codexReviewerLifecycle interface {
-	SnapshotCodexReviewer(ctx context.Context, workerID domain.SessionID) (ports.CodexReviewerControllerSnapshot, error)
-	SuspendCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedHandleID, expectedNativeSessionID string) (bool, error)
-	RestoreCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedNativeSessionID string) error
-}
-
 type runtimeController interface {
 	Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error)
 	Destroy(ctx context.Context, handle ports.RuntimeHandle) error
@@ -365,6 +359,13 @@ type Store interface {
 	DeleteSessionWorktrees(ctx context.Context, id domain.SessionID) error
 }
 
+// conversationSettingsStore is the narrow optional read boundary for deriving
+// a chat orchestrator's current approval mode during a worker spawn. Older
+// embedders without chat persistence retain project-config-only behavior.
+type conversationSettingsStore interface {
+	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
+}
+
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
@@ -417,25 +418,20 @@ type Manager struct {
 	// executable resolves the daemon's own binary (os.Executable in
 	// production); its directory is prepended to spawned sessions' PATH so the
 	// workspace hook commands resolve back to this daemon. Tests inject a stub.
-	executable                      func() (string, error)
-	newLaunchID                     func() string
-	codexOperationGate              ports.CodexOperationGate
-	codexAccountSwitchMu            sync.Mutex
-	codexAccountSwitchWorkerRunning bool
-	codexAccountSwitchLease         ports.CodexOperationLease
-	codexAccountSwitchObserverMu    sync.Mutex
-	codexAccountSwitchObserver      func()
-	startupBackgroundReconcileDone  chan struct{}
-	startupBackgroundReconcileOnce  sync.Once
-	statusRecoveryMu                sync.RWMutex
-	statusRecoveryFailed            bool
-	statusRecoveryRevision          uint64
-	statusRecoveries                map[domain.SessionID]statusRecovery
-	statusVerificationLimit         time.Duration
-	agentOpMu                       sync.Mutex
-	agentOperations                 map[domain.SessionID]agentOperationKind
-	interfaceRecoveryMu             sync.Mutex
-	deferredInterfaceRecovery       map[domain.SessionID]string
+	executable                     func() (string, error)
+	newLaunchID                    func() string
+	codexOperationGate             ports.CodexOperationGate
+	startupBackgroundReconcileDone chan struct{}
+	startupBackgroundReconcileOnce sync.Once
+	statusRecoveryMu               sync.RWMutex
+	statusRecoveryFailed           bool
+	statusRecoveryRevision         uint64
+	statusRecoveries               map[domain.SessionID]statusRecovery
+	statusVerificationLimit        time.Duration
+	agentOpMu                      sync.Mutex
+	agentOperations                map[domain.SessionID]agentOperationKind
+	interfaceRecoveryMu            sync.Mutex
+	deferredInterfaceRecovery      map[domain.SessionID]string
 	// switchDecisionInput opens a narrow human-only terminal lane while the
 	// source is blocked on permission during a mandatory switch.
 	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
@@ -557,24 +553,6 @@ func (m *Manager) SetAgentReadiness(provider ports.AgentReadinessProvider) {
 	m.agentReadiness = provider
 }
 
-// SetCodexAccountSwitchObserver connects durable switch transitions to the
-// account service's one provider-wide display stream. The callback carries no
-// credential or provider data and must remain non-blocking.
-func (m *Manager) SetCodexAccountSwitchObserver(observer func()) {
-	m.codexAccountSwitchObserverMu.Lock()
-	m.codexAccountSwitchObserver = observer
-	m.codexAccountSwitchObserverMu.Unlock()
-}
-
-func (m *Manager) publishCodexAccountSwitchChanged() {
-	m.codexAccountSwitchObserverMu.Lock()
-	observer := m.codexAccountSwitchObserver
-	m.codexAccountSwitchObserverMu.Unlock()
-	if observer != nil {
-		observer()
-	}
-}
-
 func (m *Manager) beginTerminalInputDrain(rec domain.SessionRecord) (lastInputAt time.Time, release func()) {
 	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI {
 		return time.Time{}, nil
@@ -616,13 +594,6 @@ func (m *Manager) SetReviewerTerminator(terminator ReviewerTerminator) {
 	m.reviewersMu.Lock()
 	defer m.reviewersMu.Unlock()
 	m.reviewers = terminator
-}
-
-func (m *Manager) codexReviewerLifecycle() codexReviewerLifecycle {
-	m.reviewersMu.Lock()
-	defer m.reviewersMu.Unlock()
-	reviewer, _ := m.reviewers.(codexReviewerLifecycle)
-	return reviewer
 }
 
 func (m *Manager) terminateReviewer(ctx context.Context, id domain.SessionID, body string) error {
@@ -870,6 +841,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
+	}
+	if cfg.ParentSessionID != "" && cfg.AgentConfig.Permissions == "" {
+		permissions, err := m.inheritedSpawnPermissions(ctx, cfg.ProjectID, cfg.ParentSessionID)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.AgentConfig.Permissions = permissions
 	}
 	// A per-project role override picks the harness when the spawn names none,
 	// so a project can default workers to one agent and orchestrators to another.
@@ -1216,6 +1194,34 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// inheritedSpawnPermissions derives a worker override from its requesting chat
+// orchestrator. The request supplies identity only: the stored conversation
+// settings remain the authority for the permission policy.
+func (m *Manager) inheritedSpawnPermissions(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) (domain.PermissionMode, error) {
+	parent, ok, err := m.store.GetSession(ctx, parentID)
+	if err != nil {
+		return "", fmt.Errorf("load parent session %s: %w", parentID, err)
+	}
+	if !ok || parent.ProjectID != projectID || parent.Kind != domain.KindOrchestrator {
+		// AO_SESSION_ID is available in every session, not only orchestrators.
+		// A worker (or a stale/cross-project value) must preserve the historical
+		// project-default spawn behavior rather than gain an inherited policy.
+		return "", nil
+	}
+	conversations, ok := m.store.(conversationSettingsStore)
+	if !ok {
+		return "", nil
+	}
+	conversation, err := conversations.ConversationForSession(ctx, parentID)
+	if errors.Is(err, domain.ErrNoConversation) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load parent conversation %s: %w", parentID, err)
+	}
+	return conversation.Settings.ApprovalMode, nil
 }
 
 // loadProject loads the project record so spawn can resolve its per-project
@@ -1792,9 +1798,6 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	if !ok {
 		return false, nil // already gone: benign race
 	}
-	if (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex) && m.codexAccountSwitchIsActive() {
-		return false, fmt.Errorf("kill %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)
 	handle := runtimeHandle(rec.Metadata)
@@ -2117,9 +2120,6 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
 	}
 	defer releaseHarness()
-	if (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex) && m.codexAccountSwitchIsActive() {
-		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if !rec.IsTerminated {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrNotRestorable)
 	}
@@ -2184,9 +2184,6 @@ func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.Se
 	}
 	if !ok {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrNotFound)
-	}
-	if rec.Harness == domain.HarnessCodex && m.codexAccountSwitchIsActive() {
-		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrCodexAccountSwitchInProgress)
 	}
 	if rec.IsTerminated {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrTerminated)
@@ -2277,9 +2274,6 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
 	defer releaseHarness()
-	if rec.Harness == domain.HarnessCodex && m.codexAccountSwitchIsActive() {
-		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if rec.IsTerminated {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrTerminated)
 	}
@@ -2974,9 +2968,6 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 // ReconcileStartupSafety closes interrupted operations or quarantines ambiguous
 // interface targets and agent switches with a restored input fence before the API accepts input.
 func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
-	if err := m.ReconcileCodexAccountSwitches(ctx); err != nil {
-		return fmt.Errorf("reconcile: Codex account-switch pass: %w", err)
-	}
 	// A daemon restart destroys the in-memory input fence. Close any durable
 	// non-terminal switch before adopting runtimes so the API never implies an
 	// unconfirmed continuation was delivered.
@@ -3580,13 +3571,6 @@ func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, rows []por
 // the session is active or the budget is exhausted. Confirmation never fails
 // the send: it only decides whether to nudge again.
 func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error {
-	if m.codexAccountSwitchIsActive() {
-		if rec, ok, err := m.store.GetSession(ctx, id); err != nil {
-			return fmt.Errorf("send %s: %w", id, err)
-		} else if ok && rec.Harness == domain.HarnessCodex {
-			return fmt.Errorf("send %s: %w", id, ErrCodexAccountSwitchInProgress)
-		}
-	}
 	if attachment != nil {
 		// Reuses StageAttachments rather than a bespoke writer: it already owns the
 		// empty-workspace guard (refusing beats writing under the daemon's cwd),

@@ -132,7 +132,7 @@ function RestartToUpdateDialogBody() {
 				</div>
 
 				<div className={settingsDialogBodyClass}>
-					{(workspace.isError || workspace.isFetching || !workspace.data) && <p role="status">{t("update.restart.unknownWorkers", { defaultValue: "Current worker state could not be confirmed. Installing restarts AO and may interrupt current tasks." })}</p>}
+					{(workspace.isError || !workspace.data) && <p role="status">{t("update.restart.unknownWorkers", { defaultValue: "Current worker state could not be confirmed. Installing restarts AO and may interrupt current tasks." })}</p>}
 					{atRisk.length > 0 && (
 						<div
 							className="mb-4 rounded-md border border-warning/30 bg-warning/8 px-3 py-2.5"

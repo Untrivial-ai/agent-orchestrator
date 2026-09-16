@@ -296,6 +296,9 @@ type ChatStartConfig struct {
 	// ProviderScopeID identifies the AO ownership boundary for opaque provider
 	// identifiers. Fresh approximate branches receive a new value.
 	ProviderScopeID string
+	// ProviderIDsScoped matches the branch's persisted ID format. False preserves
+	// legacy projections written before scoped IDs were supported.
+	ProviderIDsScoped bool
 	// AdditionalDirectories are extra absolute workspace roots the provider may
 	// access alongside WorkspacePath. Workspace projects use this for child repo
 	// worktrees; it is not a replacement for AO's worktree ownership.
@@ -307,6 +310,8 @@ type ChatStartConfig struct {
 
 // ChatResumeConfig reattaches to a provider conversation after a restart.
 type ChatResumeConfig struct {
+	// See ChatStartConfig.ProviderIDsScoped.
+	ProviderIDsScoped      bool
 	SessionID              domain.SessionID
 	ProviderConversationID string
 	DataDir                string
@@ -639,6 +644,12 @@ type (
 	ChatForker interface {
 		Fork(ctx context.Context, lastProviderTurnID *string) (providerConversationID string, err error)
 	}
+	// ChatInheritedHistory proves native ancestry and expresses the supplied
+	// replay in an ancestor's ID namespace. Nil means ancestry is unverified.
+	// Event order and content must be preserved; callers still verify each copy.
+	ChatInheritedHistory interface {
+		InheritedHistory(ctx context.Context, ancestor domain.ConversationBranch, events []ChatEvent) ([]ChatEvent, error)
+	}
 	// ChatRenamer sets or reads a human title the provider derived for the thread.
 	ChatRenamer interface {
 		SetTitle(ctx context.Context, title string) error
@@ -906,6 +917,9 @@ type ChatEvent struct {
 	// NativeUserMessageID is an adapter-proven native user record identity.
 	// Unlike ProviderItemID, it is never synthesized or namespaced by AO.
 	NativeUserMessageID string
+	// NativeTurnID is the provider's turn identity before AO storage scoping.
+	// Hooks use this identity to prove the replay includes their completed turn.
+	NativeTurnID string
 	// ProviderEventID is an identity for this exact native event, when the
 	// provider supplies one. It is deliberately distinct from ProviderItemID:
 	// start, delta and completion events commonly share one item id.

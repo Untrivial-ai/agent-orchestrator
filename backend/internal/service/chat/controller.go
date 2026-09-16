@@ -40,6 +40,7 @@ const (
 // the SQLite store.
 type Store interface {
 	CreateConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
+	OpenNativeConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
 	CreateProjectConversationWithContextReset(ctx context.Context, id string, project domain.ProjectID, session domain.SessionID, reset domain.ConversationActivity, now time.Time) (domain.ConversationRecord, error)
 	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
 	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string) error
@@ -54,6 +55,7 @@ type Store interface {
 	AppendImportedUserMessage(ctx context.Context, conversationID, providerTurnID string, msg domain.ConversationMessage, now time.Time) error
 
 	AppendUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error)
+	ConversationMessageByClientID(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationMessage, bool, error)
 	AppendRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
@@ -389,17 +391,20 @@ type nativeHistoryHighWater struct {
 // completed while Chat was not attached; the AO high-water mark covers an
 // immediate round trip before a resumed TUI has emitted another hook.
 type nativeHistoryCheckpoint struct {
-	nativeBoundary        *ports.NativeCheckpointBoundary
-	latestUserPrompt      string
-	latestAssistantUpdate string
-	completedUserPrompt   bool
-	providerTurnID        string
-	userMismatch          ports.ChatHistoryMismatchDimension
-	assistantMismatch     ports.ChatHistoryMismatchDimension
-	hardMismatches        []ports.ChatHistoryMismatchDimension
-	aoHighWater           nativeHistoryHighWater
-	aoHighWaterPeers      []nativeHistoryHighWater
-	replayIndex           *nativeHistoryTurnIndex
+	latestUserPromptAt      time.Time
+	latestAssistantUpdateAt time.Time
+	requireNewerTurn        bool
+	nativeBoundary          *ports.NativeCheckpointBoundary
+	latestUserPrompt        string
+	latestAssistantUpdate   string
+	completedUserPrompt     bool
+	providerTurnID          string
+	userMismatch            ports.ChatHistoryMismatchDimension
+	assistantMismatch       ports.ChatHistoryMismatchDimension
+	hardMismatches          []ports.ChatHistoryMismatchDimension
+	aoHighWater             nativeHistoryHighWater
+	aoHighWaterPeers        []nativeHistoryHighWater
+	replayIndex             *nativeHistoryTurnIndex
 }
 
 // dropUnsettledHookFacts retires legacy checkpoint text that AO recorded on a
@@ -557,8 +562,39 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	if latest == nil {
 		return
 	}
+	p.retireSupersededLegacyFacts(sessionID, turnsByID, messages, latest)
 	p.aoHighWater = evidence(latest)
 	p.replayIndex = indexNativeHistoryTurns(turns, messages, activities)
+}
+
+func (p *nativeHistoryCheckpoint) retireSupersededLegacyFacts(sessionID domain.SessionID, turns map[string]*domain.ConversationTurn, messages []domain.ConversationMessage, latest *domain.ConversationTurn) {
+	retire := func(text *string, observedAt time.Time, role domain.MessageRole, trust ports.ChatHistoryMismatchDimension) {
+		if *text == "" || observedAt.IsZero() || (trust != ports.ChatHistoryMismatchUntrustedUserText && trust != ports.ChatHistoryMismatchUntrustedAssistantText) {
+			return
+		}
+		var newest *domain.ConversationTurn
+		for _, message := range messages {
+			turn := turns[message.TurnID]
+			if turn == nil || turn.HandledBySessionID != sessionID || turn.RolledBackAt != nil || message.Streaming || message.Role != role || !nativeHistoryTextMatches(*text, message.Text) {
+				continue
+			}
+			if newest == nil || turn.RequestedAt.After(newest.RequestedAt) {
+				newest = turn
+			}
+		}
+		if newest == nil || newest.State != domain.TurnStateCompleted {
+			return
+		}
+		if latest.CompletedAt != nil && observedAt.After(*latest.CompletedAt) {
+			p.requireNewerTurn = true
+			return
+		}
+		if observedAt.Before(latest.RequestedAt) && newest.RequestedAt.Before(latest.RequestedAt) {
+			*text = ""
+		}
+	}
+	retire(&p.latestUserPrompt, p.latestUserPromptAt, domain.MessageRoleUser, p.userMismatch)
+	retire(&p.latestAssistantUpdate, p.latestAssistantUpdateAt, domain.MessageRoleAssistant, p.assistantMismatch)
 }
 
 func (p nativeHistoryCheckpoint) mismatches(
@@ -581,6 +617,7 @@ func (p nativeHistoryCheckpoint) mismatches(
 	type replayTurnText struct {
 		user      ports.ChatEvent
 		assistant ports.ChatEvent
+		nativeID  string
 	}
 	turnText := make(map[string]replayTurnText)
 	latestCompletedTurnID := ""
@@ -593,6 +630,10 @@ func (p nativeHistoryCheckpoint) mismatches(
 			continue
 		}
 		text := turnText[event.ProviderTurnID]
+		text.nativeID = event.NativeTurnID
+		if text.nativeID == "" {
+			text.nativeID = event.ProviderTurnID
+		}
 		switch event.Kind {
 		case ports.ChatEventUserMessageCompleted:
 			text.user = event
@@ -611,7 +652,7 @@ func (p nativeHistoryCheckpoint) mismatches(
 	checkpointMatched := p.latestUserPrompt == "" && p.latestAssistantUpdate == "" && p.providerTurnID == ""
 	if p.completedUserPrompt && p.providerTurnID != "" {
 		for turnID := range completedTurns {
-			if coordinationTurns[turnID] || (p.providerTurnID != "" && p.providerTurnID != turnID) {
+			if coordinationTurns[turnID] || p.providerTurnID != turnText[turnID].nativeID {
 				continue
 			}
 			text := turnText[turnID]
@@ -626,7 +667,7 @@ func (p nativeHistoryCheckpoint) mismatches(
 		checkpointMatched =
 			(p.latestUserPrompt == "" || nativeHistoryTextMatches(p.latestUserPrompt, latestText.user.Text)) &&
 				(p.latestAssistantUpdate == "" || nativeHistoryTextMatches(p.latestAssistantUpdate, latestText.assistant.Text)) &&
-				(p.providerTurnID == "" || p.providerTurnID == latestCompletedTurnID)
+				(p.providerTurnID == "" || p.providerTurnID == latestText.nativeID)
 	}
 	mismatches := append([]ports.ChatHistoryMismatchDimension(nil), p.hardMismatches...)
 	if boundary := p.nativeBoundary; boundary != nil {
@@ -703,6 +744,23 @@ func (p nativeHistoryCheckpoint) mismatches(
 	if len(boundaries) > 0 {
 		return append(mismatches, ports.ChatHistoryMismatchAOHighWater)
 	}
+	if p.requireNewerTurn {
+		pastHighWater, newer := false, false
+		for _, event := range events {
+			if event.Kind != ports.ChatEventTurnCompleted {
+				continue
+			}
+			candidate := mappedTurns[event.ProviderTurnID]
+			if candidate != nil && candidate.providerTurnID == highWater.providerTurnID {
+				pastHighWater = true
+			} else if pastHighWater && (event.TurnState == domain.TurnStateCompleted || event.TurnState == domain.TurnStateRecovered) {
+				newer = true
+			}
+		}
+		if !newer {
+			mismatches = append(mismatches, ports.ChatHistoryMismatchAOHighWater)
+		}
+	}
 	return mismatches
 }
 
@@ -716,7 +774,7 @@ func nativeHistoryTextMatches(checkpoint, replayed string) bool {
 	return domain.NativeCheckpointTextMatches(checkpoint, replayed)
 }
 
-// readNativeHistory loads and reconciles the settled provider thread without
+// readNativeHistory loads and validates the settled provider thread without
 // mutating AO's timeline. A pending provider boundary uses this split phase so
 // the caller can project the events inside the same transaction that publishes
 // the boundary and controller generation.
@@ -785,9 +843,6 @@ func (c *Controller) readNativeHistory(
 		}
 		events, err = refresher.RefreshHistory(historyCtx)
 	}
-	events = reconcileNativeHistory(
-		events, existingTurns, existingMessages, existingActivities,
-	)
 	for _, event := range events {
 		if event.ProviderEventID == "" {
 			return nil, fmt.Errorf("native history event %s has no stable identity", event.Kind)
@@ -1228,6 +1283,14 @@ func (c *Controller) Capabilities() ports.ChatCapabilities {
 func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domain.ConversationTurn, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	return c.sendLocked(ctx, msg, true)
+}
+
+func (c *Controller) sendLocked(
+	ctx context.Context,
+	msg ports.ChatUserMessage,
+	queueWhenBusy bool,
+) (domain.ConversationTurn, error) {
 	c.mu.Lock()
 	handoff := c.handoff != controllerHandoffNone
 	c.mu.Unlock()
@@ -1266,7 +1329,7 @@ func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domai
 		return domain.ConversationTurn{}, nil
 	}
 
-	if c.busy() {
+	if queueWhenBusy && c.busy() {
 		// AppendUserMessage wrote it as queued, which is exactly where it belongs
 		// until the running turn ends. drain picks it up from there.
 		return domain.ConversationTurn{

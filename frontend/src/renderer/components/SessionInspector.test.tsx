@@ -384,6 +384,7 @@ describe("SessionInspector tabs", () => {
 
     const filesTab = screen.getByRole("tab", { name: "Files" });
     expect(within(filesTab).getByText("Files")).toBeInTheDocument();
+    expect(within(filesTab).getByTestId("files-viewer-icon")).toBeInTheDocument();
     await waitFor(() =>
       expect(getMock).toHaveBeenCalledWith(
         "/api/v1/sessions/{sessionId}/workspace/files",
