@@ -97,8 +97,15 @@ export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 					loading="lazy"
 					onError={onError}
 					className={cn(
-						"block max-w-full",
-						inGallery ? "h-40 w-auto object-cover" : "h-auto max-h-80 object-contain",
+						// Never `object-cover`: a wide screenshot in a narrow conversation
+						// column is clamped by `max-w-full` to less than its aspect-ratio
+						// width, and cropping there cuts the edges off the before/after pair
+						// this layout exists for.
+						"block max-w-full object-contain",
+						// One height makes the row read as a set. The width floor is for the
+						// decode: a lazy image has no width until it lands, so without it the
+						// row wraps against zero-width boxes and reflows image by image.
+						inGallery ? "h-40 w-auto min-w-24" : "h-auto max-h-80",
 					)}
 				/>
 			</button>

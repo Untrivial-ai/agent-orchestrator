@@ -346,7 +346,13 @@ describe("ChatMarkdown images", () => {
 		expect(thumbnails).toHaveLength(3);
 		for (const thumbnail of thumbnails) {
 			expect(gallery).toContainElement(thumbnail);
-			expect(thumbnail).toHaveClass("h-40");
+			// A wide screenshot in a narrow column is clamped by max-w-full; cropping
+			// it would cut the edges off the before/after pair this is for.
+			expect(thumbnail).toHaveClass("h-40", "object-contain");
+			expect(thumbnail).not.toHaveClass("object-cover");
+			// A lazy image has no width until it decodes, so without a floor the row
+			// wraps against zero-width boxes and reflows as each one lands.
+			expect(thumbnail).toHaveClass("min-w-24");
 		}
 	});
 
