@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -142,9 +143,25 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/cues/{cueId}/invoke")
 		return
 	}
-	var req InvokeCueRequest
-	if !decodeCueBody(w, r, &req, 4<<10) {
+	var raw json.RawMessage
+	if !decodeCueBody(w, r, &raw, 4<<10) {
 		return
+	}
+	var req InvokeCueRequest
+	if len(raw) > 0 {
+		var payload struct {
+			SessionID json.RawMessage `json:"sessionId"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+			return
+		}
+		if payload.SessionID != nil {
+			if err := json.Unmarshal(payload.SessionID, &req.SessionID); err != nil || strings.TrimSpace(req.SessionID) == "" {
+				envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SESSION_ID", "Session id must not be blank when supplied", nil)
+				return
+			}
+		}
 	}
 	cueID, err := url.PathUnescape(chi.URLParam(r, "cueId"))
 	if err != nil {
