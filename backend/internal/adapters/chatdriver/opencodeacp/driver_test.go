@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
+
+	acpsdk "github.com/coder/acp-go-sdk"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -27,9 +30,9 @@ func TestConfigureUsesNativeACPAndMergesSystemPromptConfig(t *testing.T) {
 		t.Fatalf("args = %#v", args)
 	}
 	var config struct {
-		DefaultAgent string         `json:"default_agent"`
-		Provider     map[string]any `json:"provider"`
-		Permission   string         `json:"permission"`
+		DefaultAgent string            `json:"default_agent"`
+		Provider     map[string]any    `json:"provider"`
+		Permission   map[string]string `json:"permission"`
 		Agent        map[string]struct {
 			Mode   string `json:"mode"`
 			Prompt string `json:"prompt"`
@@ -47,8 +50,73 @@ func TestConfigureUsesNativeACPAndMergesSystemPromptConfig(t *testing.T) {
 	if _, ok := config.Agent["mine"]; !ok || config.Provider["local"] == nil {
 		t.Fatalf("user inline config was not preserved: %#v", config)
 	}
-	if config.Permission != "allow" {
-		t.Fatalf("permission = %q, want allow", config.Permission)
+	if config.Permission["*"] != "allow" {
+		t.Fatalf("permission = %#v, want wildcard allow", config.Permission)
+	}
+}
+
+func TestConfigureMapsOpenCodePermissionModes(t *testing.T) {
+	for _, tt := range []struct {
+		mode ports.PermissionMode
+		want map[string]string
+	}{
+		{ports.PermissionModeDefault, nil},
+		{ports.PermissionModeAcceptEdits, map[string]string{"edit": "allow"}},
+		{ports.PermissionModeAuto, map[string]string{"edit": "allow", "bash": "allow"}},
+		{ports.PermissionModeBypassPermissions, map[string]string{"*": "allow"}},
+	} {
+		t.Run(string(tt.mode), func(t *testing.T) {
+			_, env, err := configure(context.Background(), acpdriver.LaunchConfig{Permissions: tt.mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == nil {
+				if env != nil {
+					t.Fatalf("env = %#v, want nil", env)
+				}
+				return
+			}
+			var config struct {
+				Permission map[string]string `json:"permission"`
+			}
+			if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
+				t.Fatal(err)
+			}
+			if !maps.Equal(config.Permission, tt.want) {
+				t.Fatalf("permission = %#v, want %#v", config.Permission, tt.want)
+			}
+		})
+	}
+}
+
+func TestPermissionPolicyImplementsOpenCodeApprovalModes(t *testing.T) {
+	edit := acpsdk.ToolKindEdit
+	execute := acpsdk.ToolKindExecute
+	options := []acpsdk.PermissionOption{
+		{OptionId: "allow-once", Kind: acpsdk.PermissionOptionKindAllowOnce},
+		{OptionId: "allow-always", Kind: acpsdk.PermissionOptionKindAllowAlways},
+	}
+	for _, tt := range []struct {
+		name    string
+		mode    ports.PermissionMode
+		kind    *acpsdk.ToolKind
+		want    acpsdk.PermissionOptionId
+		handled bool
+	}{
+		{name: "default parks", mode: ports.PermissionModeDefault, kind: &edit},
+		{name: "accept edits allows edit", mode: ports.PermissionModeAcceptEdits, kind: &edit, want: "allow-once", handled: true},
+		{name: "accept edits parks execute", mode: ports.PermissionModeAcceptEdits, kind: &execute},
+		{name: "auto allows execute", mode: ports.PermissionModeAuto, kind: &execute, want: "allow-once", handled: true},
+		{name: "bypass persists allow", mode: ports.PermissionModeBypassPermissions, kind: &execute, want: "allow-always", handled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, handled := permissionPolicy(tt.mode, acpsdk.RequestPermissionRequest{
+				ToolCall: acpsdk.ToolCallUpdate{Kind: tt.kind}, Options: options,
+			})
+			if got != tt.want || handled != tt.handled {
+				t.Fatalf("selection = (%q, %v), want (%q, %v)", got, handled, tt.want, tt.handled)
+			}
+		})
 	}
 }
 

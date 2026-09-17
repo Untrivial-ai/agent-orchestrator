@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 
+	acpsdk "github.com/coder/acp-go-sdk"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/nativeacp"
@@ -23,12 +25,13 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 		Harness:              domain.HarnessOpenCode,
 		Configure:            configure,
 		SessionOptions:       sessionOptions,
+		PermissionPolicy:     permissionPolicy,
 		ValidateTurnSettings: validateTurnSettings,
 	}, log)
 }
 
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
-	if cfg.SystemPrompt == "" && ports.NormalizePermissionMode(cfg.Permissions) != ports.PermissionModeBypassPermissions {
+	if cfg.SystemPrompt == "" && ports.NormalizePermissionMode(cfg.Permissions) == ports.PermissionModeDefault {
 		return []string{"acp"}, nil, nil
 	}
 	content, err := opencode.PrepareACPConfigContent(
@@ -37,6 +40,45 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 		return nil, nil, err
 	}
 	return []string{"acp"}, map[string]string{"OPENCODE_CONFIG_CONTENT": content}, nil
+}
+
+// permissionPolicy keeps an active Chat controller aligned with the selected
+// AO approval mode. OpenCode's launch overlay handles the initial policy; this
+// responder covers changes made for later turns without inventing a provider
+// mode or replacing the user's deny rules.
+func permissionPolicy(
+	mode ports.PermissionMode,
+	params acpsdk.RequestPermissionRequest,
+) (acpsdk.PermissionOptionId, bool) {
+	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeAcceptEdits:
+		kind := acpsdk.ToolKind("")
+		if params.ToolCall.Kind != nil {
+			kind = *params.ToolCall.Kind
+		}
+		if kind != acpsdk.ToolKindEdit && kind != acpsdk.ToolKindDelete && kind != acpsdk.ToolKindMove {
+			return "", false
+		}
+		return permissionOption(params.Options, acpsdk.PermissionOptionKindAllowOnce)
+	case ports.PermissionModeAuto:
+		return permissionOption(params.Options, acpsdk.PermissionOptionKindAllowOnce)
+	case ports.PermissionModeBypassPermissions:
+		if id, ok := permissionOption(params.Options, acpsdk.PermissionOptionKindAllowAlways); ok {
+			return id, true
+		}
+		return permissionOption(params.Options, acpsdk.PermissionOptionKindAllowOnce)
+	default:
+		return "", false
+	}
+}
+
+func permissionOption(options []acpsdk.PermissionOption, kind acpsdk.PermissionOptionKind) (acpsdk.PermissionOptionId, bool) {
+	for _, option := range options {
+		if option.Kind == kind {
+			return option.OptionId, true
+		}
+	}
+	return "", false
 }
 
 func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {

@@ -474,16 +474,16 @@ func TestGetLaunchCommandSystemPromptFileConfig(t *testing.T) {
 
 func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 	tests := []struct {
-		name        string
-		permission  ports.PermissionMode
-		wantFlag    bool
-		notExpected string
+		name       string
+		permission ports.PermissionMode
+		wantEnv    string
+		wantFlag   bool
 	}{
-		{name: "default", permission: ports.PermissionModeDefault, notExpected: "--dangerously-skip-permissions"},
-		{name: "accept-edits", permission: ports.PermissionModeAcceptEdits, notExpected: "--dangerously-skip-permissions"},
-		{name: "auto", permission: ports.PermissionModeAuto, notExpected: "--dangerously-skip-permissions"},
+		{name: "default", permission: ports.PermissionModeDefault},
+		{name: "accept-edits", permission: ports.PermissionModeAcceptEdits, wantEnv: `{"$schema":"https://opencode.ai/config.json","permission":{"edit":"allow"}}`},
+		{name: "auto", permission: ports.PermissionModeAuto, wantEnv: `{"$schema":"https://opencode.ai/config.json","permission":{"bash":"allow","edit":"allow"}}`},
 		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: true},
-		{name: "empty", permission: "", notExpected: "--dangerously-skip-permissions"},
+		{name: "empty", permission: ""},
 	}
 
 	for _, tt := range tests {
@@ -494,11 +494,17 @@ func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 				t.Fatal(err)
 			}
 			has := contains(cmd, "--dangerously-skip-permissions")
-			if tt.wantFlag && !has {
-				t.Fatalf("command %#v missing --dangerously-skip-permissions", cmd)
+			if has != tt.wantFlag {
+				t.Fatalf("command %#v has bypass flag=%v, want %v", cmd, has, tt.wantFlag)
 			}
-			if tt.notExpected != "" && has {
-				t.Fatalf("command %#v contains %q", cmd, tt.notExpected)
+			if tt.wantEnv == "" {
+				if len(cmd) > 0 && cmd[0] == "env" {
+					t.Fatalf("command %#v should defer to OpenCode config", cmd)
+				}
+				return
+			}
+			if len(cmd) < 3 || cmd[0] != "env" || cmd[1] != "OPENCODE_CONFIG_CONTENT="+tt.wantEnv || cmd[2] != "opencode" {
+				t.Fatalf("command %#v must contain permission overlay %s", cmd, tt.wantEnv)
 			}
 		})
 	}
