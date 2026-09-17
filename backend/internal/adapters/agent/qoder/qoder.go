@@ -22,12 +22,15 @@ const (
 	systemPromptMaxBytes = 128 * 1024
 )
 
+// Plugin is the Qoder agent adapter. It is safe for concurrent use; the binary
+// path is resolved once and cached under binaryMu.
 type Plugin struct {
 	agentbase.Base
 	binaryMu       sync.Mutex
 	resolvedBinary string
 }
 
+// New returns a ready-to-register Qoder adapter.
 func New() *Plugin { return &Plugin{} }
 
 var _ adapters.Adapter = (*Plugin)(nil)
@@ -38,10 +41,13 @@ var _ ports.SubmitActivitySignaler = (*Plugin)(nil)
 var _ ports.BlockedActivitySignaler = (*Plugin)(nil)
 var _ ports.StartupInputReadinessSignaler = (*Plugin)(nil)
 
+// Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
 	return adapters.Manifest{ID: adapterID, Name: "Qoder", Description: "Run Qoder worker and orchestrator sessions.", Version: "0.0.1", Capabilities: []adapters.Capability{adapters.CapabilityAgent}}
 }
 
+// GetConfigSpec reports Qoder's optional model, reasoning-effort, and starting
+// permission-mode overrides.
 func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.ConfigSpec{}, err
@@ -53,6 +59,12 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	}}, nil
 }
 
+// GetLaunchCommand builds the fresh-launch argv. AO assigns the conversation id
+// up front via --session-id, appends the configured model, effort, permission
+// mode, and tool allow/deny flags, passes standing instructions through
+// --append-system-prompt, and delivers the task prompt with
+// --prompt-interactive so the pane stays interactive. It fails when the caller
+// supplied no native session id.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	id := strings.TrimSpace(cfg.NativeSessionID)
 	if id == "" {
@@ -77,6 +89,8 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	return cmd, nil
 }
 
+// GetPromptDeliveryStrategy reports that Qoder takes the task prompt on the
+// command line, so AO does not type it into the pane after start.
 func (p *Plugin) GetPromptDeliveryStrategy(ctx context.Context, _ ports.LaunchConfig) (ports.PromptDeliveryStrategy, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -84,6 +98,10 @@ func (p *Plugin) GetPromptDeliveryStrategy(ctx context.Context, _ ports.LaunchCo
 	return ports.PromptDeliveryInCommand, nil
 }
 
+// GetRestoreCommand rebuilds the argv for resuming an existing conversation
+// with `qoder [config flags] --resume <agentSessionId>`. ok is false when the
+// hook-derived native session id has not landed yet, so callers fall back to
+// fresh launch behavior.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) ([]string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -160,7 +178,7 @@ func systemPromptText(ctx context.Context, inline, path string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("qoder: read system prompt file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, systemPromptMaxBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("qoder: read system prompt file: %w", err)
@@ -174,6 +192,9 @@ func systemPromptText(ctx context.Context, inline, path string) (string, error) 
 	return string(data), nil
 }
 
+// SessionInfo surfaces Qoder hook-derived metadata. Metadata is intentionally
+// nil for Qoder: callers get the normalized fields directly, matching the Codex
+// adapter.
 func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (ports.SessionInfo, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.SessionInfo{}, false, err
@@ -182,8 +203,21 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 	return info, ok, nil
 }
 
-func (p *Plugin) EmitsSubmitActivity() bool         { return true }
-func (p *Plugin) EmitsBlockedActivity() bool        { return true }
+// EmitsSubmitActivity signals Qoder fires a user-prompt-submit hook under AO's
+// launch, so Activity.State can flip to active once a prompt is accepted. See
+// ports.SubmitActivitySignaler.
+func (p *Plugin) EmitsSubmitActivity() bool { return true }
+
+// EmitsBlockedActivity signals Qoder fires a permission-request hook, so AO can
+// report a session as blocked on an approval instead of guessing from pane
+// output. See ports.BlockedActivitySignaler.
+func (p *Plugin) EmitsBlockedActivity() bool { return true }
+
+// FirstSignalProvesInputReady opts Qoder into gating pane writes on its first
+// lifecycle hook: Qoder's SessionStart hook cannot fire before its own startup
+// dialogs have cleared, so before that signal pane input may be swallowed by a
+// dialog instead of reaching the composer. See
+// ports.StartupInputReadinessSignaler.
 func (p *Plugin) FirstSignalProvesInputReady() bool { return true }
 
 var qoderBinarySpec = binaryutil.BinarySpec{
@@ -193,6 +227,9 @@ var qoderBinarySpec = binaryutil.BinarySpec{
 	WinPaths: []binaryutil.WinPath{{Base: binaryutil.WinAppData, Parts: []string{"npm", "qoder.cmd"}}, {Base: binaryutil.WinAppData, Parts: []string{"npm", "qoder.exe"}}},
 }
 
+// ResolveQoderBinary returns the path to the qoder binary on this machine,
+// searching PATH then well-known npm and Homebrew install locations. It returns
+// a wrapped ports.ErrAgentBinaryNotFound when qoder is absent.
 func ResolveQoderBinary(ctx context.Context) (string, error) {
 	return binaryutil.ResolveBinary(ctx, qoderBinarySpec)
 }

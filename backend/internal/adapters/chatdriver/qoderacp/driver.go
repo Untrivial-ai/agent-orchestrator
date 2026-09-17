@@ -15,6 +15,9 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// New launches `qoder --acp` from the exact binary resolved by the existing
+// Qoder agent plugin, gated on the minimum Qoder version AO has tested. Login,
+// models, settings, and updates remain owned by the user's Qoder installation.
 func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 	return newDriver(plugin, qoder.ProbeMinimumVersion, log)
 }

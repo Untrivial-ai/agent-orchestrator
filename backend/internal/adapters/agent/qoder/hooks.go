@@ -23,12 +23,22 @@ var managedHooks = []hooksjson.HookSpec{
 
 var qoderHooks = hooksjson.Manager{Label: "qoder", CommandPrefix: hookCommandPrefix, Timeout: 30, Path: func(workspace string) string { return filepath.Join(workspace, ".qoder", "settings.json") }, Managed: managedHooks}
 
+// GetAgentHooks writes AO's managed hook commands into the workspace-local
+// .qoder/settings.json file. User-defined hooks are preserved and AO's own
+// entries are not duplicated on repeat installs.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
 	return qoderHooks.Install(ctx, cfg.WorkspacePath)
 }
+
+// UninstallHooks removes only AO's managed hook commands from the
+// workspace-local .qoder/settings.json file, leaving user-defined hooks
+// untouched. A missing file is a no-op.
 func (p *Plugin) UninstallHooks(ctx context.Context, workspace string) error {
 	return qoderHooks.Uninstall(ctx, workspace)
 }
+
+// AreHooksInstalled reports whether any AO-managed Qoder hook is present in the
+// workspace-local settings file. A missing file means none are installed.
 func (p *Plugin) AreHooksInstalled(ctx context.Context, workspace string) (bool, error) {
 	return qoderHooks.AreInstalled(ctx, workspace)
 }

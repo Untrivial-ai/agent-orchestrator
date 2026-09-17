@@ -2,6 +2,9 @@ package qoder
 
 import "context"
 
+// ResolveBinary returns the path to the qoder executable for this plugin,
+// resolving it once and reusing the cached path on later calls. It returns a
+// wrapped ports.ErrAgentBinaryNotFound when qoder is not installed.
 func (p *Plugin) ResolveBinary(ctx context.Context) (string, error) {
 	return p.resolveBinary(ctx)
 }

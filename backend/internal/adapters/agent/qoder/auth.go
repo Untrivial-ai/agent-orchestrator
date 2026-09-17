@@ -10,6 +10,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// AuthStatus reports whether Qoder is authenticated. Qoder offers no offline
+// credential-validation command, and a personal access token or on-disk
+// credential file only proves configuration, not that the remote account still
+// authorizes requests. Every path therefore returns unknown; an absent binary
+// is reported as unknown rather than an error.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err

@@ -12,6 +12,9 @@ import (
 
 var versionPattern = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)
 
+// ProbeMinimumVersion runs `<bin> --version` and returns an error unless the
+// reported version is at least minimumQoderVersion, the oldest release AO has
+// tested against. It is wired in as the ACP driver's version gate.
 func ProbeMinimumVersion(ctx context.Context, bin string) error {
 	out, err := aoprocess.CommandContext(ctx, bin, "--version").CombinedOutput()
 	if err != nil {
@@ -29,7 +32,7 @@ func validateVersionOutput(output string) error {
 	for i := range installed {
 		if installed[i] != minimum[i] {
 			if installed[i] < minimum[i] {
-				return fmt.Errorf("Qoder %s is older than AO's tested minimum %s", strings.TrimSpace(output), minimumQoderVersion)
+				return fmt.Errorf("installed Qoder %s is older than AO's tested minimum %s", strings.TrimSpace(output), minimumQoderVersion)
 			}
 			break
 		}
