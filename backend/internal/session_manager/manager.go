@@ -2866,6 +2866,31 @@ func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reconcile: interface transitions: %w", err)
 	}
+	if err := m.reconcileInterruptedSpawnSeeds(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// reconcileInterruptedSpawnSeeds terminates rows left behind when the daemon
+// dies after persisting a spawn seed but before creating its workspace or
+// runtime. There is no user work or live process to preserve in that state,
+// and leaving an orchestrator seed active prevents its project from creating a
+// replacement coordinator.
+func (m *Manager) reconcileInterruptedSpawnSeeds(ctx context.Context) error {
+	recs, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile: list sessions for interrupted spawns: %w", err)
+	}
+	for _, rec := range recs {
+		if rec.IsTerminated || rec.Metadata.WorkspacePath != "" || runtimeHandle(rec.Metadata).ID != "" {
+			continue
+		}
+		m.logger.Warn("reconcile: terminating interrupted spawn with no workspace or runtime", "sessionID", rec.ID)
+		if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
+			return fmt.Errorf("reconcile: terminate interrupted spawn %s: %w", rec.ID, err)
+		}
+	}
 	return nil
 }
 
