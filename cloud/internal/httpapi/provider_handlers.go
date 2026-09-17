@@ -577,6 +577,13 @@ func validAgentCredentialType(agent, credentialType string) bool {
 	}
 }
 
+// GitHubPATAssociatedData is the associated data a user's GitHub PAT is
+// encrypted under. Background work that decrypts the PAT outside a request
+// (the PAT pull request tracker) must use the same value.
+func GitHubPATAssociatedData(ownerUserID string) string {
+	return providerSecretAssociatedData("user:"+ownerUserID, githubPATProvider)
+}
+
 func providerSecretAssociatedData(orgID, provider string) string {
 	return orgID + "|" + provider + "|" + defaultAgentConnectionLabel
 }

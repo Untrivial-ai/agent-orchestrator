@@ -14,6 +14,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/auth"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/config"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/httpapi"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/idlepause"
@@ -28,6 +29,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
+
+// minPATPullRequestPollInterval bounds how often the PAT pull request tracker
+// spends a user's GitHub rate limit.
+const minPATPullRequestPollInterval = time.Minute
 
 // readSSHPubKeys loads the operator SSH keys authorized on every sandbox. They
 // are a debugging affordance, not part of the worker's trust path.
@@ -329,12 +334,12 @@ func run(logger *slog.Logger) error {
 	// the REST client and the store. Constructed whenever PAT decryption is
 	// possible so PAT-first writes behave consistently with PAT-first reads.
 	var patWrites *githubapp.PATWriteService
+	var patRESTClient *githubapp.Client
 	if providerCipher != nil {
 		// Empty base URL defaults to https://api.github.com, matching the App
 		// client; a GitHub Enterprise host would need a config field here.
-		patWrites = githubapp.NewPATWriteService(
-			githubapp.NewRESTClient("", nil), store,
-		)
+		patRESTClient = githubapp.NewRESTClient("", nil)
+		patWrites = githubapp.NewPATWriteService(patRESTClient, store)
 	}
 	reconciler, err := newSandboxReconciler(cfg, store, logger)
 	if err != nil {
@@ -352,9 +357,36 @@ func run(logger *slog.Logger) error {
 	// The scanner only has anything to refresh where GitHub is configured to
 	// resolve an installation for.
 	var prStatusScanner *prstatus.Scanner
+	prStatusInterval := cfg.PRStatusPollInterval
 	if githubService != nil {
 		prStatusScanner = prstatus.New(store, githubService, prstatus.Options{
-			Interval: cfg.PRStatusPollInterval,
+			Interval: prStatusInterval,
+			Logger:   logger,
+		})
+	} else if patRESTClient != nil {
+		// Without a GitHub App nothing else discovers or refreshes pull
+		// requests, so track them with each session creator's PAT, as the
+		// local daemon does with its own credentials. PAT calls count against
+		// the user's own rate limit, so poll no faster than once a minute.
+		prStatusInterval = max(prStatusInterval, minPATPullRequestPollInterval)
+		tracker := githubapp.NewPATPullRequestTracker(
+			patRESTClient,
+			store,
+			func(credential domain.WorkerGitHubPAT) (string, error) {
+				secret, err := providerCipher.Decrypt(
+					credential.EncryptedSecret, credential.Nonce,
+					httpapi.GitHubPATAssociatedData(credential.OwnerUserID),
+				)
+				if err != nil {
+					return "", err
+				}
+				defer clear(secret)
+				return string(secret), nil
+			},
+			logger,
+		)
+		prStatusScanner = prstatus.NewFunc(tracker.ScanOnce, prstatus.Options{
+			Interval: prStatusInterval,
 			Logger:   logger,
 		})
 	}
@@ -464,7 +496,7 @@ func run(logger *slog.Logger) error {
 
 	if prStatusScanner != nil {
 		go func() {
-			logger.Info("pull request status scanner started", "interval", cfg.PRStatusPollInterval)
+			logger.Info("pull request status scanner started", "interval", prStatusInterval)
 			if err := prStatusScanner.Run(ctx); err != nil {
 				logger.Error("pull request status scanner stopped", "error", err)
 			}

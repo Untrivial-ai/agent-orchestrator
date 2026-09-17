@@ -324,6 +324,141 @@ func (s *Store) OpenPullRequestRefs(ctx context.Context) ([]domain.PullRequestRe
 	return refs, nil
 }
 
+// PullRequestTrackingSessions lists every live session with a branch, across
+// organizations, for the PAT pull request tracker. The cross-org scan reads
+// only ao_sandboxes (the one session-shaped table the service context may
+// read); the session rows are then read org-scoped, so row-level security
+// still confines them.
+func (s *Store) PullRequestTrackingSessions(ctx context.Context) ([]domain.PullRequestTrackingSession, error) {
+	type liveSandbox struct {
+		sessionID string
+		active    bool
+	}
+	byOrg := map[string][]liveSandbox{}
+	err := s.withService(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(
+			ctx,
+			`SELECT org_id, session_id, desired_state
+			FROM ao_sandboxes
+			WHERE desired_state <> $1
+				AND observed_state NOT IN ($2, $3)`,
+			domain.SandboxDesiredDeleted, domain.SandboxObservedDeleted, domain.SandboxObservedTerminated,
+		)
+		if err != nil {
+			return fmt.Errorf("list live sandboxes: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var orgID, sessionID, desiredState string
+			if err := rows.Scan(&orgID, &sessionID, &desiredState); err != nil {
+				return err
+			}
+			byOrg[orgID] = append(byOrg[orgID], liveSandbox{
+				sessionID: sessionID,
+				active:    desiredState == domain.SandboxDesiredRunning,
+			})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	var sessions []domain.PullRequestTrackingSession
+	for orgID, sandboxes := range byOrg {
+		active := make(map[string]bool, len(sandboxes))
+		ids := make([]string, 0, len(sandboxes))
+		for _, sandbox := range sandboxes {
+			active[sandbox.sessionID] = sandbox.active
+			ids = append(ids, sandbox.sessionID)
+		}
+		err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+			rows, err := tx.Query(
+				ctx,
+				`SELECT id, branch
+				FROM ao_sessions
+				WHERE org_id = $1 AND id = ANY($2)
+					AND is_terminated = false
+					AND branch <> ''`,
+				orgID, ids,
+			)
+			if err != nil {
+				return fmt.Errorf("list tracked sessions: %w", err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				session := domain.PullRequestTrackingSession{OrgID: orgID}
+				if err := rows.Scan(&session.SessionID, &session.Branch); err != nil {
+					return err
+				}
+				session.Active = active[session.SessionID]
+				sessions = append(sessions, session)
+			}
+			return rows.Err()
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return sessions, nil
+}
+
+// OpenPullRequestRefsForSession lists one session's open pull requests.
+func (s *Store) OpenPullRequestRefsForSession(
+	ctx context.Context,
+	orgID, sessionID string,
+) ([]domain.PullRequestRef, error) {
+	var refs []domain.PullRequestRef
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(
+			ctx,
+			`SELECT id, org_id, provider, repository, number
+			FROM ao_pull_requests
+			WHERE org_id = $1 AND session_id = $2 AND state = 'open'`,
+			orgID, sessionID,
+		)
+		if err != nil {
+			return fmt.Errorf("list session open pull requests: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ref domain.PullRequestRef
+			if err := rows.Scan(&ref.ID, &ref.OrgID, &ref.Provider, &ref.Repository, &ref.Number); err != nil {
+				return err
+			}
+			refs = append(refs, ref)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
+// PullRequestTracked reports whether any session in the organization already
+// tracks the pull request, so branch discovery never reassigns one.
+func (s *Store) PullRequestTracked(
+	ctx context.Context,
+	orgID, provider, repository string,
+	number int,
+) (bool, error) {
+	var tracked bool
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		return tx.QueryRow(
+			ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM ao_pull_requests
+				WHERE org_id = $1 AND provider = $2 AND repository = $3 AND number = $4
+			)`,
+			orgID, provider, repository, number,
+		).Scan(&tracked)
+	})
+	if err != nil {
+		return false, fmt.Errorf("check tracked pull request: %w", err)
+	}
+	return tracked, nil
+}
+
 // UpdatePullRequestObservation applies a freshly fetched GitHub snapshot over
 // a pull request's durable record.
 func (s *Store) UpdatePullRequestObservation(

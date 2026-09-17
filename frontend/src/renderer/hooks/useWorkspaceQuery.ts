@@ -6,6 +6,7 @@ import { apiClient, apiErrorCode, hasTrustedApiBaseUrl } from "../lib/api-client
 import type { CloudCpProject, CloudCpSession } from "../lib/cloud-cp";
 import { useCloudCp } from "./useCloudCp";
 import { useCloudOrg } from "./useCloudOrg";
+import { toCloudPullRequestFacts } from "./useOrchestratorChildren";
 import { mockWorkspaces } from "../lib/mock-data";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
@@ -275,6 +276,7 @@ function toCloudWorkspaceSession(
 	project: CloudCpProject,
 	orgId: string,
 ): WorkspaceSession {
+	const status = toSessionStatus(session.status, session.isTerminated);
 	return {
 		id: session.id,
 		// The terminal pane only mounts for a session that has a terminal handle.
@@ -287,13 +289,17 @@ function toCloudWorkspaceSession(
 		provider: toAgentProvider(session.harness),
 		kind: session.kind === "orchestrator" ? "orchestrator" : "worker",
 		branch: session.branch || undefined,
-		status: toSessionStatus(session.status, session.isTerminated),
+		status,
+		scmStatus: session.scmStatus ? toSessionStatus(session.scmStatus) : undefined,
+		// The control plane sends no column, so place the card from its status,
+		// as the local mapping does when the daemon omits one.
+		kanbanColumn: toKanbanColumn(undefined, status),
 		isTerminated: session.isTerminated,
 		runtimeConnected: session.runtimeConnected,
 		createdAt: session.createdAt,
 		updatedAt: session.updatedAt,
 		activity: toSessionActivity({ state: session.activityState }),
-		prs: [],
+		prs: (session.prs ?? []).map(toCloudPullRequestFacts),
 		// Marks this as a control-plane session so the terminal opens against the
 		// CP (ticket + sandbox WebSocket) instead of the local daemon mux.
 		cloud: {

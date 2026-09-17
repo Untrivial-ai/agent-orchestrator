@@ -44,7 +44,7 @@ func (s *Server) workerGitHubPATGrant(ctx context.Context, claims worker.Claims)
 		s.logger.Warn("reject worker GitHub personal access token for non-GitHub repository", "session_id", claims.SessionID)
 		return worker.CheckoutGrantResponse{}, false
 	}
-	secret, err := s.secretCipher.Decrypt(credential.EncryptedSecret, credential.Nonce, providerSecretAssociatedData("user:"+credential.OwnerUserID, githubPATProvider))
+	secret, err := s.secretCipher.Decrypt(credential.EncryptedSecret, credential.Nonce, GitHubPATAssociatedData(credential.OwnerUserID))
 	if err != nil {
 		s.logger.Error("decrypt worker GitHub personal access token", "error", err)
 		return worker.CheckoutGrantResponse{}, false
@@ -475,10 +475,6 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
-		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Raising a pull request is not available.")
-		return
-	}
 	var input worker.RaisePullRequestRequest
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
@@ -502,8 +498,10 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	// Prefer the user's PAT when one is configured: it can write back to GitHub
 	// even where the checkout broker is read-only (e.g. staging reaches GitHub
-	// through the remote capability broker, whose write methods are stubbed).
-	// This mirrors the PAT-first read/push grant path.
+	// through the remote capability broker, whose write methods are stubbed) or
+	// entirely unconfigured (no GitHub App wired up on this deployment). This
+	// mirrors the PAT-first read/push grant path — the broker's own
+	// unavailability must not shadow a working PAT.
 	var (
 		pr  domain.PullRequest
 		err error
@@ -512,8 +510,11 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		pr, err = s.patWrites.RaisePullRequest(
 			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
 		)
-	} else {
+	} else if s.checkoutBroker != nil {
 		pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Raising a pull request is not available.")
+		return
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
@@ -549,10 +550,6 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
-		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Pull request tracking is not available.")
-		return
-	}
 	var input worker.ClaimPullRequestRequest
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
@@ -564,7 +561,9 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// PAT-first, mirroring workerRaisePullRequest: a configured PAT can claim
-	// (fetch + record) a PR even where the checkout broker is read-only.
+	// (fetch + record) a PR even where the checkout broker is read-only or
+	// entirely unconfigured. The broker's own unavailability must not shadow a
+	// working PAT.
 	var (
 		pr  domain.PullRequest
 		err error
@@ -573,8 +572,11 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		pr, err = s.patWrites.ClaimPullRequest(
 			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, input.Reference,
 		)
-	} else {
+	} else if s.checkoutBroker != nil {
 		pr, err = s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Pull request tracking is not available.")
+		return
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")

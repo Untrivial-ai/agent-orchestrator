@@ -111,10 +111,15 @@ type sessionPRFactsResponse struct {
 // sessionChildResponse is the single wire shape for a child session on both
 // the worker-facing /worker/children listing and the user-facing
 // /orgs/{orgId}/sessions/{sessionId}/children listing. Keep them identical so
-// `ao list --json` and the app's Workers view can never drift apart.
+// `ao list --json` and the app's Workers view can never drift apart. The
+// session list and get routes render the same shape, so the board shows each
+// session's pull requests as it does for local sessions.
 type sessionChildResponse struct {
 	sessionResponse
 	PRs []sessionPRFactsResponse `json:"prs"`
+	// SCMStatus is derived exactly as the local daemon derives it, so cloud
+	// and local sessions present alike.
+	SCMStatus string `json:"scmStatus,omitempty"`
 }
 
 func toSessionChildResponse(
@@ -143,6 +148,7 @@ func toSessionChildResponse(
 	return sessionChildResponse{
 		sessionResponse: toSessionResponse(session, facts),
 		PRs:             rendered,
+		SCMStatus:       string(contract.DeriveSCMStatus(facts)),
 	}
 }
 
@@ -471,18 +477,10 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	sessionIDs := make([]string, len(sessions))
-	for i, session := range sessions {
-		sessionIDs[i] = session.ID
-	}
-	prFacts, err := s.store.PRFactsBySession(r.Context(), orgID, sessionIDs)
+	items, err := s.childItems(r, orgID, sessions)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
-	}
-	items := make([]sessionResponse, 0, len(sessions))
-	for _, session := range sessions {
-		items = append(items, toSessionResponse(session, prFacts[session.ID]))
 	}
 	page := pageInfo{HasMore: hasMore}
 	if hasMore && len(sessions) > 0 {
@@ -589,12 +587,12 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	prFacts, err := s.store.PRFactsBySession(r.Context(), orgID, []string{sessionID})
+	items, err := s.childItems(r, orgID, []domain.Session{session})
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": toSessionResponse(session, prFacts[sessionID])})
+	writeJSON(w, http.StatusOK, map[string]any{"session": items[0]})
 }
 
 // deleteSession records the intent to tear a session's sandbox down. It does

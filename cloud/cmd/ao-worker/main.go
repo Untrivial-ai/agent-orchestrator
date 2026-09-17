@@ -213,21 +213,37 @@ func run(logger *slog.Logger) error {
 	}); err != nil {
 		logger.Warn("publish worker.ready failed", "error", err)
 	}
+	// prepareWorkspace and startInteractiveAgent used to run in fully
+	// independent goroutines with no ordering between them. That let the
+	// interactive agent build and launch its command — which embeds the
+	// session's initial prompt directly in argv (see startInteractiveAgent) —
+	// before checkout ever ran, or after checkout failed outright. Because
+	// that embedded first prompt never passes through
+	// HoldAgentInputUntilWorkspaceReady's queue (that mechanism only holds
+	// terminal input for turns after the first), a failed or slow checkout
+	// left the agent starting its first turn against an empty workspace with
+	// no signal to anyone that anything was wrong. workspaceReady closes that
+	// gap: the agent's own goroutine blocks on it immediately before it would
+	// otherwise build/launch the command.
+	workspaceReady := make(chan error, 1)
 	go func() {
-		if err := prepareWorkspace(
+		err := prepareWorkspace(
 			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL,
-		); err != nil {
+		)
+		if err != nil {
 			if runCtx.Err() == nil {
 				logger.Error("background workspace startup failed", "error", err)
 			}
+			workspaceReady <- err
 			return
 		}
 		transportSupervisor.MarkWorkspaceReady()
+		workspaceReady <- nil
 	}()
 	go func() {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
-			pullRequestSocketPath, reviewSocketPath, &transportSupervisor,
+			pullRequestSocketPath, reviewSocketPath, &transportSupervisor, workspaceReady,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -293,6 +309,7 @@ func startInteractiveAgent(
 	bootstrap worker.BootstrapResponse,
 	workspace, dataDir, pullRequestSocketPath, reviewSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
+	workspaceReady <-chan error,
 ) error {
 	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
 		logger.Warn("coding-agent harness unavailable", "error", err)
@@ -301,6 +318,19 @@ func startInteractiveAgent(
 	credential, err := client.Credential(ctx)
 	if err != nil {
 		return fmt.Errorf("load coding-agent credential: %w", err)
+	}
+	// BuildInteractive bakes the session's initial prompt directly into the
+	// launch argv (see agentruntime.BuildLaunchCommand), so it bypasses the
+	// transport supervisor's held-input queue entirely. Block here instead:
+	// never build or launch the agent command until checkout has definitively
+	// succeeded or failed.
+	select {
+	case err := <-workspaceReady:
+		if err != nil {
+			return fmt.Errorf("workspace not ready: %w", err)
+		}
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	agentCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(
 		bootstrap.Launch, credential, workspace,
