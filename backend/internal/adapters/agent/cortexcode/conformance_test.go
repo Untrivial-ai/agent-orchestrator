@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-const pinnedCortexCodeRelease = "1.1.87+175514.04f5c9114e11"
-
 func TestPinnedHelpFixtureFailsRequiredContract(t *testing.T) {
 	help, err := os.ReadFile("testdata/help.txt")
 	if err != nil {
