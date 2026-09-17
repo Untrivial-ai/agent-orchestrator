@@ -32,6 +32,27 @@ func (s *Store) GetAgentModelCatalog(ctx context.Context, agentID, projectID str
 	}, true, nil
 }
 
+// ListAgentModelCatalogsByAgent returns every previously discovered project
+// scope for one agent in stable project order.
+func (s *Store) ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]ports.CachedAgentModelCatalog, error) {
+	rows, err := s.qr.ListAgentModelCatalogsByAgent(ctx, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent model catalogs %s: %w", agentID, err)
+	}
+	records := make([]ports.CachedAgentModelCatalog, 0, len(rows))
+	for _, row := range rows {
+		records = append(records, ports.CachedAgentModelCatalog{
+			AgentID:       row.AgentID,
+			ProjectID:     row.ProjectID,
+			BinaryVersion: row.BinaryVersion,
+			CatalogJSON:   row.CatalogJson,
+			Source:        row.Source,
+			FetchedAt:     row.FetchedAt,
+		})
+	}
+	return records, nil
+}
+
 // UpsertAgentModelCatalog stores the latest successfully discovered catalog.
 func (s *Store) UpsertAgentModelCatalog(ctx context.Context, record ports.CachedAgentModelCatalog) error {
 	if err := s.qw.UpsertAgentModelCatalog(ctx, gen.UpsertAgentModelCatalogParams{

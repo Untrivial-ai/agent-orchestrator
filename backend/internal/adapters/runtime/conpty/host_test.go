@@ -402,6 +402,58 @@ func TestFanOut(t *testing.T) {
 	}
 }
 
+// TestSlowClientDoesNotBlockFanOut reproduces the macOS preview failure where
+// one terminal connection stopped reading. The old host wrote to every socket
+// while holding h.mu, so that one blocked Write froze status probes, attaches,
+// and output for all clients; the UI stayed at a blinking empty terminal and
+// timed-out probes accumulated in CLOSE_WAIT. Per-client writers must isolate
+// that back-pressure and keep every fast viewer moving.
+func TestSlowClientDoesNotBlockFanOut(t *testing.T) {
+	slowHost, slowPeer := net.Pipe()
+	fastHost, fastPeer := net.Pipe()
+
+	h := &host{clients: make(map[net.Conn]*clientState)}
+	slow := newClientState()
+	fast := newClientState()
+	h.clients[slowHost] = slow
+	h.clients[fastHost] = fast
+	go h.writeClient(slowHost, slow)
+	go h.writeClient(fastHost, fast)
+	t.Cleanup(func() {
+		h.removeClient(slowHost, slow)
+		h.removeClient(fastHost, fast)
+		_ = slowPeer.Close()
+		_ = fastPeer.Close()
+	})
+
+	frame, err := EncodeMessage(MsgTerminalData, []byte("still moving"))
+	if err != nil {
+		t.Fatalf("encode terminal data: %v", err)
+	}
+	broadcastDone := make(chan struct{})
+	go func() {
+		h.broadcast(frame)
+		close(broadcastDone)
+	}()
+
+	select {
+	case <-broadcastDone:
+	case <-time.After(time.Second):
+		t.Fatal("broadcast blocked behind a client that was not reading")
+	}
+
+	if err := fastPeer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set fast-client deadline: %v", err)
+	}
+	got := make([]byte, len(frame))
+	if _, err := io.ReadFull(fastPeer, got); err != nil {
+		t.Fatalf("fast client did not receive broadcast: %v", err)
+	}
+	if string(got) != string(frame) {
+		t.Fatalf("fast client frame = %x, want %x", got, frame)
+	}
+}
+
 // TestTerminalInput: MsgTerminalInput from a client reaches the fakePTY's input.
 func TestTerminalInput(t *testing.T) {
 	f := startServe(t, 102)

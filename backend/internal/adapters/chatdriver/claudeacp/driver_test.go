@@ -25,6 +25,14 @@ func TestClaudeSessionMetaAppendsWithoutReplacingPreset(t *testing.T) {
 	}
 }
 
+func TestClaudeSessionMetaNeverIncludesReplayContext(t *testing.T) {
+	meta := claudeSessionMeta(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"})
+	prompt := meta["systemPrompt"].(map[string]any)
+	if strings.Contains(prompt["append"].(string), "replayed-conversation") {
+		t.Fatal("replay context entered the system prompt")
+	}
+}
+
 func TestClaudeSessionModeUsesAdapterModeIDs(t *testing.T) {
 	tests := map[ports.PermissionMode]string{
 		ports.PermissionModeDefault:           "",
@@ -84,5 +92,29 @@ func TestRuntimeCommandOverride(t *testing.T) {
 	}
 	if launch.command != executable || len(launch.args) != 0 {
 		t.Fatalf("runtime = %#v", launch)
+	}
+}
+
+type fakePlugin struct{}
+
+func (fakePlugin) ResolveBinary(context.Context) (string, error) { return "/bin/echo", nil }
+func (fakePlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusAuthorized, nil
+}
+
+func TestClaudeAdvertisesCompactionCapability(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AO_CLAUDE_ACP_COMMAND", executable)
+
+	d := New(fakePlugin{}, nil)
+	caps, err := d.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !caps.Has(ports.ChatCapabilityCompaction) {
+		t.Fatal("Claude ACP driver should advertise compaction capability")
 	}
 }

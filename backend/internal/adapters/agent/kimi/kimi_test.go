@@ -431,6 +431,200 @@ default_model = "kimi-code/kimi-for-coding"
 	}
 }
 
+const kimiOAuthUserConfig = `default_model = "kimi-code/kimi-for-coding"
+
+[providers."managed:kimi-code"]
+api_key = ""
+
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[models."kimi-code/kimi-for-coding"]
+provider = "managed:kimi-code"
+`
+
+func TestGetAgentHooksSeedsAOManagedConfigFromOAuthUserKimiHome(t *testing.T) {
+	workspace := t.TempDir()
+	userHome := t.TempDir()
+	aoHome := t.TempDir()
+	t.Setenv(kimiCodeHomeEnv, userHome)
+	userCredentials := []byte(`{"refresh_token":"user-refresh"}`)
+	writeKimiOAuthProfile(t, userHome, userCredentials)
+
+	if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
+		WorkspacePath: workspace,
+		Env:           map[string]string{kimiCodeHomeEnv: aoHome},
+	}); err != nil {
+		t.Fatalf("GetAgentHooks err = %v", err)
+	}
+
+	assertKimiOAuthProfileSeeded(t, userHome, aoHome, userCredentials, userCredentials)
+}
+
+func TestGetAgentHooksSeedsCredentialReferencedByOAuthConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		writeDefaultSource bool
+	}{
+		{name: "scoped credential only"},
+		{name: "scoped and unrelated default credentials", writeDefaultSource: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			userHome := t.TempDir()
+			aoHome := t.TempDir()
+			t.Setenv(kimiCodeHomeEnv, userHome)
+
+			const scopedName = "kimi-code-env-a1b2c3"
+			userConfig := strings.Replace(
+				kimiOAuthUserConfig,
+				`key = "oauth/kimi-code"`,
+				`key = "oauth/`+scopedName+`"`,
+				1,
+			)
+			if err := os.WriteFile(filepath.Join(userHome, "config.toml"), []byte(userConfig), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			credentialsDir := filepath.Join(userHome, "credentials")
+			if err := os.MkdirAll(credentialsDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			scopedCredentials := []byte(`{"refresh_token":"scoped-refresh"}`)
+			if err := os.WriteFile(filepath.Join(credentialsDir, scopedName+".json"), scopedCredentials, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.writeDefaultSource {
+				if err := os.WriteFile(
+					filepath.Join(credentialsDir, "kimi-code.json"),
+					[]byte(`{"access_token":"unrelated-default"}`),
+					0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
+				WorkspacePath: workspace,
+				Env:           map[string]string{kimiCodeHomeEnv: aoHome},
+			}); err != nil {
+				t.Fatalf("GetAgentHooks err = %v", err)
+			}
+
+			config, err := os.ReadFile(filepath.Join(aoHome, "config.toml"))
+			if err != nil {
+				t.Fatalf("read AO config: %v", err)
+			}
+			if !strings.Contains(string(config), `default_model = "kimi-code/kimi-for-coding"`) {
+				t.Fatalf("AO config did not seed the scoped OAuth profile:\n%s", config)
+			}
+			targetScopedPath := filepath.Join(aoHome, "credentials", scopedName+".json")
+			gotCredentials, err := os.ReadFile(targetScopedPath)
+			if err != nil {
+				t.Fatalf("read AO scoped credentials: %v", err)
+			}
+			if string(gotCredentials) != string(scopedCredentials) {
+				t.Fatalf("AO scoped credentials = %s, want %s", gotCredentials, scopedCredentials)
+			}
+			if _, err := os.Stat(filepath.Join(aoHome, "credentials", "kimi-code.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unreferenced default AO credential stat err = %v, want not exist", err)
+			}
+		})
+	}
+}
+
+func TestGetAgentHooksReseedsHookOnlyAOManagedConfigFromOAuthUserKimiHome(t *testing.T) {
+	workspace := t.TempDir()
+	userHome := t.TempDir()
+	aoHome := t.TempDir()
+	t.Setenv(kimiCodeHomeEnv, userHome)
+	userCredentials := []byte(`{"access_token":"user-access"}`)
+	aoCredentials := []byte(`{"refresh_token":"ao-refresh"}`)
+	writeKimiOAuthProfile(t, userHome, userCredentials)
+	if err := os.WriteFile(filepath.Join(aoHome, "config.toml"), []byte(kimiHooksConfigBlock()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credentialsPath := filepath.Join(aoHome, "credentials", "kimi-code.json")
+	if err := os.MkdirAll(filepath.Dir(credentialsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialsPath, aoCredentials, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
+		WorkspacePath: workspace,
+		Env:           map[string]string{kimiCodeHomeEnv: aoHome},
+	}); err != nil {
+		t.Fatalf("GetAgentHooks err = %v", err)
+	}
+
+	assertKimiOAuthProfileSeeded(t, userHome, aoHome, userCredentials, aoCredentials)
+}
+
+func writeKimiOAuthProfile(t *testing.T, home string, credentials []byte) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(kimiOAuthUserConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credentialsPath := filepath.Join(home, "credentials", "kimi-code.json")
+	if err := os.MkdirAll(filepath.Dir(credentialsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialsPath, credentials, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertKimiOAuthProfileSeeded(
+	t *testing.T,
+	userHome, aoHome string,
+	userCredentials, wantAOCredentials []byte,
+) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(aoHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read AO config: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`default_model = "kimi-code/kimi-for-coding"`,
+		`[providers."managed:kimi-code".oauth]`,
+		`[models."kimi-code/kimi-for-coding"]`,
+		`command = "ao hooks kimi session-start"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("AO config missing %q:\n%s", want, text)
+		}
+	}
+	if got := strings.Count(text, kimiHooksSentinelStart); got != 1 {
+		t.Fatalf("managed hook block count = %d, want 1:\n%s", got, text)
+	}
+
+	credentials, err := os.ReadFile(filepath.Join(aoHome, "credentials", "kimi-code.json"))
+	if err != nil {
+		t.Fatalf("read AO credentials: %v", err)
+	}
+	if string(credentials) != string(wantAOCredentials) {
+		t.Fatalf("AO credentials = %s, want %s", credentials, wantAOCredentials)
+	}
+
+	sourceConfig, err := os.ReadFile(filepath.Join(userHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read source config: %v", err)
+	}
+	if string(sourceConfig) != kimiOAuthUserConfig {
+		t.Fatalf("source config mutated:\n%s", sourceConfig)
+	}
+	sourceCredentials, err := os.ReadFile(filepath.Join(userHome, "credentials", "kimi-code.json"))
+	if err != nil {
+		t.Fatalf("read source credentials: %v", err)
+	}
+	if string(sourceCredentials) != string(userCredentials) {
+		t.Fatalf("source credentials mutated: %s", sourceCredentials)
+	}
+}
+
 func TestGetAgentHooksSeedsAOManagedCredentialsFromUserKimiHome(t *testing.T) {
 	workspace := t.TempDir()
 	userHome := t.TempDir()

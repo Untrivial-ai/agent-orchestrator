@@ -51,6 +51,7 @@ func TestReviewCommandUsesMuseNoWriteSandbox(t *testing.T) {
 		ReviewerID:       "review-w1",
 		WorkspacePath:    "/ws/w1",
 		Prompt:           "Read the AO review task.",
+		Config:           ports.AgentConfig{Mode: "plan"},
 		SystemPromptFile: "/ao/prompts/reviewer/system.md",
 		DataDir:          "/ao/data",
 	})
@@ -66,6 +67,9 @@ func TestReviewCommandUsesMuseNoWriteSandbox(t *testing.T) {
 	}
 	if agent.got.Permissions != ports.PermissionModeAuto {
 		t.Fatalf("permissions = %q, want auto", agent.got.Permissions)
+	}
+	if agent.got.Config.Mode != "plan" {
+		t.Fatalf("launch config mode = %q, want plan", agent.got.Config.Mode)
 	}
 	if agent.got.SystemPromptFile != "/ao/prompts/reviewer/system.md" {
 		t.Fatalf("system prompt file = %q", agent.got.SystemPromptFile)
@@ -91,6 +95,9 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndNoWriteSandbox(t *testing.T) 
 	}
 	if !ok {
 		t.Fatal("ReviewRestoreCommand ok = false, want true")
+	}
+	if !got.NativeResumed {
+		t.Fatal("ReviewRestoreCommand did not report native resume")
 	}
 	want := []string{"muse", "--trust-workspace", "--approval-mode", "never", "--disable-write", "resume", "muse-native-1"}
 	if !slices.Equal(got.Argv, want) {

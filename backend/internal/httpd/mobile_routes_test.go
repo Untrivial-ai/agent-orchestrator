@@ -30,6 +30,10 @@ func (fakeMobileBridge) Regenerate() (controllers.MobileStatusResponse, error) {
 	return controllers.MobileStatusResponse{}, nil
 }
 
+func (fakeMobileBridge) StartRemoteAccess() (controllers.MobileStatusResponse, error) {
+	return controllers.MobileStatusResponse{}, nil
+}
+
 func (fakeMobileBridge) SetSecurePairing(on bool) (controllers.MobileStatusResponse, error) {
 	return controllers.MobileStatusResponse{}, nil
 }

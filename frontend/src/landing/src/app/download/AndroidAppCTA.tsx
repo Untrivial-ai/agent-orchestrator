@@ -1,41 +1,44 @@
 "use client";
 
+import { ANDROID_PLAY_STORE_URL } from "@ao/shared/constants";
 import { useState } from "react";
-import { FaAndroid } from "react-icons/fa";
 import { track } from "../../lib/analytics";
-import { Platform, usePlatform } from "../hooks/useOS";
-import {
-  ANDROID_BETA_TRIGGER_CLASS,
-  ANDROID_BETA_TRIGGER_LABEL,
-  AndroidBetaDialog,
-} from "./AndroidBetaDialog";
-import { AndroidBetaMobileSheet } from "./AndroidBetaMobileSheet";
+import { usePlatform } from "../hooks/useOS";
+import { StoreBadgeButton, StoreBadgeLink } from "./StoreBadge";
+import { StoreQRDialog } from "./StoreQRDialog";
 
+// Mirrors MobileAppCTA: direct link on the device that can install, QR handoff
+// everywhere else. Keyed off mobileOS rather than Platform.Mobile so an
+// Android visitor does not get an iOS QR and vice versa.
 export function AndroidAppCTA() {
-  const { platform } = usePlatform();
+  const { mobileOS } = usePlatform();
   const [open, setOpen] = useState(false);
 
-  if (androidCtaMode(platform) === "dialog") return <AndroidBetaDialog />;
+  if (mobileOS === "android") {
+    return (
+      <StoreBadgeLink
+        store="android"
+        href={ANDROID_PLAY_STORE_URL}
+        onClick={() => track("play_store_clicked", { surface: "badge" })}
+      />
+    );
+  }
 
   return (
     <>
-      <button
-        type="button"
+      <StoreBadgeButton
+        store="android"
         onClick={() => {
-          track("android_beta_sheet_opened");
+          track("store_qr_opened", { platform: "android" });
           setOpen(true);
         }}
-        className={ANDROID_BETA_TRIGGER_CLASS}
-      >
-        <FaAndroid className="size-4 shrink-0" aria-hidden="true" />
-        {ANDROID_BETA_TRIGGER_LABEL}
-      </button>
-
-      <AndroidBetaMobileSheet open={open} onClose={() => setOpen(false)} />
+      />
+      <StoreQRDialog
+        platform="android"
+        url={ANDROID_PLAY_STORE_URL}
+        open={open}
+        onClose={() => setOpen(false)}
+      />
     </>
   );
-}
-
-export function androidCtaMode(platform: Platform): "sheet" | "dialog" {
-  return platform === Platform.Mobile ? "sheet" : "dialog";
 }

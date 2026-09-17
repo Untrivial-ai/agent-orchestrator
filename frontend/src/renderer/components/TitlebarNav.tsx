@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const isMac = isMacPlatform();
 const isLinux = isLinuxPlatform();
@@ -56,7 +57,6 @@ export function TitlebarNav({
   const canGoForward = useCanGoForward();
 
   if (!isMac && !isLinux) return null;
-
   // macOS: pinned beside the traffic lights. Native dots sit at y: 12 with a
   // 12px hit target (centerline 18); the 40px clearance band is items-centered,
   // so top: -2px puts the toggle/arrows on that same centerline. Linux: no
@@ -140,18 +140,24 @@ function TitlebarButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      aria-label={label}
-      aria-disabled={disabled || undefined}
-      className="grid size-control-md place-items-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent disabled:hover:text-passive"
-      disabled={disabled}
-      onClick={onClick}
-      style={noDragStyle}
-      tabIndex={tabIndex}
-      title={title}
-      type="button"
-    >
-      {children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">
+          <button
+            aria-label={label}
+            aria-disabled={disabled || undefined}
+            className="grid size-control-md place-items-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent disabled:hover:text-passive"
+            disabled={disabled}
+            onClick={onClick}
+            style={noDragStyle}
+            tabIndex={tabIndex}
+            type="button"
+          >
+            {children}
+          </button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{title}</TooltipContent>
+    </Tooltip>
   );
 }

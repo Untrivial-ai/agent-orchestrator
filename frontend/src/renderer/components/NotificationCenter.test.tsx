@@ -246,6 +246,14 @@ describe("NotificationRuntime", () => {
 });
 
 describe("NotificationCenter", () => {
+	it("subscribes to workspace metadata only while the panel is open", async () => {
+		renderNotificationCenter();
+
+		expect(workspaceQueryMock).not.toHaveBeenCalled();
+		await clickOpen();
+		expect(workspaceQueryMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("uses the compact topbar bell and unread badge sizing", () => {
 		renderNotificationCenter();
 		const trigger = screen.getByRole("button", { name: /unread notifications/ });
@@ -289,6 +297,7 @@ describe("NotificationCenter", () => {
 		await clickOpen();
 
 		const panel = within(screen.getByRole("dialog", { name: "Notifications" }));
+		expect(panel.getByRole("list")).toHaveClass("board-scrollbar", "overflow-y-auto");
 		expect(panel.queryByRole("tab", { name: "Unread" })).not.toBeInTheDocument();
 		expect(panel.queryByRole("tab", { name: "All" })).not.toBeInTheDocument();
 		expect(panel.queryByText("Unseen")).not.toBeInTheDocument();

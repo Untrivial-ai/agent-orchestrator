@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { aoBridge } from "../../lib/bridge";
 import { cn } from "../../lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 /** Long enough to be noticed, short enough that a second copy reads as a second copy. */
 const CONFIRM_MS = 1400;
@@ -47,14 +48,11 @@ export function CopyButton({
 		);
 	}, [text]);
 
-	return (
+	const button = (
 		<button
 			type="button"
 			onClick={copy}
 			aria-label={copied ? "Copied" : label}
-			// Icon-only leaves nothing on screen to explain itself, so the native
-			// tooltip carries the label there and only there.
-			title={compact ? label : undefined}
 			className={cn(
 				compact
 					? "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground"
@@ -69,5 +67,16 @@ export function CopyButton({
 			)}
 			{compact ? null : copied ? "Copied" : "Copy"}
 		</button>
+	);
+
+	// Icon-only leaves nothing on screen to explain itself, so the tooltip
+	// carries the label there and only there.
+	if (!compact) return button;
+
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{button}</TooltipTrigger>
+			<TooltipContent side="bottom">{copied ? "Copied" : label}</TooltipContent>
+		</Tooltip>
 	);
 }

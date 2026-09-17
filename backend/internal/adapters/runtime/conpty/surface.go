@@ -1,6 +1,7 @@
 package conpty
 
 import (
+	"io"
 	"strings"
 
 	vt "github.com/unixshells/vt-go"
@@ -15,7 +16,14 @@ type renderedSurface struct {
 }
 
 func newRenderedSurface(cols, rows int) *renderedSurface {
-	return &renderedSurface{emulator: vt.NewSafeEmulator(cols, rows)}
+	emulator := vt.NewSafeEmulator(cols, rows)
+	// The emulator answers terminal capability and status queries through its
+	// input pipe. This surface is a passive capture-only observer, so nobody
+	// consumes those replies unless we drain them here. Leaving the pipe unread
+	// makes Emulator.Write block on the first query (for example DA1), which in
+	// turn stalls the real PTY output pump and leaves the attached xterm blank.
+	go func() { _, _ = io.Copy(io.Discard, emulator) }()
+	return &renderedSurface{emulator: emulator}
 }
 
 func (s *renderedSurface) Write(p []byte) {

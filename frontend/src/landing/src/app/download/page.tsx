@@ -18,7 +18,7 @@ import { DesktopAppPreview, PhoneAppPreview } from "./StaticAppPreviews";
 export const metadata: Metadata = {
   title: "Download",
   description:
-    "Download Agent Orchestrator for macOS, Windows, or Linux, or join the AO Mobile beta on iOS and Android.",
+    "Download Agent Orchestrator for macOS, Windows, or Linux, and get AO Mobile on iPhone and Android.",
 };
 
 interface GitHubReleaseAsset {
@@ -251,7 +251,7 @@ export default async function DownloadPage() {
                 <h2 className="text-xl font-semibold text-foreground">Mobile</h2>
                 <p className="mt-2 text-base text-muted-foreground">
                   Mobile companion to monitor agent runs and follow reviews from
-                  anywhere.
+                  anywhere. Free on iPhone and Android.
                 </p>
                 <div className="mt-6 flex flex-wrap items-center gap-3">
                   <MobileAppCTA />

@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+bin/
+coverage.out
+*.test
+__pycache__/
+*.pyc
+
+# Next.js web application
+node_modules/
+.next/
+.open-next/
+.wrangler/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.dev.vars
+
+# Reference files from Electron app
+refs/
+
+# Compiled cmd binaries built at the module root (source lives under cmd/<name>/)
+/ao-cloud
+/ao-cloud-agent
+/ao-cloud-healthcheck
+/ao-cloud-migrate
+/ao-worker
+/terminal-echo-probe

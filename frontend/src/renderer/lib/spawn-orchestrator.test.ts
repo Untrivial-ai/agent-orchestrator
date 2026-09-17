@@ -88,6 +88,19 @@ describe("spawnOrchestrator", () => {
 		});
 	});
 
+	it("accepts project_clone as a first-class orchestrator spawn source", async () => {
+		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+			data: { orchestrator: { id: "proj-8" } },
+			error: undefined,
+			response: { status: 201 },
+		});
+		await spawnOrchestrator("proj", "project_clone");
+		expect(captureMock).toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_requested", {
+			project_id: "proj",
+			source: "project_clone",
+		});
+	});
+
 	it("emits the failed event and rethrows when the daemon rejects the spawn", async () => {
 		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
 			data: undefined,

@@ -52,11 +52,12 @@ var claudeManagedHooks = []hooksjson.HookSpec{
 // claudeHooks manages AO's hooks in the workspace-local
 // .claude/settings.local.json file.
 var claudeHooks = hooksjson.Manager{
-	Label:         "claude-code",
-	CommandPrefix: claudeHookCommandPrefix,
-	Timeout:       claudeHookTimeout,
-	Path:          claudeSettingsPath,
-	Managed:       claudeManagedHooks,
+	Label:                 "claude-code",
+	CommandPrefix:         claudeHookCommandPrefix,
+	LegacyCommandPrefixes: []string{"ao hooks continue "},
+	Timeout:               claudeHookTimeout,
+	Path:                  claudeSettingsPath,
+	Managed:               claudeManagedHooks,
 }
 
 func claudeSettingsPath(workspacePath string) string {

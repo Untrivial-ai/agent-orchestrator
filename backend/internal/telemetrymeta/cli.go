@@ -31,6 +31,7 @@ var routineInternalCLICommands = []string{
 	"ao orchestrator ls",
 	"ao hooks",
 	"ao pty-host",
+	"ao codex-login",
 }
 
 // CLIActorType infers the actor for legacy loopback CLI telemetry requests that
@@ -65,6 +66,7 @@ func CLIActorType(actorType, commandPath string) string {
 var legacyActorlessSystemCLICommands = map[string]struct{}{
 	"ao agent-process":           {},
 	"ao agent-process supervise": {},
+	"ao chat-host":               {},
 	"ao completion":              {},
 	"ao daemon":                  {},
 	"ao help":                    {},
@@ -76,6 +78,7 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao agent":                  {},
 	"ao agent ls":               {},
 	"ao browser":                {},
+	"ao browser act":            {},
 	"ao browser check":          {},
 	"ao browser click":          {},
 	"ao browser console":        {},
@@ -146,8 +149,10 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao session":                {},
 	"ao session claim-pr":       {},
 	"ao session cleanup":        {},
+	"ao session exit-agent":     {},
 	"ao session kill":           {},
 	"ao session rename":         {},
+	"ao session resume-agent":   {},
 	"ao session restore":        {},
 	"ao spawn":                  {},
 	"ao stop":                   {},

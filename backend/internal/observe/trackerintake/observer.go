@@ -25,7 +25,7 @@ const (
 	DefaultFailureBackoff = 5 * time.Minute
 	// maxIntakePromptLen mirrors the session HTTP prompt limit. Intake uses the
 	// session service directly, so it must enforce the same boundary itself.
-	maxIntakePromptLen = 4096
+	maxIntakePromptLen = 16 << 10
 
 	intakePromptTruncationNotice = "\n\n[Issue content truncated to fit the session prompt limit. Open the linked issue for the full details.]\n"
 	intakePromptFooter           = "\nImplement the requested change in this repository, run the relevant checks, and open or update a pull request when ready."
@@ -252,7 +252,11 @@ func seenIssueIDs(sessions []domain.SessionRecord) map[domain.IssueID]bool {
 }
 
 // CanonicalIssueID stores tracker issue ids in sessions.issue_id with the
-// provider included, so future providers cannot collide on native ids.
+// provider included, so future providers cannot collide on native ids. For
+// GitLab self-managed instances the host is appended after '@' so issues
+// from different hosts with the same project path and iid are distinct
+// (e.g. gitlab.com/group/repo#7 vs gitlab.internal/group/repo#7). GitHub
+// and gitlab.com (zero-value host) produce the same format as before.
 func CanonicalIssueID(id domain.TrackerID) domain.IssueID {
 	provider := id.Provider
 	if provider == "" {
@@ -261,6 +265,10 @@ func CanonicalIssueID(id domain.TrackerID) domain.IssueID {
 	native := strings.TrimSpace(id.Native)
 	if native == "" {
 		return ""
+	}
+	host := strings.TrimSpace(id.Host)
+	if host != "" {
+		return domain.IssueID(string(provider) + ":" + native + "@" + host)
 	}
 	return domain.IssueID(string(provider) + ":" + native)
 }
@@ -318,7 +326,7 @@ func truncateUTF8(s string, maxBytes int) string {
 func trackerRepo(project domain.ProjectRecord, cfg domain.TrackerIntakeConfig) (domain.TrackerRepo, bool) {
 	provider := cfg.Provider
 	if provider == "" {
-		provider = domain.TrackerProviderGitHub
+		provider = domain.InferTrackerProvider(project.RepoOriginURL)
 	}
 	native := strings.TrimSpace(cfg.Repo)
 	if native == "" {
@@ -342,7 +350,7 @@ func parseRepoNative(remote string, provider domain.TrackerProvider) (string, bo
 	}
 	if strings.HasPrefix(remote, "git@") {
 		if _, rest, ok := strings.Cut(remote, ":"); ok {
-			return cleanRepoPath(rest), true
+			return cleanRepoPath(rest, provider), true
 		}
 		return "", false
 	}
@@ -350,14 +358,14 @@ func parseRepoNative(remote string, provider domain.TrackerProvider) (string, bo
 		if provider == domain.TrackerProviderGitHub {
 			host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
 			if host == "github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io") {
-				return cleanRepoPath(u.Path), true
+				return cleanRepoPath(u.Path, provider), true
 			}
 			return "", false
 		}
 		// GitLab: accept any host.
-		return cleanRepoPath(u.Path), true
+		return cleanRepoPath(u.Path, provider), true
 	}
-	return cleanRepoPath(remote), true
+	return cleanRepoPath(remote, provider), true
 }
 
 // repoHostFromOrigin extracts the host from the SCM origin URL for the given
@@ -396,15 +404,25 @@ func hostFromRemote(remote string) string {
 	return ""
 }
 
-func cleanRepoPath(path string) string {
+func cleanRepoPath(path string, provider domain.TrackerProvider) string {
 	path = strings.Trim(strings.TrimSpace(path), "/")
 	path = strings.TrimSuffix(path, ".git")
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
 		return ""
 	}
-	// For nested namespaces (GitLab group/subgroup/repo), take the last two
-	// segments — the tracker's List endpoint only needs owner/repo.
+	// GitLab supports nested groups (group/subgroup/repo). The full namespace
+	// path is required for GraphQL's fullPath parameter and REST project lookups.
+	if provider == domain.TrackerProviderGitLab {
+		for _, p := range parts {
+			if strings.TrimSpace(p) == "" {
+				return ""
+			}
+		}
+		return strings.Join(parts, "/")
+	}
+	// GitHub: take the last two segments (owner/repo). Sub-path segments
+	// beyond owner/repo (e.g. blob/main) are ignored.
 	owner := strings.TrimSpace(parts[len(parts)-2])
 	repo := strings.TrimSpace(parts[len(parts)-1])
 	if owner == "" || repo == "" {

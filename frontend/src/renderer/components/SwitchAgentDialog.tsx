@@ -32,6 +32,7 @@ import {
 	DialogDescription,
 	DialogTitle,
 } from "./ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export const SWITCH_AGENT_OPTIONS = [
 	{ value: "claude-code", label: "Claude Code" },
@@ -344,21 +345,29 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 									/>
 								</div>
 							</div>
-							<Button
-								aria-label={admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
-								className="size-(--size-settings-action-height)"
-								disabled={admissionPending}
-								size="none"
-								title={admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
-								type="submit"
-								variant="primary"
-							>
-								{admissionPending ? (
-									<LoaderCircle className="size-icon-base animate-spin" aria-hidden="true" />
-								) : (
-									<Repeat2 className="size-4 stroke-[1.8]" aria-hidden="true" />
-								)}
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span className="inline-flex">
+										<Button
+											aria-label={admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
+											className="size-(--size-settings-action-height)"
+											disabled={admissionPending}
+											size="none"
+											type="submit"
+											variant="primary"
+										>
+											{admissionPending ? (
+												<LoaderCircle className="size-icon-base animate-spin" aria-hidden="true" />
+											) : (
+												<Repeat2 className="size-4 stroke-[1.8]" aria-hidden="true" />
+											)}
+										</Button>
+									</span>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									{admissionPending ? t("newTask.starting") : t("switchAgent.confirm")}
+								</TooltipContent>
+							</Tooltip>
 						</div>
 						</form>
 					)}

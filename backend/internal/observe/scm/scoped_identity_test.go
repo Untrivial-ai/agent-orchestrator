@@ -221,39 +221,6 @@ func TestPoll_PerProviderIdentityResolution(t *testing.T) {
 	}
 }
 
-// TestPoll_ScopedIdentityFallbackToSingleResolver verifies that when only the
-// single-provider IdentityResolver is wired (no ScopedIdentityResolver), the
-// existing behavior is preserved: one identity is applied to all PRs.
-func TestPoll_ScopedIdentityFallbackToSingleResolver(t *testing.T) {
-	store := testStoreWithSession()
-	provider := &fakeProvider{
-		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
-		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
-			{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1", Author: "other"},
-			{URL: "https://github.com/o/r/pull/2", Number: 2, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha2", Author: "ALICE"},
-		}},
-		observations: map[string]ports.SCMObservation{prKey(testRepo, 2): testObs(2)},
-	}
-	identity := &fakeIdentityResolver{identity: ports.SCMIdentity{Login: "alice", Human: true}}
-	obs := New(provider, store, &fakeLifecycle{}, Config{
-		Clock:            func() time.Time { return time.Unix(1, 0).UTC() },
-		Tick:             time.Hour,
-		Logger:           quietSlog(),
-		CacheMax:         128,
-		IdentityResolver: identity,
-	})
-	if err := obs.Poll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if identity.calls != 1 {
-		t.Fatalf("identity resolver calls = %d, want 1", identity.calls)
-	}
-	fetched := fetchedNumbers(provider.fetchBatches)
-	if !fetched[2] || fetched[1] {
-		t.Fatalf("fetched = %v, want only PR #2 (alice's PR)", fetched)
-	}
-}
-
 // TestPoll_ScopedIdentityPartialFailure verifies that when identity resolution
 // fails for one provider, PRs from the other provider are still discovered
 // against their matching identity (finding #7).
@@ -303,11 +270,15 @@ func TestPoll_ScopedIdentityPartialFailure(t *testing.T) {
 		t.Fatalf("github PR #1 should be fetched (identity resolved), got fetched=%v", fetched)
 	}
 
-	// GitLab PR #3 should also be fetched — identity resolution failed for
-	// GitLab, so PRs from that provider fall back to branch-based discovery
-	// (no identity check, so any matching branch is accepted).
-	if !fetched[3] {
-		t.Fatalf("gitlab PR #3 should be fetched (identity failure → branch-based discovery), got fetched=%v", fetched)
+	// An unavailable identity must not borrow the other provider's identity
+	// or fall back to namespace matching.
+	if fetched[3] {
+		t.Fatalf("gitlab PR #3 must not be attached without its identity, got fetched=%v", fetched)
+	}
+	for _, write := range store.writes {
+		if write.pr.Provider == "gitlab" {
+			t.Fatal("persisted GitLab PR without a matching human identity")
+		}
 	}
 
 	// Both providers should have been queried.

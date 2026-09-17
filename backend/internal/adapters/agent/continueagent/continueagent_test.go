@@ -2,11 +2,16 @@ package continueagent
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -358,8 +363,6 @@ func TestSessionInfoFalseWhenNoHookMetadata(t *testing.T) {
 }
 
 func TestGetAgentHooksDelegates(t *testing.T) {
-	// We don't exercise the full hook merge here (claude tests cover it); just
-	// ensure delegation is wired and succeeds against a temp workspace.
 	plugin := &Plugin{resolvedBinary: "cn"}
 	ws := t.TempDir()
 	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
@@ -367,6 +370,126 @@ func TestGetAgentHooksDelegates(t *testing.T) {
 		SessionID:     "continue-test-1",
 	}); err != nil {
 		t.Fatalf("GetAgentHooks: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, ".claude", "settings.local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"ao hooks continue session-start",
+		"ao hooks continue user-prompt-submit",
+		"ao hooks continue notification",
+		"ao hooks continue stop",
+		"ao hooks continue session-end",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "ao hooks claude-code") {
+		t.Fatalf("Continue hooks must use the Continue token, got: %s", body)
+	}
+}
+
+func TestGetAgentHooksIncludesSupportedSessionStartSources(t *testing.T) {
+	ws := t.TempDir()
+	if err := (&Plugin{resolvedBinary: "cn"}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: ws}); err != nil {
+		t.Fatalf("GetAgentHooks: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, ".claude", "settings.local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Hooks map[string][]hooksjson.MatcherGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range settings.Hooks["SessionStart"] {
+		for _, hook := range group.Hooks {
+			if hook.Command == "ao hooks continue session-start" {
+				if group.Matcher == nil || *group.Matcher != "startup|resume|clear|compact" {
+					t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact", group.Matcher)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("Continue SessionStart hook not installed")
+}
+
+func TestGetAgentHooksMigratesLegacyClaudeHooks(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "cn"}
+	ws := t.TempDir()
+	settingsDir := filepath.Join(ws, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user stop hook"},{"type":"command","command":"ao hooks claude-code stop"}]}],"Notification":[{"hooks":[{"type":"command","command":"ao hooks claude-code notification"}]}]}}`
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.local.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: ws}); err != nil {
+		t.Fatalf("GetAgentHooks: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(settingsDir, "settings.local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if strings.Contains(body, "ao hooks claude-code") {
+		t.Fatalf("legacy Continue hooks were retained: %s", body)
+	}
+	if !strings.Contains(body, "user stop hook") {
+		t.Fatalf("user hook was not preserved: %s", body)
+	}
+	if !strings.Contains(body, "ao hooks continue stop") || !strings.Contains(body, "ao hooks continue notification") {
+		t.Fatalf("new Continue hooks missing: %s", body)
+	}
+}
+
+func TestClaudeInstallReplacesContinueHooks(t *testing.T) {
+	ws := t.TempDir()
+	settingsDir := filepath.Join(ws, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.local.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user stop hook"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := ports.WorkspaceHookConfig{WorkspacePath: ws}
+	if err := (&Plugin{resolvedBinary: "cn"}).GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatalf("install Continue hooks: %v", err)
+	}
+	if err := claudecode.New().GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatalf("install Claude Code hooks: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if strings.Contains(body, "ao hooks continue ") {
+		t.Fatalf("Continue hooks were retained after Claude install: %s", body)
+	}
+	if !strings.Contains(body, "ao hooks claude-code stop") {
+		t.Fatalf("Claude hooks missing after switch: %s", body)
+	}
+	if !strings.Contains(body, "user stop hook") {
+		t.Fatalf("user hook was not preserved: %s", body)
+	}
+}
+
+func TestDeriveActivityStateUsesClaudeCompatiblePayload(t *testing.T) {
+	got, ok := DeriveActivityState("notification", []byte(`{"notification_type":"agent_needs_input"}`))
+	if !ok || got != domain.ActivityWaitingInput {
+		t.Fatalf("DeriveActivityState(notification) = (%q, %v), want (%q, true)", got, ok, domain.ActivityWaitingInput)
 	}
 }
 

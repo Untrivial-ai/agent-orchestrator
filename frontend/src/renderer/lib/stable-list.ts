@@ -26,6 +26,7 @@ export function useStableList<T>(
 	equal: (a: T, b: T) => boolean,
 ): T[] {
 	const seen = useRef(new Map<string, T>());
+	const previousList = useRef<T[] | undefined>(undefined);
 	return useMemo(() => {
 		const next = new Map<string, T>();
 		const stable = list.map((entry) => {
@@ -37,7 +38,17 @@ export function useStableList<T>(
 		// Entries that dropped out of the list are dropped here too, so a long-lived
 		// surface does not accumulate the whole history of everything it has shown.
 		seen.current = next;
-		return stable;
+		// A fresh array invalidates downstream memo dependencies even when each row
+		// retained identity. Reuse the old array for a wholly unchanged list too.
+		const previous = previousList.current;
+		const result =
+			previous &&
+			previous.length === stable.length &&
+			previous.every((entry, index) => entry === stable[index])
+				? previous
+				: stable;
+		previousList.current = result;
+		return result;
 	}, [list, keyOf, equal]);
 }
 

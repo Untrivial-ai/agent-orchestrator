@@ -3,9 +3,9 @@ import { appI18n } from "../i18n";
 import type { PullRequestFacts, WorkspaceSession } from "../types/workspace";
 import {
 	openReviewStatesFor,
+	reviewHasLiveActivity,
 	reviewIsRunning,
 	reviewRunDisabled,
-	reviewRunActionKind,
 	reviewSessionRunAction,
 	sessionReviewsQueryOptions,
 	type PRReviewState,
@@ -85,6 +85,17 @@ describe("shared review eligibility helpers", () => {
 		expect(reviewIsRunning([reviewState(1, "needs_review")])).toBe(false);
 	});
 
+	it("only treats a running review as live when reviewer activity is not idle", () => {
+		const running = [reviewState(1, "running")];
+		expect(reviewHasLiveActivity(running, "active", true)).toBe(true);
+		expect(reviewHasLiveActivity(running, "blocked", true)).toBe(true);
+		expect(reviewHasLiveActivity(running, "idle", true)).toBe(false);
+		expect(reviewHasLiveActivity(running, "waiting_input", true)).toBe(false);
+		expect(reviewHasLiveActivity(running, "exited", true)).toBe(false);
+		expect(reviewHasLiveActivity(running, undefined, true)).toBe(true);
+		expect(reviewHasLiveActivity(running, "active", false)).toBe(false);
+	});
+
 	it("disables the run when triggering, with no open states, or with every state ineligible", () => {
 		expect(reviewRunDisabled([reviewState(1, "needs_review")], true)).toBe(true);
 		expect(reviewRunDisabled([], false)).toBe(true);
@@ -105,15 +116,5 @@ describe("shared review eligibility helpers", () => {
 		expect(reviewSessionRunAction([reviewState(1, "needs_review")], false)).toBe(
 			appI18n.t("inspector.review.runLatest"),
 		);
-	});
-
-	// Telemetry reports the action a user took, and it must not depend on the
-	// translated label they happened to see.
-	it("names the offered run action as a stable enum", () => {
-		expect(reviewRunActionKind([reviewState(1, "needs_review")], true)).toBe("reviewing");
-		expect(reviewRunActionKind([reviewState(1, "running")], false)).toBe("reviewing");
-		expect(reviewRunActionKind([reviewState(1, "needs_review")], false)).toBe("run_latest");
-		expect(reviewRunActionKind([reviewState(1, "changes_requested")], false)).toBe("rerun");
-		expect(reviewRunActionKind([], false)).toBe("run");
 	});
 });

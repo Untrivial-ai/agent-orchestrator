@@ -1,14 +1,49 @@
 import { type QueryClient, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
-import type { WorkspaceSession } from "../types/workspace";
-import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { toKanbanColumn, type WorkspaceSession, type WorkspaceSummary } from "../types/workspace";
+import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
+import { createRendererCloudCpClient } from "./useCloudCp";
+import { settingsQueryKey, type Settings } from "./useSettings";
 
 type TerminateSessionOptions = {
 	onSuccess?: (session: WorkspaceSession) => void;
 };
 
 export const terminateSessionMutationKey = ["terminate-session"] as const;
+
+async function terminateSession(queryClient: QueryClient, session: WorkspaceSession): Promise<void> {
+	if (session.cloud) {
+		const settings = queryClient.getQueryData<Settings>(settingsQueryKey);
+		const baseUrl = settings?.cloudControlPlaneUrl ?? "";
+		if (baseUrl === "") throw new Error("The cloud control plane is not configured.");
+		await createRendererCloudCpClient(baseUrl).deleteSession(session.cloud.orgId, session.id);
+		return;
+	}
+
+	const { error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
+		params: { path: { sessionId: session.id } },
+	});
+	if (error) {
+		const fallback = response ? `Failed to terminate session (${response.status})` : "Failed to terminate session";
+		throw new Error(apiErrorMessage(error, fallback));
+	}
+}
+
+// A killed session keeps its row and flips to terminated, which is exactly what
+// the next workspace fetch would report. Applying it locally lets the board
+// settle on the click rather than on the refetch.
+function markTerminated(sessionId: string) {
+	return (session: WorkspaceSession): WorkspaceSession =>
+		session.id === sessionId
+			? {
+				...session,
+				isTerminated: true,
+				status: "terminated",
+				kanbanColumn: toKanbanColumn(undefined, "terminated"),
+			}
+			: session;
+}
 
 type TerminateSessionMutationState = {
 	error: unknown;
@@ -57,17 +92,25 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 		mutationKey: terminateSessionMutationKey,
 		mutationFn: async (session: WorkspaceSession) => {
 			void captureRendererEvent("ao.renderer.session_kill_requested", { project_id: session.workspaceId });
-			const { error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
-				params: { path: { sessionId: session.id } },
-			});
-			if (error) {
-				const fallback = response ? `Failed to terminate session (${response.status})` : "Failed to terminate session";
-				throw new Error(apiErrorMessage(error, fallback));
-			}
+			await terminateSession(queryClient, session);
 		},
-		onSuccess: async (_data, session) => {
+		onSuccess: (_data, session) => {
 			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			// Write the outcome into the cached board first, then refresh in the
+			// background. A mutation stays `pending` until its onSuccess settles,
+			// so awaiting the refetch here kept the row's spinner up for a whole
+			// extra round trip after the daemon had already finished the kill.
+			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
+				workspaces?.map((workspace) =>
+					workspace.id === session.workspaceId
+						? { ...workspace, sessions: workspace.sessions.map(markTerminated(session.id)) }
+						: workspace,
+				),
+			);
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			// A cloud kill also lives in the cloud sessions query, which the board
+			// merges in separately, so refresh it too.
+			if (session.cloud) void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
 			options.onSuccess?.(session);
 		},
 		onError: (_error, session) => {

@@ -1,9 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ActivityRow, TurnChangedFiles } from "./ChatTimelineItems";
 import { ActivityRun } from "./ActivityRun";
 import type { ConversationActivity, TurnDiff } from "../../types/conversation";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 // These cover the two signal rules this surface exists to keep: a changed-file
 // list never claims to be complete when it was cut, and command output only adds
@@ -59,6 +65,66 @@ describe("TurnChangedFiles", () => {
 		render(<TurnChangedFiles diff={diff()} onOpenFile={onOpenFile} />);
 		await userEvent.click(screen.getByRole("button", { name: /Open src\/a\.ts in Files/ }));
 		expect(onOpenFile).toHaveBeenCalledWith("src/a.ts");
+	});
+
+	it("opens a cwd-relative path from a turn diff basename", async () => {
+		const onOpenFile = vi.fn();
+		render(
+			<TurnChangedFiles
+				diff={{
+					files: [{ path: "notes.txt", additions: 1, deletions: 0, status: "added" }],
+				}}
+				items={[
+					{
+						kind: "activity",
+						id: "a-1",
+						sequence: 1,
+						revision: 0,
+						activityKind: "command",
+						status: "completed",
+						summary: "Ran command",
+						detail: { cwd: "/Users/me/.ao/dev/data/worktrees/demo/demo-1", command: "ls" },
+						createdAt: new Date().toISOString(),
+					},
+				]}
+				onOpenFile={onOpenFile}
+			/>,
+		);
+		await userEvent.click(screen.getByRole("button", { name: /Open notes\.txt in Files/ }));
+		expect(onOpenFile).toHaveBeenCalledWith("notes.txt");
+	});
+
+	it("preserves duplicate-disambiguating suffixes for absolute turn diff paths", async () => {
+		const cwd = "/Users/me/.ao/dev/data/worktrees/demo/demo-1";
+		const onOpenFile = vi.fn();
+		render(
+			<TurnChangedFiles
+				diff={{
+					files: [
+						{ path: `${cwd}/frontend/index.ts`, additions: 1, deletions: 0, status: "modified" },
+						{ path: `${cwd}/backend/index.ts`, additions: 2, deletions: 0, status: "modified" },
+					],
+				}}
+				items={[
+					{
+						kind: "activity",
+						id: "a-1",
+						sequence: 1,
+						revision: 0,
+						activityKind: "command",
+						status: "completed",
+						summary: "Ran command",
+						detail: { cwd, command: "ls" },
+						createdAt: new Date().toISOString(),
+					},
+				]}
+				onOpenFile={onOpenFile}
+			/>,
+		);
+		await userEvent.click(screen.getByRole("button", { name: /Open frontend\/index\.ts in Files/ }));
+		expect(onOpenFile).toHaveBeenCalledWith("frontend/index.ts");
+		await userEvent.click(screen.getByRole("button", { name: /Open backend\/index\.ts in Files/ }));
+		expect(onOpenFile).toHaveBeenCalledWith("backend/index.ts");
 	});
 
 	it("shows the full path on basename hover", async () => {
@@ -284,7 +350,7 @@ describe("ActivityRun with a streaming command", () => {
 	}
 
 	it("opens itself so live output inside it is visible", () => {
-		const { container } = render(
+		render(
 			<ActivityRun
 				activities={[
 					commandActivity(
@@ -295,7 +361,28 @@ describe("ActivityRun with a streaming command", () => {
 				]}
 			/>,
 		);
-		expect(container.querySelector("pre")?.textContent).toBe("compiling…\n");
+		expect(screen.getByText("compiling…")).toBeInTheDocument();
+	});
+
+	it("opens the matching subgroup when a grouped command is streaming", () => {
+		const completedCommand = commandActivity({ command: "pwd" }, "completed");
+		completedCommand.id = "act-2";
+		completedCommand.sequence = 2;
+
+		render(
+			<ActivityRun
+				activities={[
+					commandActivity(
+						{ command: "npm run build", output: "compiling…\n", outputSource: "stream", outputMayBePartial: true },
+						"running",
+					),
+					completedCommand,
+					plan("act-3"),
+				]}
+			/>,
+		);
+
+		expect(screen.getByText("compiling…")).toBeInTheDocument();
 	});
 
 	it("stays collapsed when nothing inside it is printing", () => {
@@ -364,7 +451,7 @@ describe("ActivityRow command labels", () => {
 				)}
 			/>,
 		);
-		expect(screen.getByText("Explored 2 files")).toBeInTheDocument();
+		expect(screen.getByText("Read files")).toBeInTheDocument();
 		expect(screen.queryByText(/sed -n/)).not.toBeInTheDocument();
 	});
 
@@ -409,7 +496,7 @@ describe("ActivityRow command labels", () => {
 			/>,
 		);
 		const row = screen.getByRole("button");
-		expect(row).toHaveClass("py-0.5", "gap-1.5", "rounded-sm");
+		expect(row).toHaveClass("py-0.5", "gap-1.5", "select-none");
 		expect(screen.getByText("Checked repository")).toHaveClass(
 			"text-[11.5px]",
 			"font-normal",

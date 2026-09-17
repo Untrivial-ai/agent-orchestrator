@@ -14,8 +14,9 @@ import (
 // is a client concern; the poller only pushes live events and re-seeks to head
 // on restart.
 type cdcPipeline struct {
-	Broadcaster *cdc.Broadcaster
-	done        <-chan struct{}
+	Broadcaster   *cdc.Broadcaster
+	done          <-chan struct{}
+	retentionDone <-chan struct{}
 }
 
 // startCDC seeks the poller to the current head and starts its loop. It stops
@@ -26,12 +27,20 @@ func startCDC(ctx context.Context, store *sqlite.Store, logger *slog.Logger) (*c
 	if err := poller.SeekToHead(ctx); err != nil {
 		return nil, err
 	}
-	return &cdcPipeline{Broadcaster: bcast, done: poller.Start(ctx)}, nil
+	janitor := cdc.NewRetentionJanitor(store, cdc.RetentionConfig{Logger: logger})
+	return &cdcPipeline{
+		Broadcaster:   bcast,
+		done:          poller.Start(ctx),
+		retentionDone: janitor.Start(ctx),
+	}, nil
 }
 
 // Stop waits for the poller goroutine to exit (the caller must have cancelled the
 // ctx passed to startCDC).
 func (p *cdcPipeline) Stop() error {
 	<-p.done
+	if p.retentionDone != nil {
+		<-p.retentionDone
+	}
 	return nil
 }

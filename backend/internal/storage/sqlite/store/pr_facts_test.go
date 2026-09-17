@@ -181,3 +181,38 @@ func TestPRStateChangedAtFillsWhenProviderCreatedAtArrives(t *testing.T) {
 		t.Fatalf("same-state stateChangedAt = %s, want provider creation time %s", got.StateChangedAt, createdAt)
 	}
 }
+
+func TestListPRFactsForSessionsBatchesBySession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	first, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	second, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	now := time.Now().UTC().Truncate(time.Second)
+
+	write := func(sessionID domain.SessionID, url string, updatedAt time.Time) {
+		t.Helper()
+		if err := s.WriteSCMObservation(ctx, domain.PullRequest{
+			URL: url, SessionID: sessionID, Number: 1, HeadSHA: "head", UpdatedAt: updatedAt, ObservedAt: updatedAt,
+		}, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+			t.Fatalf("write %s: %v", url, err)
+		}
+	}
+	write(first.ID, "pr/1a", now)
+	write(first.ID, "pr/1b", now.Add(time.Second))
+	write(second.ID, "pr/2a", now.Add(2*time.Second))
+
+	got, err := s.ListPRFactsForSessions(ctx, []domain.SessionID{first.ID, second.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[first.ID]) != 2 || len(got[second.ID]) != 1 {
+		t.Fatalf("batched facts = %+v", got)
+	}
+	if got[first.ID][0].URL != "pr/1b" || got[first.ID][1].URL != "pr/1a" {
+		t.Fatalf("first session order = %+v, want newest first", got[first.ID])
+	}
+	if got[second.ID][0].URL != "pr/2a" {
+		t.Fatalf("second session facts = %+v", got[second.ID])
+	}
+}

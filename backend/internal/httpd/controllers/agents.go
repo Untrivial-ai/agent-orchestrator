@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -15,6 +16,8 @@ import (
 
 // AgentCatalog is the controller-facing contract for local agent inventory.
 type AgentCatalog interface {
+	CachedReadiness(ctx context.Context) (agentsvc.Readiness, error)
+	EnsureReadiness(ctx context.Context, agentIDs []string, purpose domain.AgentReadinessPurpose) (agentsvc.Readiness, error)
 	List(ctx context.Context) (agentsvc.Inventory, error)
 	Refresh(ctx context.Context) (agentsvc.Inventory, error)
 	Probe(ctx context.Context, agentID string) (agentsvc.ProbeResult, error)
@@ -31,9 +34,42 @@ type AgentsController struct {
 func (c *AgentsController) Register(r chi.Router) {
 	r.Get("/agents", c.list)
 	r.Post("/agents/refresh", c.refresh)
+	r.Get("/agents/readiness", c.readiness)
+	r.Post("/agents/readiness/ensure", c.ensureReadiness)
 	r.Post("/agents/{agent}/probe", c.probe)
 	r.Get("/agents/{agent}/models", c.models)
 	r.Post("/agents/{agent}/models/refresh", c.refreshModels)
+}
+
+func (c *AgentsController) readiness(w http.ResponseWriter, r *http.Request) {
+	if c.Catalog == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/readiness")
+		return
+	}
+	result, err := c.Catalog.CachedReadiness(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
+}
+
+func (c *AgentsController) ensureReadiness(w http.ResponseWriter, r *http.Request) {
+	if c.Catalog == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/readiness/ensure")
+		return
+	}
+	var request EnsureAgentReadinessRequest
+	if err := decodeJSONStrict(r, &request); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	result, err := c.Catalog.EnsureReadiness(r.Context(), request.AgentIDs, request.Purpose)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
 }
 
 func (c *AgentsController) models(w http.ResponseWriter, r *http.Request) {

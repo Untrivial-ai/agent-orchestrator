@@ -83,11 +83,34 @@ export function applyDocumentThemeStyle(style: ThemeStyle): void {
  * `transition-colors` / background tweens are hidden behind a snapshot.
  * Default VT crossfade is disabled in CSS — this is an instant cut.
  * Falls back to a plain update when the API is unavailable.
+ *
+ * Also sets `data-theme-transition` so global CSS can zero out
+ * transition-duration while tokens swap; otherwise composer, search, and
+ * switch chrome tween from the old palette and look stuck white/black.
  */
 export function runThemeTransition(update: () => void): void {
-	if (typeof document === "undefined" || typeof document.startViewTransition !== "function") {
+	if (typeof document === "undefined") return;
+
+	const root = document.documentElement;
+	const finish = () => {
+		requestAnimationFrame(() => {
+			delete root.dataset.themeTransition;
+		});
+	};
+	const run = () => {
+		root.dataset.themeTransition = "active";
 		update();
+		void root.offsetHeight;
+	};
+
+	if (typeof document.startViewTransition !== "function") {
+		run();
+		finish();
 		return;
 	}
-	document.startViewTransition(update);
+
+	const transition = document.startViewTransition(() => {
+		run();
+	});
+	void transition.finished.finally(finish);
 }

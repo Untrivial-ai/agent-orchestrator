@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 const LAST_UPDATED = "19 August 2026";
 
 const description =
-  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and aoagents.dev: local-first operation, optional analytics, waitlists, and testimonial submissions.";
+  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and orchestrator.inc: local-first operation, optional analytics, waitlists, and testimonial submissions.";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `Privacy Policy | ${COMPANY.NAME}`,
     description,
     images: [`${COMPANY.MARKETING_URL}/og-image.png`],
@@ -186,7 +186,7 @@ export default function PrivacyPage() {
                 your computer.
               </Bullet>
               <Bullet>
-                <Strong>aoagents.dev</Strong> — this website and the
+                <Strong>orchestrator.inc</Strong> — this website and the
                 documentation hosted on it.
               </Bullet>
             </Bullets>
@@ -372,7 +372,7 @@ export default function PrivacyPage() {
 
           <Section id="website" title="This website">
             <p>
-              aoagents.dev is a static site and runs no advertising. It uses
+              orchestrator.inc is a static site and runs no advertising. It uses
               PostHog analytics cookies to understand site usage and improve the
               experience, but analytics collection is disabled by default until
               you select <Strong>Accept</Strong>. Selecting opt-out keeps
@@ -431,9 +431,9 @@ export default function PrivacyPage() {
                 API keys, tokens, passwords, or any other credential.
               </Bullet>
               <Bullet>
-                Names or account information. The only email address or company
-                role we collect is information you voluntarily submit through an
-                optional waitlist.
+                Names or account information. The only email address, company
+                role, or social profile we collect is information you
+                voluntarily submit through an optional waitlist.
               </Bullet>
               <Bullet>Precise location data.</Bullet>
               <Bullet>

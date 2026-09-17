@@ -12,8 +12,9 @@
 //   1. `npx expo install @sentry/react-native`  (do not hand-pin the version),
 //      then point loadSdk() below at the real import
 //   2. add the @sentry/react-native Expo config plugin, then `npx expo prebuild`
-//   3. wire EAS build-time source-map upload (there is no OTA: no expo-updates,
-//      so maps are keyed by release + dist at EAS build time, not at OTA push)
+//   3. wire source-map upload at EAS build time AND on every `eas update`
+//      (the Sentry Expo plugin does both), and set `dist` to the running
+//      expo-updates id so an OTA bundle's maps resolve
 //   4. set EXPO_PUBLIC_SENTRY_DSN and update the store Data-Safety / App-Privacy
 //      declarations (a second processor gates the mobile release)
 // Until then this file compiles and runs as a no-op with no native dependency.

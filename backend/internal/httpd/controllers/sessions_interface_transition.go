@@ -20,7 +20,7 @@ const interfaceTransitionNoticeAcknowledgementPath = "/api/v1/sessions/{sessionI
 // keep implementing the stable SessionService surface.
 type sessionInterfaceTransitionService interface {
 	InterfaceTransitionStatus(context.Context, domain.SessionID) (sessionsvc.InterfaceTransitionStatus, error)
-	StartInterfaceTransition(context.Context, domain.SessionID, domain.SessionMode, domain.SessionInterfaceTransitionPolicy) (domain.SessionInterfaceTransition, error)
+	StartInterfaceTransition(context.Context, domain.SessionID, domain.SessionMode, domain.SessionInterfaceTransitionPolicy, domain.SessionInterfaceTransitionHistoryPolicy) (domain.SessionInterfaceTransition, error)
 	CancelInterfaceTransition(context.Context, domain.SessionID) error
 	AcknowledgeInterfaceTransitionNotice(context.Context, domain.SessionID, string) (domain.SessionInterfaceTransition, error)
 }
@@ -63,7 +63,11 @@ func (c *SessionsController) startInterfaceTransition(w http.ResponseWriter, r *
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	transition, err := service.StartInterfaceTransition(r.Context(), sessionID(r), in.TargetMode, in.Policy)
+	historyPolicy := in.HistoryPolicy
+	if historyPolicy == "" {
+		historyPolicy = domain.SessionInterfaceTransitionHistoryStrict
+	}
+	transition, err := service.StartInterfaceTransition(r.Context(), sessionID(r), in.TargetMode, in.Policy, historyPolicy)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -107,6 +111,9 @@ func (c *SessionsController) acknowledgeInterfaceTransitionNotice(w http.Respons
 }
 
 func sessionInterfaceTransitionView(transition domain.SessionInterfaceTransition) SessionInterfaceTransitionView {
+	if transition.HistoryPolicy == "" {
+		transition.HistoryPolicy = domain.SessionInterfaceTransitionHistoryStrict
+	}
 	var completedAt *time.Time
 	if !transition.CompletedAt.IsZero() {
 		value := transition.CompletedAt
@@ -120,7 +127,7 @@ func sessionInterfaceTransitionView(transition domain.SessionInterfaceTransition
 	return SessionInterfaceTransitionView{
 		ID: transition.ID, SessionID: transition.SessionID,
 		SourceMode: transition.SourceMode, TargetMode: transition.TargetMode,
-		Policy: transition.Policy, Phase: transition.Phase,
+		Policy: transition.Policy, HistoryPolicy: transition.HistoryPolicy, Phase: transition.Phase,
 		ErrorCode: transition.ErrorCode, ErrorDetail: transition.ErrorDetail,
 		CreatedAt: transition.CreatedAt, UpdatedAt: transition.UpdatedAt,
 		CompletedAt: completedAt, NoticeAcknowledgedAt: noticeAcknowledgedAt,

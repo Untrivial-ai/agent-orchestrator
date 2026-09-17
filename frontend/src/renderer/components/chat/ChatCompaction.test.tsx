@@ -1,8 +1,14 @@
-import { render, screen, within } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { typeInLexicalEditor } from "../../test/lexical";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 import type {
 	ConversationActivity,
 	ConversationItem,
@@ -14,6 +20,8 @@ import type {
 // that works for a day: every turn re-sends the history, so context fills on its
 // own until the conversation cannot accept another turn. These cover the two halves
 // the user sees — that a compaction happened, and how to cause one.
+
+beforeEach(() => localStorage.clear());
 
 function compaction(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
 	return {
@@ -154,7 +162,9 @@ describe("the compact control", () => {
 
 		expect(onCompact).not.toHaveBeenCalled();
 		expect(field).toHaveTextContent("/compact");
-		expect(screen.getByRole("alert")).toHaveTextContent("Stop the current turn");
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("Stop the current turn"),
+		);
 	});
 
 	it("surfaces a provider refusal only when the command is invoked", async () => {
@@ -170,7 +180,9 @@ describe("the compact control", () => {
 		expect(screen.queryByText("This agent cannot compact its history")).not.toBeInTheDocument();
 		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "/compact");
 		await user.keyboard("{Enter}");
-		expect(screen.getByRole("alert")).toHaveTextContent("This agent cannot compact its history");
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("This agent cannot compact its history"),
+		);
 	});
 
 	it("does not start a second compaction while one is running", async () => {
@@ -183,6 +195,8 @@ describe("the compact control", () => {
 		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "/compact");
 		await user.keyboard("{Enter}");
 		expect(onCompact).not.toHaveBeenCalled();
-		expect(screen.getByRole("alert")).toHaveTextContent("already being compacted");
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("already being compacted"),
+		);
 	});
 });

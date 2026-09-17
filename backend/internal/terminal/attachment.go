@@ -164,10 +164,14 @@ func (a *attachment) run(ctx context.Context) {
 			return
 		}
 		start := time.Now()
-		a.copyOut(p)
+		readErr := a.copyOut(p)
 		a.clearPTY(p)
 		_ = p.Close()
 		if a.shouldStop(ctx) {
+			return
+		}
+		if errors.Is(readErr, ports.ErrRuntimeProcessExited) {
+			a.markExited()
 			return
 		}
 
@@ -188,7 +192,7 @@ func (a *attachment) run(ctx context.Context) {
 }
 
 // copyOut pumps PTY output to the sink until the PTY closes or errors.
-func (a *attachment) copyOut(p ports.Stream) {
+func (a *attachment) copyOut(p ports.Stream) error {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := p.Read(buf)
@@ -198,7 +202,7 @@ func (a *attachment) copyOut(p ports.Stream) {
 			a.onData(chunk)
 		}
 		if err != nil {
-			return
+			return err
 		}
 	}
 }

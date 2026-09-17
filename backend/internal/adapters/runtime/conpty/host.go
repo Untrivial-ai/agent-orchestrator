@@ -2,9 +2,9 @@
 // detached process. It owns the agent's PTY (via the ptyConn seam), exposes
 // it over a loopback TCP socket using the B1 binary protocol, replays
 // scrollback to new clients, fans output to all connected clients, and shuts
-// down gracefully (ConPTY dispose first, then clients, then listener).
+// down gracefully (PTY dispose first, then clients, then listener).
 //
-// This file is cross-platform; only the real conptyConn impl is Windows-tagged.
+// This file is cross-platform; build-tagged files provide the native PTY.
 package conpty
 
 import (
@@ -19,6 +19,10 @@ import (
 const (
 	initialConPTYColumns = 220
 	initialConPTYRows    = 50
+	// A pty-host must never let one stalled viewer block PTY output, status
+	// probes, or every other viewer. Each client gets a bounded writer queue;
+	// filling it drops only that client and lets the terminal layer re-attach.
+	hostClientWriteBuffer = 256
 )
 
 // ptyConn is the host's handle to the running agent's pseudo-terminal.
@@ -27,7 +31,7 @@ type ptyConn interface {
 	io.Reader // PTY output (raw bytes from the terminal)
 	io.Writer // PTY input (keystrokes to the terminal)
 	Resize(cols, rows int) error
-	Close() error          // dispose the ConPTY
+	Close() error          // dispose the platform PTY
 	Done() <-chan struct{} // closed when the child process exits
 	ExitCode() (int, bool) // (code, true) once exited; (0, false) while running
 	PID() int
@@ -64,6 +68,42 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 type clientState struct {
 	cols, rows int
 	sized      bool
+
+	out       chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newClientState() *clientState {
+	return &clientState{
+		out:  make(chan []byte, hostClientWriteBuffer),
+		done: make(chan struct{}),
+	}
+}
+
+// enqueue is deliberately non-blocking. A slow client is disposable; the
+// shared PTY and every other viewer are not.
+func (c *clientState) enqueue(frame []byte) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	select {
+	case c.out <- frame:
+		return true
+	case <-c.done:
+		return false
+	default:
+		return false
+	}
+}
+
+func (c *clientState) close(conn net.Conn) {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = conn.Close()
+	})
 }
 
 // host holds the mutable state for a single pty-host session.
@@ -154,7 +194,7 @@ func (h *host) runAcceptLoop() {
 	}
 }
 
-// shutdown is idempotent: disposes the ConPTY, closes clients, closes the
+// shutdown is idempotent: disposes the PTY, closes clients, closes the
 // listener. Mirrors the pty-host.ts shutdown() function.
 // ponytail: 50ms sleep after pty.Close() gives the OS ConPTY helper
 // (conpty_console_list_agent.exe) time to release cleanly; avoids the
@@ -163,7 +203,7 @@ func (h *host) shutdown() {
 	h.shutdownOnce.Do(func() {
 		close(h.shutdownC)
 
-		// 1. Dispose the ConPTY first (critical ordering).
+		// 1. Dispose the PTY first (critical ordering).
 		_ = h.cfg.PTY.Close()
 
 		// 2. Brief grace so the OS ConPTY helper can clean up.
@@ -171,11 +211,12 @@ func (h *host) shutdown() {
 
 		// 3. Close all client connections.
 		h.mu.Lock()
-		for c := range h.clients {
-			_ = c.Close()
-		}
+		clients := h.clients
 		h.clients = make(map[net.Conn]*clientState)
 		h.mu.Unlock()
+		for conn, client := range clients {
+			client.close(conn)
+		}
 
 		// 4. Close the listener to unblock Accept.
 		_ = h.cfg.Listener.Close()
@@ -216,15 +257,25 @@ func (h *host) pumpPTY() {
 	// still connect and read scrollback.
 }
 
-// broadcast sends msg to all connected clients, removing any that error.
+// broadcast queues msg to all connected clients. Socket writes happen only in
+// each client's writer goroutine, never while h.mu is held: a viewer that stops
+// reading therefore cannot freeze status probes, new attaches, or other
+// viewers. A full queue drops that one client and lets the terminal layer
+// re-attach it with a fresh snapshot.
 func (h *host) broadcast(msg []byte) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	removed := false
-	for c := range h.clients {
-		if _, err := c.Write(msg); err != nil {
-			_ = c.Close()
-			delete(h.clients, c)
+	var dropped []struct {
+		conn   net.Conn
+		client *clientState
+	}
+	for conn, client := range h.clients {
+		if !client.enqueue(msg) {
+			delete(h.clients, conn)
+			dropped = append(dropped, struct {
+				conn   net.Conn
+				client *clientState
+			}{conn: conn, client: client})
 			removed = true
 		}
 	}
@@ -233,56 +284,86 @@ func (h *host) broadcast(msg []byte) {
 	if removed {
 		h.applyLargestLocked()
 	}
+	h.mu.Unlock()
+	for _, client := range dropped {
+		client.client.close(client.conn)
+	}
 }
 
-// sendTo sends msg to a single conn (best-effort; removes on error).
+// sendTo serializes a response behind that client's already-queued snapshot
+// and terminal output. This also prevents concurrent response/broadcast writes
+// from interleaving bytes and corrupting the frame stream.
 func (h *host) sendTo(conn net.Conn, msg []byte) {
-	if _, err := conn.Write(msg); err != nil {
-		h.mu.Lock()
-		_ = conn.Close()
+	h.mu.Lock()
+	client := h.clients[conn]
+	if client == nil {
+		h.mu.Unlock()
+		return
+	}
+	if !client.enqueue(msg) {
 		delete(h.clients, conn)
 		h.applyLargestLocked()
 		h.mu.Unlock()
+		client.close(conn)
+		return
 	}
+	h.mu.Unlock()
+}
+
+// writeClient is the only goroutine that writes to conn. Keeping all writes
+// here gives every client an ordered frame stream without putting socket
+// back-pressure under the host's global lock.
+func (h *host) writeClient(conn net.Conn, client *clientState) {
+	for {
+		select {
+		case <-client.done:
+			return
+		case frame := <-client.out:
+			if _, err := conn.Write(frame); err != nil {
+				h.removeClient(conn, client)
+				return
+			}
+		}
+	}
+}
+
+// removeClient is idempotent; both the reader and writer can discover a dead
+// connection. The identity guard prevents an obsolete goroutine from removing
+// a hypothetical replacement registered under the same net.Conn key.
+func (h *host) removeClient(conn net.Conn, client *clientState) {
+	h.mu.Lock()
+	if h.clients[conn] == client {
+		delete(h.clients, conn)
+		h.applyLargestLocked()
+	}
+	h.mu.Unlock()
+	client.close(conn)
 }
 
 // handleConn manages the lifecycle of a single client connection.
 func (h *host) handleConn(conn net.Conn) {
+	client := newClientState()
+	go h.writeClient(conn, client)
+
 	// Scrollback replay: take the ring snapshot, write it to the conn, and add
-	// the conn to the broadcast set all under a SINGLE h.mu hold. broadcast()
-	// also takes h.mu, so it cannot interleave: any PTY chunk that arrives is
-	// either already in this snapshot, or is broadcast strictly after the conn
-	// joins the set. Doing this in two separate locks would let a chunk slip
-	// into the gap (in neither the snapshot nor this client's broadcast) and be
-	// silently dropped.
-	// ponytail: the snapshot write happens while holding h.mu. It is bounded by
-	// MaxOutputLines (the ring cap), so the lock hold is bounded; upgrade path
-	// is a per-client send queue if a slow client ever stalls broadcast.
+	// the conn's queue, and add the conn to the broadcast set all under a SINGLE
+	// h.mu hold. broadcast() also takes h.mu, so any PTY chunk is either already
+	// in this snapshot or queued strictly after it. The writer goroutine keeps
+	// the socket itself outside this critical section.
 	h.mu.Lock()
-	snap := h.cfg.Ring.Snapshot()
+	snap := h.cfg.Ring.Replay()
 	if len(snap) > 0 {
 		snapFrame, err := EncodeMessage(MsgTerminalData, snap)
-		if err == nil {
-			_, err = conn.Write(snapFrame)
-		}
-		if err != nil {
+		if err != nil || !client.enqueue(snapFrame) {
 			h.mu.Unlock()
-			_ = conn.Close()
+			client.close(conn)
 			return
 		}
 	}
-	h.clients[conn] = &clientState{}
+	h.clients[conn] = client
 	h.mu.Unlock()
 
-	defer func() {
-		h.mu.Lock()
-		delete(h.clients, conn)
-		// This client is gone; if it was the largest, let the grid shrink back to
-		// the remaining largest client.
-		h.applyLargestLocked()
-		h.mu.Unlock()
-		_ = conn.Close()
-	}()
+	defer h.removeClient(conn, client)
 
 	parser := NewMessageParser(func(msgType byte, payload []byte) {
 		h.handleClientMsg(conn, msgType, payload)

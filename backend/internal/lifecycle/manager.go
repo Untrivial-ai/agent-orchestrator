@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 )
 
@@ -25,7 +27,7 @@ type sessionStore interface {
 	// UpdateSessionFromActivitySignal is a narrow, owner-generation-fenced
 	// write. It returns false when a concurrent lifecycle/agent-switch boundary
 	// made the reducer's previously read session stale.
-	UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord) (bool, error)
+	UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord, expectedRevision int64) (bool, error)
 	// ListSessions returns every session in a project. The dispatcher reads it
 	// to resolve the current orchestrator at delivery time.
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
@@ -58,6 +60,45 @@ type controllerEpochStore interface {
 		string,
 		time.Time,
 	) (bool, error)
+	RestoreSessionControllerEpoch(
+		context.Context,
+		domain.SessionID,
+		domain.SessionMode,
+		domain.SessionMode,
+		string,
+		time.Time,
+	) (bool, error)
+}
+
+// interfaceTransitionReader lets the activity reducer reject ownerless TUI
+// callbacks while an interface handoff is restoring that controller. It stays
+// optional so focused reducer fakes do not need the transition saga surface.
+type interfaceTransitionReader interface {
+	GetActiveSessionInterfaceTransition(
+		context.Context,
+		domain.SessionID,
+	) (domain.SessionInterfaceTransition, bool, error)
+}
+
+// chatSpawnStore commits the lifecycle facts and the provider boundary in one
+// transaction. A fresh provider must never become the durable session owner
+// while the conversation head still names the provider it replaced.
+type chatSpawnStore interface {
+	CommitChatSpawn(context.Context, domain.SessionRecord, domain.ConversationBranch) error
+}
+
+// preparedChatSpawnStore extends the atomic Chat publication boundary with
+// native-history projection. The callback runs on the same SQLite transaction
+// after the provider boundary and generation are staged, but before the live
+// session record is published. It remains optional for focused lifecycle fakes.
+type preparedChatSpawnStore interface {
+	CommitChatSpawnPrepared(
+		context.Context,
+		domain.SessionRecord,
+		domain.ConversationBranch,
+		*domain.ChatProviderHandoff,
+		func(context.Context) error,
+	) error
 }
 
 // agentSwitchSourceStopStore and agentSwitchTargetActivationStore are the
@@ -101,7 +142,7 @@ type sessionUsageFinalizer interface {
 		ctx context.Context,
 		id domain.SessionID,
 		expectedRuntimeLaunchID string,
-		expectedSessionRevision time.Time,
+		expectedSessionRevision int64,
 	) error
 }
 
@@ -162,6 +203,20 @@ func WithStartupSignalGate(pred func(domain.AgentHarness) bool) Option {
 	}
 }
 
+// WithUrgentNudgeGate supplies the adapter capability predicate that decides
+// whether an urgent (merge-conflict) nudge may reach a session at a
+// waiting_input prompt: true only for harnesses that report a permission dialog
+// as blocked rather than as waiting_input. Without it the reducer treats every
+// waiting_input prompt as a possible masked decision and withholds the urgent
+// nudge until the session is active or idle.
+func WithUrgentNudgeGate(pred func(domain.AgentHarness) bool) Option {
+	return func(m *Manager) {
+		if pred != nil {
+			m.urgentNudgeWaitingInputSafe = pred
+		}
+	}
+}
+
 // Manager reduces runtime, activity, spawn, and termination observations into durable session facts.
 // It also owns agent nudges caused by PR observations, including merge-conflict, CI-failure, and review-feedback prompts.
 type Manager struct {
@@ -204,6 +259,12 @@ type Manager struct {
 	// unknown harness is only written to while idle.
 	steerActive             func(domain.AgentHarness) bool
 	startupSignalGatesInput func(domain.AgentHarness) bool
+	// urgentNudgeWaitingInputSafe reports whether a harness surfaces a permission
+	// dialog AS blocked (rather than as waiting_input), so an urgent merge-conflict
+	// nudge is safe to paste at a waiting_input prompt. Supplied by the agent
+	// adapter via WithUrgentNudgeGate; the default answers false, so an unknown
+	// harness never takes an urgent write while waiting_input.
+	urgentNudgeWaitingInputSafe func(domain.AgentHarness) bool
 }
 
 // New builds a Lifecycle Manager over the session store it writes and the messenger it uses for agent nudges.
@@ -214,14 +275,15 @@ func New(store sessionStore, messenger ports.AgentMessenger, opts ...Option) *Ma
 	// WithClock option may still override this in tests.
 	clock := func() time.Time { return time.Now().UTC() }
 	m := &Manager{
-		store:                   store,
-		window:                  defaultRecentActivityWindow,
-		clock:                   clock,
-		react:                   newReactionState(),
-		flights:                 map[domain.SessionID]*toolFlight{},
-		pendingLaunches:         map[domain.SessionID]pendingLaunch{},
-		steerActive:             func(domain.AgentHarness) bool { return false },
-		startupSignalGatesInput: func(domain.AgentHarness) bool { return false },
+		store:                       store,
+		window:                      defaultRecentActivityWindow,
+		clock:                       clock,
+		react:                       newReactionState(),
+		flights:                     map[domain.SessionID]*toolFlight{},
+		pendingLaunches:             map[domain.SessionID]pendingLaunch{},
+		steerActive:                 func(domain.AgentHarness) bool { return false },
+		startupSignalGatesInput:     func(domain.AgentHarness) bool { return false },
+		urgentNudgeWaitingInputSafe: func(domain.AgentHarness) bool { return false },
 	}
 	if messenger != nil {
 		m.guard = sessionguard.New(store, messenger, nil)
@@ -381,7 +443,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 	var (
 		finalizer           sessionUsageFinalizer
 		terminationLaunch   string
-		terminationRevision time.Time
+		terminationRevision int64
 		shouldTerminate     bool
 	)
 	if err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
@@ -406,7 +468,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		}
 		finalizer = m.usageFinalizer
 		terminationLaunch = currentLaunch
-		terminationRevision = cur.UpdatedAt
+		terminationRevision = cur.Revision
 		shouldTerminate = true
 		return cur, false
 	}); err != nil || !shouldTerminate {
@@ -417,7 +479,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 
 	terminated := false
 	err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
-		if cur.IsTerminated || !cur.UpdatedAt.Equal(terminationRevision) ||
+		if cur.IsTerminated || cur.Revision != terminationRevision ||
 			cur.Metadata.RuntimeLaunchID != terminationLaunch || !matchesLaunch(cur) ||
 			!runtimeClearlyDead(f, cur.Activity, now, m.window) || m.sessionMutationInProgress(id) {
 			return cur, false
@@ -447,16 +509,48 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 	return nil
 }
 
+// A concurrent session writer can advance updated_at between lifecycle's read
+// and its guarded projection. Retry from the new durable record a bounded
+// number of times so the signal is reduced against the facts that actually won
+// instead of overwriting them with a stale full projection.
+const maxActivitySignalProjectionRetries = 3
+
 // ApplyActivitySignal records an authoritative agent activity signal and any
 // native agent session id carried alongside it. Metadata-only hooks leave the
 // existing activity and first-signal facts untouched.
 func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
+	// Subagent answers, including prompt suggestions, are not root-conversation
+	// facts. Their usage is collected independently from lifecycle metadata.
+	if s.Event == "subagent-stop" {
+		return nil
+	}
 	s.AgentSessionID = strings.TrimSpace(s.AgentSessionID)
 	s.LatestUserPrompt = strings.TrimSpace(s.LatestUserPrompt)
 	s.LatestAssistantUpdate = strings.TrimSpace(s.LatestAssistantUpdate)
 	s.TranscriptPath = strings.TrimSpace(s.TranscriptPath)
 	s.LaunchID = strings.TrimSpace(s.LaunchID)
 	s.ControllerGeneration = strings.TrimSpace(s.ControllerGeneration)
+	s.ProviderTurnID = strings.TrimSpace(s.ProviderTurnID)
+	s.SubmissionID = strings.TrimSpace(s.SubmissionID)
+	if !s.ConversationCheckpointOrigin.Valid() {
+		s.ConversationCheckpointOrigin = domain.ConversationCheckpointOriginUnknown
+	}
+	// The hook event is the provenance boundary for provider text. Native hook
+	// payloads repeat similarly named aliases on tool, lifecycle, and subagent
+	// events, so accepting a field merely because it is non-empty can promote an
+	// unrelated message into a hard native-history checkpoint. Missing event
+	// provenance is untrusted as well: these text fields and Event were introduced
+	// together on AO's activity wire contract.
+	switch s.Event {
+	case "user-prompt-submit":
+		s.LatestAssistantUpdate = ""
+	case "stop":
+		s.LatestUserPrompt = ""
+	default:
+		s.LatestUserPrompt = ""
+		s.LatestAssistantUpdate = ""
+		s.ProviderTurnID = ""
+	}
 	// A response or Stop hook produced by AO's optional source handoff request
 	// may contain last_assistant_message without echoing the internal prompt.
 	// From collection through source teardown, do not let that coordination
@@ -507,6 +601,10 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 			return ctx.Err()
 		}
 	}
+	projectionAttempts := 0
+	originalSignal := s
+retryProjection:
+	s = originalSignal
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		m.mu.Unlock()
@@ -516,26 +614,232 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s", ports.ErrSessionNotFound, id)
 	}
+	observedRevision := rec.Revision
 	now := m.clock()
 	if rec.IsTerminated {
 		delete(m.flights, id)
 		m.mu.Unlock()
 		return nil
 	}
-	if rec.Metadata.RuntimeLaunchID != "" && s.LaunchID != rec.Metadata.RuntimeLaunchID {
+	mode := domain.NormalizeSessionMode(rec.Mode)
+	// Rollback restores the TUI mode before its replacement runtime has a launch
+	// generation. While the durable transition remains active, an untagged hook
+	// can only belong to the stopped source runtime and must not claim this brief
+	// ownerless epoch. Once relaunch commits RuntimeLaunchID, the normal generation
+	// fence below takes over.
+	if mode == domain.SessionModeTUI && rec.Metadata.RuntimeLaunchID == "" && s.LaunchID == "" {
+		if reader, ok := m.store.(interfaceTransitionReader); ok {
+			_, active, transitionErr := reader.GetActiveSessionInterfaceTransition(ctx, id)
+			if transitionErr != nil {
+				m.mu.Unlock()
+				return fmt.Errorf("lifecycle: read active interface transition: %w", transitionErr)
+			}
+			if active {
+				m.mu.Unlock()
+				return nil
+			}
+		}
+	}
+	currentChatController := mode == domain.SessionModeChat &&
+		s.ControllerGeneration != "" &&
+		s.ControllerGeneration == rec.Metadata.ControllerGeneration
+	// Controller ownership is mode-specific. A Chat controller has no terminal
+	// launch id, so stale TUI metadata must not veto its current generation.
+	// Provider hooks inherited from a shell never receive that internal
+	// credential and therefore cannot mutate structured Chat lifecycle facts.
+	// In TUI, a tagged callback must name the current launch; clearing that
+	// launch during a handoff does not authorize the stopped source's callbacks.
+	if mode != domain.SessionModeChat &&
+		(s.LaunchID != "" || rec.Metadata.RuntimeLaunchID != "") &&
+		s.LaunchID != rec.Metadata.RuntimeLaunchID {
 		m.mu.Unlock()
 		return nil
 	}
-	if s.ControllerGeneration != "" &&
-		(domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat ||
-			s.ControllerGeneration != rec.Metadata.ControllerGeneration) {
+	if (mode == domain.SessionModeChat && !currentChatController) ||
+		(mode != domain.SessionModeChat && s.ControllerGeneration != "") {
 		m.mu.Unlock()
 		return nil
 	}
-	if !s.ExpectedUpdatedAt.IsZero() &&
-		!rec.UpdatedAt.Equal(s.ExpectedUpdatedAt) {
+	if s.ExpectedRevision != nil && rec.Revision != *s.ExpectedRevision {
 		m.mu.Unlock()
 		return nil
+	}
+	// Conversation text is meaningful only inside one provider identity, owner
+	// generation, and main turn. Reduce it as one durable state machine so a Stop
+	// whose UserPromptSubmit was lost can never borrow the prior turn's prompt.
+	checkpoint := rec.Metadata
+	previousNativeID := rec.Metadata.AgentSessionID
+	if previousNativeID == "" {
+		previousNativeID = rec.Metadata.ProviderConversationID
+	}
+	nativeIdentityChanged := s.AgentSessionID != "" && previousNativeID != "" && s.AgentSessionID != previousNativeID
+	if nativeIdentityChanged && !s.Timestamp.IsZero() &&
+		!rec.Metadata.NativeIdentityObservedAt.IsZero() && !s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt) {
+		m.mu.Unlock()
+		return nil
+	}
+	resetConversationCheckpoint :=
+		nativeIdentityChanged ||
+			(s.AgentSessionID != "" && s.LaunchID != "" &&
+				s.LaunchID != rec.Metadata.AgentSessionIDLaunchID) ||
+			(s.Event == "session-start" && s.LaunchID != "" &&
+				s.LaunchID != rec.Metadata.AgentSessionIDLaunchID)
+	if resetConversationCheckpoint {
+		checkpoint.LatestUserPrompt = ""
+		checkpoint.LatestAssistantUpdate = ""
+		checkpoint.LatestAssistantUpdateAt = time.Time{}
+		checkpoint.ConversationCheckpointState = domain.ConversationCheckpointEmpty
+		checkpoint.ConversationCheckpointGeneration = ""
+		checkpoint.ConversationCheckpointNativeID = ""
+		checkpoint.ConversationCheckpointTurnID = ""
+		if nativeIdentityChanged {
+			checkpoint.NativeTranscriptPath = ""
+			checkpoint.ConversationCheckpointUnsettled = false
+			checkpoint.NativeCheckpointEvidence = ""
+		}
+	}
+	ownerGeneration := ""
+	switch mode {
+	case domain.SessionModeTUI:
+		if s.LaunchID != "" {
+			ownerGeneration = s.LaunchID
+		}
+	case domain.SessionModeChat:
+		if s.ControllerGeneration != "" {
+			ownerGeneration = s.ControllerGeneration
+		}
+	}
+	checkpointNativeID := s.AgentSessionID
+	if checkpointNativeID == "" && ownerGeneration != "" &&
+		rec.Metadata.AgentSessionIDLaunchID == ownerGeneration {
+		checkpointNativeID = rec.Metadata.AgentSessionID
+	}
+	claudeNativeBoundary := rec.Harness == domain.HarnessClaudeCode && mode == domain.SessionModeTUI &&
+		ownerGeneration != "" && checkpointNativeID != "" && (s.Event == "user-prompt-submit" || s.Event == "stop")
+	if claudeNativeBoundary {
+		if checkpoint.NativeCheckpointEvidence == "" && !nativeIdentityChanged &&
+			(rec.Metadata.ConversationCheckpointState.Trusted() || rec.Metadata.ConversationCheckpointUnsettled) {
+			// A pre-upgrade pending/ambiguous boundary has no retained native witness.
+			// Starting a new evidence journal must not silently discharge that debt.
+			checkpoint.NativeCheckpointEvidence = `{"invalid":true}`
+		}
+		text := s.LatestAssistantUpdate
+		if s.Event == "user-prompt-submit" {
+			text = s.LatestUserPrompt
+		}
+		checkpoint.NativeCheckpointEvidence = domain.AppendNativeCheckpoint(
+			checkpoint.NativeCheckpointEvidence, checkpointNativeID, domain.NativeCheckpointObservation{
+				Generation: ownerGeneration, PromptID: s.ProviderTurnID, Submission: s.Event == "user-prompt-submit", SubmissionID: s.SubmissionID,
+				Text: text, Coordination: s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination,
+			})
+	}
+	switch s.Event {
+	case "user-prompt-submit":
+		if s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination {
+			// Preserve the last real human facts and their timestamp, but durably
+			// mark this owner turn as coordination so a promptless Stop cannot
+			// promote its response. Chat still checks the preceding human text.
+			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
+			checkpoint.ConversationCheckpointGeneration = ownerGeneration
+			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
+			checkpoint.ConversationCheckpointTurnID = ""
+		} else {
+			promptAt := timeOr(s.Timestamp, now)
+			sameCheckpointOwner := !resetConversationCheckpoint && ownerGeneration != "" &&
+				checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
+				checkpoint.ConversationCheckpointNativeID == checkpointNativeID
+			if sameCheckpointOwner && (promptAt.Before(checkpoint.LatestUserPromptAt) ||
+				(promptAt.Equal(checkpoint.LatestUserPromptAt) && s.LatestUserPrompt == checkpoint.LatestUserPrompt)) {
+				// A delayed/duplicate prompt must not replace a newer coherent
+				// checkpoint or clear its answer. Equal-time different text still
+				// establishes a new boundary; timestamps alone cannot order it.
+				if s.LatestUserPrompt != checkpoint.LatestUserPrompt {
+					// The timestamp may be a prior owner's high-water mark after
+					// clock skew. Do not let this prompt's Stop validate old text.
+					checkpoint.ConversationCheckpointUnsettled = true
+				}
+				break
+			}
+			checkpoint.LatestUserPrompt = s.LatestUserPrompt
+			if promptAt.After(checkpoint.LatestUserPromptAt) {
+				// Owner changes can carry skewed clocks. Preserve the last-human
+				// high-water time while replacing all checkpoint text/provenance.
+				checkpoint.LatestUserPromptAt = promptAt
+			}
+			checkpoint.LatestAssistantUpdate = ""
+			checkpoint.LatestAssistantUpdateAt = time.Time{}
+			checkpoint.ConversationCheckpointUnsettled = false
+			checkpoint.ConversationCheckpointGeneration = ""
+			checkpoint.ConversationCheckpointNativeID = ""
+			checkpoint.ConversationCheckpointTurnID = ""
+			if ownerGeneration != "" && checkpointNativeID != "" {
+				checkpoint.ConversationCheckpointState = domain.ConversationCheckpointPrompt
+				checkpoint.ConversationCheckpointGeneration = ownerGeneration
+				checkpoint.ConversationCheckpointNativeID = checkpointNativeID
+				if rec.Harness == domain.HarnessCodex {
+					checkpoint.ConversationCheckpointTurnID = s.ProviderTurnID
+				}
+			} else {
+				// An unowned event is retained conservatively for an ordinary strict
+				// switch, but explicit provider-history recovery may identify it as
+				// untrusted. It must not be upgraded by a later Stop.
+				checkpoint.ConversationCheckpointState = domain.ConversationCheckpointLegacy
+			}
+		}
+	case "stop":
+		if claudeNativeBoundary {
+			// A queued UserPromptSubmit reuses the executing prompt_id. Never certify
+			// its text with this Stop's answer; native ancestry resolves the pair at
+			// handoff, once the source is conclusively stopped.
+			checkpoint.ConversationCheckpointUnsettled = true
+			s.LatestAssistantUpdate = ""
+			break
+		}
+		coordinationStop := s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination ||
+			(checkpoint.ConversationCheckpointState == domain.ConversationCheckpointCoordination &&
+				ownerGeneration != "" && checkpointNativeID != "" &&
+				checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
+				checkpoint.ConversationCheckpointNativeID == checkpointNativeID)
+		if coordinationStop {
+			s.LatestAssistantUpdate = ""
+			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
+			checkpoint.ConversationCheckpointGeneration = ownerGeneration
+			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
+			checkpoint.ConversationCheckpointTurnID = ""
+		} else if checkpoint.ConversationCheckpointState == domain.ConversationCheckpointPrompt &&
+			!checkpoint.ConversationCheckpointUnsettled &&
+			(s.Timestamp.IsZero() || !s.Timestamp.Before(checkpoint.LatestUserPromptAt)) &&
+			ownerGeneration != "" && checkpointNativeID != "" &&
+			checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
+			checkpoint.ConversationCheckpointNativeID == checkpointNativeID &&
+			(checkpoint.ConversationCheckpointTurnID == "" || checkpoint.ConversationCheckpointTurnID == s.ProviderTurnID) {
+			checkpoint.LatestAssistantUpdate = s.LatestAssistantUpdate
+			checkpoint.LatestAssistantUpdateAt = timeOr(s.Timestamp, now)
+			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointComplete
+		} else if ownerGeneration != "" && checkpointNativeID != "" {
+			// A scoped Stop without its prompt boundary proves some completed turn
+			// exists, but neither text nor arrival order can identify it safely in a
+			// provider replay: repeated answers collide, and a delayed prior Stop may
+			// arrive after a pane-delivered prompt. Preserve the existing checkpoint
+			// and retain a hard unresolved-boundary witness instead. A later canonical
+			// prompt supersedes it; until then Chat replay must fail closed.
+			checkpoint.ConversationCheckpointUnsettled = true
+			s.LatestAssistantUpdate = ""
+		} else if checkpoint.LatestUserPrompt == "" && s.LatestAssistantUpdate != "" {
+			// An unowned standalone Stop can still be useful display/recovery context,
+			// but it has no owner boundary that would make it a trusted history gate.
+			// Retain it as legacy text without ever borrowing an earlier user prompt.
+			checkpoint.LatestAssistantUpdate = s.LatestAssistantUpdate
+			checkpoint.LatestAssistantUpdateAt = timeOr(s.Timestamp, now)
+			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointLegacy
+			checkpoint.ConversationCheckpointGeneration = ""
+			checkpoint.ConversationCheckpointNativeID = ""
+			checkpoint.ConversationCheckpointTurnID = ""
+		} else {
+			// No matching pending prompt means this Stop is duplicate, delayed, or
+			// missing its turn boundary. Preserve the prior coherent checkpoint.
+			s.LatestAssistantUpdate = ""
+		}
 	}
 	// An explicit prompt submission is proof that an agent was relaunched in the
 	// preserved shell. Other same-generation callbacks may have been delayed
@@ -548,13 +852,24 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	// Event-tagged signals fold through the session's tool-flight state first:
 	// they may be suppressed (state write skipped) by the blocked-precedence
 	// rule, while their tracking side effects still land. Untagged signals
-	// (old CLIs, adapters without tool identity) pass through untouched —
-	// last-writer-wins, exactly as before.
+	// (old CLIs, adapters without tool identity) retain their activity semantics,
+	// but only event-tagged main-turn facts may advance checkpoint text or time.
+	checkpointChanged := checkpoint.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
+		!checkpoint.LatestAssistantUpdateAt.Equal(rec.Metadata.LatestAssistantUpdateAt) ||
+		!checkpoint.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
+		checkpoint.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
+		checkpoint.ConversationCheckpointState != rec.Metadata.ConversationCheckpointState ||
+		checkpoint.ConversationCheckpointGeneration != rec.Metadata.ConversationCheckpointGeneration ||
+		checkpoint.ConversationCheckpointNativeID != rec.Metadata.ConversationCheckpointNativeID ||
+		checkpoint.ConversationCheckpointTurnID != rec.Metadata.ConversationCheckpointTurnID ||
+		checkpoint.NativeCheckpointEvidence != rec.Metadata.NativeCheckpointEvidence ||
+		checkpoint.ConversationCheckpointUnsettled != rec.Metadata.ConversationCheckpointUnsettled
 	metadataChanged := (s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID) ||
+		(s.AgentSessionID != "" && s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt)) ||
 		(s.AgentSessionID != "" && rec.Metadata.AgentSessionIDLaunchID != s.LaunchID) ||
-		(s.LatestUserPrompt != "" && rec.Metadata.LatestUserPrompt != s.LatestUserPrompt) ||
-		(s.LatestAssistantUpdate != "" && rec.Metadata.LatestAssistantUpdate != s.LatestAssistantUpdate) ||
-		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath)
+		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath) ||
+		checkpointChanged
+	toolFlightBeforeProjection := cloneToolFlight(m.flights[id])
 	if s.Valid {
 		s = m.applyToolPrecedenceLocked(id, rec.Activity.State, s)
 	}
@@ -562,16 +877,47 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
+	project := func(next domain.SessionRecord) (applied, retry bool, err error) {
+		applied, err = m.store.UpdateSessionFromActivitySignal(ctx, next, observedRevision)
+		if applied {
+			return applied, false, err
+		}
+		m.restoreToolFlightLocked(id, toolFlightBeforeProjection)
+		if err != nil {
+			return false, false, err
+		}
+		// Only revision misses may retry; unchanged ownership fences still reject
+		// the signal. Restore tool correlation before reducing the same signal again.
+		current, found, err := m.store.GetSession(ctx, id)
+		if err != nil || !found || current.Revision == observedRevision {
+			return false, false, err
+		}
+		if projectionAttempts >= maxActivitySignalProjectionRetries {
+			slog.Default().Warn("lifecycle: activity projection contention", "session", id, "event", s.Event, "attempts", projectionAttempts+1)
+			return false, false, fmt.Errorf("%w for %s: concurrent session writes exhausted %d attempts", ports.ErrActivityProjectionContention, id, projectionAttempts+1)
+		}
+		projectionAttempts++
+		return false, true, nil
+	}
 	if !s.Valid {
+		rec.Metadata = checkpoint
 		applyActivityMetadata(&rec.Metadata, s)
 		rec.UpdatedAt = now
-		_, err := m.store.UpdateSessionFromActivitySignal(ctx, rec)
+		_, retry, err := project(rec)
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		if retry {
+			goto retryProjection
+		}
 		m.mu.Unlock()
-		return err
+		return nil
 	}
 	if metadataChanged {
 		// Fold metadata into rec before copying it into next below, so the
 		// activity and resume handle land in one store update.
+		rec.Metadata = checkpoint
 		applyActivityMetadata(&rec.Metadata, s)
 	}
 	prevState := rec.Activity.State
@@ -586,14 +932,19 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	if sameState && !rec.FirstSignalAt.IsZero() {
 		if metadataChanged || s.Event == "user-prompt-submit" {
 			rec.UpdatedAt = now
-			applied, err := m.store.UpdateSessionFromActivitySignal(ctx, rec)
-			m.mu.Unlock()
+			applied, retry, err := project(rec)
 			if err != nil {
+				m.mu.Unlock()
 				return err
 			}
+			if retry {
+				goto retryProjection
+			}
 			if !applied {
+				m.mu.Unlock()
 				return nil
 			}
+			m.mu.Unlock()
 			return m.acknowledgeAgentSwitchTarget(ctx, id, s, now)
 		}
 		m.mu.Unlock()
@@ -612,10 +963,13 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		delete(m.flights, id)
 	}
 	next.UpdatedAt = now
-	applied, err := m.store.UpdateSessionFromActivitySignal(ctx, next)
+	applied, retry, err := project(next)
 	if err != nil {
 		m.mu.Unlock()
 		return err
+	}
+	if retry {
+		goto retryProjection
 	}
 	if !applied {
 		m.mu.Unlock()
@@ -717,11 +1071,25 @@ func (m *Manager) acknowledgeAgentSwitchTarget(ctx context.Context, id domain.Se
 	if !found || sw.State != domain.AgentSwitchDelivering {
 		return nil
 	}
-	_, err = store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
-	if err != nil {
-		return fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, err)
+	changed, ackErr := store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
+	if changed && ackErr == nil {
+		return nil
 	}
-	return nil
+	current, found, readErr := store.GetAgentSwitch(ctx, sw.ID)
+	if readErr != nil {
+		return ownership.Own(fmt.Errorf("lifecycle: read back agent switch %s acknowledgement: %w", sw.ID, readErr), ownership.OwnerAgentSwitchSaga)
+	}
+	if !found || current.State.Terminal() || current.State != domain.AgentSwitchDelivering ||
+		current.TargetGenerationID != domain.AgentGenerationID(signal.LaunchID) || current.TargetAcknowledgedAt != nil {
+		return nil
+	}
+	if ackErr != nil {
+		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, ackErr), ownership.OwnerAgentSwitchSaga)
+	}
+	if changed {
+		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: commit was not observable", sw.ID), ownership.OwnerAgentSwitchSaga)
+	}
+	return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: changed=false with unchanged durable predicate", sw.ID), ownership.OwnerAgentSwitchSaga)
 }
 
 // toolFlight tracks one session's in-flight tool executions and the pending
@@ -746,6 +1114,41 @@ type toolFlight struct {
 	// NOT be mistaken for the approval). Either way, empty means nothing
 	// tool-shaped may clear the block and it lifts only at a turn boundary.
 	blockedCandidate string
+	// cursorPending counts native Cursor permission dialogs by execution family
+	// and bounded tool name. Cursor does not provide tool-use ids, so a matching
+	// after-execution event can clear only its own key, and the session remains
+	// blocked until every observed dialog has completed.
+	cursorPending map[string]int
+}
+
+func cloneToolFlight(flight *toolFlight) *toolFlight {
+	if flight == nil {
+		return nil
+	}
+	clone := &toolFlight{
+		inflight:         make(map[string]string, len(flight.inflight)),
+		blockedCandidate: flight.blockedCandidate,
+		cursorPending:    make(map[string]int, len(flight.cursorPending)),
+	}
+	for id, name := range flight.inflight {
+		clone.inflight[id] = name
+	}
+	for key, count := range flight.cursorPending {
+		clone.cursorPending[key] = count
+	}
+	return clone
+}
+
+// restoreToolFlightLocked rolls back the in-memory half of a reducer attempt
+// whose durable session projection lost an optimistic revision race. The same
+// signal will immediately be reduced again against the winning session row, so
+// its tool correlation must also start from the same pre-attempt facts.
+func (m *Manager) restoreToolFlightLocked(id domain.SessionID, snapshot *toolFlight) {
+	if snapshot == nil {
+		delete(m.flights, id)
+		return
+	}
+	m.flights[id] = cloneToolFlight(snapshot)
 }
 
 // maxInflightTools caps a session's in-flight map so lost posts cannot grow
@@ -763,6 +1166,34 @@ func isPostToolUseEvent(event string) bool {
 	// post-tool-use-fail is retained for Kimchi hook files installed before the
 	// adapter switched to AO's canonical failure event name.
 	return event == "post-tool-use" || event == "post-tool-use-failure" || event == "post-tool-use-fail"
+}
+
+func cursorBeforeExecutionKey(s ports.ActivitySignal) (string, bool) {
+	if s.ToolName == "" {
+		return "", false
+	}
+	switch s.Event {
+	case "before-shell-execution":
+		return "shell\x00" + s.ToolName, true
+	case "before-mcp-execution":
+		return "mcp\x00" + s.ToolName, true
+	default:
+		return "", false
+	}
+}
+
+func cursorResolvedExecutionKey(s ports.ActivitySignal) (string, bool) {
+	if s.ToolName == "" {
+		return "", false
+	}
+	switch s.Event {
+	case "after-shell-execution", "cursor-shell-terminal-failure":
+		return "shell\x00" + s.ToolName, true
+	case "after-mcp-execution", "cursor-mcp-terminal-failure":
+		return "mcp\x00" + s.ToolName, true
+	default:
+		return "", false
+	}
 }
 
 // isTurnBoundaryEvent reports the events that reliably mean the pending
@@ -814,6 +1245,15 @@ func (m *Manager) applyToolPrecedenceLocked(id domain.SessionID, cur domain.Acti
 
 	switch {
 	case s.State == domain.ActivityBlocked:
+		if key, ok := cursorBeforeExecutionKey(s); ok {
+			f := ensure()
+			f.blockedCandidate = ""
+			if f.cursorPending == nil {
+				f.cursorPending = map[string]int{}
+			}
+			f.cursorPending[key]++
+			return s
+		}
 		// Entering (or re-asserting) blocked: snapshot the dialog's identity.
 		// permission-request carries the blocking tool_name; the Notification
 		// duplicate does not and must not wipe an existing snapshot.
@@ -828,6 +1268,7 @@ func (m *Manager) applyToolPrecedenceLocked(id domain.SessionID, cur domain.Acti
 		// candidate is recorded and the block clears only at a turn boundary
 		// (fail-closed).
 		f := ensure()
+		f.cursorPending = nil
 		// Recompute only when this signal identifies a dialog. Claude can emit an
 		// identity-less Notification duplicate after permission-request; that
 		// duplicate must not erase the candidate captured by the first signal.
@@ -867,14 +1308,28 @@ func (m *Manager) applyToolPrecedenceLocked(id domain.SessionID, cur domain.Acti
 		case isTurnBoundaryEvent(s.Event):
 			delete(m.flights, id)
 			return s
-		case isPostToolUseEvent(s.Event) &&
-			fl != nil && fl.blockedCandidate != "" && s.ToolUseID == fl.blockedCandidate:
-			// The single unambiguous blocking tool finished: the dialog was
-			// answered. Clear the candidate so a later dialog in the same turn
-			// starts from a clean slate.
-			fl.blockedCandidate = ""
-			return s
 		default:
+			if fl != nil {
+				if key, ok := cursorResolvedExecutionKey(s); ok && fl.cursorPending[key] > 0 {
+					if fl.cursorPending[key] == 1 {
+						delete(fl.cursorPending, key)
+					} else {
+						fl.cursorPending[key]--
+					}
+					if len(fl.cursorPending) == 0 {
+						delete(m.flights, id)
+						return s
+					}
+					return suppressed
+				}
+				if isPostToolUseEvent(s.Event) && fl.blockedCandidate != "" && s.ToolUseID == fl.blockedCandidate {
+					// The single unambiguous blocking tool finished: the dialog was
+					// answered. Clear the candidate so a later dialog in the same turn
+					// starts from a clean slate.
+					fl.blockedCandidate = ""
+					return s
+				}
+			}
 			// Subagent/sibling tool traffic (including a same-name sibling when
 			// the block was ambiguous), notification sub-types (idle_prompt,
 			// agent_completed), and anything else that is not proof the dialog
@@ -942,6 +1397,9 @@ func (m *Manager) emitTelemetry(ctx context.Context, ev ports.TelemetryEvent) {
 	if m.telemetry == nil {
 		return
 	}
+	if ev.RequestID == "" {
+		ev.RequestID = reqid.FromContext(ctx)
+	}
 	m.telemetry.Emit(ctx, ev)
 }
 
@@ -971,8 +1429,80 @@ func (m *Manager) resolveNotifications(ctx context.Context, resolutions ...ports
 	}
 }
 
+// MarkChatReconnected adopts the same live provider after daemon replacement.
+// Generation has already been claimed by Chat Service. Reconnection is not
+// activity: preserve the activity, signal receipt, and user-visible update time.
+func (m *Manager) MarkChatReconnected(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok || rec.IsTerminated || rec.Mode != domain.SessionModeChat ||
+		metadata.ProviderConversationID == "" || metadata.ProviderConversationID != rec.Metadata.ProviderConversationID ||
+		metadata.ControllerGeneration == "" || metadata.ControllerGeneration != rec.Metadata.ControllerGeneration {
+		return fmt.Errorf("lifecycle: live Chat reconnect for %q no longer owns the session", id)
+	}
+	// There are no new lifecycle facts to persist. In particular, avoid a full
+	// record write that could overwrite activity arriving during reconnection.
+	return nil
+}
+
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.
 func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	return m.markSpawned(ctx, id, metadata, nil, nil, nil)
+}
+
+// MarkChatSpawned atomically marks a Chat controller live and publishes the
+// fresh provider boundary reserved before the provider process connected.
+func (m *Manager) MarkChatSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary domain.ConversationBranch,
+) error {
+	if boundary.ID == "" || boundary.ConversationID == "" || boundary.SessionID != id ||
+		boundary.ProviderConversationID == "" || boundary.ProviderScopeID != boundary.ID ||
+		metadata.ProviderConversationID != boundary.ProviderConversationID ||
+		strings.TrimSpace(metadata.ControllerGeneration) == "" {
+		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
+	}
+	return m.markSpawned(ctx, id, metadata, &boundary, nil, nil)
+}
+
+// MarkChatSpawnedPrepared publishes native history together with its reserved
+// provider boundary and lifecycle owner. The preparation callback is executed
+// only by the storage transaction; no controller is registered and the session
+// remains externally unavailable until the complete unit commits.
+func (m *Manager) MarkChatSpawnedPrepared(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
+	prepare func(context.Context) error,
+) error {
+	if prepare == nil {
+		return errors.New("lifecycle: Chat provider-history preparation is missing")
+	}
+	if boundary.ID == "" || boundary.ConversationID == "" || boundary.SessionID != id ||
+		boundary.ProviderConversationID == "" || boundary.ProviderScopeID != boundary.ID ||
+		metadata.ProviderConversationID != boundary.ProviderConversationID ||
+		strings.TrimSpace(metadata.ControllerGeneration) == "" {
+		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
+	}
+	return m.markSpawned(ctx, id, metadata, &boundary, handoff, prepare)
+}
+
+func (m *Manager) markSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary *domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
+	prepare func(context.Context) error,
+) error {
 	launchID := strings.TrimSpace(metadata.RuntimeLaunchID)
 	reactivator, err := func() (sessionUsageReactivator, error) {
 		m.mu.Lock()
@@ -993,9 +1523,35 @@ func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata
 		// a stale "signals worked once" fact.
 		rec.FirstSignalAt = time.Time{}
 		rec.Metadata = mergeMetadata(rec.Metadata, metadata)
+		if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
+			strings.TrimSpace(metadata.ControllerGeneration) != "" {
+			// A committed Chat controller is the sole session owner. Clear any
+			// terminal identity retained by an older handoff/recovery build so it
+			// cannot confuse runtime observation or a later daemon restart.
+			rec.Metadata.RuntimeHandleID = ""
+			rec.Metadata.RuntimeLaunchID = ""
+		}
 		rec.UpdatedAt = now
-		if err := m.store.UpdateSession(ctx, rec); err != nil {
-			return nil, err
+		if boundary == nil {
+			if err := m.store.UpdateSession(ctx, rec); err != nil {
+				return nil, err
+			}
+		} else if prepare == nil {
+			writer, ok := m.store.(chatSpawnStore)
+			if !ok {
+				return nil, errors.New("lifecycle: atomic Chat spawn persistence is unavailable")
+			}
+			if err := writer.CommitChatSpawn(ctx, rec, *boundary); err != nil {
+				return nil, err
+			}
+		} else {
+			writer, ok := m.store.(preparedChatSpawnStore)
+			if !ok {
+				return nil, errors.New("lifecycle: atomic Chat provider-history persistence is unavailable")
+			}
+			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, handoff, prepare); err != nil {
+				return nil, err
+			}
 		}
 		return m.usageReactivator, nil
 	}()
@@ -1018,6 +1574,33 @@ func (m *Manager) CommitControllerEpoch(
 	source, target domain.SessionMode,
 	nativeConversationID string,
 	startFresh bool,
+) (bool, error) {
+	return m.changeControllerEpoch(
+		ctx, id, source, target, nativeConversationID, startFresh, false,
+	)
+}
+
+// RestoreControllerEpoch rolls an incomplete handoff back to its source owner.
+// It deliberately preserves replay checkpoint provenance: the target never
+// became live, so a later strict retry must still prove the same checkpoint.
+func (m *Manager) RestoreControllerEpoch(
+	ctx context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeConversationID string,
+	startFresh bool,
+) (bool, error) {
+	return m.changeControllerEpoch(
+		ctx, id, source, target, nativeConversationID, startFresh, true,
+	)
+}
+
+func (m *Manager) changeControllerEpoch(
+	ctx context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeConversationID string,
+	startFresh, restore bool,
 ) (bool, error) {
 	if !source.Valid() || !target.Valid() || source == target {
 		return false, fmt.Errorf("lifecycle: invalid controller epoch %q -> %q", source, target)
@@ -1049,9 +1632,16 @@ func (m *Manager) CommitControllerEpoch(
 		return false, nil
 	}
 	now := m.clock()
-	changed, err := writer.CommitSessionControllerEpoch(
-		ctx, id, source, target, nativeConversationID, now,
-	)
+	var changed bool
+	if restore {
+		changed, err = writer.RestoreSessionControllerEpoch(
+			ctx, id, source, target, nativeConversationID, now,
+		)
+	} else {
+		changed, err = writer.CommitSessionControllerEpoch(
+			ctx, id, source, target, nativeConversationID, now,
+		)
+	}
 	if err != nil || !changed {
 		m.mu.Unlock()
 		return changed, err
@@ -1068,6 +1658,20 @@ func (m *Manager) CommitControllerEpoch(
 	next.Metadata.AgentSessionIDLaunchID = ""
 	next.Metadata.ProviderConversationID = nativeConversationID
 	next.Metadata.ControllerGeneration = ""
+	if !restore && target == domain.SessionModeTUI {
+		// The checkpoint admitted the source Terminal transcript into Chat. Once
+		// Chat hands ownership back, newer Chat turns are represented by AO's
+		// durable high-water facts; retaining the old Terminal text would compare
+		// it against the latest provider turn on the next round trip and fail a
+		// valid replay closed. A new TUI main-turn hook establishes fresh text.
+		next.Metadata.LatestUserPrompt = ""
+		next.Metadata.LatestAssistantUpdate = ""
+		next.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
+		next.Metadata.ConversationCheckpointGeneration = ""
+		next.Metadata.ConversationCheckpointNativeID = ""
+		next.Metadata.ConversationCheckpointTurnID = ""
+		next.Metadata.ConversationCheckpointUnsettled = false
+	}
 	next.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
 	next.UpdatedAt = now
 	delete(m.flights, id)
@@ -1118,8 +1722,8 @@ func (m *Manager) ActivateAgentSwitchTarget(
 	return writer.ActivateAgentSwitchTarget(ctx, activation)
 }
 
-// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session to
-// the structured controller generation that Chat Service already claimed.
+// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
+// from the fenced source generation to the structured target controller.
 func (m *Manager) ActivateChatAgentSwitchTarget(
 	ctx context.Context,
 	activation domain.AgentSwitchChatTargetActivation,
@@ -1152,7 +1756,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		}
 
 		launchID := rec.Metadata.RuntimeLaunchID
-		sessionRevision := rec.UpdatedAt
+		sessionRevision := rec.Revision
 		m.mu.Lock()
 		finalizer := m.usageFinalizer
 		m.mu.Unlock()
@@ -1173,7 +1777,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 			case cur.Metadata.RuntimeLaunchID != launchID:
 				outcome = terminationLaunchChanged
 				return cur, false
-			case !cur.UpdatedAt.Equal(sessionRevision):
+			case cur.Revision != sessionRevision:
 				return cur, false
 			default:
 				cur.IsTerminated = true
@@ -1193,7 +1797,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		case terminationLaunchChanged:
 			return fmt.Errorf("lifecycle: runtime launch changed while terminating session %q", id)
 		default:
-			// A same-launch activity transition changed UpdatedAt after usage was
+			// A same-launch session write changed revision after usage was
 			// finalized. Retry from a fresh snapshot so termination and usage
 			// finalization commit against the same durable revision.
 			continue
@@ -1207,9 +1811,11 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 // RetireForReplacement, and tracker-driven termination - funnels through
 // here, so this single hook covers every terminal-state path rather than
 // only explicit ao session kill. Best-effort: logged on failure, never
-// returned, matching the rest of AO's terminal-state teardown. A project-load
-// error skips reaping rather than guessing - the package's stated bias is to
-// spare on ambiguity, not to reap on it.
+// returned, matching the rest of AO's terminal-state teardown. Standalone
+// sessions have no project-level opt-out, so they use the default reap-enabled
+// policy. For project sessions, a project-load error skips reaping rather than
+// guessing - the package's stated bias is to spare on ambiguity, not to reap on
+// it.
 func (m *Manager) reapSessionContainers(ctx context.Context, id domain.SessionID) {
 	if m.containers == nil {
 		return
@@ -1220,13 +1826,15 @@ func (m *Manager) reapSessionContainers(ctx context.Context, id domain.SessionID
 			slog.Default().Warn("lifecycle: container reap: session lookup failed, skipping", "session", id, "err", err)
 			return
 		}
-		project, ok, err := m.projects.GetProject(ctx, string(rec.ProjectID))
-		if err != nil || !ok {
-			slog.Default().Warn("lifecycle: container reap: project lookup failed or missing, skipping rather than guessing", "session", id, "project", rec.ProjectID, "err", err)
-			return
-		}
-		if project.Config.ContainerReap.Disabled {
-			return
+		if !rec.IsStandalone() {
+			project, ok, err := m.projects.GetProject(ctx, string(rec.ProjectID))
+			if err != nil || !ok {
+				slog.Default().Warn("lifecycle: container reap: project lookup failed or missing, skipping rather than guessing", "session", id, "project", rec.ProjectID, "err", err)
+				return
+			}
+			if project.Config.ContainerReap.Disabled {
+				return
+			}
 		}
 	}
 	removed, err := m.containers.ReapSessionContainers(ctx, id)
@@ -1243,7 +1851,7 @@ func finalizeSessionUsage(
 	ctx context.Context,
 	id domain.SessionID,
 	expectedRuntimeLaunchID string,
-	expectedSessionRevision time.Time,
+	expectedSessionRevision int64,
 	finalizer sessionUsageFinalizer,
 ) {
 	if finalizer == nil {
@@ -1294,8 +1902,18 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	set(&base.AgentSessionIDLaunchID, in.AgentSessionIDLaunchID)
 	set(&base.Prompt, in.Prompt)
 	set(&base.LatestUserPrompt, in.LatestUserPrompt)
+	if !in.LatestUserPromptAt.IsZero() {
+		base.LatestUserPromptAt = in.LatestUserPromptAt
+	}
+	if !in.LatestAssistantUpdateAt.IsZero() {
+		base.LatestAssistantUpdateAt = in.LatestAssistantUpdateAt
+	}
+	if !in.NativeIdentityObservedAt.IsZero() {
+		base.NativeIdentityObservedAt = in.NativeIdentityObservedAt
+	}
 	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
 	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
+	set(&base.Model, in.Model)
 	set(&base.BrowserCapabilityVerifier, in.BrowserCapabilityVerifier)
 	// The chat controller's resume handle. Without this a restart has no thread to
 	// resume and the conversation is stranded — the provider still holds it, but
@@ -1312,12 +1930,9 @@ func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySi
 	if signal.AgentSessionID != "" {
 		meta.AgentSessionID = signal.AgentSessionID
 		meta.AgentSessionIDLaunchID = signal.LaunchID
-	}
-	if signal.LatestUserPrompt != "" {
-		meta.LatestUserPrompt = signal.LatestUserPrompt
-	}
-	if signal.LatestAssistantUpdate != "" {
-		meta.LatestAssistantUpdate = signal.LatestAssistantUpdate
+		if signal.Timestamp.After(meta.NativeIdentityObservedAt) {
+			meta.NativeIdentityObservedAt = signal.Timestamp
+		}
 	}
 	if signal.TranscriptPath != "" {
 		meta.NativeTranscriptPath = signal.TranscriptPath

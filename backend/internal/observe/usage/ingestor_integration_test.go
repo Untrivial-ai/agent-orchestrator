@@ -8,13 +8,165 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing/catalogsync"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
+
+// Break caught: activating a new catalog after estimation but before the
+// source event commit could leave an old-version event behind after the new
+// provider backfill had already passed it.
+func TestIngestorHoldsPricingFenceThroughApplyUsageChunk(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, source, path, now := seedCodexIngestionSource(t, dataDir)
+	content := `{"type":"session_meta","payload":{"model_provider":"openai"}}` + "\n" +
+		`{"type":"turn_context","payload":{"model":"gpt-test"}}` + "\n" +
+		string(codexTokenLine("2026-07-28T10:00:00Z", 100, 60, 0, 20, 5)) + "\n"
+	mustNoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	oldSnapshot := testPricingSnapshot(t, "0.000001")
+	newSnapshot := testPricingSnapshot(t, "0.000002")
+	manager := pricing.NewManager(oldSnapshot)
+	interleaved := &applyInterleavingStore{Store: store}
+	activationAdmission := make(chan struct{})
+	activationDone := make(chan error, 1)
+	interleaved.beforeApply = func() {
+		observedCtx := &fenceAdmissionContext{Context: ctx, admitted: activationAdmission}
+		go func() {
+			_, err := manager.Activate(observedCtx, newSnapshot)
+			activationDone <- err
+		}()
+		<-activationAdmission
+		select {
+		case err := <-activationDone:
+			t.Fatalf("activation crossed the ingestion commit fence: %v", err)
+		default:
+		}
+	}
+
+	ingestor := NewIngestor(interleaved, IngestorConfig{
+		Clock:   func() time.Time { return now },
+		Pricing: manager,
+	})
+	if _, err := ingestor.Ingest(ctx, source.ID); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if err := <-activationDone; err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	var total sql.NullInt64
+	var version string
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db"))
+	mustNoError(t, err)
+	defer func() { _ = db.Close() }()
+	mustNoError(t, db.QueryRowContext(ctx, `
+SELECT estimated_cost_nanos, pricing_version
+FROM model_usage_events
+WHERE usage_source_id = ?`, source.ID).Scan(&total, &version))
+	if !total.Valid || total.Int64 != 86_000 {
+		t.Fatalf("estimated total = %+v, want 86000 nano-USD", total)
+	}
+	if want := oldSnapshot.ProviderVersion("openai"); version != want {
+		t.Fatalf("pricing version = %q, want pre-activation %q", version, want)
+	}
+}
+
+// Break caught: shutdown cancellation while ingestion waits for catalog
+// activation admission must leave both the source cursor and events untouched.
+func TestIngestorCancelsWhileWaitingForPricingFence(t *testing.T) {
+	dataDir := t.TempDir()
+	store, source, path, now := seedCodexIngestionSource(t, dataDir)
+	content := `{"type":"session_meta","payload":{"model_provider":"openai"}}` + "\n" +
+		`{"type":"turn_context","payload":{"model":"gpt-test"}}` + "\n" +
+		string(codexTokenLine("2026-07-28T10:00:00Z", 100, 60, 0, 20, 5)) + "\n"
+	mustNoError(t, os.WriteFile(path, []byte(content), 0o600))
+	manager := pricing.NewManager(testPricingSnapshot(t, "0.000001"))
+	release, err := manager.Fence().Acquire(context.Background())
+	mustNoError(t, err)
+	defer release()
+
+	readComplete := make(chan struct{})
+	ingestor := NewIngestor(store, IngestorConfig{
+		Clock: func() time.Time { return now }, Pricing: manager,
+	})
+	ingestor.afterRead = func() { close(readComplete) }
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, ingestErr := ingestor.Ingest(ctx, source.ID)
+		result <- ingestErr
+	}()
+	<-readComplete
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ingest error = %v, want context canceled", err)
+	}
+	persisted, ok, err := store.GetUsageSourceForIngestion(context.Background(), source.ID)
+	mustNoError(t, err)
+	if !ok || persisted.Source.ByteOffset != 0 {
+		t.Fatalf("canceled source = %+v ok=%v", persisted.Source, ok)
+	}
+	aggregates, err := store.ListUsageModelAggregates(context.Background(), sourceSessionID(t, store, source.ID))
+	mustNoError(t, err)
+	if len(aggregates) != 0 {
+		t.Fatalf("canceled ingestion persisted events: %+v", aggregates)
+	}
+}
+
+// Break caught: optional price arithmetic failure must not strand valid token
+// facts or their durable transcript cursor in an endless retry loop.
+func TestIngestorPersistsUsageUnpricedWhenEstimationOverflows(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, source, path, now := seedCodexIngestionSource(t, dataDir)
+	content := `{"type":"session_meta","payload":{"model_provider":"openai"}}` + "\n" +
+		`{"type":"turn_context","payload":{"model":"gpt-test"}}` + "\n" +
+		string(codexTokenLine("overflow", int64(^uint64(0)>>1), 0, 0, 0, 0)) + "\n"
+	mustNoError(t, os.WriteFile(path, []byte(content), 0o600))
+	snapshot := testPricingSnapshot(t, "1")
+	pricingErrors := make(chan error, 1)
+	ingestor := NewIngestor(store, IngestorConfig{
+		Clock:          func() time.Time { return now },
+		Pricing:        pricing.NewManager(snapshot),
+		OnPricingError: func(err error) { pricingErrors <- err },
+	})
+	if _, err := ingestor.Ingest(ctx, source.ID); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	select {
+	case err := <-pricingErrors:
+		if err == nil {
+			t.Fatal("nil pricing error callback")
+		}
+	default:
+		t.Fatal("pricing overflow was not reported")
+	}
+
+	persisted, ok, err := store.GetUsageSourceForIngestion(ctx, source.ID)
+	mustNoError(t, err)
+	if !ok || persisted.Source.ByteOffset != int64(len(content)) {
+		t.Fatalf("overflow source cursor = %+v ok=%v", persisted.Source, ok)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db"))
+	mustNoError(t, err)
+	defer func() { _ = db.Close() }()
+	var total sql.NullInt64
+	var version string
+	var input int64
+	mustNoError(t, db.QueryRow(`SELECT input_tokens, estimated_cost_nanos, pricing_version
+FROM model_usage_events WHERE usage_source_id = ?`, source.ID).Scan(&input, &total, &version))
+	if input != int64(^uint64(0)>>1) || total.Valid || version != snapshot.ProviderVersion("openai") {
+		t.Fatalf("overflow event = input %d total %+v version %q", input, total, version)
+	}
+}
 
 func TestIngestorPersistsVersionedCodexParserStateAcrossChunks(t *testing.T) {
 	ctx := context.Background()
@@ -985,6 +1137,52 @@ func ingestSourceFully(ctx context.Context, t *testing.T, ingestor *Ingestor, so
 type applyInterleavingStore struct {
 	*sqlite.Store
 	beforeApply func()
+}
+
+type fenceAdmissionContext struct {
+	context.Context
+	admitted chan struct{}
+	once     sync.Once
+}
+
+func (c *fenceAdmissionContext) Err() error {
+	c.once.Do(func() { close(c.admitted) })
+	return c.Context.Err()
+}
+
+func testPricingSnapshot(t *testing.T, openAIInputRate string) *pricing.Snapshot {
+	t.Helper()
+	root := t.TempDir()
+	upstream := []byte(`{
+  "anthropic/claude-test": {
+    "litellm_provider": "anthropic",
+    "mode": "chat",
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0
+  },
+  "openai/gpt-test": {
+    "litellm_provider": "openai",
+    "mode": "responses",
+    "input_cost_per_token": ` + openAIInputRate + `,
+    "cache_read_input_token_cost": 0.0000001,
+    "output_cost_per_token": 0.000002
+  },
+  "zai/glm-test": {
+    "litellm_provider": "zai",
+    "mode": "chat",
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0
+  }
+}`)
+	_, err := catalogsync.Sync(root, upstream, catalogsync.Source{
+		Repository: "BerriAI/litellm",
+		Revision:   "0123456789abcdef0123456789abcdef01234567",
+		Path:       "model_prices_and_context_window.json",
+	})
+	mustNoError(t, err)
+	catalog, err := pricing.NewCache(root).Load(t.Context())
+	mustNoError(t, err)
+	return catalog.Snapshot()
 }
 
 func (s *applyInterleavingStore) ApplyUsageChunk(

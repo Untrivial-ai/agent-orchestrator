@@ -13,11 +13,14 @@ import (
 type agentOperationKind string
 
 const (
-	agentOperationSwitch  agentOperationKind = "switch"
-	agentOperationResume  agentOperationKind = "resume"
-	agentOperationKill    agentOperationKind = "kill"
-	agentOperationRestore agentOperationKind = "restore"
-	agentOperationRetire  agentOperationKind = "retire"
+	agentOperationSwitch            agentOperationKind = "switch"
+	agentOperationExit              agentOperationKind = "exit"
+	agentOperationResume            agentOperationKind = "resume"
+	agentOperationKill              agentOperationKind = "kill"
+	agentOperationRestore           agentOperationKind = "restore"
+	agentOperationRetire            agentOperationKind = "retire"
+	agentOperationReconcile         agentOperationKind = "reconcile"
+	agentOperationInterfaceRecovery agentOperationKind = "interface_recovery"
 )
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")
@@ -74,13 +77,21 @@ func (m *Manager) SessionMutationInProgress(id domain.SessionID) bool {
 
 func (m *Manager) agentOperationActiveLocked(id domain.SessionID) bool {
 	_, ok := m.agentOperations[id]
-	return ok
+	_, deferred := m.deferredInterfaceRecovery[id]
+	return ok || deferred
 }
 
 func (m *Manager) agentSwitchDecisionInputAllowedLocked(id domain.SessionID) bool {
-	switching := m.agentOperations[id] == agentOperationSwitch
-	_, allowed := m.switchDecisionInput[id]
-	return switching && allowed
+	if _, deferred := m.deferredInterfaceRecovery[id]; deferred {
+		return false
+	}
+	switch m.agentOperations[id] {
+	case agentOperationSwitch:
+		_, allowed := m.switchDecisionInput[id]
+		return allowed
+	default:
+		return false
+	}
 }
 
 // beginAgentOperation closes input admission before waiting for already-issued
@@ -113,6 +124,50 @@ func (m *Manager) beginAgentOperation(ctx context.Context, id domain.SessionID, 
 	}
 }
 
+// beginAgentOperations reserves every currently-unowned session before waiting
+// for any admitted input to drain. Startup reconciliation uses this batch form
+// so candidates queued behind its worker limit are fenced just as early as the
+// candidates already being probed.
+func (m *Manager) beginAgentOperations(ctx context.Context, ids []domain.SessionID, kind agentOperationKind) ([]domain.SessionID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type reservation struct {
+		id      domain.SessionID
+		drained <-chan struct{}
+	}
+	reservations := make([]reservation, 0, len(ids))
+	m.agentOpMu.Lock()
+	for _, id := range ids {
+		id = domain.SessionID(strings.TrimSpace(string(id)))
+		if id == "" || m.agentOperationActiveLocked(id) {
+			continue
+		}
+		m.agentOperations[id] = kind
+		reservations = append(reservations, reservation{id: id, drained: m.inputDrained[id]})
+	}
+	m.agentOpMu.Unlock()
+
+	for _, reservation := range reservations {
+		if reservation.drained == nil {
+			continue
+		}
+		select {
+		case <-reservation.drained:
+		case <-ctx.Done():
+			for _, reserved := range reservations {
+				m.endAgentOperation(reserved.id, kind)
+			}
+			return nil, ctx.Err()
+		}
+	}
+	acquired := make([]domain.SessionID, 0, len(reservations))
+	for _, reservation := range reservations {
+		acquired = append(acquired, reservation.id)
+	}
+	return acquired, nil
+}
+
 func (m *Manager) endAgentOperation(id domain.SessionID, kind agentOperationKind) {
 	m.agentOpMu.Lock()
 	defer m.agentOpMu.Unlock()
@@ -122,7 +177,34 @@ func (m *Manager) endAgentOperation(id domain.SessionID, kind agentOperationKind
 	}
 	if current, ok := m.agentOperations[id]; ok && current == kind {
 		delete(m.agentOperations, id)
+		m.resumeDeferredInterfaceRecoveryLocked(id)
 	}
+}
+
+// The deferred fence survives the foreign operation's release. Recovery, not
+// that operation, is responsible for reopening input after its durable commit.
+func (m *Manager) resumeDeferredInterfaceRecoveryLocked(id domain.SessionID) {
+	transitionID, deferred := m.deferredInterfaceRecovery[id]
+	if !deferred {
+		return
+	}
+	if err := m.beginAgentSwitchAttempt(); err != nil {
+		return // Preserve the fence for the next boot after shutdown admission closes.
+	}
+	go func() {
+		defer m.agentSwitchWorkers.Done()
+		recovered, err := m.recoverInterfaceTransitions(m.backgroundContext, transitionID)
+		if err != nil {
+			m.logger.Error("interface transition: deferred recovery failed", "sessionID", id, "error", err)
+		} else if len(recovered) == 0 {
+			// The exact obligation was cancelled/settled before the worker read it.
+			m.agentOpMu.Lock()
+			if m.deferredInterfaceRecovery[id] == transitionID {
+				delete(m.deferredInterfaceRecovery, id)
+			}
+			m.agentOpMu.Unlock()
+		}
+	}()
 }
 
 func (m *Manager) allowAgentSwitchDecisionInput(id domain.SessionID, switchID domain.AgentSwitchID) {
@@ -247,6 +329,7 @@ func (m *Manager) releaseRetainedAgentSwitch(id domain.SessionID) {
 	}
 	delete(m.retainedSwitches, id)
 	delete(m.agentOperations, id)
+	m.resumeDeferredInterfaceRecoveryLocked(id)
 }
 
 func (m *Manager) beginAgentResume(ctx context.Context, id domain.SessionID) error {

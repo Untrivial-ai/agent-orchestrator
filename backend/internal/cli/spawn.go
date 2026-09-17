@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,6 +21,7 @@ const maxDisplayNameLen = 20
 
 type spawnOptions struct {
 	project         string
+	standalone      bool
 	harness         string
 	kind            string
 	mode            string
@@ -39,8 +39,9 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
-	ProjectID       string `json:"projectId"`
+	ProjectID       string `json:"projectId,omitempty"`
 	IssueID         string `json:"issueId,omitempty"`
+	ParentSessionID string `json:"parentSessionId,omitempty"`
 	TrackerProvider string `json:"trackerProvider,omitempty"`
 	Kind            string `json:"kind,omitempty"`
 	Mode            string `json:"mode,omitempty"`
@@ -53,29 +54,27 @@ type spawnRequest struct {
 
 type spawnResult struct {
 	Session struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
+		ID          string `json:"id"`
+		Status      string `json:"status"`
+		DisplayName string `json:"displayName"`
 	} `json:"session"`
 	PromptBytes       int `json:"promptBytes,omitempty"`
 	SystemPromptBytes int `json:"systemPromptBytes,omitempty"`
-}
-
-type agentProbeResult struct {
-	Agent     agentInfo `json:"agent"`
-	Supported bool      `json:"supported"`
-	Installed bool      `json:"installed"`
 }
 
 func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	var opts spawnOptions
 	cmd := &cobra.Command{
 		Use:   "spawn",
-		Short: "Spawn an agent session in a registered project",
-		Long: "Spawn an agent session (worker or orchestrator) in a registered project.\n\n" +
+		Short: "Spawn an agent session",
+		Long: "Spawn an agent session in a registered project, or a standalone worker with --standalone.\n\n" +
 			"The session runs the chosen agent in a\n" +
-			"fresh isolated workspace. Git projects use worktrees; Scratch uses an AO-managed directory.",
+			"fresh isolated workspace. Git projects use worktrees; standalone agents use an AO-managed plain directory.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.standalone && strings.TrimSpace(opts.project) != "" {
+				return usageError{fmt.Errorf("--standalone and --project cannot be used together")}
+			}
 			if opts.noTakeover && opts.claimPR == "" {
 				return usageError{fmt.Errorf("--no-takeover requires --claim-pr")}
 			}
@@ -95,6 +94,18 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if opts.kind != "" && opts.kind != "worker" && opts.kind != "orchestrator" {
 				return usageError{fmt.Errorf(`--kind must be "worker" or "orchestrator"`)}
 			}
+			if opts.standalone {
+				if opts.kind == "orchestrator" {
+					return usageError{fmt.Errorf("standalone sessions must be workers")}
+				}
+				if strings.TrimSpace(opts.branch) != "" || strings.TrimSpace(opts.issue) != "" || strings.TrimSpace(opts.claimPR) != "" {
+					return usageError{fmt.Errorf("standalone sessions do not support --branch, --issue, or --claim-pr")}
+				}
+				if strings.TrimSpace(opts.harness) == "" {
+					return usageError{fmt.Errorf("--agent is required with --standalone")}
+				}
+				opts.kind = "worker"
+			}
 
 			tp := strings.TrimSpace(opts.trackerProvider)
 			if tp == "" {
@@ -105,11 +116,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			opts.trackerProvider = tp
 
-			project, err := ctx.resolveSpawnProject(cmd.Context(), opts.project)
-			if err != nil {
-				return err
+			var project projectDetails
+			var err error
+			if !opts.standalone {
+				project, err = ctx.resolveSpawnProject(cmd.Context(), opts.project)
+				if err != nil {
+					return err
+				}
+				opts.project = project.ID
 			}
-			opts.project = project.ID
 
 			harness, err := resolveSpawnHarness(opts.harness, opts.kind, project)
 			if err != nil {
@@ -141,6 +156,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			req := spawnRequest{
 				ProjectID:       opts.project,
 				IssueID:         opts.issue,
+				ParentSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
 				TrackerProvider: opts.trackerProvider,
 				Kind:            opts.kind,
 				Harness:         opts.harness,
@@ -153,6 +169,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			var res spawnResult
 			if err := ctx.postJSON(cmd.Context(), "sessions", req, &res); err != nil {
 				return err
+			}
+			if strings.TrimSpace(res.Session.ID) == "" {
+				return fmt.Errorf("daemon returned empty session id for spawn")
 			}
 			claimed := ""
 			if opts.claimPR != "" {
@@ -176,7 +195,11 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if res.PromptBytes > 0 || res.SystemPromptBytes > 0 {
 				promptSize = fmt.Sprintf(" [prompt %d B, system %d B]", res.PromptBytes, res.SystemPromptBytes)
 			}
-			_, err = fmt.Fprintf(out, "spawned session %s (%s)%s%s\n", res.Session.ID, res.Session.Status, claimLabel, promptSize)
+			displayName := res.Session.DisplayName
+			if displayName == "" {
+				displayName = name
+			}
+			_, err = fmt.Fprintf(out, "spawned session %s %q (%s)%s%s\n", res.Session.ID, displayName, res.Session.Status, claimLabel, promptSize)
 			return err
 		},
 	}
@@ -189,11 +212,12 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 		}
 		return pflag.NormalizedName(name)
 	})
-	f.StringVar(&opts.project, "project", "", "Project id to spawn the session in (default: AO_PROJECT_ID, current registered repo, or Scratch when it is the only project)")
+	f.StringVar(&opts.project, "project", "", "Project id to spawn the session in (default: AO_PROJECT_ID or the current registered repo)")
+	f.BoolVar(&opts.standalone, "standalone", false, "Spawn a projectless worker in an AO-managed plain directory (requires --agent)")
 	f.StringVar(&opts.harness, "harness", "", "Agent harness / --agent: claude-code, codex, aider, opencode, grok, droid, amp, agy, crush, cursor, qwen, copilot, goose, auggie, continue, devin, cline, kimi, muse, kiro, kilocode, vibe, pi, kimchi, prime-agent, autohand (default: project worker.agent; orchestrator spawns default to project orchestrator.agent; required if the project has none)")
 	f.StringVar(&opts.kind, "kind", "", "Session role: worker or orchestrator (default: worker)")
 	f.StringVar(&opts.mode, "mode", "", "Initial session interface: chat (structured agent connection) or tui (the agent's native terminal). Omitted uses the daemon default; compatible sessions can switch later.")
-	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for Scratch)")
+	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for standalone or Scratch sessions)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
@@ -201,22 +225,23 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Immediately claim an existing PR for the spawned session")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
-	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip advisory agent catalog install/auth preflight before spawning")
+	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")
 	return cmd
 }
 
 func (c *commandContext) fetchAgentInventory(ctx context.Context, refresh bool) (agentInventory, error) {
-	var inv agentInventory
 	if refresh {
-		if err := c.postJSON(ctx, "agents/refresh", struct{}{}, &inv); err != nil {
+		var inventory agentInventory
+		if err := c.postJSON(ctx, "agents/refresh", struct{}{}, &inventory); err != nil {
 			return agentInventory{}, err
 		}
-		return inv, nil
+		return inventory, nil
 	}
-	if err := c.getJSON(ctx, "agents", &inv); err != nil {
+	readiness, err := c.ensureAgentReadiness(ctx, nil, "display")
+	if err != nil {
 		return agentInventory{}, err
 	}
-	return inv, nil
+	return readinessInventory(readiness), nil
 }
 
 func (c *commandContext) resolveSpawnProject(ctx context.Context, explicit string) (projectDetails, error) {
@@ -240,7 +265,7 @@ func (c *commandContext) resolveSpawnProject(ctx context.Context, explicit strin
 	if ok {
 		return project, nil
 	}
-	return projectDetails{}, usageError{fmt.Errorf("project could not be resolved; pass --project or run `ao project add --path <repo-path> --worker-agent <agent>`")}
+	return projectDetails{}, usageError{fmt.Errorf("project could not be resolved; pass --project, use --standalone, or run `ao project add --path <repo-path> --worker-agent <agent>`")}
 }
 
 func (c *commandContext) resolveProjectFromSession(ctx context.Context, sessionID string) (projectDetails, error) {
@@ -273,7 +298,6 @@ func (c *commandContext) resolveProjectFromCWD(ctx context.Context) (projectDeta
 	})
 
 	var best projectDetails
-	details := make(map[string]projectDetails, len(list.Projects))
 	bestLen := -1
 	ambiguous := false
 	for _, summary := range list.Projects {
@@ -281,7 +305,6 @@ func (c *commandContext) resolveProjectFromCWD(ctx context.Context) (projectDeta
 		if err != nil {
 			return projectDetails{}, false, err
 		}
-		details[summary.ID] = project
 		if project.Path == "" {
 			continue
 		}
@@ -303,26 +326,12 @@ func (c *commandContext) resolveProjectFromCWD(ctx context.Context) (projectDeta
 		}
 	}
 	if bestLen == -1 {
-		if scratch, ok := onlyScratchProject(list.Projects, details); ok {
-			return scratch, true, nil
-		}
 		return projectDetails{}, false, nil
 	}
 	if ambiguous {
 		return projectDetails{}, false, usageError{fmt.Errorf("current directory matches multiple registered projects; pass --project")}
 	}
 	return best, true, nil
-}
-
-func onlyScratchProject(summaries []projectSummary, details map[string]projectDetails) (projectDetails, bool) {
-	if len(summaries) != 1 {
-		return projectDetails{}, false
-	}
-	project := details[summaries[0].ID]
-	if isScratchProject(project) {
-		return project, true
-	}
-	return projectDetails{}, false
 }
 
 func isScratchProject(project projectDetails) bool {
@@ -373,92 +382,43 @@ func resolveSpawnHarness(explicit, kind string, project projectDetails) (string,
 }
 
 func (c *commandContext) preflightSpawnAgentAuth(ctx context.Context, cmd *cobra.Command, agentID string) error {
-	inv, err := c.fetchAgentInventory(ctx, true)
+	readiness, err := c.ensureAgentReadiness(ctx, []string{agentID}, "launch")
 	if err != nil {
-		return err
-	}
-	state := agentCatalogStateFor(inv, agentID)
-	if !state.supported {
-		return fmt.Errorf("agent %q is not supported by this daemon; pass a supported --agent or run `ao agent ls`", agentID)
-	}
-	if !state.installed || state.authStatus == "unauthorized" {
-		fresh, err := c.probeSpawnAgent(ctx, agentID)
-		if err != nil {
-			if agentProbeUnavailable(err) {
-				_, err = fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q fresh readiness probe is unavailable; continuing and letting spawn validate runtime readiness\n", agentID)
-				return err
-			}
-			return err
-		}
-		if !fresh.Supported {
+		var apiErr apiResponseError
+		if errors.As(err, &apiErr) && apiErr.ErrorBody.Code == "UNKNOWN_AGENT_ID" {
 			return fmt.Errorf("agent %q is not supported by this daemon; pass a supported --agent or run `ao agent ls`", agentID)
 		}
-		if !fresh.Installed {
-			return fmt.Errorf("agent %q needs install; install the agent CLI or pass --skip-agent-check to let spawn validate it", agentID)
-		}
-		state.installed = true
-		state.authorized = fresh.Agent.AuthStatus == "authorized"
-		state.authStatus = fresh.Agent.AuthStatus
+		return err
 	}
-	if state.authorized {
+	if len(readiness.Agents) != 1 {
+		return fmt.Errorf("agent %q is not supported by this daemon; pass a supported --agent or run `ao agent ls`", agentID)
+	}
+	snapshot := readiness.Agents[0]
+	if snapshot.Installation.State == "not_installed" {
+		return fmt.Errorf("agent %q needs install; install the agent CLI before spawning", agentID)
+	}
+	if snapshot.Installation.State == "unknown" {
+		_, err = fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q installation status is unknown; continuing and letting spawn validate runtime readiness\n", agentID)
+		return err
+	}
+	if snapshot.Authentication.State == "authorized" || snapshot.Authentication.State == "not_applicable" {
 		return nil
 	}
-	if state.authStatus == "unauthorized" {
-		_, err = fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q may need auth according to a fresh local probe; continuing and letting spawn validate runtime readiness\n", agentID)
+	if snapshot.Authentication.State == "unauthorized" {
+		_, err = fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q may need auth according to daemon readiness; continuing and letting spawn validate runtime readiness\n", agentID)
 		return err
 	}
 	_, err = fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q auth status is unknown; continuing and letting spawn validate runtime readiness\n", agentID)
 	return err
 }
 
-func (c *commandContext) probeSpawnAgent(ctx context.Context, agentID string) (agentProbeResult, error) {
-	var result agentProbeResult
-	if err := c.postJSON(ctx, "agents/"+url.PathEscape(agentID)+"/probe", struct{}{}, &result); err != nil {
-		return agentProbeResult{}, err
+func (c *commandContext) ensureAgentReadiness(ctx context.Context, agentIDs []string, purpose string) (agentReadinessResponse, error) {
+	var result agentReadinessResponse
+	request := ensureAgentReadinessRequest{AgentIDs: agentIDs, Purpose: purpose}
+	if err := c.postJSON(ctx, "agents/readiness/ensure", request, &result); err != nil {
+		return agentReadinessResponse{}, err
 	}
 	return result, nil
-}
-
-func agentProbeUnavailable(err error) bool {
-	var apiErr apiResponseError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	return apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusNotImplemented
-}
-
-type agentCatalogState struct {
-	supported  bool
-	installed  bool
-	authorized bool
-	authStatus string
-}
-
-func agentCatalogStateFor(inv agentInventory, agentID string) agentCatalogState {
-	state := agentCatalogState{}
-	for _, info := range inv.Supported {
-		if info.ID == agentID {
-			state.supported = true
-			break
-		}
-	}
-	for _, info := range inv.Authorized {
-		if info.ID == agentID {
-			state.installed = true
-			state.authorized = true
-			state.authStatus = "authorized"
-			return state
-		}
-	}
-	for _, info := range inv.Installed {
-		if info.ID == agentID {
-			state.installed = true
-			state.authorized = info.AuthStatus == "authorized"
-			state.authStatus = info.AuthStatus
-			return state
-		}
-	}
-	return state
 }
 
 // rollbackSpawnedSession reverses a partial `spawn` whose out-of-band follow-up

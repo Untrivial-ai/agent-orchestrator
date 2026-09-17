@@ -185,7 +185,7 @@ export function describeRegisterFailure(
 				title: "This build can't receive push notifications",
 				message:
 					platform === "ios"
-						? "This iOS build has no push entitlement. Install a build distributed through TestFlight to receive notifications."
+						? "This build can't receive notifications. Install Agent Orchestrator from the App Store to turn them on."
 						: "The device couldn't provide a push token for this build.",
 			};
 		case "denied":

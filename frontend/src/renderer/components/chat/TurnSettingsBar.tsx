@@ -12,12 +12,12 @@
  *
  * ACP agents advertise those same dimensions as live session options. They share
  * this chrome rather than each growing a row of pickers: model and thought level
- * club into the left-hand control, mode sits on the right where Codex approvals
- * live, and anything else nests under More. The lists inside are still the
+ * club into the left-hand control, while a provider-owned mode (such as planning)
+ * stays separate from AO's approval policy. The lists inside are still the
  * provider's; only the grouping of the triggers is AO's.
  */
 
-import { Fragment, useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useMemo, type FocusEvent, type ReactNode } from "react";
 import { Shuffle } from "lucide-react";
 import {
 	OptionMenu,
@@ -30,6 +30,8 @@ import {
 	OptionMenuTrigger,
 } from "../ui/option-menu";
 import { cn } from "../../lib/utils";
+import { Switch } from "../ui/switch";
+import { ModelMenuChoices } from "./ModelMenuChoices";
 import type {
 	ApprovalMode,
 	ChatConfigOption,
@@ -39,18 +41,32 @@ import type {
 	TurnSettings,
 } from "../../types/conversation";
 
-/**
- * AO's four approval modes, in increasing order of what the agent may do without
- * asking. The hints say what each actually permits rather than naming a policy.
- */
-const APPROVAL_COPY: Record<ApprovalMode, { label: string; hint: string }> = {
-	default: { label: "Default", hint: "Never asks — the worktree is the boundary" },
-	"accept-edits": { label: "Ask outside worktree", hint: "Edits here are free; anything else asks" },
-	auto: { label: "Ask when unsure", hint: "The agent decides when to check with you" },
-	"bypass-permissions": { label: "Never ask", hint: "No approvals, no sandbox" },
+/** AO's generic approval modes, used by harnesses without a native vocabulary. */
+const APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
+	default: { label: "Default approvals" },
+	"accept-edits": { label: "Accept edits" },
+	auto: { label: "Auto-approve" },
+	"bypass-permissions": { label: "Bypass permissions" },
 };
 
 const APPROVAL_ORDER: ApprovalMode[] = [
+	"default",
+	"accept-edits",
+	"auto",
+	"bypass-permissions",
+];
+
+// Codex has three distinct permission profiles. Its default is already full
+// access in AO's isolated worktree posture, so expose it as that rather than a
+// fourth, ambiguous "default" option.
+const CODEX_APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
+	default: { label: "Full access" },
+	"accept-edits": { label: "Ask for approval" },
+	auto: { label: "Approve for me" },
+	"bypass-permissions": { label: "Bypass permissions" },
+};
+
+const CODEX_APPROVAL_ORDER: ApprovalMode[] = [
 	"default",
 	"accept-edits",
 	"auto",
@@ -64,8 +80,13 @@ const CHAT_MENU_CLASS = "chat-settings-menu text-[12px]!";
 export function TurnSettingsBar({
 	models,
 	settings,
+	harness,
 	reroute,
 	onChange,
+	onRememberPermissions,
+	rememberPermissionsPending,
+	rememberPermissionsError,
+	rememberedPermissionMode,
 	configOptions,
 	onChangeConfigOption,
 	configPending,
@@ -75,6 +96,8 @@ export function TurnSettingsBar({
 }: {
 	models: ChatModel[];
 	settings: TurnSettings;
+	/** The active provider selects its own supported permission vocabulary. */
+	harness?: string;
 	/**
 	 * The provider answered with a different model than the one chosen. Separate from
 	 * `settings` all the way down: settings are what the user asked for, this is what
@@ -83,12 +106,17 @@ export function TurnSettingsBar({
 	 */
 	reroute?: ModelReroute;
 	onChange?: (next: TurnSettings) => void;
+	onRememberPermissions?: (mode: ApprovalMode) => Promise<unknown> | void;
+	rememberPermissionsPending?: boolean;
+	rememberPermissionsError?: string;
+	rememberedPermissionMode?: ApprovalMode;
 	/** Controls advertised by an ACP agent for this exact live session. */
 	configOptions?: ChatConfigOption[];
 	onChangeConfigOption?: (
 		optionId: string,
 		value: ChatConfigOptionValue,
 	) => Promise<unknown> | void;
+	/** Prevent overlapping writes because provider responses replace the catalog. */
 	configPending?: boolean;
 	error?: string;
 	disabled?: boolean;
@@ -96,10 +124,11 @@ export function TurnSettingsBar({
 	children?: ReactNode;
 }) {
 	const selected = models.find((model) => model.id === settings.model);
-	const fallback = models.find((model) => model.default);
-	// The label says what will actually be used: the provider's default is a real
-	// answer, not an absence, so it is named rather than shown as "none".
-	const chosenLabel = selected?.displayName ?? fallback?.displayName ?? "Provider default";
+	const fallback = settings.model ? undefined : models.find((model) => model.default);
+	// A catalog miss must not relabel an explicit choice or borrow another model's
+	// effort settings. Custom or newly available models may not be listed yet.
+	const chosenLabel =
+		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Provider default";
 	const rerouted = reroute
 		? models.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
 		: undefined;
@@ -107,20 +136,46 @@ export function TurnSettingsBar({
 	const efforts = (selected ?? fallback)?.efforts ?? [];
 	const effortLabel =
 		settings.reasoningEffort ?? (selected ?? fallback)?.defaultEffort ?? undefined;
-	const approvalLabel = APPROVAL_COPY[settings.approvalMode ?? "default"].label;
+	const approvalCopy = harness === "codex" ? CODEX_APPROVAL_COPY : APPROVAL_COPY;
+	const approvalOrder = harness === "codex" ? CODEX_APPROVAL_ORDER : APPROVAL_ORDER;
+	const approvalLabel = approvalCopy[settings.approvalMode ?? "default"].label;
 	const modelGroupLabel = effortLabel
 		? `${modelLabel} ${capitalize(effortLabel)}`
 		: modelLabel;
 	const grouped = partitionConfigOptions(configOptions ?? []);
-	const optionDisabled = Boolean(disabled || configPending);
+	const optionDisabled = Boolean(disabled || configPending || rememberPermissionsPending);
 	const applyOption = (optionId: string, value: ChatConfigOptionValue) => {
 		if (!onChangeConfigOption) return;
 		void Promise.resolve(onChangeConfigOption(optionId, value)).catch(() => {});
 	};
-	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
-	const clubbedLeft = grouped.model.length > 0 || grouped.effort.length > 0 || grouped.extra.length > 0;
 	const modeOption = grouped.mode;
-	const showRightDropdown = Boolean(onChange || modeOption);
+	const inlineExecutionMode =
+		grouped.executionMode && isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
+	const standaloneExecutionMode =
+		grouped.executionMode && !isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
+	const planning = isPlanMode(grouped.executionMode);
+	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
+	const clubbedLeft =
+		grouped.model.length > 0 ||
+		grouped.effort.length > 0 ||
+		Boolean(inlineExecutionMode) ||
+		grouped.toggles.length > 0 ||
+		grouped.extra.length > 0;
+	const rememberMode = modeOption
+		? modeOption.choices.find((choice) => choice.value === modeOption.currentValue)?.permissionMode
+		: settings.approvalMode ?? "default";
+	const rememberAction = onRememberPermissions && rememberMode && !planning ? (
+		<OptionMenuItem
+			disabled={optionDisabled}
+			onSelect={() => {
+				void Promise.resolve(onRememberPermissions(rememberMode)).catch(() => {});
+			}}
+			className="mt-1 border-t border-border pt-2 text-xs"
+		>
+			Remember for this project
+		</OptionMenuItem>
+	) : null;
+	const showRightDropdown = Boolean(children || (!planning && (onChange || modeOption)));
 
 	return (
 		<div role="group" aria-label="Turn settings" className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -131,7 +186,7 @@ export function TurnSettingsBar({
 							models={models}
 							settings={settings}
 							onChange={onChange}
-							disabled={disabled}
+							disabled={optionDisabled}
 							modelLabel={modelLabel}
 							groupLabel={modelGroupLabel}
 							effortLabel={effortLabel}
@@ -139,6 +194,8 @@ export function TurnSettingsBar({
 							reroute={reroute}
 							rerouted={rerouted}
 							chosenLabel={chosenLabel}
+							executionMode={inlineExecutionMode}
+							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							onChangeConfigOption={onChangeConfigOption ? applyOption : undefined}
 						/>
@@ -148,7 +205,17 @@ export function TurnSettingsBar({
 						<ClubbedConfigPicker
 							modelOptions={grouped.model}
 							effortOptions={grouped.effort}
+							executionMode={inlineExecutionMode}
+							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
+							disabled={optionDisabled}
+							onChange={applyOption}
+						/>
+					) : null}
+
+					{standaloneExecutionMode && onChangeConfigOption ? (
+						<ExecutionModePicker
+							option={standaloneExecutionMode}
 							disabled={optionDisabled}
 							onChange={applyOption}
 						/>
@@ -158,31 +225,26 @@ export function TurnSettingsBar({
 				{showRightDropdown || children ? (
 					<div className="flex h-7 shrink-0 items-center gap-1">
 						{children}
-						{modeOption && onChangeConfigOption ? (
+						{!planning && modeOption && onChangeConfigOption ? (
 							<ConfigOptionPicker
 								option={modeOption}
 								disabled={optionDisabled}
 								onChange={(value) => applyOption(modeOption.id, value)}
+								footer={rememberAction}
 							/>
 						) : onChange ? (
 							<Picker
 								label={approvalLabel}
-								title="What the agent may do without asking"
-								disabled={disabled}
+													title="Approval policy for the next turn"
+													disabled={optionDisabled}
 							>
-								<OptionMenuLabel
-									className={cn("flex items-baseline justify-between gap-2 text-[12px]!")}
-								>
-									<span>Approvals</span>
-									<span className="text-[11px] font-normal text-muted-foreground">
-										Applies to the next turn
-									</span>
-								</OptionMenuLabel>
-								{APPROVAL_ORDER.map((mode) => (
+								{approvalOrder.map((mode) => (
 									<OptionMenuItem
 										key={mode}
+										active={mode === (settings.approvalMode ?? "default")}
+										radio
 										onSelect={() => onChange({ ...settings, approvalMode: mode })}
-										className={cn("flex-col items-start gap-0.5")}
+										className={cn("text-xs")}
 									>
 										<span
 											className={cn(
@@ -192,18 +254,24 @@ export function TurnSettingsBar({
 													: "text-muted-foreground",
 											)}
 										>
-											{APPROVAL_COPY[mode].label}
-										</span>
-										<span className="text-[11px] leading-snug text-muted-foreground">
-											{APPROVAL_COPY[mode].hint}
+											{approvalCopy[mode].label}
 										</span>
 									</OptionMenuItem>
 								))}
+								{rememberAction}
 							</Picker>
 						) : null}
 					</div>
 				) : null}
 			</div>
+			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
+				<p role="status" className="px-1 text-[11px] text-muted-foreground">
+					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
+				</p>
+			) : null}
+			{rememberPermissionsError ? (
+				<p role="alert" className="px-1 text-[11px] text-destructive">{rememberPermissionsError}</p>
+			) : null}
 			{error ? (
 				<p role="alert" className="px-1 text-[11px] leading-snug text-destructive">
 					{error}
@@ -225,6 +293,8 @@ function ModelEffortPicker({
 	reroute,
 	rerouted,
 	chosenLabel,
+	executionMode,
+	toggles = [],
 	extraOptions = [],
 	onChangeConfigOption,
 }: {
@@ -239,30 +309,12 @@ function ModelEffortPicker({
 	reroute?: ModelReroute;
 	rerouted?: string;
 	chosenLabel: string;
+	executionMode?: ChatConfigOption;
+	toggles?: ChatConfigOption[];
 	extraOptions?: ChatConfigOption[];
 	onChangeConfigOption?: (optionId: string, value: ChatConfigOptionValue) => void;
 }) {
-	const modelScrollRef = useRef<HTMLDivElement>(null);
-	const [modelSubOpen, setModelSubOpen] = useState(false);
-	const [canScrollDown, setCanScrollDown] = useState(false);
-	const updateScrollCue = useCallback(() => {
-		const element = modelScrollRef.current;
-		setCanScrollDown(
-			Boolean(element && element.scrollHeight - element.scrollTop > element.clientHeight + 1),
-		);
-	}, []);
-	useLayoutEffect(() => {
-		if (!modelSubOpen) {
-			setCanScrollDown(false);
-			return;
-		}
-		updateScrollCue();
-		const element = modelScrollRef.current;
-		if (!element || typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(updateScrollCue);
-		observer.observe(element);
-		return () => observer.disconnect();
-	}, [modelSubOpen, updateScrollCue, models.length, reroute]);
+	const catalog = useMemo(() => models.map((model) => ({ ...model, label: model.displayName })), [models]);
 
 	return (
 		<OptionMenu>
@@ -291,56 +343,24 @@ function ModelEffortPicker({
 					) : null}
 				</OptionMenuTrigger>
 			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
-				<OptionMenuSub onOpenChange={setModelSubOpen}>
+				<OptionMenuSub>
 					<OptionMenuSubTrigger label="Model" value={modelLabel} />
 					{/* Scroll on an inner strip: the surface utility caps height but wheel
 					    events do not reliably reach an outer overflow on nested submenus. */}
-					<OptionMenuSubContent scrollable className={CHAT_MENU_CLASS}>
-						<div className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
-							<div
-								ref={modelScrollRef}
-								className="model-menu-scroll flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1"
-								onScroll={updateScrollCue}
-							>
-								{models.map((model) => (
-									<OptionMenuItem
-										key={model.id}
-										active={model.id === settings.model}
-										onSelect={() =>
-											onChange({ ...settings, model: model.id, reasoningEffort: undefined })
-										}
-										className={cn("flex-col items-start gap-0.5")}
-									>
-										<span className="flex w-full items-baseline gap-2">
-											<span
-												className={cn(
-																"text-xs",
-													model.id === settings.model
-														? "text-foreground"
-														: "text-muted-foreground",
-												)}
-											>
-												{model.displayName}
-											</span>
-											{model.default ? (
-												<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-													default
-												</span>
-											) : null}
-										</span>
-										{model.description ? (
-											<span className="text-[11px] leading-snug text-muted-foreground">
-												{model.description}
-											</span>
-										) : null}
-									</OptionMenuItem>
-								))}
-							</div>
-							<div
-								className={cn("model-menu-overflow-cue", canScrollDown ? "opacity-100" : "opacity-0")}
-								aria-hidden="true"
-							/>
-						</div>
+					<OptionMenuSubContent scrollable className={CHAT_MENU_CLASS} onFocus={focusModelSearch}>
+						<ModelMenuChoices models={catalog}>
+							{(matches) => matches.map((model) => (
+								<OptionMenuItem
+									key={model.id}
+									active={model.id === settings.model}
+									radio
+									onSelect={() => onChange({ ...settings, model: model.id, reasoningEffort: undefined })}
+									className={cn("text-xs", model.id === settings.model ? "text-foreground" : "text-muted-foreground")}
+								>
+									{model.displayName}
+								</OptionMenuItem>
+							))}
+						</ModelMenuChoices>
 					</OptionMenuSubContent>
 				</OptionMenuSub>
 
@@ -352,6 +372,7 @@ function ModelEffortPicker({
 								<OptionMenuItem
 									key={effort}
 									active={effort === settings.reasoningEffort}
+									radio
 									onSelect={() => onChange({ ...settings, reasoningEffort: effort })}
 									className={cn("text-xs")}
 								>
@@ -369,6 +390,12 @@ function ModelEffortPicker({
 						</OptionMenuSubContent>
 					</OptionMenuSub>
 				) : null}
+				{executionMode && onChangeConfigOption ? (
+					<PlanModeToggle option={executionMode} onChange={onChangeConfigOption} />
+				) : null}
+				{toggles.map((option) => (
+					<ConfigToggle key={option.id} option={option} onChange={onChangeConfigOption!} />
+				))}
 				{extraOptions.length > 0 && onChangeConfigOption ? (
 					<MoreOptionsSubmenu options={extraOptions} onChange={onChangeConfigOption} />
 				) : null}
@@ -380,12 +407,16 @@ function ModelEffortPicker({
 function ClubbedConfigPicker({
 	modelOptions,
 	effortOptions,
+	executionMode,
+	toggles,
 	extraOptions,
 	disabled,
 	onChange,
 }: {
 	modelOptions: ChatConfigOption[];
 	effortOptions: ChatConfigOption[];
+	executionMode?: ChatConfigOption;
+	toggles: ChatConfigOption[];
 	extraOptions: ChatConfigOption[];
 	disabled?: boolean;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
@@ -395,9 +426,12 @@ function ClubbedConfigPicker({
 	const modelLabel = primaryModel ? optionCurrentLabel(primaryModel) : undefined;
 	const effortLabel = primaryEffort ? optionCurrentLabel(primaryEffort) : undefined;
 	const groupLabel = [modelLabel, effortLabel].filter(Boolean).join(" ") || "More";
-	const leftCount = modelOptions.length + effortOptions.length + extraOptions.length;
+	const leftCount =
+		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length;
 	if (leftCount === 1) {
-		const option = primaryModel ?? primaryEffort ?? extraOptions[0];
+		if (executionMode)
+			return <ExecutionModePicker option={executionMode} disabled={disabled} onChange={onChange} />;
+		const option = primaryModel ?? primaryEffort ?? executionMode ?? toggles[0] ?? extraOptions[0];
 		if (!option) return null;
 		return (
 			<ConfigOptionPicker
@@ -426,9 +460,116 @@ function ClubbedConfigPicker({
 				{effortOptions.map((option) => (
 					<OptionSubmenu key={option.id} option={option} onChange={onChange} />
 				))}
+				{executionMode ? <PlanModeToggle option={executionMode} onChange={onChange} /> : null}
+				{toggles.map((option) => (
+					<ConfigToggle key={option.id} option={option} onChange={onChange} />
+				))}
 				{extraOptions.length > 0 ? (
 					<MoreOptionsSubmenu options={extraOptions} onChange={onChange} />
 				) : null}
+			</OptionMenuContent>
+		</OptionMenu>
+	);
+}
+
+function PlanModeToggle({
+	option,
+	onChange,
+}: {
+	option: ChatConfigOption;
+	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
+}) {
+	const planning = isPlanMode(option);
+	const planChoice = option.choices.find((choice) => isPlanChoice(choice));
+	const agentChoice = option.choices.find((choice) => !isPlanChoice(choice));
+	const next = planning ? agentChoice : planChoice;
+	if (!next) return null;
+	return (
+		<MenuToggle
+			label="Plan Mode"
+			checked={planning}
+			onCheckedChange={() => onChange(option.id, { value: next.value })}
+		/>
+	);
+}
+
+function ConfigToggle({
+	option,
+	onChange,
+}: {
+	option: ChatConfigOption;
+	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
+}) {
+	return (
+		<MenuToggle
+			label={option.name}
+			checked={optionIsEnabled(option)}
+			onCheckedChange={(enabled) => {
+				if (option.type === "boolean") {
+					onChange(option.id, { enabled });
+					return;
+				}
+				const next = option.choices.find((choice) => choiceIsEnabled(choice) === enabled);
+				if (next) onChange(option.id, { value: next.value });
+			}}
+		/>
+	);
+}
+
+function MenuToggle({
+	label,
+	checked,
+	onCheckedChange,
+}: {
+	label: string;
+	checked: boolean;
+	onCheckedChange: (checked: boolean) => void;
+}) {
+	return (
+		<OptionMenuItem
+			onSelect={(event) => event.preventDefault()}
+			className="justify-between gap-4 px-3 py-2 text-xs"
+		>
+			<span>{label}</span>
+			<Switch
+				aria-label={label}
+				checked={checked}
+				onPointerDown={(event) => event.stopPropagation()}
+				onClick={(event) => event.stopPropagation()}
+				onCheckedChange={onCheckedChange}
+			/>
+		</OptionMenuItem>
+	);
+}
+
+function ExecutionModePicker({
+	option,
+	disabled,
+	onChange,
+}: {
+	option: ChatConfigOption;
+	disabled?: boolean;
+	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
+}) {
+	return (
+		<OptionMenu>
+			<OptionMenuTrigger
+				disabled={disabled}
+				aria-label="Model mode for the next turn"
+				title="Model mode for the next turn"
+				className={TRIGGER_CLASS}
+			>
+				<span className="min-w-0 max-w-[16ch] truncate">{executionModeLabel(option)}</span>
+			</OptionMenuTrigger>
+			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
+				{isPlanBinary(option) ? (
+					<PlanModeToggle option={option} onChange={onChange} />
+				) : (
+					<ConfigOptionChoices
+						option={option}
+						onChange={(value) => onChange(option.id, value)}
+					/>
+				)}
 			</OptionMenuContent>
 		</OptionMenu>
 	);
@@ -455,27 +596,27 @@ function MoreOptionsSubmenu({
 
 function OptionSubmenu({
 	option,
+	label,
 	onChange,
 	scrollable,
 }: {
 	option: ChatConfigOption;
+	/** A semantic label when one provider option is deliberately split in two. */
+	label?: string;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
 	scrollable?: boolean;
 }) {
 	const current = optionCurrentLabel(option);
 	return (
 		<OptionMenuSub>
-			<OptionMenuSubTrigger label={option.name} value={current} />
-			<OptionMenuSubContent scrollable={scrollable} className={CHAT_MENU_CLASS}>
-				{scrollable ? (
-					<div className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
-						<div className="model-menu-scroll flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1">
-							<ConfigOptionChoices
-								option={option}
-								onChange={(value) => onChange(option.id, value)}
-							/>
-						</div>
-					</div>
+			<OptionMenuSubTrigger label={label ?? option.name} value={current} />
+			<OptionMenuSubContent
+				scrollable={scrollable}
+				className={CHAT_MENU_CLASS}
+				onFocus={isModelOption(option) ? focusModelSearch : undefined}
+			>
+				{isModelOption(option) ? (
+					<ConfigModelChoices option={option} onChange={(value) => onChange(option.id, value)} />
 				) : (
 					<ConfigOptionChoices
 						option={option}
@@ -489,21 +630,50 @@ function OptionSubmenu({
 
 function ConfigOptionPicker({
 	option,
+	title,
 	onChange,
 	disabled,
+	footer,
 }: {
 	option: ChatConfigOption;
+	title?: string;
 	onChange: (value: ChatConfigOptionValue) => void;
 	disabled?: boolean;
+	footer?: ReactNode;
 }) {
 	return (
 		<Picker
 			label={optionCurrentLabel(option)}
-			title={option.description || option.name}
+			title={title || option.description || option.name}
 			disabled={disabled}
+			onFocus={isModelOption(option) ? focusModelSearch : undefined}
 		>
-			<ConfigOptionChoices option={option} onChange={onChange} />
+			{isModelOption(option) ? (
+				<ConfigModelChoices option={option} onChange={onChange} />
+			) : (
+				<ConfigOptionChoices option={option} onChange={onChange} />
+			)}
+			{footer}
 		</Picker>
+	);
+}
+
+function ConfigModelChoices({
+	option,
+	onChange,
+}: {
+	option: ChatConfigOption;
+	onChange: (value: ChatConfigOptionValue) => void;
+}) {
+	const models = useMemo(() => option.choices.map((choice) => ({
+		...choice,
+		id: choice.value,
+		label: choice.name,
+	})), [option.choices]);
+	return (
+		<ModelMenuChoices models={models}>
+			{(matches) => <ConfigOptionChoices option={{ ...option, choices: matches }} onChange={onChange} />}
+		</ModelMenuChoices>
 	);
 }
 
@@ -519,8 +689,9 @@ function ConfigOptionChoices({
 			<>
 				{[true, false].map((enabled) => (
 					<OptionMenuItem
-						key={String(enabled)}
-						active={enabled === option.currentBoolean}
+							key={String(enabled)}
+							active={enabled === option.currentBoolean}
+							radio
 						onSelect={() => onChange({ enabled })}
 						className={cn("text-xs")}
 					>
@@ -552,8 +723,9 @@ function ConfigOptionChoices({
 						) : null}
 						<OptionMenuItem
 							active={choice.value === option.currentValue}
+							radio
 							onSelect={() => onChange({ value: choice.value })}
-							className={cn("flex-col items-start gap-0.5")}
+							className={cn("text-xs")}
 						>
 							<span className="flex w-full items-baseline gap-2">
 								<span
@@ -567,11 +739,6 @@ function ConfigOptionChoices({
 									{choice.name}
 								</span>
 							</span>
-							{choice.description ? (
-								<span className="text-[11px] leading-snug text-muted-foreground">
-									{choice.description}
-								</span>
-							) : null}
 						</OptionMenuItem>
 					</Fragment>
 				);
@@ -592,6 +759,7 @@ function Picker({
 	disabled,
 	badge,
 	children,
+	onFocus,
 }: {
 	label: string;
 	title: string;
@@ -599,6 +767,7 @@ function Picker({
 	/** A note that belongs on the trigger, e.g. the model that was overridden. */
 	badge?: React.ReactNode;
 	children: React.ReactNode;
+	onFocus?: (event: FocusEvent<HTMLDivElement>) => void;
 }) {
 	return (
 		<OptionMenu>
@@ -607,11 +776,21 @@ function Picker({
 					<span className="min-w-0 max-w-[16ch] truncate">{label}</span>
 					{badge}
 				</OptionMenuTrigger>
-			<OptionMenuContent align="end" className={CHAT_MENU_CLASS}>
+			<OptionMenuContent align="end" className={CHAT_MENU_CLASS} onFocus={onFocus}>
 				{children}
 			</OptionMenuContent>
 		</OptionMenu>
 	);
+}
+
+function focusModelSearch(event: FocusEvent<HTMLDivElement>) {
+	if (event.target !== event.currentTarget) return;
+	const search = event.currentTarget.querySelector<HTMLInputElement>('input[type="search"]');
+	if (search) {
+		// Focus search before the menu's roving focus chooses a model.
+		event.preventDefault();
+		search.focus();
+	}
 }
 
 function capitalize(value: string): string {
@@ -619,7 +798,17 @@ function capitalize(value: string): string {
 }
 
 function isModelOption(option: ChatConfigOption): boolean {
-	return option.category === "model" || option.id === "model" || option.id === "agent";
+	return option.category === "model" || option.id === "model";
+}
+
+/**
+ * ACP may advertise an `agent` option for its own multi-agent internals. It is
+ * not AO's harness switcher and is not a model choice, so exposing it in the
+ * composer promises a meaning AO cannot guarantee. Harness changes remain in
+ * the dedicated session switcher.
+ */
+function isAgentOption(option: ChatConfigOption): boolean {
+	return option.id === "agent" || option.category === "agent";
 }
 
 function isEffortOption(option: ChatConfigOption): boolean {
@@ -630,18 +819,38 @@ function isModeOption(option: ChatConfigOption): boolean {
 	return option.category === "mode" || option.id === "mode";
 }
 
+function isInlineToggleOption(option: ChatConfigOption): boolean {
+	return option.type === "boolean" || /(?:^|[\s_-])fast(?:[\s_-]|$)/i.test(`${option.id} ${option.name}`);
+}
+
+function optionIsEnabled(option: ChatConfigOption): boolean {
+	if (option.type === "boolean") return Boolean(option.currentBoolean);
+	return choiceIsEnabled(option.choices.find((choice) => choice.value === option.currentValue));
+}
+
+function choiceIsEnabled(choice: ChatConfigOption["choices"][number] | undefined): boolean {
+	return Boolean(choice && /(?:^|[\s_-])(on|enabled|true)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
+}
+
 function partitionConfigOptions(options: ChatConfigOption[]): {
 	model: ChatConfigOption[];
 	effort: ChatConfigOption[];
+	/** Provider plan/agent modes, placed with model selection rather than permissions. */
+	executionMode: ChatConfigOption | undefined;
+	/** Compact boolean controls, such as Fast Mode, rendered beside Plan Mode. */
+	toggles: ChatConfigOption[];
 	mode: ChatConfigOption | undefined;
 	extra: ChatConfigOption[];
 } {
 	const primaryModel: ChatConfigOption[] = [];
 	const otherModel: ChatConfigOption[] = [];
 	const effort: ChatConfigOption[] = [];
+	const toggles: ChatConfigOption[] = [];
 	const extra: ChatConfigOption[] = [];
+	let executionMode: ChatConfigOption | undefined;
 	let mode: ChatConfigOption | undefined;
 	for (const option of options) {
+		if (isAgentOption(option)) continue;
 		if (isModelOption(option)) {
 			if (option.category === "model" || option.id === "model") primaryModel.push(option);
 			else otherModel.push(option);
@@ -651,13 +860,106 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 			effort.push(option);
 			continue;
 		}
+		if (isInlineToggleOption(option)) {
+			toggles.push(option);
+			continue;
+		}
 		if (isModeOption(option) && !mode) {
-			mode = option;
+			// Classify before synthesizing Claude's Agent choice so it cannot promote approval choices.
+			const executionValues = executionChoiceValues(option.choices);
+			const permissionChoices = option.choices.filter((choice) => !executionValues.has(choice.value));
+			const executionChoices = addAgentModeChoice(
+				option.choices.filter((choice) => executionValues.has(choice.value)),
+				permissionChoices,
+			);
+			if (executionChoices.length > 0) {
+				executionMode = withChoices(option, executionChoices);
+				if (permissionChoices.length > 0) mode = withChoices(option, permissionChoices);
+			} else {
+				mode = option;
+			}
 			continue;
 		}
 		extra.push(option);
 	}
-	return { model: [...primaryModel, ...otherModel], effort, mode, extra };
+	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
+}
+
+/** Ask is an execution mode only when the same option advertises Agent; otherwise it is an approval policy. */
+function executionChoiceValues(choices: ChatConfigOption["choices"]): Set<string> {
+	const values = new Set<string>();
+	const hasAgent = choices.some((choice) => executionChoiceMatches(choice, "agent"));
+	for (const choice of choices) {
+		if (executionChoiceMatches(choice, "plan|agent|build")) {
+			values.add(choice.value);
+			continue;
+		}
+		if (hasAgent && executionChoiceMatches(choice, "ask")) values.add(choice.value);
+	}
+	return values;
+}
+
+// Match complete mode labels so custom agent names cannot masquerade as native modes.
+function executionChoiceMatches(choice: ChatConfigOption["choices"][number], word: string): boolean {
+	return [choice.value, choice.name].some((value) =>
+		new RegExp(`^(?:${word})(?:[\\s_-]mode)?$`, "i").test(value.trim()),
+	);
+}
+
+function choiceMatches(
+	choice: Pick<ChatConfigOption["choices"][number], "name" | "value">,
+	word: string,
+): boolean {
+	return new RegExp(`(?:^|[\\s_-])(?:${word})(?:[\\s_-]|$)`, "i").test(`${choice.name} ${choice.value}`);
+}
+
+/**
+ * Claude currently sends Plan as an execution mode but describes its ordinary
+ * interactive posture as Manual. Present the latter as Agent Mode next to Plan,
+ * without inventing a value: choosing it still sends the provider's own Manual
+ * value. Other harnesses that advertise Agent Mode explicitly stay untouched.
+ */
+function addAgentModeChoice(
+	executionChoices: ChatConfigOption["choices"],
+	permissionChoices: ChatConfigOption["choices"],
+): ChatConfigOption["choices"] {
+	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent"))) {
+		return executionChoices;
+	}
+	const standard = permissionChoices.find((choice) => choiceMatches(choice, "manual"))
+		?? permissionChoices.find((choice) => choiceMatches(choice, "default|standard"));
+	return standard
+		? [{ ...standard, name: "Agent Mode", description: "Standard agent execution" }, ...executionChoices]
+		: executionChoices;
+}
+
+function isPlanBinary(option: ChatConfigOption): boolean {
+	return option.choices.length === 2 && option.choices.some(isPlanChoice);
+}
+
+function executionModeLabel(option: ChatConfigOption): string {
+	if (isPlanBinary(option)) return isPlanMode(option) ? "Plan Mode" : "Agent Mode";
+	return option.choices.find((choice) => choice.value === option.currentValue)?.name ?? option.name;
+}
+
+function isPlanMode(option: ChatConfigOption | undefined): boolean {
+	return Boolean(option?.currentValue && isPlanChoice({ value: option.currentValue, name: option.currentValue }));
+}
+
+function isPlanChoice(choice: Pick<ChatConfigOption["choices"][number], "name" | "value">): boolean {
+	// Custom agent IDs can contain "plan" without enabling native planning.
+	return [choice.value, choice.name].some((value) => /^plan(?:[\s_-]mode)?$/i.test(value.trim()));
+}
+
+function withChoices(
+	option: ChatConfigOption,
+	choices: ChatConfigOption["choices"],
+	name = option.name,
+): ChatConfigOption {
+	const currentValue = choices.some((choice) => choice.value === option.currentValue)
+		? option.currentValue
+		: undefined;
+	return { ...option, name, currentValue, choices };
 }
 
 function optionCurrentLabel(option: ChatConfigOption): string {

@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=node:22-bookworm-slim
+FROM ${BASE_IMAGE}
+
+USER root
+COPY --chown=ao-worker:ao-worker test/fake-claude.sh /usr/local/bin/claude
+RUN chmod 0755 /usr/local/bin/claude
+USER ao-worker

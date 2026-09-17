@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -14,14 +13,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestOMPAuthStatusUsesDocumentedStatusCommand(t *testing.T) {
+func TestOMPAuthStatusDoesNotLaunchInteractiveAgentAsStatusProbe(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
 	previous := authprobe.CmdRunner
 	authprobe.CmdRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name != "omp" || !reflect.DeepEqual(args, []string{"auth", "status"}) {
-			t.Fatalf("command = %q %#v, want omp auth status", name, args)
-		}
-		return []byte("Logged in"), nil
+		t.Fatalf("unexpected interactive probe: %q %#v", name, args)
+		return nil, nil
 	}
 	t.Cleanup(func() { authprobe.CmdRunner = previous })
 
@@ -29,8 +26,8 @@ func TestOMPAuthStatusUsesDocumentedStatusCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusUnknown)
 	}
 }
 

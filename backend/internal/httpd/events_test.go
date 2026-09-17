@@ -394,3 +394,56 @@ func testCDCEventWithType(seq int64, typ cdc.EventType) cdc.Event {
 		CreatedAt: time.Unix(seq, 0).UTC(),
 	}
 }
+
+// An idle stream sent nothing at all, which is fine on a LAN and broken behind
+// a proxy: Cloudflare buffers a lone small write and has nothing to push it
+// through, so a single agent reply sat unseen for over a minute while the same
+// stream worked instantly over the LAN. The bulk replay always arrived because
+// it is large enough to flush on its own.
+//
+// A periodic comment frame keeps the pipe moving and carries any buffered event
+// out with it. Comments are the SSE no-op: clients ignore them, and the cursor
+// is untouched.
+func TestEventsStreamHeartbeatsWhileIdle(t *testing.T) {
+	restore := eventsHeartbeatInterval
+	eventsHeartbeatInterval = 50 * time.Millisecond
+	defer func() { eventsHeartbeatInterval = restore }()
+
+	live := &fakeEventSubscriber{}
+	src := &fakeEventSource{live: live}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		CDC:    src,
+		Events: live,
+	}, ControlDeps{})
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Past head, so the server clamps to head and replays nothing: the stream is
+	// genuinely idle and anything that arrives can only be a heartbeat.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events?after=999999", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	deadline := time.Now().Add(4 * time.Second)
+	seen := ""
+	buf := make([]byte, 256)
+	for time.Now().Before(deadline) {
+		n, err := resp.Body.Read(buf)
+		if err != nil {
+			break
+		}
+		seen += string(buf[:n])
+		for _, line := range strings.Split(seen, "\n") {
+			// An SSE comment: a frame beginning with a colon.
+			if strings.HasPrefix(line, ":") {
+				return
+			}
+		}
+	}
+	t.Fatalf("idle stream sent no comment frame in 4s (got %q); a buffering proxy has nothing to flush an event through", seen)
+}

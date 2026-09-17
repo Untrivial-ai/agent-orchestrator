@@ -8,12 +8,25 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+var (
+	// ErrUnsupportedEffort reports a value the selected model did not advertise.
+	ErrUnsupportedEffort = errors.New("unsupported model effort")
+	// ErrModelCapabilitiesUnavailable reports tuning that cannot be validated safely.
+	ErrModelCapabilitiesUnavailable = errors.New("model capabilities unavailable")
+)
+
 // ErrAgentBinaryNotFound is returned by agent adapters when neither PATH nor
 // any well-known install location holds the agent's binary. The session
 // manager surfaces this BEFORE creating the runtime so a missing CLI doesn't
 // silently launch into an empty tmux pane that the reaper later mistakes
 // for a live session.
 var ErrAgentBinaryNotFound = errors.New("agent: binary not found on PATH")
+
+// ErrAgentBinaryIdentityUnknown is returned by a startup-only presence check
+// when a name-matching executable exists but the adapter's identity probe has
+// not confirmed it. It is deliberately distinct from ErrAgentBinaryNotFound:
+// callers must not present an unverified name-only match as installed.
+var ErrAgentBinaryIdentityUnknown = errors.New("agent: binary identity unknown")
 
 // AgentAuthStatus describes the result of a short local auth probe for an
 // installed agent. It is advisory only: credentials, quota, selected model
@@ -74,9 +87,21 @@ type AgentBinaryResolver interface {
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
 // adapter whose normal binary resolution performs additional validation. It
 // must only inspect local executable paths; it must not start the agent CLI.
-// AO uses it for the first-render prerequisite gate, where existence is enough.
+// AO uses it for the first-render prerequisite gate. Identity-sensitive
+// adapters may return ErrAgentBinaryIdentityUnknown when existence alone is
+// insufficient; that result remains unknown until a normal identity probe.
 type AgentBinaryPresenceResolver interface {
 	ResolveBinaryPresence(ctx context.Context) (path string, err error)
+}
+
+// AgentReadinessProvider is the daemon-owned coordination boundary used by
+// launch and policy consumers. Implementations coalesce native checks and keep
+// the resulting snapshots in memory.
+type AgentReadinessProvider interface {
+	EnsureAgentReadiness(ctx context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error)
+	InvalidateAgentInstallation(agentID string)
+	InvalidateAgentAuthentication(agentID string)
+	RecheckAgent(agentID string)
 }
 
 // AgentNativeSessionTerminator is an optional adapter capability used before
@@ -119,7 +144,7 @@ type AgentInterfaceHandoffHistoryProbe interface {
 type ModelSelectionMode string
 
 const (
-	// ModelSelectionCatalog renders a searchable list with a custom-id escape hatch.
+	// ModelSelectionCatalog renders a model list reported by the selected agent.
 	ModelSelectionCatalog ModelSelectionMode = "catalog"
 	// ModelSelectionText renders a free-form model id input.
 	ModelSelectionText ModelSelectionMode = "text"
@@ -127,21 +152,39 @@ const (
 	ModelSelectionModeList ModelSelectionMode = "mode"
 )
 
+// CustomModelEntryMode tells clients how an agent handles models that are not
+// present in its current catalog.
+type CustomModelEntryMode string
+
+const (
+	// CustomModelEntryNone means the agent only accepts its reported choices.
+	CustomModelEntryNone CustomModelEntryMode = "none"
+	// CustomModelEntryDirect means AO may pass a user-entered model id directly.
+	CustomModelEntryDirect CustomModelEntryMode = "direct"
+	// CustomModelEntryConfigured means custom models must first be configured in
+	// the agent and then discovered by AO as ordinary catalog entries.
+	CustomModelEntryConfigured CustomModelEntryMode = "configured"
+)
+
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
 type AgentModelInfo struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Provider  string `json:"provider,omitempty"`
-	IsDefault bool   `json:"isDefault,omitempty"`
+	ID            string   `json:"id"`
+	Label         string   `json:"label"`
+	Provider      string   `json:"provider,omitempty"`
+	IsDefault     bool     `json:"isDefault,omitempty"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
 
 // AgentModelCatalog is AO's normalized model-picker response.
 type AgentModelCatalog struct {
-	AgentID       string             `json:"agentId"`
-	SelectionMode ModelSelectionMode `json:"selectionMode" enum:"catalog,text,mode"`
-	Models        []AgentModelInfo   `json:"models"`
-	AllowCustom   bool               `json:"allowCustom"`
-	Source        string             `json:"source"`
+	AgentID          string               `json:"agentId"`
+	SelectionMode    ModelSelectionMode   `json:"selectionMode" enum:"catalog,text,mode"`
+	Models           []AgentModelInfo     `json:"models"`
+	CustomModelEntry CustomModelEntryMode `json:"customModelEntry" enum:"none,direct,configured"`
+	// AllowCustom is retained for compatibility and is true only for direct entry.
+	AllowCustom bool   `json:"allowCustom"`
+	Source      string `json:"source"`
 	// BinaryVersion is the legacy wire name for AO's non-sensitive executable
 	// and configuration metadata fingerprint.
 	BinaryVersion string    `json:"binaryVersion,omitempty"`
@@ -165,17 +208,11 @@ type CachedAgentModelCatalog struct {
 	FetchedAt     time.Time
 }
 
-// AgentInventoryCache persists the last successful advisory installation and
-// authentication probe across daemon restarts.
-type AgentInventoryCache interface {
-	GetAgentInventoryCache(ctx context.Context) (inventoryJSON string, observedAt time.Time, ok bool, err error)
-	UpsertAgentInventoryCache(ctx context.Context, inventoryJSON string, observedAt time.Time) error
-}
-
 // AgentModelCatalogCache persists normalized model catalogs across daemon
 // restarts. Implementations must treat agent+project as the logical key.
 type AgentModelCatalogCache interface {
 	GetAgentModelCatalog(ctx context.Context, agentID, projectID string) (CachedAgentModelCatalog, bool, error)
+	ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]CachedAgentModelCatalog, error)
 	UpsertAgentModelCatalog(ctx context.Context, record CachedAgentModelCatalog) error
 }
 
@@ -241,6 +278,15 @@ type EmptyComposerDetector interface {
 	ComposerIsEmpty(output string) bool
 }
 
+// WaitingInputComposerReadiness is an opt-in capability for adapters where an
+// empty composer authoritatively proves that a durable waiting_input state is
+// safe for unsolicited delivery. EmptyComposerDetector alone is insufficient:
+// other harnesses can render an empty composer beside a permission or
+// structured-input boundary.
+type WaitingInputComposerReadiness interface {
+	EmptyComposerProvesWaitingInputReady() bool
+}
+
 // ContinuousTerminalActivityDetector is implemented by adapters whose TUI is
 // the only authoritative source for some activity transitions. These adapters
 // are sampled on every observer tick, including while idle or waiting for
@@ -248,6 +294,13 @@ type EmptyComposerDetector interface {
 type ContinuousTerminalActivityDetector interface {
 	TerminalActivityDetector
 	ContinuouslyDetectTerminalActivity() bool
+}
+
+// WaitingTerminalActivityDetector is implemented by non-continuous terminal
+// detectors that can authoritatively recover from a durable waiting-input state.
+type WaitingTerminalActivityDetector interface {
+	TerminalActivityDetector
+	ContinuouslyDetectTerminalActivityWhileWaiting() bool
 }
 
 // PromptReadinessHints describes when an after-start prompt should be sent.

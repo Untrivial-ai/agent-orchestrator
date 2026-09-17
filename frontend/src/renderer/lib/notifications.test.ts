@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { computeSseRetryDelayMs } from "./sse-backoff";
 import type { NotificationDTO, NotificationsCache } from "./notifications";
 
 const {
@@ -469,6 +470,35 @@ describe("createNotificationsTransport", () => {
 			expect(showNotificationMock).toHaveBeenCalledTimes(1);
 		},
 	);
+
+	it("does not make a new daemon port serve the dead port's backoff delay", () => {
+		vi.useFakeTimers();
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		createNotificationsTransport(queryClient()).connect();
+		const onBaseUrlChange = subscribeApiBaseUrlMock.mock.calls[0][0] as () => void;
+
+		// Grow the delay on the old port.
+		for (let failure = 1; failure <= 4; failure += 1) {
+			const source = EventSourceStub.instances.at(-1)!;
+			source.readyState = 2;
+			source.onerror?.();
+			vi.advanceTimersByTime(computeSseRetryDelayMs(failure, () => 0.5));
+		}
+
+		getApiBaseUrlMock.mockReturnValue("http://127.0.0.1:4555");
+		onBaseUrlChange();
+
+		// The fresh port starts over at the initial delay.
+		const moved = EventSourceStub.instances.at(-1)!;
+		moved.readyState = 2;
+		moved.onerror?.();
+		const beforeRetry = EventSourceStub.instances.length;
+		vi.advanceTimersByTime(computeSseRetryDelayMs(1, () => 0.5) - 1);
+		expect(EventSourceStub.instances).toHaveLength(beforeRetry);
+		vi.advanceTimersByTime(1);
+		expect(EventSourceStub.instances).toHaveLength(beforeRetry + 1);
+		vi.useRealTimers();
+	});
 
 	it("reconnects when the API base URL changes", () => {
 		createNotificationsTransport(queryClient()).connect();

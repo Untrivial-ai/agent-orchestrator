@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
@@ -30,6 +32,12 @@ import (
 // envelope.WriteError: the wire envelope hides internals ("Internal server
 // error"), so without this the cause of a 500 was lost entirely.
 func requestLogger(log *slog.Logger, sink ports.EventSink) func(http.Handler) http.Handler {
+	return requestLoggerWithCapture(log, sink, sentryobs.CaptureHTTPError)
+}
+
+type captureHTTPErrorFunc func(context.Context, error, map[string]string, string)
+
+func requestLoggerWithCapture(log *slog.Logger, sink ports.EventSink, captureHTTPError captureHTTPErrorFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
@@ -45,13 +53,14 @@ func requestLogger(log *slog.Logger, sink ports.EventSink) func(http.Handler) ht
 					"duration", time.Since(start),
 					"remote", r.RemoteAddr,
 				}
-				if err := capturedErr(); err != nil && ww.Status() >= http.StatusInternalServerError {
-					attrs = append(attrs, "error", err)
+				captured := capturedErr()
+				if captured.Err != nil && ww.Status() >= http.StatusInternalServerError {
+					attrs = append(attrs, "error", captured.Err)
 				}
 				log.Info("http request", attrs...)
 				if ww.Status() >= http.StatusInternalServerError {
 					path := telemetrymeta.RoutePattern(r)
-					capErr := capturedErr()
+					capErr := captured.Err
 					var errorKind, errorCode string
 					if capErr != nil {
 						errorKind, errorCode = telemetrymeta.ErrorKindAndCode(capErr)
@@ -87,12 +96,12 @@ func requestLogger(log *slog.Logger, sink ports.EventSink) func(http.Handler) ht
 					}
 					// Capture genuine faults to Sentry with the real error/stack.
 					// 503 (transient contention) is excluded by ShouldCaptureStatus.
-					if sentryobs.ShouldCaptureStatus(ww.Status()) {
+					if sentryobs.ShouldCaptureStatus(ww.Status()) && captured.ReportingOwner != ownership.OwnerAgentSwitchSaga {
 						err := capErr
 						if err == nil {
 							err = fmt.Errorf("HTTP %d %s %s", ww.Status(), r.Method, path)
 						}
-						sentryobs.CaptureHTTPError(r.Context(), err, map[string]string{
+						captureHTTPError(r.Context(), err, map[string]string{
 							"component":  "httpd",
 							"operation":  "http_request",
 							"method":     r.Method,

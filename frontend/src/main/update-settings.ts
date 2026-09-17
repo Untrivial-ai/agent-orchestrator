@@ -1,6 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+/** A refreshed target must be shown and explicitly confirmed before installation. */
+export type UpdateInstallResult = void | {
+	state: "confirmation-required";
+	version: string;
+	releaseNotes?: string;
+};
+
 export type UpdateChannel = "latest" | "nightly";
 
 /** A pinned PR feature build. `channel` stays as the home channel; this is a separate overlay. */
@@ -20,14 +27,17 @@ export interface UpdateSettings {
 // Live state of an automatic or manual update check/download, streamed to the
 // renderer so Settings and the sidebar can reflect progress.
 export type UpdateState =
-	"idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error" | "unsupported";
+	"idle" | "checking" | "available" | "not-available" | "downloading" | "preparing" | "downloaded" | "error" | "unsupported";
 
 export interface UpdateStatus {
 	state: UpdateState;
 	version?: string;
+	/** Absent while a requested download is waiting for its first progress event. */
 	percent?: number;
+	transferred?: number;
+	total?: number;
 	message?: string;
-	/** Epoch ms when the updater most recently finished checking the feed. */
+	/** Epoch ms when the updater most recently successfully checked the feed. */
 	checkedAt?: number;
 	/** Present for statuses owned by a renderer-requested updater operation. */
 	requestId?: string;
@@ -36,6 +46,24 @@ export interface UpdateStatus {
 	// escalated: true when per-channel rules say the user should be nudged harder.
 	stagedAt?: number;
 	escalated?: boolean;
+	/**
+	 * What changed in the offered build, as plain text.
+	 *
+	 * electron-updater carries the GitHub release body here. It is sanitized and
+	 * length-capped in the main process before it crosses the wire: the feed is
+	 * remote content, and the renderer must never be handed markup to inject.
+	 */
+	releaseNotes?: string;
+	/**
+	 * Set on EVERY status while a build sits downloaded and waiting to install,
+	 * whatever `state` currently says. A routine check drives state through
+	 * checking → available → not-available while the staged build is untouched,
+	 * and the sidebar's restart row keyed off `state` alone, so it blinked out of
+	 * existence every time a background check ran. Consumers that care about
+	 * "there is something to install" should read this instead of `state`.
+	 */
+	/** ready=false means native preparation is outstanding, including restored provenance. */
+	staged?: { version?: string; stagedAt: number; escalated: boolean; ready?: boolean };
 	// Present when automatic update checks have failed several times in a row
 	// with Chromium network-stack errors (net::ERR_*) — the app's network stack
 	// is wedged and restarting the app usually fixes it (#3526).
@@ -46,6 +74,7 @@ export interface UpdateStatus {
 	// checks are not getting through, so the UI can offer a retry instead of
 	// rendering nothing at all.
 	checksFailing?: boolean;
+	checkError?: string;
 	// Present only when state === "error" and the failure is a Chromium
 	// network-stack error (net::ERR_*). The renderer localizes restart guidance
 	// from this flag instead of receiving pre-built English prose (#3526).

@@ -22,6 +22,12 @@
 	/* Go and Makefiles arrive tab-indented; the browser default of 8 wastes half
 	   the column in a panel this narrow. */
 	tab-size: 4;
+	scrollbar-width: none;
+}
+
+:is(.chat-code pre, .markdown-code)::-webkit-scrollbar {
+	width: 0;
+	height: 0;
 }
 
 /* A long line scrolls by default: a wrapped line of code is harder to read than

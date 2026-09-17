@@ -25,8 +25,10 @@ import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, C
 import { cachedConversationState, createMobileConversationPageCache, discardHistoricalPages } from "./snapshot";
 import { conversationActionError, conversationErrorCode } from "./conversationErrors";
 import { subscribeConversationEvents } from "./conversationEvents";
+import { conversationPollIntervalFor } from "./conversationPoll";
 import { createAsyncValueCache } from "./asyncValueCache";
 import { createRequestGate } from "./requestGate";
+import { withAttachmentReferences } from "./messageAttachments";
 import { loadTurnOptionCatalog } from "./turnOptionsCatalog";
 
 const REFRESH_DEBOUNCE_MS = 120;
@@ -216,6 +218,18 @@ export function useMobileConversation(
 			if (event.payload?.conversationId) scheduleRefresh();
 		});
 	}, [cfg, sessionId, scheduleRefresh, unavailable]);
+
+	// Poll the conversation on paths where the event stream cannot deliver.
+	// Over a Cloudflare quick tunnel the subscription above never fires — the
+	// body is forwarded in ~128 KB chunks and a chat event is a few hundred
+	// bytes — so without this the screen shows the agent working indefinitely
+	// while the reply has already landed.
+	useEffect(() => {
+		const every = conversationPollIntervalFor(cfg);
+		if (every === null || unavailable) return;
+		const timer = setInterval(() => scheduleRefresh(), every);
+		return () => clearInterval(timer);
+	}, [cfg, unavailable, scheduleRefresh]);
 
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
@@ -420,10 +434,4 @@ function classifyConversationError(error: unknown): { permanent: boolean; code?:
 
 function conversationPageCacheKey(cfg: ServerConfig, sessionId: string): string {
 	return `${cfg.secure ? "https" : "http"}://${cfg.host}:${cfg.httpPort}/${cfg.password}/${sessionId}`;
-}
-
-function withAttachmentReferences(text: string, paths: string[]): string {
-	if (paths.length === 0) return text;
-	const references = paths.map((path) => `- ${path}`).join("\n");
-	return `${text.trim()}${text.trim() ? "\n\n" : ""}Attached files are available in the worktree:\n${references}`;
 }

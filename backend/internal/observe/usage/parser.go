@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 )
 
 type jsonlRecord struct {
@@ -43,6 +44,8 @@ func parseRecordsWithState(
 	case domain.UsageSourceCodexRollout:
 		parseCodex(source, records, state.Codex, &result)
 		result.pendingCodexSpawnCalls = len(state.Codex.PendingSpawnCallIDs)
+	case domain.UsageSourceKimiWire:
+		parseKimi(source, records, &result)
 	default:
 		result.Cursor.AnomalyCount++
 		result.Cursor.LastErrorCode = domain.UsageErrorUnsupportedSourceFormat
@@ -111,18 +114,27 @@ type stableTailStateV1 struct {
 }
 
 type claudeParserStateV1 struct {
-	ModelID        string `json:"model_id,omitempty"`
+	ModelID  string `json:"model_id,omitempty"`
+	Provider string `json:"billing_provider,omitempty"`
+	// LegacyProvider is the retired "provider" key. A build before #2928 filled
+	// it with the harness name — "claude-code", "openai" — not a billing route,
+	// so decoding must accept it (DisallowUnknownFields) and must never read
+	// it. Reusing the key for the billing route would stamp the harness name
+	// onto every event newly ingested from such a source, marked observed and
+	// therefore beyond every repair path.
 	LegacyProvider string `json:"provider,omitempty"`
 }
 
 type codexParserStateV1 struct {
-	Baseline            codexTokenVector `json:"baseline"`
-	ModelID             string           `json:"model_id,omitempty"`
-	LegacyProvider      string           `json:"provider,omitempty"`
-	NativeSessionID     string           `json:"native_session_id,omitempty"`
-	DirectParentID      string           `json:"direct_parent_id,omitempty"`
-	PendingSpawnCallIDs []string         `json:"pending_spawn_call_ids"`
-	DiscoveredChildIDs  []string         `json:"discovered_child_ids"`
+	Baseline       codexTokenVector `json:"baseline"`
+	ModelID        string           `json:"model_id,omitempty"`
+	Provider       string           `json:"billing_provider,omitempty"`
+	LegacyProvider string           `json:"provider,omitempty"` // see claudeParserStateV1
+
+	NativeSessionID     string   `json:"native_session_id,omitempty"`
+	DirectParentID      string   `json:"direct_parent_id,omitempty"`
+	PendingSpawnCallIDs []string `json:"pending_spawn_call_ids"`
+	DiscoveredChildIDs  []string `json:"discovered_child_ids"`
 }
 
 func decodeParserState(source domain.UsageSourceRecord) (*parserStateEnvelope, error) {
@@ -174,18 +186,22 @@ func decodeParserState(source domain.UsageSourceRecord) (*parserStateEnvelope, e
 		if state.Codex == nil || state.Claude != nil {
 			return nil, errors.New("codex state has invalid parser payload")
 		}
+		state.Codex.LegacyProvider = ""
 		if state.Codex.PendingSpawnCallIDs == nil {
 			state.Codex.PendingSpawnCallIDs = []string{}
 		}
 		if state.Codex.DiscoveredChildIDs == nil {
 			state.Codex.DiscoveredChildIDs = []string{}
 		}
-		state.Codex.LegacyProvider = ""
 		if err := normalizeCodexParserState(state.Codex); err != nil {
 			return nil, err
 		}
 		if err := validateCodexDirectParent(source, state.Codex); err != nil {
 			return nil, err
+		}
+	case domain.UsageSourceKimiWire:
+		if state.Claude != nil || state.Codex != nil {
+			return nil, errors.New("append-only state has invalid parser payload")
 		}
 	default:
 		return nil, fmt.Errorf("unsupported source kind %q", source.Kind)
@@ -206,6 +222,9 @@ func newParserState(kind domain.UsageSourceKind) (*parserStateEnvelope, error) {
 			PendingSpawnCallIDs: []string{},
 			DiscoveredChildIDs:  []string{},
 		}
+	case domain.UsageSourceKimiWire:
+		// Kimi records carry stable native IDs, so no provider-specific
+		// cumulative baseline is required.
 	default:
 		return nil, fmt.Errorf("unsupported source kind %q", kind)
 	}
@@ -240,23 +259,30 @@ func validSHA256Digest(value string) bool {
 type claudeTranscriptRecord struct {
 	Type        string `json:"type"`
 	UUID        string `json:"uuid"`
+	Provider    string `json:"provider"`
 	Timestamp   string `json:"timestamp"`
 	IsSidechain bool   `json:"isSidechain"`
 	Message     struct {
 		ID         string  `json:"id"`
 		Model      string  `json:"model"`
+		Provider   string  `json:"provider"`
 		StopReason *string `json:"stop_reason"`
-		Usage      *struct {
-			InputTokens              int64 `json:"input_tokens"`
-			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-			OutputTokens             int64 `json:"output_tokens"`
-			CacheCreation            *struct {
-				Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
-				Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
-			} `json:"cache_creation"`
-		} `json:"usage"`
+		// Decoded twice on purpose: the typed view drives the neutral counters,
+		// and the raw bytes are the bounded provider object stored verbatim so
+		// fields Anthropic adds later survive without a schema change here.
+		Usage json.RawMessage `json:"usage"`
 	} `json:"message"`
+}
+
+type claudeNativeUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 func parseClaude(source domain.UsageSourceContext, records []jsonlRecord, state *claudeParserStateV1, result *parseResult) {
@@ -267,7 +293,16 @@ func parseClaude(source domain.UsageSourceContext, records []jsonlRecord, state 
 			recordMalformed(result)
 			continue
 		}
-		if native.Type != "assistant" || native.Message.Usage == nil || native.Message.StopReason == nil || strings.TrimSpace(*native.Message.StopReason) == "" {
+		// The transcript feeds the same write-once column as the hook, so it
+		// earns the same whitelist. An unrecognised string is dropped rather
+		// than stored: unattributed is repairable, a wrong attribution is not.
+		nativeProvider := pricing.TrustedClaudeBillingProvider(
+			firstNonEmpty(native.Message.Provider, native.Provider))
+		if nativeProvider != "" {
+			state.Provider = nativeProvider
+		}
+		if native.Type != "assistant" || !jsonValueReported(native.Message.Usage) ||
+			native.Message.StopReason == nil || strings.TrimSpace(*native.Message.StopReason) == "" {
 			continue
 		}
 		if source.Source.Kind == domain.UsageSourceClaudeMain && native.IsSidechain {
@@ -276,13 +311,17 @@ func parseClaude(source domain.UsageSourceContext, records []jsonlRecord, state 
 		if strings.EqualFold(strings.TrimSpace(native.Message.Model), "<synthetic>") {
 			continue
 		}
-		usage := native.Message.Usage
+		var usage claudeNativeUsage
+		if err := json.Unmarshal(native.Message.Usage, &usage); err != nil {
+			recordMalformed(result)
+			continue
+		}
 		var creation5m, creation1h *int64
 		if usage.CacheCreation != nil {
 			creation5m = int64Ptr(usage.CacheCreation.Ephemeral5mInputTokens)
 			creation1h = int64Ptr(usage.CacheCreation.Ephemeral1hInputTokens)
 		}
-		tokens, details, ok := normalizeAnthropicUsage(
+		tokens, ok := normalizeAnthropicUsage(
 			usage.InputTokens,
 			usage.CacheCreationInputTokens,
 			usage.CacheReadInputTokens,
@@ -296,13 +335,19 @@ func parseClaude(source domain.UsageSourceContext, records []jsonlRecord, state 
 		}
 		model := firstNonEmpty(native.Message.Model, state.ModelID, source.InitialModelID, "unknown")
 		state.ModelID = model
+		billingProvider := pricing.TrustedClaudeBillingProvider(firstNonEmpty(
+			nativeProvider, state.Provider, source.ProviderHint,
+		))
 		keyID := firstNonEmpty(native.Message.ID, native.UUID, strconv.FormatInt(record.Offset, 10))
 		event := domain.ModelUsageEvent{
-			ProviderID:      domain.UsageProviderAnthropic,
-			ModelID:         model,
-			Tokens:          tokens,
-			ProviderDetails: domain.UsageProviderDetails{Anthropic: &details},
-			CreatedAt:       parseUsageTimestamp(native.Timestamp),
+			ProviderID:            domain.UsageProviderAnthropic,
+			BillingProviderID:     billingProvider,
+			BillingProviderSource: domain.ObservedBillingProviderSource(billingProvider),
+			ModelID:               model,
+			MeasurementKind:       domain.UsageMeasurementNativeReported,
+			Tokens:                tokens,
+			ProviderUsageJSON:     boundedProviderUsage(native.Message.Usage),
+			CreatedAt:             parseUsageTimestamp(native.Timestamp),
 			SourceEventKey: stableSourceEventKey(
 				"claude",
 				source.NativeRootID,
@@ -324,6 +369,17 @@ func parseClaude(source domain.UsageSourceContext, records []jsonlRecord, state 
 	}
 }
 
+// canonicalBillingProvider normalizes one observed routing fact into a catalog
+// provider identifier. Unknown or conflicting routing stays empty so the event
+// is stored unattributed rather than priced against the wrong provider.
+func canonicalBillingProvider(observed string) string {
+	provider := pricing.CanonicalProviderID(observed)
+	if provider == "unknown" {
+		return ""
+	}
+	return provider
+}
+
 type codexEnvelope struct {
 	Timestamp string          `json:"timestamp"`
 	Type      string          `json:"type"`
@@ -338,6 +394,13 @@ func parseCodex(source domain.UsageSourceContext, records []jsonlRecord, state *
 			continue
 		}
 		switch envelope.Type {
+		case "session_meta":
+			var payload struct {
+				ModelProvider string `json:"model_provider"`
+			}
+			if json.Unmarshal(envelope.Payload, &payload) == nil {
+				state.Provider = firstNonEmpty(payload.ModelProvider, state.Provider)
+			}
 		case "turn_context":
 			var payload struct {
 				Model string `json:"model"`
@@ -534,19 +597,26 @@ func removeString(values []string, target string) []string {
 }
 
 func parseCodexEvent(source domain.UsageSourceContext, envelope codexEnvelope, state *codexParserStateV1, result *parseResult) {
+	// payload.info is the bounded object; payload.rate_limits is its sibling and
+	// is deliberately never read, so account-level quota state cannot be stored.
 	var payload struct {
-		Type string `json:"type"`
-		Info *struct {
-			Total              codexTokenVector  `json:"total_token_usage"`
-			Last               *codexTokenVector `json:"last_token_usage"`
-			ModelContextWindow int64             `json:"model_context_window"`
-		} `json:"info"`
+		Type string          `json:"type"`
+		Info json.RawMessage `json:"info"`
 	}
-	if err := json.Unmarshal(envelope.Payload, &payload); err != nil || payload.Type != "token_count" || payload.Info == nil {
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil ||
+		payload.Type != "token_count" || !jsonValueReported(payload.Info) {
 		return
 	}
-	total := payload.Info.Total
-	if isCodexContextFill(total, payload.Info.ModelContextWindow) {
+	var info struct {
+		Total              codexTokenVector  `json:"total_token_usage"`
+		Last               *codexTokenVector `json:"last_token_usage"`
+		ModelContextWindow int64             `json:"model_context_window"`
+	}
+	if err := json.Unmarshal(payload.Info, &info); err != nil {
+		return
+	}
+	total := info.Total
+	if isCodexContextFill(total, info.ModelContextWindow) {
 		state.Baseline = codexTokenVector{}
 		return
 	}
@@ -583,8 +653,8 @@ func parseCodexEvent(source domain.UsageSourceContext, envelope codexEnvelope, s
 		OutputTokens: output, ReasoningOutputTokens: reasoning, TotalTokens: reportedTotal,
 	}
 	selected := delta
-	if payload.Info.Last != nil {
-		last := *payload.Info.Last
+	if info.Last != nil {
+		last := *info.Last
 		if !validCodexTotal(last) {
 			result.Cursor.AnomalyCount++
 			result.Cursor.LastErrorCode = domain.UsageErrorNonMonotonicCumulativeUsage
@@ -604,28 +674,38 @@ func parseCodexEvent(source domain.UsageSourceContext, envelope codexEnvelope, s
 		state.Baseline = total
 		return
 	}
-	tokens, details, ok := normalizeOpenAIUsage(
+	tokens, ok := normalizeOpenAIUsage(
 		selected.InputTokens,
 		selected.CachedInputTokens,
 		selected.CacheWriteInputTokens,
 		selected.OutputTokens,
-		selected.ReasoningOutputTokens,
-		selected.TotalTokens,
 	)
 	if !ok {
 		result.Cursor.AnomalyCount++
 		result.Cursor.LastErrorCode = domain.UsageErrorNonMonotonicCumulativeUsage
 		return
 	}
+	// A record that carried no per-event vector still gives up its cache-write
+	// count, because the neutral counters beside it are the same subtraction of
+	// the same two native readings. Persisting it is what keeps a write-rated
+	// model priceable; see codexProviderUsage.
+	var derivedCacheWrite *int64
+	if info.Last == nil {
+		write := selected.CacheWriteInputTokens
+		derivedCacheWrite = &write
+	}
 	state.Baseline = total
 	model := firstNonEmpty(state.ModelID, source.InitialModelID, "unknown")
 	state.ModelID = model
 	event := domain.ModelUsageEvent{
-		ProviderID:      domain.UsageProviderOpenAI,
-		ModelID:         model,
-		Tokens:          tokens,
-		ProviderDetails: domain.UsageProviderDetails{OpenAI: &details},
-		CreatedAt:       parseUsageTimestamp(envelope.Timestamp),
+		ProviderID:            domain.UsageProviderOpenAI,
+		BillingProviderID:     canonicalBillingProvider(state.Provider),
+		BillingProviderSource: domain.ObservedBillingProviderSource(canonicalBillingProvider(state.Provider)),
+		ModelID:               model,
+		MeasurementKind:       domain.UsageMeasurementNativeReported,
+		Tokens:                tokens,
+		ProviderUsageJSON:     codexProviderUsage(payload.Info, derivedCacheWrite),
+		CreatedAt:             parseUsageTimestamp(envelope.Timestamp),
 		SourceEventKey: stableSourceEventKey(
 			"codex",
 			source.NativeRootID,
@@ -669,56 +749,112 @@ func isCodexContextFill(total codexTokenVector, modelContextWindow int64) bool {
 		total.TotalTokens == modelContextWindow
 }
 
-func normalizeOpenAIUsage(input, cachedInput, cacheWriteInput, output, reasoningOutput, reportedTotal int64) (domain.UsageTokenMetrics, domain.OpenAIUsageDetails, bool) {
+func normalizeOpenAIUsage(input, cachedInput, cacheWriteInput, output int64) (domain.UsageTokenMetrics, bool) {
 	if input < 0 || cachedInput < 0 || cachedInput > input || cacheWriteInput < 0 ||
-		cacheWriteInput > input-cachedInput || output < 0 || reasoningOutput < 0 || reasoningOutput > output ||
-		reportedTotal < 0 || (reportedTotal != 0 && reportedTotal != input+output) {
-		return domain.UsageTokenMetrics{}, domain.OpenAIUsageDetails{}, false
+		cacheWriteInput > input-cachedInput || output < 0 {
+		return domain.UsageTokenMetrics{}, false
 	}
-	uncachedInput := input - cachedInput
-	metrics := domain.UsageTokenMetrics{
+	return domain.UsageTokenMetrics{
+		InputTokens:         int64Ptr(input),
+		CachedInputTokens:   int64Ptr(cachedInput),
+		UncachedInputTokens: int64Ptr(input - cachedInput),
+		OutputTokens:        int64Ptr(output),
+	}, true
+}
+
+func normalizeAnthropicUsage(directInput, cacheCreationInput, cachedInput, output int64, creation5m, creation1h *int64) (domain.UsageTokenMetrics, bool) {
+	uncachedInput, ok := sumNonNegative(directInput, cacheCreationInput)
+	if !ok {
+		return domain.UsageTokenMetrics{}, false
+	}
+	input, ok := sumNonNegative(cachedInput, uncachedInput)
+	if !ok || output < 0 || !validAnthropicCacheCreation(cacheCreationInput, creation5m, creation1h) {
+		return domain.UsageTokenMetrics{}, false
+	}
+	return domain.UsageTokenMetrics{
 		InputTokens:         int64Ptr(input),
 		CachedInputTokens:   int64Ptr(cachedInput),
 		UncachedInputTokens: int64Ptr(uncachedInput),
 		OutputTokens:        int64Ptr(output),
-		Provenance: domain.UsageMetricProvenanceSet{
-			InputTokens: domain.UsageMetricReported, CachedInputTokens: domain.UsageMetricReported,
-			UncachedInputTokens: domain.UsageMetricDerived,
-			OutputTokens:        domain.UsageMetricReported,
-		},
-	}
-	details := domain.OpenAIUsageDetails{
-		ReasoningOutputTokens: int64Ptr(reasoningOutput), CacheWriteInputTokens: int64Ptr(cacheWriteInput),
-	}
-	if reportedTotal != 0 || input+output == 0 {
-		details.ReportedTotalTokens = int64Ptr(reportedTotal)
-	}
-	return metrics, details, true
+	}, true
 }
 
-func normalizeAnthropicUsage(directInput, cacheCreationInput, cachedInput, output int64, creation5m, creation1h *int64) (domain.UsageTokenMetrics, domain.AnthropicUsageDetails, bool) {
-	uncachedInput, ok := sumNonNegative(directInput, cacheCreationInput)
-	if !ok {
-		return domain.UsageTokenMetrics{}, domain.AnthropicUsageDetails{}, false
+// maxProviderUsageBytes bounds one stored provider usage object. Transcripts are
+// untrusted input, and an object this large is no longer the small counter
+// record the providers document, so it is dropped rather than persisted.
+const maxProviderUsageBytes = 8 << 10
+
+// jsonValueReported reports whether raw carries a value at all, as opposed to
+// being absent or an explicit JSON null.
+//
+// That distinction used to come free from a nil pointer. A json.RawMessage
+// holding `null` has nonzero length and decodes into a typed struct as all-zero
+// values, so a record reporting no usage would otherwise become a synthetic
+// zero event — or, for Codex, a cumulative baseline of zero that recharges
+// every earlier token. Callers still decode the value afterwards, so a present
+// but non-object member remains malformed rather than being silently dropped.
+func jsonValueReported(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
+// isJSONObject reports whether raw is a present JSON object. Unmarshalling into
+// a map is the check: JSON null yields a nil map without an error, and any
+// other JSON type fails outright.
+func isJSONObject(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
 	}
-	input, ok := sumNonNegative(cachedInput, uncachedInput)
-	if !ok || output < 0 || !validAnthropicCacheCreation(cacheCreationInput, creation5m, creation1h) {
-		return domain.UsageTokenMetrics{}, domain.AnthropicUsageDetails{}, false
+	var object map[string]json.RawMessage
+	return json.Unmarshal(raw, &object) == nil && object != nil
+}
+
+// codexProviderUsage stores the CLI's own usage object, plus the per-event
+// cache-write count when the CLI reported only cumulative totals.
+//
+// The estimator needs a per-event write bucket to price a model that publishes
+// a cache-write rate — every current gpt-5.6 variant does — and it reads that
+// bucket from last_token_usage, which is optional. On a record without one the
+// counters AO stores are already a delta of two native cumulative readings, and
+// this is that same subtraction over the same readings, so it is derived rather
+// than invented. It is namespaced instead of folded into a last_token_usage the
+// CLI never emitted: a reader must still be able to tell what the provider said
+// from what AO worked out.
+func codexProviderUsage(raw json.RawMessage, derivedCacheWrite *int64) string {
+	stored := boundedProviderUsage(raw)
+	if stored == "" || derivedCacheWrite == nil {
+		return stored
 	}
-	return domain.UsageTokenMetrics{
-			InputTokens:         int64Ptr(input),
-			CachedInputTokens:   int64Ptr(cachedInput),
-			UncachedInputTokens: int64Ptr(uncachedInput),
-			OutputTokens:        int64Ptr(output),
-			Provenance: domain.UsageMetricProvenanceSet{
-				InputTokens: domain.UsageMetricDerived, CachedInputTokens: domain.UsageMetricReported,
-				UncachedInputTokens: domain.UsageMetricDerived,
-				OutputTokens:        domain.UsageMetricReported,
-			},
-		}, domain.AnthropicUsageDetails{
-			DirectUncachedInputTokens: int64Ptr(directInput), CacheCreationInputTokens: int64Ptr(cacheCreationInput),
-			CacheCreation5mInputTokens: creation5m, CacheCreation1hInputTokens: creation1h,
-		}, true
+	derived := json.RawMessage(strconv.FormatInt(*derivedCacheWrite, 10))
+	object := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(stored), &object); err != nil {
+		return stored
+	}
+	object[derivedCacheWriteKey] = derived
+	encoded, err := json.Marshal(object)
+	if err != nil || len(encoded) > maxProviderUsageBytes {
+		return stored
+	}
+	return string(encoded)
+}
+
+// derivedCacheWriteKey names the one member AO adds to a stored provider usage
+// object. The ao_ prefix is the whole point: nothing reading this object should
+// mistake it for something a provider reported.
+const derivedCacheWriteKey = "ao_derived_cache_write_input_tokens"
+
+// boundedProviderUsage compacts one provider usage object for durable storage.
+// It returns empty for anything that is not a JSON object or exceeds the bound,
+// which stores SQL NULL: an absent object is honest, a truncated one is not.
+func boundedProviderUsage(raw json.RawMessage) string {
+	if len(raw) > maxProviderUsageBytes || !isJSONObject(raw) {
+		return ""
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return ""
+	}
+	return compact.String()
 }
 
 func validAnthropicCacheCreation(total int64, creation5m, creation1h *int64) bool {

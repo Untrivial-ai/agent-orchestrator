@@ -73,6 +73,7 @@ func aiderConfigPaths() []string {
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		paths = append(paths,
+			filepath.Join(home, ".aider", "oauth-keys.env"),
 			filepath.Join(home, ".env"),
 			filepath.Join(home, ".aider.conf.yml"),
 			filepath.Join(home, ".aider.conf.yaml"),

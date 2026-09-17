@@ -125,6 +125,15 @@ func TestRingSnapshotExcludesPartial(t *testing.T) {
 	}
 }
 
+func TestRingReplayIncludesPartialTUIOutput(t *testing.T) {
+	r := NewRing()
+	r.Append([]byte("complete\n\x1b[?1049h\rcurrent tui"))
+
+	if got, want := string(r.Replay()), "complete\n\x1b[?1049h\rcurrent tui"; got != want {
+		t.Errorf("Replay = %q, want %q", got, want)
+	}
+}
+
 // TestRingConcurrent validates the advertised goroutine-safety of Ring under the
 // race detector. It spawns 10 writer goroutines (Append) and 10 reader goroutines
 // (Snapshot + Tail) that all run concurrently; any data race will be caught by

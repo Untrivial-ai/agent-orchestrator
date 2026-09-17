@@ -99,6 +99,8 @@ type ReviewInvocation struct {
 	ReviewQueue []ReviewTask
 	// ReviewIndex is this invocation's zero-based position in ReviewQueue.
 	ReviewIndex int
+	// Config carries the reviewer's resolved agent configuration override.
+	Config domain.AgentConfig
 	// WorkspacePath is the worker's checkout the reviewer reads.
 	WorkspacePath string
 	// DataDir is AO's owned state root. Reviewer prelaunch hooks may use it for
@@ -144,6 +146,9 @@ type ReviewCommandSpec struct {
 	Argv           []string
 	Env            map[string]string
 	AgentSessionID string
+	// NativeResumed reports whether this command resumes an existing provider-
+	// native conversation rather than relaunching a fresh reviewer process.
+	NativeResumed bool
 	// InitialMessage is injected after the process starts. Interactive-only
 	// reviewers use this instead of placing a task on the command line.
 	InitialMessage string

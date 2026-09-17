@@ -3,6 +3,7 @@ import {
 	APP_LOCALES,
 	DEFAULT_LOCALE,
 	DEFAULT_UI_SETTINGS,
+	coerceTerminalShell,
 	coerceLocale,
 	coerceUiSettings,
 } from "./ui-locale";
@@ -24,34 +25,46 @@ describe("shared UI locale schema", () => {
 	});
 
 	it("normalizes persisted settings through the shared locale validator", () => {
-		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ locale: "zh-CN", soundNotificationsEnabled: true });
-		expect(coerceUiSettings({ locale: "ja" })).toEqual({ locale: "ja", soundNotificationsEnabled: true });
-		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ locale: "pt-BR", soundNotificationsEnabled: true });
+		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "zh-CN" });
+		expect(coerceUiSettings({ locale: "ja" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "ja" });
+		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "pt-BR" });
 		expect(coerceUiSettings({ locale: "pt" })).toEqual(DEFAULT_UI_SETTINGS);
 		expect(coerceUiSettings(null)).toEqual(DEFAULT_UI_SETTINGS);
 	});
 
 	it("defaults soundNotificationsEnabled to true and accepts a persisted boolean", () => {
-		expect(DEFAULT_UI_SETTINGS).toEqual({ locale: "en", soundNotificationsEnabled: true });
-		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: false })).toEqual({
+		expect(DEFAULT_UI_SETTINGS).toEqual({
 			locale: "en",
+			soundNotificationsEnabled: true,
+			terminalShell: { kind: "auto" },
+		});
+		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: false })).toEqual({
+			...DEFAULT_UI_SETTINGS,
 			soundNotificationsEnabled: false,
 		});
 		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: true })).toEqual({
-			locale: "en",
+			...DEFAULT_UI_SETTINGS,
 			soundNotificationsEnabled: true,
 		});
 	});
 
 	it("coerces a non-boolean or missing soundNotificationsEnabled to the default (true)", () => {
-		expect(coerceUiSettings({ locale: "en" })).toEqual({ locale: "en", soundNotificationsEnabled: true });
+		expect(coerceUiSettings({ locale: "en" })).toEqual(DEFAULT_UI_SETTINGS);
 		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: "false" })).toEqual({
-			locale: "en",
-			soundNotificationsEnabled: true,
+			...DEFAULT_UI_SETTINGS,
 		});
 		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: null })).toEqual({
-			locale: "en",
-			soundNotificationsEnabled: true,
+			...DEFAULT_UI_SETTINGS,
 		});
+	});
+
+	it("accepts supported terminal shells and normalizes custom paths", () => {
+		expect(coerceTerminalShell({ kind: "git-bash" })).toEqual({ kind: "git-bash" });
+		expect(coerceTerminalShell({ kind: "custom", path: "  C:\\Tools\\bash.exe  " })).toEqual({
+			kind: "custom",
+			path: "C:\\Tools\\bash.exe",
+		});
+		expect(coerceTerminalShell({ kind: "custom", path: "   " })).toEqual({ kind: "custom" });
+		expect(coerceTerminalShell({ kind: "fish" })).toEqual({ kind: "auto" });
 	});
 });

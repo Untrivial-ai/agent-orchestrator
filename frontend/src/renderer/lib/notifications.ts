@@ -2,6 +2,7 @@ import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
 import { aoBridge } from "./bridge";
 import { apiClient, apiErrorMessage, getApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
+import { computeSseRetryDelayMs } from "./sse-backoff";
 
 export type NotificationDTO = components["schemas"]["NotificationResponse"];
 export type NotificationsPage = components["schemas"]["ListNotificationsResponse"];
@@ -12,7 +13,6 @@ export const unreadNotificationsQueryKey = ["notifications", "history", "unread"
 export const recentNotificationsQueryKey = ["notifications", "history", "all"] as const;
 export const NOTIFICATION_PAGE_SIZE = 100;
 
-const SSE_RETRY_MS = 5_000;
 const EVENTSOURCE_CLOSED = 2;
 
 /**
@@ -296,24 +296,35 @@ export function createNotificationsTransport(
 				void queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey });
 			};
 
+			// Consecutive scheduled rebuilds since the stream last opened; paces
+			// the retry instead of knocking on a flat cadence forever (#4323).
+			let retries = 0;
+
 			const scheduleRetry = () => {
 				if (retryTimer) return;
+				retries += 1;
 				retryTimer = setTimeout(() => {
 					retryTimer = undefined;
 					connectSource();
-				}, SSE_RETRY_MS);
+				}, computeSseRetryDelayMs(retries));
 			};
 
 			const connectSource = () => {
 				if (typeof EventSource === "undefined") return;
 				const baseUrl = getApiBaseUrl();
 				if (source && sourceBaseUrl === baseUrl && source.readyState !== EVENTSOURCE_CLOSED) return;
+				// A new daemon port is a fresh target; it should not inherit the
+				// delay the dead port earned.
+				if (sourceBaseUrl && sourceBaseUrl !== baseUrl) retries = 0;
 				source?.close();
 				source = undefined;
 				sourceBaseUrl = baseUrl;
 				try {
 					source = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/notifications/stream`);
-					source.onopen = invalidateNotifications;
+					source.onopen = () => {
+						retries = 0;
+						invalidateNotifications();
+					};
 					source.onerror = () => {
 						if (source?.readyState === EVENTSOURCE_CLOSED) scheduleRetry();
 					};

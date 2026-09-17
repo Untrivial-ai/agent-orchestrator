@@ -236,7 +236,7 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
 	}
 	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
-		[]string{"respawn-pane", "-k", "-t", "sess-1:0.0", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
+		[]string{"respawn-pane", "-k", "-t", "sess-1", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("respawnPaneArgs = %#v, want %#v", got, want)
 	}
 	// set-option uses pane-targeting (no = prefix).
@@ -259,7 +259,7 @@ func TestCommandBuilders(t *testing.T) {
 	if got, want := hasSessionArgs("sess-1"), []string{"has-session", "-t", "=sess-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hasSessionArgs = %#v, want %#v", got, want)
 	}
-	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1:0.0", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
+	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
@@ -430,6 +430,29 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	}
 	if !strings.Contains(launchCmd, "'myagent'") {
 		t.Fatalf("launch command missing quoted argv: %q", launchCmd)
+	}
+}
+
+func TestCreateCommandTerminalExitsWhenCommandCompletes(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+
+	_, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:               "command-1",
+		WorkspacePath:           "/tmp/ws",
+		Argv:                    []string{"ao", "codex-login"},
+		ExitOnCommandCompletion: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	args := fr.calls[0].args
+	launchCmd := args[len(args)-1]
+	if !strings.HasSuffix(launchCmd, "; exit $?") {
+		t.Fatalf("command terminal launch = %q, want command exit propagation", launchCmd)
+	}
+	if strings.Contains(launchCmd, `exec "${SHELL:-/bin/sh}" -i`) || strings.Contains(launchCmd, `exec cat >/dev/null`) {
+		t.Fatalf("command terminal launch unexpectedly keeps the pane alive: %q", launchCmd)
 	}
 }
 
@@ -710,7 +733,7 @@ func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
 	if len(fr.calls) != 2 {
 		t.Fatalf("calls = %d, want respawn + liveness probe", len(fr.calls))
 	}
-	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1:0.0" || args[5] != "/tmp/ws" {
+	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1" || args[5] != "/tmp/ws" {
 		t.Fatalf("respawn args = %#v", args)
 	}
 	if args := fr.calls[1].args; !reflect.DeepEqual(args, hasSessionArgs("sess-1")) {
@@ -776,6 +799,80 @@ func TestIsAliveAdoptsSessionFromLegacyDefaultSocket(t *testing.T) {
 		}
 		if !reflect.DeepEqual(fr.calls[i].args, want[i]) {
 			t.Fatalf("call %d args = %#v, want %#v", i, fr.calls[i].args, want[i])
+		}
+	}
+}
+
+func TestIsAliveAdoptsLegacyDefaultSessionWhenNamedSocketDoesNotExist(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{
+			out: []byte("error connecting to /private/tmp/tmux-501/ao (No such file or directory)"),
+			err: &exec.ExitError{},
+		},
+		{}, // legacy default-socket discovery
+		{}, // has-session on the adopted legacy socket
+	}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if err != nil || !alive {
+		t.Fatalf("IsAlive = (%v, %v), want (true, nil)", alive, err)
+	}
+	want := [][]string{
+		append([]string{"-L", "ao"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+	}
+	wantBinaries := []string{"bundled-tmux-test", "system-tmux-test", "system-tmux-test"}
+	if len(fr.calls) != len(want) {
+		t.Fatalf("calls = %d, want %d: %+v", len(fr.calls), len(want), fr.calls)
+	}
+	for i := range want {
+		if fr.calls[i].name != wantBinaries[i] {
+			t.Fatalf("call %d binary = %q, want %q", i, fr.calls[i].name, wantBinaries[i])
+		}
+		if !reflect.DeepEqual(fr.calls[i].args, want[i]) {
+			t.Fatalf("call %d args = %#v, want %#v", i, fr.calls[i].args, want[i])
+		}
+	}
+}
+
+func TestIsAliveKeepsAmbiguousNamedSocketFailureInNamedNamespace(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	connectionRefused := fakeRunnerResult{
+		out: []byte("error connecting to /private/tmp/tmux-501/ao (Connection refused)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{connectionRefused, connectionRefused}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false with inconclusive error")
+	}
+	if len(fr.calls) != 2 {
+		t.Fatalf("calls = %d, want named discovery and named liveness probe", len(fr.calls))
+	}
+	for i, call := range fr.calls {
+		if call.name != "bundled-tmux-test" {
+			t.Fatalf("call %d binary = %q, want bundled-tmux-test", i, call.name)
+		}
+		if len(call.args) < 2 || call.args[0] != "-L" || call.args[1] != "ao" {
+			t.Fatalf("call %d args = %#v, want named ao socket", i, call.args)
 		}
 	}
 }
@@ -880,6 +977,52 @@ func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
 	}
 }
 
+// Same teardown generosity for the tmux ≥ 3.4 absent-server wording.
+func TestDestroyIsIdempotentWhenSocketAbsent(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{nil, []byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
+	fr.err = &exec.ExitError{}
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy socket-absent: %v", err)
+	}
+}
+
+// The migration-deployment reboot case: every probe on both sockets hits the
+// absent-socket text, and kill-session still resolves to "nothing to kill"
+// instead of surfacing the probe failure.
+func TestDestroyIsIdempotentWhenBothMigrationSocketsAbsent(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	absent := fakeRunnerResult{
+		out: []byte("error connecting to /tmp/tmux-1000/missing (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent}} // repeated for every call
+	r.runner = fr
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	sawKill := false
+	for _, c := range fr.calls {
+		// Socket-qualified argv carries the "-L <name>" prefix, so scan for the
+		// subcommand instead of expecting it at args[0].
+		for _, a := range c.args {
+			if a == "kill-session" {
+				sawKill = true
+			}
+		}
+	}
+	if !sawKill {
+		t.Fatal("Destroy never reached kill-session")
+	}
+}
+
 func TestDestroyReportsUnexpectedFailures(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{nil, []byte("permission denied")}
@@ -980,6 +1123,146 @@ func TestIsExactSupervisedProcessAliveRejectsManualRelaunchFromPreservedShell(t 
 	}
 }
 
+func TestProbeFencedRuntimeExactProcessMatchIsAlive(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n102 101 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedAlive || got.Reason != ports.FencedReasonExactMatch {
+		t.Fatalf("ProbeFencedRuntime exact process = %+v, want alive/exact_match", got)
+	}
+}
+
+func TestProbeFencedRuntimeAmbiguousIdentityIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-other -- codex\n102 101 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonGenerationMismatch {
+		t.Fatalf("ProbeFencedRuntime ambiguous process = %+v, want unknown/generation_mismatch", got)
+	}
+}
+
+func TestProbeFencedRuntimeExactSupervisorWithoutChildIsDead(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedDead || got.Reason != ports.FencedReasonExactAbsent {
+		t.Fatalf("ProbeFencedRuntime exited exact process = %+v, want dead/exact_absent", got)
+	}
+}
+
+func TestProbeFencedRuntimeManualRelaunchWithoutSupervisorIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 codex resume native-1\n102 101 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonIdentityMissing {
+		t.Fatalf("ProbeFencedRuntime manual relaunch = %+v, want unknown/identity_missing", got)
+	}
+}
+
+func TestProbeFencedRuntimeMalformedProcessRowIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonProbeFailed {
+		t.Fatalf("ProbeFencedRuntime malformed scan = %+v, want unknown/probe_failed", got)
+	}
+}
+
+func TestProbeFencedRuntimeMultipleSupervisorGenerationsIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n201 100 /opt/ao agent-process supervise --session sess-1 --launch launch-other -- codex\n202 201 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonGenerationMismatch {
+		t.Fatalf("ProbeFencedRuntime multi-generation scan = %+v, want unknown/generation_mismatch", got)
+	}
+}
+
+type partialCreateFailureRunner struct {
+	statusFailed bool
+}
+
+func (r *partialCreateFailureRunner) Run(_ context.Context, _ []string, _ string, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	switch args[0] {
+	case "display-message":
+		return []byte("/tmp/ws\n"), nil
+	case "set-option":
+		if !r.statusFailed {
+			r.statusFailed = true
+			return nil, errors.New("set status response lost")
+		}
+	case "list-panes":
+		return []byte("4242\n"), nil
+	case "kill-session":
+		return nil, errors.New("cleanup failed")
+	}
+	return nil, nil
+}
+
+func TestPartialCreateCleanupFailureExposesRuntimeEffectEvidence(t *testing.T) {
+	r := New(Options{Binary: "tmux-test", Shell: "/bin/sh", Timeout: time.Second})
+	r.runner = &partialCreateFailureRunner{}
+	r.reapSessions = (&recordingReaper{}).reap
+
+	handle, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "sess-partial", WorkspacePath: "/tmp/ws", Argv: []string{"codex"},
+	})
+	if handle.ID != "" || err == nil {
+		t.Fatalf("Create partial = (%+v, %v), want empty direct handle and evidence error", handle, err)
+	}
+	var effect ports.RuntimeEffectError
+	if !errors.As(err, &effect) {
+		t.Fatalf("Create error %T does not implement RuntimeEffectError", err)
+	}
+	if effect.PossibleHandle().ID != "sess-partial" || effect.EffectOutcome() != ports.RuntimeEffectPossible || effect.CleanupOutcome() != ports.RuntimeCleanupFailed {
+		t.Fatalf("Create effect evidence = handle %+v effect %q cleanup %q", effect.PossibleHandle(), effect.EffectOutcome(), effect.CleanupOutcome())
+	}
+}
+
 func TestIsSupervisedProcessAliveRejectsBarePreservedShell(t *testing.T) {
 	entries, err := parseProcessTable("100 1 /bin/zsh -i\n")
 	if err != nil {
@@ -1074,17 +1357,60 @@ func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 	}
 }
 
-func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
+// tmux ≥ 3.4 words an absent server "error connecting … (No such file or
+// directory)" instead of "no server running". The socket file does not exist,
+// so no server can be listening: this is the same conclusive server absence,
+// and the recovery paths (boot reconcile, restore, restart) key off
+// ErrRuntimeUnavailable.
+func TestIsAliveReportsAbsentSocketAsRuntimeUnavailable(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
 	fr.err = &exec.ExitError{}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
 	}
 	if alive {
 		t.Fatal("alive = true, want false")
+	}
+}
+
+// After a reboot both the private and the legacy server are gone. The session
+// must come back as ErrRuntimeUnavailable, not ErrRuntimeProbeInconclusive:
+// an inconclusive probe dead-ends boot reconciliation ("a failed probe is not
+// proof of death: leave the session as-is") and leaves the session live-looking
+// but unrecoverable — kill 500s, restore refuses. Connection refused (socket
+// exists, no listener yet) stays inconclusive; see
+// TestIsAliveKeepsAmbiguousNamedSocketFailureInNamedNamespace.
+func TestIsAliveReportsUnavailableWhenBothSocketsAbsent(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	absent := fakeRunnerResult{
+		out: []byte("error connecting to /tmp/tmux-1000/missing (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent, absent, absent}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false")
+	}
+	if len(fr.calls) != 3 {
+		t.Fatalf("calls = %d, want private probe, legacy probe, resolved private probe", len(fr.calls))
+	}
+	for i, wantBinary := range []string{"bundled-tmux-test", "system-tmux-test", "bundled-tmux-test"} {
+		if fr.calls[i].name != wantBinary {
+			t.Fatalf("call %d binary = %q, want %q", i, fr.calls[i].name, wantBinary)
+		}
 	}
 }
 
@@ -1101,6 +1427,74 @@ func TestIsAliveReportsOtherExitFailuresAsProbeErrors(t *testing.T) {
 	}
 	if alive {
 		t.Fatal("alive = true on probe failure")
+	}
+}
+
+func TestIsChildAliveServerAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		wantErr      bool
+	}{
+		{name: "absent server", output: "no server running on /tmp/tmux-1000/default"},
+		{name: "missing socket is conclusive absence", output: "error connecting to /tmp/tmux-1000/default (No such file or directory)"},
+		{name: "connection refused", output: "error connecting to /tmp/tmux-1000/default (Connection refused)", wantErr: true},
+		{name: "protocol failure", output: "protocol version mismatch", wantErr: true},
+		{name: "unexpected exit", output: "server exited unexpectedly", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{[]byte(tc.output)}
+			fr.err = &exec.ExitError{}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive || (err != nil) != tc.wantErr {
+				t.Fatalf("IsChildAlive = %v, %v; want false, error=%v", alive, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestIsChildAliveUsesPaneStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  string
+		alive   bool
+		wantErr bool
+	}{
+		{name: "running", status: "0\n", alive: true},
+		{name: "retained exit", status: "1\n"},
+		{name: "another pane running", status: "1\n0\n", alive: true},
+		{name: "all panes exited", status: "1\n1\n"},
+		{name: "missing status", wantErr: true},
+		{name: "invalid status", status: "unknown", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{nil, []byte(tc.status)}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive != tc.alive || (err != nil) != tc.wantErr {
+				t.Fatalf("child status %q = %v, %v; want alive %v, error %v", tc.status, alive, err, tc.alive, tc.wantErr)
+			}
+			if len(fr.calls) != 2 || !reflect.DeepEqual(fr.calls[1].args, []string{"list-panes", "-s", "-t", "=shell", "-F", "#{pane_dead}"}) {
+				t.Fatalf("child probe calls = %v", fr.calls)
+			}
+		})
+	}
+}
+
+func TestIsChildAlivePreservesProbeFailures(t *testing.T) {
+	for _, failedCall := range []int{1, 2} {
+		r, fr := newTestRuntime(0)
+		probeErr := errors.New("runtime probe failed")
+		fr.hook = func(_ context.Context, call int) error {
+			if call == failedCall {
+				return probeErr
+			}
+			return nil
+		}
+		alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+		if alive || !errors.Is(err, probeErr) {
+			t.Fatalf("probe failure at call %d = %v, %v; want original error", failedCall, alive, err)
+		}
 	}
 }
 

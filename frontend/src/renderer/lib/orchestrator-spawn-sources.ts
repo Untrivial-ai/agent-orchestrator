@@ -4,6 +4,7 @@ export const ORCHESTRATOR_SPAWN_SOURCES = [
 	"topbar",
 	"sidebar",
 	"project_add",
+	"project_clone",
 	"settings",
 	"restart",
 	"command_palette",

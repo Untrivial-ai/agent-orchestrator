@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import { Linking, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { ApiError, pingServer } from "./api";
 import { DEFAULT_CONFIG, loadConfig, saveConfig, type ServerConfig } from "./config";
+import { saveHost, setActiveHost } from "./hosts";
+import { adoptManualConnection } from "./manualConnect";
+import { probeIdentity } from "./connectRuntime";
 import {
 	classifyConnectionFailure,
 	describeConnectionFailure,
@@ -51,6 +54,20 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 			// with no further input from them.
 			await pingServer(target);
 			await saveConfig(target);
+			// Store it as a machine and select it. Writing only the legacy config
+			// left resolution reconnecting the previously active machine on the
+			// next launch, so a manual connection silently did not stick.
+			await adoptManualConnection(target, {
+				identity: async (c) => {
+					try {
+						return await probeIdentity(c);
+					} catch {
+						return ""; // Older daemon, or an endpoint that cannot say: still worth storing.
+					}
+				},
+				saveHost,
+				setActiveHost,
+			});
 			mobileTelemetry()?.capture(MOBILE_EVENTS.paired, { method: "manual" });
 			haptics.success();
 			onConnected();
