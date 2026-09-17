@@ -399,7 +399,8 @@ func (f *fakeLauncher) Destroy(_ context.Context, handleID string) error {
 	if f.destroyCalled != nil {
 		f.destroyCalled <- handleID
 	}
-	if f.destroyErr != nil && (f.destroyErrCall == 0 || f.destroyErrCall == f.destroyCalls) {
+	if f.destroyErrCall > 0 {
+		f.destroyErrCall--
 		return f.destroyErr
 	}
 	return nil
@@ -793,10 +794,12 @@ func TestRestoreReviewerClaimsNewLaunchBeforeRestoreHooksWithFencedStore(t *test
 
 func TestCancelInterruptsReviewerAndCancelsRunningRuns(t *testing.T) {
 	store := &fakeStore{
-		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "review-mer-1"},
+		reviews: map[domain.ReviewerHarness]domain.Review{
+			domain.ReviewerCodex: {ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "review-mer-1"},
+		},
 		runs: []domain.ReviewRun{
-			{ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning},
-			{ID: "run-2", ReviewID: "rev-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/2", TargetSHA: "sha2", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+			{ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning},
+			{ID: "run-2", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, PRURL: "https://github.com/o/r/pull/2", TargetSHA: "sha2", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
 		},
 	}
 	launcher := &fakeLauncher{}
@@ -810,11 +813,8 @@ func TestCancelInterruptsReviewerAndCancelsRunningRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if !launcher.cancelled || launcher.cancelledHandle != "review-mer-1" {
-		t.Fatalf("launcher cancel = %v handle=%q", launcher.cancelled, launcher.cancelledHandle)
-	}
-	if launcher.cancelledHarness != domain.ReviewerCodex {
-		t.Fatalf("cancel harness = %q, want codex", launcher.cancelledHarness)
+	if !launcher.destroyed || launcher.destroyedHandle != "review-mer-1" {
+		t.Fatalf("launcher destroy = %v handle=%q", launcher.destroyed, launcher.destroyedHandle)
 	}
 	if len(res.CancelledRuns) != 1 || res.CancelledRuns[0].ID != "run-1" {
 		t.Fatalf("cancelled runs = %+v", res.CancelledRuns)
@@ -835,7 +835,6 @@ func TestCancelInterruptsReviewerAndCancelsRunningRuns(t *testing.T) {
 
 func TestCancelTargetsRunningReviewerHarness(t *testing.T) {
 	store := &fakeStore{
-		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "codex-pane"},
 		reviews: map[domain.ReviewerHarness]domain.Review{
 			domain.ReviewerCodex:    {ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "codex-pane"},
 			domain.ReviewerOpenCode: {ID: "rev-open", SessionID: "mer-1", Harness: domain.ReviewerOpenCode, ReviewerHandleID: "opencode-pane"},
@@ -854,8 +853,8 @@ func TestCancelTargetsRunningReviewerHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if launcher.cancelledHandle != "opencode-pane" || launcher.cancelledHarness != domain.ReviewerOpenCode {
-		t.Fatalf("cancelled handle=%q harness=%q, want opencode pane", launcher.cancelledHandle, launcher.cancelledHarness)
+	if launcher.destroyedHandle != "opencode-pane" {
+		t.Fatalf("destroyed handle=%q, want opencode pane", launcher.destroyedHandle)
 	}
 	if len(res.CancelledRuns) != 1 || res.CancelledRuns[0].ID != "run-open" {
 		t.Fatalf("cancelled runs = %+v", res.CancelledRuns)
@@ -1036,12 +1035,12 @@ func TestSwitchReviewerKeepsDefaultReviewerInheritanceWhenSavingConfig(t *testin
 	eng.projects = fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{
 		Harness: domain.ReviewerOpenCode,
 	}}}}
-	selected, selectedConfig, err := eng.reviewerSelection(context.Background(), worker)
+	selectedReviewers, err := eng.reviewerSelection(context.Background(), worker)
 	if err != nil {
 		t.Fatalf("reviewerSelection after project change: %v", err)
 	}
-	if selected != domain.ReviewerOpenCode || selectedConfig.Model != "claude-3.7" {
-		t.Fatalf("selection after project reviewer change = (%q, %+v), want inherited opencode config", selected, selectedConfig)
+	if len(selectedReviewers) != 1 || selectedReviewers[0].Harness != domain.ReviewerOpenCode || selectedReviewers[0].AgentConfig.Model != "claude-3.7" {
+		t.Fatalf("selection after project reviewer change = (%d reviewers, %+v), want inherited opencode config", len(selectedReviewers), selectedReviewers)
 	}
 }
 
@@ -1557,13 +1556,14 @@ func TestReviewerSelectionMergesSessionConfigWithProjectReviewerConfig(t *testin
 		AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions},
 	}}}}, &fakeLauncher{})
 
-	harness, config, err := eng.reviewerSelection(context.Background(), worker)
+	selectedReviewers, err := eng.reviewerSelection(context.Background(), worker)
 	if err != nil {
 		t.Fatalf("reviewerSelection: %v", err)
 	}
-	if harness != domain.ReviewerClaudeCode {
-		t.Fatalf("harness = %q, want claude-code", harness)
+	if len(selectedReviewers) != 1 || selectedReviewers[0].Harness != domain.ReviewerClaudeCode {
+		t.Fatalf("reviewers = %+v, want single claude-code reviewer", selectedReviewers)
 	}
+	config := selectedReviewers[0].AgentConfig
 	if config.Model != "gpt-5" || config.Effort != "high" || config.Permissions != domain.PermissionModeBypassPermissions {
 		t.Fatalf("config = %+v, want merged session override + project permissions", config)
 	}
