@@ -1423,3 +1423,123 @@ func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 		t.Errorf("a terminated session still received %v", launcher.relayed)
 	}
 }
+
+type chatProbeAgent struct {
+	fakeAgent
+	exists bool
+	err    error
+	probed []string
+}
+
+func (p *chatProbeAgent) NativeConversationExists(
+	_ context.Context,
+	_ ports.SessionRef,
+	nativeConversationID string,
+	_ map[string]string,
+) (bool, error) {
+	p.probed = append(p.probed, nativeConversationID)
+	return p.exists, p.err
+}
+
+type chatProbeAgents struct {
+	agent ports.Agent
+}
+
+func (p chatProbeAgents) Agent(domain.AgentHarness) (ports.Agent, bool) {
+	return p.agent, true
+}
+
+func newChatManagerWithAgents(chat ChatLauncher, agents ports.AgentResolver) (*Manager, *fakeStore, *fakeRuntime) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    agents,
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Chat:      chat,
+		Lifecycle: &fakeLCM{store: st},
+		DataDir:   "/ao-test-data",
+		LookPath:  lookPath,
+	})
+	return m, st, rt
+}
+
+func TestResumeChatSession_FallsBackToFreshThreadWhenNativeConversationMissing(t *testing.T) {
+	launcher := &recordingLauncher{}
+	probe := &chatProbeAgent{exists: false}
+	mgr, store, _ := newChatManagerWithAgents(launcher, chatProbeAgents{agent: probe})
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	rec.Metadata.ProviderConversationID = "thread-unmaterialized"
+	store.sessions["mer-1"] = rec
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(probe.probed) != 1 || probe.probed[0] != "thread-unmaterialized" {
+		t.Fatalf("probed = %v, want [thread-unmaterialized]", probe.probed)
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("started %d chat controllers, want 1", len(launcher.started))
+	}
+	if got := launcher.started[0].ProviderConversationID; got != "" {
+		t.Fatalf("provider conversation id passed to StartChat = %q, want empty", got)
+	}
+	if result.Mode != RestoreModeFresh {
+		t.Fatalf("result.Mode = %v, want %v", result.Mode, RestoreModeFresh)
+	}
+	if result.Session.Metadata.ProviderConversationID != "thread-1" {
+		t.Fatalf("restored session provider conversation id = %q, want thread-1", result.Session.Metadata.ProviderConversationID)
+	}
+}
+
+func TestResumeChatSession_ResumesExistingThreadWhenNativeConversationExists(t *testing.T) {
+	launcher := &recordingLauncher{}
+	probe := &chatProbeAgent{exists: true}
+	mgr, store, _ := newChatManagerWithAgents(launcher, chatProbeAgents{agent: probe})
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	rec.Metadata.ProviderConversationID = "thread-existing"
+	store.sessions["mer-1"] = rec
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(probe.probed) != 1 || probe.probed[0] != "thread-existing" {
+		t.Fatalf("probed = %v, want [thread-existing]", probe.probed)
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("started %d chat controllers, want 1", len(launcher.started))
+	}
+	if got := launcher.started[0].ProviderConversationID; got != "thread-existing" {
+		t.Fatalf("provider conversation id passed to StartChat = %q, want thread-existing", got)
+	}
+	if result.Mode != RestoreModeNative {
+		t.Fatalf("result.Mode = %v, want %v", result.Mode, RestoreModeNative)
+	}
+}
+
+func TestResumeChatSession_FailsWhenNativeConversationMissingAndNativeHistoryRequired(t *testing.T) {
+	launcher := &recordingLauncher{}
+	probe := &chatProbeAgent{exists: false}
+	mgr, store, _ := newChatManagerWithAgents(launcher, chatProbeAgents{agent: probe})
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	rec.Metadata.ProviderConversationID = "thread-unmaterialized"
+	store.sessions["mer-1"] = rec
+
+	_, err := mgr.resumeAgentRecordWithPolicy(context.Background(), "resume", rec, false, true)
+	if !errors.Is(err, ErrNativeConversationMissing) {
+		t.Fatalf("err = %v, want ErrNativeConversationMissing", err)
+	}
+	if len(launcher.started) != 0 {
+		t.Fatalf("started %d chat controllers, want 0", len(launcher.started))
+	}
+}
+

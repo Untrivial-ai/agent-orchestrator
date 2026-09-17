@@ -1235,6 +1235,12 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
+	case errors.Is(err, ports.ErrChatResumeFailed):
+		return apierr.Conflict("CHAT_RESUME_FAILED", err.Error(), nil)
+	case errors.Is(err, ports.ErrChatHistoryUnavailable):
+		return apierr.Conflict("CHAT_HISTORY_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, ports.ErrChatHistoryUnsettled):
+		return apierr.Conflict("CHAT_HISTORY_UNSETTLED", err.Error(), nil)
 	case errors.Is(err, ports.ErrUnsupportedEffort):
 		return apierr.Invalid("UNSUPPORTED_EFFORT", err.Error(), nil)
 	case errors.Is(err, ports.ErrModelCapabilitiesUnavailable):
