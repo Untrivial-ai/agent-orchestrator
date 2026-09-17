@@ -50,4 +50,13 @@ func TestScanReviewRunReadsTerminal(t *testing.T) {
 	}
 }
 
+func TestTerminalTicketPurposeBindsReviewerTerminal(t *testing.T) {
+	if got, want := terminalTicketPurpose("agent", "reviewer-terminal-id"), "terminal:agent:reviewer-terminal-id"; got != want {
+		t.Fatalf("terminalTicketPurpose = %q, want %q", got, want)
+	}
+	if got, want := terminalTicketPurpose("agent", ""), "terminal:agent"; got != want {
+		t.Fatalf("generic terminalTicketPurpose = %q, want %q", got, want)
+	}
+}
+
 func ptr(value string) *string { return &value }

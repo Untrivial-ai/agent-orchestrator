@@ -334,6 +334,7 @@ export function TerminalCacheProvider({
 			if (cached) return cached;
 			const sessionId = paneSession.id;
 			const orgId = cloud.orgId;
+			const reviewerTerminalID = terminalTarget?.kind === "reviewer" ? terminalTarget.handleId : undefined;
 			// One replay cursor per pane, shared across every mux the hook rebuilds
 			// on reconnect (the factory closure captures it and is itself cached
 			// per factoryKey). A rebuilt mux resumes from the last sequence it
@@ -345,6 +346,7 @@ export function TerminalCacheProvider({
 				createCloudTerminalMux({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
 					kind,
+					terminalId: reviewerTerminalID,
 					cursor,
 					// Both kinds open their socket directly; the CP's find-or-create
 					// OpenTerminal + starting/ready messages drive readiness. There is
@@ -355,6 +357,7 @@ export function TerminalCacheProvider({
 					mintTicket: async (ticketKind) => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
 							kind: ticketKind,
+							...(reviewerTerminalID ? { terminalId: reviewerTerminalID } : {}),
 						});
 						return response.ticket;
 					},
