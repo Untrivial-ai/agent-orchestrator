@@ -2033,14 +2033,12 @@ textarea,
 	}
 }
 
-/* ── Global resize state (sidebar drag) ─────────────────────────────────── */
+/* ── Global resize state (sidebar / inspector drag) ─────────────────────── */
+/* Grip paint lives on ResizeHandle's fixed span — DO NOT restore
+   `body.is-resizing-x [data-slot="resize-handle"]::after` (rejected chrome). */
 body.is-resizing-x {
 	cursor: col-resize;
 	user-select: none;
-}
-
-body.is-resizing-x [data-slot="resize-handle"]::after {
-	background: var(--color-border);
 }
 
 body.is-resizing-x [data-slot="sidebar-gap"],
@@ -2074,8 +2072,10 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	}
 }
 
-/* Keep keyboard focus visible without adding a ring to the sidebar chrome. */
-.sidebar-focusless :focus-visible {
+/* Keep keyboard focus visible without adding a ring to the sidebar chrome.
+   Opt out elements that own their own fill (icon actions, brand, folder toggle,
+   NavRowHighlight hosts) so each new control does not need another !important. */
+.sidebar-focusless :focus-visible:not(.sidebar-icon-action):not([data-sidebar-brand]):not([data-project-folder]) {
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
 	box-shadow: none !important;
@@ -2098,6 +2098,15 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
    never paint the sidebar focus fill on it. */
 .sidebar-focusless [data-project-folder]:focus-visible {
 	background-color: transparent !important;
+}
+
+/* Brand → home is opted out of the wash above; still needs a keyboard cue.
+   Beats the global `:focus-visible { outline: none !important }` via specificity. */
+.sidebar-focusless [data-sidebar-brand]:focus-visible {
+	outline: 2px solid color-mix(in oklab, var(--color-ring) 55%, transparent) !important;
+	outline-offset: 2px !important;
+	background-color: transparent !important;
+	box-shadow: none !important;
 }
 
 /* Keyboard focus for the growing pill: focus-visible only (not focus-within),

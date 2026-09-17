@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -16,8 +16,6 @@ import {
 import { Check, Copy, GitBranch, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
 import type { MessageKey } from "../i18n";
 import { aoBridge } from "../lib/bridge";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { formatTimeCompact } from "../lib/format-time";
 import { formatEstimatedCost } from "../lib/format-cost";
 import { formatTokenCount } from "../lib/format-token-count";
@@ -53,7 +51,6 @@ export function toBoardSessionPresentation(
 		isTerminated: session.isTerminated,
 		kanbanColumn: session.kanbanColumn,
 		displayStatus: session.displayStatus,
-		statusReadiness: session.statusReadiness,
 		provider: session.provider,
 		status: session.status,
 		statusPresentation:
@@ -155,15 +152,6 @@ function DesktopSessionCard({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const retryStatus = useMutation({
-		mutationFn: async () => {
-			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
-				params: { path: { sessionId: session.id } },
-			});
-			if (error) throw new Error(apiErrorMessage(error, t("session.statusUnavailable")));
-		},
-		onSettled: () => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
-	});
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const summaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
 	const termination = useTerminateSessionState(session.id);
@@ -225,26 +213,9 @@ function DesktopSessionCard({
 			action={action}
 			branchAction={branchAction}
 			branchIcon={<GitBranch aria-hidden="true" className="size-icon-2xs shrink-0" />}
-			error={termination.error ?? retryStatus.error?.message ?? undefined}
+			error={termination.error ?? undefined}
 			externalLink={ProductExternalLink}
-			footer={
-				<>
-					{footer}
-					{interactive && session.statusReadiness === "unavailable" && (
-						<button
-							type="button"
-							disabled={retryStatus.isPending}
-							className="px-3 py-2 text-xs text-secondary hover:text-primary disabled:opacity-50"
-							onClick={(event) => {
-								event.stopPropagation();
-								retryStatus.mutate();
-							}}
-						>
-							{retryStatus.isPending ? t("session.statusChecking") : t("session.retryStatus")}
-						</button>
-					)}
-				</>
-			}
+			footer={footer}
 			interactive={interactive}
 			labels={{
 				formatTime: formatTimeCompact,

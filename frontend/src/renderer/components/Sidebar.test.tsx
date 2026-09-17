@@ -486,6 +486,16 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Signed in as user@example.com")).not.toBeInTheDocument();
 	});
 
+	it("navigates home from the brand row", async () => {
+		const user = userEvent.setup();
+		mockParams.projectId = "proj-1";
+		renderSidebar();
+
+		await user.click(screen.getByRole("button", { name: "Go to home" }));
+
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+	});
+
 	it("suppresses focus chrome without removing keyboard focusability", () => {
 		renderSidebar();
 
@@ -1891,34 +1901,21 @@ describe("Sidebar", () => {
 		).toBe(`${SIDEBAR_MIN_WIDTH}px`);
 	});
 
-	it("flushes any queued rAF frame on pointer-up and persists the clamped width", async () => {
-		let queuedFrame: FrameRequestCallback | undefined;
-		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-			queuedFrame = callback;
-			return 1;
-		});
-		const cancelAnimationFrameSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+	it("persists the clamped width on pointer-up (sync apply during drag)", async () => {
+		renderSidebar();
 
-		try {
-			renderSidebar();
+		const resizeHandle = screen.getByTestId("resize-handle");
 
-			const resizeHandle = screen.getByTestId("resize-handle");
+		fireEvent.pointerDown(resizeHandle, { clientX: SIDEBAR_DEFAULT_WIDTH });
+		fireEvent.pointerMove(window, { clientX: SIDEBAR_MIN_WIDTH + 5 });
+		expect(
+			document
+				.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')
+				?.style.getPropertyValue("--ao-sidebar-w"),
+		).toBe(`${SIDEBAR_MIN_WIDTH + 5}px`);
 
-			fireEvent.pointerDown(resizeHandle, { clientX: SIDEBAR_DEFAULT_WIDTH });
-			fireEvent.pointerMove(window, { clientX: SIDEBAR_MIN_WIDTH + 5 });
-			fireEvent.pointerUp(window);
-
-			// rAF was queued; pointerUp should flush it via cancelAnimationFrame.
-			expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(1);
-			expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
-
-			// Firing the stale frame after cancellation should not overwrite width.
-			queuedFrame?.(performance.now());
-			expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
-		} finally {
-			requestAnimationFrameSpy.mockRestore();
-			cancelAnimationFrameSpy.mockRestore();
-		}
+		fireEvent.pointerUp(window);
+		expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
 	});
 
 	it("paints the dot from its board section while activity drives the pulse", () => {

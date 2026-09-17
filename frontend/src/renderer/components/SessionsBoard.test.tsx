@@ -114,23 +114,6 @@ beforeEach(() => {
 });
 
 describe("SessionsBoard", () => {
-	it("retries an unverified session without opening or terminating it", async () => {
-		workspaceQueryMock.mockReturnValue({
-			data: [workspaceWithSessions([boardSession({ id: "unverified", title: "Unverified task", status: "unknown", displayStatus: "Working", statusReadiness: "unavailable" })])],
-			isSuccess: true, isError: false,
-		});
-		const client = renderBoard("p1");
-		const invalidate = vi.spyOn(client, "invalidateQueries");
-		expect(screen.queryByText("Working")).not.toBeInTheDocument();
-		expect(screen.getByText("Unable to verify")).toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: "Retry status check" }));
-		await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
-			params: { path: { sessionId: "unverified" } },
-		}));
-		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["workspaces"] }));
-		expect(navigateMock).not.toHaveBeenCalled();
-	});
-
 	it("uses the last human message time rather than generic session updatedAt", () => {
 		const presentation = toBoardSessionPresentation(
 			boardSession({

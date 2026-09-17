@@ -6,15 +6,16 @@ import { useUiStore } from "../stores/ui-store";
 import { TooltipProvider } from "./ui/tooltip";
 import type { UpdateStatus } from "../../main/update-settings";
 
-const { updInstall, updGetStatus, updOnStatus, workspaceData } = vi.hoisted(() => ({
+const { updInstall, updRelaunch, updGetStatus, updOnStatus, workspaceData } = vi.hoisted(() => ({
 	updInstall: vi.fn(),
+	updRelaunch: vi.fn(),
 	updGetStatus: vi.fn(),
 	updOnStatus: vi.fn(),
 	workspaceData: { current: [] as unknown[] },
 }));
 
 vi.mock("../lib/bridge", () => ({
-	aoBridge: { updates: { getStatus: updGetStatus, install: updInstall, onStatus: updOnStatus } },
+	aoBridge: { updates: { getStatus: updGetStatus, install: updInstall, relaunch: updRelaunch, onStatus: updOnStatus } },
 }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	useWorkspaceQuery: () => ({ data: workspaceData.current }),
@@ -42,7 +43,7 @@ function renderDialog(status: UpdateStatus) {
 }
 
 beforeEach(() => {
-	for (const m of [updInstall, updGetStatus, updOnStatus]) m.mockReset();
+	for (const m of [updInstall, updRelaunch, updGetStatus, updOnStatus]) m.mockReset();
 	updOnStatus.mockReturnValue(() => undefined);
 	workspaceData.current = [];
 	useUiStore.setState({ updateInstallPromptOpen: false });
@@ -182,27 +183,41 @@ it("keeps notes and session risks visible, blocks duplicate submits and dismissa
 	expect(screen.queryByTestId("restart-to-update-dialog")).toBeNull();
 });
 
-it("shows an inline failure and allows retry", async () => {
+it("shows an inline failure and retries by relaunching AO", async () => {
 	const install = deferredInstall();
+	updRelaunch.mockResolvedValue(undefined);
 	useUiStore.setState({ updateInstallPromptOpen: true });
 	renderDialog({ state: "downloaded", version: "1.2.3", releaseNotes: "Safer updates" });
 	await screen.findByText("Safer updates");
 	await userEvent.click(screen.getByRole("button", { name: "Restart & install" }));
-	await act(async () => install.reject(new Error("Error invoking remote method 'updates:install': Error: macOS preparation timed out. Close AO and reopen it before trying again.")));
+	await act(async () => install.reject(new Error("Error invoking remote method 'updates:install': Error: Couldn't finish preparing the update. Retry to try again.")));
 	expect(screen.getByRole("alert")).toHaveTextContent("AO could not prepare the update. Please try again.");
-	expect(screen.getByRole("alert")).toHaveTextContent("macOS preparation timed out. Close AO and reopen it before trying again.");
+	expect(screen.getByRole("alert")).toHaveTextContent("Couldn't finish preparing the update. Retry to try again.");
 	expect(screen.getByRole("alert")).not.toHaveTextContent("Error invoking remote method");
 	expect(screen.getByText("Safer updates")).toBeVisible();
 	expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
 	expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
 	expect(screen.queryByRole("progressbar")).toBeNull();
-	const retry = deferredInstall();
+	// The primary action becomes Retry, and retry restarts AO rather than
+	// re-invoking install() against a Squirrel that cannot be reset in-process.
+	await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+	expect(updRelaunch).toHaveBeenCalledTimes(1);
+	expect(updInstall).toHaveBeenCalledTimes(1);
+});
+
+it("hides the install-on-quit line once preparation fails", async () => {
+	const install = deferredInstall();
+	useUiStore.setState({ updateInstallPromptOpen: true });
+	renderDialog({ state: "downloaded", version: "1.2.3", releaseNotes: "Safer updates" });
+	await screen.findByText("Safer updates");
+	// Shown while nothing has failed: install-on-quit is still armed.
+	expect(screen.getByText(/installs on its own the next time you quit/)).toBeVisible();
 	await userEvent.click(screen.getByRole("button", { name: "Restart & install" }));
-	expect(updInstall).toHaveBeenCalledTimes(2);
-	expect(screen.queryByRole("alert")).toBeNull();
-	expect(screen.queryByText(/Close AO and reopen it/)).toBeNull();
-	await act(async () => retry.resolve());
-	expect(useUiStore.getState().updateInstallPromptOpen).toBe(false);
+	await act(async () => install.reject(new Error("Couldn't finish preparing the update. AO stayed open, so nothing changed. Retry to try again.")));
+	// The main process turned off install-on-quit on failure, so the promise is
+	// gone rather than contradicting the error.
+	expect(screen.getByRole("alert")).toBeVisible();
+	expect(screen.queryByText(/installs on its own the next time you quit/)).toBeNull();
 });
 
 it("allows cancelling after preparation fails", async () => {

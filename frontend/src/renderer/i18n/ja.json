@@ -1066,6 +1066,7 @@
 	"update.restart.sessionsBody": "再起動するとこれらは途中で中断されます。ターミナルセッションと Codex チャットセッションは自動的に再接続します。",
 	"update.restart.confirm": "再起動してインストール",
 	"update.restart.preparing": "更新を準備しています…",
+	"update.restart.retry": "再試行",
 	"update.restart.targetChanged": "別のアップデートが利用可能になりました。バージョンとリリースノートを確認して、もう一度確定してください。",
 	"update.restart.prepareFailed": "AO は更新を準備できませんでした。もう一度お試しください。",
 	"update.restart.installsOnQuit": "このビルドは次にアプリを終了したときにも自動的にインストールされます。",
@@ -2021,5 +2022,6 @@
 	"chat.draftDiscard.stay": "留まる",
 	"chat.draftDiscard.leaveAnyway": "離れる",
 	"chat.edit.abandonRecovery": "編集の復旧を中止",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "ホームに移動"
 }

@@ -3,10 +3,12 @@ import { CancellationToken } from "builder-util-runtime";
 import { app, dialog, autoUpdater as nativeAutoUpdater } from "electron";
 import { startMacUpdateProgress } from "./mac-update-progress";
 import { markUpdateRelaunch } from "./update-relaunch-flag";
-import { accessSync, constants as fsConstants, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import semver from "semver";
+import { AO_BUNDLE_ID } from "./stale-app-copies";
 import type { RequestOptions } from "node:http";
 import {
   readUpdateSettings,
@@ -107,16 +109,134 @@ let restartFailureHandler: (() => void) | undefined;
 let macRestartProgress: Awaited<ReturnType<typeof startMacUpdateProgress>> | undefined;
 let nativeReadyVersion: string | undefined;
 let nativePreparationError: Error | undefined;
-const NATIVE_PREPARATION_TIMEOUT_MS = 180_000;
+// Squirrel.Mac staging has no progress event and no cancel API, so a fixed
+// deadline punished slow disks (#5170). Watch the staging dir for growth and
+// give up only after a stretch of no progress; fall back to a fixed cap when the
+// growth signal can't be read.
+const STAGE_POLL_INTERVAL_MS = 10_000;
+const STAGE_INACTIVITY_TIMEOUT_MS = 90_000;
+// After ditto finishes extracting, ShipIt verifies the code signature: a
+// read-only phase where the staging bytes plateau while real work continues.
+// That plateau can outlast the inactivity window, so never call a stall on
+// bytes alone until this much total time has passed; a genuinely wedged stage
+// still trips on the no-signal and absolute caps below.
+const STAGE_VERIFY_GRACE_MS = 3 * 60_000;
+const STAGE_NO_SIGNAL_CAP_MS = 6 * 60_000;
+const STAGE_ABSOLUTE_CAP_MS = 15 * 60_000;
+// A ShipIt extract unpacks the downloaded zip and keeps both the old and new
+// bundles around during the swap, so it needs several times the archive size in
+// free space. Derive the requirement from the artifact we actually downloaded
+// rather than a flat number: a small nightly should not be refused on a disk
+// that comfortably fits it. A floor keeps a safety margin, and a cap keeps a
+// large build from demanding more than the extraction realistically uses. When
+// the artifact size is unknown, fall back to the cap.
+const STAGE_ARCHIVE_EXPANSION_FACTOR = 3;
+const STAGE_FREE_BYTES_FLOOR = 512 * 1024 * 1024;
+const STAGE_FREE_BYTES_CAP = 2 * 1024 * 1024 * 1024;
+
+function requiredFreeBytesToStage(archiveBytes: number | undefined): number {
+  if (!archiveBytes || archiveBytes <= 0) return STAGE_FREE_BYTES_CAP;
+  const derived = archiveBytes * STAGE_ARCHIVE_EXPANSION_FACTOR;
+  return Math.min(STAGE_FREE_BYTES_CAP, Math.max(STAGE_FREE_BYTES_FLOOR, derived));
+}
+// Short user-facing lines; the raw ditto/pkzip/codesign detail is logged, not shown.
+const STAGE_STALL_MESSAGE = "Couldn't finish preparing the update. AO stayed open, so nothing changed. Retry to try again.";
+const STAGE_DISK_MESSAGE = "Not enough disk space to install the update. Free up space, then retry.";
 let nativePreparationBlocked: Error | undefined;
 let rejectNativeOperation: ((error: Error) => void) | undefined;
 let nativePreparation: { version: string; promise: Promise<void>; finish(error?: Error): void } | undefined;
 
-function beginNativePreparation(version: string): void {
+// Squirrel.Mac stages into ~/Library/Caches/<bundleId>.ShipIt. This is the OS
+// updater's own working area: AO only READS it (never writes, keeps no AO state
+// there; AO state stays under ~/.ao) and every read fails open to undefined.
+// The path is our own bundle id, not the first ".ShipIt" that happens to be in
+// the cache: another Electron app's staging dir would give a bogus byte signal
+// that keeps the watchdog alive (or falsely full) while our own stage stalls.
+function macShipItDir(): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const dir = path.join(os.homedir(), "Library", "Caches", `${AO_BUNDLE_ID}.ShipIt`);
+    return existsSync(dir) ? dir : undefined;
+  } catch { return undefined; }
+}
+
+// Bytes under the staging area, bounded so a poll can't walk a huge tree.
+// undefined means no readable signal.
+function shipItStagingBytes(dir: string | undefined): number | undefined {
+  if (dir === undefined) return undefined;
+  let total = 0;
+  let seen = 0;
+  const budget = 20_000;
+  const walk = (d: string): void => {
+    let names: string[];
+    try { names = readdirSync(d); } catch { return; }
+    for (const name of names) {
+      if (seen >= budget) return;
+      seen += 1;
+      const full = path.join(d, name);
+      let st;
+      try { st = lstatSync(full); } catch { continue; }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(full);
+      else total += st.size;
+    }
+  };
+  walk(dir);
+  return seen === 0 ? undefined : total;
+}
+
+// True when the volume clearly lacks room to extract and swap the given
+// requirement. Fails open.
+function insufficientDiskForStaging(requiredBytes: number): boolean {
+  if (process.platform !== "darwin") return false;
+  try {
+    const target = macShipItDir() ?? path.join(os.homedir(), "Library", "Caches");
+    const { bavail, bsize } = statfsSync(target);
+    return Number(bavail) * Number(bsize) < requiredBytes;
+  } catch { return false; }
+}
+
+// Rewrites only known extraction/verification failures to a short line; any
+// other error passes through so its own recovery and messaging stay intact.
+function shortStagingMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/no space left on device/i.test(raw)) return STAGE_DISK_MESSAGE;
+  if (/ditto:|pkzip|code ?signature|codesign|failed to (?:extract|unzip)/i.test(raw)) return STAGE_STALL_MESSAGE;
+  return raw;
+}
+
+function blockNativePreparation(message: string): void {
+  nativePreparationBlocked = new Error(message);
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  activeDownloadCancellation?.cancel();
+}
+
+// Test seam: override the filesystem probes to drive the watchdog
+// deterministically. A fresh module import restores the defaults.
+let readStagingBytes: (dir: string | undefined) => number | undefined = shipItStagingBytes;
+let stagingDiskIsFull: (requiredBytes: number) => boolean = insufficientDiskForStaging;
+export function __setStagingProbesForTesting(probes: {
+  readStagingBytes?: (dir: string | undefined) => number | undefined;
+  stagingDiskIsFull?: (requiredBytes: number) => boolean;
+}): void {
+  if (probes.readStagingBytes) readStagingBytes = probes.readStagingBytes;
+  if (probes.stagingDiskIsFull) stagingDiskIsFull = probes.stagingDiskIsFull;
+}
+
+function beginNativePreparation(version: string, archiveBytes?: number): void {
   if (nativePreparationBlocked) return;
   if (nativePreparation) {
-    nativePreparationBlocked = new Error("macOS received overlapping update requests. Close and reopen AO before retrying.");
+    nativePreparationBlocked = new Error(STAGE_STALL_MESSAGE);
     nativePreparation.finish(nativePreparationBlocked);
+    return;
+  }
+  // Catch a full disk before ditto fails partway with a cryptic pkzip error (#5170).
+  if (stagingDiskIsFull(requiredFreeBytesToStage(archiveBytes))) {
+    blockNativePreparation(STAGE_DISK_MESSAGE);
+    nativeReadyVersion = undefined;
+    nativePreparationError = nativePreparationBlocked;
+    broadcast(stagedDownloadedStatus());
     return;
   }
   nativeReadyVersion = undefined;
@@ -130,7 +250,7 @@ function beginNativePreparation(version: string): void {
     version, promise,
     finish(error?: Error) {
       if (nativePreparation !== preparation) return;
-      clearTimeout(timer);
+      clearInterval(watchdog);
       nativePreparation = undefined;
       nativePreparationError = error;
       if (error) {
@@ -140,17 +260,48 @@ function beginNativePreparation(version: string): void {
       } else { nativeReadyVersion = version; resolve(); }
     },
   };
-  const timer = setTimeout(() => {
-    // Squirrel offers no cancellation API. Do not start another generation on
-    // top of a timed-out native request, even if its JS transfer settles later.
-    nativePreparationBlocked = new Error("macOS stopped responding while preparing the update. AO has stayed open. Close and reopen AO before retrying.");
-    autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = false;
-    activeDownloadCancellation?.cancel();
+  // Squirrel creates the .ShipIt dir only after electron-updater has already
+  // emitted update-downloaded (it stages on the checkForUpdates() call that
+  // fires right after this handler runs), so the dir usually does not exist yet
+  // at this point. Keep re-resolving it until it appears, otherwise the growth
+  // signal never engages and every stage falls back to the flat no-signal cap.
+  let stagingDir = macShipItDir();
+  const startedAt = Date.now();
+  let lastBytes = readStagingBytes(stagingDir);
+  let lastProgressAt = startedAt;
+  const trip = (): void => {
+    // No cancel API, so never stage again on top of a stalled request even if
+    // its JS transfer settles later; recovery is a clean relaunch.
+    console.error(`native update preparation stalled after ${Math.round((Date.now() - startedAt) / 1000)}s with no staging progress`);
+    blockNativePreparation(STAGE_STALL_MESSAGE);
     preparation.finish(nativePreparationBlocked);
     broadcast(stagedDownloadedStatus());
-  }, NATIVE_PREPARATION_TIMEOUT_MS);
-  timer.unref?.();
+  };
+  const watchdog = setInterval(() => {
+    const now = Date.now();
+    if (stagingDir === undefined) stagingDir = macShipItDir();
+    const bytes = readStagingBytes(stagingDir);
+    if (bytes !== undefined && (lastBytes === undefined || bytes > lastBytes)) {
+      lastBytes = bytes;
+      lastProgressAt = now;
+    }
+    const haveSignal = bytes !== undefined;
+    // A byte plateau only counts as a stall once it has outlasted the
+    // signature-verification grace, so a legitimate verify phase is not mistaken
+    // for a wedge.
+    const plateauStalled =
+      haveSignal &&
+      now - lastProgressAt >= STAGE_INACTIVITY_TIMEOUT_MS &&
+      now - startedAt >= STAGE_VERIFY_GRACE_MS;
+    if (
+      now - startedAt >= STAGE_ABSOLUTE_CAP_MS ||
+      plateauStalled ||
+      (!haveSignal && now - startedAt >= STAGE_NO_SIGNAL_CAP_MS)
+    ) {
+      trip();
+    }
+  }, STAGE_POLL_INTERVAL_MS);
+  watchdog.unref?.();
   nativePreparation = preparation;
 }
 
@@ -1384,15 +1535,18 @@ function wireUpdaterEvents(): void {
       broadcast(lastStatus.state === "downloading" ? lastStatus : stagedDownloadedStatus());
     });
     nativeAutoUpdater.on("error", (error) => {
-      nativePreparation?.finish(error);
+      // Log the full detail; surface only a short line.
+      console.error("native macOS updater error during staging:", error);
+      const short = new Error(shortStagingMessage(error));
+      nativePreparation?.finish(short);
       nativeReadyVersion = undefined;
-      nativePreparationError = error;
+      nativePreparationError = short;
       if (macRestartRequested) {
         macRestartRequested = false;
         macRestartPreparation = undefined;
         stagedInCurrentProcess = false;
-        void macRestartProgress?.fail(errorMessage(error)).catch(() => undefined);
-        broadcast({ state: "error", message: errorMessage(error) });
+        void macRestartProgress?.fail(short.message).catch(() => undefined);
+        broadcast({ state: "error", message: short.message });
         // Squirrel can close the windows, then fail to persist its relaunch
         // request. Restore AO in that still-running process instead of leaving
         // the user with no app window and no possible automatic restart.
@@ -1498,7 +1652,15 @@ function wireUpdaterEvents(): void {
     const restaged = stagedAtMs !== undefined && info?.version === stagedVersion;
     stagedVersion = info?.version;
     stagedInCurrentProcess = true;
-    if (process.platform === "darwin" && stagedVersion) beginNativePreparation(stagedVersion);
+    if (process.platform === "darwin" && stagedVersion) {
+      // electron-updater carries the artifact sizes in the manifest; the mac
+      // build is a single zip, so the largest entry is the archive we staged.
+      const archiveBytes = info?.files?.reduce(
+        (max, file) => Math.max(max, file?.size ?? 0),
+        0,
+      );
+      beginNativePreparation(stagedVersion, archiveBytes || undefined);
+    }
     stagedChannel = autoUpdater.channel ?? undefined;
     offeredReleaseNotes =
       normalizeReleaseNotes(info?.releaseNotes) ?? offeredReleaseNotes ?? directFeedReleaseNotes;

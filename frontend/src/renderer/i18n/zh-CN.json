@@ -1050,6 +1050,7 @@
 	"update.restart.sessionsBody": "重启会中断这些会话。终端会话和 Codex 聊天会话会自动重新连接。",
 	"update.restart.confirm": "重启并安装",
 	"update.restart.preparing": "正在准备更新…",
+	"update.restart.retry": "重试",
 	"update.restart.targetChanged": "现在有其他更新可用。请查看版本和发行说明，然后再次确认。",
 	"update.restart.prepareFailed": "AO 无法准备更新。请重试。",
 	"update.restart.installsOnQuit": "下次退出应用时，此版本也会自动安装。",
@@ -2003,5 +2004,6 @@
 	"chat.draftDiscard.stay": "留下",
 	"chat.draftDiscard.leaveAnyway": "仍然离开",
 	"chat.edit.abandonRecovery": "放弃编辑恢复",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "返回主页"
 }

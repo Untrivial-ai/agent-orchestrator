@@ -107,7 +107,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	defer releaseCodexAdmission()
 	agentConfig := in.cfg.AgentConfig
 	if !in.cfg.AgentConfigResolved {
-		agentConfig = applySpawnAgentConfig(effectiveAgentConfig(in.cfg.Kind, in.project.Config), in.cfg.AgentConfig)
+		agentConfig = applySpawnAgentConfig(effectiveAgentConfig(in.cfg.Harness, in.cfg.Kind, in.project.Config), in.cfg.AgentConfig)
 	}
 
 	var diffBaseSHA, diffBaseRef string

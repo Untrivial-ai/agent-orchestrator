@@ -1066,6 +1066,7 @@
 	"update.restart.sessionsBody": "Ein Neustart bricht diese mitten im Zug ab. Terminal-Sitzungen und Codex-Chat-Sitzungen verbinden sich selbst wieder.",
 	"update.restart.confirm": "Neu starten und installieren",
 	"update.restart.preparing": "Update wird vorbereitet…",
+	"update.restart.retry": "Wiederholen",
 	"update.restart.targetChanged": "Ein anderes Update ist jetzt verfügbar. Prüfe die Version und Versionshinweise und bestätige erneut.",
 	"update.restart.prepareFailed": "AO konnte das Update nicht vorbereiten. Bitte versuchen Sie es erneut.",
 	"update.restart.installsOnQuit": "Dieser Build wird auch beim nächsten Beenden der App automatisch installiert.",
@@ -2021,5 +2022,6 @@
 	"chat.draftDiscard.stay": "Bleiben",
 	"chat.draftDiscard.leaveAnyway": "Trotzdem verlassen",
 	"chat.edit.abandonRecovery": "Bearbeitungswiederherstellung aufgeben",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "Zur Startseite"
 }

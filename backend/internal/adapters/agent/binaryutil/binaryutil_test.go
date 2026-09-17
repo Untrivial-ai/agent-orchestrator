@@ -31,6 +31,83 @@ func TestResolveBinaryPrefersPath(t *testing.T) {
 	}
 }
 
+func TestResolveBinaryReturnsPathBeforeFallbackDiscoveryDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookup shape differs on windows")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "widget")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("HOME", t.TempDir())
+
+	// A valid ordinary PATH hit must return before the slower fallback
+	// enumeration gets a chance to consume the caller's remaining deadline.
+	ctx := &deadlineAfterChecksContext{Context: context.Background(), remaining: 2}
+	got, err := ResolveBinary(ctx, BinarySpec{
+		Label:       "widget",
+		Names:       []string{"widget"},
+		NodeManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("got %q, want %q", got, bin)
+	}
+}
+
+type deadlineAfterChecksContext struct {
+	context.Context
+	remaining int
+}
+
+func (c *deadlineAfterChecksContext) Err() error {
+	if c.remaining > 0 {
+		c.remaining--
+		return nil
+	}
+	return context.DeadlineExceeded
+}
+
+func TestResolveBinaryIdentityAcceptsPathHit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookup shape differs on windows")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "widget")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fallback := filepath.Join(t.TempDir(), "widget")
+	if err := os.WriteFile(fallback, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	probes := 0
+	got, err := ResolveBinary(context.Background(), BinarySpec{
+		Label:     "widget",
+		Names:     []string{"widget"},
+		UnixPaths: []string{fallback},
+		ValidateIdentity: func(context.Context, string) bool {
+			probes++
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("got %q, want %q", got, bin)
+	}
+	if probes != 1 {
+		t.Fatalf("identity probes = %d, want one PATH probe", probes)
+	}
+}
+
 func TestDefaultFNMDirDarwin(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "Users", "tester")
 	want := filepath.Join(home, "Library", "Application Support", "fnm")

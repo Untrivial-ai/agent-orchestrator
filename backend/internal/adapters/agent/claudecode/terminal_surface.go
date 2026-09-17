@@ -10,13 +10,19 @@ import (
 
 const claudeTerminalSurfaceLookbackLines = 12
 
+// claudeComposerChromeLabels names provider-owned text that Claude Code paints
+// into the current composer row with default styling (observed during drain
+// failures: a bare "Claude Code" product label between the composer rules).
+// It is not human input and must not fail an interface switch.
+var claudeComposerChromeLabels = []string{"Claude Code"}
+
 // InspectTerminalSurface reports independent work and composer facts from
 // Claude Code's current TUI. Claude may keep its composer visible while a turn
 // is active, so an empty composer never overrides an active footer marker.
 func (p *Plugin) InspectTerminalSurface(output string) ports.TerminalSurfaceObservation {
-	composer := terminalui.LastBorderedPromptComposerState(output, "❯")
+	composer := terminalui.LastBorderedPromptComposerState(output, "❯", claudeComposerChromeLabels...)
 	if composer == terminalui.ComposerUnknown {
-		composer = terminalui.LastPromptComposerState(output, "❯")
+		composer = terminalui.LastPromptComposerState(output, "❯", claudeComposerChromeLabels...)
 	}
 
 	observation := ports.TerminalSurfaceObservation{Composer: claudeComposerState(composer)}

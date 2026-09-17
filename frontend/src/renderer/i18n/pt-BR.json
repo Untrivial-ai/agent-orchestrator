@@ -1086,6 +1086,7 @@
 	"update.restart.sessionsBody": "Reiniciar interrompe essas sessões no meio do turno. Sessões de terminal e de chat do Codex se reconectam sozinhas.",
 	"update.restart.confirm": "Reiniciar e instalar",
 	"update.restart.preparing": "Preparando atualização…",
+	"update.restart.retry": "Tentar novamente",
 	"update.restart.targetChanged": "Outra atualização está disponível. Confira a versão e as notas da versão e confirme novamente.",
 	"update.restart.prepareFailed": "O AO não conseguiu preparar a atualização. Tente novamente.",
 	"update.restart.installsOnQuit": "Esta compilação também é instalada sozinha na próxima vez que você sair do aplicativo.",
@@ -2050,5 +2051,6 @@
 	"chat.draftDiscard.stay": "Ficar",
 	"chat.draftDiscard.leaveAnyway": "Sair mesmo assim",
 	"chat.edit.abandonRecovery": "Abandonar recuperação da edição",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"shell.goHome": "Ir para o início"
 }

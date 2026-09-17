@@ -99,6 +99,11 @@ import { isOrchestratorSession, sessionIsActive } from "../types/workspace";
 import { terminalTargetBelongsToSession, type TerminalTarget } from "../types/terminal";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { useResolvedTheme, useUiStore, type InspectorView } from "../stores/ui-store";
+import {
+	INSPECTOR_SEPARATOR_RESERVE_PX,
+	inspectorMaxWidthCss,
+	inspectorMaxWidthPx,
+} from "../lib/inspector-width";
 
 const WORKSPACE_DEFAULT_PX = 500;
 const WORKSPACE_MIN_PX = 340;
@@ -114,9 +119,7 @@ const CHAT_READABLE_MIN_PX = 560;
 // canvas workflow. This is still wide enough for the timeline and composer, and
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
-const WORKSPACE_ABSOLUTE_MIN_PX = 300;
 type CenterFileOpenRequest = { commitSha?: string; editing: boolean; key: number; mode: FileViewMode; scope?: FileOpenOptions["scope"] };
-const INSPECTOR_SEPARATOR_RESERVE_PX = 8;
 const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
 // 239px tablist breakpoint plus the 76px pinned-action reserve and 10px leading
@@ -224,21 +227,6 @@ function inspectorSizing(view: InspectorView): InspectorSizing {
 	};
 }
 
-function inspectorMaxWidthPx(
-	availableWidth?: number,
-	maxPercent = WORKSPACE_MAX_PERCENT,
-	chatMinWidth = CHAT_READABLE_MIN_PX,
-): number | undefined {
-	if (!Number.isFinite(availableWidth) || !availableWidth || availableWidth <= 0) return undefined;
-	const percentageCap = Math.floor((availableWidth * maxPercent) / 100);
-	const readableChatCap = Math.max(WORKSPACE_ABSOLUTE_MIN_PX, availableWidth - chatMinWidth);
-	return Math.min(availableWidth, percentageCap, readableChatCap);
-}
-
-function inspectorMaxWidthCss(maxPercent: number, chatMinWidth: number): string {
-	return `min(${maxPercent}%, max(${WORKSPACE_ABSOLUTE_MIN_PX}px, calc(100% - ${chatMinWidth}px)))`;
-}
-
 function initialInspectorSize(sizing: InspectorSizing, availableWidth?: number): string {
 	const raw = typeof window === "undefined" ? null : window.localStorage?.getItem(sizing.storageKey);
 	const parsed = raw === null ? Number.NaN : Number(raw);
@@ -318,20 +306,29 @@ function SessionInspectorRail({
 	splitRef: RefObject<HTMLDivElement | null>;
 }) {
 	const prefersReducedMotion = useReducedMotion();
-	const rangeRef = useRef({ min: sizing.minWidth, max: sizing.defaultWidth * 2 });
-	const rangeModeRef = useRef(sizing.mode);
-	if (rangeModeRef.current !== sizing.mode) {
-		rangeModeRef.current = sizing.mode;
-		// The CSS max-width remains the live visual clamp while the shell moves.
-		// Start a new profile with an unconstrained destination; ResizeObserver
-		// updates only the pointer-drag limits without rerendering the browser.
-		rangeRef.current = { min: sizing.minWidth, max: sizing.defaultWidth * 2 };
-	}
-	const minWidth = useCallback(() => rangeRef.current.min, []);
-	const maxWidth = useCallback(() => rangeRef.current.max, []);
 	const gapRef = useRef<HTMLDivElement>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
+	// Live min/max from the split — never cache defaultWidth*2 as the drag ceiling
+	// (that was the inspector leftmost overshoot). useResizable is the sole clamp owner.
+	const minWidth = useCallback(() => {
+		const split = splitRef.current;
+		if (!split || split.clientWidth <= 0) return sizing.minWidth;
+		const available = Math.max(0, split.clientWidth - INSPECTOR_SEPARATOR_RESERVE_PX);
+		const max =
+			inspectorMaxWidthPx(available, sizing.maxPercent, sizing.chatMinWidth) ?? sizing.defaultWidth;
+		return Math.min(sizing.minWidth, max);
+	}, [sizing.chatMinWidth, sizing.defaultWidth, sizing.maxPercent, sizing.minWidth, splitRef]);
+	const maxWidth = useCallback(() => {
+		const split = splitRef.current;
+		// Unlaid-out split must not crush a restored width; CSS max-width still paints the cap.
+		if (!split || split.clientWidth <= 0) return Number.POSITIVE_INFINITY;
+		const available = Math.max(0, split.clientWidth - INSPECTOR_SEPARATOR_RESERVE_PX);
+		return (
+			inspectorMaxWidthPx(available, sizing.maxPercent, sizing.chatMinWidth) ?? sizing.defaultWidth
+		);
+	}, [sizing.chatMinWidth, sizing.defaultWidth, sizing.maxPercent, sizing.minWidth, splitRef]);
 	const getResizeTargets = useCallback(() => [gapRef.current, panelRef.current], []);
+	const getBorderElement = useCallback(() => panelRef.current, []);
 	const { onPointerDown, onCollapsedPointerDown, onDoubleClick } = useResizable({
 		cssVar: inspectorWidthVar,
 		getCssTargets: getResizeTargets,
@@ -343,24 +340,6 @@ function SessionInspectorRail({
 		onExpand,
 		restoreMin: restoreMinWidth,
 	});
-
-	useLayoutEffect(() => {
-		const split = splitRef.current;
-		if (!split) return;
-		const updateRange = () => {
-			const availableWidth = Math.max(0, split.clientWidth - INSPECTOR_SEPARATOR_RESERVE_PX);
-			const maxWidth =
-				inspectorMaxWidthPx(availableWidth, sizing.maxPercent, sizing.chatMinWidth) ??
-				sizing.defaultWidth;
-			const minWidth = Math.min(sizing.minWidth, maxWidth);
-			rangeRef.current = { min: minWidth, max: maxWidth };
-		};
-		updateRange();
-		if (typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(updateRange);
-		observer.observe(split);
-		return () => observer.disconnect();
-	}, [sizing.chatMinWidth, sizing.defaultWidth, sizing.maxPercent, sizing.minWidth, splitRef]);
 
 	const transition = prefersReducedMotion ? { duration: 0 } : SHELL_PANEL_SPRING;
 	const hidden = !isOpen && settledClosed;
@@ -402,6 +381,8 @@ function SessionInspectorRail({
 				<ResizeHandle
 					className={!isOpen ? "hidden" : undefined}
 					data-testid="inspector-resize-handle"
+					getBorderElement={getBorderElement}
+					getObserveElements={getResizeTargets}
 					onDoubleClick={onDoubleClick}
 					onPointerDown={onPointerDown}
 					side="left"

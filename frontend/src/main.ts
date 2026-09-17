@@ -2350,6 +2350,13 @@ ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 	await downloadUpdateNow(requestId);
 });
 ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
+// Retry after a failed macOS preparation: Squirrel can't reset a stalled staging
+// in-process, so restart AO like a manual quit-and-reopen. install-on-quit is
+// already off on the failed path, so quitting can't apply a half-prepared build.
+ipcMain.handle("updates:relaunch", () => {
+	app.relaunch();
+	app.quit();
+});
 
 // Whether THIS boot is a post-update relaunch, so the startup loader can show
 // "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
