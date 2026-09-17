@@ -4559,7 +4559,7 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 		"Browser network capture is optional and off by default",
 		"never enable it for routine browser actions",
 		"relative to the session workspace root",
-		"use `ao preview README.md`, not `../README.md`",
+		"use `\"$AO_CLI_PATH\" preview README.md`, not `../README.md`",
 		"existing confined loopback preview",
 	} {
 		if !strings.Contains(systemPrompt, want) {
