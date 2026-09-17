@@ -10,8 +10,10 @@ import (
 	"strconv"
 )
 
+// MinimumVersion is the earliest DeepAgents version eligible for conformance testing.
 const MinimumVersion = "0.1.70"
 
+// ErrVersionUnsupported and the other exported errors identify failed contract gates.
 var (
 	ErrVersionUnsupported          = errors.New("DeepAgents version is unsupported")
 	ErrProfileIsolationUnsafe      = errors.New("DeepAgents profile isolation would replace user state")
@@ -43,6 +45,7 @@ type Contract struct {
 	AuthStatus          bool
 }
 
+// ValidateContract rejects incomplete or unsafe DeepAgents capability evidence.
 func ValidateContract(c Contract) error {
 	if c.UsesReplacementHome {
 		return ErrProfileIsolationUnsafe

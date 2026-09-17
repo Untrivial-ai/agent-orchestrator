@@ -25,8 +25,8 @@ func TestDeepAgentsUpstreamConformance(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	version := commandOutput(t, ctx, abs, "--version")
-	help := commandOutput(t, ctx, abs, "--help")
+	version := commandOutput(ctx, t, abs, "--version")
+	help := commandOutput(ctx, t, abs, "--help")
 
 	installed, ok := parseSemver(version)
 	if !ok {
@@ -50,7 +50,7 @@ func TestDeepAgentsUpstreamConformance(t *testing.T) {
 	t.Fatal("DeepAgents static flags passed, but behavioral conformance evidence has not been recorded")
 }
 
-func commandOutput(t *testing.T, ctx context.Context, binary string, args ...string) string {
+func commandOutput(ctx context.Context, t *testing.T, binary string, args ...string) string {
 	t.Helper()
 	output, err := exec.CommandContext(ctx, binary, args...).CombinedOutput()
 	if err != nil {
