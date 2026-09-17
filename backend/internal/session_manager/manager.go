@@ -4194,8 +4194,8 @@ func (m *Manager) aoSkillPointer() string {
 		}
 	}
 	return "\n\n" + "## Using the ao CLI\n\n" +
-		"AO provides its own executable in `$" + EnvCLIPath + "`. For every AO command, use `" + command + " …`, never bare `ao …`: Codex login shells can reorder PATH and select an incompatible older AO installation.\n\n" +
-		"When using `ao`, read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides.\n\n" +
+		"Use `" + command + "` for AO commands, never bare `ao`: login shells may choose an incompatible install.\n\n" +
+		"Read `" + skillFile + "` and only the relevant guide under `" + commandsGlob + "`.\n\n" +
 		"## AO desktop Browser panel\n\n" +
 		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `" + command + " preview` are relative to the session workspace root, regardless of the shell's current directory: use `" + command + " preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
 		"For page inspection or interaction, read `" + browserFile + "` and use `" + command + " browser` from this AO session. Browser network capture is optional and off by default; follow that guide and never enable it for routine browser actions. " +

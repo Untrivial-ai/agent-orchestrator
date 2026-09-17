@@ -4716,8 +4716,8 @@ func TestSystemPrompt_AppendsConfidentialityGuard(t *testing.T) {
 			if !strings.Contains(sp, "AO desktop Browser panel") || !strings.Contains(sp, "agent.browsers.get(\"iab\")") {
 				t.Fatalf("%s: system prompt missing AO browser routing guidance:\n%s", tc.name, sp)
 			}
-			if !strings.Contains(sp, "AO provides its own executable in `$AO_CLI_PATH`") ||
-				!strings.Contains(sp, "Codex login shells can reorder PATH") ||
+			if !strings.Contains(sp, "Use `\"$AO_CLI_PATH\"` for AO commands, never bare `ao`") ||
+				!strings.Contains(sp, "login shells may choose an incompatible install") ||
 				!strings.Contains(sp, "Static file targets passed to `\"$AO_CLI_PATH\" preview`") ||
 				!strings.Contains(sp, "relative to the session workspace root") ||
 				!strings.Contains(sp, "use `\"$AO_CLI_PATH\" preview README.md`, not `../README.md`") ||
