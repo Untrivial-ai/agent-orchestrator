@@ -475,7 +475,7 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
+	if s.checkoutBroker == nil && s.patWrites == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Raising a pull request is not available.")
 		return
 	}
@@ -512,8 +512,11 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		pr, err = s.patWrites.RaisePullRequest(
 			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
 		)
-	} else {
+	} else if s.checkoutBroker != nil {
 		pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Raising a pull request is not available.")
+		return
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
@@ -549,7 +552,7 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
+	if s.checkoutBroker == nil && s.patWrites == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Pull request tracking is not available.")
 		return
 	}
@@ -573,8 +576,11 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		pr, err = s.patWrites.ClaimPullRequest(
 			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, input.Reference,
 		)
-	} else {
+	} else if s.checkoutBroker != nil {
 		pr, err = s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Pull request tracking is not available.")
+		return
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")

@@ -161,6 +161,20 @@ func TestWorkerRaisePullRequestPrefersPAT(t *testing.T) {
 	}
 }
 
+func TestWorkerRaisePullRequestUsesPATWithoutBroker(t *testing.T) {
+	srv, _, recordStore, gh := newPATTestServer(t, nil)
+	srv.checkoutBroker = nil
+	w := httptest.NewRecorder()
+	srv.workerRaisePullRequest(w, patRaiseRequest(t))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+	if gh.hits == 0 || recordStore.created != 1 {
+		t.Fatalf("PAT path did not create the PR without a broker: github hits=%d records=%d", gh.hits, recordStore.created)
+	}
+}
+
 // Without a PAT the handler must fall through to the checkout broker.
 func TestWorkerRaisePullRequestFallsBackToBrokerWithoutPAT(t *testing.T) {
 	srv, broker, _, gh := newPATTestServer(t, postgres.ErrNotFound)
