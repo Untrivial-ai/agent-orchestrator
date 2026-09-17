@@ -1591,9 +1591,9 @@ const ProjectItem = memo(function ProjectItem({
 					<ConfirmDialog
 						open={forceConfirmOpen}
 						onOpenChange={setForceConfirmOpen}
-						title="Delete protected workspace?"
-						description={<><p className="text-sm font-medium text-foreground">AO could not safely remove a session workspace.</p><p className="mt-1 text-xs text-muted-foreground">Deleting will permanently remove that AO-managed workspace and any uncommitted changes. Your original project folder will not be deleted.</p></>}
-						confirmLabel="Delete project and workspace"
+						title={t("shell.forceRemoveProjectTitle")}
+						description={<><p className="text-sm font-medium text-foreground">{t("shell.forceRemoveProjectLead")}</p><p className="mt-1 text-xs text-muted-foreground">{t("shell.forceRemoveProjectBody")}</p></>}
+						confirmLabel={t("shell.forceRemoveProjectConfirm")}
 						destructive
 						onConfirm={handleForceRemove}
 					/>
