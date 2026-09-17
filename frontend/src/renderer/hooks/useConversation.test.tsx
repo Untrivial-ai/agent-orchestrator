@@ -527,6 +527,46 @@ describe("session-scoped conversation commands", () => {
 		expect(result.current.error).toBeUndefined();
 	});
 
+	it("swallows CHAT_NO_ACTIVE_TURN on interrupt instead of trapping the composer on a red 409", async () => {
+		postMock.mockResolvedValue({ data: undefined, error: { code: "CHAT_NO_ACTIVE_TURN" } });
+		apiErrorCodeMock.mockReturnValue("CHAT_NO_ACTIVE_TURN");
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-stop-settled"), {
+			wrapper: HookWrapper,
+		});
+
+		// The turn already settled: the snapshot refetch reconciles the view, so
+		// the desired end state is true and there is nothing to act on. A red
+		// banner here would leave Stop replaying the same 409.
+		act(() => {
+			result.current.interrupt();
+		});
+		await waitFor(() => {
+			expect(invalidate).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-stop-settled"] });
+		});
+		expect(result.current.busy).toBe(false);
+		expect(result.current.error).toBeUndefined();
+	});
+
+	it("still surfaces non-settlement interrupt failures", async () => {
+		postMock.mockResolvedValue({ data: undefined, error: { code: "CHAT_PROVIDER_REFUSED", message: "provider busy" } });
+		apiErrorCodeMock.mockReturnValue("CHAT_PROVIDER_REFUSED");
+		const { result } = renderHook(() => useConversationCommands("ao-stop-refused"), { wrapper });
+
+		act(() => {
+			result.current.interrupt();
+		});
+		await waitFor(() => {
+			expect(result.current.error).toBe("failed");
+		});
+	});
+
 	it.each(["retry", "edit"] as const)(
 		"keeps pending and accepted %s work attached to its initiating session",
 		async (operation) => {

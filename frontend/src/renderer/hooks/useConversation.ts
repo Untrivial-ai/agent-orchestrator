@@ -911,6 +911,18 @@ export function useConversationCommands(sessionId: string | undefined) {
 	const interruptTargetsCurrentSession = interrupt.variables?.targetSessionId === sessionId;
 	const retryTargetsCurrentSession = retryTurn.variables?.targetSessionId === sessionId;
 	const editTargetsCurrentSession = editMessage.variables?.targetSessionId === sessionId;
+	// CHAT_NO_ACTIVE_TURN on interrupt means the turn already settled: the end
+	// state the user wanted is true, and the mutation's onError refetch
+	// reconciles the view. Surfacing it as a red banner would trap them on a
+	// Working bar that is about to clear with an error they cannot act on —
+	// pressing Stop again just replays the same 409. Genuine failures (network,
+	// provider refusal) still surface.
+	const interruptError =
+		interruptTargetsCurrentSession &&
+		interrupt.error &&
+		apiErrorCode(interrupt.error) !== "CHAT_NO_ACTIVE_TURN"
+			? interrupt.error
+			: undefined;
 
 	return {
 		send: (input: string | ConversationSendInput) => {
@@ -1076,12 +1088,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 		error:
 			(sendTargetsCurrentSession && send.error) ||
 			resolve.error ||
-			(interruptTargetsCurrentSession && interrupt.error) ||
+			interruptError ||
 			chooseSettings.error
 				? apiErrorMessage(
 							(sendTargetsCurrentSession ? send.error : undefined) ??
 							resolve.error ??
-							(interruptTargetsCurrentSession ? interrupt.error : undefined) ??
+							interruptError ??
 							chooseSettings.error,
 					)
 				: undefined,
