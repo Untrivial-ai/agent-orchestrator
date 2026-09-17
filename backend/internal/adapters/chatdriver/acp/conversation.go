@@ -617,14 +617,6 @@ func (c *conversation) finishPrompt(
 	}
 	c.mu.Lock()
 	c.terminalEventID = eventID
-	c.mu.Unlock()
-	c.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
-	})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
-
-	c.mu.Lock()
 	if c.activeTurn == turnID {
 		c.activeTurn = ""
 		c.settlingTurn = ""
@@ -635,6 +627,11 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+	c.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
+		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
+	})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
