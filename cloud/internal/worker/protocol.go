@@ -265,9 +265,13 @@ type WorkspaceFile struct {
 type TerminalCommand struct {
 	TerminalID string `json:"terminalId"`
 	Kind       string `json:"kind,omitempty"`
-	Data       []byte `json:"data,omitempty"`
-	Columns    uint16 `json:"columns,omitempty"`
-	Rows       uint16 `json:"rows,omitempty"`
+	// Review starts an isolated coding-agent conversation for an automated PR
+	// review. It shares the session workspace, but never resumes the session's
+	// interactive agent thread.
+	Review  bool   `json:"review,omitempty"`
+	Data    []byte `json:"data,omitempty"`
+	Columns uint16 `json:"columns,omitempty"`
+	Rows    uint16 `json:"rows,omitempty"`
 }
 
 // TerminalStreamFrame is one message on the persistent duplex terminal

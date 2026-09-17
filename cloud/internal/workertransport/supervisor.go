@@ -61,6 +61,7 @@ type Supervisor struct {
 	Workspace       string
 	Shell           string
 	AgentCommand    workerexec.Command
+	ReviewCommand   workerexec.Command
 	AgentTerminalID string
 	Started         chan<- error
 	PollInterval    time.Duration
@@ -266,6 +267,15 @@ func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command,
 	return nil
 }
 
+// SetReviewCommand configures the fresh coding-agent command used by automated
+// PR review terminals. Review processes share the checkout but must not resume
+// the interactive session's native conversation.
+func (s *Supervisor) SetReviewCommand(command workerexec.Command) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReviewCommand = command
+}
+
 func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	// Do not claim a queued user turn until the agent PTY is actually live. The
 	// workspace transport starts first, so claiming here would otherwise mark
@@ -395,7 +405,7 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		return nil
 	}
 	processCtx, cancel := context.WithCancel(ctx)
-	command, cleanup, err := s.terminalCommand(processCtx, input.Kind)
+	command, cleanup, err := s.terminalCommand(processCtx, input)
 	if err != nil {
 		cancel()
 		s.mu.Unlock()
@@ -456,16 +466,20 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 
 func (s *Supervisor) terminalCommand(
 	ctx context.Context,
-	kind string,
+	input worker.TerminalCommand,
 ) (*exec.Cmd, func(), error) {
-	if kind == "agent" {
-		if s.AgentCommand.Path == "" {
+	if input.Kind == "agent" {
+		commandConfig := s.AgentCommand
+		if input.Review {
+			commandConfig = s.ReviewCommand
+		}
+		if commandConfig.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
-		command := exec.CommandContext(ctx, s.AgentCommand.Path, s.AgentCommand.Args...)
-		command.Dir = s.AgentCommand.Dir
-		command.Env = terminalEnvironment(s.AgentCommand.Env)
-		cleanup := s.AgentCommand.Cleanup
+		command := exec.CommandContext(ctx, commandConfig.Path, commandConfig.Args...)
+		command.Dir = commandConfig.Dir
+		command.Env = terminalEnvironment(commandConfig.Env)
+		cleanup := commandConfig.Cleanup
 		if cleanup == nil {
 			cleanup = func() {}
 		}

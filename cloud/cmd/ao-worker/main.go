@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -338,6 +339,19 @@ func startInteractiveAgent(
 	if err != nil {
 		return fmt.Errorf("build interactive coding-agent command: %w", err)
 	}
+	// A review shares this worker's checkout, but it needs a separate native
+	// conversation. Resuming the user's active Codex thread starts a second
+	// writer and makes Codex exit before the review can run.
+	reviewLaunch := bootstrap.Launch
+	reviewLaunch.SessionID = uuid.NewString()
+	reviewLaunch.AgentSessionID = ""
+	reviewCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(
+		reviewLaunch, credential, workspace,
+	)
+	if err != nil {
+		agentCommand.Cleanup()
+		return fmt.Errorf("build review coding-agent command: %w", err)
+	}
 	agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
 	agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
 	agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
@@ -354,14 +368,20 @@ func startInteractiveAgent(
 		`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
 		`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
 		"to submit an AO-triggered review verdict."
+	reviewCommand.Env = agentCommand.Env
+	transportSupervisor.SetReviewCommand(reviewCommand)
 	agentTerminal, err := client.ensureAgentTerminal(ctx)
 	if err != nil {
 		if agentCommand.Cleanup != nil {
 			agentCommand.Cleanup()
 		}
+		if reviewCommand.Cleanup != nil {
+			reviewCommand.Cleanup()
+		}
 		return fmt.Errorf("initialize agent terminal: %w", err)
 	}
 	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal.TerminalID); err != nil {
+		reviewCommand.Cleanup()
 		return fmt.Errorf("start interactive coding-agent terminal: %w", err)
 	}
 	if err := client.publishEvent(ctx, "agent.ready", map[string]any{
