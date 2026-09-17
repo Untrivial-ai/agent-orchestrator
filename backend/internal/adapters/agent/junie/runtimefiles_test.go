@@ -287,7 +287,6 @@ func TestRuntimeFilesPrepareConcurrentCallsExposeOnlyCompleteFiles(t *testing.T)
 	errCh := make(chan error, len(prompts))
 	var writers sync.WaitGroup
 	for _, prompt := range prompts {
-		prompt := prompt
 		writers.Add(1)
 		go func() {
 			defer writers.Done()

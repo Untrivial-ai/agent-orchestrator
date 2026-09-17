@@ -70,6 +70,15 @@ function renderSection() {
 }
 
 describe("HarnessSettingsSection", () => {
+	it("shows Junie as an experimental terminal agent with its official logo", async () => {
+		renderSection();
+		const row = (await screen.findByText("Junie")).closest('[data-agent="junie"]');
+		expect(row).not.toBeNull();
+		expect(row).toHaveTextContent("Experimental");
+		expect(row).toHaveTextContent("Terminal UI");
+		expect(row?.querySelector('img[src*="junie"]')).not.toBeNull();
+	});
+
 	beforeEach(async () => {
 		await appI18n.changeLanguage("en");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);

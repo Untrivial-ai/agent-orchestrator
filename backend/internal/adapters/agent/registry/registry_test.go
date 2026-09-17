@@ -185,3 +185,20 @@ func hasLine(content, line string) bool {
 	}
 	return false
 }
+
+func TestRegistryIncludesJunieTerminalHarness(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("junie")
+	if !ok {
+		t.Fatal("Junie is missing from the agent catalog")
+	}
+	if adapter.Manifest().Name != "Junie" {
+		t.Fatalf("unexpected Junie label: %q", adapter.Manifest().Name)
+	}
+	if !domain.AgentHarness("junie").IsKnown() {
+		t.Fatal("Junie cannot be selected for a session")
+	}
+}

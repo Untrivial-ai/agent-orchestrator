@@ -1,14 +1,22 @@
 # Junie integration evidence
 
 Reviewed 17 September 2026 against the official Junie documentation, last
-modified 16 September. This is development evidence, not an available AO agent.
+modified 16 September. Updated 18 September for experimental Terminal UI exposure.
 
-## Admission decision
+## Experimental availability
 
-Junie remains absent from AO's agent and Chat registries, harness enum, database
-constraints, setup catalogs, and product selectors. The experimental terminal
-package constructs commands and isolated runtime files; passing its offline
-tests is not evidence of a working authenticated Junie session.
+Junie is registered as an experimental Terminal UI harness. It appears in
+Settings → Agent Harnesses and the agent picker, with official installer and
+native first-run login actions. Select Junie with Terminal UI to start a session,
+or use `ao spawn <project> --agent junie`. Complete authentication and native
+permission dialogs directly in the terminal. Authentication remains `unknown`
+because AO has no reliable local probe. ACP Chat and reviewer support remain
+disabled. Passing offline tests does not establish authenticated conformance.
+
+Automated lifecycle and coordination nudges are suppressed for Junie because
+its current activity signals cannot reliably identify permission dialogs. The
+initial task is passed through `--prompt`; follow-up interaction is available
+in the terminal. Native restore is implemented but not yet verified live.
 
 The [hooks documentation](https://junie.jetbrains.com/docs/junie-cli-hooks.html)
 still requires Early Access. The reviewed stable feed ends at `3196.5`
@@ -42,9 +50,9 @@ not local verification results.
   prove authorization, and missing environment variables cannot disprove native
   OAuth credentials. Local auth remains `unknown`; no credential store is read
   and no model request is made by readiness checks.
-- Production install, setup, and model-catalog changes are deferred along with
-  registration. Shipping those surfaces while registration is blocked would
-  advertise an unavailable agent.
+- Install and login use the official Junie installer and native first-run flow.
+  AO does not silently opt users into the Early Access channel or invent a model
+  catalog. Activity hooks require an installed hook-capable EAP release.
 - ACP is deferred. The public
   [ACP overview](https://junie.jetbrains.com/docs/junie-cli-acp.html) documents
   `junie --acp true`, but not the durable load, history replay, or configuration
@@ -53,7 +61,7 @@ not local verification results.
   uses fresh sessions and transcript replay. A fake-backed driver alone would
   not establish Junie's compatibility.
 
-## Evidence required before registration
+## Evidence required before production support
 
 Use a pinned official artifact and authenticated throwaway project; record its
 platform, channel, build and verified SHA-256. Never test against real AO data.

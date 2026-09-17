@@ -1,7 +1,7 @@
-// Package junie contains an experimental, unregistered terminal adapter for
+// Package junie contains an experimental terminal adapter for
 // JetBrains Junie. Its isolated config enables lifecycle hooks, and a non-empty
 // AO guidelines file exclusively replaces Junie's normal project guidelines.
-// Registration remains blocked on authenticated live conformance evidence.
+// Authenticated live conformance remains unverified; ACP Chat is not registered.
 package junie
 
 import (
@@ -20,8 +20,8 @@ import (
 
 const adapterID = "junie"
 
-// Plugin is the experimental Junie terminal adapter. It is intentionally not
-// registered while Junie's stable hook and resume behavior remain unverified.
+// Plugin is the experimental Junie terminal adapter. Hook and restore behavior
+// still require live verification on the user's installed release.
 type Plugin struct {
 	agentbase.Base
 	binaryMu       sync.Mutex
@@ -29,8 +29,7 @@ type Plugin struct {
 	runtimeFiles   RuntimeFileBuilder
 }
 
-// New returns an unregistered Junie adapter for tests and future conformance
-// work.
+// New returns the experimental Junie terminal adapter.
 func New() *Plugin {
 	return &Plugin{runtimeFiles: NewRuntimeFileBuilder()}
 }

@@ -12,8 +12,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// This fixture records evidence, not an opt-in switch. Removing the admission
-// checks below requires a reviewed stable contract and authenticated live proof.
+// This fixture records outstanding live evidence. Experimental terminal
+// registration does not claim conformance or enable ACP Chat.
 type candidateContract struct {
 	HooksDocumentation string `json:"hooksDocumentation"`
 	ReviewedOn         string `json:"reviewedOn"`
@@ -29,12 +29,12 @@ type candidateContract struct {
 			SHA256   string `json:"sha256"`
 		} `json:"artifacts"`
 	} `json:"releases"`
-	TUIRegistrationEligible  bool     `json:"tuiRegistrationEligible"`
-	ChatRegistrationEligible bool     `json:"chatRegistrationEligible"`
-	MissingEvidence          []string `json:"missingEvidence"`
+	TUIConformanceVerified  bool     `json:"tuiConformanceVerified"`
+	ChatConformanceVerified bool     `json:"chatConformanceVerified"`
+	MissingEvidence         []string `json:"missingEvidence"`
 }
 
-func TestJunieCandidateRemainsUnregistered(t *testing.T) {
+func TestJunieExperimentalTerminalKeepsChatUnregistered(t *testing.T) {
 	data, err := os.ReadFile("testdata/contract.json")
 	if err != nil {
 		t.Fatal(err)
@@ -64,16 +64,18 @@ func TestJunieCandidateRemainsUnregistered(t *testing.T) {
 	if len(contract.Releases) != 2 || !channels["stable"] || !channels["eap"] {
 		t.Fatal("stable and EAP evidence must be separate")
 	}
-	if contract.TUIRegistrationEligible || contract.ChatRegistrationEligible {
-		t.Fatal("unverified candidate cannot enable TUI or Chat")
+	if contract.TUIConformanceVerified || contract.ChatConformanceVerified {
+		t.Fatal("fixture must retain the unverified conformance status")
 	}
-	if domain.AgentHarness("junie").IsKnown() {
-		t.Fatal("Junie must not be a selectable harness before conformance")
+	if !domain.AgentHarness("junie").IsKnown() {
+		t.Fatal("experimental Junie must be selectable")
 	}
-	for _, adapter := range agentregistry.Constructors() {
-		if adapter.Manifest().ID == "junie" {
-			t.Fatal("Junie TUI was registered without stable hook conformance")
-		}
+	reg, err := agentregistry.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get("junie"); !ok {
+		t.Fatal("experimental Junie terminal adapter is missing")
 	}
 	if chatregistry.Build(nil).SupportsChat(domain.AgentHarness("junie")) {
 		t.Fatal("Junie Chat was registered without authenticated ACP conformance")

@@ -80,8 +80,8 @@
       ]
     }
   ],
-  "tuiRegistrationEligible": false,
-  "chatRegistrationEligible": false,
+  "tuiConformanceVerified": false,
+  "chatConformanceVerified": false,
   "missingEvidence": [
     "Stable hook release",
     "Artifact execution and captured CLI help",

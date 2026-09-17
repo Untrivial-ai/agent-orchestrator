@@ -67,8 +67,7 @@ var Derivers = map[string]DeriveFunc{
 	"autohand":    activitystate.StandardDeriveActivityState,
 	"vibe":        vibe.DeriveActivityState,
 	"fake":        fake.DeriveActivityState,
-	// Junie callbacks are available for isolated conformance work only. The
-	// harness remains absent from the production registry while hooks are EAP.
+	// Junie hooks are experimental and do not observe permission decisions.
 	"junie": junie.DeriveActivityState,
 }
 
