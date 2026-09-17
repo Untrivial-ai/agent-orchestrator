@@ -154,6 +154,10 @@ export function TurnSettingsBar({
 	const standaloneExecutionMode =
 		grouped.executionMode && !isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
 	const planning = isPlanMode(grouped.executionMode);
+	// OpenCode's Build/Plan selector is provider-owned and independent of its
+	// permission rules. Keep AO's approval picker available in Plan mode so a
+	// user can choose the policy that will apply when they return to Build.
+	const approvalAvailableWhilePlanning = harness === "opencode";
 	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
@@ -164,7 +168,7 @@ export function TurnSettingsBar({
 	const rememberMode = modeOption
 		? modeOption.choices.find((choice) => choice.value === modeOption.currentValue)?.permissionMode
 		: settings.approvalMode ?? "default";
-	const rememberAction = onRememberPermissions && rememberMode && !planning ? (
+	const rememberAction = onRememberPermissions && rememberMode && (!planning || approvalAvailableWhilePlanning) ? (
 		<OptionMenuItem
 			disabled={optionDisabled}
 			onSelect={() => {
@@ -175,7 +179,9 @@ export function TurnSettingsBar({
 			Remember for this project
 		</OptionMenuItem>
 	) : null;
-	const showRightDropdown = Boolean(children || (!planning && (onChange || modeOption)));
+	const showRightDropdown = Boolean(
+		children || ((!planning || approvalAvailableWhilePlanning) && (onChange || modeOption)),
+	);
 
 	return (
 		<div role="group" aria-label="Turn settings" className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -264,7 +270,7 @@ export function TurnSettingsBar({
 					</div>
 				) : null}
 			</div>
-			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
+			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && (!planning || approvalAvailableWhilePlanning) && !configPending) ? (
 				<p role="status" className="px-1 text-[11px] text-muted-foreground">
 					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
 				</p>

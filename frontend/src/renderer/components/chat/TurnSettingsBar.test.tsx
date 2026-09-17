@@ -341,6 +341,33 @@ describe("ACP session config options", () => {
 		expect(screen.getByRole("switch", { name: "Plan Mode" })).not.toBeChecked();
 	});
 
+	it("keeps OpenCode approval controls available in Plan Mode", () => {
+		render(
+			<TurnSettingsBar
+				harness="opencode"
+				models={[]}
+				settings={{ approvalMode: "auto" }}
+				configOptions={[{
+					id: "mode",
+					name: "Session Mode",
+					category: "mode",
+					type: "select",
+					currentValue: "plan",
+					choices: [
+						{ value: "build", name: "Build" },
+						{ value: "plan", name: "Plan" },
+					],
+				}]}
+				onChange={vi.fn()}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
+			"Auto-approve",
+		);
+	});
+
 	it("keeps model, effort, and provider mode explicit while hiding ACP agent internals", async () => {
 		const user = userEvent.setup();
 		render(
