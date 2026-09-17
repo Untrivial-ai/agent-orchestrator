@@ -78,9 +78,15 @@ func TestRunInstallScriptCancellationCleansUp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected cancellation")
 	}
+	// Cancellation can land while the download is still in flight, before the
+	// scratch directory is ever created, so an absent directory is also a clean
+	// outcome: nothing leaked. Only surviving entries indicate a leftover script.
 	entries, readErr := os.ReadDir(filepath.Join(dataDir, "installers", "tmp"))
-	if readErr != nil || len(entries) != 0 {
-		t.Fatalf("temporary scripts remain after cancellation: %v, %v", entries, readErr)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("read installer scratch dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary scripts remain after cancellation: %v", entries)
 	}
 }
 

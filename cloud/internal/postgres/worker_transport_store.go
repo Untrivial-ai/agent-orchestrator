@@ -355,12 +355,27 @@ func (s *Store) IssueTerminalTicket(
 		var exited bool
 		err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
 			return tx.QueryRow(ctx,
-				`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
+				`SELECT session.is_terminated OR session.activity_state = 'exited' OR (
+					EXISTS (
 					SELECT 1 FROM ao_terminal_sessions terminal
 					WHERE terminal.org_id = session.org_id
 					  AND terminal.session_id = session.id
 					  AND terminal.kind = 'agent'
 					  AND terminal.state IN ('closed', 'failed')
+					)
+					AND NOT EXISTS (
+					SELECT 1 FROM ao_terminal_sessions terminal
+					JOIN ao_worker_connections worker
+					  ON worker.org_id = terminal.org_id
+					 AND worker.session_id = terminal.session_id
+					 AND worker.epoch = terminal.worker_epoch
+					 AND worker.disconnected_at IS NULL
+					WHERE terminal.org_id = session.org_id
+					  AND terminal.session_id = session.id
+					  AND terminal.kind = 'agent'
+					  AND terminal.state IN ('opening', 'open')
+					  AND terminal.expires_at > now()
+					)
 				)
 				FROM ao_sessions session
 				WHERE session.org_id = $1 AND session.id = $2`,
@@ -472,12 +487,27 @@ func (s *Store) IssueTerminalTicket(
 			if kind == "agent" {
 				var exited bool
 				lookupErr := tx.QueryRow(ctx,
-					`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
+					`SELECT session.is_terminated OR session.activity_state = 'exited' OR (
+						EXISTS (
 						SELECT 1 FROM ao_terminal_sessions terminal
 						WHERE terminal.org_id = session.org_id
 						  AND terminal.session_id = session.id
 						  AND terminal.kind = 'agent'
 						  AND terminal.state IN ('closed', 'failed')
+						)
+						AND NOT EXISTS (
+						SELECT 1 FROM ao_terminal_sessions terminal
+						JOIN ao_worker_connections worker
+						  ON worker.org_id = terminal.org_id
+						 AND worker.session_id = terminal.session_id
+						 AND worker.epoch = terminal.worker_epoch
+						 AND worker.disconnected_at IS NULL
+						WHERE terminal.org_id = session.org_id
+						  AND terminal.session_id = session.id
+						  AND terminal.kind = 'agent'
+						  AND terminal.state IN ('opening', 'open')
+						  AND terminal.expires_at > now()
+						)
 					)
 					FROM ao_sessions session
 					WHERE session.org_id = $1 AND session.id = $2`,
