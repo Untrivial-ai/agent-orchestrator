@@ -9,11 +9,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"github.com/go-chi/chi/v5"
 )
 
 // patServerStore is the Server's store: it resolves the session's encrypted PAT
@@ -36,7 +38,11 @@ func (s *patServerStore) AppendSessionEvent(context.Context, string, string, str
 }
 
 // patRecordStore is the PAT write service's record store.
-type patRecordStore struct{ created int }
+type patRecordStore struct {
+	created   int
+	reviewRun domain.ReviewRunPullRequest
+	delivered int
+}
 
 func (s *patRecordStore) CreatePullRequestRecord(
 	_ context.Context, _, _, _, repository, author string, number int,
@@ -48,6 +54,25 @@ func (s *patRecordStore) CreatePullRequestRecord(
 
 func (s *patRecordStore) ClaimPullRequestRecord(_ context.Context, _, _ string, input domain.PullRequest) (domain.PullRequest, error) {
 	return input, nil
+}
+
+func (s *patRecordStore) ReviewRunPullRequest(context.Context, string, string) (domain.ReviewRunPullRequest, error) {
+	return s.reviewRun, nil
+}
+
+func (s *patRecordStore) CompleteAndDeliverReviewRun(
+	_ context.Context, _, reviewRunID, _ string, _ domain.SubmitReviewResult, _ string,
+) (domain.ReviewRun, error) {
+	s.delivered++
+	return domain.ReviewRun{ID: reviewRunID, Status: contract.AOReviewRunDelivered}, nil
+}
+
+func (s *patRecordStore) FailReviewRun(context.Context, string, string, string, string) (domain.ReviewRun, error) {
+	return domain.ReviewRun{}, nil
+}
+
+func (s *patRecordStore) CloseReviewTerminal(context.Context, string, string, string) error {
+	return nil
 }
 
 // recordingCheckoutBroker tracks whether a write reached the broker.
@@ -98,6 +123,12 @@ func newPATTestServer(t *testing.T, patErr error) (*Server, *recordingCheckoutBr
 			})
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/octo/widgets/pulls/7/reviews" {
+			_, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 8})
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(gh.Close)
@@ -128,6 +159,14 @@ type githubServerRecorder struct {
 func patRaiseRequest(t *testing.T) *http.Request {
 	body := `{"title":"Add logging","headBranch":"feature","baseBranch":"main"}`
 	return workerRequest(t, http.MethodPost, "/worker/pull-requests", body, "worker:git")
+}
+
+func patSubmitReviewRequest(t *testing.T, reviewRunID string) *http.Request {
+	t.Helper()
+	r := workerRequest(t, http.MethodPost, "/worker/reviews/"+reviewRunID+"/submit", `{"verdict":"approved","body":"Looks good."}`, "worker:git")
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("reviewRunId", reviewRunID)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, routeCtx))
 }
 
 // With a configured PAT the write must go to GitHub with the PAT, and the
@@ -172,6 +211,33 @@ func TestWorkerRaisePullRequestUsesPATWithoutBroker(t *testing.T) {
 	}
 	if gh.hits == 0 || recordStore.created != 1 {
 		t.Fatalf("PAT path did not create the PR without a broker: github hits=%d records=%d", gh.hits, recordStore.created)
+	}
+}
+
+func TestWorkerSubmitReviewUsesPATWithoutBroker(t *testing.T) {
+	srv, _, recordStore, gh := newPATTestServer(t, nil)
+	srv.checkoutBroker = nil
+	const reviewRunID = "22222222-2222-2222-2222-222222222222"
+	recordStore.reviewRun = domain.ReviewRunPullRequest{
+		ReviewRun: domain.ReviewRun{
+			ID:              reviewRunID,
+			ReviewSessionID: testOrchestratorID,
+			Status:          contract.AOReviewRunRunning,
+		},
+		PullRequestRepository: "octo/widgets",
+		PullRequestNumber:     7,
+	}
+	w := httptest.NewRecorder()
+	srv.workerSubmitReview(w, patSubmitReviewRequest(t, reviewRunID))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if gh.hits == 0 || recordStore.delivered != 1 {
+		t.Fatalf("PAT path did not submit the review without a broker: github hits=%d delivered=%d", gh.hits, recordStore.delivered)
+	}
+	if gh.auth != "Bearer ghp_HANDLERtestPAT0000000000000000000" {
+		t.Fatalf("GitHub Authorization = %q, want the PAT as bearer", gh.auth)
 	}
 }
 

@@ -294,7 +294,7 @@ func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
 		return
 	}
-	if s.github == nil {
+	if s.reviewService == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Starting a review is not available.")
 		return
 	}
@@ -314,11 +314,11 @@ func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
 		if pr.Draft || pr.State != contract.PRStateOpen || pr.HeadSHA == "" {
 			continue
 		}
-		run, didCreate, err := s.github.TriggerReview(r.Context(), orgID, sessionID, pr)
+		run, didCreate, err := s.reviewService.TriggerReview(r.Context(), orgID, sessionID, pr)
 		if err != nil {
 			s.logger.Error("trigger cloud review", "error", err, "request_id", requestID(r), "pull_request_id", pr.ID)
 			if len(startedRunIDs) > 0 {
-				if _, rollbackErr := s.github.CancelReviewRuns(r.Context(), orgID, sessionID, startedRunIDs); rollbackErr != nil {
+				if _, rollbackErr := s.reviewService.CancelReviewRuns(r.Context(), orgID, sessionID, startedRunIDs); rollbackErr != nil {
 					s.logger.Error("rollback cloud review batch", "error", rollbackErr, "request_id", requestID(r))
 				}
 			}
@@ -355,7 +355,7 @@ func (s *Server) cancelSessionReviews(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
 		return
 	}
-	if s.github == nil {
+	if s.reviewService == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Cancelling a review is not available.")
 		return
 	}
@@ -363,7 +363,7 @@ func (s *Server) cancelSessionReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if _, err := s.github.CancelReviews(r.Context(), orgID, sessionID); err != nil {
+	if _, err := s.reviewService.CancelReviews(r.Context(), orgID, sessionID); err != nil {
 		s.logger.Error("cancel cloud review", "error", err, "request_id", requestID(r))
 		writeError(w, r, http.StatusBadGateway, "REVIEW_FAILED", "The review could not be cancelled.")
 		return

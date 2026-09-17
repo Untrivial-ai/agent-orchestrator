@@ -158,6 +158,7 @@ type Server struct {
 	drain                   chan struct{}
 	logger                  *slog.Logger
 	github                  *githubapp.Service
+	reviewService           *githubapp.Service
 	checkoutBroker          CheckoutBroker
 	patWrites               *githubapp.PATWriteService
 	brokerAuthToken         string
@@ -195,6 +196,7 @@ type Options struct {
 	Release                   string
 	Logger                    *slog.Logger
 	GitHub                    *githubapp.Service
+	ReviewService             *githubapp.Service
 	CheckoutBroker            CheckoutBroker
 	PATWrites                 *githubapp.PATWriteService
 	BrokerAuthToken           string
@@ -267,6 +269,7 @@ func New(options Options) *Server {
 		drain:                     make(chan struct{}),
 		logger:                    logger,
 		github:                    options.GitHub,
+		reviewService:             options.ReviewService,
 		checkoutBroker:            options.CheckoutBroker,
 		patWrites:                 options.PATWrites,
 		brokerAuthToken:           options.BrokerAuthToken,
@@ -289,6 +292,9 @@ func New(options Options) *Server {
 	}
 	if server.checkoutBroker == nil && options.GitHub != nil {
 		server.checkoutBroker = options.GitHub
+	}
+	if server.reviewService == nil && options.GitHub != nil {
+		server.reviewService = options.GitHub
 	}
 	server.provisioning.Provider = sandboxProvider
 	if server.provisioning.Release == "" {
