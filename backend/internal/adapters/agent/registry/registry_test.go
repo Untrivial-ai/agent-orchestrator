@@ -112,6 +112,23 @@ func TestRegistryIncludesOMP(t *testing.T) {
 	t.Fatal("Harnessed does not contain omp")
 }
 
+func TestRegistryIncludesQoder(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("qoder")
+	if !ok || adapter.Manifest().Name != "Qoder" {
+		t.Fatalf("qoder adapter = %#v, %v", adapter, ok)
+	}
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessQoder {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain qoder")
+}
+
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
 	for _, ha := range Harnessed() {
 		if ha.Harness == domain.HarnessFake {

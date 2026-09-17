@@ -30,6 +30,7 @@ import opencodeLogo from "../assets/agents/opencode.svg";
 import piLogo from "../assets/agents/pi.png";
 import primeAgentLogo from "../assets/agents/prime-agent.png";
 import qwenLogo from "../assets/agents/qwen.png";
+import qoderLogo from "../assets/agents/qoder.svg";
 import vibeLogo from "../assets/agents/vibe.png";
 
 // Real brand logos keyed by the harness name AO stores on session.provider.
@@ -46,6 +47,7 @@ const LOGOS: AgentLogoSources = {
 	droid: droidLogo,
 	crush: crushLogo,
 	qwen: qwenLogo,
+	qoder: qoderLogo,
 	goose: gooseLogo,
 	continue: continueLogo,
 	devin: devinLogo,

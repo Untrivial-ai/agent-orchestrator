@@ -22,7 +22,7 @@ func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 }
 
 func TestSupportsHarness(t *testing.T) {
-	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie, domain.HarnessContinue, domain.HarnessAider, domain.HarnessOMP} {
+	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie, domain.HarnessContinue, domain.HarnessAider, domain.HarnessOMP, domain.HarnessQoder} {
 		if !SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = false, want true", h)
 		}

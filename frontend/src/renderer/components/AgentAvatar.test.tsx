@@ -17,4 +17,10 @@ describe("AgentAvatar", () => {
 
 		expect(screen.getByRole("img", { name: "omp" })).toHaveAttribute("src", expect.stringContaining("omp.png"));
 	});
+
+	it("renders the Qoder brand asset", () => {
+		render(<AgentAvatar provider="qoder" />);
+
+		expect(screen.getByRole("img", { name: "qoder" })).toHaveAttribute("src", expect.stringContaining("Qoder"));
+	});
 });

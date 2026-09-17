@@ -190,7 +190,7 @@ func TestResolveReviewerHarness(t *testing.T) {
 	}
 	for _, worker := range []AgentHarness{
 		HarnessCopilot, HarnessCursor, HarnessKilocode, HarnessKiro, HarnessPi,
-		HarnessAider, HarnessAmp, HarnessQwen, HarnessAgy, HarnessContinue,
+		HarnessAider, HarnessAmp, HarnessQwen, HarnessQoder, HarnessAgy, HarnessContinue,
 		HarnessGoose, HarnessVibe, HarnessDevin, HarnessDroid, HarnessKimi,
 		HarnessGrok, HarnessCrush, HarnessAuggie, HarnessCline, HarnessAutohand,
 	} {

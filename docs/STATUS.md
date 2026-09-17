@@ -109,8 +109,16 @@ surface (`npm run sqlc`, `npm run api`).
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.
 - Lifecycle reducer plus reaper (`internal/observe/reaper`).
-- Agent adapter platform under `internal/adapters/agent/` (25 adapters) with a
+- Agent adapter platform under `internal/adapters/agent/` (28 adapters) with a
   registry and `ao hooks` activity dispatch.
+- Qoder CLI 1.1.54+ is available as a worker or orchestrator on macOS, Linux,
+  and supported Windows architectures. AO assigns the native session id,
+  delivers the initial prompt atomically, appends role instructions without
+  replacing Qoder's defaults, restores that exact id, and observes native
+  lifecycle hooks. Authentication uses `qoder login` or
+  `QODER_PERSONAL_ACCESS_TOKEN`. Qoder is not a reviewer. Its native ACP binding
+  remains unregistered until authenticated load/replay/approval/cancel and
+  reconnect conformance passes; TUI-to-Chat handoff is likewise excluded.
 - Daemon-owned in-memory agent readiness coordination with normalized
   installation/authentication observations, purpose-specific freshness,
   single-flight checks, bounded warm-up/retries, launch-time validation, and

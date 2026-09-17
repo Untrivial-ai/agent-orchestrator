@@ -1,0 +1,11 @@
+Qoder CLI 1.1.54 contract fixture (sanitized)
+--model <model>
+--reasoning-effort <level>
+--prompt-interactive <text>
+--permission-mode <mode>
+--allowed-tools <tool>
+--disallowed-tools <tool>
+--resume [id]
+--session-id <id>
+--append-system-prompt <text>
+ACP is started with the documented hidden flag: --acp

@@ -35,6 +35,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetKimchi:     "https://docs.kimchi.dev/docs/coding-getting-started",
 	TargetPrimeAgent: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
+	TargetQoder:      "https://docs.qoder.com/cli/installation",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -197,6 +198,8 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 		} else {
 			plans = []Plan{s.planBun(target), official}
 		}
+	case TargetQoder:
+		plans = []Plan{s.planNPM(target, "@qoder-ai/qodercli")}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

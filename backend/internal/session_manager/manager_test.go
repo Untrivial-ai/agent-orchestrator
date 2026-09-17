@@ -698,6 +698,17 @@ type recordingAgent struct {
 	restoreCalls int
 }
 
+type callerAssignedRecordingAgent struct {
+	*recordingAgent
+	nativeID string
+}
+
+func (a callerAssignedRecordingAgent) ContinuationCapabilities() ports.ContinuationCapabilities {
+	return ports.ContinuationCapabilities{FreshNativeSessionID: ports.FreshNativeSessionIDCallerAssigned}
+}
+
+func (a callerAssignedRecordingAgent) NewNativeSessionID() string { return a.nativeID }
+
 func (a *recordingAgent) GetLaunchCommand(_ context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	a.launchCalls++
 	a.lastConfig = cfg.Config
@@ -1439,6 +1450,25 @@ func TestSpawn_ResolvesProjectConfig(t *testing.T) {
 	}
 	if got := ws.lastCfg.BaseBranch; got != "" {
 		t.Fatalf("automatic workspace base branch = %q, want empty for adapter inference", got)
+	}
+}
+
+func TestSpawn_AssignsFreshNativeSessionIDBeforeLaunch(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	recorder := &recordingAgent{}
+	agent := callerAssignedRecordingAgent{recordingAgent: recorder, nativeID: "fresh-native-1"}
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessQoder}); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.lastLaunch.NativeSessionID; got != "fresh-native-1" {
+		t.Fatalf("launch native session ID = %q, want caller-assigned ID", got)
 	}
 }
 
@@ -4900,6 +4930,28 @@ func TestRestore_FallbackLaunchCarriesSystemPrompt(t *testing.T) {
 	}
 	if agent.lastLaunch.Prompt != "kick off" {
 		t.Fatalf("fallback launch prompt = %q, want persisted task prompt", agent.lastLaunch.Prompt)
+	}
+}
+
+func TestRestore_FallbackAssignsFreshNativeSessionIDBeforeLaunch(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessQoder, IsTerminated: true,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", Prompt: "continue the task"},
+	}
+	recorder := &recordingAgent{}
+	agent := callerAssignedRecordingAgent{recordingAgent: recorder, nativeID: "fresh-native-2"}
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.lastLaunch.NativeSessionID; got != "fresh-native-2" {
+		t.Fatalf("fallback launch native session ID = %q, want caller-assigned ID", got)
 	}
 }
 

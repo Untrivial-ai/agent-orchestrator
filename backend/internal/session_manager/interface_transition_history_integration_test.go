@@ -217,7 +217,12 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 						// Simulate a native context change after launch.
 						terminalID = freshID(string(sess.ID))
 					}
-					if tc.replaceOrchestrator || tc.changeTerminalIdentity || tc.removeTranscript {
+					if (tc.replaceOrchestrator || tc.removeTranscript) && harness == domain.HarnessClaudeCode {
+						if _, err := uuid.Parse(terminalID); err != nil || terminalID == original {
+							t.Fatalf("fresh Claude native identity = %q, want a new UUID", terminalID)
+						}
+						expectedNativeID = terminalID
+					} else if tc.replaceOrchestrator || tc.changeTerminalIdentity || tc.removeTranscript {
 						expectedNativeID = freshID(string(sess.ID))
 					}
 					if terminalID != expectedNativeID {

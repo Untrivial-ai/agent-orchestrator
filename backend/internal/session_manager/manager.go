@@ -1035,6 +1035,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		Config:           adapterConfig,
 		Permissions:      adapterConfig.Permissions,
 	}
+	if err := assignFreshNativeSessionID(agent, &launchCfg); err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnLaunchCommand, err)
+	}
 	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
@@ -4961,6 +4965,9 @@ func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID
 		Config:           agentConfig,
 		Permissions:      agentConfig.Permissions,
 	}
+	if err := assignFreshNativeSessionID(agent, &launchCfg); err != nil {
+		return nil, "", "", fmt.Errorf("fresh native session id: %w", err)
+	}
 	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("prompt delivery: %w", err)
@@ -4977,6 +4984,22 @@ func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID
 		mode = RestoreModeSavedPrompt
 	}
 	return argv, delivery, mode, nil
+}
+
+func assignFreshNativeSessionID(agent ports.Agent, cfg *ports.LaunchConfig) error {
+	capabilities, ok := agent.(ports.AgentContinuationCapabilityProvider)
+	if !ok || capabilities.ContinuationCapabilities().FreshNativeSessionID != ports.FreshNativeSessionIDCallerAssigned {
+		return nil
+	}
+	provider, ok := agent.(ports.AgentFreshNativeSessionIDProvider)
+	if !ok {
+		return errors.New("adapter declares caller-assigned native session ids without an allocator")
+	}
+	cfg.NativeSessionID = strings.TrimSpace(provider.NewNativeSessionID())
+	if cfg.NativeSessionID == "" {
+		return errors.New("adapter returned an empty native session id")
+	}
+	return nil
 }
 
 // validateAgentBinary checks that argv[0] resolves via the manager's

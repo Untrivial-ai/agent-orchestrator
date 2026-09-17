@@ -9225,6 +9225,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - qoder
           - fake
           type: string
         approvalMode:
@@ -9795,6 +9796,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - qoder
           - cloudflared
           type: string
         updatedAt:
@@ -11768,6 +11770,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - qoder
           type: string
         issueId:
           type: string

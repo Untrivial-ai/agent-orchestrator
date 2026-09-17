@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Qoder</title>
+  <defs><linearGradient id="qoder-gradient" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1366EC"/><stop offset="1" stop-color="#7366FF"/></linearGradient></defs>
+  <path fill="url(#qoder-gradient)" d="M8 10 29 9c-2 5-4 7-8 8l-6 1v25c0 4 7 8 14 11 1 1 2 4 1 8C17 59 8 55 8 44V10Zm27-1 21 1v34c0 11-9 15-22 18-1-4 0-7 1-8 7-3 14-7 14-11V18l-6-1c-4-1-6-3-8-8ZM30 23l6 1-7 23-6-2 7-22Zm-11 7 5-5 8 8-5 5-8-8Zm26 0-8 8-5-5 8-8 5 5Z"/>
+</svg>
