@@ -46,7 +46,7 @@ func TestRuntimeFilesPrepareWritesPrivateOverlay(t *testing.T) {
 	assertRuntimePathMode(t, files.GuidelinesPath, 0o600)
 }
 
-func TestRuntimeFilesPrepareUsesFileInstructionsAndCreatesEmptyGuidelines(t *testing.T) {
+func TestRuntimeFilesPrepareUsesFileInstructionsAndOmitsEmptyGuidelines(t *testing.T) {
 	t.Run("file instructions", func(t *testing.T) {
 		dataDir := t.TempDir()
 		promptPath := filepath.Join(t.TempDir(), "standing.md")
@@ -66,15 +66,86 @@ func TestRuntimeFilesPrepareUsesFileInstructionsAndCreatesEmptyGuidelines(t *tes
 	})
 
 	t.Run("absent instructions", func(t *testing.T) {
+		dataDir := t.TempDir()
 		files, err := NewRuntimeFileBuilder().Prepare(context.Background(), RuntimeFileRequest{
-			DataDir:   t.TempDir(),
+			DataDir:   dataDir,
 			SessionID: "empty",
 		})
 		if err != nil {
 			t.Fatalf("Prepare: %v", err)
 		}
-		assertRuntimeFileContent(t, files.GuidelinesPath, "\n")
+		if files.GuidelinesPath != "" {
+			t.Fatalf("GuidelinesPath = %q, want empty", files.GuidelinesPath)
+		}
+		guidelinesPath := filepath.Join(dataDir, "agent-runtime", "junie", "empty", "guidelines.md")
+		if _, statErr := os.Lstat(guidelinesPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("empty instructions created guidelines file: %v", statErr)
+		}
 		assertRuntimeConfig(t, files.ConfigPath)
+	})
+
+	t.Run("whitespace-only inline instructions win over file", func(t *testing.T) {
+		dataDir := t.TempDir()
+		files, err := NewRuntimeFileBuilder().Prepare(context.Background(), RuntimeFileRequest{
+			DataDir:          dataDir,
+			SessionID:        "inline-whitespace",
+			SystemPrompt:     " \t\n\n",
+			SystemPromptFile: filepath.Join(dataDir, "missing-prompt.md"),
+		})
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if files.GuidelinesPath != "" {
+			t.Fatalf("GuidelinesPath = %q, want empty", files.GuidelinesPath)
+		}
+		guidelinesPath := filepath.Join(dataDir, "agent-runtime", "junie", "inline-whitespace", "guidelines.md")
+		if _, statErr := os.Lstat(guidelinesPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("whitespace instructions created guidelines file: %v", statErr)
+		}
+	})
+
+	t.Run("whitespace-only file instructions", func(t *testing.T) {
+		dataDir := t.TempDir()
+		promptPath := filepath.Join(t.TempDir(), "standing.md")
+		if err := os.WriteFile(promptPath, []byte(" \t\n\n"), 0o600); err != nil {
+			t.Fatalf("write prompt: %v", err)
+		}
+		files, err := NewRuntimeFileBuilder().Prepare(context.Background(), RuntimeFileRequest{
+			DataDir:          dataDir,
+			SessionID:        "file-whitespace",
+			SystemPromptFile: promptPath,
+		})
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if files.GuidelinesPath != "" {
+			t.Fatalf("GuidelinesPath = %q, want empty", files.GuidelinesPath)
+		}
+		guidelinesPath := filepath.Join(dataDir, "agent-runtime", "junie", "file-whitespace", "guidelines.md")
+		if _, statErr := os.Lstat(guidelinesPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("whitespace file created guidelines file: %v", statErr)
+		}
+	})
+
+	t.Run("previous guidelines remain but are not returned", func(t *testing.T) {
+		dataDir := t.TempDir()
+		builder := NewRuntimeFileBuilder()
+		first, err := builder.Prepare(context.Background(), RuntimeFileRequest{
+			DataDir: dataDir, SessionID: "previous", SystemPrompt: "keep on disk",
+		})
+		if err != nil {
+			t.Fatalf("first Prepare: %v", err)
+		}
+		second, err := builder.Prepare(context.Background(), RuntimeFileRequest{
+			DataDir: dataDir, SessionID: "previous",
+		})
+		if err != nil {
+			t.Fatalf("second Prepare: %v", err)
+		}
+		if second.GuidelinesPath != "" {
+			t.Fatalf("GuidelinesPath = %q, want empty", second.GuidelinesPath)
+		}
+		assertRuntimeFileContent(t, first.GuidelinesPath, "keep on disk\n")
 	})
 }
 
@@ -98,6 +169,21 @@ func TestRuntimeFilesPrepareRejectsUnsafeInputs(t *testing.T) {
 	_, err := NewRuntimeFileBuilder().Prepare(context.Background(), RuntimeFileRequest{SessionID: "valid"})
 	if err == nil {
 		t.Fatal("Prepare succeeded without an AO data directory")
+	}
+}
+
+func TestRuntimeFilesPrepareRejectsRelativeDataDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	relativeDataDir := filepath.Join("relative", "ao-data")
+
+	_, err := NewRuntimeFileBuilder().Prepare(context.Background(), RuntimeFileRequest{
+		DataDir: relativeDataDir, SessionID: "valid",
+	})
+	if err == nil {
+		t.Fatal("Prepare succeeded with a relative AO data directory")
+	}
+	if _, statErr := os.Lstat(relativeDataDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("relative data directory was created: %v", statErr)
 	}
 }
 

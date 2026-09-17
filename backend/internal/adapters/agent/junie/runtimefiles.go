@@ -18,7 +18,9 @@ type RuntimeFileRequest struct {
 	DataDir, SessionID, SystemPrompt, SystemPromptFile string
 }
 
-// RuntimeFiles names the generated Junie runtime overlay files.
+// RuntimeFiles names the generated Junie runtime overlay files. A non-empty
+// GuidelinesPath is experimental: Junie uses the explicit AO guidelines in
+// place of its native project guidelines rather than appending them.
 type RuntimeFiles struct {
 	ConfigPath, GuidelinesPath string
 }
@@ -42,6 +44,9 @@ func (runtimeFileBuilder) Prepare(ctx context.Context, request RuntimeFileReques
 	}
 	if strings.TrimSpace(request.DataDir) == "" {
 		return RuntimeFiles{}, errors.New("junie: AO data directory is required")
+	}
+	if !filepath.IsAbs(request.DataDir) {
+		return RuntimeFiles{}, errors.New("junie: AO data directory must be absolute")
 	}
 	if !safeRuntimePathComponent(request.SessionID) {
 		return RuntimeFiles{}, errors.New("junie: invalid session ID")
@@ -80,26 +85,34 @@ func (runtimeFileBuilder) Prepare(ctx context.Context, request RuntimeFileReques
 	}
 
 	files := RuntimeFiles{
-		ConfigPath:     filepath.Join(sessionDir, "config.json"),
-		GuidelinesPath: filepath.Join(sessionDir, "guidelines.md"),
+		ConfigPath: filepath.Join(sessionDir, "config.json"),
+	}
+	if len(guidelines) > 0 {
+		files.GuidelinesPath = filepath.Join(sessionDir, "guidelines.md")
 	}
 	if err := validateRuntimeDirectoryChain(dataDir, runtimeRoot, junieRoot, sessionDir); err != nil {
 		return RuntimeFiles{}, err
 	}
-	for _, path := range []string{files.ConfigPath, files.GuidelinesPath} {
+	paths := []string{files.ConfigPath}
+	if files.GuidelinesPath != "" {
+		paths = append(paths, files.GuidelinesPath)
+	}
+	for _, path := range paths {
 		if err := requireSafeRuntimeFile(path); err != nil {
 			return RuntimeFiles{}, err
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return RuntimeFiles{}, err
-	}
-	if err := validateRuntimeDirectoryChain(dataDir, runtimeRoot, junieRoot, sessionDir); err != nil {
-		return RuntimeFiles{}, err
-	}
-	if err := hookutil.AtomicWriteFile(files.GuidelinesPath, guidelines, 0o600); err != nil {
-		return RuntimeFiles{}, fmt.Errorf("junie: write guidelines: %w", err)
+	if files.GuidelinesPath != "" {
+		if err := ctx.Err(); err != nil {
+			return RuntimeFiles{}, err
+		}
+		if err := validateRuntimeDirectoryChain(dataDir, runtimeRoot, junieRoot, sessionDir); err != nil {
+			return RuntimeFiles{}, err
+		}
+		if err := hookutil.AtomicWriteFile(files.GuidelinesPath, guidelines, 0o600); err != nil {
+			return RuntimeFiles{}, fmt.Errorf("junie: write guidelines: %w", err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return RuntimeFiles{}, err
@@ -121,6 +134,9 @@ func runtimeGuidelines(request RuntimeFileRequest) ([]byte, error) {
 			return nil, fmt.Errorf("junie: read standing instructions: %w", err)
 		}
 		text = string(data)
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
 	}
 	return []byte(strings.TrimRight(text, "\n") + "\n"), nil
 }
