@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { pingServer } from "../lib/api";
 import { pickNormalLens } from "../lib/cameraLens";
@@ -17,7 +17,11 @@ import type { Theme } from "../lib/theme";
 import { haptics } from "../lib/haptics";
 import { clearOnboardingSkipped } from "../lib/onboardingStore";
 import { pairFromCode } from "../lib/pairFlow";
-import { isLegacyPairingCode, parsePairingCode } from "../lib/pairingCode";
+import {
+	isLegacyPairingCode,
+	pairingNeedsUnencryptedConfirmation,
+	parsePairingCode,
+} from "../lib/pairingCode";
 import { saveHost, setActiveHost } from "../lib/hosts";
 import { probeEndpoint } from "../lib/connectRuntime";
 import { raceEndpoints } from "../lib/race";
@@ -81,7 +85,8 @@ export default function PairScreen() {
 		if (scanned.current || busy || !focused.current) return;
 		// Cheap reject first: the camera sees every barcode in frame, and only a
 		// code we can actually parse should stop the scanner.
-		if (!parsePairingCode(data)) {
+		const offer = parsePairingCode(data);
+		if (!offer) {
 			if (rejected.current !== data) {
 				rejected.current = data;
 				// A v1 code is a recognisable thing, not noise: say what to do
@@ -93,6 +98,23 @@ export default function PairScreen() {
 		}
 		rejected.current = null;
 		scanned.current = true;
+		if (pairingNeedsUnencryptedConfirmation(offer)) {
+			Alert.alert(
+				"Unencrypted local connection",
+				"This pairing can send your AO password over the local network without encryption. Continue only on a private network you trust.",
+				[
+					{
+						text: "Cancel",
+						style: "cancel",
+						onPress: () => {
+							scanned.current = false;
+						},
+					},
+					{ text: "I trust this network", onPress: () => void pair(data) },
+				],
+			);
+			return;
+		}
 		await pair(data);
 	}
 

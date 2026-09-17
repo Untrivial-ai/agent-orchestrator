@@ -97,7 +97,8 @@ beforeEach(() => {
 	mobileStatus.tunnel = undefined;
 	mobileStatus.endpoints = [{ kind: "lan", host: "192.168.1.42", port: 3011, secure: false }];
 	mobileStatus.tailscaleHost = "100.72.46.7";
-	mobileStatus.warning = "";
+	mobileStatus.warning = "Traffic on this connection is not encrypted. Only use it on a network you trust.";
+	vi.mocked(apiClient.POST).mockClear();
 	mobileStatus.securePairing = {
 		enabled: false,
 		available: false,
@@ -106,6 +107,18 @@ beforeEach(() => {
 		port: 0,
 		reason: "",
 	};
+});
+
+test("requires explicit trusted-network confirmation before exposing the LAN bridge", async () => {
+	mobileStatus.enabled = false;
+	renderMobileSettings();
+
+	await userEvent.click(await screen.findByRole("button", { name: "Generate" }));
+	expect(screen.getByRole("dialog")).toHaveTextContent("Use an unencrypted local connection?");
+	expect(apiClient.POST).not.toHaveBeenCalledWith("/api/v1/mobile/enable");
+
+	await userEvent.click(screen.getByRole("button", { name: "I trust this network — generate" }));
+	await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/mobile/enable"));
 });
 
 test("QR payload carries host, port, and password for one-scan connect", () => {
