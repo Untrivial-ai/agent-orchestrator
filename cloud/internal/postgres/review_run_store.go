@@ -86,7 +86,11 @@ func (s *Store) OpenReviewTerminal(
 		); err != nil {
 			return err
 		}
-		openPayload, err := json.Marshal(worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"})
+		openPayload, err := json.Marshal(worker.TerminalCommand{
+			TerminalID: terminalID,
+			Kind:       "agent",
+			Review:     true,
+		})
 		if err != nil {
 			return err
 		}
