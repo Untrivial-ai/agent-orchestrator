@@ -2,8 +2,9 @@ package junie
 
 import (
 	"context"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestAuthStatusNeverClaimsAuthorizationFromEnvironment(t *testing.T) {

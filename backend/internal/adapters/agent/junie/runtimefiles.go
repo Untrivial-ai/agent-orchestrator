@@ -12,18 +12,25 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 )
 
+// RuntimeFileRequest describes one session's isolated Junie runtime files.
 type RuntimeFileRequest struct{ DataDir, SessionID, SystemPrompt, SystemPromptFile string }
+
+// RuntimeFiles contains the paths prepared for one Junie session.
 type RuntimeFiles struct{ ConfigPath, GuidelinesPath string }
+
+// RuntimeFileBuilder prepares isolated Junie configuration and guidelines.
 type RuntimeFileBuilder interface {
 	Prepare(context.Context, RuntimeFileRequest) (RuntimeFiles, error)
 }
 type runtimeFileBuilder struct{}
 
+// NewRuntimeFileBuilder returns the production Junie runtime file builder.
 func NewRuntimeFileBuilder() RuntimeFileBuilder { return runtimeFileBuilder{} }
 
 type hookCommand struct {
-	Type, Command string
-	Timeout       int `json:"timeout"`
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Timeout int    `json:"timeout"`
 }
 type hookGroup struct {
 	Matcher string        `json:"matcher,omitempty"`
@@ -44,6 +51,7 @@ func (runtimeFileBuilder) Prepare(ctx context.Context, req RuntimeFileRequest) (
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return RuntimeFiles{}, fmt.Errorf("create Junie runtime directory: %w", err)
 	}
+	// #nosec G302 -- directories require execute permission for private owner access.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return RuntimeFiles{}, err
 	}

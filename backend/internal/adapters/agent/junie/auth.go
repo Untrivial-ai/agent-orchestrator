@@ -2,13 +2,15 @@ package junie
 
 import (
 	"context"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"os"
 	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 var junieAPIKeys = []string{"JUNIE_API_KEY", "JUNIE_ANTHROPIC_API_KEY", "JUNIE_OPENAI_API_KEY", "JUNIE_GOOGLE_API_KEY", "JUNIE_GROK_API_KEY", "JUNIE_META_API_KEY", "JUNIE_OPENROUTER_API_KEY", "JUNIE_LITELLM_API_KEY"}
 
+// AuthStatus reports whether Junie's authentication can be verified locally.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err

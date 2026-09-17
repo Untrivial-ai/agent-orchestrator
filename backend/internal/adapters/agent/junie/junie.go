@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// Plugin implements the gated Junie agent adapter.
 type Plugin struct {
 	agentbase.Base
 	builder        RuntimeFileBuilder
@@ -20,19 +21,28 @@ type Plugin struct {
 	resolvedBinary string
 }
 
+// New creates a Junie agent adapter.
 func New() *Plugin { return &Plugin{builder: NewRuntimeFileBuilder()} }
+
+// Manifest describes the Junie agent adapter.
 func (p *Plugin) Manifest() adapters.Manifest {
 	return adapters.Manifest{ID: "junie", Name: "Junie", Description: "Run JetBrains Junie worker sessions.", Version: "0.0.1", Capabilities: []adapters.Capability{adapters.CapabilityAgent}}
 }
+
+// GetConfigSpec reports Junie's supported launch configuration fields.
 func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.ConfigSpec{}, err
 	}
 	return ports.ConfigSpec{Fields: []ports.ConfigField{{Key: "model", Type: ports.ConfigFieldString, Description: "Junie model override."}, {Key: "effort", Type: ports.ConfigFieldEnum, Enum: []string{"low", "medium", "high"}, Description: "Junie reasoning effort."}}}, nil
 }
+
+// GetLaunchCommand builds a command for a new Junie session.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	return p.command(ctx, cfg.DataDir, cfg.SessionID, cfg.SystemPrompt, cfg.SystemPromptFile, cfg.Config, cfg.Permissions, "", cfg.Prompt, false)
 }
+
+// GetRestoreCommand builds a command that resumes an existing Junie session.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) ([]string, bool, error) {
 	id := strings.TrimSpace(cfg.Session.Metadata[ports.MetadataKeyAgentSessionID])
 	if id == "" {
@@ -78,6 +88,8 @@ func (p *Plugin) command(ctx context.Context, dataDir, sessionID, prompt, prompt
 var nativeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 func validNativeID(id string) bool { return nativeIDPattern.MatchString(id) }
+
+// SessionInfo extracts standard Junie session metadata.
 func (p *Plugin) SessionInfo(ctx context.Context, s ports.SessionRef) (ports.SessionInfo, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.SessionInfo{}, false, err
@@ -85,11 +97,17 @@ func (p *Plugin) SessionInfo(ctx context.Context, s ports.SessionRef) (ports.Ses
 	i, ok := agentbase.StandardSessionInfo(s)
 	return i, ok, nil
 }
+
+// GetAgentHooks prepares Junie's isolated hook configuration.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
 	_, err := p.builder.Prepare(ctx, RuntimeFileRequest{DataDir: cfg.DataDir, SessionID: cfg.SessionID, SystemPrompt: cfg.SystemPrompt, SystemPromptFile: cfg.SystemPromptFile})
 	return err
 }
+
+// ResolveBinary resolves and caches the user-installed Junie executable.
 func (p *Plugin) ResolveBinary(ctx context.Context) (string, error) { return p.junieBinary(ctx) }
+
+// ResolveJunieBinary resolves the user-installed Junie executable.
 func ResolveJunieBinary(ctx context.Context) (string, error) {
 	return binaryutil.ResolveBinary(ctx, junieBinarySpec())
 }

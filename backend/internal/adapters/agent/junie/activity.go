@@ -2,6 +2,7 @@ package junie
 
 import "github.com/aoagents/agent-orchestrator/backend/internal/domain"
 
+// DeriveActivityState maps a Junie hook event to AO's durable activity state.
 func DeriveActivityState(event string, _ []byte) (domain.ActivityState, bool) {
 	switch event {
 	case "user-prompt-submit", "pre-tool-use":

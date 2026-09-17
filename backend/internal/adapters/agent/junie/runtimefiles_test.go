@@ -45,6 +45,17 @@ func TestRuntimeFilesArePrivateAndFailClosed(t *testing.T) {
 	}
 }
 
+func TestHookCommandUsesJunieJSONSchema(t *testing.T) {
+	data, err := json.Marshal(hookCommand{Type: "command", Command: "ao hooks junie stop", Timeout: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"type":"command","command":"ao hooks junie stop","timeout":2}`
+	if string(data) != want {
+		t.Fatalf("hook command JSON = %s, want %s", data, want)
+	}
+}
+
 func TestRuntimeFilesRejectTraversalAndPreferInline(t *testing.T) {
 	b := NewRuntimeFileBuilder()
 	dir := t.TempDir()
