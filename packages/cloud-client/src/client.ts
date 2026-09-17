@@ -54,6 +54,8 @@ import type {
   WorkerTransportRequest,
   WorkerTurn,
   WorkspaceDiff,
+  WorkspaceDiffCategory,
+  WorkspaceDiffFileDetail,
   WorkspaceEntryPage,
   WorkspaceFile,
   WorkspaceFileWriteInput,
@@ -561,6 +563,22 @@ export class CloudClient {
       `/sessions/${encodeURIComponent(sessionId)}/workspace/file`,
     );
     return this.request(this.withQuery(endpoint, { path }), options);
+  }
+
+  readWorkspaceDiffFile(
+    orgId: string,
+    sessionId: string,
+    path: string,
+    categoryOrOptions: WorkspaceDiffCategory | RequestOptions = {},
+    options: RequestOptions = {},
+  ): Promise<WorkspaceDiffFileDetail> {
+    const endpoint = this.orgPath(
+      orgId,
+      `/sessions/${encodeURIComponent(sessionId)}/workspace/file/diff`,
+    );
+    const category = typeof categoryOrOptions === "string" ? categoryOrOptions : undefined;
+    const requestOptions = typeof categoryOrOptions === "string" ? options : categoryOrOptions;
+    return this.request(this.withQuery(endpoint, { path, category }), requestOptions);
   }
 
   writeWorkspaceFile(

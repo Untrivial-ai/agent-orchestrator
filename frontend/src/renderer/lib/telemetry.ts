@@ -497,6 +497,17 @@ export async function sanitizeRendererProperties(
 			// separates "checking on a worker" from "reviewing its output".
 			if (typeof properties?.has_pr === "boolean") safe.has_pr = properties.has_pr;
 			break;
+		case "ao.renderer.cloud_workspace_diff_viewed":
+			// Viewing this panel is itself the product signal. Session, project,
+			// provider, and file identifiers intentionally never leave the renderer.
+			break;
+		case "ao.renderer.cloud_diff_file_opened":
+			// The comparison category is enough to distinguish worktree review from
+			// branch review without collecting a repository-relative file path.
+			if (properties?.category === "uncommitted" || properties?.category === "unpushed" || properties?.category === "pushed") {
+				safe.category = properties.category;
+			}
+			break;
 		case "ao.renderer.orchestrator_spawn_requested":
 		case "ao.renderer.orchestrator_spawn_succeeded":
 		case "ao.renderer.orchestrator_spawn_failed": {

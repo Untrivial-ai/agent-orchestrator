@@ -51,6 +51,7 @@ import {
 } from "../hooks/useSessionScmSummary";
 import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
 import { useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
@@ -194,7 +195,16 @@ export const SessionInspector = memo(function SessionInspector({
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const filesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
+	const cloudOrgId = session?.cloud?.orgId;
+	const cloudDiff = useQuery({
+		queryKey: ["cloud-workspace-diff", cloudBaseUrl, cloudOrgId ?? "", session?.id ?? ""],
+		enabled: !browserOnly && cloudReady && (session?.cloud?.sandboxProvider === "docker" || session?.cloud?.sandboxProvider === "nodeops" || session?.cloud?.sandboxProvider === "coder") && cloudOrgId !== undefined,
+		refetchInterval: 5_000,
+		queryFn: () => cloudCpClient.getWorkspaceDiff(cloudOrgId!, session!.id),
+	});
+	const filesChangedCount = session?.cloud ? cloudDiff.data?.files.length : localFilesChangedCount;
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);

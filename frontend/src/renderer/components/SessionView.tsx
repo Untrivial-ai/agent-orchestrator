@@ -29,6 +29,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
 import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import { SessionActionsMenu } from "./SessionActionsMenu";
@@ -2048,24 +2049,28 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						settledClosed={!isInspectorOpen && inspectorSettledClosed}
 						splitRef={sessionSplitRef}
 					>
-						<SessionInspector
-							browserOnly={browserOnly}
-							browserAnnotationQueue={inspectorView === "browser" ? browserAnnotationQueue : undefined}
-							browserPoppedOut={browserPoppedOut}
-							filesView={
-								inspectorView === "files" && session ? (
-									<SessionFileExplorer
-										onOpenFile={openCenterFile}
-										onSplitChange={setFilesSplit}
-										onToggleMaximized={handleToggleFilesPopOut}
-										revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
-										sessionId={session.id}
-										split={filesSplit}
-									/>
-								) : null
-							}
-							isInspectorVisible={inspectorPanelVisible}
-							onOpenFiles={browserOnly ? undefined : handleOpenFiles}
+							<SessionInspector
+								browserOnly={browserOnly}
+								browserAnnotationQueue={inspectorView === "browser" ? browserAnnotationQueue : undefined}
+								browserPoppedOut={browserPoppedOut}
+								filesView={
+									inspectorView === "files" && session ? (
+										session.cloud ? (
+											<CloudWorkspaceDiff session={session} />
+										) : (
+											<SessionFileExplorer
+											onOpenFile={openCenterFile}
+											onSplitChange={setFilesSplit}
+											onToggleMaximized={handleToggleFilesPopOut}
+											revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
+											sessionId={session.id}
+											split={filesSplit}
+											/>
+										)
+									) : null
+								}
+								isInspectorVisible={inspectorPanelVisible}
+								onOpenFiles={browserOnly ? undefined : handleOpenFiles}
 							onOpenReviewFile={handleOpenReviewFile}
 							onOpenReviewerTerminal={selectReviewerTerminal}
 							onToggleBrowserPopOut={handleToggleBrowserPopOut}
@@ -2144,7 +2149,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					if (!open) settleUnsafeDraftLeave(false);
 				}}
 			/>
-			{filesPoppedOut && session
+			{filesPoppedOut && session && !session.cloud
 				? createPortal(
 						<div
 							className={cn(
@@ -2153,12 +2158,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							)}
 						>
 							<SessionFileExplorer
-								isMaximized
-								onSplitChange={setFilesSplit}
-								onToggleMaximized={handleToggleFilesPopOut}
-								sessionId={session.id}
-								split={filesSplit}
-							/>
+									isMaximized
+									onSplitChange={setFilesSplit}
+									onToggleMaximized={handleToggleFilesPopOut}
+									sessionId={session.id}
+									split={filesSplit}
+								/>
 						</div>,
 						document.body,
 					)

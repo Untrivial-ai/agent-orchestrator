@@ -419,6 +419,7 @@ func New(options Options) *Server {
 			}
 			router.Get("/sessions/{sessionId}/workspace/files", server.listWorkspaceFiles)
 			router.Get("/sessions/{sessionId}/workspace/file", server.readWorkspaceFile)
+			router.Get("/sessions/{sessionId}/workspace/file/diff", server.readWorkspaceDiffFile)
 			router.Put("/sessions/{sessionId}/workspace/file", server.writeWorkspaceFile)
 			router.Get("/sessions/{sessionId}/workspace/diff", server.getWorkspaceDiff)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)

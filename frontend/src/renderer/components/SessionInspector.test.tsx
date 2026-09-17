@@ -3799,7 +3799,7 @@ describe("SessionInspector summary reviews", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
       "Summary",
       "Browser",
-      "Files",
+		"0 Files",
     ]);
     expect(
       screen.getByRole("switch", { name: "Automatically fix review comments" }),

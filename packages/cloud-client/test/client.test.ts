@@ -353,6 +353,35 @@ describe("CloudClient", () => {
     });
   });
 
+	 it("reads a cloud workspace file with its selected comparison category", async () => {
+		const file = {
+			path: "src/main.ts",
+			status: "modified",
+			additions: 1,
+			deletions: 1,
+			size: 12,
+			binary: false,
+			deleted: false,
+			content: "export {}\n",
+			contentTruncated: false,
+			diff: "@@ -1 +1 @@\n-export {};\n+export {}\n",
+			diffTruncated: false,
+		} as const;
+		const fetchMock = vi.fn(
+			async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(file),
+		);
+		const client = createCloudClient({
+			baseUrl: "https://cloud.example.com",
+			getAccessToken: () => "access-token",
+			fetch: fetchMock as typeof fetch,
+		});
+
+		await expect(client.readWorkspaceDiffFile("tenant one", "session one", file.path, "unpushed")).resolves.toEqual(file);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/workspace/file/diff?path=src%2Fmain.ts&category=unpushed",
+		);
+	});
+
   it("reads normalized pull requests and AO review state for a session", async () => {
     const pullRequest = {
       url: "github://o/r/pull/7",
