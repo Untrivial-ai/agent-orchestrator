@@ -21,7 +21,8 @@ func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID string, pr
 	if !created {
 		return run, false, nil
 	}
-	if err := s.store.OpenReviewTerminal(ctx, orgID, sessionID, run.ID, reviewPrompt(run.ID, pr)); err != nil {
+	terminalID, err := s.store.OpenReviewTerminal(ctx, orgID, sessionID, run.ID, reviewPrompt(run.ID, pr))
+	if err != nil {
 		// A run is durable before the terminal is queued. Queue failures must
 		// resolve that durable record too; otherwise every client truthfully
 		// renders a review as running forever even though it never started.
@@ -29,6 +30,7 @@ func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID string, pr
 		s.closeReviewTerminal(ctx, orgID, sessionID, run.ID)
 		return domain.ReviewRun{}, false, err
 	}
+	run.ReviewTerminalID = terminalID
 	return run, true, nil
 }
 
@@ -36,6 +38,18 @@ func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID string, pr
 // teardown, so a disconnected worker cannot leave a stuck running review.
 func (s *Service) CancelReviews(ctx context.Context, orgID, sessionID string) ([]domain.ReviewRun, error) {
 	runs, err := s.store.CancelRunningReviewRunsBySession(ctx, orgID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, run := range runs {
+		s.closeReviewTerminal(ctx, orgID, sessionID, run.ID)
+	}
+	return runs, nil
+}
+
+// CancelReviewRuns rolls back only the runs created by one trigger request.
+func (s *Service) CancelReviewRuns(ctx context.Context, orgID, sessionID string, runIDs []string) ([]domain.ReviewRun, error) {
+	runs, err := s.store.CancelReviewRuns(ctx, orgID, sessionID, runIDs)
 	if err != nil {
 		return nil, err
 	}

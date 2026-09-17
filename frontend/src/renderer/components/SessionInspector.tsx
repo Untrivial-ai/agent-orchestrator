@@ -1781,7 +1781,7 @@ function CloudReviewsSection({
 			const running = data.reviews.find((review) => review.status === "running");
 			if (running && data.reviewerHandleId) {
 				onOpenReviewerTerminal?.({ handleId: data.reviewerHandleId, harness: data.reviewerHarness || session.provider });
-			} else {
+			} else if (!running) {
 				setReviewNotice(t("inspector.reviewAlreadyRanForCommit"));
 			}
 		},

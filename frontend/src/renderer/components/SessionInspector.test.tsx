@@ -381,6 +381,64 @@ describe("SessionInspector tabs", () => {
     });
   });
 
+  it("does not report an already-reviewed commit while a cloud review handle is pending", async () => {
+    cloudCpMock.listSessionPullRequests.mockResolvedValue({
+      sessionId: "sess-1",
+      pullRequests: [{
+        url: "https://github.com/acme/repo/pull/7",
+        number: 7,
+        state: "open",
+        updatedAt: "2026-06-15T00:00:00Z",
+      }],
+    });
+    cloudCpMock.getSessionReviewState.mockResolvedValue({
+      sessionId: "sess-1",
+      reviewerHarness: "claude-code",
+      reviews: [{
+        pullRequestUrl: "https://github.com/acme/repo/pull/7",
+        pullRequestNumber: 7,
+        title: "Cloud review",
+        targetSha: "head-7",
+        status: "needs_review",
+      }],
+      runs: [],
+    });
+    cloudCpMock.triggerSessionReviews.mockResolvedValue({
+      sessionId: "sess-1",
+      reviewerHandleId: "",
+      reviewerHarness: "claude-code",
+      reviews: [{
+        pullRequestUrl: "https://github.com/acme/repo/pull/7",
+        pullRequestNumber: 7,
+        title: "Cloud review",
+        targetSha: "head-7",
+        status: "running",
+      }],
+      runs: [],
+    });
+    const onOpenReviewerTerminal = vi.fn();
+
+    renderWithQuery(
+      <SessionInspector
+        onOpenReviewerTerminal={onOpenReviewerTerminal}
+        session={session([], { cloud: { orgId: "org-1" } })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: "Reviews" }));
+    await userEvent.click(screen.getByRole("button", { name: "Review latest commit" }));
+
+    await waitFor(() =>
+      expect(cloudCpMock.triggerSessionReviews).toHaveBeenCalledWith("org-1", "sess-1"),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "This commit has already been reviewed. Push a new commit to run another review.",
+      }),
+    ).not.toBeInTheDocument();
+    expect(onOpenReviewerTerminal).not.toHaveBeenCalled();
+  });
+
   it("shows only Browser content without navigation tabs for an orchestrator", () => {
     renderWithQuery(<SessionInspector browserOnly session={session([], { kind: "orchestrator" })} />);
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();

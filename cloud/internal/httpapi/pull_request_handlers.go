@@ -298,21 +298,38 @@ func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Starting a review is not available.")
 		return
 	}
+	if err := s.store.CheckSessionWriteAccess(r.Context(), principalFrom(r), orgID, sessionID); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
 	prs, err := s.store.ListPullRequestsBySession(r.Context(), principalFrom(r), orgID, sessionID)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
 	created := false
+	startedRunIDs := make([]string, 0, len(prs))
+	reviewerHandleID := ""
 	for _, pr := range prs {
 		if pr.Draft || pr.State != contract.PRStateOpen || pr.HeadSHA == "" {
 			continue
 		}
-		_, didCreate, err := s.github.TriggerReview(r.Context(), orgID, sessionID, pr)
+		run, didCreate, err := s.github.TriggerReview(r.Context(), orgID, sessionID, pr)
 		if err != nil {
 			s.logger.Error("trigger cloud review", "error", err, "request_id", requestID(r), "pull_request_id", pr.ID)
+			if len(startedRunIDs) > 0 {
+				if _, rollbackErr := s.github.CancelReviewRuns(r.Context(), orgID, sessionID, startedRunIDs); rollbackErr != nil {
+					s.logger.Error("rollback cloud review batch", "error", rollbackErr, "request_id", requestID(r))
+				}
+			}
 			writeError(w, r, http.StatusBadGateway, "REVIEW_FAILED", "The review could not be started.")
 			return
+		}
+		if didCreate {
+			startedRunIDs = append(startedRunIDs, run.ID)
+		}
+		if reviewerHandleID == "" && run.ReviewTerminalID != "" {
+			reviewerHandleID = run.ReviewTerminalID
 		}
 		created = created || didCreate
 	}
@@ -320,6 +337,9 @@ func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
+	}
+	if reviewerHandleID != "" {
+		payload["reviewerHandleId"] = reviewerHandleID
 	}
 	status := http.StatusOK
 	if created {
@@ -337,6 +357,10 @@ func (s *Server) cancelSessionReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.github == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Cancelling a review is not available.")
+		return
+	}
+	if err := s.store.CheckSessionWriteAccess(r.Context(), principalFrom(r), orgID, sessionID); err != nil {
+		s.writeStoreError(w, r, err)
 		return
 	}
 	if _, err := s.github.CancelReviews(r.Context(), orgID, sessionID); err != nil {
