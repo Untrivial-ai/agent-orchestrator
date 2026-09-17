@@ -369,13 +369,30 @@ func TestCuesAPI_InvokeRejectsPresentBlankSessionID(t *testing.T) {
 	}
 }
 
+func TestCuesAPI_InvokeRejectsTopLevelNullBody(t *testing.T) {
+	svc := &fakeCueService{}
+	srv := newCueTestServer(t, svc)
+
+	for _, body := range []string{`null`, ` null `} {
+		body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body=%s", status, body)
+		}
+		if !strings.Contains(string(body), "INVALID_JSON") {
+			t.Fatalf("missing INVALID_JSON envelope: %s", body)
+		}
+		if svc.gotCueID != "" || svc.gotSession != "" {
+			t.Fatalf("invalid body dispatched: cue=%q session=%q", svc.gotCueID, svc.gotSession)
+		}
+	}
+}
+
 func TestCuesAPI_InvokeOmittedSessionIDSpawnsWorker(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 	}{
 		{"empty body", ""},
 		{"empty object", `{}`},
-		{"null body", `null`},
 		{"unrelated field", `{"unused":1}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
