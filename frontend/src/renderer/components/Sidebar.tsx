@@ -1892,15 +1892,19 @@ const SessionActions = memo(function SessionActions({
 	const { t } = useTranslation();
 	const { mutate: pinSession } = usePinSession();
 	const { mutate: unpinSession } = useUnpinSession();
-	const { mutate: terminateSession, isPending: isKilling } = useTerminateSession();
+	// Optimistic: navigate + drop the row as soon as kill starts (onMutate),
+	// not after the daemon round-trip.
+	const onKilledRef = useRef(onKilled);
+	onKilledRef.current = onKilled;
+	const { mutate: terminateSession, isPending: isKilling } = useTerminateSession({
+		onOptimistic: (killed) => {
+			onKilledRef.current?.(killed);
+		},
+	});
 
 	const handleKill = (event: React.MouseEvent) => {
 		event.stopPropagation();
-		terminateSession(session, {
-			onSuccess: () => {
-				onKilled?.(session);
-			},
-		});
+		terminateSession(session);
 	};
 
 	return (

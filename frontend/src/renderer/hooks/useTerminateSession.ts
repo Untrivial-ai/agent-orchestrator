@@ -1,6 +1,11 @@
 import { type QueryClient, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
-import { toKanbanColumn, type WorkspaceSession, type WorkspaceSummary } from "../types/workspace";
+import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
+import {
+	applyTerminatedSession,
+	clearOptimisticSessionKill,
+	trackOptimisticSessionKill,
+} from "./optimistic-session-kills";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
 import { createRendererCloudCpClient } from "./useCloudCp";
@@ -9,7 +14,8 @@ import { useUiStore } from "../stores/ui-store";
 import { appI18n } from "../i18n";
 
 type TerminateSessionOptions = {
-	onSuccess?: (session: WorkspaceSession) => void;
+	/** Fires synchronously as the kill starts — before the cache drops the row. */
+	onOptimistic?: (session: WorkspaceSession) => void;
 };
 
 export const terminateSessionMutationKey = ["terminate-session"] as const;
@@ -30,21 +36,6 @@ async function terminateSession(queryClient: QueryClient, session: WorkspaceSess
 		const fallback = response ? `Failed to terminate session (${response.status})` : "Failed to terminate session";
 		throw new Error(apiErrorMessage(error, fallback));
 	}
-}
-
-// A killed session keeps its row and flips to terminated, which is exactly what
-// the next workspace fetch would report. Applying it locally lets the board
-// settle on the click rather than on the refetch.
-function markTerminated(sessionId: string) {
-	return (session: WorkspaceSession): WorkspaceSession =>
-		session.id === sessionId
-			? {
-				...session,
-				isTerminated: true,
-				status: "terminated",
-				kanbanColumn: toKanbanColumn(undefined, "terminated"),
-			}
-			: session;
 }
 
 type TerminateSessionMutationState = {
@@ -99,27 +90,37 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 
 			await terminateSession(queryClient, session);
 		},
-		onSuccess: (_data, session) => {
-			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
-			// Write the outcome into the cached board first, then refresh in the
-			// background. A mutation stays `pending` until its onSuccess settles,
-			// so awaiting the refetch here kept the row's spinner up for a whole
-			// extra round trip after the daemon had already finished the kill.
+		onMutate: async (session) => {
+			// Navigate first while the row is still on screen / in closed-over lists.
+			options.onOptimistic?.(session);
+			// Drop in-flight workspace fetches so they cannot overwrite the optimistic
+			// remove with a pre-kill snapshot (CDC + refetchInterval race).
+			await queryClient.cancelQueries({ queryKey: workspaceQueryKey });
+			const previous = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
+			trackOptimisticSessionKill(session.id);
 			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
-				workspaces?.map((workspace) =>
-					workspace.id === session.workspaceId
-						? { ...workspace, sessions: workspace.sessions.map(markTerminated(session.id)) }
-						: workspace,
-				),
+				applyTerminatedSession(workspaces, session.id),
 			);
-			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			// A cloud kill also lives in the cloud sessions query, which the board
-			// merges in separately, so refresh it too.
-			if (session.cloud) void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
-			options.onSuccess?.(session);
+			return { previous };
 		},
-		onError: (_error, session) => {
+		onSuccess: async (_data, session) => {
+			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
+			// Reinforce before refresh; keep the optimistic id until this refetch finishes.
+			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
+				applyTerminatedSession(workspaces, session.id),
+			);
+			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			if (session.cloud) await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+		},
+		onError: (_error, session, context) => {
 			void captureRendererEvent("ao.renderer.session_kill_failed", { project_id: session.workspaceId });
+			clearOptimisticSessionKill(session.id);
+			if (context?.previous) {
+				queryClient.setQueryData(workspaceQueryKey, context.previous);
+			}
+		},
+		onSettled: (_data, error, session) => {
+			if (!error) clearOptimisticSessionKill(session.id);
 		},
 	});
 }
