@@ -56,7 +56,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 	if err != nil || !ok {
 		return ReviewDeliveryNoop, err
 	}
-	if cannotNudge(rec) {
+	if cannotNudge(rec) || !rec.AutoInjectReview {
 		return ReviewDeliveryNoop, nil
 	}
 	if m.guard == nil {
@@ -89,7 +89,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 	anchorPR := results[0].PRURL
 	key := "review-batch:" + anchorPR + ":" + batchID
 	sig := strings.Join(sigParts, "\x01")
-	outcome, err := m.sendOnce(ctx, workerID, anchorPR, key, sig, msg.String(), reviewMaxNudge, false)
+	outcome, err := m.sendOnce(ctx, workerID, anchorPR, key, sig, msg.String(), reviewMaxNudge, nudgePolicyReview)
 	if err != nil {
 		return ReviewDeliveryNoop, err
 	}
@@ -133,20 +133,22 @@ type reactionPayload struct {
 
 // pendingNudge is one actionable PR nudge queued by ApplyPRObservation. Queuing
 // each condition's nudge (instead of sending inline and returning) keeps the
-// conditions independent — none can suppress another — and centralizes the
 // send + dedup in a single loop.
 type pendingNudge struct {
 	key         string
 	sig         string
 	msg         string
 	maxAttempts int
-	// urgent routes the send through sessionguard.NudgeUrgent instead of
-	// Nudge: it still reaches a session idle at a needs-input prompt instead
-	// of being suppressed until the agent resumes. Reserved for the
-	// merge-conflict nudge (see ApplyPRObservation) — every other nudge type
-	// keeps the ordinary Nudge gate.
-	urgent bool
+	policy      nudgePolicy
 }
+
+type nudgePolicy int
+
+const (
+	nudgePolicyStandard nudgePolicy = iota
+	nudgePolicyUrgent
+	nudgePolicyReview
+)
 
 // ApplyPRObservation reacts to a fetched PR observation after the PR service has
 // persisted it. It does not write PR rows; it owns PR-driven lifecycle effects
@@ -261,7 +263,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			}
 		}
 
-		if hasUnresolvedComments(o.Comments) {
+		if rec.AutoInjectReview && hasUnresolvedComments(o.Comments) {
 			comments := unresolvedReviewComments(o.Comments)
 			for _, comment := range comments {
 				if !comment.AutoInjectReview {
@@ -283,7 +285,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			}
 		}
 
-		if o.Review == domain.ReviewChangesRequest {
+		if rec.AutoInjectReview && o.Review == domain.ReviewChangesRequest {
 			for _, review := range reviews {
 				if review.State != domain.ReviewChangesRequest || !review.AutoInjectReview {
 					continue
@@ -323,7 +325,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			if o.URL != "" {
 				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
 			}
-			nudges = append(nudges, pendingNudge{key: mergeConflictKey(o.URL), sig: string(o.Mergeability), msg: msg, maxAttempts: 0, urgent: true})
+			nudges = append(nudges, pendingNudge{key: mergeConflictKey(o.URL), sig: string(o.Mergeability), msg: msg, maxAttempts: 0, policy: nudgePolicyUrgent})
 		}
 	}
 	// The definitively-cleared re-arm (#4528) runs above the dead-session gate,
@@ -332,7 +334,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	// other deferred read errors.
 
 	for _, n := range nudges {
-		if _, err := m.sendOnce(ctx, id, o.URL, n.key, n.sig, n.msg, n.maxAttempts, n.urgent); err != nil {
+		if _, err := m.sendOnce(ctx, id, o.URL, n.key, n.sig, n.msg, n.maxAttempts, n.policy); err != nil {
 			return err
 		}
 	}
@@ -706,7 +708,7 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 			// the PR-row signature load/persist is skipped, so the dedup
 			// survives only for the lifetime of this Manager. Cross-restart
 			// persistence ships with #35.
-			_, err := m.sendOnce(ctx, id, "", "tracker-bot:"+o.Issue.URL, strings.Join(ids, ","), msg, 0, false)
+			_, err := m.sendOnce(ctx, id, "", "tracker-bot:"+o.Issue.URL, strings.Join(ids, ","), msg, 0, nudgePolicyStandard)
 			return err
 		}
 	}
@@ -958,7 +960,7 @@ const (
 	sendOnceSuppressed
 )
 
-func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key, sig, msg string, maxAttempts int, urgent bool) (sendOnceOutcome, error) {
+func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key, sig, msg string, maxAttempts int, policy nudgePolicy) (sendOnceOutcome, error) {
 	if m.guard == nil {
 		return sendOnceAccounted, nil
 	}
@@ -989,7 +991,8 @@ func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key,
 	// the write was attempted and stays accounted, matching the pre-guard
 	// behavior.
 	nudge := m.guard.Nudge
-	if urgent {
+	switch policy {
+	case nudgePolicyUrgent:
 		// Merge-conflict nudges (the only urgent nudge today) must still reach
 		// a session idle at a needs-input prompt; NudgeUrgent keeps refusing
 		// while a live permission dialog is on screen — including the
@@ -999,6 +1002,8 @@ func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key,
 		nudge = func(ctx context.Context, id domain.SessionID, msg string) (sessionguard.Outcome, error) {
 			return m.guard.NudgeUrgent(ctx, id, msg, m.urgentNudgeWaitingInputSafe)
 		}
+	case nudgePolicyReview:
+		nudge = m.guard.NudgeReview
 	}
 	outcome, err := nudge(ctx, id, msg)
 	if err != nil {
