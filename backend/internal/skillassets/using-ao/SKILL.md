@@ -6,7 +6,7 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 
 # AO CLI Catalog
 
-`ao` is a thin CLI over the local AO daemon. Every command is `ao <command> --help` for the authoritative flag list.
+`ao` is a thin CLI over the local AO daemon. In an AO-managed session, invoke it as `"$AO_CLI_PATH" <command>` rather than bare `ao`: nested login shells can reorder `PATH` to an older installation. Every command accepts `--help` for the authoritative flag list.
 
 | Command | What it does | When to use | Details |
 |---|---|---|---|

@@ -4716,9 +4716,11 @@ func TestSystemPrompt_AppendsConfidentialityGuard(t *testing.T) {
 			if !strings.Contains(sp, "AO desktop Browser panel") || !strings.Contains(sp, "agent.browsers.get(\"iab\")") {
 				t.Fatalf("%s: system prompt missing AO browser routing guidance:\n%s", tc.name, sp)
 			}
-			if !strings.Contains(sp, "Static file targets passed to `ao preview`") ||
+			if !strings.Contains(sp, "AO provides its own executable in `$AO_CLI_PATH`") ||
+				!strings.Contains(sp, "Codex login shells can reorder PATH") ||
+				!strings.Contains(sp, "Static file targets passed to `\"$AO_CLI_PATH\" preview`") ||
 				!strings.Contains(sp, "relative to the session workspace root") ||
-				!strings.Contains(sp, "use `ao preview README.md`, not `../README.md`") ||
+				!strings.Contains(sp, "use `\"$AO_CLI_PATH\" preview README.md`, not `../README.md`") ||
 				!strings.Contains(sp, "Never create or modify `package.json`") ||
 				!strings.Contains(sp, "Do not create `.ao/launch.json` unless the user asks") {
 				t.Fatalf("%s: system prompt missing static-first preview safeguards:\n%s", tc.name, sp)
@@ -5856,6 +5858,9 @@ func TestSpawnAndRestore_PinHookPATHToDaemonBinary(t *testing.T) {
 			}
 			if got := rt.lastCfg.Env["PATH"]; got != want {
 				t.Fatalf("runtime env PATH = %q, want %q", got, want)
+			}
+			if got := rt.lastCfg.Env[EnvCLIPath]; got != daemonExe {
+				t.Fatalf("runtime env %s = %q, want canonical daemon executable %q", EnvCLIPath, got, daemonExe)
 			}
 		})
 	}
