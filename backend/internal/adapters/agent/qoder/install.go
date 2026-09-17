@@ -15,8 +15,19 @@ func (p *Plugin) resolveBinary(ctx context.Context) (string, error) {
 	if p.resolvedBinary != "" {
 		return p.resolvedBinary, nil
 	}
-	bin, err := ResolveQoderBinary(ctx)
+	resolve := p.resolveBinaryPath
+	if resolve == nil {
+		resolve = ResolveQoderBinary
+	}
+	bin, err := resolve(ctx)
 	if err != nil {
+		return "", err
+	}
+	probe := p.probeMinimumVersion
+	if probe == nil {
+		probe = ProbeMinimumVersion
+	}
+	if err := probe(ctx, bin); err != nil {
 		return "", err
 	}
 	p.resolvedBinary = bin

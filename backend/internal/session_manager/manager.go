@@ -1035,7 +1035,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		Config:           adapterConfig,
 		Permissions:      adapterConfig.Permissions,
 	}
-	if err := assignFreshNativeSessionID(agent, &launchCfg); err != nil {
+	reservedNativeID, err := assignFreshNativeSessionID(agent, &launchCfg)
+	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnLaunchCommand, err)
 	}
@@ -1071,6 +1072,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepareLaunch, err)
 	}
 	defer m.lcm.CancelLaunch(id, launchID)
+	if err := m.reserveFreshNativeIdentity(ctx, &rec, reservedNativeID, launchID); err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepareLaunch, err)
+	}
 	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, cfg.Harness)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
@@ -1095,6 +1100,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		WorkspaceRepoPath:         ws.RepoPath,
 		RuntimeHandleID:           handle.ID,
 		RuntimeLaunchID:           launchID,
+		AgentSessionID:            rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
 		Prompt:                    prompt,
 		LatestUserPrompt:          prompt,
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
@@ -2433,11 +2440,12 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	var argv []string
 	var delivery ports.PromptDeliveryStrategy
 	var mode RestoreMode
+	var reservedNativeID string
 	if forceFresh {
-		argv, delivery, mode, err = freshLaunchArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
+		argv, delivery, mode, reservedNativeID, err = freshLaunchArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
 			systemPrompt, systemPromptFile, agentConfig, rec.Kind, m.dataDir, true)
 	} else {
-		argv, delivery, mode, err = restoreArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
+		argv, delivery, mode, reservedNativeID, err = restoreArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
 			systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir, env)
 	}
 	if err != nil {
@@ -2468,6 +2476,10 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: prepare launch: %w", operation, rec.ID, err)
 	}
 	defer m.lcm.CancelLaunch(rec.ID, launchID)
+	if err := m.reserveFreshNativeIdentity(ctx, &rec, reservedNativeID, launchID); err != nil {
+		m.cleanupSystemPromptDir(rec.ID)
+		return RestoreResult{}, fmt.Errorf("%s %s: reserve native identity: %w", operation, rec.ID, err)
+	}
 	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, rec.Harness)
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
@@ -4885,7 +4897,7 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // signals via ok=false (e.g. no native session id captured yet). Returns
 // ErrNotResumable when transcript-preserving restore is required but unavailable,
 // or when a promptless, unresumable worker has nothing to restore from.
-func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string, env map[string]string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string, env map[string]string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, string, error) {
 	ref := ports.SessionRef{
 		ID:            string(id),
 		WorkspacePath: workspacePath,
@@ -4893,7 +4905,7 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	}
 	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions})
 	if err != nil {
-		return nil, "", "", fmt.Errorf("restore command: %w", err)
+		return nil, "", "", "", fmt.Errorf("restore command: %w", err)
 	}
 	// The id is real but the provider never persisted a conversation under it —
 	// a session torn down before its first turn, or one whose switch away failed
@@ -4901,7 +4913,7 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	// found" every time, so the id alone must not gate restore.
 	conversationLost := ok && nativeConversationMissing(ctx, agent, ref, meta.AgentSessionID, env)
 	if ok && !conversationLost {
-		return cmd, ports.PromptDeliveryInCommand, RestoreModeNative, nil
+		return cmd, ports.PromptDeliveryInCommand, RestoreModeNative, "", nil
 	}
 	// A lost conversation is not the same as nothing to restore: the session
 	// reached the point of reserving an id, and its workspace holds whatever
@@ -4944,12 +4956,12 @@ func nativeConversationMissing(ctx context.Context, agent ports.Agent, ref ports
 // freshLaunchArgv builds the non-resume half of restoreArgv. Interface
 // transitions also use it when an adapter proves its reserved id has no
 // persisted history, both for preflight and for the actual target launch.
-func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, dataDir string, allowPromptless bool) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, dataDir string, allowPromptless bool) ([]string, ports.PromptDeliveryStrategy, RestoreMode, string, error) {
 	// A saved prompt is replayed fresh. An orchestrator is promptless by design
 	// and relaunches with the system prompt only. A promptless WORKER has no task
 	// and no session id to restore from: do not blank-relaunch it.
 	if meta.Prompt == "" && kind != domain.KindOrchestrator && !allowPromptless {
-		return nil, "", "", ErrNotResumable
+		return nil, "", "", "", ErrNotResumable
 	}
 	// Fall through to a fresh launch. Command-delivered agents receive
 	// meta.Prompt in argv; after-start agents receive it via the messenger once
@@ -4965,41 +4977,56 @@ func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID
 		Config:           agentConfig,
 		Permissions:      agentConfig.Permissions,
 	}
-	if err := assignFreshNativeSessionID(agent, &launchCfg); err != nil {
-		return nil, "", "", fmt.Errorf("fresh native session id: %w", err)
+	reservedNativeID, err := assignFreshNativeSessionID(agent, &launchCfg)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("fresh native session id: %w", err)
 	}
 	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("prompt delivery: %w", err)
+		return nil, "", "", "", fmt.Errorf("prompt delivery: %w", err)
 	}
 	if delivery == ports.PromptDeliveryAfterStart {
 		launchCfg.Prompt = ""
 	}
 	argv, err := agent.GetLaunchCommand(ctx, launchCfg)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("launch command: %w", err)
+		return nil, "", "", "", fmt.Errorf("launch command: %w", err)
 	}
 	mode := RestoreModeFresh
 	if meta.Prompt != "" {
 		mode = RestoreModeSavedPrompt
 	}
-	return argv, delivery, mode, nil
+	return argv, delivery, mode, reservedNativeID, nil
 }
 
-func assignFreshNativeSessionID(agent ports.Agent, cfg *ports.LaunchConfig) error {
+func assignFreshNativeSessionID(agent ports.Agent, cfg *ports.LaunchConfig) (string, error) {
 	capabilities, ok := agent.(ports.AgentContinuationCapabilityProvider)
 	if !ok || capabilities.ContinuationCapabilities().FreshNativeSessionID != ports.FreshNativeSessionIDCallerAssigned {
-		return nil
+		return "", nil
 	}
 	provider, ok := agent.(ports.AgentFreshNativeSessionIDProvider)
 	if !ok {
-		return errors.New("adapter declares caller-assigned native session ids without an allocator")
+		return "", errors.New("adapter declares caller-assigned native session ids without an allocator")
 	}
 	cfg.NativeSessionID = strings.TrimSpace(provider.NewNativeSessionID())
 	if cfg.NativeSessionID == "" {
-		return errors.New("adapter returned an empty native session id")
+		return "", errors.New("adapter returned an empty native session id")
 	}
-	return nil
+	return cfg.NativeSessionID, nil
+}
+
+// reserveFreshNativeIdentity records a caller-assigned provider id before the
+// runtime starts. Providers may omit their SessionStart hook, and a failed
+// launch may have created native history before returning an error; retaining
+// the exact reservation makes every later restore fail closed through resume.
+func (m *Manager) reserveFreshNativeIdentity(ctx context.Context, rec *domain.SessionRecord, nativeID, launchID string) error {
+	nativeID = strings.TrimSpace(nativeID)
+	if nativeID == "" {
+		return nil
+	}
+	rec.Metadata.AgentSessionID = nativeID
+	rec.Metadata.AgentSessionIDLaunchID = launchID
+	return m.store.UpdateSession(ctx, *rec)
 }
 
 // validateAgentBinary checks that argv[0] resolves via the manager's

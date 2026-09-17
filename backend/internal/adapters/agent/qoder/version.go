@@ -14,7 +14,8 @@ var versionPattern = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)
 
 // ProbeMinimumVersion runs `<bin> --version` and returns an error unless the
 // reported version is at least minimumQoderVersion, the oldest release AO has
-// tested against. It is wired in as the ACP driver's version gate.
+// tested against. Binary resolution uses this gate before advertising terminal
+// readiness or returning a launchable path; the ACP driver reuses it too.
 func ProbeMinimumVersion(ctx context.Context, bin string) error {
 	out, err := aoprocess.CommandContext(ctx, bin, "--version").CombinedOutput()
 	if err != nil {

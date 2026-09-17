@@ -804,7 +804,7 @@ func (m *Manager) preflightInterfaceTarget(
 	config := effectiveAgentConfig(rec.Kind, project.Config)
 	var cmd []string
 	if transition.NativeConversationID == "" {
-		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
+		cmd, _, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
 			rec.Metadata, systemPrompt, "", config, rec.Kind, m.dataDir, true)
 	} else {
 		var resumable bool

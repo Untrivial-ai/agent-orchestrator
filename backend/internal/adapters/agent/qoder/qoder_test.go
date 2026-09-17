@@ -2,12 +2,66 @@ package qoder
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestResolveBinaryEnforcesMinimumVersionBeforeCaching(t *testing.T) {
+	for _, tc := range []struct {
+		name, version, wantErr string
+	}{
+		{name: "old", version: "qoder 1.1.53", wantErr: "older than"},
+		{name: "current", version: "qoder 1.1.54"},
+		{name: "unparseable", version: "qoder development", wantErr: "unrecognized Qoder version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolveCalls, probeCalls := 0, 0
+			p := New()
+			p.resolveBinaryPath = func(context.Context) (string, error) {
+				resolveCalls++
+				return "/bin/qoder", nil
+			}
+			p.probeMinimumVersion = func(context.Context, string) error {
+				probeCalls++
+				return validateVersionOutput(tc.version)
+			}
+			got, err := p.ResolveBinary(context.Background())
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("ResolveBinary error = %v, want containing %q", err, tc.wantErr)
+				}
+				if got != "" || p.resolvedBinary != "" {
+					t.Fatalf("rejected binary was cached: got=%q cached=%q", got, p.resolvedBinary)
+				}
+				return
+			}
+			if err != nil || got != "/bin/qoder" {
+				t.Fatalf("ResolveBinary = %q, %v", got, err)
+			}
+			if _, err := p.ResolveBinary(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if resolveCalls != 1 || probeCalls != 1 {
+				t.Fatalf("resolve calls = %d, probe calls = %d, want validated cache", resolveCalls, probeCalls)
+			}
+		})
+	}
+}
+
+func TestResolveBinaryPropagatesVersionProbeFailure(t *testing.T) {
+	p := New()
+	p.resolveBinaryPath = func(context.Context) (string, error) { return "/bin/qoder", nil }
+	want := errors.New("version command failed")
+	p.probeMinimumVersion = func(context.Context, string) error { return want }
+	if _, err := p.ResolveBinary(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("ResolveBinary error = %v, want %v", err, want)
+	}
+}
 
 func TestLaunchCommand(t *testing.T) {
 	tests := []struct {

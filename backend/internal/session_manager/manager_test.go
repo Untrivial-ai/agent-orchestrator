@@ -1464,11 +1464,16 @@ func TestSpawn_AssignsFreshNativeSessionIDBeforeLaunch(t *testing.T) {
 		LookPath: func(string) (string, error) { return "/bin/true", nil },
 	})
 
-	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessQoder}); err != nil {
+	spawned, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessQoder})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := recorder.lastLaunch.NativeSessionID; got != "fresh-native-1" {
 		t.Fatalf("launch native session ID = %q, want caller-assigned ID", got)
+	}
+	if spawned.Metadata.AgentSessionID != "fresh-native-1" || spawned.Metadata.AgentSessionIDLaunchID != spawned.Metadata.RuntimeLaunchID {
+		t.Fatalf("spawned native identity = id:%q launch:%q runtime:%q, want reserved identity owned by launch",
+			spawned.Metadata.AgentSessionID, spawned.Metadata.AgentSessionIDLaunchID, spawned.Metadata.RuntimeLaunchID)
 	}
 }
 
@@ -1844,8 +1849,7 @@ func TestRestore_RotatesSupervisedAgentGeneration(t *testing.T) {
 		NewLaunchID: func() string { return "launch-new" },
 	})
 
-	result, err := m.RestoreWithMode(ctx, "mer-1")
-	if err != nil {
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
 		t.Fatal(err)
 	}
 	if result.Session.Metadata.RuntimeLaunchID != "launch-new" {
@@ -3565,7 +3569,8 @@ func TestRestore_AppliesProjectAgentConfig(t *testing.T) {
 	lookPath := func(string) (string, error) { return "/bin/true", nil }
 	m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
 
-	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+	result, err := m.RestoreWithMode(ctx, "mer-1")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if agent.lastConfig.Model != "restore-model" {
@@ -4947,11 +4952,63 @@ func TestRestore_FallbackAssignsFreshNativeSessionIDBeforeLaunch(t *testing.T) {
 		LookPath: func(string) (string, error) { return "/bin/true", nil },
 	})
 
-	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+	result, err := m.RestoreWithMode(ctx, "mer-1")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := recorder.lastLaunch.NativeSessionID; got != "fresh-native-2" {
 		t.Fatalf("fallback launch native session ID = %q, want caller-assigned ID", got)
+	}
+	if result.Session.Metadata.AgentSessionID != "fresh-native-2" || result.Session.Metadata.AgentSessionIDLaunchID != result.Session.Metadata.RuntimeLaunchID {
+		t.Fatalf("restored native identity = id:%q launch:%q runtime:%q, want reserved identity owned by launch",
+			result.Session.Metadata.AgentSessionID, result.Session.Metadata.AgentSessionIDLaunchID, result.Session.Metadata.RuntimeLaunchID)
+	}
+	rec := st.sessions["mer-1"]
+	rec.IsTerminated = true
+	rec.Activity.State = domain.ActivityExited
+	st.sessions["mer-1"] = rec
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.launchCalls != 1 || recorder.restoreCalls != 2 {
+		t.Fatalf("launch calls = %d, restore calls = %d, want one fresh launch then exact resume", recorder.launchCalls, recorder.restoreCalls)
+	}
+	if got := recorder.lastRestore.Session.Metadata[ports.MetadataKeyAgentSessionID]; got != "fresh-native-2" {
+		t.Fatalf("repeated restore native session ID = %q, want reserved ID", got)
+	}
+}
+
+func TestRestore_FallbackPersistsFreshNativeSessionIDBeforeRuntimeFailure(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessQoder, IsTerminated: true,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", RuntimeHandleID: "h-old", Prompt: "continue the task"},
+	}
+	recorder := &recordingAgent{}
+	agent := callerAssignedRecordingAgent{recordingAgent: recorder, nativeID: "fresh-native-failed"}
+	rt := &fakeRuntime{createErr: errors.New("qoder did not start")}
+	m := New(Deps{
+		Runtime: rt, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err == nil {
+		t.Fatal("RestoreWithMode succeeded, want runtime launch failure")
+	}
+	reserved := st.sessions["mer-1"].Metadata
+	if reserved.AgentSessionID != "fresh-native-failed" || reserved.AgentSessionIDLaunchID == "" {
+		t.Fatalf("reserved identity after launch failure = id:%q launch:%q", reserved.AgentSessionID, reserved.AgentSessionIDLaunchID)
+	}
+	rt.createErr = nil
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.launchCalls != 1 || recorder.restoreCalls != 2 {
+		t.Fatalf("launch calls = %d, restore calls = %d, want failed fresh launch followed by exact resume", recorder.launchCalls, recorder.restoreCalls)
+	}
+	if got := recorder.lastRestore.Session.Metadata[ports.MetadataKeyAgentSessionID]; got != "fresh-native-failed" {
+		t.Fatalf("retry native session ID = %q, want failed launch reservation", got)
 	}
 }
 

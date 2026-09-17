@@ -26,8 +26,10 @@ const (
 // path is resolved once and cached under binaryMu.
 type Plugin struct {
 	agentbase.Base
-	binaryMu       sync.Mutex
-	resolvedBinary string
+	binaryMu            sync.Mutex
+	resolvedBinary      string
+	resolveBinaryPath   func(context.Context) (string, error)
+	probeMinimumVersion func(context.Context, string) error
 }
 
 // New returns a ready-to-register Qoder adapter.
