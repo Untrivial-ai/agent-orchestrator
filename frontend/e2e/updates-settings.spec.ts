@@ -55,30 +55,30 @@ test("@P0 live update flow stays synchronized without reopening Settings", async
 	await page.goto("/#/settings");
 	await page.getByRole("button", { name: "Updates", exact: true }).click();
 	await page.getByRole("button", { name: "Update to v2.0.0" }).click();
-	await expect(page.getByTestId("sidebar-update-downloading")).toContainText("Starting download…");
-	await expect(page.getByTestId("update-status-line")).toContainText("Starting download…");
+	await expect(page.getByTestId("sidebar-update-downloading")).toContainText(/Starting download…|Downloading… 0%/);
+	await expect(page.getByTestId("update-status-line")).toContainText(/Starting download…|Downloading…/);
 
 	// A missed push is recovered by one local status read, without feed checks.
 	await page.evaluate(() => {
-		window.ao!.updates.getStatus = async () => ({ state: "downloading", version: "2.0.0", percent: 42, transferred: 42_000_000, total: 100_000_000 });
+		window.__aoFakeUpdates!.setStatus({ state: "downloading", version: "2.0.0", percent: 42, transferred: 42_000_000, total: 100_000_000 });
 	});
-	await expect(page.getByTestId("sidebar-update-downloading")).toContainText("42% downloaded");
+	await expect(page.getByTestId("sidebar-update-downloading")).toContainText("Downloading… 42%");
 	await expect(page.getByTestId("update-status-line")).toContainText("42.0 / 100.0 MB");
 	await expect(page.getByTestId("app-version")).toHaveText("v1.0.0");
 	await expect(page.getByText("Updating to v2.0.0")).toBeVisible();
 
 	await page.evaluate(() => {
-		window.ao!.updates.getStatus = async () => ({ state: "preparing", version: "2.0.0", percent: 100, staged: { version: "2.0.0", stagedAt: 10, escalated: false, ready: false } });
+		window.__aoFakeUpdates!.setStatus({ state: "preparing", version: "2.0.0", percent: 100, staged: { version: "2.0.0", stagedAt: 10, escalated: false, ready: false } });
 	});
-	await expect(page.getByTestId("sidebar-update-downloading")).toContainText("Preparing update…");
+	await expect(page.getByTestId("sidebar-update-ready")).toContainText("Restart to update");
 	await expect(page.getByTestId("update-status-line")).toContainText("Preparing update…");
 	await expect(page.getByRole("button", { name: "Install Update", exact: true })).toHaveCount(0);
 
 	await page.evaluate(() => {
-		window.ao!.updates.getStatus = async () => ({ state: "downloaded", version: "2.0.0" });
+		window.__aoFakeUpdates!.setStatus({ state: "downloaded", version: "2.0.0" });
 	});
-	await expect(page.getByTestId("sidebar-update-ready")).toContainText("Install Update");
-	await expect(page.getByTestId("sidebar-update-ready")).toHaveClass(/bg-muted/);
+	await expect(page.getByTestId("sidebar-update-ready")).toContainText("Restart to update");
+	await expect(page.getByTestId("sidebar-update-ready")).toHaveAttribute("aria-label", "Restart to install update v2.0.0");
 	await expect(page.getByTestId("sidebar-update-ready")).not.toHaveClass(/text-success/);
-	await expect(page.getByRole("button", { name: "Install Update", exact: true })).toBeEnabled();
+	await expect(page.getByRole("button", { name: "Restart & install", exact: true })).toBeEnabled();
 });

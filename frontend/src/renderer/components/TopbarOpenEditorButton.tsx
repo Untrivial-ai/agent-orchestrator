@@ -15,6 +15,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import {
 	AndroidStudioIcon,
+	AntigravityIcon,
 	CursorIcon,
 	JetBrainsIcon,
 	SublimeIcon,
@@ -31,6 +32,7 @@ const editorIcons: Record<string, typeof VSCodeIcon> = {
 	cursor: CursorIcon,
 	windsurf: WindsurfIcon,
 	zed: ZedIcon,
+	antigravity: AntigravityIcon,
 	sublime: SublimeIcon,
 	"android-studio": AndroidStudioIcon,
 	intellij: JetBrainsIcon,
@@ -48,6 +50,7 @@ const editorColors: Record<string, string> = {
 	vscode: "#1F9CF0",
 	"vscode-insiders": "#1F9CF0",
 	vscodium: "#2F80ED",
+	antigravity: "#4285F4",
 	sublime: "#FF9800",
 	"android-studio": "#3DDC84",
 };
@@ -97,21 +100,25 @@ export function TopbarOpenEditorButton({
 		open.mutate({ sessionId, projectId, ...(targetId ? { targetId } : {}) });
 	};
 	const launchError = open.error instanceof Error ? open.error.message : null;
-	const guidance = !stateQuery.isPending && !workspaceAvailable
+	const workspaceError = !stateQuery.isPending && !workspaceAvailable
 		? state?.unavailableReason ?? t("editor.workspaceUnavailable")
-		: !stateQuery.isPending && editors.length === 0
-			? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
-			: null;
+		: null;
+	const visibleActionError = launchError ?? workspaceError;
+	const noEditorGuidance = !stateQuery.isPending && workspaceAvailable && editors.length === 0
+		? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
+		: null;
 	const mainTitle = stateQuery.isPending
 		? t("editor.preparingWorkspace")
-		: (guidance
-			?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle")));
+		: (workspaceError
+			?? (preferred
+				? t("editor.openWorkspaceInTitle", { name: preferred.name })
+				: (noEditorGuidance ?? t("editor.chooseEditorTitle"))));
 
 	return (
 		<>
-			{launchError || guidance ? (
-				<TopbarActionError className="max-w-content-max truncate" title={launchError ?? guidance ?? undefined}>
-					{launchError ?? guidance}
+			{visibleActionError ? (
+				<TopbarActionError className="max-w-content-max truncate" title={visibleActionError}>
+					{visibleActionError}
 				</TopbarActionError>
 			) : null}
 			<div
@@ -172,6 +179,17 @@ export function TopbarOpenEditorButton({
 								{editor.name}
 							</DropdownMenuItem>
 						))}
+						{editors.length === 0 && noEditorGuidance ? (
+							<>
+								<DropdownMenuSeparator />
+								<div
+									className="px-2 py-1.5 text-micro leading-relaxed text-passive select-none max-w-60"
+									role="note"
+								>
+									{noEditorGuidance}
+								</div>
+							</>
+						) : null}
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>

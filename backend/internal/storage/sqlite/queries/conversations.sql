@@ -46,13 +46,13 @@ INSERT INTO conversation_branches (
     id, conversation_id, session_id, provider_conversation_id,
     parent_branch_id, fork_after_turn_id, replaced_turn_id,
     replacement_turn_id, fork_after_sequence, strategy, replay_cutoff_sequence,
-    replay_truncated, provider_scope_id, created_at
+    replay_truncated, provider_scope_id, provider_ids_scoped, created_at
 ) VALUES (
     sqlc.arg(id), sqlc.arg(conversation_id), sqlc.narg(session_id),
     sqlc.arg(provider_conversation_id), sqlc.narg(parent_branch_id),
     sqlc.narg(fork_after_turn_id), sqlc.narg(replaced_turn_id),
     sqlc.narg(replacement_turn_id), sqlc.arg(fork_after_sequence), sqlc.arg(strategy),
-    sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(created_at)
+    sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(provider_ids_scoped), sqlc.arg(created_at)
 );
 
 -- name: SelectConversationBranch :one
@@ -1408,7 +1408,7 @@ WHERE conversation_id = sqlc.arg(conversation_id)
   AND client_message_id = sqlc.arg(client_message_id)
   AND state = 'reserved' AND provider_work_started = 0
   AND EXISTS (
-    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.session_id
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.current_session_id
     WHERE c.id = conversation_edit_deliveries.conversation_id
       AND s.controller_generation = sqlc.arg(generation)
       AND s.session_mode = 'chat' AND s.is_terminated = 0

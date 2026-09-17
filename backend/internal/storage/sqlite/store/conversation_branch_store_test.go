@@ -335,6 +335,49 @@ func TestActivateConversationBranchMovesProviderAndGenerationTogether(t *testing
 	}
 }
 
+func TestBranchActivationScopesNativeHistoryFacts(t *testing.T) {
+	for _, nativeID := range []string{"thread-root", "thread-child"} {
+		t.Run(nativeID, func(t *testing.T) {
+			ctx := context.Background()
+			s, session, conversation := seededChatConversation(t)
+			session.Metadata.AgentSessionID = "thread-root"
+			session.Metadata.LatestUserPrompt = "continue"
+			session.Metadata.LatestUserPromptAt = testNow
+			session.Metadata.LatestAssistantUpdate = "old answer"
+			session.Metadata.LatestAssistantUpdateAt = testNow
+			session.Metadata.NativeTranscriptPath = "/old/transcript.jsonl"
+			if err := s.UpdateSession(ctx, session); err != nil {
+				t.Fatal(err)
+			}
+			branch := domain.ConversationBranch{
+				ID: "child", ConversationID: conversation.ID, ParentBranchID: conversation.ActiveBranchID,
+				ProviderConversationID: nativeID,
+			}
+			if err := s.CreateAndActivateConversationBranch(ctx, session.ID, branch, "child-generation", testNow.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := s.GetSession(ctx, session.ID)
+			if err != nil || !found {
+				t.Fatalf("GetSession: found=%v err=%v", found, err)
+			}
+			meta := got.Metadata
+			if meta.AgentSessionID != nativeID || meta.ProviderConversationID != nativeID || meta.ControllerGeneration != "child-generation" {
+				t.Fatalf("native owner not moved with branch: %+v", meta)
+			}
+			if nativeID == "thread-root" {
+				if meta.LatestUserPrompt != "continue" || !meta.LatestUserPromptAt.Equal(testNow) ||
+					meta.LatestAssistantUpdate != "old answer" || !meta.LatestAssistantUpdateAt.Equal(testNow) ||
+					meta.NativeTranscriptPath != "/old/transcript.jsonl" {
+					t.Fatalf("same native owner lost checkpoint: %+v", meta)
+				}
+			} else if meta.LatestUserPrompt != "" || !meta.LatestUserPromptAt.Equal(testNow) ||
+				meta.LatestAssistantUpdate != "" || !meta.LatestAssistantUpdateAt.IsZero() || meta.NativeTranscriptPath != "" {
+				t.Fatalf("new native owner inherited checkpoint or lost last human activity time: %+v", meta)
+			}
+		})
+	}
+}
+
 func TestActivateConversationBranchRollsBackWhenSessionCannotMove(t *testing.T) {
 	ctx := context.Background()
 	s, session, conversation := seededChatConversation(t)
@@ -473,6 +516,78 @@ func TestEditDeliveryReservationHasOneConcurrentWinner(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Fatalf("reservation winners = %d, want exactly one", winners)
+	}
+}
+
+func TestBeginEditProviderWorkUsesCurrentConversationOwner(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		scope      domain.ConversationScope
+		rebind     bool
+		stale      bool
+		mode       domain.SessionMode
+		terminated bool
+		wantErr    bool
+	}{
+		{name: "worker", scope: domain.ConversationScopeSession, mode: domain.SessionModeChat},
+		{name: "orchestrator", scope: domain.ConversationScopeProject, mode: domain.SessionModeChat},
+		{name: "rebound orchestrator", scope: domain.ConversationScopeProject, rebind: true, mode: domain.SessionModeChat},
+		{name: "previous orchestrator", scope: domain.ConversationScopeProject, rebind: true, stale: true, mode: domain.SessionModeChat, wantErr: true},
+		{name: "stale generation", scope: domain.ConversationScopeSession, stale: true, mode: domain.SessionModeChat, wantErr: true},
+		{name: "terminal owner", scope: domain.ConversationScopeProject, mode: domain.SessionModeTUI, wantErr: true},
+		{name: "terminated owner", scope: domain.ConversationScopeProject, mode: domain.SessionModeChat, terminated: true, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newTestStore(t)
+			seedProject(t, s, "edit-owner")
+			rec := sampleRecord("edit-owner")
+			rec.Mode = tt.mode
+			rec.Metadata.ControllerGeneration = "generation-source"
+			source, err := s.CreateSession(ctx, rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conversation, err := s.CreateConversation(ctx, "edit-owner-conversation", tt.scope, source.ProjectID, source.ID, testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := source
+			if tt.rebind {
+				rec.Metadata.ControllerGeneration = "generation-target"
+				owner, err = s.CreateSession(ctx, rec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rebound, err := s.CreateConversation(ctx, "unused", tt.scope, owner.ProjectID, owner.ID, testNow.Add(time.Minute))
+				if err != nil || rebound.ID != conversation.ID {
+					t.Fatalf("rebind: conversation=%+v err=%v", rebound, err)
+				}
+			}
+			owner.Mode, owner.IsTerminated = tt.mode, tt.terminated
+			if err := s.UpdateSession(ctx, owner); err != nil {
+				t.Fatal(err)
+			}
+			if _, won, err := s.ReserveEditDelivery(ctx, conversation.ID, "edit-client", "{}", testNow); err != nil || !won {
+				t.Fatalf("reserve: won=%v err=%v", won, err)
+			}
+			generation := owner.Metadata.ControllerGeneration
+			if tt.stale {
+				generation = "stale-generation"
+				if tt.rebind {
+					generation = source.Metadata.ControllerGeneration
+				}
+			}
+			err = s.BeginEditProviderWork(ctx, conversation.ID, "edit-client", generation)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("begin provider work: err=%v, wantErr=%v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if err := s.BeginEditProviderWork(ctx, conversation.ID, "edit-client", generation); err == nil {
+					t.Fatal("same reservation started provider work twice")
+				}
+			}
+		})
 	}
 }
 

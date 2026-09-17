@@ -172,6 +172,11 @@ export function WindowTitlebar() {
       const target = event.target as HTMLElement | null;
       if (target?.closest('[class*="window-titlebar"]')) return;
       if (target?.closest('[data-testid="browser-panel"]')) return;
+      // The docked omnibox is portaled into the inspector header, outside the
+      // browser-panel div — but focusing/clicking it is still browser use. If it
+      // reported shell focus, main would drop the browser shortcut target and the
+      // next ⌘T/⌘W would open/close a terminal instead of a browser tab.
+      if (target?.closest('[data-testid="browser-address-bar"], .browser-panel__topbar-host')) return;
       void window.ao?.menu?.notifyShellFocus();
     };
     document.addEventListener("focusin", onShellUse);

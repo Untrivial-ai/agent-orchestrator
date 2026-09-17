@@ -573,6 +573,17 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 	}
 	switch {
 	case update.AgentMessageChunk != nil:
+		c.mu.Lock()
+		isCompacting := c.compactingTurnID != "" && c.compactingTurnID == turnID
+		c.mu.Unlock()
+		if isCompacting {
+			if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
+				c.mu.Lock()
+				c.compactionSummary += delta
+				c.mu.Unlock()
+			}
+			break
+		}
 		id := c.providerItemID(messageID(update.AgentMessageChunk.MessageId, "assistant", turnID))
 		if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
 			if parentID := c.providerItemID(parentToolUseID(update.AgentMessageChunk.Meta)); parentID != "" {
@@ -598,6 +609,12 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			emit(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
 		}
 	case update.AgentThoughtChunk != nil:
+		c.mu.Lock()
+		isCompacting := c.compactingTurnID != "" && c.compactingTurnID == turnID
+		c.mu.Unlock()
+		if isCompacting {
+			break
+		}
 		id := c.providerItemID(messageID(update.AgentThoughtChunk.MessageId, "thought", turnID))
 		if delta := contentText(update.AgentThoughtChunk.Content); delta != "" {
 			c.mu.Lock()
@@ -639,7 +656,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			emit(ports.ChatEvent{Kind: ports.ChatEventThreadRenamed, Title: *update.SessionInfoUpdate.Title})
 		}
 		if turnID != "" {
-			if event, ok := c.sessionFailureEvent(turnID, update.SessionInfoUpdate.Meta); ok {
+			if event, ok := c.sessionFailureEvent(turnID, sourceID, update.SessionInfoUpdate.Meta); ok {
 				emit(event)
 			}
 		}
@@ -653,6 +670,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		// when its configuration changes, so retaining absent entries is wrong.
 		c.replaceAvailableCommands(update.AvailableCommandsUpdate.AvailableCommands)
 	case update.UsageUpdate != nil:
+		c.trackContext(int64(update.UsageUpdate.Used), int64(update.UsageUpdate.Size))
 		usage := &ports.ChatUsage{
 			ContextUsed: int64(update.UsageUpdate.Used), ContextWindow: int64(update.UsageUpdate.Size),
 			ContextKnown: true,
@@ -903,24 +921,15 @@ func nestedMap(meta map[string]any, key string) map[string]any {
 // namespace. A stable provider item id makes successive retry attempts update one
 // row; settling the enclosing turn then settles this running status with it.
 func (c *conversation) sessionFailureEvent(
-	turnID string,
+	turnID, sourceID string,
 	meta map[string]any,
 ) (ports.ChatEvent, bool) {
-	jetbrains := nestedMap(meta, "jetbrains")
-	air := nestedMap(jetbrains, "air")
-	version, versionOK := number(air["version"])
-	failure := nestedMap(air, "sessionFailure")
-	if !versionOK || version < 1 || failure == nil {
+	failure := sessionFailure(meta)
+	if failure == nil {
 		return ports.ChatEvent{}, false
 	}
-
-	id, _ := failure["id"].(string)
 	title, _ := failure["title"].(string)
-	id = strings.TrimSpace(id)
 	title = strings.TrimSpace(title)
-	if id == "" || title == "" {
-		return ports.ChatEvent{}, false
-	}
 
 	detailMap := map[string]any{"event": "provider.failure"}
 	for _, key := range []string{"category", "severity"} {
@@ -938,25 +947,62 @@ func (c *conversation) sessionFailureEvent(
 	event := ports.ChatEvent{
 		Kind:           ports.ChatEventActivityStarted,
 		ProviderTurnID: turnID,
-		// Some adapters mint a fresh extension incident id for every retry when
-		// their provider turn id is not known yet. AO already has the durable turn
-		// boundary, so key the live failure to that boundary and update one row.
-		ProviderItemID: c.providerItemID("session-failure:" + turnID),
 		ActivityKind:   domain.ActivityKindSystem,
 		ActivityStatus: domain.ActivityStatusRunning,
 		Summary:        title,
 		Detail:         detail,
 	}
 	c.mu.Lock()
+	if c.providerFailure != nil && c.providerFailure.ProviderTurnID == turnID {
+		event.ProviderItemID = c.providerFailure.ProviderItemID
+	} else {
+		// One row per uninterrupted retry episode. Host identity survives replay;
+		// direct connections have no replay ID and need a fresh local identity.
+		if sourceID == "" {
+			sourceID = uuid.NewString()
+		}
+		event.ProviderItemID = c.providerItemID("session-failure:" + sourceID)
+	}
 	c.providerFailure = &event
 	c.mu.Unlock()
 	return event, true
 }
 
-// completeProviderFailure removes a stale retry warning as soon as the provider
-// produces substantive output again. The AIR extension advances failures but
-// deliberately sends no recovery update, so AO closes its normalized activity
-// on the first message, thought, tool call, or plan after the failure.
+func sessionFailure(meta map[string]any) map[string]any {
+	air := nestedMap(nestedMap(meta, "jetbrains"), "air")
+	version, versionOK := number(air["version"])
+	failure := nestedMap(air, "sessionFailure")
+	id, _ := failure["id"].(string)
+	title, _ := failure["title"].(string)
+	if !versionOK || version < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(title) == "" {
+		return nil
+	}
+	return failure
+}
+
+// Claude puts negotiated terminal failures on the prompt response, which still
+// has stopReason=end_turn. Translate the protocol's severity and actions into the
+// shared provider-failure contract; never match provider prose or maintain a list
+// of subscription/limit error messages.
+func promptResponseFailure(meta map[string]any) error {
+	failure := sessionFailure(meta)
+	if failure["severity"] != "error" {
+		return nil
+	}
+	title, _ := failure["title"].(string)
+	details, _ := failure["details"].(string)
+	var cause error
+	if actions, ok := failure["actions"].([]any); ok {
+		for _, action := range actions {
+			if action == "login" {
+				cause = ports.ErrChatAuthRequired
+			}
+		}
+	}
+	return ports.NewChatProviderFailure(title, details, cause)
+}
+
+// AIR sends no recovery update, so output completes the active retry episode.
 func (c *conversation) completeProviderFailure(turnID string, emit func(ports.ChatEvent)) {
 	c.mu.Lock()
 	if c.providerFailure == nil || c.providerFailure.ProviderTurnID != turnID {

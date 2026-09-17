@@ -81,6 +81,15 @@ describe("SessionsBoardView", () => {
 		lastArchiveMotionTransition.current = undefined;
 	});
 
+	it.each(["checking", "unavailable"] as const)("withholds provisional activity while %s", (statusReadiness) => {
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, status: "working", displayStatus: "Working", statusReadiness }} />);
+		expect(screen.queryByText("Working")).not.toBeInTheDocument();
+		expect(screen.getByText(statusReadiness === "checking" ? "Checking…" : "Unable to verify")).toBeInTheDocument();
+	});
+
 	it("renders one lane per Kanban column, newest first, with one scroller each", () => {
 		const sessions: BoardSessionPresentation[] = [
 			baseSession,

@@ -261,6 +261,18 @@ beforeEach(() => {
 });
 
 describe("CreateProjectFlow droppedPath", () => {
+	it("shows the standalone agent action when the host provides one", async () => {
+		const onCreateStandaloneAgent = vi.fn();
+		const user = userEvent.setup();
+		renderChooseFlow({ onCreateStandaloneAgent });
+
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "New standalone agent" }));
+
+		expect(onCreateStandaloneAgent).toHaveBeenCalledOnce();
+		await waitFor(() => expect(screen.queryByRole("button", { name: "New standalone agent" })).not.toBeInTheDocument());
+	});
+
 	it("does not open on mount", () => {
 		render(<CreateProjectFlow mode="choose" {...noop} droppedPath={null} />);
 		expect(screen.queryByRole("button", { name: "Import a workspace folder" })).not.toBeInTheDocument();
@@ -582,7 +594,7 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import a workspace folder");
 
-		expect(await screen.findByText("This is a single project, not a collection of projects. Import it as a project instead.")).toBeInTheDocument();
+		expect(await screen.findByText("This is a single repository, not a collection of repositories. Import it as a project instead.")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
 		expect(screen.queryByText("proj")).not.toBeInTheDocument();
 
@@ -640,7 +652,7 @@ describe("CreateProjectFlow project import validation", () => {
 		renderChooseFlow();
 		await openSource(user, "Import a workspace folder");
 
-		expect(screen.queryByText("This is a single project, not a collection of projects. Import it as a project instead.")).not.toBeInTheDocument();
+		expect(screen.queryByText("This is a single repository, not a collection of repositories. Import it as a project instead.")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Import as project" })).not.toBeInTheDocument();
 		expect(await screen.findByText("app")).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Continue" }));

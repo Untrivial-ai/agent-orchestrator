@@ -1080,7 +1080,12 @@ export const ChatComposer = memo(function ChatComposer({
 		}
 		if (!draftScope || savingQueuedEdit) {
 			setSubmitting(true);
+			// A plain-text send has a local timeline echo — clear the editor immediately
+			// so the user sees one acknowledgement rather than their draft stranded until
+			// the daemon round-trip completes. Attachments retain the retry path.
+			const clearForLocalEcho = !shouldSteer && !savingQueuedEdit && nativePayloads.length === 0;
 			try {
+				if (clearForLocalEcho) clearEditorView();
 				if (shouldSteer && onSteer) {
 					const outcome = nativePayloads.length > 0
 						? await onSteer(message, nativePayloads)
@@ -1099,9 +1104,15 @@ export const ChatComposer = memo(function ChatComposer({
 				} else {
 					await onSend(message);
 				}
-				clearEditorView();
+				if (!clearForLocalEcho) clearEditorView();
 				fileAttachments.clear();
 			} catch (error) {
+				if (clearForLocalEcho) {
+					textRef.current = currentText;
+					hasTextRef.current = currentText.trim().length > 0;
+					setHasText(hasTextRef.current);
+					editor.current?.setText(currentText);
+				}
 				setSendError(
 					savingQueuedEdit
 						? apiErrorMessage(error, "chat.draft.queueSaveFailed")

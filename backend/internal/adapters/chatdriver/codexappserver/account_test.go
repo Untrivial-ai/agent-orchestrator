@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -176,6 +177,48 @@ func TestAccountClientConsumesResetCreditIdempotently(t *testing.T) {
 	}
 }
 
+func TestAccountClientUsesNativeLogout(t *testing.T) {
+	serverReads, clientWrites := io.Pipe()
+	clientReads, serverWrites := io.Pipe()
+	factory := NewAccountFactory(fakePlugin{bin: "codex"}, nil)
+	factory.spawn = func(context.Context, string, string, []string, []string) (*process, error) {
+		return &process{stdin: clientWrites, stdout: clientReads, stop: func() error { return serverWrites.Close() }}, nil
+	}
+	go serveAccountTestProtocol(serverReads, serverWrites, map[string]any{
+		"initialize":                   map[string]any{},
+		codexproto.MethodAccountLogout: map[string]any{},
+	})
+	client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Logout(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAccountClientMapsUnsupportedNativeLogout(t *testing.T) {
+	serverReads, clientWrites := io.Pipe()
+	clientReads, serverWrites := io.Pipe()
+	factory := NewAccountFactory(fakePlugin{bin: "codex"}, nil)
+	factory.spawn = func(context.Context, string, string, []string, []string) (*process, error) {
+		return &process{stdin: clientWrites, stdout: clientReads, stop: func() error { return serverWrites.Close() }}, nil
+	}
+	go serveAccountTestProtocol(serverReads, serverWrites, map[string]any{
+		"initialize":                   map[string]any{},
+		codexproto.MethodAccountLogout: rpcError{Code: -32601, Message: "method not found"},
+	})
+	client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Logout(context.Background()); !errors.Is(err, ports.ErrCodexAccountLogoutUnsupported) {
+		t.Fatalf("logout error = %v", err)
+	}
+}
+
 func TestInspectCodexSchemaDirectoryMapsSupportedUnsupportedAndUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	allMethods := []string{
@@ -183,7 +226,6 @@ func TestInspectCodexSchemaDirectoryMapsSupportedUnsupportedAndUnreadable(t *tes
 		codexproto.MethodAccountRateLimitsRead,
 		codexproto.MethodAccountUsageRead,
 		codexproto.MethodAccountRateLimitResetCreditConsume,
-		codexproto.MethodThreadResume,
 		codexproto.MethodAccountUpdated,
 	}
 	data, err := json.Marshal(map[string]any{"methods": allMethods})
@@ -195,21 +237,21 @@ func TestInspectCodexSchemaDirectoryMapsSupportedUnsupportedAndUnreadable(t *tes
 		t.Fatal(err)
 	}
 	capabilities := inspectCodexSchemaDirectory(dir)
-	if capabilities.AccountRead.State != domain.CodexCapabilitySupported || capabilities.CapacityRead.State != domain.CodexCapabilitySupported || capabilities.UsageRead.State != domain.CodexCapabilitySupported || capabilities.ResetCreditConsume.State != domain.CodexCapabilitySupported || capabilities.ThreadResume.State != domain.CodexCapabilitySupported {
+	if capabilities.AccountRead.State != domain.CodexCapabilitySupported || capabilities.CapacityRead.State != domain.CodexCapabilitySupported || capabilities.UsageRead.State != domain.CodexCapabilitySupported || capabilities.ResetCreditConsume.State != domain.CodexCapabilitySupported {
 		t.Fatalf("supported capabilities = %#v", capabilities)
 	}
 	if err := os.WriteFile(path, []byte(`{"methods":["account/read"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	capabilities = inspectCodexSchemaDirectory(dir)
-	if capabilities.AccountRead.State != domain.CodexCapabilitySupported || capabilities.CapacityRead.State != domain.CodexCapabilityUnsupported || capabilities.UsageRead.State != domain.CodexCapabilityUnsupported || capabilities.ResetCreditConsume.State != domain.CodexCapabilityUnsupported || capabilities.ThreadResume.State != domain.CodexCapabilityUnsupported {
+	if capabilities.AccountRead.State != domain.CodexCapabilitySupported || capabilities.CapacityRead.State != domain.CodexCapabilityUnsupported || capabilities.UsageRead.State != domain.CodexCapabilityUnsupported || capabilities.ResetCreditConsume.State != domain.CodexCapabilityUnsupported {
 		t.Fatalf("read-only capabilities = %#v", capabilities)
 	}
 	if err := os.WriteFile(path, []byte(`not-json "account/read"`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	capabilities = inspectCodexSchemaDirectory(dir)
-	if capabilities.AccountRead.State != domain.CodexCapabilityUnknown || capabilities.CapacityRead.State != domain.CodexCapabilityUnknown || capabilities.UsageRead.State != domain.CodexCapabilityUnknown || capabilities.ResetCreditConsume.State != domain.CodexCapabilityUnknown || capabilities.ThreadResume.State != domain.CodexCapabilityUnknown {
+	if capabilities.AccountRead.State != domain.CodexCapabilityUnknown || capabilities.CapacityRead.State != domain.CodexCapabilityUnknown || capabilities.UsageRead.State != domain.CodexCapabilityUnknown || capabilities.ResetCreditConsume.State != domain.CodexCapabilityUnknown {
 		t.Fatalf("unreadable capabilities = %#v", capabilities)
 	}
 }
@@ -240,7 +282,12 @@ func serveAccountTestProtocol(reader io.Reader, writer io.Writer, responses map[
 		if !ok {
 			result = map[string]any{}
 		}
-		response, _ := json.Marshal(map[string]any{"id": request.ID, "result": result})
+		payload := map[string]any{"id": request.ID, "result": result}
+		if rpcErr, isError := result.(rpcError); isError {
+			delete(payload, "result")
+			payload["error"] = rpcErr
+		}
+		response, _ := json.Marshal(payload)
 		_, _ = writer.Write(append(response, '\n'))
 	}
 }

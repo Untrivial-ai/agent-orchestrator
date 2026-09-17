@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,8 @@ const { getMock, patchMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = 
 	apiErrorMessageMock: vi.fn(),
 }));
 
-vi.mock("../lib/api-client", () => ({
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/api-client")>(),
 	apiClient: { GET: getMock, POST: postMock, PATCH: patchMock },
 	apiErrorCode: apiErrorCodeMock,
 	apiErrorMessage: apiErrorMessageMock,
@@ -24,8 +25,11 @@ import {
 	useConversation,
 	useConversationCommands,
 	useConversationConfigOptions,
+	useConversationSkills,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { TooltipProvider } from "../components/ui/tooltip";
 
 function wrapper({ children }: { children: ReactNode }) {
 	const queryClient = new QueryClient({
@@ -102,7 +106,69 @@ beforeEach(() => {
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
 });
 
+it("renders a retained-history boundary between exchanges from the daemon snapshot", async () => {
+	getMock.mockResolvedValue({ data: {
+		...WIRE, controller: "ready", turns: [], modelReroute: undefined, account: undefined,
+		latestSequence: 3,
+		messages: [
+			{ id: "old", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Earlier context answer", streaming: false, createdAt: "2026-09-13T00:00:00Z" },
+			{ id: "new", sequence: 3, revision: 1, role: "assistant", origin: "provider", text: "Independent context answer", streaming: false, createdAt: "2026-09-13T00:02:00Z" },
+		],
+		activities: [{ id: "boundary", sequence: 2, revision: 1, kind: "system", status: "completed",
+			summary: "Native conversation changed. Earlier messages are retained; continuity with this agent's context is not verified.",
+			detail: { event: "context.boundary", reason: "native_terminal_handoff" }, createdAt: "2026-09-13T00:01:00Z" }],
+	}, error: undefined });
+	function LiveConversation() {
+		const { snapshot } = useConversation("ao-1");
+		return snapshot ? <TooltipProvider><ChatWorkspace snapshot={snapshot} /></TooltipProvider> : null;
+	}
+	render(<LiveConversation />, { wrapper });
+	const boundary = await screen.findByText(/continuity with this agent's context is not verified/);
+	const old = screen.getByText("Earlier context answer");
+	const current = screen.getByText("Independent context answer");
+	expect(old.compareDocumentPosition(boundary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+	expect(boundary.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+	expect(screen.getAllByText(/Native conversation changed/)).toHaveLength(1);
+});
+
 describe("accepted conversation sends", () => {
+	it("keeps a local echo through acceptance until its durable turn is observed", async () => {
+		const response = deferred<{ data: { turnId: string }; error: undefined }>();
+		postMock.mockReturnValue(response.promise);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-local-echo"), {
+			wrapper: HookWrapper,
+		});
+
+		let sending!: Promise<unknown>;
+		act(() => {
+			sending = result.current.send("show my message first");
+		});
+		await waitFor(() => {
+			expect(result.current.localEchos).toHaveLength(1);
+		});
+		expect(result.current.localEchos[0]).toMatchObject({ text: "show my message first" });
+		expect(result.current.localEchos[0]?.turnId).toBeUndefined();
+
+		response.resolve({ data: { turnId: "turn-local-echo" }, error: undefined });
+		await act(async () => {
+			await sending;
+		});
+		await waitFor(() =>
+			expect(result.current.localEchos).toMatchObject([
+				{ text: "show my message first", turnId: "turn-local-echo" },
+			]),
+		);
+
+		act(() => result.current.acknowledgeLocalEcho("turn-local-echo"));
+		await waitFor(() => expect(result.current.localEchos).toEqual([]));
+	});
+
 	it("keeps each accepted turn attached to the session that initiated it", async () => {
 		const firstResponse = deferred<{
 			data: { turnId: string };
@@ -1082,5 +1148,73 @@ describe("controller recovery", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-1"] });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
 		invalidateSpy.mockRestore();
+	});
+});
+
+describe("useConversationSkills polling", () => {
+	function skillsWrapper(queryClient: QueryClient) {
+		return function Wrapper({ children }: { children: ReactNode }) {
+			return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+		};
+	}
+
+	it("stops polling while the controller is not ready", async () => {
+		vi.useFakeTimers();
+		try {
+			// The daemon answers 409 CHAT_CONTROLLER_NOT_READY while no live controller
+			// owns the session. A fixed-interval poll would re-request the catalog every
+			// minute for as long as the surface stayed mounted, turning one readiness
+			// conflict into a steady stream of 409s.
+			apiErrorCodeMock.mockReturnValue("CHAT_CONTROLLER_NOT_READY");
+			getMock.mockResolvedValue({ error: { code: "CHAT_CONTROLLER_NOT_READY" } });
+			const queryClient = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+
+			renderHook(() => useConversationSkills("ao-skills", true), {
+				wrapper: skillsWrapper(queryClient),
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(getMock).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5 * 60_000);
+			});
+			// No further requests: the readiness conflict backs the poll off entirely.
+			expect(getMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps polling once the catalog loads", async () => {
+		vi.useFakeTimers();
+		try {
+			// An empty catalog is a real answer, not a failure: polling continues so a
+			// skill published later becomes visible without a second event channel.
+			getMock.mockResolvedValue({ data: { skills: [] } });
+			const queryClient = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+
+			renderHook(() => useConversationSkills("ao-skills-ok", true), {
+				wrapper: skillsWrapper(queryClient),
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(getMock).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+			expect(getMock).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

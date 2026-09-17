@@ -74,3 +74,5 @@ export default function AgentSheetRoute() {
 		/>
 	);
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

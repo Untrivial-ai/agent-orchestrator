@@ -24,7 +24,7 @@ WHERE id = ?2
   AND phase IN ('failed', 'recovery_required')
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
-          created_at, updated_at, completed_at, notice_acknowledged_at
+          created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 `
 
 type AcknowledgeSessionInterfaceTransitionNoticeParams struct {
@@ -50,6 +50,7 @@ func (q *Queries) AcknowledgeSessionInterfaceTransitionNotice(ctx context.Contex
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.NoticeAcknowledgedAt,
+		&i.HistoryPolicy,
 	)
 	return i, err
 }
@@ -116,7 +117,7 @@ func (q *Queries) EnqueueSessionInterfaceTransitionMessage(ctx context.Context, 
 const getActiveSessionInterfaceTransition = `-- name: GetActiveSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE session_id = ?
   AND phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
@@ -141,6 +142,7 @@ func (q *Queries) GetActiveSessionInterfaceTransition(ctx context.Context, sessi
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.NoticeAcknowledgedAt,
+		&i.HistoryPolicy,
 	)
 	return i, err
 }
@@ -148,13 +150,16 @@ func (q *Queries) GetActiveSessionInterfaceTransition(ctx context.Context, sessi
 const getLatestSessionInterfaceTransition = `-- name: GetLatestSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE session_id = ?
 ORDER BY created_at DESC, rowid DESC
 LIMIT 1
 `
 
+// Tests and injected clocks can assign multiple sagas the same timestamp.
+// This rowid table is append-only for a surviving session, so descending rowid
+// is the unique insertion-order tie-break that identifies the newer saga.
 func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessionID domain.SessionID) (SessionInterfaceTransition, error) {
 	row := q.db.QueryRowContext(ctx, getLatestSessionInterfaceTransition, sessionID)
 	var i SessionInterfaceTransition
@@ -172,6 +177,7 @@ func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessi
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.NoticeAcknowledgedAt,
+		&i.HistoryPolicy,
 	)
 	return i, err
 }
@@ -179,7 +185,7 @@ func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessi
 const getSessionInterfaceTransition = `-- name: GetSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE id = ?
 `
@@ -201,19 +207,20 @@ func (q *Queries) GetSessionInterfaceTransition(ctx context.Context, id string) 
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.NoticeAcknowledgedAt,
+		&i.HistoryPolicy,
 	)
 	return i, err
 }
 
 const insertSessionInterfaceTransition = `-- name: InsertSessionInterfaceTransition :one
 INSERT INTO session_interface_transitions (
-    id, session_id, source_mode, target_mode, policy, phase,
+    id, session_id, source_mode, target_mode, policy, history_policy, phase,
     native_conversation_id, error_code, error_detail,
     created_at, updated_at, completed_at, notice_acknowledged_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL)
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
-          created_at, updated_at, completed_at, notice_acknowledged_at
+          created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 `
 
 type InsertSessionInterfaceTransitionParams struct {
@@ -222,6 +229,7 @@ type InsertSessionInterfaceTransitionParams struct {
 	SourceMode           domain.SessionMode
 	TargetMode           domain.SessionMode
 	Policy               domain.SessionInterfaceTransitionPolicy
+	HistoryPolicy        domain.SessionInterfaceTransitionHistoryPolicy
 	Phase                domain.SessionInterfaceTransitionPhase
 	NativeConversationID string
 	CreatedAt            time.Time
@@ -235,6 +243,7 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 		arg.SourceMode,
 		arg.TargetMode,
 		arg.Policy,
+		arg.HistoryPolicy,
 		arg.Phase,
 		arg.NativeConversationID,
 		arg.CreatedAt,
@@ -255,6 +264,7 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.NoticeAcknowledgedAt,
+		&i.HistoryPolicy,
 	)
 	return i, err
 }
@@ -262,7 +272,7 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 const listActiveSessionInterfaceTransitions = `-- name: ListActiveSessionInterfaceTransitions :many
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
 ORDER BY created_at
@@ -291,6 +301,7 @@ func (q *Queries) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]
 			&i.UpdatedAt,
 			&i.CompletedAt,
 			&i.NoticeAcknowledgedAt,
+			&i.HistoryPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -308,7 +319,7 @@ func (q *Queries) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]
 const listDeliverableSessionInterfaceTransitions = `-- name: ListDeliverableSessionInterfaceTransitions :many
 SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase,
        t.native_conversation_id, t.error_code, t.error_detail,
-       t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at
+       t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy
 FROM session_interface_transitions AS t
 WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required')
   AND EXISTS (
@@ -342,6 +353,7 @@ func (q *Queries) ListDeliverableSessionInterfaceTransitions(ctx context.Context
 			&i.UpdatedAt,
 			&i.CompletedAt,
 			&i.NoticeAcknowledgedAt,
+			&i.HistoryPolicy,
 		); err != nil {
 			return nil, err
 		}

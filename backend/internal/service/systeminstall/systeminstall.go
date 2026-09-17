@@ -908,7 +908,7 @@ func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 			runErr = errors.New("remote installer runner is not configured")
 		} else {
 			command := *plan.Script
-			command.Env = append([]string(nil), env...)
+			command.Env = append(append([]string(nil), env...), command.Env...)
 			var result ports.InstallScriptResult
 			result, runErr = s.installScripts.RunInstallScript(ctx, command, out, out)
 			if result.SHA256 != "" {

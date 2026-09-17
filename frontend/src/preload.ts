@@ -53,8 +53,12 @@ import {
 	type AgentSwitchVisibilitySignalBody,
 } from "./shared/agent-switch-observability";
 import type {
+	BrowserAnnotationActionInput,
 	BrowserAnnotationCancelPayload,
+	BrowserAnnotationCompleteInput,
+	BrowserAnnotationDiscardInput,
 	BrowserAnnotationModeInput,
+	BrowserAnnotationStatePayload,
 	BrowserAnnotationSubmitPayload,
 } from "./shared/browser-annotations";
 import type {
@@ -382,6 +386,8 @@ const api = {
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
 		historySuggestions: (input: { viewId: string; query: string }) =>
 			ipcRenderer.invoke("browser:history:suggest", input) as Promise<BrowserHistorySuggestion[]>,
+		historyFavicon: (input: { viewId: string; url: string }) =>
+			ipcRenderer.invoke("browser:history:favicon", input) as Promise<string | undefined>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,
@@ -435,6 +441,12 @@ const api = {
 		destroy: (viewId: string) => ipcRenderer.send("browser:destroy", viewId),
 		setAnnotationMode: (input: BrowserAnnotationModeInput) =>
 			ipcRenderer.invoke("browser:annotation:setMode", input) as Promise<void>,
+		completeAnnotation: (input: BrowserAnnotationCompleteInput) =>
+			ipcRenderer.invoke("browser:annotation:complete", input) as Promise<void>,
+		discardAnnotations: (input: BrowserAnnotationDiscardInput) =>
+			ipcRenderer.invoke("browser:annotation:discard", input) as Promise<void>,
+		annotationAction: (input: BrowserAnnotationActionInput) =>
+			ipcRenderer.invoke("browser:annotation:action", input) as Promise<void>,
 		onNavState: (listener: (state: BrowserNavState) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserNavState) => listener(state);
 			ipcRenderer.on("browser:navState", wrapped);
@@ -498,6 +510,13 @@ const api = {
 			ipcRenderer.on("browser:annotation:canceled", wrapped);
 			return () => {
 				ipcRenderer.off("browser:annotation:canceled", wrapped);
+			};
+		},
+		onAnnotationState: (listener: (payload: BrowserAnnotationStatePayload) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, payload: BrowserAnnotationStatePayload) => listener(payload);
+			ipcRenderer.on("browser:annotation:state", wrapped);
+			return () => {
+				ipcRenderer.off("browser:annotation:state", wrapped);
 			};
 		},
 	},
@@ -569,6 +588,10 @@ const api = {
 		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
 		install: (confirmedVersion?: string) => ipcRenderer.invoke("updates:install", confirmedVersion) as Promise<UpdateInstallResult>,
+		// True only when this boot is a genuine post-update relaunch; lets the
+		// startup loader swap "Connecting" copy for "Updating / Restarting".
+		isPostUpdateRelaunch: () => ipcRenderer.invoke("updates:isPostUpdateRelaunch") as Promise<boolean>,
+		relaunch: () => ipcRenderer.invoke("updates:relaunch") as Promise<void>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);

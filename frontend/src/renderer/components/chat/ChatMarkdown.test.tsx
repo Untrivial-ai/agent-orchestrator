@@ -19,9 +19,9 @@ beforeEach(() => {
 // The point of these is that the SYNTAX stops being visible. Every case here is a
 // shape agents actually emit, and the assertion is that structure replaced markup.
 
-function renderWithLinkHandler(text: string, onLinkOpen: (url: string) => void) {
+function renderWithLinkHandler(text: string, onLinkOpen: (url: string) => void, workspacePaths: string[] = []) {
 	return render(
-		<ChatLinkProvider onLinkOpen={onLinkOpen}>
+		<ChatLinkProvider onLinkOpen={onLinkOpen} workspacePaths={workspacePaths}>
 			<ChatMarkdown text={text} />
 		</ChatLinkProvider>,
 	);
@@ -141,6 +141,19 @@ describe("ChatMarkdown", () => {
 		openExternal.mockRestore();
 	});
 
+	it("routes workspace file clicks to the AO Browser handler", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler("see [test-ui-2.html](test-ui-2.html)", onLinkOpen, ["test-ui-2.html"]);
+
+		await user.click(screen.getByRole("link", { name: "test-ui-2.html" }));
+
+		expect(onLinkOpen).toHaveBeenCalledWith("test-ui-2.html");
+		expect(openExternal).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
 	it("opens a web link in the system browser on Option/Alt-click", () => {
 		const onLinkOpen = vi.fn();
 		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
@@ -177,27 +190,27 @@ describe("ChatMarkdown", () => {
 		openExternal.mockRestore();
 	});
 
-	it("offers 'Open in system browser' on right-click, without opening in the panel", async () => {
+	it("offers 'Open in external browser' on right-click, without opening in the panel", async () => {
 		const user = userEvent.setup();
 		const onLinkOpen = vi.fn();
 		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
 		renderWithLinkHandler("see [the issue](https://example.com/i/1)", onLinkOpen);
 
 		fireEvent.contextMenu(screen.getByRole("link", { name: "the issue" }));
-		await user.click(await screen.findByRole("menuitem", { name: "Open in system browser" }));
+		await user.click(await screen.findByRole("menuitem", { name: "Open in external browser" }));
 
 		expect(openExternal).toHaveBeenCalledWith("https://example.com/i/1");
 		expect(onLinkOpen).not.toHaveBeenCalled();
 		openExternal.mockRestore();
 	});
 
-	it("offers 'Copy link address' on right-click", async () => {
+	it("offers 'Copy link' on right-click", async () => {
 		const user = userEvent.setup();
 		const writeText = vi.spyOn(aoBridge.clipboard, "writeText").mockResolvedValue(undefined);
 		renderWithLinkHandler("see [the issue](https://example.com/i/1)", vi.fn());
 
 		fireEvent.contextMenu(screen.getByRole("link", { name: "the issue" }));
-		await user.click(await screen.findByRole("menuitem", { name: "Copy link address" }));
+		await user.click(await screen.findByRole("menuitem", { name: "Copy link" }));
 
 		expect(writeText).toHaveBeenCalledWith("https://example.com/i/1");
 		writeText.mockRestore();
@@ -209,8 +222,8 @@ describe("ChatMarkdown", () => {
 
 		fireEvent.contextMenu(screen.getByRole("link", { name: "Email support" }));
 
-		expect(await screen.findByRole("menuitem", { name: "Copy link address" })).toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Open in system browser" })).not.toBeInTheDocument();
+		expect(await screen.findByRole("menuitem", { name: "Copy link" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Open in external browser" })).not.toBeInTheDocument();
 	});
 
 	it("opens non-web links in the system browser", async () => {

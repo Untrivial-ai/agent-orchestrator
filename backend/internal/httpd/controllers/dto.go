@@ -64,6 +64,11 @@ type CodexAccountLoginIDParam struct {
 	OperationID string `path:"operationId" description:"In-memory Codex account login operation identifier."`
 }
 
+// CodexAccountSwitchIDParam documents a durable Codex account switch identifier.
+type CodexAccountSwitchIDParam struct {
+	SwitchID string `path:"switchId" description:"Durable Codex account switch identifier."`
+}
+
 // ListProjectsResponse is the body of GET /api/v1/projects.
 type ListProjectsResponse struct {
 	Projects []projectsvc.Summary `json:"projects"`
@@ -277,8 +282,12 @@ type ListSessionsResponse struct {
 
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
-	ProjectID       domain.ProjectID       `json:"projectId"`
-	IssueID         domain.IssueID         `json:"issueId,omitempty"`
+	// ProjectID is omitted for a standalone worker session.
+	ProjectID domain.ProjectID `json:"projectId,omitempty"`
+	IssueID   domain.IssueID   `json:"issueId,omitempty"`
+	// ParentSessionID is supplied by `ao spawn` inside an AO session. The daemon
+	// validates it before deriving inherited worker settings.
+	ParentSessionID domain.SessionID       `json:"parentSessionId,omitempty"`
 	TrackerProvider domain.TrackerProvider `json:"trackerProvider,omitempty" enum:"github,gitlab"`
 	Kind            domain.SessionKind     `json:"kind,omitempty" enum:"worker,orchestrator"`
 	Harness         domain.AgentHarness    `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,qodercli"`
@@ -745,26 +754,28 @@ type ResumeAgentResponse struct {
 // StartSessionInterfaceTransitionRequest is the body of POST
 // /api/v1/sessions/{sessionId}/interface-transition.
 type StartSessionInterfaceTransitionRequest struct {
-	TargetMode domain.SessionMode                      `json:"targetMode" enum:"chat,tui"`
-	Policy     domain.SessionInterfaceTransitionPolicy `json:"policy" enum:"drain,interrupt"`
+	TargetMode    domain.SessionMode                             `json:"targetMode" enum:"chat,tui"`
+	Policy        domain.SessionInterfaceTransitionPolicy        `json:"policy" enum:"drain,interrupt"`
+	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy `json:"historyPolicy,omitempty" enum:"strict,provider_history"`
 }
 
 // SessionInterfaceTransitionView is the client-facing progress record. The
 // provider-native conversation id is intentionally not exposed: clients need
 // controller state, not an adapter implementation detail.
 type SessionInterfaceTransitionView struct {
-	ID                   string                                  `json:"id"`
-	SessionID            domain.SessionID                        `json:"sessionId"`
-	SourceMode           domain.SessionMode                      `json:"sourceMode" enum:"chat,tui"`
-	TargetMode           domain.SessionMode                      `json:"targetMode" enum:"chat,tui"`
-	Policy               domain.SessionInterfaceTransitionPolicy `json:"policy" enum:"drain,interrupt"`
-	Phase                domain.SessionInterfaceTransitionPhase  `json:"phase" enum:"requested,preflighting,draining,source_stopping,source_stopped,target_starting,activating,completed,failed,cancelled,recovery_required"`
-	ErrorCode            string                                  `json:"errorCode,omitempty"`
-	ErrorDetail          string                                  `json:"errorDetail,omitempty"`
-	CreatedAt            time.Time                               `json:"createdAt"`
-	UpdatedAt            time.Time                               `json:"updatedAt"`
-	CompletedAt          *time.Time                              `json:"completedAt,omitempty"`
-	NoticeAcknowledgedAt *time.Time                              `json:"noticeAcknowledgedAt,omitempty"`
+	ID                   string                                         `json:"id"`
+	SessionID            domain.SessionID                               `json:"sessionId"`
+	SourceMode           domain.SessionMode                             `json:"sourceMode" enum:"chat,tui"`
+	TargetMode           domain.SessionMode                             `json:"targetMode" enum:"chat,tui"`
+	Policy               domain.SessionInterfaceTransitionPolicy        `json:"policy" enum:"drain,interrupt"`
+	HistoryPolicy        domain.SessionInterfaceTransitionHistoryPolicy `json:"historyPolicy" enum:"strict,provider_history"`
+	Phase                domain.SessionInterfaceTransitionPhase         `json:"phase" enum:"requested,preflighting,draining,source_stopping,source_stopped,target_starting,activating,completed,failed,cancelled,recovery_required"`
+	ErrorCode            string                                         `json:"errorCode,omitempty"`
+	ErrorDetail          string                                         `json:"errorDetail,omitempty"`
+	CreatedAt            time.Time                                      `json:"createdAt"`
+	UpdatedAt            time.Time                                      `json:"updatedAt"`
+	CompletedAt          *time.Time                                     `json:"completedAt,omitempty"`
+	NoticeAcknowledgedAt *time.Time                                     `json:"noticeAcknowledgedAt,omitempty"`
 }
 
 // SessionInterfaceTransitionStatusResponse is the body of GET
@@ -857,6 +868,7 @@ type DelegateTaskRequest struct {
 	Brief     string              `json:"brief" maxLength:"16384"`
 	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,qodercli,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
+	Effort    *string             `json:"effort,omitempty" maxLength:"64"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
 	// bypass value only after the user accepts an approval-less Chat fallback.
 	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
@@ -1110,16 +1122,20 @@ type ClaimPRResponse struct {
 // state-only semantics.
 // AgentSessionID may arrive without State on metadata-only SessionStart hooks.
 type SetActivityRequest struct {
-	State                 string             `json:"state,omitempty" enum:"active,idle,waiting_input,blocked,exited" description:"Agent activity state reported by an agent hook. Optional for metadata-only hooks."`
-	Event                 string             `json:"event,omitempty" description:"AO hook sub-command that produced this state (e.g. post-tool-use)."`
-	ToolName              string             `json:"toolName,omitempty" description:"Native tool name, for tool-use hook events."`
-	ToolUseID             string             `json:"toolUseId,omitempty" description:"Native tool-use id, for tool-use hook events."`
-	AgentSessionID        string             `json:"agentSessionId,omitempty" description:"Native agent session identifier used to resume its transcript."`
-	LatestUserPrompt      string             `json:"latestUserPrompt,omitempty" maxLength:"16384" description:"Latest real user prompt exposed by the provider hook."`
-	LatestAssistantUpdate string             `json:"latestAssistantUpdate,omitempty" maxLength:"16384" description:"Latest assistant update exposed by the provider hook."`
-	TranscriptPath        string             `json:"transcriptPath,omitempty" maxLength:"4096" description:"Read-only provider-native transcript path exposed by the hook."`
-	LaunchID              string             `json:"launchId,omitempty" description:"AO process generation that produced the signal."`
-	Usage                 *UsageHookMetadata `json:"usage,omitempty" description:"Provider transcript metadata used by the local usage pipeline."`
+	ObservedAt                   time.Time                           `json:"observedAt,omitempty" description:"Time the local hook process observed the event, before delivery to the daemon."`
+	State                        string                              `json:"state,omitempty" enum:"active,idle,waiting_input,blocked,exited" description:"Agent activity state reported by an agent hook. Optional for metadata-only hooks."`
+	Event                        string                              `json:"event,omitempty" description:"AO hook sub-command that produced this state (e.g. post-tool-use)."`
+	ToolName                     string                              `json:"toolName,omitempty" description:"Native tool name, for tool-use hook events."`
+	ToolUseID                    string                              `json:"toolUseId,omitempty" description:"Native tool-use id, for tool-use hook events."`
+	AgentSessionID               string                              `json:"agentSessionId,omitempty" description:"Native agent session identifier used to resume its transcript."`
+	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty" maxLength:"16384" description:"Latest real user prompt exposed by the provider hook."`
+	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty" maxLength:"16384" description:"Latest assistant update exposed by the provider hook."`
+	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty" enum:"human,coordination" description:"Whether the main-turn boundary came from a human or AO coordination."`
+	ProviderTurnID               string                              `json:"providerTurnId,omitempty" description:"Native main-turn identity reported by the hook, when supported."`
+	SubmissionID                 string                              `json:"submissionId,omitempty" maxLength:"36" description:"AO prompt-hook context correlation UUID, when supported."`
+	TranscriptPath               string                              `json:"transcriptPath,omitempty" maxLength:"4096" description:"Read-only provider-native transcript path exposed by the hook."`
+	LaunchID                     string                              `json:"launchId,omitempty" description:"AO process generation that produced the signal."`
+	Usage                        *UsageHookMetadata                  `json:"usage,omitempty" description:"Provider transcript metadata used by the local usage pipeline."`
 }
 
 // UsageHookMetadata is the transcript metadata carried by supported Claude
@@ -1211,13 +1227,25 @@ type EnsureAgentReadinessRequest struct {
 
 // CodexAccountsResponse is the controller-owned, redacted cached account view.
 type CodexAccountsResponse struct {
-	ActiveAccountID        string                               `json:"activeAccountId,omitempty"`
-	AccountRevision        int64                                `json:"accountRevision"`
-	Accounts               []CodexAccountResponse               `json:"accounts"`
-	Capabilities           CodexAccountCapabilitiesResponse     `json:"capabilities"`
-	UnmanagedGlobalAccount *CodexUnmanagedGlobalAccountResponse `json:"unmanagedGlobalAccount,omitempty"`
-	ActiveLogin            *CodexActiveLoginResponse            `json:"activeLogin,omitempty"`
-	CurrentSwitch          *CodexAccountSwitchResponse          `json:"currentSwitch,omitempty"`
+	ActiveAccountID      string                            `json:"activeAccountId,omitempty"`
+	AccountRevision      int64                             `json:"accountRevision"`
+	Accounts             []CodexAccountResponse            `json:"accounts"`
+	Capabilities         CodexAccountCapabilitiesResponse  `json:"capabilities"`
+	DeviceReconciliation CodexDeviceReconciliationResponse `json:"deviceReconciliation"`
+	ActiveLogin          *CodexActiveLoginResponse         `json:"activeLogin,omitempty"`
+	CurrentSwitch        *CodexAccountSwitchResponse       `json:"currentSwitch,omitempty"`
+}
+
+// CodexDeviceReconciliationResponse reports whether the device credential was
+// locally associated with a saved account.
+type CodexDeviceReconciliationResponse struct {
+	Status                string     `json:"status" enum:"not_checked,checking,verified,temporarily_unavailable,blocked"`
+	ActiveAccountVerified bool       `json:"activeAccountVerified"`
+	ReasonCode            string     `json:"reasonCode"`
+	Retryable             bool       `json:"retryable"`
+	AttemptedAt           *time.Time `json:"attemptedAt,omitempty"`
+	VerifiedAt            *time.Time `json:"verifiedAt,omitempty"`
+	NextRetryAt           *time.Time `json:"nextRetryAt,omitempty"`
 }
 
 // CodexAccountResponse contains UI account facts without provider or storage identity.
@@ -1311,19 +1339,12 @@ type CodexAccountCapabilitiesResponse struct {
 	GlobalSwitch       CodexCapabilityObservationResponse `json:"globalSwitch"`
 }
 
-// CodexUnmanagedGlobalAccountResponse explains a device identity AO cannot manage.
-type CodexUnmanagedGlobalAccountResponse struct {
-	Label        string  `json:"label"`
-	AuthMethod   string  `json:"authMethod" enum:"chatgpt,api_key,other,unknown"`
-	AccountEmail *string `json:"accountEmail,omitempty"`
-	ReasonCode   string  `json:"reasonCode"`
-	Reason       string  `json:"reason"`
-}
-
 // EnsureCodexAccountsRequest selects accounts for display reads.
 type EnsureCodexAccountsRequest struct {
-	AccountIDs   []string `json:"accountIds,omitempty"`
-	IncludeUsage bool     `json:"includeUsage,omitempty"`
+	AccountIDs                []string `json:"accountIds,omitempty"`
+	IncludeUsage              bool     `json:"includeUsage,omitempty"`
+	ForceAuthentication       bool     `json:"forceAuthentication,omitempty"`
+	ForceDeviceReconciliation bool     `json:"forceDeviceReconciliation,omitempty"`
 }
 
 // ConsumeCodexAccountResetCreditRequest identifies one idempotent provider
@@ -1343,7 +1364,7 @@ type OpenCodexAccountLoginTerminalResponse struct {
 type CodexAccountLoginResponse struct {
 	OperationID string                `json:"operationId"`
 	AccountID   string                `json:"accountId,omitempty"`
-	Status      string                `json:"status" enum:"pending,verifying,unauthorized,unverified,completed,cancelled,failed,expired"`
+	Status      string                `json:"status" enum:"pending,verifying,unauthorized,retryable,completed,cancelled,failed,expired"`
 	ReasonCode  string                `json:"reasonCode"`
 	Reason      string                `json:"reason"`
 	Account     *CodexAccountResponse `json:"account,omitempty"`
@@ -1354,7 +1375,7 @@ type CodexAccountLoginResponse struct {
 type CodexActiveLoginResponse struct {
 	OperationID   string                            `json:"operationId"`
 	AccountID     string                            `json:"accountId,omitempty"`
-	Status        string                            `json:"status" enum:"pending,verifying,unauthorized,unverified,completed,cancelled,failed,expired"`
+	Status        string                            `json:"status" enum:"pending,verifying,unauthorized,retryable,completed,cancelled,failed,expired"`
 	ReasonCode    string                            `json:"reasonCode"`
 	Reason        string                            `json:"reason"`
 	ExpiresAt     time.Time                         `json:"expiresAt"`
@@ -1372,14 +1393,10 @@ type CodexAccountLoginTerminalResponse struct {
 
 // StartCodexAccountSwitchRequest requests an idempotent global account change.
 type StartCodexAccountSwitchRequest struct {
-	TargetAccountID         string `json:"targetAccountId" minLength:"1"`
-	ExpectedAccountRevision int64  `json:"expectedAccountRevision" minimum:"0"`
+	TargetAccountID string `json:"targetAccountId" minLength:"1"`
+	// ExpectedAccountRevision is accepted temporarily for older clients and ignored.
+	ExpectedAccountRevision *int64 `json:"expectedAccountRevision,omitempty" minimum:"0" deprecated:"true"`
 	IdempotencyKey          string `json:"idempotencyKey" minLength:"1"`
-}
-
-// CodexAccountSwitchIDParam describes the durable switch path parameter.
-type CodexAccountSwitchIDParam struct {
-	SwitchID string `path:"switchId" description:"Durable Codex account switch identifier."`
 }
 
 // CodexAccountSwitchPhase is the retained public switch lifecycle.
@@ -1387,29 +1404,16 @@ type CodexAccountSwitchPhase string
 
 // CodexAccountSwitchResponse contains only safe AO identifiers and progress.
 type CodexAccountSwitchResponse struct {
-	ID                     string                              `json:"id"`
-	SourceAccountID        string                              `json:"sourceAccountId"`
-	TargetAccountID        string                              `json:"targetAccountId"`
-	Phase                  CodexAccountSwitchPhase             `json:"phase" enum:"requested,stopping_sessions,sessions_stopped,checkpointing_source,activating_target,verifying_target,restarting_sessions,rollback_required,recovery_required,completed,failed"`
-	FailureCode            string                              `json:"failureCode,omitempty"`
-	Sessions               []CodexAccountSwitchSessionResponse `json:"sessions"`
-	CanRecover             bool                                `json:"canRecover"`
-	CredentialsCommittedAt *time.Time                          `json:"credentialsCommittedAt,omitempty"`
-	CreatedAt              time.Time                           `json:"createdAt"`
-	UpdatedAt              time.Time                           `json:"updatedAt"`
-	CompletedAt            *time.Time                          `json:"completedAt,omitempty"`
-}
-
-// CodexAccountSwitchSessionResponse is safe AO session progress for a switch.
-type CodexAccountSwitchSessionResponse struct {
-	SessionID     string     `json:"sessionId"`
-	InterfaceMode string     `json:"interfaceMode" enum:"tui,chat"`
-	WasRunning    bool       `json:"wasRunning"`
-	StopState     string     `json:"stopState"`
-	RestartState  string     `json:"restartState"`
-	ErrorCode     string     `json:"errorCode,omitempty"`
-	StoppedAt     *time.Time `json:"stoppedAt,omitempty"`
-	RestartedAt   *time.Time `json:"restartedAt,omitempty"`
+	ID                     string                  `json:"id"`
+	SourceKind             string                  `json:"sourceKind" enum:"managed,device,none"`
+	SourceAccountID        string                  `json:"sourceAccountId,omitempty"`
+	TargetAccountID        string                  `json:"targetAccountId"`
+	Phase                  CodexAccountSwitchPhase `json:"phase" enum:"requested,checkpointing_source,activating_target,recovery_required,completed,failed"`
+	FailureCode            string                  `json:"failureCode,omitempty"`
+	CredentialsCommittedAt *time.Time              `json:"credentialsCommittedAt,omitempty"`
+	CreatedAt              time.Time               `json:"createdAt"`
+	UpdatedAt              time.Time               `json:"updatedAt"`
+	CompletedAt            *time.Time              `json:"completedAt,omitempty"`
 }
 
 // AgentReadinessSnapshot is one normalized harness readiness view.
@@ -1907,6 +1911,17 @@ type SteerConversationResponse struct {
 	// ActivityID is the timeline row recording the guidance, so an optimistic bubble
 	// can be reconciled with the durable one rather than shown twice.
 	ActivityID string `json:"activityId,omitempty"`
+}
+
+// SteerOrSendConversationResponse reports the single durable outcome selected by
+// the atomic steer-or-send operation.
+type SteerOrSendConversationResponse struct {
+	Outcome        string           `json:"outcome" enum:"steered,sent"`
+	TurnID         string           `json:"turnId,omitempty"`
+	ProviderTurnID string           `json:"providerTurnId,omitempty"`
+	ActivityID     string           `json:"activityId,omitempty"`
+	State          domain.TurnState `json:"state,omitempty" enum:"queued,running,completed,recovered,interrupted,failed"`
+	Duplicate      bool             `json:"duplicate"`
 }
 
 // EditConversationMessageRequest changes the readable text of one durable human

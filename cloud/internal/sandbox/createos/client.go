@@ -6,12 +6,11 @@ package createos
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -77,6 +76,7 @@ type Client struct {
 	// sandbox has actually gone away. A field rather than a constant so tests
 	// can drive the poll loop without sleeping.
 	deletePoll time.Duration
+	log        *slog.Logger
 }
 
 var (
@@ -94,6 +94,7 @@ type Config struct {
 	Region       string
 	SSHPubKeys   []string
 	HTTPClient   *http.Client
+	Logger       *slog.Logger
 }
 
 // New creates a CreateOS sandbox provider.
@@ -101,6 +102,10 @@ func New(config Config) *Client {
 	httpClient := config.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: defaultTimeout}
+	}
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 	return &Client{
 		baseURL:      strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
@@ -111,6 +116,7 @@ func New(config Config) *Client {
 		sshPubKeys:   append([]string(nil), config.SSHPubKeys...),
 		http:         httpClient,
 		deletePoll:   deletePollInterval,
+		log:          logger,
 	}
 }
 
@@ -310,9 +316,12 @@ type execResponse struct {
 	Result execResult `json:"result"`
 }
 
-// BootstrapWorker uploads the AO worker into a live sandbox and launches it.
-// Using exec instead of a baked-in entrypoint keeps the rootfs generic and lets
-// the reconciler repair a sandbox without replacing its compute.
+// BootstrapWorker launches the AO worker in a live sandbox. CreateOS runs a
+// Firecracker microVM with no init that could auto-start a baked service and no
+// create-time env visible to boot, so the worker must be launched over the exec
+// API. It launches the template-baked binary directly — the worker self-heals to
+// this control plane's exact build if the bake is stale — and only uploads when
+// the binary is missing entirely.
 func (c *Client) BootstrapWorker(
 	ctx context.Context,
 	id sandbox.ID,
@@ -331,12 +340,12 @@ func (c *Client) BootstrapWorker(
 		return fmt.Errorf("createos: worker helper destination %q must be an absolute path", bootstrap.HelperDestination)
 	}
 
-	// Fast path: a template that pre-bakes these exact binaries lets the whole
-	// bootstrap collapse to one exec (hash check + launch), skipping both
-	// multi-megabyte uploads - the dominant cost of a fresh-sandbox bootstrap.
-	// Any miss (older template, corrupted file, exec hiccup) falls through to
-	// the plain upload path below, so a stale template self-heals.
-	if c.launchBakedWorker(ctx, id, bootstrap, destination, helperDestination) {
+	// Primary path: launch the template-baked binary in one exec, skipping both
+	// multi-megabyte uploads — the dominant cost of a fresh-sandbox bootstrap. A
+	// stale bake is fine: the worker self-updates from the control plane. Only a
+	// binary that is missing entirely (a mis-baked image) falls through to the
+	// upload path below.
+	if c.launchWorker(ctx, id, bootstrap, destination) {
 		return nil
 	}
 
@@ -419,32 +428,25 @@ func (c *Client) BootstrapWorker(
 	return c.exec(ctx, id, "bash", []string{"-c", script.String()})
 }
 
-// launchBakedWorker launches template-baked binaries when their content hashes
-// match exactly what this control plane would upload. One exec verifies and
-// launches; the stop/user/launch tail mirrors BootstrapWorker's upload path
-// (kept in step by hand - the upload path additionally stages and swaps files,
-// so the two cannot share one literal script). Returns true only when the
-// baked launch actually happened; every other outcome (hash miss, missing
-// binary, exec error) reports false so the caller uploads as before.
-func (c *Client) launchBakedWorker(
+// launchWorker launches the template-baked worker binary in place, whatever its
+// version. The worker self-heals from the control plane's /worker/binary
+// endpoint when its baked copy is stale (keyed by the AO_WORKER_EXPECTED_SHA256
+// it is handed), so the reconciler no longer uploads multi-megabyte binaries on
+// every provision. One exec confirms the binary is present and launches it; the
+// stop/user/launch tail mirrors BootstrapWorker's upload fallback. Returns true
+// when the launch happened; only a missing binary (a mis-baked image) or an exec
+// error reports false, so the caller uploads as a last resort.
+func (c *Client) launchWorker(
 	ctx context.Context,
 	id sandbox.ID,
 	bootstrap sandbox.WorkerBootstrap,
-	destination, helperDestination string,
+	destination string,
 ) bool {
-	hashGuard := func(path string, binary []byte) string {
-		sum := sha256.Sum256(binary)
-		return "[ -x " + shellQuote(path) + " ] && " +
-			"[ \"$(sha256sum " + shellQuote(path) + " | cut -d\" \" -f1)\" = " +
-			shellQuote(hex.EncodeToString(sum[:])) + " ]"
-	}
 	var script strings.Builder
 	script.WriteString("set -e; ")
-	script.WriteString("if ! { " + hashGuard(destination, bootstrap.Binary))
-	if len(bootstrap.HelperBinary) > 0 {
-		script.WriteString(" && " + hashGuard(helperDestination, bootstrap.HelperBinary))
-	}
-	script.WriteString("; }; then echo AO_BAKED_MISS; exit 0; fi; ")
+	// Only the worker binary must be present to launch; a missing or stale ao
+	// helper is healed by the worker's own self-update, so it is not gated here.
+	script.WriteString("if ! [ -x " + shellQuote(destination) + " ]; then echo AO_WORKER_ABSENT; exit 0; fi; ")
 	script.WriteString("{ pkill -f " + shellQuote("^"+destination+"( |$)") + " || true; }; ")
 	command := launchEnvironment(bootstrap.Environment) + shellQuote(destination)
 	if user := strings.TrimSpace(bootstrap.User); user != "" {
@@ -456,12 +458,19 @@ func (c *Client) launchBakedWorker(
 		command = "runuser --user " + quotedUser + " -- " + command
 	}
 	script.WriteString("nohup " + command + " >> /var/log/ao-worker.log 2>&1 & ")
-	script.WriteString("echo AO_BAKED_OK")
+	script.WriteString("echo AO_WORKER_LAUNCHED")
 	result, err := c.execCapture(ctx, id, "bash", []string{"-c", script.String()})
 	if err != nil {
+		c.log.Warn("createos baked worker launch failed; falling back to upload",
+			"provider_id", id, "error", err)
 		return false
 	}
-	return strings.Contains(result.Stdout, "AO_BAKED_OK")
+	if strings.Contains(result.Stdout, "AO_WORKER_LAUNCHED") {
+		c.log.Info("createos launched baked worker", "provider_id", id)
+		return true
+	}
+	c.log.Info("createos baked worker absent; falling back to upload", "provider_id", id)
+	return false
 }
 
 // execCapture runs a command and returns its captured result, failing on a

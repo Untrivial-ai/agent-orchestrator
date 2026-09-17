@@ -5,6 +5,7 @@ import type { GlobalSettingsSection } from "../../stores/ui-store";
 import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CloudCredentialsSection } from "./CloudCredentialsSection";
+import { CloudProviderSection } from "./CloudProviderSection";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
@@ -72,7 +73,12 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: Cloud,
 		label: (t) => t("settings.cloud"),
 		visible: ({ cloudEnabled }) => cloudEnabled,
-		render: (_t, titleHidden) => <CloudCredentialsSection titleHidden={titleHidden} />,
+		render: (_t, titleHidden) => (
+			<>
+				<CloudProviderSection titleHidden={titleHidden} />
+				<CloudCredentialsSection titleHidden={titleHidden} />
+			</>
+		),
 	},
 	{
 		id: "mobile",

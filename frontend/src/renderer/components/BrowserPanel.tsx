@@ -8,7 +8,10 @@ import {
 	useState,
 	type FocusEvent,
 	type FormEvent,
+	type KeyboardEvent,
+	type ReactElement,
 } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
 	DndContext,
@@ -36,11 +39,12 @@ import {
 	Check,
 	ChevronRight,
 	Download,
+	Eye,
 	ExternalLink,
 	Globe2,
-	Layers3,
 	Maximize2,
 	Minimize2,
+	RotateCcw,
 	Monitor,
 	MoreVertical,
 	MousePointer2,
@@ -49,11 +53,13 @@ import {
 	Settings2,
 	Smartphone,
 	Tablet,
+	Trash2,
 	UserRound,
 	X,
 } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { useBrowserView, type BrowserViewModel } from "../hooks/useBrowserView";
+import { useTabScrollEdges } from "../hooks/useTabScrollEdges";
 import { formatBrowserAnnotationMessage, type BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
 import type { BrowserProfile } from "../../shared/browser-profiles";
 import type { WorkspaceSession } from "../types/workspace";
@@ -64,9 +70,10 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { SETTINGS_MENU_ROW, SETTINGS_MENU_SURFACE } from "./settings/SettingsMenuTrigger";
 import { Input } from "./ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { BrowserTabsRail, type BrowserTabsRailHandle } from "./BrowserTabsRail";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { appI18n, type MessageKey } from "../i18n";
@@ -116,6 +123,7 @@ const DEVICE_PRESETS: { id: string; label: string; width: number; height: number
 	{ id: "nest-hub-max", label: "Nest Hub Max", width: 1280, height: 800, category: "tablet" },
 ];
 const CUSTOM_DEVICE_PRESET_ID = "custom";
+const MAX_HISTORY_SUGGESTIONS = 4;
 const MIN_DEVICE_FRAME_WIDTH = 240;
 const MAX_DEVICE_FRAME_WIDTH = 2560;
 
@@ -144,15 +152,11 @@ type BrowserPanelProps = {
 	session: WorkspaceSession;
 	active: boolean;
 	poppedOut: boolean;
-	onTogglePopOut: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+	onTogglePopOut: (next: boolean) => void;
+	topbarHost?: HTMLElement | null;
 };
 
 type AnnotationStatus = "idle" | "picking" | "queued" | "sending" | "sent" | "error";
-
-// Docked rail visibility: collapsed (0px, tab access via the toolbar trigger) is
-// the default; pinning restores an always-visible icon rail. Persisted so it's a
-// one-time choice, not a state.
-const RAIL_PINNED_STORAGE_KEY = "ao.browserTabs.railPinned";
 
 export type BrowserAnnotationQueueModel = {
 	status: AnnotationStatus;
@@ -178,6 +182,7 @@ export function useBrowserAnnotationQueue({
 		queuedCount: 0,
 	});
 	const annotationQueueRef = useRef<BrowserAnnotationSubmitPayload[]>([]);
+	const stagedScreenshotPathsRef = useRef(new Map<BrowserAnnotationSubmitPayload, string[]>());
 	const annotationSendingRef = useRef(false);
 	const sessionIdRef = useRef(sessionId ?? "");
 	const generationRef = useRef(0);
@@ -188,6 +193,7 @@ export function useBrowserAnnotationQueue({
 		if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
 		sentTimerRef.current = null;
 		annotationQueueRef.current = [];
+		stagedScreenshotPathsRef.current.clear();
 		annotationSendingRef.current = false;
 		setState({ status: "idle", error: "", queuedCount: 0 });
 	}, []);
@@ -210,16 +216,45 @@ export function useBrowserAnnotationQueue({
 			let sent = false;
 			let failureMessage = appI18n.t("browser.unableSendAnnotation");
 			try {
-				const message = formatBrowserAnnotationMessage(payload);
+				let screenshotPaths = stagedScreenshotPathsRef.current.get(payload);
+				if (!screenshotPaths) {
+					const attachments = [
+						...payload.session.screenshots.map(({ mimeType, data }) => ({ mimeType, data })),
+						...(payload.snapshot ? [payload.snapshot] : []),
+					];
+					if (attachments.length > 0) {
+						const staged = await apiClient.POST("/api/v1/sessions/{sessionId}/attachments", {
+							params: { path: { sessionId: sendSessionId } },
+							body: { attachments },
+						});
+						if (staged.error || !staged.data) {
+							failureMessage = apiErrorMessage(staged.error, appI18n.t("browser.unableSendAnnotation"));
+							return;
+						}
+						screenshotPaths = staged.data.paths;
+						stagedScreenshotPathsRef.current.set(payload, screenshotPaths);
+					} else {
+						screenshotPaths = [];
+					}
+				}
+				const message = formatBrowserAnnotationMessage(payload, { screenshotPaths });
 				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId: sendSessionId } },
-					body: { message, attachment: payload.snapshot },
+					body: { message },
 				});
 				if (error) {
 					failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
 					return;
 				}
 				sent = true;
+				stagedScreenshotPathsRef.current.delete(payload);
+				await window.ao?.browser.completeAnnotation?.({
+					viewId: payload.viewId,
+					tabId: payload.tabId,
+					pageKey: payload.pageKey,
+					sessionToken: payload.sessionToken,
+					success: true,
+				});
 			} catch (error) {
 				failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
 			} finally {
@@ -317,6 +352,7 @@ export function BrowserPanel({
 	active,
 	poppedOut,
 	onTogglePopOut,
+	topbarHost,
 }: BrowserPanelProps) {
 	const browserView = useBrowserView({
 		sessionId: session.id,
@@ -337,6 +373,7 @@ export function BrowserPanel({
 			onTogglePopOut={onTogglePopOut}
 			poppedOut={poppedOut}
 			session={session}
+			topbarHost={topbarHost}
 		/>
 	);
 }
@@ -347,6 +384,7 @@ export function BrowserPanelView({
 	onTogglePopOut,
 	browserView,
 	annotationQueue,
+	topbarHost,
 }: BrowserPanelProps & { annotationQueue: BrowserAnnotationQueueModel; browserView: BrowserViewModel }) {
 	const { t } = useTranslation();
 	const {
@@ -374,13 +412,15 @@ export function BrowserPanelView({
 		openDevTools = async () => undefined,
 		closeDevTools = async () => undefined,
 		annotationMode,
+		annotationState = { count: 0, screenshotCount: 0, hasDraft: false },
 		setAnnotationMode,
+		annotationAction = async () => undefined,
 	} = browserView;
 	const [urlInput, setUrlInput] = useState(navState.url);
 	const [historySuggestions, setHistorySuggestions] = useState<Array<{ url: string; title?: string }>>([]);
-	const historyListId = useId();
+	const historyMenuId = useId();
+	const [activeHistorySuggestion, setActiveHistorySuggestion] = useState(-1);
 	const [urlEditing, setUrlEditing] = useState(false);
-	const urlTakeover = urlEditing && !poppedOut;
 	const { beginPicking, cancelPicking, enqueue, error, failPicking, queuedCount, retryQueued, status } =
 		annotationQueue;
 	const hasNativeBrowser = Boolean(window.ao?.browser);
@@ -390,8 +430,7 @@ export function BrowserPanelView({
 	const [devicePreset, setDevicePreset] = useState<string | null>(null);
 	const [customDeviceWidth, setCustomDeviceWidth] = useState("390");
 	const [controlsView, setControlsView] = useState<"root" | "devices" | "profiles">("root");
-	const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
-	const [controlsTooltipOpen, setControlsTooltipOpen] = useState(false);
+	const [controlsOpen, setControlsOpen] = useState(false);
 	const [browserProfiles, setBrowserProfiles] = useState<BrowserProfile[]>([]);
 	const [profilesLoading, setProfilesLoading] = useState(false);
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
@@ -399,14 +438,57 @@ export function BrowserPanelView({
 		devicePreset === CUSTOM_DEVICE_PRESET_ID
 			? clampDeviceFrameWidth(Number(customDeviceWidth))
 			: DEVICE_PRESETS.find((preset) => preset.id === devicePreset)?.width;
-	const railRef = useRef<BrowserTabsRailHandle>(null);
-	const panelRef = useRef<HTMLDivElement>(null);
 	const urlInputRef = useRef<HTMLInputElement>(null);
-	const controlsHoverRef = useRef(false);
-	const [pinned, setPinned] = useState(() => window.localStorage.getItem(RAIL_PINNED_STORAGE_KEY) === "1");
-	const showTabsTrigger = !poppedOut && (!pinned || tabs.length === 1);
+	const historyMenuRef = useRef<HTMLDivElement>(null);
+	const historyRequestGenerationRef = useRef(0);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
+	const {
+		scrollRef: tabScrollRef,
+		scrollToEnd: scrollTabsToEnd,
+		showLeftFade: showTabsLeftFade,
+		showRightFade: showTabsRightFade,
+	} = useTabScrollEdges([tabs.length]);
+	const previousTabCountRef = useRef(tabs.length);
+	// Vertical wheel scrolls the horizontal tab strip when it overflows — same
+	// affordance as the session terminal tabs (CenterPane.tsx).
+	useEffect(() => {
+		const element = tabScrollRef.current;
+		if (!element) return;
+		const handleWheel = (event: WheelEvent) => {
+			if (event.ctrlKey || event.metaKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+			if (event.deltaY === 0 || element.scrollWidth <= element.clientWidth) return;
+			event.preventDefault();
+			element.scrollBy({ left: event.deltaY });
+		};
+		element.addEventListener("wheel", handleWheel, { passive: false });
+		return () => element.removeEventListener("wheel", handleWheel);
+	}, [tabScrollRef]);
+
+	// Opening a tab (or a popup adding one) appends it, so reveal the newest.
+	useEffect(() => {
+		if (tabs.length > previousTabCountRef.current) scrollTabsToEnd();
+		previousTabCountRef.current = tabs.length;
+	}, [tabs.length, scrollTabsToEnd]);
+
+	// Keep the active tab visible when selection changes (click, keyboard, or a
+	// close that shifts activation), unless a drag is positioning it.
+	useEffect(() => {
+		if (draggedTopTabId) return;
+		const region = tabScrollRef.current;
+		if (!region) return;
+		const activeTab = Array.from(region.querySelectorAll<HTMLElement>("[data-browser-tab-id]")).find(
+			(element) => element.dataset.browserTabId === activeTabId,
+		);
+		if (!activeTab) return;
+		const regionRect = region.getBoundingClientRect();
+		const tabRect = activeTab.getBoundingClientRect();
+		let nextScrollLeft = region.scrollLeft;
+		if (tabRect.left < regionRect.left) nextScrollLeft -= regionRect.left - tabRect.left;
+		if (tabRect.right > regionRect.right) nextScrollLeft += tabRect.right - regionRect.right;
+		if (nextScrollLeft === region.scrollLeft) return;
+		region.scrollTo({ behavior: "smooth", left: Math.max(0, nextScrollLeft) });
+	}, [activeTabId, tabs.length, draggedTopTabId, tabScrollRef]);
 
 	useEffect(() => {
 		if (controlsView !== "profiles" || !window.ao?.browserProfiles) return;
@@ -459,6 +541,15 @@ export function BrowserPanelView({
 		() =>
 			window.ao?.browser.onFocusLocation((targetViewId) => {
 				if (targetViewId !== viewId) return;
+				// ⌘T/Ctrl+T focuses the omnibox after opening a tab. When the bar is
+				// portaled into the inspector header it sits outside the panel focus
+				// boundary, so restore the browser shortcut target before the input
+				// takes focus — otherwise the next ⌘T/⌘W falls through to terminal
+				// shortcuts and yank focus to the main pane.
+				window.ao?.browser.notifyPanelUsed(viewId);
+				if (document.activeElement === urlInputRef.current) {
+					return;
+				}
 				urlInputRef.current?.focus();
 				urlInputRef.current?.select();
 			}),
@@ -491,11 +582,6 @@ export function BrowserPanelView({
 		[reorderTabs, tabs],
 	);
 
-	const handlePinnedChange = useCallback((next: boolean) => {
-		setPinned(next);
-		window.localStorage.setItem(RAIL_PINNED_STORAGE_KEY, next ? "1" : "0");
-	}, []);
-
 	// Docked DevTools belongs to the native page view, which is intentionally
 	// hidden while the active target is blank. Keep close available for any
 	// in-flight state update, but do not offer an open action with no page.
@@ -504,7 +590,6 @@ export function BrowserPanelView({
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const browserDownloads = useBrowserDownloads();
 	const [downloadsOpen, setDownloadsOpen] = useState(false);
-	const [downloadsTooltipOpen, setDownloadsTooltipOpen] = useState(false);
 	const previousDownloadCount = useRef(0);
 	const hasActiveDownload = browserDownloads.downloads.some(
 		(download) => download.status === "progressing" || download.status === "paused",
@@ -527,6 +612,7 @@ export function BrowserPanelView({
 	useEffect(() => {
 		setUrlInput(navState.url);
 		setHistorySuggestions([]);
+		setActiveHistorySuggestion(-1);
 		// A prior submit (typed, or pasted, then Enter) leaves the caret at the
 		// end of the old value; the browser keeps that same horizontal scroll
 		// position for the new value, scrolling the scheme/host off the left
@@ -540,6 +626,7 @@ export function BrowserPanelView({
 	}, [navState.url]);
 
 	useEffect(() => {
+		const generation = ++historyRequestGenerationRef.current;
 		const query = urlInput.trim();
 		if (
 			!urlEditing ||
@@ -547,7 +634,7 @@ export function BrowserPanelView({
 			!viewId ||
 			!profileState.profileId ||
 			query === navState.url ||
-			query.length < 2
+			query.length < 1
 		) {
 			setHistorySuggestions([]);
 			return;
@@ -555,8 +642,16 @@ export function BrowserPanelView({
 		let current = true;
 		const timer = window.setTimeout(() => {
 			void window.ao!.browser.historySuggestions({ viewId, query }).then(
-				(suggestions) => current && setHistorySuggestions(suggestions),
-				() => current && setHistorySuggestions([]),
+				(suggestions) => {
+					if (!current || historyRequestGenerationRef.current !== generation) return;
+					setHistorySuggestions(suggestions.slice(0, MAX_HISTORY_SUGGESTIONS));
+					setActiveHistorySuggestion(-1);
+				},
+				() => {
+					if (!current || historyRequestGenerationRef.current !== generation) return;
+					setHistorySuggestions([]);
+					setActiveHistorySuggestion(-1);
+				},
 			);
 		}, 120);
 		return () => {
@@ -575,10 +670,12 @@ export function BrowserPanelView({
 		if (!onPageFocus) return;
 		return onPageFocus((focusedViewId) => {
 			if (focusedViewId !== viewId) return;
+			historyRequestGenerationRef.current += 1;
 			urlInputRef.current?.blur();
 			setUrlEditing(false);
 			setUrlInput(navState.url);
 			setHistorySuggestions([]);
+			setActiveHistorySuggestion(-1);
 		});
 	}, [navState.url, viewId]);
 
@@ -598,10 +695,12 @@ export function BrowserPanelView({
 	}, [cancelPicking, enqueue, viewId]);
 
 	const navigateFromAddressBar = (url: string) => {
+		historyRequestGenerationRef.current += 1;
 		urlInputRef.current?.blur();
 		setUrlEditing(false);
 		setUrlInput(url);
 		setHistorySuggestions([]);
+		setActiveHistorySuggestion(-1);
 		void navigate(url);
 	};
 
@@ -612,31 +711,46 @@ export function BrowserPanelView({
 	};
 
 	const handleURLChange = (value: string) => {
+		historyRequestGenerationRef.current += 1;
 		setUrlInput(value);
-		const selected = historySuggestions.find((suggestion) => suggestion.url === value.trim());
-		if (!selected) return;
-		navigateFromAddressBar(selected.url);
+		setActiveHistorySuggestion(-1);
 	};
 
-	const endUrlEditing = () => {
+	const handleURLKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			historyRequestGenerationRef.current += 1;
+			setHistorySuggestions([]);
+			setActiveHistorySuggestion(-1);
+			return;
+		}
+		if (historySuggestions.length === 0) return;
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+			event.preventDefault();
+			const direction = event.key === "ArrowDown" ? 1 : -1;
+			setActiveHistorySuggestion((current) => {
+				if (current < 0) return direction > 0 ? 0 : historySuggestions.length - 1;
+				return (current + direction + historySuggestions.length) % historySuggestions.length;
+			});
+			return;
+		}
+		if (event.key === "Enter" && activeHistorySuggestion >= 0) {
+			event.preventDefault();
+			navigateFromAddressBar(historySuggestions[activeHistorySuggestion]!.url);
+			return;
+		}
+	};
+
+	const endUrlEditing = (event: FocusEvent<HTMLInputElement>) => {
+		if (event.relatedTarget instanceof Node && historyMenuRef.current?.contains(event.relatedTarget)) return;
+		historyRequestGenerationRef.current += 1;
 		setUrlEditing(false);
 		setUrlInput(navState.url);
 		setHistorySuggestions([]);
+		setActiveHistorySuggestion(-1);
 	};
 
 	const beginUrlEditing = () => {
-		const input = urlInputRef.current;
-		const wrapper = input?.parentElement;
-		const toolbar = input?.closest<HTMLElement>(".browser-panel__toolbar");
-		if (!poppedOut && wrapper && toolbar) {
-			const wrapperRect = wrapper.getBoundingClientRect();
-			const toolbarRect = toolbar.getBoundingClientRect();
-			const navigationButtons = toolbar.querySelectorAll<HTMLElement>(".browser-panel__navigation-btn");
-			const lastNavigationButton = navigationButtons.item(navigationButtons.length - 1);
-			const targetLeft = lastNavigationButton?.getBoundingClientRect().right ?? toolbarRect.left + 4;
-			wrapper.style.setProperty("--browser-url-expand-left", `${targetLeft + 2 - wrapperRect.left}px`);
-			wrapper.style.setProperty("--browser-url-expand-right", `${wrapperRect.right - toolbarRect.right + 4}px`);
-		}
 		setUrlEditing(true);
 	};
 
@@ -664,13 +778,9 @@ export function BrowserPanelView({
 		}
 	};
 
-	// The button lives in the toolbar, not inside the rail, so a fast
-	// hover-rail-then-click-here still needs to force the flyout closed first —
-	// same reason rows inside the rail do it (see BrowserTabsRail.tsx). A blank
-	// new tab has nowhere to go on its own, so send focus straight to the URL
-	// bar afterward instead of leaving the user to click into it themselves.
+	// A blank new tab has nowhere to go on its own, so send focus straight to
+	// the URL bar afterward instead of leaving the user to click into it.
 	const handleOpenTab = useCallback(async () => {
-		railRef.current?.closeFlyout(true);
 		await openTab();
 		urlInputRef.current?.focus();
 		urlInputRef.current?.select();
@@ -708,44 +818,130 @@ export function BrowserPanelView({
 							? error
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
-	return (
-		<div
+	const suggestionsOpen = urlEditing && historySuggestions.length > 0;
+	const browserAddressBar = (
+		<form
 			className={cn(
-				"browser-panel flex h-full min-h-browser-min flex-col overflow-hidden rounded-lg border border-border bg-background",
-				poppedOut && "browser-panel--popped-out",
-				agentStatusLabel && "browser-panel--agent-active",
+				"browser-panel__address-bar min-w-0 flex-1",
+				urlEditing && "browser-panel__address-bar--editing",
 			)}
-			data-browser-dock-target={poppedOut ? undefined : ""}
-			data-browser-native-page={navState.url ? "live" : "empty"}
-			data-testid="browser-panel"
-			onBlurCapture={(event: FocusEvent<HTMLDivElement>) => {
-				if (viewId && !event.currentTarget.contains(event.relatedTarget)) {
-					window.ao?.browser.notifyPanelBlur(viewId);
-				}
-			}}
+			data-testid="browser-address-bar"
 			onFocusCapture={() => {
+				// When docked, this form is portaled into the inspector header and is
+				// therefore outside the browser-panel focus boundary below. Restore the
+				// browser shortcut target when its address input receives focus.
 				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
 			}}
-			onPointerDownCapture={() => {
-				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
-			}}
-			ref={panelRef}
-			role="tabpanel"
+			onSubmit={submit}
 		>
-			<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
-				<DndContext
-					collisionDetection={closestCenter}
-					modifiers={browserTopTabDragModifiers}
-					onDragCancel={() => setDraggedTopTabId(null)}
-					onDragEnd={handleTopTabDragEnd}
-					onDragStart={({ active }) => setDraggedTopTabId(String(active.id))}
-					sensors={tabSensors}
+			<Popover
+				onOpenChange={(open) => {
+					if (!open && suggestionsOpen) {
+						historyRequestGenerationRef.current += 1;
+						setHistorySuggestions([]);
+						setActiveHistorySuggestion(-1);
+					}
+				}}
+				open={suggestionsOpen}
+			>
+				<PopoverAnchor asChild>
+					<div className="browser-panel__url-wrap relative min-w-0 flex-1">
+						<Input
+							aria-activedescendant={activeHistorySuggestion >= 0 ? `${historyMenuId}-${activeHistorySuggestion}` : undefined}
+							aria-controls={suggestionsOpen ? historyMenuId : undefined}
+							aria-expanded={suggestionsOpen}
+							aria-haspopup="listbox"
+							aria-label={t("browser.url")}
+							className="browser-panel__url-input h-browser-url text-xs"
+							onBlur={endUrlEditing}
+							onChange={(event) => handleURLChange(event.target.value)}
+							onClick={() => urlInputRef.current?.select()}
+							onFocus={beginUrlEditing}
+							onKeyDown={handleURLKeyDown}
+							placeholder={t("browser.urlPlaceholder")}
+							ref={urlInputRef}
+							value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
+						/>
+						{isWebLink(navState.url) ? (
+							<BrowserControlTooltip label={t("inspector.openInSystemBrowser")}>
+									<Button
+										aria-label={t("inspector.openInSystemBrowser")}
+										className="browser-panel__url-external"
+										onClick={openCurrentPageExternally}
+										size="icon-sm"
+										type="button"
+										variant="ghost"
+									>
+										<ExternalLink aria-hidden="true" className="size-icon-base" />
+									</Button>
+							</BrowserControlTooltip>
+						) : null}
+					</div>
+				</PopoverAnchor>
+				<PopoverContent
+					align="start"
+					aria-label={t("browser.urlSuggestions")}
+					className={cn(
+						SETTINGS_MENU_SURFACE,
+						"browser-panel__history-suggestions",
+					)}
+					data-browser-native-overlay="true"
+					id={historyMenuId}
+					onOpenAutoFocus={(event) => event.preventDefault()}
+					ref={historyMenuRef}
+					role="listbox"
+					sideOffset={4}
 				>
-					<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
+					{historySuggestions.map((suggestion, index) => (
+						<button
+							aria-selected={index === activeHistorySuggestion}
+							className={cn(
+								SETTINGS_MENU_ROW,
+								"flex w-full items-center gap-2.5 px-2.5 py-2 text-left",
+								index === activeHistorySuggestion && "bg-settings-menu-selected text-settings-title",
+							)}
+							id={`${historyMenuId}-${index}`}
+							key={suggestion.url}
+							onClick={() => navigateFromAddressBar(suggestion.url)}
+							onMouseDown={(event) => event.preventDefault()}
+							onPointerMove={() => setActiveHistorySuggestion(index)}
+							role="option"
+							type="button"
+						>
+							<BrowserSuggestionIcon
+								cachedFavicon={faviconForOpenTab(suggestion.url, tabs)}
+								url={suggestion.url}
+								viewId={viewId}
+							/>
+							<span className="min-w-0 flex-1">
+								{suggestion.title ? (
+									<span className="block truncate text-control text-settings-title">{suggestion.title}</span>
+								) : null}
+								<span className="block truncate text-caption text-settings-muted">{suggestion.url}</span>
+							</span>
+						</button>
+					))}
+				</PopoverContent>
+			</Popover>
+		</form>
+	);
+	const browserTabBar = (
+		<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
+			<DndContext
+				collisionDetection={closestCenter}
+				modifiers={browserTopTabDragModifiers}
+				onDragCancel={() => setDraggedTopTabId(null)}
+				onDragEnd={handleTopTabDragEnd}
+				onDragStart={({ active }) => setDraggedTopTabId(String(active.id))}
+				sensors={tabSensors}
+			>
+				<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
+					<div className="browser-panel__tab-region">
 						<div
 							aria-label={t("browser.tabs")}
 							className="browser-panel__tab-strip"
 							onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
+							ref={tabScrollRef}
 							role="tablist"
 						>
 							{tabs.map((tab) => (
@@ -759,41 +955,191 @@ export function BrowserPanelView({
 								/>
 							))}
 						</div>
-					</SortableContext>
-					<DragOverlay
-						adjustScale={false}
-						dropAnimation={null}
-						modifiers={browserTopTabDragModifiers}
-					>
-						{draggedTopTab ? (
-							<BrowserTopTabDragOverlay onlyTab={tabs.length === 1} tab={draggedTopTab} />
+						{showTabsLeftFade ? (
+							<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
 						) : null}
-					</DragOverlay>
-				</DndContext>
-				<button
-					aria-label={t("browser.openNewTab")}
-					className={cn(
-						"browser-panel__tab-new",
-						draggedTopTabId && "browser-panel__tab-new--dragging",
-					)}
-					onClick={() => void handleOpenTab()}
-					title={t("browser.openNewTab")}
-					type="button"
-				>
-					<Plus aria-hidden="true" className="size-icon-base" />
-				</button>
-			</div>
-			<form
-				className={cn(
-					"browser-panel__toolbar flex shrink-0 min-w-0 items-center gap-1 border-b border-border bg-surface",
-					urlTakeover && "browser-panel__toolbar--url-takeover",
-				)}
-				data-testid="browser-toolbar"
-				onSubmit={submit}
-			>
+						{showTabsRightFade ? <div aria-hidden="true" className="browser-panel__tab-fade" /> : null}
+					</div>
+				</SortableContext>
+				<DragOverlay adjustScale={false} dropAnimation={null} modifiers={browserTopTabDragModifiers}>
+					{draggedTopTab ? <BrowserTopTabDragOverlay onlyTab={tabs.length === 1} tab={draggedTopTab} /> : null}
+				</DragOverlay>
+			</DndContext>
+				<BrowserControlTooltip label={t("browser.openNewTab")}>
+					<button
+						aria-label={t("browser.openNewTab")}
+						className={cn("browser-panel__tab-new", draggedTopTabId && "browser-panel__tab-new--dragging")}
+						onClick={() => void handleOpenTab()}
+						type="button"
+					>
+						<Plus aria-hidden="true" className="size-icon-base" />
+					</button>
+				</BrowserControlTooltip>
+		</div>
+	);
+	const annotationToolbar = (
+		<div
+			className="browser-panel__toolbar browser-panel__toolbar--annotation"
+			data-testid="browser-toolbar"
+		>
+			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--leading">
 				<Tooltip>
 					<TooltipTrigger asChild>
-						<span className="browser-panel__navigation-control inline-flex">
+						<Button
+							aria-label={t("browser.annotationExitMode")}
+							onClick={() => {
+								cancelPicking();
+								void setAnnotationMode(false);
+							}}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<X aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.annotationExit")}
+					</TooltipContent>
+				</Tooltip>
+				<span aria-hidden="true" className="browser-panel__annotation-separator" />
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("browser.annotationDiscardAllComments")}
+							className="browser-panel__annotation-discard"
+							onClick={() => void annotationAction("discard-all")}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Trash2 aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.annotationDiscardAll")}
+					</TooltipContent>
+				</Tooltip>
+			</div>
+			<div className="browser-panel__annotation-context">
+				<span aria-hidden="true" className="browser-panel__annotation-status-dot" />
+				<span className="browser-panel__annotation-label">{t("browser.annotationActive")}</span>
+				<span className="browser-panel__annotation-host">
+					{(() => {
+						try {
+							return new URL(navState.url).hostname;
+						} catch {
+							return navState.title || "page";
+						}
+					})()}
+				</span>
+			</div>
+			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--trailing">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("browser.takeScreenshot")}
+							onClick={() => void annotationAction("capture")}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Camera aria-hidden="true" className="size-icon-base" />
+							{annotationState.screenshotCount > 0 ? (
+								<span className="browser-panel__annotation-icon-count">{annotationState.screenshotCount}</span>
+							) : null}
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.takeScreenshot")}
+					</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("browser.annotationOriginalPage")}
+							onBlur={() => void annotationAction("restore-preview")}
+							onPointerCancel={() => void annotationAction("restore-preview")}
+							onPointerDown={() => void annotationAction("preview-original")}
+							onPointerLeave={() => void annotationAction("restore-preview")}
+							onPointerUp={() => void annotationAction("restore-preview")}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Eye aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.annotationOriginal")}
+					</TooltipContent>
+				</Tooltip>
+				<span aria-hidden="true" className="browser-panel__annotation-separator" />
+				<Button
+					aria-label={t("browser.annotationSendAll")}
+					className="browser-panel__annotation-send h-7 gap-1.5 px-2.5 text-xs font-medium"
+					disabled={annotationState.count === 0 && !annotationState.hasDraft}
+					onClick={() => void annotationAction("submit")}
+					size="sm"
+					type="button"
+				>
+					{t("browser.annotationSend")}
+					{annotationState.count > 0 ? (
+						<span className="browser-panel__annotation-send-count">{annotationState.count}</span>
+					) : null}
+				</Button>
+			</div>
+		</div>
+	);
+	return (
+		<div
+			className={cn(
+				"browser-panel flex h-full min-h-browser-min flex-col overflow-hidden border border-border bg-background",
+				poppedOut && "browser-panel--popped-out",
+				agentStatusLabel && "browser-panel--agent-active",
+			)}
+			data-browser-dock-target={poppedOut ? undefined : ""}
+			data-browser-native-page={navState.url ? "live" : "empty"}
+			data-testid="browser-panel"
+			onBlurCapture={(event: FocusEvent<HTMLDivElement>) => {
+				if (!viewId || event.currentTarget.contains(event.relatedTarget)) return;
+				// Focus moving into the portaled omnibox is still browser chrome — do
+				// not drop the shortcut target or ⌘T/⌘W will create/close terminals.
+				if (topbarHost && event.relatedTarget instanceof Node && topbarHost.contains(event.relatedTarget)) {
+					return;
+				}
+				// relatedTarget is null or body/documentElement when focus leaves the
+				// document entirely (e.g. into the native page after a shortcut-driven
+				// tab close) or when an unmounting element drops focus to document.body.
+				// That is still browser context, so keep the shortcut target.
+				if (
+					!event.relatedTarget ||
+					event.relatedTarget === document.body ||
+					event.relatedTarget === document.documentElement
+				) {
+					return;
+				}
+				window.ao?.browser.notifyPanelBlur(viewId);
+			}}
+			onFocusCapture={() => {
+				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+			}}
+			onPointerDownCapture={() => {
+				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+			}}
+			role="tabpanel"
+		>
+			{topbarHost ? createPortal(browserAddressBar, topbarHost) : browserAddressBar}
+			<div
+				className={cn("browser-panel__tab-row", annotationMode && "browser-panel__tab-row--annotation")}
+				data-testid="browser-tab-row"
+			>
+				{annotationMode ? annotationToolbar : (
+					<>
+						{browserTabBar}
+						<div className="browser-panel__toolbar" data-testid="browser-toolbar">
+							<BrowserControlTooltip label={t("browser.back")}>
+								<span className="browser-panel__navigation-control inline-flex">
 							<Button
 								aria-label={t("browser.back")}
 								className="browser-panel__navigation-btn"
@@ -805,13 +1151,10 @@ export function BrowserPanelView({
 							>
 								<ArrowLeft aria-hidden="true" className="size-icon-base" />
 							</Button>
-						</span>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.back")}</TooltipContent>
-				</Tooltip>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<span className="browser-panel__navigation-control inline-flex">
+					</span>
+				</BrowserControlTooltip>
+				<BrowserControlTooltip label={t("browser.forward")}>
+					<span className="browser-panel__navigation-control inline-flex">
 							<Button
 								aria-label={t("browser.forward")}
 								className="browser-panel__navigation-btn"
@@ -823,13 +1166,10 @@ export function BrowserPanelView({
 							>
 								<ArrowRight aria-hidden="true" className="size-icon-base" />
 							</Button>
-						</span>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.forward")}</TooltipContent>
-				</Tooltip>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
+					</span>
+				</BrowserControlTooltip>
+				<BrowserControlTooltip label={navState.isLoading ? t("browser.stop") : t("browser.reload")}>
+					<Button
 							aria-label={navState.isLoading ? t("browser.stop") : t("browser.reload")}
 							className="browser-panel__navigation-btn"
 							onClick={() => void (navState.isLoading ? stop() : reload())}
@@ -842,10 +1182,8 @@ export function BrowserPanelView({
 							) : (
 								<RefreshCw aria-hidden="true" className="size-icon-base" />
 							)}
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{navState.isLoading ? t("browser.stop") : t("browser.reload")}</TooltipContent>
-				</Tooltip>
+					</Button>
+				</BrowserControlTooltip>
 				{annotationStatusLabel ? (
 					<span className="sr-only" role="status">
 						{annotationStatusLabel}
@@ -855,56 +1193,15 @@ export function BrowserPanelView({
 						{agentStatusLabel}
 					</span>
 				) : null}
-				<div className="browser-panel__url-wrap relative min-w-0 flex-1">
-					<Input
-						aria-label={t("browser.url")}
-						className={cn(
-							"browser-panel__url-input h-browser-url font-mono text-xs",
-							poppedOut ? "pr-9" : !urlEditing && "px-9 text-center",
-						)}
-						list={historySuggestions.length > 0 ? historyListId : undefined}
-						onBlur={endUrlEditing}
-						onChange={(event) => handleURLChange(event.target.value)}
-						onFocus={beginUrlEditing}
-						placeholder={t("browser.urlPlaceholder")}
-						ref={urlInputRef}
-						value={urlEditing || poppedOut ? urlInput : compactBrowserAddress(navState.url)}
-					/>
-					{isWebLink(navState.url) ? (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									aria-label={t("inspector.openInSystemBrowser")}
-									className="browser-panel__url-external"
-									onClick={openCurrentPageExternally}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<ExternalLink aria-hidden="true" className="size-icon-sm" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">
-								{t("inspector.openInSystemBrowser")}
-							</TooltipContent>
-						</Tooltip>
-					) : null}
-					<datalist id={historyListId}>
-						{historySuggestions.map((suggestion) => (
-							<option key={suggestion.url} value={suggestion.url}>
-								{suggestion.title}
-							</option>
-						))}
-					</datalist>
-				</div>
 				{tabNotice ? (
 					<span className="max-w-24 truncate text-caption text-accent" role="status">
 						{tabNotice}
 					</span>
 				) : null}
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<span className="inline-flex">
+				<BrowserControlTooltip
+					label={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
+				>
+					<span className="inline-flex">
 							<Button
 								aria-label={
 									canRetryAnnotation
@@ -921,7 +1218,7 @@ export function BrowserPanelView({
 								type="button"
 								variant="ghost"
 							>
-								<MousePointer2 aria-hidden="true" className="h-4 w-4" />
+								<MousePointer2 aria-hidden="true" className="size-icon-base" />
 								{annotationStatusLabel ? (
 									<span
 										aria-hidden="true"
@@ -934,28 +1231,20 @@ export function BrowserPanelView({
 									<span aria-hidden="true" className="pointer-events-none absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent" />
 								) : null}
 							</Button>
-						</span>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">
-						{annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
-					</TooltipContent>
-				</Tooltip>
+					</span>
+				</BrowserControlTooltip>
 				{browserDownloads.downloads.length > 0 ? (
 					<DropdownMenu
 						onOpenChange={(open) => {
 							setDownloadsOpen(open);
-							if (open) setDownloadsTooltipOpen(false);
 						}}
 						open={downloadsOpen}
 					>
-						<Tooltip open={downloadsTooltipOpen && !downloadsOpen}>
-							<TooltipTrigger asChild>
-								<DropdownMenuTrigger asChild>
+						<BrowserControlTooltip disabled={downloadsOpen} label={t("browser.downloads.title")}>
+							<DropdownMenuTrigger asChild>
 									<Button
 									aria-label={t("browser.downloads.title")}
 									className={cn("relative", hasActiveDownload && "text-accent")}
-									onPointerEnter={() => setDownloadsTooltipOpen(true)}
-									onPointerLeave={() => setDownloadsTooltipOpen(false)}
 										size="icon-sm"
 										type="button"
 										variant="ghost"
@@ -963,10 +1252,8 @@ export function BrowserPanelView({
 										<Download aria-hidden="true" className="size-icon-base" />
 										{hasActiveDownload ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-accent" /> : null}
 									</Button>
-								</DropdownMenuTrigger>
-							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.downloads.title")}</TooltipContent>
-						</Tooltip>
+							</DropdownMenuTrigger>
+						</BrowserControlTooltip>
 						<DropdownMenuContent
 							align="end"
 							className="w-96 p-0"
@@ -989,43 +1276,22 @@ export function BrowserPanelView({
 				) : null}
 				<DropdownMenu
 					onOpenChange={(open) => {
-						setControlsMenuOpen(open);
-						setControlsTooltipOpen(false);
+						setControlsOpen(open);
 						if (!open) setControlsView("root");
 					}}
 				>
-					<Tooltip
-						onOpenChange={(open) => setControlsTooltipOpen(open && controlsHoverRef.current && !controlsMenuOpen)}
-						open={controlsTooltipOpen}
-					>
-						<TooltipTrigger asChild>
-							<DropdownMenuTrigger asChild>
+					<BrowserControlTooltip disabled={controlsOpen} label={t("browser.controls")}>
+						<DropdownMenuTrigger asChild>
 								<Button
 									aria-label={t("browser.controls")}
-									onPointerEnter={() => {
-										controlsHoverRef.current = true;
-									}}
-									onPointerLeave={() => {
-										controlsHoverRef.current = false;
-										setControlsTooltipOpen(false);
-									}}
 									size="icon-sm"
 									type="button"
 									variant="ghost"
 								>
 									<MoreVertical aria-hidden="true" className="size-icon-base" />
 								</Button>
-							</DropdownMenuTrigger>
-						</TooltipTrigger>
-						<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.controls")}</TooltipContent>
-					</Tooltip>
-					{/* Opens directly over the live page (the toolbar sits right above the
-					    native browser view), so without this it renders behind the native
-					    view — Electron always paints native view pixels above the
-					    renderer. Marked as a browser overlay so useBrowserView.ts's
-					    MutationObserver raises the transparent shell above the native view
-					    for as long as this stays mounted+open. See the matching comment on
-					    BrowserTabsRail's flyout for the full mechanism. */}
+						</DropdownMenuTrigger>
+					</BrowserControlTooltip>
 					<DropdownMenuContent
 						align="end"
 						className={controlsView === "root" ? "w-56" : "w-64"}
@@ -1139,6 +1405,20 @@ export function BrowserPanelView({
 							<>
 								<DropdownMenuItem
 									className="gap-2"
+									onSelect={() => onTogglePopOut(!poppedOut)}
+								>
+									{poppedOut ? (
+										<Minimize2 aria-hidden="true" className="size-icon-base shrink-0" />
+									) : (
+										<Maximize2 aria-hidden="true" className="size-icon-base shrink-0" />
+									)}
+									<span className="flex-1">
+										{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
+									</span>
+								</DropdownMenuItem>
+								<div className="my-1 h-px bg-border" role="separator" />
+								<DropdownMenuItem
+									className="gap-2"
 									onSelect={(event) => {
 										event.preventDefault();
 										setControlsView("devices");
@@ -1180,98 +1460,34 @@ export function BrowserPanelView({
 									<Download aria-hidden="true" className="size-icon-base shrink-0" />
 									<span className="flex-1">{t("browser.downloads.title")}</span>
 								</DropdownMenuItem>
+								{closedTabs.length > 0 ? (
+									<DropdownMenuItem className="gap-2" onSelect={() => void reopenClosedTab()}>
+										<RotateCcw aria-hidden="true" className="size-icon-base shrink-0" />
+										<span className="flex-1">{t("browser.reopenClosedTab")}</span>
+									</DropdownMenuItem>
+								) : null}
 							</>
 						)}
 					</DropdownMenuContent>
 				</DropdownMenu>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							aria-label={poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-							onClick={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
-							size="icon-sm"
-							type="button"
-							variant="ghost"
-						>
-							{poppedOut ? (
-								<Minimize2 aria-hidden="true" className="size-icon-base" />
-							) : (
-								<Maximize2 aria-hidden="true" className="size-icon-base" />
-							)}
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}</TooltipContent>
-				</Tooltip>
-				{/* Docked mode has no reserved rail column by default (see
-				    BrowserTabsRail.tsx) — this trigger is the only way to reach the tab
-				    list until the user pins the rail, so it remains visible even with a
-				    single tab. It also returns when a pinned rail drops to one tab, keeping
-				    recently closed tabs reachable. Hover/focus
-				    drive the rail's flyout imperatively since the two live in separate
-				    DOM subtrees (toolbar row vs. body row) — see BrowserTabsRail.tsx's
-				    BrowserTabsRailHandle for why the close side stays debounced here. */}
-				{showTabsTrigger ? (
-					<div className="browser-panel__toolbar-tabs-trigger flex w-8 shrink-0 items-center justify-center self-stretch border-l border-border">
-						<Button
-							aria-label={t("browser.tabsTitle", { count: tabs.length })}
-							className="relative"
-							onBlur={() => railRef.current?.closeFlyout()}
-							onFocus={() => railRef.current?.openFlyout(true)}
-							onPointerEnter={() => railRef.current?.openFlyout()}
-							onPointerLeave={() => railRef.current?.closeFlyout()}
-							size="icon-sm"
-							title={t("browser.tabsTitle", { count: tabs.length })}
-							type="button"
-							variant="ghost"
-						>
-							<Layers3 aria-hidden="true" className="size-icon-base" />
-							<span
-								aria-hidden="true"
-								className="pointer-events-none absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-foreground px-1 font-mono text-[9px] font-semibold leading-4 text-background shadow-sm"
-							>
-								{tabs.length}
-							</span>
-						</Button>
-					</div>
-				) : null}
-				{/* Fixed at the rail's own width (w-8) and flush against the panel's
-				    right edge (the form has no right padding) so this column lines up
-				    with the docked rail directly below it. Popped-out has no icon rail
-				    to align with, and gets its own "+" row inside BrowserTabsRail. */}
-				{!poppedOut ? (
-					<div className="browser-panel__toolbar-new-tab flex w-8 shrink-0 items-center justify-center self-stretch border-l border-border">
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									aria-label={t("browser.openNewTab")}
-									onClick={() => void handleOpenTab()}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<Plus aria-hidden="true" className="size-icon-base" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.openNewTab")}</TooltipContent>
-						</Tooltip>
-					</div>
-				) : null}
-			</form>
+						</div>
+					</>
+				)}
+			</div>
 			<div className="browser-panel__body flex min-h-0 flex-1 overflow-hidden">
 				<div
 					className="browser-panel__viewport relative min-h-0 flex-1 overflow-hidden"
 					// The live page paints as a separate native WebContentsView, not inside
-					// this div. Opening any overlay (e.g. the tabs-rail flyout,
-					// BrowserTabsRail.tsx's data-browser-native-overlay) briefly raises the
-					// transparent shell above that native view so the overlay can paint on
-					// top — if this div painted an opaque background here, it would blank
-					// the live page for the duration. `.browser-panel__viewport` in
-					// styles.css carries its own plain-CSS background (a decorative
-					// gradient for the empty/no-bridge placeholder states) that is NOT a
-					// Tailwind utility and so can't be toggled via className — Tailwind
-					// utilities live in a lower-priority cascade layer and can never
-					// override plain author CSS. Gate that CSS rule with this data
-					// attribute instead, so there's exactly one place deciding opacity.
+					// this div. Opening any browser overlay (e.g. the controls menu) briefly
+					// raises the transparent shell above that native view so the overlay can
+					// paint on top — if this div painted an opaque background here, it would
+					// blank the live page for the duration. `.browser-panel__viewport` in
+					// styles.css carries its own plain-CSS background for the empty/no-bridge
+					// placeholder states that is NOT a Tailwind utility and so can't be
+					// toggled via className — Tailwind utilities live in a lower-priority
+					// cascade layer and can never override plain author CSS. Gate that CSS
+					// rule with this data attribute instead, so there's exactly one place
+					// deciding opacity.
 					data-placeholder={!hasNativeBrowser || navState.url === "" ? "true" : undefined}
 					data-testid="browser-viewport"
 				>
@@ -1307,24 +1523,31 @@ export function BrowserPanelView({
 						</p>
 					) : null}
 				</div>
-				{/* Both docked and popped-out keep the rail on the right of the
-				    viewport (out of the way of the toolbar/address bar). */}
-				<BrowserTabsRail
-					activeTabId={activeTabId}
-					closedTabs={closedTabs}
-					onCloseTab={closeTab}
-					onOpenTab={handleOpenTab}
-					onPinnedChange={handlePinnedChange}
-					onReopenClosedTab={reopenClosedTab}
-					onReorderTabs={reorderTabs}
-					onSelectTab={handleSelectTab}
-					pinned={pinned}
-					poppedOut={poppedOut}
-					ref={railRef}
-					tabs={tabs}
-				/>
 			</div>
 		</div>
+	);
+}
+
+function BrowserControlTooltip({
+	children,
+	disabled = false,
+	label,
+}: {
+	children: ReactElement;
+	disabled?: boolean;
+	label: string;
+}) {
+	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		if (disabled) setOpen(false);
+	}, [disabled]);
+	return (
+		<Tooltip open={open} onOpenChange={(nextOpen) => setOpen(disabled ? false : nextOpen)}>
+			<TooltipTrigger asChild>{children}</TooltipTrigger>
+			<TooltipContent data-browser-native-overlay="true" side="bottom" sideOffset={4}>
+				{label}
+			</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -1352,37 +1575,40 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 				selected && "browser-panel__tab--active",
 				isDragging && "browser-panel__tab--drag-placeholder",
 			)}
+			data-browser-tab-id={tab.id}
 			ref={setNodeRef}
 			style={{ transform: CSS.Transform.toString(transform), transition }}
 		>
-			<button
-				{...attributes}
-				{...listeners}
-				aria-selected={selected}
-				className="browser-panel__tab-select"
-				onClick={() => void onSelect(tab.id)}
-				role="tab"
-				tabIndex={selected ? 0 : -1}
-				title={label.title}
-				type="button"
-			>
-				{tab.favicon ? (
-					<img alt="" className="browser-panel__tab-icon object-cover" src={tab.favicon} />
-				) : (
-					<Globe2 aria-hidden="true" className="browser-panel__tab-icon" />
-				)}
-				<span className="browser-panel__tab-title">{label.title}</span>
-			</button>
-			<button
-				aria-label={closeLabel}
-				className="browser-panel__tab-close"
-				disabled={onlyTab}
-				onClick={() => onClose(tab.id)}
-				title={onlyTab ? t("browser.onlyTab") : closeLabel}
-				type="button"
-			>
-				<X aria-hidden="true" className="size-icon-sm" />
-			</button>
+			<BrowserControlTooltip label={label.title}>
+				<button
+					{...attributes}
+					{...listeners}
+					aria-selected={selected}
+					className="browser-panel__tab-select"
+					onClick={() => void onSelect(tab.id)}
+					role="tab"
+					tabIndex={selected ? 0 : -1}
+					type="button"
+				>
+					{tab.favicon ? (
+						<img alt="" className="browser-panel__tab-icon object-cover" src={tab.favicon} />
+					) : (
+						<Globe2 aria-hidden="true" className="browser-panel__tab-icon" />
+					)}
+					<span className="browser-panel__tab-title">{label.title}</span>
+				</button>
+			</BrowserControlTooltip>
+			<BrowserControlTooltip label={onlyTab ? t("browser.onlyTab") : closeLabel}>
+				<button
+					aria-label={closeLabel}
+					className="browser-panel__tab-close"
+					disabled={onlyTab}
+					onClick={() => onClose(tab.id)}
+					type="button"
+				>
+					<X aria-hidden="true" className="size-icon-base" />
+				</button>
+			</BrowserControlTooltip>
 		</div>
 	);
 });
@@ -1411,29 +1637,12 @@ export const BrowserTopTabDragOverlay = memo(function BrowserTopTabDragOverlay({
 			</div>
 			{onlyTab ? null : (
 				<span className="browser-panel__tab-close">
-					<X aria-hidden="true" className="size-icon-sm" />
+					<X aria-hidden="true" className="size-icon-base" />
 				</span>
 			)}
 		</div>
 	);
 });
-
-function compactBrowserAddress(url: string): string {
-	if (!url) return "";
-	try {
-		const parsed = new URL(url);
-		if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-			return parsed.host.replace(/^www\./i, "");
-		}
-		if (parsed.protocol === "file:") {
-			const name = parsed.pathname.split("/").filter(Boolean).at(-1);
-			return name ? decodeURIComponent(name) : url;
-		}
-		return parsed.host || url;
-	} catch {
-		return url;
-	}
-}
 
 function agentActivityLabel(activity: BrowserViewModel["agentBrowserActivity"], active: boolean): string {
 	if (!active && !activity?.active) return "";
@@ -1479,6 +1688,67 @@ function browserActionVerb(action: string): string {
 		}
 	})();
 	return appI18n.t(key);
+}
+
+function getDisplayUrl(url: string): string {
+	if (!url) return url;
+	try {
+		const parsed = new URL(url);
+		if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+			return parsed.hostname.replace(/^www\./, "");
+		}
+		return url;
+	} catch {
+		return url;
+	}
+}
+
+function webOrigin(url: string): string | undefined {
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function faviconForOpenTab(url: string, tabs: BrowserViewModel["tabs"]): string | undefined {
+	const origin = webOrigin(url);
+	if (!origin) return undefined;
+	return tabs.find((tab) => tab.favicon && webOrigin(tab.url) === origin)?.favicon;
+}
+
+function BrowserSuggestionIcon({ cachedFavicon, url, viewId }: { cachedFavicon?: string; url: string; viewId: string }) {
+	const origin = webOrigin(url);
+	const nativeCompositionEnabled = window.ao?.browser.nativeCompositionEnabled === true;
+	const directFavicon = !nativeCompositionEnabled && origin ? `${origin}/favicon.ico` : undefined;
+	const [favicon, setFavicon] = useState(cachedFavicon ?? directFavicon);
+	useEffect(() => {
+		setFavicon(cachedFavicon ?? directFavicon);
+		const historyFavicon = window.ao?.browser.historyFavicon;
+		if (cachedFavicon || !nativeCompositionEnabled || !viewId || typeof historyFavicon !== "function") return;
+		let current = true;
+		void historyFavicon({ viewId, url }).then(
+			(nextFavicon) => {
+				if (current && nextFavicon) setFavicon(nextFavicon);
+			},
+			() => undefined,
+		);
+		return () => {
+			current = false;
+		};
+	}, [cachedFavicon, directFavicon, nativeCompositionEnabled, url, viewId]);
+	if (!favicon) {
+		return <Globe2 aria-hidden="true" className="size-icon-base shrink-0 text-settings-muted" />;
+	}
+	return (
+		<img
+			alt=""
+			className="size-icon-base shrink-0 rounded-sm object-contain"
+			onError={() => setFavicon(undefined)}
+			src={favicon}
+		/>
+	);
 }
 
 function StaticPreview({ url }: { url: string }) {

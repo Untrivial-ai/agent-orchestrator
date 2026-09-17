@@ -3,8 +3,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
-import { CreateProjectAgentSheet, defaultAuthorizedAgent, RequiredAgentField } from "./CreateProjectAgentSheet";
+import { CreateProjectAgentSheet, RequiredAgentField } from "./CreateProjectAgentSheet";
 import { TooltipProvider } from "./ui/tooltip";
 
 function renderSheet(
@@ -17,6 +18,9 @@ function renderSheet(
 		queryClient.setQueryData(agentReadinessQueryKey, {
 			agents: [agentReadiness("claude-code"), agentReadiness("codex")],
 		});
+	}
+	if (queryClient.getQueryData(workspaceQueryKey) === undefined) {
+		queryClient.setQueryData(workspaceQueryKey, []);
 	}
 	render(
 		<QueryClientProvider client={queryClient}>
@@ -42,38 +46,15 @@ async function chooseOption(trigger: HTMLElement, optionName: string) {
 	await userEvent.click(await screen.findByRole("option", { name: new RegExp(escaped, "i") }));
 }
 
+function hoursAgo(hours: number): string {
+	return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
 describe("CreateProjectAgentSheet", () => {
 	it("shakes the active sheet when creation fails", () => {
 		renderSheet(undefined, undefined, { shake: true });
 
 		expect(screen.getByRole("dialog")).toHaveClass("modal-shake");
-	});
-
-	it("chooses the highest-priority authorized default agent", () => {
-		expect(
-			defaultAuthorizedAgent([
-				agentReadiness("opencode", "OpenCode"),
-				agentReadiness("codex", "Codex"),
-			]),
-		).toBe("codex");
-	});
-
-	it("chooses the most frequently used authorized agent by default", () => {
-		expect(
-			defaultAuthorizedAgent([
-				agentReadiness("claude-code", "Claude Code", { usageCount: 1 }),
-				agentReadiness("codex", "Codex", { usageCount: 3 }),
-			]),
-		).toBe("codex");
-	});
-
-	it("falls back to the alphabetically first authorized agent when no priority agent is authorized", () => {
-		expect(
-			defaultAuthorizedAgent([
-				agentReadiness("goose", "Goose"),
-				agentReadiness("devin", "Devin"),
-			]),
-		).toBe("devin");
 	});
 
 	it("uses the compact trigger size for agent fields", () => {
@@ -114,6 +95,53 @@ describe("CreateProjectAgentSheet", () => {
 			orchestratorAgent: "claude-code",
 			trackerIntake: undefined,
 		});
+	});
+
+	it("defaults each role from its own session history", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(workspaceQueryKey, [
+			{
+				sessions: [
+					{ id: "w1", kind: "worker", provider: "codex", createdAt: hoursAgo(5) },
+					{ id: "w2", kind: "worker", provider: "codex", createdAt: hoursAgo(4) },
+					{ id: "o1", kind: "orchestrator", provider: "claude-code", createdAt: hoursAgo(3) },
+				],
+			},
+		]);
+		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
+
+		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+		expect(onSubmit).toHaveBeenCalledWith({
+			workerAgent: "codex",
+			orchestratorAgent: "claude-code",
+			trackerIntake: undefined,
+		});
+	});
+
+	it("does not replace a manually selected role when history refreshes", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(workspaceQueryKey, [
+			{
+				sessions: [{ id: "w1", kind: "worker", provider: "claude-code", createdAt: hoursAgo(3) }],
+			},
+		]);
+		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
+		await chooseOption(screen.getByLabelText("Worker agent"), "codex");
+
+		queryClient.setQueryData(workspaceQueryKey, [
+			{
+				sessions: [
+					{ id: "w2", kind: "worker", provider: "claude-code", createdAt: hoursAgo(2) },
+					{ id: "w3", kind: "worker", provider: "claude-code", createdAt: hoursAgo(1) },
+				],
+			},
+		]);
+		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+		expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ workerAgent: "codex" }));
 	});
 
 	it("does not show a manual agent catalog refresh action", () => {

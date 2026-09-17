@@ -20,6 +20,10 @@ func (s *Store) CreateSessionInterfaceTransition(
 	ctx context.Context,
 	rec domain.SessionInterfaceTransition,
 ) (domain.SessionInterfaceTransition, bool, error) {
+	if !rec.HistoryPolicy.Valid() {
+		return domain.SessionInterfaceTransition{}, false,
+			fmt.Errorf("create interface transition: history policy %q is invalid", rec.HistoryPolicy)
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	row, err := s.qw.InsertSessionInterfaceTransition(ctx, gen.InsertSessionInterfaceTransitionParams{
@@ -28,6 +32,7 @@ func (s *Store) CreateSessionInterfaceTransition(
 		SourceMode:           rec.SourceMode,
 		TargetMode:           rec.TargetMode,
 		Policy:               rec.Policy,
+		HistoryPolicy:        rec.HistoryPolicy,
 		Phase:                rec.Phase,
 		NativeConversationID: rec.NativeConversationID,
 		CreatedAt:            rec.CreatedAt,
@@ -44,6 +49,59 @@ func (s *Store) CreateSessionInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, false, fmt.Errorf("read winning interface transition for %s: %w", rec.SessionID, lookupErr)
 	}
 	return interfaceTransitionToDomain(existing), false, nil
+}
+
+// CreateSessionInterfaceTransitionAfter claims a provider-history recovery
+// only while expectedPredecessorID is still the exact latest saga. The read and
+// insert share the writer transaction and lock, closing the consent TOCTOU gap.
+func (s *Store) CreateSessionInterfaceTransitionAfter(
+	ctx context.Context,
+	rec domain.SessionInterfaceTransition,
+	expectedPredecessorID string,
+) (transition domain.SessionInterfaceTransition, created, predecessorMatched bool, err error) {
+	if !rec.HistoryPolicy.Valid() {
+		return domain.SessionInterfaceTransition{}, false, false,
+			fmt.Errorf("create interface transition: history policy %q is invalid", rec.HistoryPolicy)
+	}
+	if expectedPredecessorID == "" {
+		return domain.SessionInterfaceTransition{}, false, false,
+			fmt.Errorf("create interface transition: expected predecessor is empty")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	err = s.inTx(ctx, "create interface transition after predecessor", func(q *gen.Queries) error {
+		latest, lookupErr := q.GetLatestSessionInterfaceTransition(ctx, rec.SessionID)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return nil
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("read latest interface transition for %s: %w", rec.SessionID, lookupErr)
+		}
+		if latest.ID != expectedPredecessorID {
+			return nil
+		}
+		predecessorMatched = true
+		row, insertErr := q.InsertSessionInterfaceTransition(ctx, gen.InsertSessionInterfaceTransitionParams{
+			ID: rec.ID, SessionID: rec.SessionID, SourceMode: rec.SourceMode,
+			TargetMode: rec.TargetMode, Policy: rec.Policy, HistoryPolicy: rec.HistoryPolicy,
+			Phase: rec.Phase, NativeConversationID: rec.NativeConversationID,
+			CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt,
+		})
+		if insertErr == nil {
+			transition, created = interfaceTransitionToDomain(row), true
+			return nil
+		}
+		if !isSQLiteUnique(insertErr) {
+			return fmt.Errorf("create interface transition for %s: %w", rec.SessionID, insertErr)
+		}
+		existing, activeErr := q.GetActiveSessionInterfaceTransition(ctx, rec.SessionID)
+		if activeErr != nil {
+			return fmt.Errorf("read winning interface transition for %s: %w", rec.SessionID, activeErr)
+		}
+		transition = interfaceTransitionToDomain(existing)
+		return nil
+	})
+	return transition, created, predecessorMatched, err
 }
 
 // GetSessionInterfaceTransition reads one interface transition by id.
@@ -190,6 +248,31 @@ func (s *Store) CommitSessionControllerEpoch(
 	nativeID string,
 	now time.Time,
 ) (bool, error) {
+	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, false, now)
+}
+
+// RestoreSessionControllerEpoch atomically restores the source interface after
+// a failed or interrupted handoff. Unlike an accepted Chat-to-TUI handoff, a
+// rollback must retain the checkpoint that caused target replay to fail so an
+// ordinary retry cannot silently bypass it.
+func (s *Store) RestoreSessionControllerEpoch(
+	ctx context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeID string,
+	now time.Time,
+) (bool, error) {
+	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, true, now)
+}
+
+func (s *Store) commitSessionControllerEpoch(
+	ctx context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeID string,
+	restore bool,
+	now time.Time,
+) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tx, err := s.writeDB.BeginTx(ctx, nil)
@@ -198,15 +281,28 @@ func (s *Store) CommitSessionControllerEpoch(
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := s.qw.WithTx(tx)
-	rows, err := q.CommitSessionControllerEpoch(ctx, gen.CommitSessionControllerEpochParams{
-		SessionMode:            target,
-		AgentSessionID:         nativeID,
-		ProviderConversationID: nativeID,
-		ActivityLastAt:         now,
-		UpdatedAt:              now,
-		ID:                     id,
-		SessionMode_2:          source,
-	})
+	var rows int64
+	if restore {
+		rows, err = q.RestoreSessionControllerEpoch(ctx, gen.RestoreSessionControllerEpochParams{
+			TargetMode:             target,
+			AgentSessionID:         nativeID,
+			ProviderConversationID: nativeID,
+			ActivityLastAt:         now,
+			UpdatedAt:              now,
+			ID:                     id,
+			SourceMode:             source,
+		})
+	} else {
+		rows, err = q.CommitSessionControllerEpoch(ctx, gen.CommitSessionControllerEpochParams{
+			TargetMode:             target,
+			AgentSessionID:         nativeID,
+			ProviderConversationID: nativeID,
+			ActivityLastAt:         now,
+			UpdatedAt:              now,
+			ID:                     id,
+			SourceMode:             source,
+		})
+	}
 	if err != nil {
 		return false, fmt.Errorf("commit controller epoch for %s: %w", id, err)
 	}
@@ -295,7 +391,7 @@ func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.Sess
 	return domain.SessionInterfaceTransition{
 		ID: row.ID, SessionID: row.SessionID,
 		SourceMode: row.SourceMode, TargetMode: row.TargetMode,
-		Policy: row.Policy, Phase: row.Phase,
+		Policy: row.Policy, HistoryPolicy: row.HistoryPolicy, Phase: row.Phase,
 		NativeConversationID: row.NativeConversationID,
 		ErrorCode:            row.ErrorCode, ErrorDetail: row.ErrorDetail,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,

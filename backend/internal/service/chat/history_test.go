@@ -822,7 +822,7 @@ func TestEditMessageReplaysDurableContextWhenNativeForkIsUnavailable(t *testing.
 		t.Fatalf("initial start has no provider scope: %#v", starts[0])
 	}
 	if starts[1].SystemPrompt != "preserved prompt" || starts[1].ProviderScopeID == "" ||
-		starts[1].ProviderScopeID == starts[0].ProviderScopeID {
+		starts[1].ProviderScopeID == starts[0].ProviderScopeID || !starts[1].ProviderIDsScoped {
 		t.Fatalf("approximate start config = %#v", starts[1])
 	}
 	sent := driver.fresh.sentMessages()
@@ -1763,6 +1763,10 @@ func TestEditMessageForksBeforeMiddlePromptAndReusesStoredContent(t *testing.T) 
 		resumes[0].SystemPrompt != "preserved prompt" || resumes[0].ProviderScopeID == "" ||
 		len(starts) != 1 || resumes[0].ProviderScopeID != starts[0].ProviderScopeID {
 		t.Fatalf("resume config = %#v", resumes)
+	}
+	branch, err := h.st.ConversationBranch(ctx, h.ctrl.ConversationID(), result.ActiveBranchID)
+	if err != nil || branch.ProviderScopeID == "" || branch.ProviderScopeID != resumes[0].ProviderScopeID || !branch.ProviderIDsScoped || !resumes[0].ProviderIDsScoped {
+		t.Fatalf("native fork lost its durable replay namespace: branch=%+v err=%v", branch, err)
 	}
 }
 

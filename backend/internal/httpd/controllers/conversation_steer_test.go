@@ -116,10 +116,14 @@ func (s *promoteQueuedStub) PromoteQueuedTurn(
 type steerStub struct {
 	*fakeConversationService
 
-	result    chatsvc.SteerResult
-	err       error
-	seen      []ports.ChatUserMessage
-	recovered []string
+	result       chatsvc.SteerResult
+	err          error
+	seen         []ports.ChatUserMessage
+	recovered    []string
+	atomicResult chatsvc.SteerOrSendResult
+	atomicErr    error
+	atomicSeen   []ports.ChatUserMessage
+	recoverOnly  []bool
 }
 
 func (s *steerStub) Steer(
@@ -134,6 +138,17 @@ func (s *steerStub) Steer(
 func (s *steerStub) RecoverSteer(_ context.Context, _ domain.SessionID, id string) (chatsvc.SteerResult, error) {
 	s.recovered = append(s.recovered, id)
 	return s.result, s.err
+}
+
+func (s *steerStub) SteerOrSend(
+	_ context.Context,
+	_ domain.SessionID,
+	msg ports.ChatUserMessage,
+	recoverOnly bool,
+) (chatsvc.SteerOrSendResult, error) {
+	s.atomicSeen = append(s.atomicSeen, msg)
+	s.recoverOnly = append(s.recoverOnly, recoverOnly)
+	return s.atomicResult, s.atomicErr
 }
 
 func TestSteerRecoveryRouteOnlyReadsReceipt(t *testing.T) {
@@ -192,6 +207,50 @@ func postSteer(t *testing.T, svc *steerStub, body any) (int, map[string]any, ste
 	_ = json.Unmarshal(raw, &ok)
 	_ = json.Unmarshal(raw, &failure)
 	return resp.StatusCode, ok, failure
+}
+
+func postSteerOrSend(t *testing.T, svc *steerStub, body any) (int, map[string]any, steerErrorBody) {
+	t.Helper()
+	srv := steerRouter(t, svc)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	resp, err := http.Post(srv.URL+"/api/v1/sessions/p1-1/conversation/steer-or-send",
+		"application/json", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("POST steer or send: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var ok map[string]any
+	var failure steerErrorBody
+	_ = json.Unmarshal(raw, &ok)
+	_ = json.Unmarshal(raw, &failure)
+	return resp.StatusCode, ok, failure
+}
+
+func TestSteerOrSendRouteReturnsAtomicOutcome(t *testing.T) {
+	svc := &steerStub{
+		fakeConversationService: &fakeConversationService{},
+		atomicResult: chatsvc.SteerOrSendResult{
+			Steered: true,
+			Steer:   chatsvc.SteerResult{ProviderTurnID: "provider-turn-1", ActivityID: "activity-1"},
+		},
+	}
+	status, body, _ := postSteerOrSend(t, svc, map[string]any{
+		"text": "correct it", "clientMessageId": "atomic-1",
+	})
+	if status != http.StatusAccepted || body["outcome"] != "steered" || body["providerTurnId"] != "provider-turn-1" {
+		t.Fatalf("status=%d body=%v", status, body)
+	}
+	if len(svc.atomicSeen) != 1 || svc.atomicSeen[0].ClientMessageID != "atomic-1" ||
+		len(svc.recoverOnly) != 1 || svc.recoverOnly[0] {
+		t.Fatalf("atomic request = %+v recoverOnly=%v", svc.atomicSeen, svc.recoverOnly)
+	}
 }
 
 // 202, not 200: the provider takes the guidance and acts on it at its next model
