@@ -341,7 +341,8 @@ describe("ACP session config options", () => {
 		expect(screen.getByRole("switch", { name: "Plan Mode" })).not.toBeChecked();
 	});
 
-	it("keeps OpenCode approval controls available in Plan Mode", () => {
+	it("places OpenCode approval controls below Plan Mode", async () => {
+		const user = userEvent.setup();
 		render(
 			<TurnSettingsBar
 				harness="opencode"
@@ -363,9 +364,9 @@ describe("ACP session config options", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Auto-approve",
-		);
+		await user.click(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }));
+		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeInTheDocument();
+		expect(screen.getByText("Approval policy")).toBeInTheDocument();
 	});
 
 	it("keeps model, effort, and provider mode explicit while hiding ACP agent internals", async () => {

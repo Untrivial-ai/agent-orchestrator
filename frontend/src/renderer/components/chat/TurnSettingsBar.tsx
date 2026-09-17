@@ -158,6 +158,7 @@ export function TurnSettingsBar({
 	// permission rules. Keep AO's approval picker available in Plan mode so a
 	// user can choose the policy that will apply when they return to Build.
 	const approvalAvailableWhilePlanning = harness === "opencode";
+	const inlineApprovalPicker = Boolean(approvalAvailableWhilePlanning && inlineExecutionMode && onChange);
 	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
@@ -180,7 +181,7 @@ export function TurnSettingsBar({
 		</OptionMenuItem>
 	) : null;
 	const showRightDropdown = Boolean(
-		children || ((!planning || approvalAvailableWhilePlanning) && (onChange || modeOption)),
+		children || ((!planning || approvalAvailableWhilePlanning) && ((onChange && !inlineApprovalPicker) || modeOption)),
 	);
 
 	return (
@@ -204,6 +205,16 @@ export function TurnSettingsBar({
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							onChangeConfigOption={onChangeConfigOption ? applyOption : undefined}
+							approvalPicker={inlineApprovalPicker && onChange ? (
+								<ApprovalPolicySubmenu
+									label={approvalLabel}
+									settings={settings}
+									approvalCopy={approvalCopy}
+									approvalOrder={approvalOrder}
+									onChange={onChange}
+									footer={rememberAction}
+								/>
+							) : undefined}
 						/>
 					) : null}
 
@@ -216,6 +227,16 @@ export function TurnSettingsBar({
 							extraOptions={grouped.extra}
 							disabled={optionDisabled}
 							onChange={applyOption}
+							approvalPicker={inlineApprovalPicker && onChange ? (
+								<ApprovalPolicySubmenu
+									label={approvalLabel}
+									settings={settings}
+									approvalCopy={approvalCopy}
+									approvalOrder={approvalOrder}
+									onChange={onChange}
+									footer={rememberAction}
+								/>
+							) : undefined}
 						/>
 					) : null}
 
@@ -303,6 +324,7 @@ function ModelEffortPicker({
 	toggles = [],
 	extraOptions = [],
 	onChangeConfigOption,
+	approvalPicker,
 }: {
 	models: ChatModel[];
 	settings: TurnSettings;
@@ -319,6 +341,7 @@ function ModelEffortPicker({
 	toggles?: ChatConfigOption[];
 	extraOptions?: ChatConfigOption[];
 	onChangeConfigOption?: (optionId: string, value: ChatConfigOptionValue) => void;
+	approvalPicker?: ReactNode;
 }) {
 	const catalog = useMemo(() => models.map((model) => ({ ...model, label: model.displayName })), [models]);
 
@@ -399,6 +422,7 @@ function ModelEffortPicker({
 				{executionMode && onChangeConfigOption ? (
 					<PlanModeToggle option={executionMode} onChange={onChangeConfigOption} />
 				) : null}
+				{approvalPicker}
 				{toggles.map((option) => (
 					<ConfigToggle key={option.id} option={option} onChange={onChangeConfigOption!} />
 				))}
@@ -418,6 +442,7 @@ function ClubbedConfigPicker({
 	extraOptions,
 	disabled,
 	onChange,
+	approvalPicker,
 }: {
 	modelOptions: ChatConfigOption[];
 	effortOptions: ChatConfigOption[];
@@ -426,6 +451,7 @@ function ClubbedConfigPicker({
 	extraOptions: ChatConfigOption[];
 	disabled?: boolean;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
+	approvalPicker?: ReactNode;
 }) {
 	const primaryModel = modelOptions[0];
 	const primaryEffort = effortOptions[0];
@@ -433,7 +459,7 @@ function ClubbedConfigPicker({
 	const effortLabel = primaryEffort ? optionCurrentLabel(primaryEffort) : undefined;
 	const groupLabel = [modelLabel, effortLabel].filter(Boolean).join(" ") || "More";
 	const leftCount =
-		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length;
+		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length + Number(Boolean(approvalPicker));
 	if (leftCount === 1) {
 		if (executionMode)
 			return <ExecutionModePicker option={executionMode} disabled={disabled} onChange={onChange} />;
@@ -467,6 +493,7 @@ function ClubbedConfigPicker({
 					<OptionSubmenu key={option.id} option={option} onChange={onChange} />
 				))}
 				{executionMode ? <PlanModeToggle option={executionMode} onChange={onChange} /> : null}
+				{approvalPicker}
 				{toggles.map((option) => (
 					<ConfigToggle key={option.id} option={option} onChange={onChange} />
 				))}
@@ -496,6 +523,47 @@ function PlanModeToggle({
 			checked={planning}
 			onCheckedChange={() => onChange(option.id, { value: next.value })}
 		/>
+	);
+}
+
+function ApprovalPolicySubmenu({
+	label,
+	settings,
+	approvalCopy,
+	approvalOrder,
+	onChange,
+	footer,
+}: {
+	label: string;
+	settings: TurnSettings;
+	approvalCopy: Record<ApprovalMode, { label: string }>;
+	approvalOrder: ApprovalMode[];
+	onChange: (next: TurnSettings) => void;
+	footer?: ReactNode;
+}) {
+	return (
+		<OptionMenuSub>
+			<OptionMenuSubTrigger label="Approval policy" value={label} />
+			<OptionMenuSubContent className={CHAT_MENU_CLASS}>
+				{approvalOrder.map((mode) => (
+					<OptionMenuItem
+						key={mode}
+						active={mode === (settings.approvalMode ?? "default")}
+						radio
+						onSelect={() => onChange({ ...settings, approvalMode: mode })}
+						className="text-xs"
+					>
+						<span className={cn(
+							"text-xs",
+							mode === (settings.approvalMode ?? "default") ? "text-foreground" : "text-muted-foreground",
+						)}>
+							{approvalCopy[mode].label}
+						</span>
+					</OptionMenuItem>
+				))}
+				{footer}
+			</OptionMenuSubContent>
+		</OptionMenuSub>
 	);
 }
 
