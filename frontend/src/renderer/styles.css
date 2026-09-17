@@ -518,6 +518,18 @@
 	padding: 0;
 }
 
+/* Keep the session card intact: this strip belongs to its slate outer frame,
+ * above the complete card (tabs and inspector alike), so it is a native macOS
+ * or Linux drag target without introducing a seam inside session content. */
+.center-panel-shell--draggable-session-frame {
+	flex-direction: column;
+}
+
+.center-panel-session-drag-strip {
+	flex: 0 0 var(--space-2);
+	-webkit-app-region: drag;
+}
+
 /* Sidebar closed on mac: content panel expands to fill the full window.
  * Remove all padding and strip the surface border + radius so it's flush. */
 .sidebar-hidden .center-panel-shell.center-panel-shell--mac {
@@ -1153,6 +1165,18 @@ button.settings-row-bar {
 		color: var(--color-text-settings-row);
 		outline: none;
 	}
+
+	/* The clear affordance is secondary to the query itself, so it recedes
+	   until pointed at. */
+	&::-webkit-search-cancel-button {
+		opacity: 0.4;
+		cursor: pointer;
+		transition: opacity var(--duration-fast) ease-out;
+	}
+
+	&::-webkit-search-cancel-button:hover {
+		opacity: 1;
+	}
 }
 
 @utility settings-row-value {
@@ -1590,6 +1614,32 @@ textarea,
 	background-color: color-mix(in srgb, var(--color-scrollbar) 56%, transparent);
 }
 
+/* Thin project-list scrollbar: keeps a scroll affordance without the chunky
+   system thumb. Linux also suppresses the end-cap buttons below. */
+.project-sidebar-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent) transparent;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar {
+	width: 6px;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar-thumb {
+	min-height: 24px;
+	border-radius: 999px;
+	background-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent);
+}
+
+.project-sidebar-scrollbar:hover::-webkit-scrollbar-thumb,
+.project-sidebar-scrollbar:focus-within::-webkit-scrollbar-thumb {
+	background-color: color-mix(in srgb, var(--color-scrollbar) 42%, transparent);
+}
+
 .platform-linux .project-sidebar-scrollbar::-webkit-scrollbar {
 	width: 6px;
 }
@@ -1983,14 +2033,12 @@ textarea,
 	}
 }
 
-/* ── Global resize state (sidebar drag) ─────────────────────────────────── */
+/* ── Global resize state (sidebar / inspector drag) ─────────────────────── */
+/* Grip paint lives on ResizeHandle's fixed span — DO NOT restore
+   `body.is-resizing-x [data-slot="resize-handle"]::after` (rejected chrome). */
 body.is-resizing-x {
 	cursor: col-resize;
 	user-select: none;
-}
-
-body.is-resizing-x [data-slot="resize-handle"]::after {
-	background: var(--color-border);
 }
 
 body.is-resizing-x [data-slot="sidebar-gap"],
@@ -2024,11 +2072,101 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	}
 }
 
-/* Keep keyboard focus visible without adding a ring to the sidebar chrome. */
-.sidebar-focusless :focus-visible {
+/* Keep keyboard focus visible without adding a ring to the sidebar chrome.
+   Opt out elements that own their own fill (icon actions, brand, folder toggle,
+   NavRowHighlight hosts) so each new control does not need another !important. */
+.sidebar-focusless :focus-visible:not(.sidebar-icon-action):not([data-sidebar-brand]):not([data-project-folder]) {
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
 	box-shadow: none !important;
+}
+
+/* Icon-only trailing controls (project kebab/orchestrator, session pin/kill,
+   Projects "+") tint the glyph only — never pick up the focus fill above. */
+.sidebar-focusless .sidebar-icon-action:focus-visible {
+	background-color: transparent !important;
+}
+
+/* Growing NavRowHighlight owns the fill — don't paint a second focus slab on
+   the host or its inner focusable (session open button). */
+.sidebar-focusless .group\/nav-row:focus-visible,
+.sidebar-focusless .group\/nav-row :focus-visible {
+	background-color: transparent !important;
+}
+
+/* Folder disclosure hit-target sits over the icon, outside the nav-row host —
+   never paint the sidebar focus fill on it. */
+.sidebar-focusless [data-project-folder]:focus-visible {
+	background-color: transparent !important;
+}
+
+/* Brand → home is opted out of the wash above; still needs a keyboard cue.
+   Beats the global `:focus-visible { outline: none !important }` via specificity. */
+.sidebar-focusless [data-sidebar-brand]:focus-visible {
+	outline: 2px solid color-mix(in oklab, var(--color-ring) 55%, transparent) !important;
+	outline-offset: 2px !important;
+	background-color: transparent !important;
+	box-shadow: none !important;
+}
+
+/* Keyboard focus for the growing pill: focus-visible only (not focus-within),
+   so a mouse click on Pinned / footer rows does not leave the pill stuck on.
+   Project folder toggle + trailing actions live outside the nav-row host but
+   inside data-project-drag-row — light that project's pill from there too. */
+.group\/nav-row:focus-visible [data-nav-row-highlight-idle],
+.group\/nav-row:has(:focus-visible) [data-nav-row-highlight-idle],
+[data-project-drag-row]:has(:focus-visible) [data-nav-row-highlight-idle] {
+	width: 100%;
+	height: 100%;
+	opacity: 1;
+}
+
+/* Fine-pointer hover only: row highlight grow, folder↔chevron swap, session
+   action reveal. Touch must not sticky-hover; keyboard uses focus-visible above.
+   Folder/chevron/actions use `scale`/`rotate` (not `transform`) so Tailwind v4
+   utilities are actually overridden on hover. */
+@media (hover: hover) and (pointer: fine) {
+	/* Per-row host. Project trailing actions / folder toggle sit outside the
+	   nav button but inside data-project-drag-row — require that row's :hover
+	   so expanded sessions under the same menu-item are not all lit at once. */
+	.group\/nav-row:hover [data-nav-row-highlight-idle],
+	.group\/menu-item:not([data-dragging="true"]) [data-project-drag-row]:hover [data-nav-row-highlight-idle] {
+		width: 100%;
+		height: 100%;
+		opacity: 1;
+	}
+
+	/* 1.2 + 3.2 — contextual folder/chevron; scale animates, opacity snaps; skip while drag ghost */
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-project-folder-icon] {
+		scale: 0.8;
+		opacity: 0;
+	}
+
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-project-chevron-icon] {
+		scale: 1;
+		opacity: 1;
+	}
+
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-project-folder-visual][data-expanded] [data-project-chevron-icon] {
+		rotate: 90deg;
+	}
+
+	.group\/session-row:hover [data-session-action-buttons] {
+		scale: 1;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.group\/session-row:hover [data-session-message-age] {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	[data-nav-row-highlight] {
+		width: 100% !important;
+		height: 100% !important;
+	}
 }
 
 /* A reorder can leave its source row, so lock the renderer cursor until the
@@ -3555,7 +3693,7 @@ html.sidebar-reordering * {
 }
 
 .session-inspector__topbar--browser:has(.browser-panel__address-bar--editing) {
-	grid-template-columns: minmax(0, 1fr) clamp(240px, 58cqw, 640px) minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr) clamp(240px, 52cqw, 560px) minmax(0, 1fr);
 }
 
 .session-inspector__topbar--browser > .session-inspector__tablist {
@@ -3566,6 +3704,10 @@ html.sidebar-reordering * {
 .session-inspector__topbar > .browser-panel__topbar-host {
 	grid-column: 2;
 	width: 100%;
+}
+
+.session-inspector__topbar > .browser-panel__topbar-host > .browser-panel__address-bar {
+	transform: translateX(clamp(32px, 6cqw, 48px));
 }
 
 .session-inspector__topbar--browser > .session-inspector-actions-spacer {
@@ -3599,6 +3741,12 @@ html.sidebar-reordering * {
 		width: 180px;
 		justify-self: center;
 		transition: width var(--duration-fast) ease;
+	}
+
+	.session-inspector__topbar--browser
+		> .browser-panel__topbar-host
+		> .browser-panel__address-bar {
+		transform: none;
 	}
 
 	.session-inspector__topbar--browser:has(.browser-panel__address-bar--editing)

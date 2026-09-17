@@ -397,6 +397,7 @@ func run(logger *slog.Logger) error {
 		SecretCipher:              providerCipher,
 		WebhookMaxBody:            cfg.GitHub.WebhookMaxBody,
 		TerminalStreamEnabled:     cfg.TerminalStreamEnabled,
+		TerminalRelayEnabled:      cfg.TerminalRelayEnabled,
 	}
 	if cfg.Environment == "development" &&
 		os.Getenv("AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION") == "true" {
@@ -404,6 +405,11 @@ func run(logger *slog.Logger) error {
 		apiOptions.CredentialValidator = developmentCredentialValidator{}
 	}
 	api := httpapi.New(apiOptions)
+	if cfg.TerminalRelayEnabled {
+		logger.Info("experimental terminal relay enabled",
+			"terminal_stream_enabled", cfg.TerminalStreamEnabled,
+			"mode", "local_same_replica")
+	}
 	// The work-wait long-poll and terminal streaming both ride a Postgres NOTIFY
 	// listener. Run it wherever workers connect so WaitForWork can be woken on
 	// enqueue; register the terminal channels only when that feature is on.

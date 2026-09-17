@@ -163,7 +163,7 @@ func (m *Manager) executeChatAgentSwitch(
 	if err := m.chat.PreflightChat(
 		ctx,
 		cfg.TargetHarness,
-		effectiveAgentConfig(rec.Kind, project.Config).Permissions,
+		effectiveAgentConfig(cfg.TargetHarness, rec.Kind, project.Config).Permissions,
 	); err != nil {
 		return result, fmt.Errorf("switch Chat agent %s: target preflight: %w", id, err)
 	}
@@ -171,12 +171,7 @@ func (m *Manager) executeChatAgentSwitch(
 	if !ok {
 		return result, fmt.Errorf("switch Chat agent %s: %w", id, ErrInterfaceHandoffUnsupported)
 	}
-	baseAgentConfig := effectiveAgentConfig(rec.Kind, project.Config)
-	if roleOverride(rec.Kind, project.Config).Harness != cfg.TargetHarness {
-		baseAgentConfig.Model = ""
-		baseAgentConfig.Effort = ""
-		baseAgentConfig.Mode = ""
-	}
+	baseAgentConfig := effectiveAgentConfig(cfg.TargetHarness, rec.Kind, project.Config)
 	agentConfig, err := m.resolveChatAgentConfig(ctx, ports.SpawnConfig{
 		ProjectID: rec.ProjectID,
 		Kind:      rec.Kind,
@@ -383,6 +378,10 @@ func (m *Manager) executeChatAgentSwitch(
 	} else {
 		recorder.boundary(domain.AgentSwitchFailureChatProviderStart)
 	}
+	historyMode := ports.ChatHistoryImport
+	if resumable {
+		historyMode = ports.ChatHistoryDeferred
+	}
 	_, err = m.chat.StartChat(ctx, ChatStart{
 		SessionID:               id,
 		ProjectID:               rec.ProjectID,
@@ -408,10 +407,10 @@ func (m *Manager) executeChatAgentSwitch(
 			m.augmentAgentRuntimeEnv(targetAgent, launchEnv)
 			return launchEnv, nil
 		},
-		ProviderConversationID:  providerConversationID,
-		ProviderScopeID:         chatSwitchProviderBoundaryID(result.ID),
-		ControllerGeneration:    string(targetGeneration),
-		SkipNativeHistoryImport: resumable,
+		ProviderConversationID: providerConversationID,
+		ProviderScopeID:        chatSwitchProviderBoundaryID(result.ID),
+		ControllerGeneration:   string(targetGeneration),
+		HistoryMode:            historyMode,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			emptyCommit := ChatControllerCommit{}
 			targetControllerOwner := chatControllerOwner(
@@ -626,7 +625,7 @@ func (m *Manager) rollbackStoppedChatAgentSwitchSource(
 	if err != nil {
 		return err
 	}
-	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	agentConfig := effectiveAgentConfig(rec.Harness, rec.Kind, project.Config)
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	m.augmentAgentRuntimeEnv(sourceAgent, env)
 	if err := m.prepareWorkspace(

@@ -146,13 +146,14 @@ describe("TopbarOpenEditorButton", () => {
 			workspaceAvailable: true,
 		});
 		renderButton();
-		expect(await screen.findByRole("alert")).toHaveTextContent("No supported editor found");
-		expect(screen.getByRole("button", { name: "Choose editor" })).toBeDisabled();
+		expect(await screen.findByRole("button", { name: "Choose editor" })).toBeDisabled();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Open workspace options" }));
 		expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual([
 			"Open in Finder",
 			"Open in Terminal",
 		]);
+		expect(screen.getByRole("note")).toHaveTextContent("No supported editor found");
 	});
 
 	it("shows a missing workspace and disables every launch action", async () => {

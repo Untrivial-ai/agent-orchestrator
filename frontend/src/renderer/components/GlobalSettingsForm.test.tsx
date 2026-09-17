@@ -495,7 +495,10 @@ describe("GlobalSettingsForm", () => {
 		expect(button).toBeDisabled();
 		expect(button).toHaveTextContent("Checking for updates…");
 		expect(button.querySelector("svg")).toHaveClass("animate-spin");
-		expect(screen.getByTestId("update-status-line")).toHaveTextContent("Checking for updates…");
+		const statusLine = screen.getByTestId("update-status-line");
+		expect(statusLine).not.toHaveTextContent("Checking for updates…");
+		expect(statusLine.querySelector("svg")).toBeNull();
+		expect(statusLine).toHaveClass("min-h-5");
 
 		act(() => finishCheck());
 		await waitFor(() => expect(button).toBeEnabled(), { timeout: 1_500 });
@@ -515,7 +518,7 @@ describe("GlobalSettingsForm", () => {
 		const requestId = updCheck.mock.calls[0]?.[0]?.requestId;
 		expect(requestId).toMatch(/^manual-update-/);
 		act(() => emit({ state: "not-available", checkedAt: Date.now() }));
-		expect(screen.getByTestId("update-status-line")).toHaveTextContent("Checking for updates…");
+		expect(screen.getByTestId("update-status-line")).not.toHaveTextContent("Checking for updates…");
 		expect(button).toBeDisabled();
 
 		act(() => emit({ state: "not-available", checkedAt: Date.now(), requestId }));

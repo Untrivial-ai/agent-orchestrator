@@ -87,19 +87,23 @@ type CodexCapacitySummary struct {
 
 // Codex capacity reason codes are stable, display-safe explanations.
 const (
-	CodexCapacityReasonNotChecked         = "capacity_not_checked"
-	CodexCapacityReasonChecking           = "capacity_checking"
-	CodexCapacityReasonAvailable          = "capacity_available"
-	CodexCapacityReasonNearLimit          = "capacity_near_limit"
-	CodexCapacityReasonExhausted          = "capacity_exhausted"
-	CodexCapacityReasonUnsupported        = "capacity_unsupported"
-	CodexCapacityReasonSkippedSignedOut   = "capacity_skipped_signed_out"
-	CodexCapacityReasonSkippedAuthUnknown = "capacity_skipped_auth_unknown"
-	CodexCapacityReasonAccountUnavailable = "capacity_account_unavailable"
-	CodexCapacityReasonInvalidated        = "capacity_invalidated"
-	CodexCapacityReasonCheckInconclusive  = "capacity_check_inconclusive"
-	CodexCapacityReasonCheckTimeout       = "capacity_check_timeout"
-	CodexCapacityReasonCheckFailed        = "capacity_check_failed"
+	CodexCapacityReasonNotChecked          = "capacity_not_checked"
+	CodexCapacityReasonChecking            = "capacity_checking"
+	CodexCapacityReasonAvailable           = "capacity_available"
+	CodexCapacityReasonNearLimit           = "capacity_near_limit"
+	CodexCapacityReasonExhausted           = "capacity_exhausted"
+	CodexCapacityReasonUnsupported         = "capacity_unsupported"
+	CodexCapacityReasonSkippedSignedOut    = "capacity_skipped_signed_out"
+	CodexCapacityReasonSkippedAuthUnknown  = "capacity_skipped_auth_unknown"
+	CodexCapacityReasonAccountUnavailable  = "capacity_account_unavailable"
+	CodexCapacityReasonInvalidated         = "capacity_invalidated"
+	CodexCapacityReasonCheckInconclusive   = "capacity_check_inconclusive"
+	CodexCapacityReasonCheckTimeout        = "capacity_check_timeout"
+	CodexCapacityReasonCheckFailed         = "capacity_check_failed"
+	CodexCapacityReasonClientStartFailed   = "capacity_client_start_failed"
+	CodexCapacityReasonProviderRejected    = "capacity_provider_rejected"
+	CodexCapacityReasonProviderUnavailable = "capacity_provider_unavailable"
+	CodexCapacityReasonCheckStopped        = "capacity_check_stopped"
 )
 
 // CompactCodexCapacity removes bucket details for ordinary session reads.

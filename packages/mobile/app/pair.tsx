@@ -334,3 +334,5 @@ const makeStyles = (t: Theme) =>
 	},
 	manualText: { color: t.textSecondary, fontSize: 15, fontWeight: "600" },
 });
+
+export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";

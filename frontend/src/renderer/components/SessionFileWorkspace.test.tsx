@@ -27,6 +27,16 @@ describe("SessionFileWorkspace", () => {
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-mode", "file");
 	});
 
+	it("leaves whole-file feedback rendering to the focused file pane", () => {
+		const activeAnnotation: FileAnnotationModel = {
+			...annotation,
+			target: { path: "src/App.tsx", side: "file", surface: "focused" },
+		};
+		render(<SessionFileWorkspace annotation={activeAnnotation} path="src/App.tsx" sessionId="sess-1" split={false} />);
+
+		expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+	});
+
 	it("reports center-editor dirty state with the opened path", () => {
 		const onDirtyChange = vi.fn();
 		render(<SessionFileWorkspace annotation={annotation} onDirtyChange={onDirtyChange} path="src/App.tsx" sessionId="sess-1" split={false} />);

@@ -1315,6 +1315,72 @@ func TestInspectTerminalSurfaceSeparatesClaudeWorkFromComposer(t *testing.T) {
 	}
 }
 
+// Fixtures captured from Claude Code 2.1.273 during a real drain failure
+// (issue #5482): the composer is empty, but Claude paints a multi-line
+// non-dim statusline below the lower rule and transient non-dim chrome
+// between the rules. Provider chrome must never read as a human draft.
+func TestInspectTerminalSurfaceClaude273DoesNotReadChromeAsDraft(t *testing.T) {
+	plugin := &Plugin{}
+	rule := "\x1b[38;2;136;136;136m" + strings.Repeat("─", 118) + "\x1b[m"
+	tests := []struct {
+		name       string
+		output     string
+		wantWork   ports.TerminalSurfaceWorkState
+		wantEditor ports.TerminalComposerState
+	}{
+		{
+			name: "idle empty composer above a multi-line provider statusline",
+			output: "  \x1b[38;2;153;153;153m40100 tokens\x1b[39m\n" +
+				rule + "\n\x1b[39m❯ \x1b[7m \x1b[0m\n" + rule + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]\n" +
+				"  cwd: /Users/example/worktree\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// Mismatched rules make the boxed layout unknown, but the footer-free
+			// fallback still closes the composer at the rule below the prompt:
+			// the statusline below it is provider chrome, not a draft.
+			name: "unmatched composer rules do not read status chrome as draft",
+			output: "\x1b[38;5;244m" + strings.Repeat("─", 48) + "\x1b[39m\n" +
+				"\x1b[39m❯ \x1b[7m \x1b[0m\n" +
+				strings.Repeat("─", 24) + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// Captured live from a stuck session: a bare default-styled
+			// "Claude Code" product label sits on the composer prompt row
+			// between matching rules. It is provider chrome, not a draft.
+			name: "provider product label on the prompt row is not a draft",
+			output: rule + "\n❯  Claude Code\n" + rule + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]\n" +
+				"  cwd: /Users/example/worktree\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// The same label followed by real typed text stays a draft.
+			name: "human text after the label is still a draft",
+			output: rule + "\n❯  Claude Code review please\n" + rule + "\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerDraft,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := plugin.InspectTerminalSurface(tt.output)
+			if got.Work != tt.wantWork || got.Composer != tt.wantEditor {
+				t.Fatalf("InspectTerminalSurface() = %+v, want work=%v composer=%v", got, tt.wantWork, tt.wantEditor)
+			}
+		})
+	}
+}
+
 func contains(values []string, needle string) bool {
 	for _, v := range values {
 		if v == needle {
