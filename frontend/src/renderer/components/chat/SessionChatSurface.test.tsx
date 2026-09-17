@@ -52,6 +52,7 @@ const {
 	agentSwitchState: { data: [] as AgentSwitchSummary[] },
 	conversationCommandState: {
 		busy: false,
+		chooseSettings: vi.fn(),
 		pendingAcceptedTurnId: undefined as string | undefined,
 		acknowledgeAcceptedTurn: vi.fn(),
 	},
@@ -119,6 +120,7 @@ vi.mock("./ChatWorkspace", async () => {
 			newWorkDisabled,
 			onLinkOpen,
 			onRememberPermissions,
+			onChooseSettings,
 			snapshot,
 			shellTarget,
 		}: {
@@ -128,6 +130,7 @@ vi.mock("./ChatWorkspace", async () => {
 			newWorkDisabled?: boolean;
 			onLinkOpen?: (url: string) => void;
 			onRememberPermissions?: unknown;
+			onChooseSettings?: unknown;
 			snapshot: { sessionId?: string };
 			shellTarget?: { handleId: string };
 		}) => {
@@ -145,6 +148,7 @@ vi.mock("./ChatWorkspace", async () => {
 					{snapshot.sessionId ? <div>Mounted {mountedSessionId}</div> : null}
 					{snapshot.sessionId ? <div>Rendered {snapshot.sessionId}</div> : null}
 					<div data-testid="remember-available">{String(Boolean(onRememberPermissions))}</div>
+					<div data-testid="turn-settings-available">{String(Boolean(onChooseSettings))}</div>
 					{headerActions}
 					{sessionTabAction}
 					<button type="button" onClick={() => onLinkOpen?.(LINK)}>
@@ -211,6 +215,23 @@ afterEach(() => {
 });
 
 describe("SessionChatSurface link routing", () => {
+	it("keeps OpenCode approvals writable when its provider supplies Build/Plan mode", () => {
+		conversationState.snapshot = { capabilities: ["config_options"], harness: "opencode" };
+		configState.options = [{
+			id: "mode",
+			name: "Mode",
+			category: "mode",
+			type: "select",
+			currentValue: "build",
+			choices: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan" }],
+		}];
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+		render(<Wrapper client={queryClient}><SessionChatSurface session={{ ...session, provider: "opencode" }} /></Wrapper>);
+
+		expect(screen.getByTestId("turn-settings-available")).toHaveTextContent("true");
+	});
+
 	it("does not report idle work before the conversation snapshot loads", () => {
 		conversationState.snapshot = undefined;
 		conversationState.isLoading = true;

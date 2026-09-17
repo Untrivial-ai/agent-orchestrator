@@ -522,7 +522,10 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				openingShell={openingShell}
 				shellError={shellError}
 				models={models}
-				onChooseSettings={hasProviderMode ? undefined : commands.chooseSettings}
+				// OpenCode's Build/Plan selector is provider-owned, but its approval
+				// policy remains an AO turn setting. Keep that setter available so the
+				// picker immediately below Plan Mode is actionable.
+				onChooseSettings={hasProviderMode && renderSnapshot.harness !== "opencode" ? undefined : commands.chooseSettings}
 				onRememberPermissions={can(renderSnapshot, "config_options") && !configOptions.loaded
 					? undefined : projectPermissions.remember}
 				rememberPermissionsPending={projectPermissions.pending}
