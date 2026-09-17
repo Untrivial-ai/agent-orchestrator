@@ -21,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
+	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 )
 
 // Manager is the controller-facing contract for the /api/v1/projects surface.
@@ -55,13 +56,14 @@ type Manager interface {
 
 	// Remove unregisters a project, stopping its sessions and reclaiming
 	// managed workspaces.
-	Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error)
+	Remove(ctx context.Context, id domain.ProjectID, force bool) (RemoveResult, error)
 }
 
 // SessionTeardowner is the narrow session-service surface project removal
 // needs: stop live project sessions and reclaim managed terminal workspaces.
 type SessionTeardowner interface {
-	TeardownProject(ctx context.Context, project domain.ProjectID) error
+	TeardownProject(ctx context.Context, project domain.ProjectID) (sessionsvc.ProjectTeardownOutcome, error)
+	ForceTeardownProject(ctx context.Context, project domain.ProjectID) error
 }
 
 // Service implements project registration and lookup use-cases for controllers.
@@ -736,7 +738,7 @@ func resolveDefaultBranch(ctx context.Context, path string) string {
 // Remove stops live project sessions, reclaims safe managed workspaces, then
 // archives the project registration. The original repository path and durable
 // session/history rows are preserved.
-func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error) {
+func (m *Service) Remove(ctx context.Context, id domain.ProjectID, force bool) (RemoveResult, error) {
 	if err := validateProjectID(id); err != nil {
 		return RemoveResult{}, err
 	}
@@ -748,8 +750,17 @@ func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult
 		return RemoveResult{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
 	if m.sessions != nil {
-		if err := m.sessions.TeardownProject(ctx, id); err != nil {
+		outcome, err := m.sessions.TeardownProject(ctx, id)
+		if err != nil {
 			return RemoveResult{}, err
+		}
+		if outcome.Blocked {
+			if !force {
+				return RemoveResult{}, apierr.Conflict("PROJECT_REMOVE_BLOCKED", "AO could not safely remove a session workspace. Delete the project and workspace to continue.", nil)
+			}
+			if err := m.sessions.ForceTeardownProject(ctx, id); err != nil {
+				return RemoveResult{}, err
+			}
 		}
 	}
 	ok, err = m.store.ArchiveProject(ctx, string(id), time.Now())

@@ -134,6 +134,11 @@ type RestoreOutcome struct {
 	Mode    RestoreModeView `json:"restoreMode"`
 }
 
+// ProjectTeardownOutcome reports whether normal project removal left an
+// AO-managed workspace protected. The caller must obtain explicit consent
+// before invoking ForceTeardownProject.
+type ProjectTeardownOutcome struct{ Blocked bool }
+
 // ResumeAgentOutcome reports the resumed read model and how AO relaunched it.
 type ResumeAgentOutcome struct {
 	Session domain.Session  `json:"session"`
@@ -909,10 +914,11 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 // sessions of the same project that reach the shared repository are serialized
 // by the workspace adapter's per-repo teardown lock. Dirty worktrees are
 // preserved by Kill and Cleanup; callers only see hard teardown failures.
-func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID) error {
+func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID) (ProjectTeardownOutcome, error) {
+	out := ProjectTeardownOutcome{}
 	recs, err := s.listRecords(ctx, project)
 	if err != nil {
-		return err
+		return out, err
 	}
 	errs := make([]error, len(recs))
 	var wg sync.WaitGroup
@@ -931,11 +937,31 @@ func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID)
 	wg.Wait()
 	for _, err := range errs {
 		if err != nil {
-			return err
+			out.Blocked = true
 		}
 	}
-	_, err = s.Cleanup(ctx, project)
-	return err
+	cleanup, err := s.Cleanup(ctx, project)
+	if err != nil {
+		return out, err
+	}
+	if len(cleanup.Skipped) > 0 {
+		out.Blocked = true
+	}
+	return out, nil
+}
+
+type forceProjectCommander interface {
+	ForceTeardownProject(context.Context, domain.ProjectID) error
+}
+
+// ForceTeardownProject is intentionally separate from normal teardown: it is
+// reachable only after the UI's destructive confirmation.
+func (s *Service) ForceTeardownProject(ctx context.Context, project domain.ProjectID) error {
+	manager, ok := s.manager.(forceProjectCommander)
+	if !ok {
+		return apierr.Internal("PROJECT_REMOVE_FORCE_UNSUPPORTED", "This build cannot force-remove project workspaces")
+	}
+	return manager.ForceTeardownProject(ctx, project)
 }
 
 // List returns sessions as enriched display models after applying API filters.

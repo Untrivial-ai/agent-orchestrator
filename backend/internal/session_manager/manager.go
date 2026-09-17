@@ -3816,6 +3816,36 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	return result, nil
 }
 
+// ForceTeardownProject permanently removes only AO-managed session workspaces.
+// It is called after an explicit user confirmation from project removal; the
+// original project repository is never passed to ForceDestroy.
+func (m *Manager) ForceTeardownProject(ctx context.Context, project domain.ProjectID) error {
+	recs, err := m.cleanupRecords(ctx, project)
+	if err != nil {
+		return fmt.Errorf("force cleanup %s: %w", project, err)
+	}
+	for _, rec := range recs {
+		ws := workspaceInfo(rec)
+		if ws.Path == "" {
+			continue
+		}
+		if err := m.workspace.ForceDestroy(ctx, ws); err != nil {
+			return fmt.Errorf("force cleanup %s: workspace: %w", rec.ID, err)
+		}
+		if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
+			return fmt.Errorf("force cleanup %s: %w", rec.ID, err)
+		}
+		if !rec.IsTerminated {
+			if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
+				return fmt.Errorf("force cleanup %s: %w", rec.ID, err)
+			}
+		}
+		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
+		m.cleanupSystemPromptDir(rec.ID)
+	}
+	return nil
+}
+
 // cleanupOne reclaims one terminated session's workspace, gating shut any
 // shell terminal scoped to it first (same ordering as Kill). Split out of
 // Cleanup's loop so the release function's defer is scoped to one session's
