@@ -9796,6 +9796,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - zcode
           - cloudflared
           type: string
         updatedAt:
