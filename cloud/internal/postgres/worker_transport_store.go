@@ -345,13 +345,13 @@ func (s *Store) finishWorkerRequest(
 func (s *Store) IssueTerminalTicket(
 	ctx context.Context,
 	principal domain.Principal,
-	orgID, sessionID, kind string,
+	orgID, sessionID, kind, terminalID string,
 	ttl time.Duration,
 ) (string, []string, error) {
 	// Do this before waking a paused sandbox. Reopening an already-finished
 	// coding-agent terminal cannot succeed, and treating it as an interactive
 	// request would needlessly resume compute just for the browser to retry.
-	if kind == "agent" {
+	if kind == "agent" && terminalID == "" {
 		var exited bool
 		err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
 			return tx.QueryRow(ctx,
@@ -546,20 +546,38 @@ func (s *Store) IssueTerminalTicket(
 		// The workspace shell terminal is deliberately available earlier, so this
 		// only applies to kind == "agent".
 		if kind == "agent" {
-			var agentTerminalLive bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS (
-					SELECT 1 FROM ao_terminal_sessions
-					WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
-					  AND kind = 'agent' AND state IN ('opening', 'open')
-					  AND expires_at > now()
-				)`,
-				orgID, sessionID, epoch,
-			).Scan(&agentTerminalLive); err != nil {
-				return err
-			}
-			if !agentTerminalLive {
-				return ErrWorkerUnavailable
+			if terminalID != "" {
+				var exists bool
+				if err := tx.QueryRow(ctx,
+					`SELECT EXISTS (
+						SELECT 1 FROM ao_terminal_sessions
+						WHERE org_id = $1 AND session_id = $2 AND id = $3
+						  AND worker_epoch = $4 AND kind = $5
+						  AND state IN ('opening', 'open') AND expires_at > now()
+					)`,
+					orgID, sessionID, terminalID, epoch, kind,
+				).Scan(&exists); err != nil {
+					return err
+				}
+				if !exists {
+					return ErrWorkerUnavailable
+				}
+			} else {
+				var agentTerminalLive bool
+				if err := tx.QueryRow(ctx,
+					`SELECT EXISTS (
+						SELECT 1 FROM ao_terminal_sessions
+						WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
+						  AND kind = 'agent' AND state IN ('opening', 'open')
+						  AND expires_at > now()
+					)`,
+					orgID, sessionID, epoch,
+				).Scan(&agentTerminalLive); err != nil {
+					return err
+				}
+				if !agentTerminalLive {
+					return ErrWorkerUnavailable
+				}
 			}
 		}
 		mode = effectiveMode(mode, access.ModeCap)
@@ -579,7 +597,7 @@ func (s *Store) IssueTerminalTicket(
 			`INSERT INTO ao_access_tickets (
 				org_id, session_id, purpose, scopes, token_hash, worker_epoch, expires_at
 			) VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval)`,
-			orgID, sessionID, "terminal:"+kind, scopes, hash[:], epoch, intervalString(ttl),
+			orgID, sessionID, terminalTicketPurpose(kind, terminalID), scopes, hash[:], epoch, intervalString(ttl),
 		)
 		return err
 	})
@@ -695,7 +713,7 @@ func (s *Store) EnsureWorkerAgentTerminal(
 
 func (s *Store) OpenTerminal(
 	ctx context.Context,
-	token, kind string,
+	token, kind, terminalID string,
 	ttl time.Duration,
 ) (domain.TerminalSession, error) {
 	hash := sha256.Sum256([]byte(token))
@@ -708,13 +726,13 @@ func (s *Store) OpenTerminal(
 			  AND consumed_at IS NULL AND expires_at > now()
 			RETURNING id, org_id, session_id, purpose, scopes,
 				COALESCE(worker_epoch, 0), expires_at`,
-			hash[:], "terminal:"+kind,
+			hash[:], terminalTicketPurpose(kind, terminalID),
 		).Scan(
 			&ticket.ID, &ticket.OrgID, &ticket.SessionID, &ticket.Purpose,
 			&ticket.Scopes, &ticket.WorkerEpoch, &ticket.ExpiresAt,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return classifyInvalidTerminalTicket(ctx, tx, hash[:], "terminal:"+kind)
+			return classifyInvalidTerminalTicket(ctx, tx, hash[:], terminalTicketPurpose(kind, terminalID))
 		}
 		return err
 	})
@@ -735,6 +753,24 @@ func (s *Store) OpenTerminal(
 		}
 		if !current {
 			return ErrStaleWorker
+		}
+		if kind == "agent" && terminalID != "" {
+			err := tx.QueryRow(ctx,
+				`UPDATE ao_terminal_sessions
+				SET expires_at = now() + $1::interval, updated_at = now()
+				WHERE org_id = $2 AND session_id = $3 AND id = $4
+				  AND worker_epoch = $5 AND kind = 'agent'
+				  AND state IN ('opening', 'open') AND expires_at > now()
+				RETURNING id, state, expires_at`,
+				intervalString(ttl), ticket.OrgID, ticket.SessionID, terminalID, ticket.WorkerEpoch,
+			).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt)
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrWorkerUnavailable
+			}
+			return err
 		}
 		if kind == "agent" {
 			// Serialize against the worker's own EnsureWorkerAgentTerminal so a
@@ -833,6 +869,13 @@ func (s *Store) OpenTerminal(
 		return err
 	})
 	return terminal, err
+}
+
+func terminalTicketPurpose(kind, terminalID string) string {
+	if terminalID == "" {
+		return "terminal:" + kind
+	}
+	return "terminal:" + kind + ":" + terminalID
 }
 
 func classifyInvalidTerminalTicket(

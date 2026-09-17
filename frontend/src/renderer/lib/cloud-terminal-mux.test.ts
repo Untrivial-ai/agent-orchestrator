@@ -140,4 +140,21 @@ describe("createCloudTerminalMux cursor resume", () => {
 		expect(chunks.join("")).toContain("\x1b[2J");
 		mux.dispose();
 	});
+
+	it("routes a reviewer ticket to its exact terminal", async () => {
+		FakeWebSocket.instances = [];
+		const mux = createCloudTerminalMux({
+			wsBaseUrl: "wss://cp.example.com/api/cloud/v1",
+			kind: "agent",
+			terminalId: "reviewer-terminal-id",
+			mintTicket: async () => "ticket-1",
+			WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		const url = new URL(FakeWebSocket.instances[0].url.replace(/^ws/, "http"));
+		expect(url.searchParams.get("terminalId")).toBe("reviewer-terminal-id");
+		mux.dispose();
+	});
+
 });

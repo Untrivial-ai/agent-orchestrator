@@ -398,6 +398,8 @@ export type CloudCpTerminalKind = "workspace" | "agent";
 /** POST /orgs/{orgId}/sessions/{sessionId}/terminal-ticket */
 export interface CloudCpTerminalTicketRequest {
 	kind: CloudCpTerminalKind;
+	/** Optional exact terminal surface, used for a dedicated reviewer terminal. */
+	terminalId?: string;
 }
 
 export interface CloudCpTerminalTicketResponse {
