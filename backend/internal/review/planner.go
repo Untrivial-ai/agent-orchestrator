@@ -130,7 +130,7 @@ func PlanAggregate(prs []domain.PullRequest, runs []domain.ReviewRun) []PRReview
 	// Group runs by PR+SHA+harness to get the latest run for each reviewer
 	runsByPRAndSHAAndHarness := make(map[string]domain.ReviewRun)
 	for _, run := range runs {
-		if run.PRURL == "" || run.TargetSHA == "" || run.Harness == "" {
+		if run.PRURL == "" || run.TargetSHA == "" {
 			continue
 		}
 		key := run.PRURL + "\x00" + run.TargetSHA + "\x00" + string(run.Harness)

@@ -9812,6 +9812,10 @@ components:
           type: string
         reviewerHarness:
           type: string
+        reviewerTerminals:
+          items:
+            $ref: '#/components/schemas/ReviewerTerminalResponse'
+          type: array
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -9822,6 +9826,7 @@ components:
           type: array
       required:
       - reviewerHandleId
+      - reviewerTerminals
       - reviews
       - runs
       type: object
@@ -9929,6 +9934,10 @@ components:
           type: string
         reviewerHarness:
           type: string
+        reviewerTerminals:
+          items:
+            $ref: '#/components/schemas/ReviewerTerminalResponse'
+          type: array
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -9939,6 +9948,7 @@ components:
           type: array
       required:
       - reviewerHandleId
+      - reviewerTerminals
       - reviews
       - runs
       type: object
@@ -10735,6 +10745,10 @@ components:
           type: string
         reviewerHarness:
           type: string
+        reviewerTerminals:
+          items:
+            $ref: '#/components/schemas/ReviewerTerminalResponse'
+          type: array
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -10745,6 +10759,7 @@ components:
           type: array
       required:
       - reviewerHandleId
+      - reviewerTerminals
       - reviews
       - runs
       type: object
@@ -10873,6 +10888,24 @@ components:
       - review
       - reviews
       - reviewerHandleId
+      type: object
+    ReviewerTerminalResponse:
+      properties:
+        activityState:
+          enum:
+          - active
+          - idle
+          - waiting_input
+          - blocked
+          - exited
+          type: string
+        handleId:
+          type: string
+        harness:
+          type: string
+      required:
+      - handleId
+      - harness
       type: object
     RoleOverride:
       properties:
@@ -12138,6 +12171,10 @@ components:
           type: boolean
         reviewerHandleId:
           type: string
+        reviewerTerminals:
+          items:
+            $ref: '#/components/schemas/ReviewerTerminalResponse'
+          type: array
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -12148,6 +12185,7 @@ components:
           type: array
       required:
       - reviewerHandleId
+      - reviewerTerminals
       - reviews
       - runs
       - created
