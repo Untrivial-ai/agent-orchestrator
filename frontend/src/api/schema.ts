@@ -2918,7 +2918,7 @@ export interface components {
             activity: components["schemas"]["DomainActivity"];
             attentionDetail?: string;
             /** @enum {string} */
-            attentionReason?: "stalled" | "question_pending" | "decision_pending" | "blocked_infra" | "provider_quota" | "provider_auth" | "environment_error" | "vcs_conflict";
+            attentionReason?: "stalled" | "question_pending" | "decision_pending" | "blocked_infra" | "provider_quota" | "provider_auth" | "environment_error" | "vcs_conflict" | "switch_recovery_pending";
             autoInjectCI: boolean;
             autoInjectReview: boolean;
             autoReviewEnabled: boolean;

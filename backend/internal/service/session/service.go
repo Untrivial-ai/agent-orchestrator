@@ -324,7 +324,7 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if firstSession {
 		s.emitFirstSessionSpawned(ctx, rec, project)
 	}
-	sess, err := s.toSession(ctx, rec)
+	sess, err := s.toSession(ctx, rec, nil)
 	if err != nil {
 		return domain.Session{}, 0, 0, err
 	}
@@ -603,7 +603,7 @@ func (s *Service) Restore(ctx context.Context, id domain.SessionID) (RestoreOutc
 	if err != nil {
 		return RestoreOutcome{}, toAPIError(err)
 	}
-	session, err := s.toSession(ctx, res.Session)
+	session, err := s.toSession(ctx, res.Session, nil)
 	if err != nil {
 		return RestoreOutcome{}, err
 	}
@@ -622,7 +622,7 @@ func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgent
 	if err != nil {
 		return ExitAgentOutcome{}, toAPIError(err)
 	}
-	session, err := s.toSession(ctx, rec)
+	session, err := s.toSession(ctx, rec, nil)
 	if err != nil {
 		return ExitAgentOutcome{}, err
 	}
@@ -636,7 +636,7 @@ func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeA
 	if err != nil {
 		return ResumeAgentOutcome{}, toAPIError(err)
 	}
-	session, err := s.toSession(ctx, res.Session)
+	session, err := s.toSession(ctx, res.Session, nil)
 	if err != nil {
 		return ResumeAgentOutcome{}, err
 	}
@@ -990,12 +990,13 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 	}
 	out := make([]domain.Session, 0, len(filtered))
 	for _, rec := range filtered {
-		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID], watchdogFor(rec.ProjectID), errsBySession[rec.ID])
+		var activeSwitch *domain.AgentSwitch
+		if agentSwitch, ok := activeBySession[rec.ID]; ok {
+			activeSwitch = &agentSwitch
+		}
+		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID], watchdogFor(rec.ProjectID), errsBySession[rec.ID], activeSwitch)
 		if err != nil {
 			return nil, err
-		}
-		if agentSwitch, ok := activeBySession[rec.ID]; ok {
-			sess.ActiveAgentSwitch = &agentSwitch
 		}
 		out = append(out, sess)
 	}
@@ -1053,16 +1054,20 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	if !ok {
 		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
-	sess, err := s.toSession(ctx, rec)
-	if err != nil {
-		return domain.Session{}, err
-	}
-	activeSwitch, ok, err := s.store.GetActiveAgentSwitch(ctx, id)
+	// Load the active switch before deriving: the watchdog reads it for a
+	// switch_recovery_pending verdict, and the projection carries it too. One
+	// read serves both.
+	loadedSwitch, ok, err := s.store.GetActiveAgentSwitch(ctx, id)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("get active agent switch for %s: %w", id, err)
 	}
+	var activeSwitch *domain.AgentSwitch
 	if ok {
-		sess.ActiveAgentSwitch = &activeSwitch
+		activeSwitch = &loadedSwitch
+	}
+	sess, err := s.toSession(ctx, rec, activeSwitch)
+	if err != nil {
+		return domain.Session{}, err
 	}
 	if s.statusRecoveryRevision() != recoveryRevision {
 		sess.StatusReadiness = "checking"
@@ -1070,7 +1075,7 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	return sess, nil
 }
 
-func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun, watchdog domain.ResolvedWatchdogConfig, workerErrs []domain.WorkerErrorEvent) (domain.Session, error) {
+func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun, watchdog domain.ResolvedWatchdogConfig, workerErrs []domain.WorkerErrorEvent, activeSwitch *domain.AgentSwitch) (domain.Session, error) {
 	runs = canonicalizeCurrentHeadReviewRuns(prs, runs)
 	prs = deduplicatePRFacts(prs)
 	// All derivations read the clock once, from the same instant: status and
@@ -1084,7 +1089,7 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	}); ok {
 		readiness = recovery.SessionStatusReadiness(rec)
 	}
-	attention := deriveWatchdog(rec, watchdog, workerErrs, now)
+	attention := deriveWatchdog(rec, watchdog, workerErrs, activeSwitch, now)
 	return domain.Session{
 		SessionRecord:   rec,
 		StatusReadiness: readiness,
@@ -1095,6 +1100,7 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 		KanbanColumn:      presentation.Column,
 		DisplayStatus:     presentation.DisplayStatus,
 		TerminalHandleID:  rec.Metadata.RuntimeHandleID,
+		ActiveAgentSwitch: activeSwitch,
 		NeedsAttention:    attention.needsAttention,
 		AttentionReason:   attention.reason,
 		AttentionDetail:   attention.detail,
@@ -1345,7 +1351,7 @@ func toSpawnAPIError(err error) error {
 	}
 }
 
-func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (domain.Session, error) {
+func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord, activeSwitch *domain.AgentSwitch) (domain.Session, error) {
 	prs, err := s.store.ListPRFactsForSession(ctx, rec.ID)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("pr facts %s: %w", rec.ID, err)
@@ -1358,7 +1364,7 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("worker errors %s: %w", rec.ID, err)
 	}
-	return s.toSessionWithFacts(rec, prs, runs, s.resolveWatchdogConfig(ctx, rec.ProjectID), workerErrs)
+	return s.toSessionWithFacts(rec, prs, runs, s.resolveWatchdogConfig(ctx, rec.ProjectID), workerErrs, activeSwitch)
 }
 
 // currentHeadReviewRuns reads the session's AO review passes for the Kanban

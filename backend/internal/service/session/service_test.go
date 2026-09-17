@@ -4995,7 +4995,7 @@ func TestToSessionWithFactsRemapsTransferredAliasReviewRuns(t *testing.T) {
 		CreatedAt: rec.UpdatedAt,
 	}}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID], domain.DefaultWatchdog(), nil)
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID], domain.DefaultWatchdog(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5053,7 +5053,7 @@ func TestToSessionWithFactsCanonicalAliasRunSupersedesOlderAliasRun(t *testing.T
 		},
 	}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID], domain.DefaultWatchdog(), nil)
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID], domain.DefaultWatchdog(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5230,6 +5230,88 @@ func TestGetSurfacesWatchdogProviderQuotaAndLastErrorAt(t *testing.T) {
 	}
 	if sess.LastWorkerErrorAt == nil || !sess.LastWorkerErrorAt.Equal(now.Add(-11*time.Minute)) {
 		t.Fatalf("LastWorkerErrorAt = %v, want the error instant", sess.LastWorkerErrorAt)
+	}
+}
+
+func TestListAndGetSurfaceSwitchRecoveryPending(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	st := newFakeStore()
+	// Recent progress, so only the wedged switch can raise attention.
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	st.activeSwitches["mer-1"] = domain.AgentSwitch{
+		ID: "switch-1", SessionID: "mer-1",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchStartingTarget, ErrorCode: domain.AgentSwitchErrorTargetStartUnconfirmed,
+		RequestedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-2 * time.Minute),
+	}
+
+	list, err := (&Service{store: st, clock: func() time.Time { return now }}).List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list = %+v, want one session", list)
+	}
+	if !list[0].NeedsAttention || list[0].AttentionReason != domain.AttentionReasonSwitchRecoveryPending {
+		t.Fatalf("list attention = %+v, want switch_recovery_pending", list[0])
+	}
+	if list[0].ActiveAgentSwitch == nil || list[0].ActiveAgentSwitch.ID != "switch-1" {
+		t.Fatalf("list active switch projection = %+v", list[0].ActiveAgentSwitch)
+	}
+	if list[0].LastWorkerErrorAt == nil || !list[0].LastWorkerErrorAt.Equal(now.Add(-2*time.Minute)) {
+		t.Fatalf("list LastWorkerErrorAt = %v, want switch UpdatedAt", list[0].LastWorkerErrorAt)
+	}
+
+	got, err := (&Service{store: st, clock: func() time.Time { return now }}).Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.NeedsAttention || got.AttentionReason != domain.AttentionReasonSwitchRecoveryPending {
+		t.Fatalf("get attention = %+v, want switch_recovery_pending", got)
+	}
+	if got.ActiveAgentSwitch == nil || got.ActiveAgentSwitch.ID != "switch-1" {
+		t.Fatalf("get active switch projection = %+v", got.ActiveAgentSwitch)
+	}
+
+	// Settling the saga clears both the verdict and the projection on the next
+	// read, with no manual reset.
+	delete(st.activeSwitches, "mer-1")
+	settled, err := (&Service{store: st, clock: func() time.Time { return now }}).Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.NeedsAttention || settled.ActiveAgentSwitch != nil {
+		t.Fatalf("cleared switch still flagged: %+v", settled)
+	}
+}
+
+func TestListHealthyMidSwitchStaysSilent(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	st.activeSwitches["mer-1"] = domain.AgentSwitch{
+		ID: "switch-1", SessionID: "mer-1",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchPreparingHandoff,
+	}
+
+	list, err := (&Service{store: st, clock: func() time.Time { return now }}).List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].NeedsAttention {
+		t.Fatalf("healthy mid-switch raised attention: %+v", list)
+	}
+	if list[0].ActiveAgentSwitch == nil {
+		t.Fatal("healthy mid-switch projection missing")
 	}
 }
 

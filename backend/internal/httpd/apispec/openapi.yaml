@@ -8348,6 +8348,7 @@ components:
           - provider_auth
           - environment_error
           - vcs_conflict
+          - switch_recovery_pending
           type: string
         autoInjectCI:
           type: boolean

@@ -252,21 +252,24 @@ type Session struct {
 	DisplayStatus    DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
 	TerminalHandleID string        `json:"terminalHandleId,omitempty"`
 	// NeedsAttention is the daemon worker-watchdog's read-time verdict: true
-	// when the session looks stuck (stalled, parked on a question/decision, or
-	// wedged on provider errors) rather than working quietly. Derived from
-	// durable activity/error facts on every read; never persisted.
+	// when the session looks stuck (stalled, parked on a question/decision,
+	// wedged on provider errors, or blocked on an unresolved agent switch)
+	// rather than working quietly. Derived from durable activity/error/switch
+	// facts on every read; never persisted.
 	NeedsAttention bool `json:"needsAttention"`
 	// AttentionReason is the machine-stable watchdog verdict, present only
 	// when NeedsAttention is true.
-	AttentionReason AttentionReason `json:"attentionReason,omitempty" enum:"stalled,question_pending,decision_pending,blocked_infra,provider_quota,provider_auth,environment_error,vcs_conflict"`
+	AttentionReason AttentionReason `json:"attentionReason,omitempty" enum:"stalled,question_pending,decision_pending,blocked_infra,provider_quota,provider_auth,environment_error,vcs_conflict,switch_recovery_pending"`
 	// AttentionDetail is the human sentence behind the verdict: quiet
-	// durations plus the last-error excerpt when one exists. Present only when
+	// durations plus the last-error excerpt when one exists, or the switch
+	// recovery sentence for switch_recovery_pending. Present only when
 	// NeedsAttention is true.
 	AttentionDetail string `json:"attentionDetail,omitempty"`
 	// LastWorkerErrorAt is when the latest still-unrecovered worker error was
-	// recorded: an error newer than the session's last progress. Nil when every
-	// recorded error predates the latest progress (a recovered outage clears
-	// itself with no manual reset) or when none was ever recorded.
+	// recorded (an error newer than the session's last progress), or the
+	// wedged switch's last-change instant for switch_recovery_pending. Nil when
+	// every recorded error predates the latest progress (a recovered outage
+	// clears itself with no manual reset) or when none was ever recorded.
 	LastWorkerErrorAt *time.Time   `json:"lastWorkerErrorAt,omitempty"`
 	ActiveAgentSwitch *AgentSwitch `json:"-"`
 	// PRs are the session's attributed pull requests (one session can own many).

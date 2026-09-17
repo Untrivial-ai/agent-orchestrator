@@ -66,14 +66,16 @@ var vcsPhrases = []string{
 }
 
 // transientPhrases match retryable infrastructure errors that are not quota:
-// 5xx, timeouts, connection resets. Enough of these in a row (with zero
-// progress between) raise blocked_infra; a couple followed by silence read as
-// stalled through the generic active-quiet rule instead.
+// 5xx, timeouts, connection resets, and TLS/certificate handshake failures.
+// Enough of these in a row (with zero progress between) raise blocked_infra; a
+// couple followed by silence read as stalled through the generic active-quiet
+// rule instead.
 var transientPhrases = []string{
 	"500", "502", "503", "504", "timeout", "timed out", "connection",
 	"econn", "socket", "temporarily", "try again", "overloaded",
 	"capacity", "internal error", "server error", "bad gateway",
 	"service unavailable", "network", "dns", "eai_again",
+	"certificate", "cert", "tls", "ssl",
 }
 
 // classifyWorkerError maps one provider-error excerpt to its class. Precedence
@@ -126,12 +128,14 @@ type watchdogVerdict struct {
 }
 
 // deriveWatchdog computes the needs-attention verdict from durable facts: the
-// session's activity state/recency, its project-resolved thresholds, and its
-// recorded worker errors (newest first; sorted defensively). Evaluation order
-// is pause states, then error rules, then the active-quiet catch-all; a
-// terminated session never needs attention. Any new progress (activity newer
-// than every error) clears error-based verdicts with no manual reset.
-func deriveWatchdog(rec domain.SessionRecord, cfg domain.ResolvedWatchdogConfig, errs []domain.WorkerErrorEvent, now time.Time) watchdogVerdict {
+// session's activity state/recency, its project-resolved thresholds, its
+// recorded worker errors (newest first; sorted defensively), and its
+// already-loaded active agent switch when one exists. Evaluation order is pause
+// states, then a wedged switch, then error rules, then the active-quiet
+// catch-all; a terminated session never needs attention. Any new progress
+// (activity newer than every error) clears error-based verdicts with no manual
+// reset, and a cleared switch row clears its verdict on the next read.
+func deriveWatchdog(rec domain.SessionRecord, cfg domain.ResolvedWatchdogConfig, errs []domain.WorkerErrorEvent, activeSwitch *domain.AgentSwitch, now time.Time) watchdogVerdict {
 	if rec.IsTerminated {
 		return watchdogVerdict{}
 	}
@@ -159,6 +163,24 @@ func deriveWatchdog(rec domain.SessionRecord, cfg domain.ResolvedWatchdogConfig,
 			reason:         domain.AttentionReasonQuestionPending,
 			detail:         fmt.Sprintf("Waiting on input for %s (question pending)", trimDuration(quiet)),
 		}
+	}
+
+	// A wedged agent switch outranks the error rules: the saga already holds the
+	// session's interaction lock, so no retry or nudge can move it and only a
+	// person can resolve ownership. Healthy mid-switch sagas do not match
+	// RequiresRecovery and fall through to the error and quiet rules like any
+	// other session; the check re-runs every read, so the verdict clears the
+	// moment the row clears.
+	if activeSwitch != nil && activeSwitch.RequiresRecovery() {
+		verdict := watchdogVerdict{
+			needsAttention: true,
+			reason:         domain.AttentionReasonSwitchRecoveryPending,
+			detail:         switchRecoveryDetail(*activeSwitch, now),
+		}
+		if at := switchRecoveryAt(*activeSwitch); !at.IsZero() {
+			verdict.lastErrorAt = &at
+		}
+		return verdict
 	}
 
 	sorted := append([]domain.WorkerErrorEvent(nil), errs...)
@@ -228,6 +250,27 @@ func deriveWatchdog(rec domain.SessionRecord, cfg domain.ResolvedWatchdogConfig,
 		}
 	}
 	return watchdogVerdict{}
+}
+
+// switchRecoveryAt is the instant a wedged switch last changed: its durable
+// UpdatedAt, falling back to RequestedAt for a row that never advanced past the
+// request. Zero means the row carries no usable instant.
+func switchRecoveryAt(sw domain.AgentSwitch) time.Time {
+	if !sw.UpdatedAt.IsZero() {
+		return sw.UpdatedAt
+	}
+	return sw.RequestedAt
+}
+
+// switchRecoveryDetail is the human sentence behind a switch_recovery_pending
+// verdict: the harness pair, the stable error code, how long the saga has been
+// wedged, and the Restore affordance that resolves it.
+func switchRecoveryDetail(sw domain.AgentSwitch, now time.Time) string {
+	detail := fmt.Sprintf("Agent switch %s -> %s needs recovery (%s", sw.FromHarness, sw.TargetHarness, sw.ErrorCode)
+	if at := switchRecoveryAt(sw); !at.IsZero() {
+		detail += fmt.Sprintf(", %s", trimDuration(now.Sub(at)))
+	}
+	return detail + "); open the agent-switch dialog and Restore"
 }
 
 // excerptWorkerError bounds one error message for human display: single line,

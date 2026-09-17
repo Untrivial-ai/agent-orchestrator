@@ -43,6 +43,16 @@ const (
 	// error (worktree checked out elsewhere, merge conflict) with no progress
 	// since.
 	AttentionReasonVCSConflict AttentionReason = "vcs_conflict"
+	// AttentionReasonSwitchRecoveryPending is a non-terminal agent switch whose
+	// retained ownership boundary needs a person: exactly the three recovery
+	// markers (source_stop_unconfirmed, target_start_unconfirmed,
+	// source_restore_unconfirmed). It raises immediately rather than after a
+	// quiet period, because the saga already holds the session's interaction
+	// lock and no input can move until someone resolves it. Healthy mid-switch
+	// sagas stay silent, and the verdict clears itself on the read after the
+	// row clears. The detail names the harness pair, the error code, and the
+	// Restore affordance.
+	AttentionReasonSwitchRecoveryPending AttentionReason = "switch_recovery_pending"
 )
 
 // DecisionNeededMarker is the human-facing flag embedded in the detail of a
