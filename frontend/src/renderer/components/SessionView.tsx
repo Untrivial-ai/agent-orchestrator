@@ -420,7 +420,7 @@ function CloudLifecycleStatus({ stage }: { stage: CloudLifecycleStage }) {
 	const label = {
 		paused_by_coder: t("cloud.lifecycle.pausedByCoder"),
 		resuming_workspace: t("cloud.lifecycle.resumingWorkspace"),
-		waiting_for_coder_agent: t("cloud.lifecycle.waitingForCoderAgent"),
+		waiting_for_coder_agent: t("cloud.lifecycle.connecting"),
 		starting_ao_worker: t("cloud.lifecycle.startingAoWorker"),
 		restoring_agent: t("cloud.lifecycle.restoringAgent"),
 		connected: t("cloud.lifecycle.connected"),

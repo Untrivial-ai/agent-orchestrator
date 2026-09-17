@@ -906,6 +906,22 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("uses generic copy while a cloud workspace is connecting", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = false;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "provisioning",
+		};
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Connecting");
+		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
+	});
+
 	it("activates a new terminal opened while a file tab is selected", async () => {
 		const shell = {
 			handleId: "sh-after-file",

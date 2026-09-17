@@ -19,7 +19,7 @@
 	"cloud.lifecycle.restoringAgent": "Restoring agent",
 	"cloud.lifecycle.resumingWorkspace": "Resuming workspace",
 	"cloud.lifecycle.startingAoWorker": "Starting AO worker",
-	"cloud.lifecycle.waitingForCoderAgent": "Waiting for Coder agent",
+	"cloud.lifecycle.connecting": "Connecting",
 	"board.empty.body": "Describe a task and the orchestrator plans it, spawns worker sessions, and tracks them here as work moves forward.",
 	"board.empty.title": "No worker sessions yet",
 	"home.folderMissing": "Folder missing",
