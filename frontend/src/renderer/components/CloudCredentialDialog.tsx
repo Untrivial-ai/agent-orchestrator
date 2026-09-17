@@ -22,11 +22,15 @@ import { useCloudOrg } from "../hooks/useCloudOrg";
 import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
+import { aoBridge } from "../lib/bridge";
+
+const CHATGPT_LOGIN = "chatgpt_login";
 
 // The coding-agent providers the control plane accepts, with the credential
-// types each one validates (see cloud validAgentCredentialType). The first
-// credential type is the default and matches the "setup token" a developer
-// normally pastes.
+// types each one validates (see cloud validAgentCredentialType). Codex's
+// ChatGPT-subscription path deliberately has no secret field: the desktop app
+// performs the browser login locally, then securely sends Codex's native auth
+// document to the control plane. A session token is never pasted or displayed.
 const AGENTS = [
 	{
 		agent: "claude-code",
@@ -40,8 +44,8 @@ const AGENTS = [
 		agent: "codex",
 		label: "Codex",
 		creds: [
-			{ value: "access_token", label: "Access token" },
 			{ value: "api_key", label: "API key" },
+			{ value: CHATGPT_LOGIN, label: "Log in with ChatGPT" },
 		],
 	},
 	{
@@ -59,7 +63,7 @@ type Phase = "idle" | "submitting" | "success";
 // same PUT /orgs/{org}/provider-connections/agents/{agent}, in the app.
 export function CloudCredentialDialog() {
 	const { t } = useTranslation();
-	const { client } = useCloudCp();
+	const { client, baseUrl } = useCloudCp();
 	const { org } = useCloudOrg();
 	const queryClient = useQueryClient();
 	const open = useCredentialDialogStore((s) => s.open);
@@ -72,6 +76,7 @@ export function CloudCredentialDialog() {
 	const [error, setError] = useState<string | null>(null);
 
 	const creds = useMemo(() => AGENTS.find((a) => a.agent === agent)?.creds ?? AGENTS[0].creds, [agent]);
+	const needsSecret = credentialType !== CHATGPT_LOGIN;
 
 	// Reset the whole form each time the dialog opens so a reopen never shows a
 	// stale secret or a previous error/success.
@@ -91,7 +96,7 @@ export function CloudCredentialDialog() {
 		setError(null);
 	};
 
-	const canSubmit = phase !== "submitting" && secret.trim() !== "" && org !== undefined;
+	const canSubmit = phase !== "submitting" && needsSecret && secret.trim() !== "" && org !== undefined;
 
 	const submit = async () => {
 		if (!canSubmit || org === undefined) return;
@@ -110,6 +115,20 @@ export function CloudCredentialDialog() {
 			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
 			setPhase("success");
 			setSecret("");
+		} catch (err) {
+			setPhase("idle");
+			setError(err instanceof Error ? err.message : t("cloudCredential.failed"));
+		}
+	};
+
+	const loginWithChatGPT = async () => {
+		if (org === undefined || phase === "submitting") return;
+		setPhase("submitting");
+		setError(null);
+		try {
+			await aoBridge.cloud.connectProviderAuth({ baseUrl, orgId: org.id, provider: agent });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			setPhase("success");
 		} catch (err) {
 			setPhase("idle");
 			setError(err instanceof Error ? err.message : t("cloudCredential.failed"));
@@ -166,22 +185,26 @@ export function CloudCredentialDialog() {
 							</Select>
 						</div>
 
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="cloud-cred-secret">{t("cloudCredential.tokenLabel")}</Label>
-							<Input
-								id="cloud-cred-secret"
-								type="password"
-								autoComplete="off"
-								spellCheck={false}
-								placeholder={t("cloudCredential.tokenPlaceholder")}
-								value={secret}
-								onChange={(e) => setSecret(e.target.value)}
-								onKeyDown={(e) => {
-									if (e.key === "Enter") void submit();
-								}}
-							/>
-							<p className="text-caption leading-4 text-settings-muted">{t("cloudCredential.tokenHint")}</p>
-						</div>
+						{needsSecret ? (
+							<div className="flex flex-col gap-1.5">
+								<Label htmlFor="cloud-cred-secret">{t("cloudCredential.tokenLabel")}</Label>
+								<Input
+									id="cloud-cred-secret"
+									type="password"
+									autoComplete="off"
+									spellCheck={false}
+									placeholder={t("cloudCredential.tokenPlaceholder")}
+									value={secret}
+									onChange={(e) => setSecret(e.target.value)}
+									onKeyDown={(e) => {
+										if (e.key === "Enter") void submit();
+									}}
+								/>
+								<p className="text-caption leading-4 text-settings-muted">{t("cloudCredential.tokenHint")}</p>
+							</div>
+						) : (
+							<p className="text-caption leading-4 text-settings-muted">{t("cloudCredential.chatgptLoginUnavailable")}</p>
+						)}
 
 						{error ? (
 							<p role="alert" className="text-caption leading-4 text-error">
@@ -197,9 +220,14 @@ export function CloudCredentialDialog() {
 							{phase === "success" ? t("cloudCredential.done") : t("cloudCredential.cancel")}
 						</Button>
 					</DialogClose>
-					{phase !== "success" ? (
+					{phase !== "success" && needsSecret ? (
 						<Button type="button" variant="footer-primary" disabled={!canSubmit} onClick={() => void submit()}>
 							{phase === "submitting" ? t("cloudCredential.connecting") : t("cloudCredential.connect")}
+						</Button>
+					) : null}
+					{phase !== "success" && !needsSecret ? (
+						<Button type="button" variant="footer-primary" disabled={org === undefined || phase === "submitting"} onClick={() => void loginWithChatGPT()}>
+							{phase === "submitting" ? t("cloudCredential.connecting") : t("cloudCredential.loginWithChatGPT")}
 						</Button>
 					) : null}
 				</div>

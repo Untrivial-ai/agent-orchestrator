@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,16 @@ func (v *agentCredentialValidator) Validate(
 	case "claude-code":
 		return v.validateClaude(ctx, credentialType, secret)
 	case "codex":
+		if credentialType == "auth_json" {
+			// Codex owns this refreshable credential document. AO intentionally
+			// does not inspect its fields; a non-empty JSON object is the only
+			// safe local validation before the worker hands it back to Codex.
+			var document map[string]json.RawMessage
+			if json.Unmarshal(secret, &document) != nil || document == nil {
+				return errInvalidAgentCredential
+			}
+			return nil
+		}
 		if credentialType != "api_key" && credentialType != "access_token" {
 			return errInvalidAgentCredential
 		}
