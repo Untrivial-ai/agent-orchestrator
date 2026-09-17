@@ -1091,20 +1091,20 @@ INSERT INTO projects (id, path, registered_at) VALUES ('alpha', '/repos/alpha', 
 	}
 }
 
-// TestMigration0134AddsZcodeToLegacyQMConstraint seeds the QM-variant OMP-era
+// TestMigration0148AddsZcodeToLegacyQMConstraint seeds the QM-variant OMP-era
 // constraint (0095's second preserved schema: ... 'omp', 'qm', 'fake') and
-// runs only migration 0134, asserting the QM replace pair inserted 'zcode'.
+// runs only migration 0148, asserting the QM replace pair inserted 'zcode'.
 // Without the QM pair, the replace() source string omits 'qm' and no-ops,
 // leaving zcode session inserts to fail with a CHECK violation on installs
 // that took 0095's legacy branch.
-func TestMigration0134AddsZcodeToLegacyQMConstraint(t *testing.T) {
+func TestMigration0148AddsZcodeToLegacyQMConstraint(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 133)
+	upTo(t, db, 147)
 
 	// Simulate a legacy QM-variant database: swap the post-0133 constraint
 	// (omp, no qm) to the QM variant (omp, qm).
@@ -1124,8 +1124,8 @@ WHERE type = 'table' AND name = 'sessions'`,
 		t.Fatalf("reparse legacy qm harness constraint: %v", err)
 	}
 
-	// Run only migration 0134 (versions 1–133 are already applied).
-	upTo(t, db, 134)
+	// Run only migration 0148 (versions 1–133 are already applied).
+	upTo(t, db, 148)
 
 	var schema string
 	if err := db.QueryRow(
@@ -1135,7 +1135,7 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	for _, harness := range []string{"'zcode'", "'qm'", "'omp'"} {
 		if !strings.Contains(schema, harness) {
-			t.Fatalf("sessions.harness CHECK is missing %s after migration 0134:\n%s", harness, schema)
+			t.Fatalf("sessions.harness CHECK is missing %s after migration 0148:\n%s", harness, schema)
 		}
 	}
 }
