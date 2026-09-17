@@ -354,7 +354,9 @@ func TestSessionInfoFalseWhenNoHookMetadata(t *testing.T) {
 func TestGetAgentHooksIsNoOp(t *testing.T) {
 	// Zcode's hook config is user-global (~/.zcode/cli/config.json); there is
 	// no workspace-scoped hook file, so the adapter must not install anything.
-	plugin := &Plugin{resolvedBinary: "zcode"}
+	// The inherited agentbase no-op never touches the resolved binary, so the
+	// zero-value plugin is the correct construction here (govet unusedwrite).
+	plugin := &Plugin{}
 	err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
 		WorkspacePath: t.TempDir(),
 		SessionID:     "zcode-test-1",
