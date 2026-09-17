@@ -67,6 +67,7 @@ const (
 	TargetKimchi     Target = "kimchi"
 	TargetPrimeAgent Target = "prime-agent"
 	TargetOMP        Target = "omp"
+	TargetJunie      Target = "junie"
 	// TargetCloudflared is the optional connector that makes a paired phone
 	// reachable from outside the local network.
 	TargetCloudflared Target = "cloudflared"
@@ -79,7 +80,7 @@ var agentTargets = []Target{
 	TargetDroid, TargetCrush, TargetCline, TargetGoose, TargetQwen,
 	TargetContinue, TargetDevin, TargetKiro, TargetKilocode, TargetVibe,
 	TargetMuse, TargetAgy, TargetAutohand, TargetKimchi, TargetPrimeAgent,
-	TargetOMP,
+	TargetOMP, TargetJunie,
 }
 
 var agentTargetSet = func() map[Target]bool {

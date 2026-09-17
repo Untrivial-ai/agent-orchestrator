@@ -35,6 +35,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetKimchi:     "https://docs.kimchi.dev/docs/coding-getting-started",
 	TargetPrimeAgent: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
+	TargetJunie:      "https://junie.jetbrains.com/docs/junie-cli.html",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -197,6 +198,8 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 		} else {
 			plans = []Plan{s.planBun(target), official}
 		}
+	case TargetJunie:
+		plans = []Plan{s.officialByOS(target, "https://junie.jetbrains.com/install.sh", "bash", "https://junie.jetbrains.com/install.ps1", agentDocumentationURLs[target])}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

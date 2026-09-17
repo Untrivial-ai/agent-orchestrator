@@ -1,0 +1,11 @@
+Usage: junie [options]
+  --prompt <text>
+  --guidelines-filename <path>
+  --model <model>
+  --effort <low|medium|high>
+  --brave
+  --resume
+  --session-id <id>
+  --config-location <path>
+  --skip-update-check
+  --acp <true|false>

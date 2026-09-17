@@ -1,0 +1,9 @@
+{
+  "build": "3196.4",
+  "marketingVersion": "26.9.14",
+  "releaseFeed": "https://raw.githubusercontent.com/jetbrains-junie/junie/main/update-info.jsonl",
+  "hooksChannel": "eap",
+  "requiredFlags": ["--prompt", "--guidelines-filename", "--model", "--effort", "--brave", "--resume", "--session-id", "--config-location", "--skip-update-check", "--acp"],
+  "tuiRegistrationEligible": false,
+  "chatRegistrationEligible": false
+}
