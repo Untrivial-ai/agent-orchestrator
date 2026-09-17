@@ -1,0 +1,135 @@
+From b450d84ccb57b280f7aaf39b571c038368201f3a Mon Sep 17 00:00:00 2001
+From: Vaibhav Tomar <vtking03@gmail.com>
+Date: Thu, 17 Sep 2026 00:11:44 +0530
+Subject: [PATCH] fix(switch): carry semantic handoff into Chat agent switches
+
+Chat-mode switches forced the optional source handoff to unavailable
+and never re-injected the verified semantic report, so the incoming
+agent only got transcript fallback and forced re-briefing. Mirror the
+TUI path: collect the optional source handoff before quiescing the
+source controller, then read the verified artifact at delivery and
+embed it in the finalized continuation alongside the conversation
+checkpoint, latest user direction, latest assistant update, and
+workspace/PR facts.
+---
+ .../session_manager/agent_switching_chat.go   | 30 +++++++++++++------
+ .../agent_switching_chat_integration_test.go  | 28 +++++++++++++++++
+ 2 files changed, 49 insertions(+), 9 deletions(-)
+
+diff --git a/backend/internal/session_manager/agent_switching_chat.go b/backend/internal/session_manager/agent_switching_chat.go
+index 5c4dfba..f23912e 100644
+--- a/backend/internal/session_manager/agent_switching_chat.go
++++ b/backend/internal/session_manager/agent_switching_chat.go
+@@ -216,15 +216,16 @@ func (m *Manager) executeChatAgentSwitch(
+ 		return result, fmt.Errorf("switch Chat agent %s: workspace roots: %w", id, err)
+ 	}
+ 	recorder.boundary(domain.AgentSwitchFailureHandoffDirectoryPrepare)
+-	if _, _, err := m.prepareAgentHandoffPaths(ctx, id, string(result.ID)); err != nil {
+-		return result, fmt.Errorf("switch Chat agent %s: prepare handoff directory: %w", id, err)
++	candidatePath, _, candidateErr := m.prepareAgentHandoffPaths(ctx, id, string(result.ID))
++	if candidateErr != nil {
++		m.logger.Warn("agent switch: optional semantic handoff directory unavailable", "sessionID", id, "switchID", result.ID, "error", candidateErr)
+ 	}
+ 
+-	recorder.boundary(domain.AgentSwitchFailureHandoffSettlement)
+-	result, err = m.settleOptionalAgentHandoff(
+-		ctx, store, result, domain.AgentHandoffUnavailable)
++	recorder.boundary(domain.AgentSwitchFailureHandoffCollection)
++	result, err = m.collectOptionalAgentHandoff(
++		ctx, store, rec, admitted.sourceAgent, result, candidatePath)
+ 	if err != nil {
+-		return result, fmt.Errorf("switch Chat agent %s: close optional source handoff: %w", id, err)
++		return result, fmt.Errorf("switch Chat agent %s: collect optional source handoff: %w", id, err)
+ 	}
+ 	recorder.boundary(domain.AgentSwitchFailureChatSourceQuiesce)
+ 	if err := handoff.PrepareChatHandoff(
+@@ -309,12 +310,23 @@ func (m *Manager) executeChatAgentSwitch(
+ 	ctx = postStopCtx
+ 
+ 	recorder.boundary(domain.AgentSwitchFailureSourceTranscriptCapture)
++	deliverySwitch := result
++	semanticHandoff, semanticHandoffAvailable := m.readVerifiedAgentHandoffForDelivery(ctx, result)
++	if !semanticHandoffAvailable {
++		// Preserve the durable row as provenance, but never advertise or rely on
++		// an absent, replaced, or hash-mismatched file in this delivery.
++		deliverySwitch.AgentHandoffStatus = domain.AgentHandoffFailed
++		deliverySwitch.AgentHandoffPath = ""
++		deliverySwitch.AgentHandoffHash = ""
++	}
++	includeTranscriptFallback := !semanticHandoffAvailable
+ 	observedTranscript, sourceTranscriptStatus := m.captureSourceTranscriptFact(
+-		ctx, admitted.sourceAgent, admitted.sourceNative, true)
++		ctx, admitted.sourceAgent, admitted.sourceNative, includeTranscriptFallback)
+ 	finalContext := deterministicSwitchContext{
+ 		OriginalTask:          stoppedSession.Metadata.Prompt,
+ 		LatestUserPrompt:      stoppedSession.Metadata.LatestUserPrompt,
+ 		LatestAssistantUpdate: stoppedSession.Metadata.LatestAssistantUpdate,
++		SemanticHandoff:       semanticHandoff,
+ 		Workspaces:            m.captureWorkspaceFacts(ctx, stoppedSession),
+ 		PullRequests:          m.capturePRFacts(ctx, id),
+ 		CapturedAt:            m.clock(),
+@@ -324,7 +336,7 @@ func (m *Manager) executeChatAgentSwitch(
+ 	}
+ 	recorder.boundary(domain.AgentSwitchFailureContinuationBuild)
+ 	continuation := buildTargetContinuationMessageWithLimit(
+-		result, finalContext, observedTranscript, handoffContinuationMaxBytes)
++		deliverySwitch, finalContext, observedTranscript, handoffContinuationMaxBytes)
+ 	recorder.boundary(domain.AgentSwitchFailureFinalArtifactPublish)
+ 	writtenFinal, err := m.writeFinalizedHandoffFile(ctx, result, continuation)
+ 	if err != nil {
+@@ -332,7 +344,7 @@ func (m *Manager) executeChatAgentSwitch(
+ 	}
+ 	recorder.boundary(domain.AgentSwitchFailureFinalArtifactCommit)
+ 	result, err = m.finalizeAgentSwitchHandoff(
+-		ctx, store, result, writtenFinal, false, sourceTranscriptStatus)
++		ctx, store, result, writtenFinal, semanticHandoffAvailable, sourceTranscriptStatus)
+ 	if err != nil {
+ 		if errors.Is(err, errAgentSwitchFinalArtifactVerify) {
+ 			recorder.failurePoint = domain.AgentSwitchFailureFinalArtifactVerify
+diff --git a/backend/internal/session_manager/agent_switching_chat_integration_test.go b/backend/internal/session_manager/agent_switching_chat_integration_test.go
+index ab723ba..114c339 100644
+--- a/backend/internal/session_manager/agent_switching_chat_integration_test.go
++++ b/backend/internal/session_manager/agent_switching_chat_integration_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"log/slog"
+ 	"path/filepath"
+ 	"reflect"
++	"strings"
+ 	"sync"
+ 	"testing"
+ 	"time"
+@@ -578,4 +579,31 @@ func TestSwitchAgentRealChatServiceSQLiteActivationCAS(t *testing.T) {
+ 			t.Fatalf("stale target boundary lookup error = %v, want ErrNoConversationBranch", err)
+ 		}
+ 	})
++
++	t.Run("persists conversation checkpoint into the incoming agent handoff", func(t *testing.T) {
++		fixture := newChatSwitchIntegrationFixture(t, false)
++		admitted := fixture.runSwitch(t, "real-chat-handoff-carryover")
++		completed, found, err := fixture.store.GetAgentSwitch(context.Background(), admitted.ID)
++		if err != nil || !found {
++			t.Fatalf("completed switch: found=%v err=%v", found, err)
++		}
++		if completed.State != domain.AgentSwitchCompleted {
++			t.Fatalf("completed switch state = %q, want completed", completed.State)
++		}
++		finalized, valid := fixture.manager.readVerifiedFinalizedHandoff(context.Background(), completed)
++		if !valid {
++			t.Fatalf("finalized handoff valid = false for switch %+v", completed)
++		}
++		for _, want := range []string{
++			"keep the API small",
++			"implementation is in progress",
++			"implement the feature",
++			"abc123",
++			"<ao-continuation ",
++		} {
++			if !strings.Contains(finalized.Continuation, want) {
++				t.Fatalf("finalized continuation missing %q:\n%s", want, finalized.Continuation)
++			}
++		}
++	})
+ }
+-- 
+2.51.0
+
