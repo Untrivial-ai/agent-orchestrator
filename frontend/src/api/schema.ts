@@ -3441,6 +3441,7 @@ export interface components {
         KillReviewResponse: {
             reviewerHandleId: string;
             reviewerHarness?: string;
+            reviewerTerminals: components["schemas"]["ReviewerTerminalResponse"][];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -3480,6 +3481,7 @@ export interface components {
             reviewerActivityState?: "active" | "idle" | "waiting_input" | "blocked" | "exited";
             reviewerHandleId: string;
             reviewerHarness?: string;
+            reviewerTerminals: components["schemas"]["ReviewerTerminalResponse"][];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -3799,6 +3801,7 @@ export interface components {
         RestoreReviewResponse: {
             reviewerHandleId: string;
             reviewerHarness?: string;
+            reviewerTerminals: components["schemas"]["ReviewerTerminalResponse"][];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -3846,6 +3849,12 @@ export interface components {
             review: components["schemas"]["ReviewRun"];
             reviewerHandleId: string;
             reviews: components["schemas"]["ReviewRun"][];
+        };
+        ReviewerTerminalResponse: {
+            /** @enum {string} */
+            activityState?: "active" | "idle" | "waiting_input" | "blocked" | "exited";
+            handleId: string;
+            harness: string;
         };
         RoleOverride: {
             agent?: string;
@@ -4347,6 +4356,7 @@ export interface components {
             /** @description True when a new review pass was started; false when an existing run for the same commit was reused. */
             created: boolean;
             reviewerHandleId: string;
+            reviewerTerminals: components["schemas"]["ReviewerTerminalResponse"][];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };

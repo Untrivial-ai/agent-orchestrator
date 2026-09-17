@@ -1618,7 +1618,10 @@ function ReviewsSection({
 				setReviewNotice(t("inspector.reviewAlreadyRanForCommit"));
 				return;
 			}
-			if (data?.reviewerHandleId) {
+			if (data?.reviewerTerminals && data.reviewerTerminals.length > 0) {
+				const terminal = data.reviewerTerminals[0];
+				onOpenReviewerTerminal?.({ handleId: terminal.handleId, harness: terminal.harness || "reviewer" });
+			} else if (data?.reviewerHandleId) {
 				const harness = started.latestRun.harness || "reviewer";
 				onOpenReviewerTerminal?.({ handleId: data.reviewerHandleId, harness });
 			}
