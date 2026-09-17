@@ -78,6 +78,8 @@ type fakeStore struct {
 	comments            map[string][]domain.PullRequestComment
 	commentsErr         error
 	reviewRuns          map[domain.SessionID][]domain.CurrentHeadReviewRun
+	workerErrs          map[domain.SessionID][]domain.WorkerErrorEvent
+	workerErrsErr       error
 	listPRFactsCalls    int
 	listReviewRunsCalls int
 	num                 int
@@ -97,6 +99,7 @@ func newFakeStore() *fakeStore {
 		threads:        map[string][]domain.PullRequestReviewThread{},
 		comments:       map[string][]domain.PullRequestComment{},
 		reviewRuns:     map[domain.SessionID][]domain.CurrentHeadReviewRun{},
+		workerErrs:     map[domain.SessionID][]domain.WorkerErrorEvent{},
 	}
 }
 
@@ -375,6 +378,24 @@ func (f *fakeStore) ListCurrentHeadReviewRunsForSessions(_ context.Context, ids 
 	out := make(map[domain.SessionID][]domain.CurrentHeadReviewRun, len(ids))
 	for _, id := range ids {
 		out[id] = append([]domain.CurrentHeadReviewRun(nil), f.reviewRuns[id]...)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) LatestSessionWorkerErrors(_ context.Context, id domain.SessionID) ([]domain.WorkerErrorEvent, error) {
+	if f.workerErrsErr != nil {
+		return nil, f.workerErrsErr
+	}
+	return append([]domain.WorkerErrorEvent(nil), f.workerErrs[id]...), nil
+}
+
+func (f *fakeStore) LatestSessionWorkerErrorsForSessions(_ context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.WorkerErrorEvent, error) {
+	if f.workerErrsErr != nil {
+		return nil, f.workerErrsErr
+	}
+	out := make(map[domain.SessionID][]domain.WorkerErrorEvent, len(ids))
+	for _, id := range ids {
+		out[id] = append([]domain.WorkerErrorEvent(nil), f.workerErrs[id]...)
 	}
 	return out, nil
 }
@@ -4974,7 +4995,7 @@ func TestToSessionWithFactsRemapsTransferredAliasReviewRuns(t *testing.T) {
 		CreatedAt: rec.UpdatedAt,
 	}}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID], domain.DefaultWatchdog(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5032,7 +5053,7 @@ func TestToSessionWithFactsCanonicalAliasRunSupersedesOlderAliasRun(t *testing.T
 		},
 	}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID], domain.DefaultWatchdog(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5137,5 +5158,111 @@ func TestSpawnTelemetryCarriesRequestID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestListSurfacesWatchdogQuestionPending(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:  domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-6 * time.Minute)},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	list, err := (&Service{store: st, clock: func() time.Time { return now }}).List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("len(list) = %d, want 1", len(list))
+	}
+	if !list[0].NeedsAttention || list[0].AttentionReason != domain.AttentionReasonQuestionPending {
+		t.Fatalf("session = %+v, want needsAttention question_pending", list[0])
+	}
+	if list[0].AttentionDetail == "" {
+		t.Fatal("attention detail missing")
+	}
+}
+
+func TestListWatchdogUsesProjectThresholdOverride(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{
+		ID: "mer",
+		Config: domain.ProjectConfig{
+			Watchdog: domain.WatchdogConfig{StalledAfterMinutes: 1},
+		},
+	}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-2 * time.Minute)},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	list, err := (&Service{store: st, clock: func() time.Time { return now }}).List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !list[0].NeedsAttention || list[0].AttentionReason != domain.AttentionReasonStalled {
+		t.Fatalf("list = %+v, want stalled under the project's 1m override", list)
+	}
+}
+
+func TestGetSurfacesWatchdogProviderQuotaAndLastErrorAt(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-12 * time.Minute)},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	st.workerErrs["mer-1"] = []domain.WorkerErrorEvent{{
+		SessionID:  "mer-1",
+		Source:     domain.WorkerErrorSourceChatTurn,
+		Message:    "402 payment required: spend limit reached",
+		OccurredAt: now.Add(-11 * time.Minute),
+	}}
+	sess, err := (&Service{store: st, clock: func() time.Time { return now }}).Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.NeedsAttention || sess.AttentionReason != domain.AttentionReasonProviderQuota {
+		t.Fatalf("session = %+v, want needsAttention provider_quota", sess)
+	}
+	if sess.LastWorkerErrorAt == nil || !sess.LastWorkerErrorAt.Equal(now.Add(-11*time.Minute)) {
+		t.Fatalf("LastWorkerErrorAt = %v, want the error instant", sess.LastWorkerErrorAt)
+	}
+}
+
+func TestListPropagatesWorkerErrorReadFailure(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.workerErrsErr = errors.New("db down")
+	_, err := (&Service{store: st}).List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err == nil || !strings.Contains(err.Error(), "list worker errors") {
+		t.Fatalf("err = %v, want list worker errors", err)
+	}
+}
+
+func TestGetPropagatesWorkerErrorReadFailure(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.workerErrsErr = errors.New("db down")
+	_, err := (&Service{store: st}).Get(context.Background(), "mer-1")
+	if err == nil || !strings.Contains(err.Error(), "worker errors") {
+		t.Fatalf("err = %v, want worker errors", err)
+	}
+}
+
+func TestResolveWatchdogConfigFallsBackToDefaults(t *testing.T) {
+	st := newFakeStore()
+	svc := &Service{store: st}
+	want := domain.DefaultWatchdog()
+	// Unknown project: the read must never fail a session read.
+	if got := svc.resolveWatchdogConfig(context.Background(), "missing"); got != want {
+		t.Fatalf("unknown project = %+v, want defaults %+v", got, want)
+	}
+	// Standalone session (no project): global defaults.
+	if got := svc.resolveWatchdogConfig(context.Background(), ""); got != want {
+		t.Fatalf("standalone = %+v, want defaults %+v", got, want)
 	}
 }

@@ -8336,6 +8336,19 @@ components:
           $ref: '#/components/schemas/AgentSwitch'
         activity:
           $ref: '#/components/schemas/DomainActivity'
+        attentionDetail:
+          type: string
+        attentionReason:
+          enum:
+          - stalled
+          - question_pending
+          - decision_pending
+          - blocked_infra
+          - provider_quota
+          - provider_auth
+          - environment_error
+          - vcs_conflict
+          type: string
         autoInjectCI:
           type: boolean
         autoInjectReview:
@@ -8400,6 +8413,11 @@ components:
           type:
           - "null"
           - string
+        lastWorkerErrorAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         mode:
           enum:
           - chat
@@ -8407,6 +8425,8 @@ components:
           type: string
         model:
           type: string
+        needsAttention:
+          type: boolean
         pinnedAt:
           format: date-time
           type:
@@ -8510,6 +8530,7 @@ components:
       - status
       - kanbanColumn
       - displayStatus
+      - needsAttention
       - prs
       type: object
     ControllersSetSecurePairingRequest:
@@ -10500,6 +10521,8 @@ components:
           type: array
         trackerIntake:
           $ref: '#/components/schemas/TrackerIntakeConfig'
+        watchdog:
+          $ref: '#/components/schemas/WatchdogConfig'
         worker:
           $ref: '#/components/schemas/RoleOverride'
       type: object
@@ -12307,6 +12330,18 @@ components:
       - processedTokens
       - cacheReadTokens
       - estimatedCost
+      type: object
+    WatchdogConfig:
+      properties:
+        consecutiveInfraErrors:
+          format: int64
+          type: integer
+        questionPendingAfterMinutes:
+          format: int64
+          type: integer
+        stalledAfterMinutes:
+          format: int64
+          type: integer
       type: object
     WorkspaceCommitSummary:
       properties:

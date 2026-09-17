@@ -49,6 +49,12 @@ type Store interface {
 	ListPRComments(ctx context.Context, prURL string) ([]domain.PullRequestComment, error)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 	ListWorkspaceRepos(ctx context.Context, projectID string) ([]domain.WorkspaceRepoRecord, error)
+	// LatestSessionWorkerErrors returns a session's recorded worker-error
+	// facts, newest first, for the watchdog's read-time derivation.
+	LatestSessionWorkerErrors(ctx context.Context, id domain.SessionID) ([]domain.WorkerErrorEvent, error)
+	// LatestSessionWorkerErrorsForSessions batches LatestSessionWorkerErrors
+	// for session-list reads, keyed by session id.
+	LatestSessionWorkerErrorsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.WorkerErrorEvent, error)
 }
 
 // ListFilter captures API-facing session list query filters.
@@ -969,9 +975,22 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 	if err != nil {
 		return nil, fmt.Errorf("list review runs: %w", err)
 	}
+	errsBySession, err := s.store.LatestSessionWorkerErrorsForSessions(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("list worker errors: %w", err)
+	}
+	watchdogByProject := make(map[domain.ProjectID]domain.ResolvedWatchdogConfig)
+	watchdogFor := func(projectID domain.ProjectID) domain.ResolvedWatchdogConfig {
+		if cfg, ok := watchdogByProject[projectID]; ok {
+			return cfg
+		}
+		cfg := s.resolveWatchdogConfig(ctx, projectID)
+		watchdogByProject[projectID] = cfg
+		return cfg
+	}
 	out := make([]domain.Session, 0, len(filtered))
 	for _, rec := range filtered {
-		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID])
+		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID], watchdogFor(rec.ProjectID), errsBySession[rec.ID])
 		if err != nil {
 			return nil, err
 		}
@@ -1051,12 +1070,12 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	return sess, nil
 }
 
-func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
+func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun, watchdog domain.ResolvedWatchdogConfig, workerErrs []domain.WorkerErrorEvent) (domain.Session, error) {
 	runs = canonicalizeCurrentHeadReviewRuns(prs, runs)
 	prs = deduplicatePRFacts(prs)
-	// Both derivations read the clock once, from the same instant: they share
-	// the no-signal rule, and two reads could put them either side of its grace
-	// period and have the card contradict its own status.
+	// All derivations read the clock once, from the same instant: status and
+	// the watchdog share recency thresholds, and two reads could put them
+	// either side of one and have the card contradict its own verdict.
 	now := s.now()
 	presentation := deriveKanbanPresentation(rec, prs, runs, now, s.harnessSignals(rec.Harness))
 	readiness := "ready"
@@ -1065,18 +1084,38 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	}); ok {
 		readiness = recovery.SessionStatusReadiness(rec)
 	}
+	attention := deriveWatchdog(rec, watchdog, workerErrs, now)
 	return domain.Session{
 		SessionRecord:   rec,
 		StatusReadiness: readiness,
 		ChatProviderPreserved: rec.Mode == domain.SessionModeChat && !rec.IsTerminated &&
 			s.chatProviderPreserved != nil && s.chatProviderPreserved(rec.ID),
-		Status:           deriveStatus(rec, prs, now, s.harnessSignals(rec.Harness)),
-		SCMStatus:        deriveSCMStatus(prs),
-		KanbanColumn:     presentation.Column,
-		DisplayStatus:    presentation.DisplayStatus,
-		TerminalHandleID: rec.Metadata.RuntimeHandleID,
-		PRs:              prs,
+		Status:            deriveStatus(rec, prs, now, s.harnessSignals(rec.Harness)),
+		SCMStatus:         deriveSCMStatus(prs),
+		KanbanColumn:      presentation.Column,
+		DisplayStatus:     presentation.DisplayStatus,
+		TerminalHandleID:  rec.Metadata.RuntimeHandleID,
+		NeedsAttention:    attention.needsAttention,
+		AttentionReason:   attention.reason,
+		AttentionDetail:   attention.detail,
+		LastWorkerErrorAt: attention.lastErrorAt,
+		PRs:               prs,
 	}, nil
+}
+
+// resolveWatchdogConfig loads a project's watchdog thresholds, falling back
+// to the global defaults when the session is standalone, the project is
+// unknown, or the read fails. A config read must never fail a session read:
+// worst case the session is judged by the defaults.
+func (s *Service) resolveWatchdogConfig(ctx context.Context, projectID domain.ProjectID) domain.ResolvedWatchdogConfig {
+	if projectID == "" || s.store == nil {
+		return domain.DefaultWatchdog()
+	}
+	rec, ok, err := s.store.GetProject(ctx, string(projectID))
+	if err != nil || !ok {
+		return domain.DefaultWatchdog()
+	}
+	return rec.Config.Watchdog.Resolve()
 }
 
 // toAPIError maps the session engine's sentinel errors to their REST API
@@ -1315,7 +1354,11 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	if err != nil {
 		return domain.Session{}, err
 	}
-	return s.toSessionWithFacts(rec, prs, runs)
+	workerErrs, err := s.store.LatestSessionWorkerErrors(ctx, rec.ID)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("worker errors %s: %w", rec.ID, err)
+	}
+	return s.toSessionWithFacts(rec, prs, runs, s.resolveWatchdogConfig(ctx, rec.ProjectID), workerErrs)
 }
 
 // currentHeadReviewRuns reads the session's AO review passes for the Kanban

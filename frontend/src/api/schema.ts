@@ -2916,6 +2916,9 @@ export interface components {
         ControllersSessionView: {
             activeAgentSwitch?: components["schemas"]["AgentSwitch"];
             activity: components["schemas"]["DomainActivity"];
+            attentionDetail?: string;
+            /** @enum {string} */
+            attentionReason?: "stalled" | "question_pending" | "decision_pending" | "blocked_infra" | "provider_quota" | "provider_auth" | "environment_error" | "vcs_conflict";
             autoInjectCI: boolean;
             autoInjectReview: boolean;
             autoReviewEnabled: boolean;
@@ -2936,9 +2939,12 @@ export interface components {
             kind: string;
             /** Format: date-time */
             lastUserMessageAt?: null | string;
+            /** Format: date-time */
+            lastWorkerErrorAt?: null | string;
             /** @enum {string} */
             mode: "chat" | "tui";
             model?: string;
+            needsAttention: boolean;
             /** Format: date-time */
             pinnedAt?: null | string;
             /** Format: int64 */
@@ -3702,6 +3708,7 @@ export interface components {
             sessionPrefix?: string;
             symlinks?: string[];
             trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
+            watchdog?: components["schemas"]["WatchdogConfig"];
             worker?: components["schemas"]["RoleOverride"];
         };
         ProjectGetResponse: {
@@ -4404,6 +4411,14 @@ export interface components {
             processedTokens: null | number;
             /** @description Input not read from an existing provider cache. Includes cache writes. */
             uncachedInputTokens: null | number;
+        };
+        WatchdogConfig: {
+            /** Format: int64 */
+            consecutiveInfraErrors?: number;
+            /** Format: int64 */
+            questionPendingAfterMinutes?: number;
+            /** Format: int64 */
+            stalledAfterMinutes?: number;
         };
         WorkspaceCommitSummary: {
             author: string;

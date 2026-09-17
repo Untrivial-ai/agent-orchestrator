@@ -249,9 +249,26 @@ type Session struct {
 	// important current fact about the session at the stage it sits in. It is
 	// derived after the column, from the facts that column reads, and ships in
 	// renderable form so clients print it without a mapping table of their own.
-	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
-	TerminalHandleID  string        `json:"terminalHandleId,omitempty"`
-	ActiveAgentSwitch *AgentSwitch  `json:"-"`
+	DisplayStatus    DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
+	TerminalHandleID string        `json:"terminalHandleId,omitempty"`
+	// NeedsAttention is the daemon worker-watchdog's read-time verdict: true
+	// when the session looks stuck (stalled, parked on a question/decision, or
+	// wedged on provider errors) rather than working quietly. Derived from
+	// durable activity/error facts on every read; never persisted.
+	NeedsAttention bool `json:"needsAttention"`
+	// AttentionReason is the machine-stable watchdog verdict, present only
+	// when NeedsAttention is true.
+	AttentionReason AttentionReason `json:"attentionReason,omitempty" enum:"stalled,question_pending,decision_pending,blocked_infra,provider_quota,provider_auth,environment_error,vcs_conflict"`
+	// AttentionDetail is the human sentence behind the verdict: quiet
+	// durations plus the last-error excerpt when one exists. Present only when
+	// NeedsAttention is true.
+	AttentionDetail string `json:"attentionDetail,omitempty"`
+	// LastWorkerErrorAt is when the latest still-unrecovered worker error was
+	// recorded: an error newer than the session's last progress. Nil when every
+	// recorded error predates the latest progress (a recovered outage clears
+	// itself with no manual reset) or when none was ever recorded.
+	LastWorkerErrorAt *time.Time   `json:"lastWorkerErrorAt,omitempty"`
+	ActiveAgentSwitch *AgentSwitch `json:"-"`
 	// PRs are the session's attributed pull requests (one session can own many).
 	// They feed status derivation and are surfaced on the API read model. Not
 	// serialized here: the HTTP boundary maps them to the curated wire shape.

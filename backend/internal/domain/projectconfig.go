@@ -73,6 +73,11 @@ type ProjectConfig struct {
 	// new session at spawn time. Users can still override the per-session toggle
 	// after spawn.
 	AutoReview bool `json:"autoReview,omitempty"`
+
+	// Watchdog overrides the daemon worker-watchdog (health/stuck detection)
+	// thresholds for this project's sessions. The zero value keeps the global
+	// defaults; only set thresholds are overridden.
+	Watchdog WatchdogConfig `json:"watchdog,omitempty"`
 }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker
@@ -209,6 +214,9 @@ func (c ProjectConfig) Validate() error {
 		}
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {
+		return err
+	}
+	if err := c.Watchdog.Validate(); err != nil {
 		return err
 	}
 	return nil

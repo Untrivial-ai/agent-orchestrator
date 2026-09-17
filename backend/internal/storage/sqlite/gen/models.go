@@ -611,6 +611,15 @@ type SessionInterfaceTransitionMessage struct {
 	ClientMessageID string
 }
 
+type SessionWorkerError struct {
+	ID           int64
+	SessionID    string
+	Source       string
+	TurnID       string
+	ErrorMessage string
+	OccurredAt   time.Time
+}
+
 type SessionWorktree struct {
 	SessionID    domain.SessionID
 	RepoName     string

@@ -1137,6 +1137,15 @@ func (s *Store) SettleTurn(
 			return err
 		}
 	}
+	// A failed turn is a durable worker-error fact for the watchdog: the raw
+	// provider message plus when it happened, recorded atomically with the
+	// settle on the same writer. Interrupted turns are user intent, not
+	// errors, and carry no message.
+	if state == domain.TurnStateFailed && errMessage != "" {
+		if err := recordSessionWorkerError(ctx, q, turn.HandledBySessionID, domain.WorkerErrorSourceChatTurn, turn.ID, errMessage, now); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2010,6 +2019,19 @@ func (s *Store) SettleTurnByID(
 ) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	// Attribute a failed turn to its owning session for the watchdog log. An
+	// unknown turn keeps the historical blind-settle semantics (settle, record
+	// nothing); only a read failure aborts before the settle.
+	var turn gen.ConversationTurn
+	attribute := state == domain.TurnStateFailed && errMessage != ""
+	if attribute {
+		var err error
+		turn, err = s.qw.SelectConversationTurnByID(ctx, turnID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("select turn %s: %w", turnID, err)
+		}
+		attribute = err == nil
+	}
 	if err := s.qw.SettleConversationTurn(ctx, gen.SettleConversationTurnParams{
 		State:        state,
 		ErrorMessage: errMessage,
@@ -2017,6 +2039,11 @@ func (s *Store) SettleTurnByID(
 		ID:           turnID,
 	}); err != nil {
 		return fmt.Errorf("settle turn %s: %w", turnID, err)
+	}
+	if attribute {
+		if err := recordSessionWorkerError(ctx, s.qw, turn.HandledBySessionID, domain.WorkerErrorSourceChatTurn, turn.ID, errMessage, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }
