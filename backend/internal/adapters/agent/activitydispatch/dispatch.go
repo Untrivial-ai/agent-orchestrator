@@ -20,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/droid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/fake"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/junie"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimchi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/muse"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/omp"
@@ -66,6 +67,9 @@ var Derivers = map[string]DeriveFunc{
 	"autohand":    activitystate.StandardDeriveActivityState,
 	"vibe":        vibe.DeriveActivityState,
 	"fake":        fake.DeriveActivityState,
+	// Junie callbacks are available for isolated conformance work only. The
+	// harness remains absent from the production registry while hooks are EAP.
+	"junie": junie.DeriveActivityState,
 }
 
 // SignalCoverage describes how much of a harness lifecycle AO can observe.
@@ -91,8 +95,9 @@ const (
 // callback. Continue's Claude-compatible hooks vary by installed CLI version,
 // so its terminal fallback is useful without treating hook silence as broken.
 var signalCoverageOverrides = map[domain.AgentHarness]SignalCoverage{
-	domain.HarnessAider:    SignalCoveragePartial,
-	domain.HarnessContinue: SignalCoveragePartial,
+	domain.AgentHarness("junie"): SignalCoveragePartial,
+	domain.HarnessAider:          SignalCoveragePartial,
+	domain.HarnessContinue:       SignalCoveragePartial,
 }
 
 // CoverageForHarness returns the activity-signal coverage for a selectable

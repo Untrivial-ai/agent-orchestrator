@@ -1,0 +1,94 @@
+{
+  "reviewedOn": "2026-09-17",
+  "hooksDocumentation": "https://junie.jetbrains.com/docs/junie-cli-hooks.html",
+  "hooksChannel": "eap",
+  "releases": [
+    {
+      "channel": "stable",
+      "build": "3196.5",
+      "marketingVersion": "26.9.14",
+      "releaseFeed": "https://raw.githubusercontent.com/JetBrains/junie/main/update-info.jsonl",
+      "artifacts": [
+        {
+          "platform": "linux-aarch64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3196.5/junie-release-3196.5-linux-aarch64.zip",
+          "sha256": "ac43e6b9ab512b94c57b1d12d52ac35131eb8dbcfb55b42f7fb1e8cd2dd76a98"
+        },
+        {
+          "platform": "linux-amd64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3196.5/junie-release-3196.5-linux-amd64.zip",
+          "sha256": "dfe7635595f87c6e6d2a3acfe239b2bcb54ceaef4df41f0ca1044ed0ae37aa01"
+        },
+        {
+          "platform": "macos-aarch64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3196.5/junie-release-3196.5-macos-aarch64.zip",
+          "sha256": "02bd45ace8ffbbdf4a8ddb761f487a4ebb067b3c9d7bacdb468261800a92cda6"
+        },
+        {
+          "platform": "macos-amd64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3196.5/junie-release-3196.5-macos-amd64.zip",
+          "sha256": "be9b05355a16b072b82bde8bf7a2392ca8c6957910846c30cd68f849bedba105"
+        },
+        {
+          "platform": "windows-aarch64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3196.5/junie-release-3196.5-windows-aarch64.zip",
+          "sha256": "ff96d1920b85f9f8c340db01a7c6890317ab82064fd65cc00693ed41cc307e5e"
+        },
+        {
+          "platform": "windows-amd64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3196.5/junie-release-3196.5-windows-amd64.zip",
+          "sha256": "1fa1e5ec7a3811c0c775f7cdac85c5a4daaed8208382bd382c9faaa03fd50ff1"
+        }
+      ]
+    },
+    {
+      "channel": "eap",
+      "build": "3294.4",
+      "marketingVersion": "26.9.21",
+      "releaseFeed": "https://raw.githubusercontent.com/JetBrains/junie/main/update-info-eap.jsonl",
+      "artifacts": [
+        {
+          "platform": "linux-aarch64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3294.4/junie-eap-3294.4-linux-aarch64.zip",
+          "sha256": "dba9a54582fdb2dbf89605f8c28595845dc40b13ad266c0475b703b2edf611b5"
+        },
+        {
+          "platform": "linux-amd64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3294.4/junie-eap-3294.4-linux-amd64.zip",
+          "sha256": "3a63aad3680319a2cb7a648667d3c987bd77f1ee310644d19d5978ceb56d4dfa"
+        },
+        {
+          "platform": "macos-aarch64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3294.4/junie-eap-3294.4-macos-aarch64.zip",
+          "sha256": "cdacfdd4fdb0549e8372a0630753ecf7bdd2ad95772f0495746bf9d0c3941333"
+        },
+        {
+          "platform": "macos-amd64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3294.4/junie-eap-3294.4-macos-amd64.zip",
+          "sha256": "58956d1328c1d2cceaf530f095dfb4b97523757dd3dfed721e7f890dfc8467b0"
+        },
+        {
+          "platform": "windows-aarch64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3294.4/junie-eap-3294.4-windows-aarch64.zip",
+          "sha256": "b25f70e580b2693dbde3b34eccfa2ab5a841ffc9a04a576d08e4a9ccf8b93d45"
+        },
+        {
+          "platform": "windows-amd64",
+          "url": "https://github.com/JetBrains/junie/releases/download/3294.4/junie-eap-3294.4-windows-amd64.zip",
+          "sha256": "eeb6c8728cfe763c2b3b972d5efd8fcc6df92b0c8c21bae7a5635fa05beaff32"
+        }
+      ]
+    }
+  ],
+  "tuiRegistrationEligible": false,
+  "chatRegistrationEligible": false,
+  "missingEvidence": [
+    "Stable hook release",
+    "Artifact execution and captured CLI help",
+    "Authenticated prompt delivery, onboarding and trust handling",
+    "Persistent guidelines and preservation of project guidance",
+    "Native session_id capture and exact restore with prior context",
+    "Permission observation preserves native dialog and explicit denial",
+    "ACP initialize/new/load, streaming, permissions, cancellation, reconnect and history replay"
+  ]
+}

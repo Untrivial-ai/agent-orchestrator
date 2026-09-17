@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -264,6 +265,9 @@ func TestRuntimeFilesPrepareIsIdempotentAndDoesNotClobberOtherFiles(t *testing.T
 }
 
 func TestRuntimeFilesPrepareConcurrentCallsExposeOnlyCompleteFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows readers do not share delete access; native replacement concurrency needs separate platform conformance")
+	}
 	dataDir := t.TempDir()
 	builder := NewRuntimeFileBuilder()
 	initial, err := builder.Prepare(context.Background(), RuntimeFileRequest{
@@ -391,7 +395,9 @@ func assertRuntimePathMode(t *testing.T, path string, want os.FileMode) {
 	if err != nil {
 		t.Fatalf("lstat %s: %v", path, err)
 	}
-	if got := info.Mode().Perm(); got != want {
+	// Windows does not expose POSIX mode bits. Native ACL verification remains
+	// part of the platform admission gate; the path/content tests still run.
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != want {
 		t.Fatalf("mode %s = %04o, want %04o", path, got, want)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
@@ -420,6 +426,9 @@ func mustRuntimeMkdirAll(t *testing.T, path string) {
 func mustRuntimeSymlink(t *testing.T, oldname, newname string) {
 	t.Helper()
 	if err := os.Symlink(oldname, newname); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink test requires Windows symlink privileges: %v", err)
+		}
 		t.Fatalf("symlink %s -> %s: %v", newname, oldname, err)
 	}
 }

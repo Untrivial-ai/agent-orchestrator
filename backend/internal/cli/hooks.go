@@ -19,6 +19,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/junie"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
@@ -381,6 +382,13 @@ func newHooksCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) runHook(ctx context.Context, agent, event string) error {
+	if agent == "junie" {
+		// Leave room for the projection-busy retries while completing before
+		// Junie's ten-second hook runner deadline. Delivery stays best-effort.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
 	observedAt := c.deps.Now()
 	if isAgyModernHookEvent(agent, event) {
 		// AGY requires every modern hook handler to return a JSON object, even
@@ -421,7 +429,9 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
+	if agent == "junie" {
+		agentSessionID = junie.NativeSessionID(payload)
+	} else if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
 		agentSessionID = hookAgentSessionID(payload)
 	}
 	usage := hookUsageMetadata(agent, payload)
@@ -570,7 +580,9 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 	}
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
+	if agent == "junie" {
+		agentSessionID = junie.NativeSessionID(payload)
+	} else if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
 		agentSessionID = hookAgentSessionID(payload)
 	}
 	if !hasActivity && agentSessionID == "" {

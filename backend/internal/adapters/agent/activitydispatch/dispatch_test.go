@@ -6,13 +6,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// Every deriver key must be a known harness name except fake, whose deriver is
-// retained for test fixtures and historical callbacks even though the harness is
-// no longer user-selectable. SupportsHarness equates tokens and harnesses, so any
+// Every deriver key must be a known harness name except fake and experimental
+// Junie, whose callbacks support fixtures/conformance without being selectable.
+// SupportsHarness equates tokens and harnesses, so any
 // other drift would silently report a hooked harness as hook-less.
 func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 	for token := range Derivers {
-		if token == string(domain.HarnessFake) {
+		if token == string(domain.HarnessFake) || token == "junie" {
 			continue
 		}
 		if !domain.AgentHarness(token).IsKnown() {
@@ -32,6 +32,15 @@ func TestSupportsHarness(t *testing.T) {
 		if SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = true, want false", h)
 		}
+	}
+}
+
+func TestJunieExperimentalDispatchHasPartialCoverage(t *testing.T) {
+	if state, ok := Derive("junie", "stop", []byte(`{}`)); !ok || state != domain.ActivityIdle {
+		t.Fatalf("Junie stop = (%q, %v)", state, ok)
+	}
+	if CoverageForHarness(domain.AgentHarness("junie")) != SignalCoveragePartial {
+		t.Fatal("unverified Junie hooks must not claim complete coverage")
 	}
 }
 
