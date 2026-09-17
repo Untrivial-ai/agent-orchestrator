@@ -371,10 +371,11 @@ func (s *Store) ReviewRunPullRequest(
 			orgID, reviewRunID,
 		)
 		var status, verdict, aoReviewState string
+		var reviewTerminalID *string
 		if err := row.Scan(
 			&out.ID, &out.OrgID, &out.PullRequestID, &out.ReviewSessionID,
 			&out.TargetSHA, &status, &verdict, &out.Body,
-			&out.ProviderReviewID, &out.ReviewTerminalID, &out.LastError, &out.CreatedAt,
+			&out.ProviderReviewID, &reviewTerminalID, &out.LastError, &out.CreatedAt,
 			&out.CompletedAt, &out.DeliveredAt,
 			&out.PullRequestProvider, &out.PullRequestRepository, &out.PullRequestNumber,
 			&out.PullRequestURL, &out.PullRequestTitle, &aoReviewState,
@@ -386,6 +387,9 @@ func (s *Store) ReviewRunPullRequest(
 		}
 		out.Status = contract.AOReviewRunStatus(status)
 		out.Verdict = contract.AOReviewVerdict(verdict)
+		if reviewTerminalID != nil {
+			out.ReviewTerminalID = *reviewTerminalID
+		}
 		out.PullRequestAOReviewState = contract.AOReviewState(aoReviewState)
 		return nil
 	})
@@ -435,10 +439,11 @@ func (s *Store) ListReviewRunsBySession(
 		for rows.Next() {
 			var run domain.ReviewRunPullRequest
 			var status, verdict, aoReviewState string
+			var reviewTerminalID *string
 			if err := rows.Scan(
 				&run.ID, &run.OrgID, &run.PullRequestID, &run.ReviewSessionID,
 				&run.TargetSHA, &status, &verdict, &run.Body,
-				&run.ProviderReviewID, &run.ReviewTerminalID, &run.LastError, &run.CreatedAt,
+				&run.ProviderReviewID, &reviewTerminalID, &run.LastError, &run.CreatedAt,
 				&run.CompletedAt, &run.DeliveredAt,
 				&run.PullRequestProvider, &run.PullRequestRepository, &run.PullRequestNumber,
 				&run.PullRequestURL, &run.PullRequestTitle, &aoReviewState,
@@ -447,6 +452,9 @@ func (s *Store) ListReviewRunsBySession(
 			}
 			run.Status = contract.AOReviewRunStatus(status)
 			run.Verdict = contract.AOReviewVerdict(verdict)
+			if reviewTerminalID != nil {
+				run.ReviewTerminalID = *reviewTerminalID
+			}
 			run.PullRequestAOReviewState = contract.AOReviewState(aoReviewState)
 			out = append(out, run)
 		}
@@ -468,9 +476,10 @@ type reviewRunRow interface {
 func scanReviewRun(row reviewRunRow) (domain.ReviewRun, error) {
 	var run domain.ReviewRun
 	var status, verdict string
+	var reviewTerminalID *string
 	err := row.Scan(
 		&run.ID, &run.OrgID, &run.PullRequestID, &run.ReviewSessionID, &run.TargetSHA,
-		&status, &verdict, &run.Body, &run.ProviderReviewID, &run.ReviewTerminalID, &run.LastError,
+		&status, &verdict, &run.Body, &run.ProviderReviewID, &reviewTerminalID, &run.LastError,
 		&run.CreatedAt, &run.CompletedAt, &run.DeliveredAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -481,5 +490,8 @@ func scanReviewRun(row reviewRunRow) (domain.ReviewRun, error) {
 	}
 	run.Status = contract.AOReviewRunStatus(status)
 	run.Verdict = contract.AOReviewVerdict(verdict)
+	if reviewTerminalID != nil {
+		run.ReviewTerminalID = *reviewTerminalID
+	}
 	return run, nil
 }
