@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
 import { renderMermaidDiagram } from "../../lib/mermaid-diagram";
 import { ActivityTitle, ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
 import { ChatImageSourceProvider } from "./chat-image-source";
+import { setApiBaseUrl } from "../../lib/api-client";
 
 // Mermaid needs real SVG layout APIs jsdom lacks; pin the routing boundary and
 // let MermaidBlock.test.tsx own the block's states.
@@ -323,6 +324,35 @@ describe("ChatMarkdown image sources", () => {
 			"src",
 			"http://127.0.0.1:3001/api/v1/x.png",
 		);
+	});
+
+	it("falls back to the alt text when a resolved image fails to load", () => {
+		// Agents guess worktree paths, so a 404 on the blob route is an ordinary
+		// outcome, not an edge case: a broken-image box mid-reply is the wrong
+		// default. Matches `MarkdownImage` in the file viewer.
+		renderInSession("![missing shot](docs/missing.png)");
+
+		fireEvent.error(screen.getByRole("img", { name: "missing shot" }));
+
+		expect(screen.queryByRole("img")).not.toBeInTheDocument();
+		expect(screen.getByText("missing shot")).toBeInTheDocument();
+	});
+
+	it("rebuilds image URLs when the daemon base URL arrives or changes", () => {
+		// getApiBaseUrl() is "" until a daemon URL is trusted, so an image rendered
+		// during startup or a daemon restart points at the renderer origin. It has to
+		// recover here rather than relying on an unrelated subscriber re-rendering it.
+		renderInSession("![screenshot](docs/shot.png)");
+		const before = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		expect(before.startsWith("/api/v1/sessions/session-1/workspace/file/blob")).toBe(true);
+
+		try {
+			act(() => setApiBaseUrl("http://127.0.0.1:3111"));
+			const after = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+			expect(after.startsWith("http://127.0.0.1:3111/api/v1/sessions/session-1/workspace/file/blob")).toBe(true);
+		} finally {
+			act(() => setApiBaseUrl(null));
+		}
 	});
 
 	it("leaves a relative path untouched outside a session", () => {
