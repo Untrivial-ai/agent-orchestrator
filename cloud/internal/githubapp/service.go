@@ -105,6 +105,16 @@ type Service struct {
 	checkErr      error
 }
 
+// NewReviewService builds the review-lifecycle subset used by local Cloud.
+// Starting and cancelling a reviewer terminal does not require GitHub App
+// credentials; delivery is handled separately with the session owner's PAT.
+func NewReviewService(store Store, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{store: store, logger: logger}
+}
+
 func (s *Service) Check(ctx context.Context) error {
 	s.checkMu.Lock()
 	defer s.checkMu.Unlock()

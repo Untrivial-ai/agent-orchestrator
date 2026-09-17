@@ -657,7 +657,7 @@ func (s *Server) workerSubmitReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
+	if s.checkoutBroker == nil && s.patWrites == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Submitting a review is not available.")
 		return
 	}
@@ -671,10 +671,19 @@ func (s *Server) workerSubmitReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	run, err := s.checkoutBroker.SubmitReview(r.Context(), claims.OrgID, claims.SessionID, reviewRunID, domain.SubmitReviewResult{
-		Verdict: contract.AOReviewVerdict(strings.TrimSpace(input.Verdict)),
-		Body:    input.Body,
-	})
+	result := domain.SubmitReviewResult{Verdict: contract.AOReviewVerdict(strings.TrimSpace(input.Verdict)), Body: input.Body}
+	var (
+		run domain.ReviewRun
+		err error
+	)
+	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+		run, err = s.patWrites.SubmitReview(r.Context(), claims.OrgID, claims.SessionID, reviewRunID, grant.Token, result)
+	} else if s.checkoutBroker != nil {
+		run, err = s.checkoutBroker.SubmitReview(r.Context(), claims.OrgID, claims.SessionID, reviewRunID, result)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Submitting a review is not available.")
+		return
+	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "REVIEW_NOT_AUTHORIZED", "This session may not submit a verdict for this review.")
 		return
