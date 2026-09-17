@@ -127,6 +127,8 @@ func TestGetLaunchCommandRejectsInvalidConfigMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid mode")
 	}
+	// ValidateMode names the harness in the error; "invalid zcode mode" is
+	// still the contract.
 	if !strings.Contains(err.Error(), "invalid zcode mode") {
 		t.Fatalf("err = %v, want invalid zcode mode", err)
 	}

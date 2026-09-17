@@ -34,6 +34,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -83,16 +84,19 @@ func (p *Plugin) Manifest() adapters.Manifest {
 
 // GetConfigSpec reports ZCode's permission modes. ZCode pins its model in
 // its own config (model.main); zcode 0.16.5 has no --model launch flag, so
-// AO exposes the mode instead of a misleading raw-model field.
+// AO exposes the mode instead of a misleading raw-model field. The enum is
+// the domain vocabulary, so it can never diverge from what AgentConfig
+// validation accepts.
 func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.ConfigSpec{}, err
 	}
+	v, _ := domain.ModeVocabulary(domain.HarnessZCode)
 	return ports.ConfigSpec{Fields: []ports.ConfigField{{
 		Key:         "mode",
 		Type:        ports.ConfigFieldEnum,
 		Description: "ZCode permission mode passed to `zcode --mode`.",
-		Enum:        []string{"build", "edit", "plan", "yolo"},
+		Enum:        v.Values,
 	}}}, nil
 }
 
@@ -213,12 +217,6 @@ func (p *Plugin) zcodeBinary(ctx context.Context) (string, error) {
 	return binary, nil
 }
 
-// zcodeModes are the --mode values the real zcode binary accepts (0.16.5:
-// "Supported modes: build, edit, plan, yolo"). A persisted config mode outside
-// this set would otherwise be passed straight to argv and kill the terminal
-// session at launch; validating here turns it into a clean input error.
-var zcodeModes = map[string]bool{"build": true, "edit": true, "plan": true, "yolo": true}
-
 // appendModeFlags maps AO permission modes onto zcode's --mode values. An
 // explicit per-session mode config (build|edit|plan|yolo) wins; otherwise the
 // permission mode is mapped — acceptEdits→edit, auto→build (zcode's internal
@@ -227,8 +225,12 @@ var zcodeModes = map[string]bool{"build": true, "edit": true, "plan": true, "yol
 // default: build).
 func appendModeFlags(cmd *[]string, permissions ports.PermissionMode, configMode string) error {
 	if mode := strings.TrimSpace(configMode); mode != "" {
-		if !zcodeModes[mode] {
-			return fmt.Errorf("invalid zcode mode %q: supported modes are build, edit, plan, yolo", mode)
+		// Defense-in-depth: the domain table accepts the union of every
+		// harness's modes, so re-check against ZCode's own vocabulary here —
+		// a config written by another path must fail as a clean input error,
+		// not reach argv and kill the terminal session at launch.
+		if err := domain.ValidateMode(domain.HarnessZCode, mode); err != nil {
+			return err
 		}
 		*cmd = append(*cmd, "--mode", mode)
 		return nil

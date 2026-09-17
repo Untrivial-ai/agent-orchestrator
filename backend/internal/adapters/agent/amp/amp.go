@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -50,16 +51,18 @@ func (p *Plugin) Manifest() adapters.Manifest {
 
 // GetConfigSpec reports Amp's built-in operating modes. Amp deliberately
 // chooses the underlying models for a mode, so AO exposes mode rather than a
-// misleading raw-model field.
+// misleading raw-model field. The enum is the domain vocabulary, so it can
+// never diverge from what AgentConfig validation accepts.
 func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.ConfigSpec{}, err
 	}
+	v, _ := domain.ModeVocabulary(domain.HarnessAmp)
 	return ports.ConfigSpec{Fields: []ports.ConfigField{{
 		Key:         "mode",
 		Type:        ports.ConfigFieldEnum,
 		Description: "Amp agent mode.",
-		Enum:        []string{"low", "medium", "high", "ultra"},
+		Enum:        v.Values,
 	}}}, nil
 }
 
