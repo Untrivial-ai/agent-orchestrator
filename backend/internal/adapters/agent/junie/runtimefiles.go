@@ -161,7 +161,7 @@ func runtimeConfigJSON() ([]byte, error) {
 		return []runtimeHookCommand{{
 			Type:    "command",
 			Command: "ao hooks junie " + name,
-			Timeout: 2,
+			Timeout: 10,
 		}}
 	}
 	config := runtimeConfig{Hooks: map[string][]runtimeHookRule{

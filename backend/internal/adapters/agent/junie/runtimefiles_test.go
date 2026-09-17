@@ -362,12 +362,12 @@ func assertRuntimeConfig(t *testing.T, path string) {
 
 	const expected = `{
   "hooks": {
-    "SessionStart": [{"matcher":"startup|resume|clear","hooks":[{"type":"command","command":"ao hooks junie session-start","timeout":2}]}],
-    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"ao hooks junie user-prompt-submit","timeout":2}]}],
-    "PreToolUse": [{"matcher":".*","hooks":[{"type":"command","command":"ao hooks junie pre-tool-use","timeout":2}]}],
-    "Stop": [{"hooks":[{"type":"command","command":"ao hooks junie stop","timeout":2}]}],
-    "StopFailure": [{"matcher":".*","hooks":[{"type":"command","command":"ao hooks junie stop-failure","timeout":2}]}],
-    "SessionEnd": [{"matcher":"prompt_input_exit|logout|other","hooks":[{"type":"command","command":"ao hooks junie session-end","timeout":2}]}]
+    "SessionStart": [{"matcher":"startup|resume|clear","hooks":[{"type":"command","command":"ao hooks junie session-start","timeout":10}]}],
+    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"ao hooks junie user-prompt-submit","timeout":10}]}],
+    "PreToolUse": [{"matcher":".*","hooks":[{"type":"command","command":"ao hooks junie pre-tool-use","timeout":10}]}],
+    "Stop": [{"hooks":[{"type":"command","command":"ao hooks junie stop","timeout":10}]}],
+    "StopFailure": [{"matcher":".*","hooks":[{"type":"command","command":"ao hooks junie stop-failure","timeout":10}]}],
+    "SessionEnd": [{"matcher":"prompt_input_exit|logout|other","hooks":[{"type":"command","command":"ao hooks junie session-end","timeout":10}]}]
   }
 }`
 	var got, want map[string]any
