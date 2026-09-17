@@ -14,7 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const reviewTerminalRequestTTL = 30 * time.Second
+const (
+	reviewTerminalRequestTTL = 30 * time.Second
+	reviewTerminalSessionTTL = 24 * time.Hour
+)
 
 // CreateReviewRun records at most one active review pass per pull request
 // commit. Terminal runs are retained as history and can be retriggered.
@@ -87,8 +90,29 @@ func (s *Store) OpenReviewTerminal(
 		if err != nil {
 			return err
 		}
-		if _, err := createWorkerRequest(
+		request, err := createWorkerRequest(
 			ctx, tx, orgID, sessionID, "terminal.open", openPayload, reviewTerminalRequestTTL, "",
+		)
+		if err != nil {
+			return err
+		}
+		var active int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM ao_terminal_sessions
+			WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
+			  AND state IN ('opening', 'open') AND expires_at > now()`,
+			orgID, sessionID, request.WorkerEpoch,
+		).Scan(&active); err != nil {
+			return err
+		}
+		if active >= maxActiveTerminalSessions {
+			return ErrConflict
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO ao_terminal_sessions (
+				id, org_id, session_id, worker_epoch, kind, expires_at
+			) VALUES ($1, $2, $3, $4, 'agent', now() + $5::interval)`,
+			terminalID, orgID, sessionID, request.WorkerEpoch, intervalString(reviewTerminalSessionTTL),
 		); err != nil {
 			return err
 		}
