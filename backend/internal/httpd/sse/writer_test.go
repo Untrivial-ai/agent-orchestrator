@@ -145,6 +145,59 @@ func TestWriter_UnwrapsThroughMiddleware(t *testing.T) {
 	}
 }
 
+// unwrapOnlyWriter exposes flushing solely through Unwrap: unlike chi's
+// wrapper (which implements http.Flusher directly), it does not implement
+// http.Flusher itself, so the capability check must walk the Unwrap chain.
+// The named field (not an embedding) avoids promoting the recorder's Flush.
+type unwrapOnlyWriter struct {
+	rec *httptest.ResponseRecorder
+}
+
+func (u *unwrapOnlyWriter) Header() http.Header { return u.rec.Header() }
+func (u *unwrapOnlyWriter) Write(b []byte) (int, error) {
+	return u.rec.Write(b)
+}
+func (u *unwrapOnlyWriter) WriteHeader(statusCode int) {
+	u.rec.WriteHeader(statusCode)
+}
+func (u *unwrapOnlyWriter) Unwrap() http.ResponseWriter { return u.rec }
+
+func TestUpgrade_UnwrapOnlyWrapper(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &unwrapOnlyWriter{rec: rec}
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+
+	if _, ok := any(w).(http.Flusher); ok {
+		t.Fatal("test wrapper must not implement http.Flusher directly")
+	}
+
+	sw, err := sse.Upgrade(w, req)
+	if err != nil {
+		t.Fatalf("Upgrade through Unwrap-only wrapper: %v", err)
+	}
+	rec.Body.Reset()
+
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/event-stream; charset=utf-8", got)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// The single initial flush must carry the SSE headers: no probe flush
+	// may commit the response before Upgrade configures them.
+	if !rec.Flushed {
+		t.Fatal("expected initial flush after headers are set")
+	}
+
+	if err := sw.WriteComment("heartbeat"); err != nil {
+		t.Fatalf("WriteComment through Unwrap-only wrapper: %v", err)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, ": heartbeat") {
+		t.Fatalf("expected comment frame through unwrap-only wrapper, got %q", got)
+	}
+}
+
 type deadlineRecordingWriter struct {
 	*httptest.ResponseRecorder
 	mu        sync.Mutex

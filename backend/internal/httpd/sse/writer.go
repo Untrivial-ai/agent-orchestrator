@@ -39,21 +39,46 @@ type Writer struct {
 	writeTimeout time.Duration
 }
 
+// maxUnwrapDepth bounds the flusher capability walk below. Wrapper chains
+// are shallow in practice; the cap only guards against a cyclic Unwrap.
+const maxUnwrapDepth = 8
+
+// supportsFlush reports whether w can be flushed, either directly or through
+// an Unwrap chain, without performing any I/O. Probing with a real Flush
+// would commit the implicit 200 response before the SSE headers are set, and
+// the probe itself would run without a write deadline.
+func supportsFlush(w http.ResponseWriter) bool {
+	for i := 0; i < maxUnwrapDepth; i++ {
+		if _, ok := w.(http.Flusher); ok {
+			return true
+		}
+		uw, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		w = uw.Unwrap()
+		if w == nil {
+			return false
+		}
+	}
+	return false
+}
+
 // Upgrade verifies flusher support, sets common SSE response headers,
 // writes HTTP 200 OK, and flushes the initial frame.
 // If streaming is unsupported, an SSE_UNSUPPORTED API error is written to w
 // and ErrUnsupported is returned.
 func Upgrade(w http.ResponseWriter, r *http.Request, opts ...Option) (*Writer, error) {
-	rc := http.NewResponseController(w)
-
-	// Check if flushing is supported directly or via ResponseController unwrap.
-	if _, ok := w.(http.Flusher); !ok {
-		if err := rc.Flush(); errors.Is(err, http.ErrNotSupported) {
-			envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED",
-				"Streaming is not supported by this server", nil)
-			return nil, ErrUnsupported
-		}
+	// Check flusher support without I/O (see supportsFlush): a probe Flush
+	// on an Unwrap-only wrapper would succeed and commit the response
+	// before the SSE headers and write deadline are configured.
+	if !supportsFlush(w) {
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED",
+			"Streaming is not supported by this server", nil)
+		return nil, ErrUnsupported
 	}
+
+	rc := http.NewResponseController(w)
 
 	sw := &Writer{
 		w:            w,
