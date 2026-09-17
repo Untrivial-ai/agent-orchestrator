@@ -2401,15 +2401,16 @@ describe("Sidebar", () => {
 		);
 	});
 
-	it("does not navigate when killing a session fails", async () => {
+	it("navigates optimistically when killing the active session", async () => {
 		mockParams.projectId = "proj-1";
 		mockParams.sessionId = "proj-1-1";
-		postMock.mockImplementation(async (path: string) => {
-			if (path === "/api/v1/sessions/{sessionId}/kill") {
-				return { error: { message: "Daemon unavailable" }, response: new Response(null, { status: 500 }) };
-			}
-			return { data: undefined, error: undefined };
-		});
+		let resolveKill: (() => void) | undefined;
+		postMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveKill = () => resolve({ data: { ok: true }, error: undefined, response: new Response(null, { status: 200 }) });
+				}),
+		);
 		renderSidebar({
 			workspaces: [
 				{
@@ -2424,13 +2425,13 @@ describe("Sidebar", () => {
 		const row = screen.getByLabelText("Open first task").closest<HTMLElement>("[data-session-row]")!;
 		fireEvent.click(within(row).getByLabelText("Kill session"));
 
-		await waitFor(() =>
-			expect(postMock).toHaveBeenCalledWith(
-				"/api/v1/sessions/{sessionId}/kill",
-				expect.objectContaining({ params: { path: { sessionId: "proj-1-1" } } }),
-			),
-		);
-		expect(navigateMock).not.toHaveBeenCalled();
+		// Navigation occurs optimistically on click rather than waiting for daemon round-trip.
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId",
+			params: { projectId: "proj-1" },
+		});
+
+		resolveKill?.();
 	});
 
 	it("downloads the update when the available row is clicked", async () => {
