@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -149,6 +150,10 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 	}
 	var req InvokeCueRequest
 	if len(raw) > 0 {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Request body must be a JSON object or absent", nil)
+			return
+		}
 		var payload struct {
 			SessionID json.RawMessage `json:"sessionId"`
 		}
