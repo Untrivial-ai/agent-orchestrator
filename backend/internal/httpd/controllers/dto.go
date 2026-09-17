@@ -162,6 +162,12 @@ type ListSessionsQuery struct {
 	Fresh            *bool  `query:"fresh,omitempty" description:"When true, return only fresh non-terminated sessions."`
 }
 
+// RemoveProjectQuery requires an explicit second user confirmation before AO
+// discards protected AO-managed workspaces. It never applies to the source repo.
+type RemoveProjectQuery struct {
+	Force bool `query:"force,omitempty"`
+}
+
 // CleanupSessionsQuery is the query string accepted by POST /api/v1/sessions/cleanup.
 type CleanupSessionsQuery struct {
 	Project string `query:"project,omitempty" description:"Project id filter. When omitted, clean terminated sessions across all projects."`

@@ -2567,7 +2567,7 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if err := svc.TeardownProject(context.Background(), "mer"); err != nil {
+	if _, err := svc.TeardownProject(context.Background(), "mer"); err != nil {
 		t.Fatalf("TeardownProject: %v", err)
 	}
 	if len(fc.killed) != 1 || fc.killed[0] != "mer-1" {
@@ -2603,7 +2603,7 @@ func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
 	svc := &Service{manager: fc, store: st}
 
 	done := make(chan error, 1)
-	go func() { done <- svc.TeardownProject(context.Background(), "mer") }()
+	go func() { _, err := svc.TeardownProject(context.Background(), "mer"); done <- err }()
 
 	select {
 	case <-mer1Entered:
@@ -2644,12 +2644,15 @@ func TestTeardownProjectStopsOnKillError(t *testing.T) {
 	fc := &fakeCommander{killErr: boom}
 	svc := &Service{manager: fc, store: st}
 
-	err := svc.TeardownProject(context.Background(), "mer")
-	if !errors.Is(err, boom) {
-		t.Fatalf("TeardownProject err = %v, want boom", err)
+	out, err := svc.TeardownProject(context.Background(), "mer")
+	if err != nil {
+		t.Fatalf("TeardownProject err = %v, want nil", err)
 	}
-	if len(fc.cleanupProjects) != 0 {
-		t.Fatalf("cleanup projects = %#v, want none after kill failure", fc.cleanupProjects)
+	if !out.Blocked {
+		t.Fatal("TeardownProject outcome was not blocked after a kill failure")
+	}
+	if len(fc.cleanupProjects) != 1 {
+		t.Fatalf("cleanup projects = %#v, want cleanup despite kill failure", fc.cleanupProjects)
 	}
 }
 
