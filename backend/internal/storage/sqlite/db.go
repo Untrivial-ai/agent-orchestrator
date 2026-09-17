@@ -35,14 +35,21 @@ var migrationsFS embed.FS
 // pragmas are applied on every connection open. WAL + NORMAL lets readers run
 // concurrently with the writer; busy_timeout absorbs brief writer contention;
 // foreign_keys enforces the cascades and the CDC triggers' lookups.
+//
+// _timezone=UTC makes the driver convert every time.Time to UTC before writing
+// it. Without it the driver stores time.Time.String() in the caller's zone, and
+// zones whose abbreviation is numeric (Asia/Colombo's "+0530") produce a string
+// the driver cannot parse back, so every later Scan of that row fails.
 const pragmas = "?_pragma=journal_mode(WAL)" +
 	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(ON)" +
-	"&_pragma=synchronous(NORMAL)"
+	"&_pragma=synchronous(NORMAL)" +
+	"&_timezone=UTC"
 
 const readOnlyPragmas = "?mode=ro" +
 	"&_pragma=busy_timeout(5000)" +
-	"&_pragma=foreign_keys(ON)"
+	"&_pragma=foreign_keys(ON)" +
+	"&_timezone=UTC"
 
 // maxReaders caps the reader pool. WAL allows many concurrent readers.
 const maxReaders = 8
