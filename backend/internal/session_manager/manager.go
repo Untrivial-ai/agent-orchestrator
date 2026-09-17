@@ -1538,8 +1538,33 @@ func roleConfigName(kind domain.SessionKind) string {
 	return "worker"
 }
 
+// projectAgentConfigForHarness layers the project's per-harness agent config
+// over its base agent config for the given harness; set harness-config fields
+// win. Role overrides are not applied.
+func projectAgentConfigForHarness(cfg domain.ProjectConfig, harness domain.AgentHarness) ports.AgentConfig {
+	merged := cfg.AgentConfig
+	harnessCfg, ok := cfg.HarnessConfigs[harness]
+	if !ok {
+		return merged
+	}
+	if harnessCfg.Model != "" {
+		merged.Model = harnessCfg.Model
+	}
+	if harnessCfg.Effort != "" {
+		merged.Effort = harnessCfg.Effort
+	}
+	if harnessCfg.Mode != "" {
+		merged.Mode = harnessCfg.Mode
+	}
+	if harnessCfg.Permissions != "" {
+		merged.Permissions = harnessCfg.Permissions
+	}
+	return merged
+}
+
 // effectiveAgentConfig merges the role override's agent config over the
-// project's base agent config; set override fields win.
+// project's base agent config, layered with the per-harness config for the
+// harness the session will run; set override fields win.
 //
 // Model/Mode are inherited only when the launch harness matches the role's
 // configured harness — otherwise they were tuned for a different agent and
@@ -1547,7 +1572,7 @@ func roleConfigName(kind domain.SessionKind) string {
 // harness means "not pinned" and always matches. Permissions is
 // harness-neutral and is always inherited.
 func effectiveAgentConfig(harness domain.AgentHarness, kind domain.SessionKind, cfg domain.ProjectConfig) ports.AgentConfig {
-	merged := cfg.AgentConfig
+	merged := projectAgentConfigForHarness(cfg, harness)
 	role := roleOverride(kind, cfg)
 	override := role.AgentConfig
 	harnessMatches := role.Harness == "" || role.Harness == harness

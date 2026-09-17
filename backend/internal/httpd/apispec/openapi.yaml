@@ -10480,6 +10480,10 @@ components:
           additionalProperties:
             type: string
           type: object
+        harnessConfigs:
+          additionalProperties:
+            $ref: '#/components/schemas/AgentConfig'
+          type: object
         orchestrator:
           $ref: '#/components/schemas/RoleOverride'
         orchestratorRules:

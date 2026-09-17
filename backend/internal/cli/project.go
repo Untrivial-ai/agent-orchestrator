@@ -76,6 +76,7 @@ type workspaceRepoDetails struct {
 // agentConfig mirrors the daemon's typed domain.AgentConfig for the CLI client.
 type agentConfig struct {
 	Model       string `json:"model,omitempty"`
+	Effort      string `json:"effort,omitempty"`
 	Mode        string `json:"mode,omitempty"`
 	Permissions string `json:"permissions,omitempty"`
 }
@@ -119,11 +120,16 @@ type projectConfig struct {
 	AgentRulesFile    string               `json:"agentRulesFile,omitempty"`
 	OrchestratorRules string               `json:"orchestratorRules,omitempty"`
 	AgentConfig       agentConfig          `json:"agentConfig,omitempty"`
-	Worker            roleOverride         `json:"worker,omitempty"`
-	Orchestrator      roleOverride         `json:"orchestrator,omitempty"`
-	TrackerIntake     trackerIntakeConfig  `json:"trackerIntake,omitempty"`
-	AutoReview        bool                 `json:"autoReview,omitempty"`
-	Reviewers         []reviewerConfig     `json:"reviewers,omitempty"`
+	// HarnessConfigs mirrors domain.ProjectConfig.HarnessConfigs: per-harness
+	// agent-config overrides keyed by harness name. The CLI mirrors it as a
+	// string-keyed map because harness names are plain vocabulary strings; the
+	// daemon validates the keys.
+	HarnessConfigs map[string]agentConfig `json:"harnessConfigs,omitempty"`
+	Worker         roleOverride           `json:"worker,omitempty"`
+	Orchestrator   roleOverride           `json:"orchestrator,omitempty"`
+	TrackerIntake  trackerIntakeConfig    `json:"trackerIntake,omitempty"`
+	AutoReview     bool                   `json:"autoReview,omitempty"`
+	Reviewers      []reviewerConfig       `json:"reviewers,omitempty"`
 }
 
 // setConfigRequest mirrors the daemon's SetConfigInput body for
@@ -137,7 +143,10 @@ type projectSetConfigOptions struct {
 	defaultBranch     string
 	sessionPrefix     string
 	model             string
+	effort            string
 	permission        string
+	harnessModel      []string
+	harnessEffort     []string
 	workerAgent       string
 	orchestratorAgent string
 	agentRules        string
@@ -330,7 +339,10 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.canonicalRepoURL, "canonical-repo-url", "", "Explicit upstream HTTPS repository URL for PR claims (same provider, host, and port as origin)")
 	f.StringVar(&opts.sessionPrefix, "session-prefix", "", "Displayed session-id prefix")
 	f.StringVar(&opts.model, "model", "", "Agent model override (e.g. claude-opus-4-5)")
+	f.StringVar(&opts.effort, "effort", "", "Agent effort override (e.g. high)")
 	f.StringVar(&opts.permission, "permission", "", "Permission mode: default, accept-edits, auto, bypass-permissions")
+	f.StringArrayVar(&opts.harnessModel, "harness-model", nil, "Per-harness model override as HARNESS=MODEL (repeatable; e.g. claude-code=opus)")
+	f.StringArrayVar(&opts.harnessEffort, "harness-effort", nil, "Per-harness effort override as HARNESS=EFFORT (repeatable; e.g. opencode=high)")
 	f.StringVar(&opts.workerAgent, "worker-agent", "", "Harness override for worker sessions")
 	f.StringVar(&opts.orchestratorAgent, "orchestrator-agent", "", "Harness override for orchestrator sessions")
 	f.StringVar(&opts.agentRules, "agent-rules", "", "Project-specific standing instructions for worker sessions")
@@ -369,6 +381,10 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 	if err != nil {
 		return projectConfig{}, err
 	}
+	harnessConfigs, err := parseHarnessAgentConfigPairs(opts.harnessModel, opts.harnessEffort)
+	if err != nil {
+		return projectConfig{}, err
+	}
 	cfg := projectConfig{
 		CanonicalRepoURL:  opts.canonicalRepoURL,
 		DefaultBranch:     opts.defaultBranch,
@@ -379,7 +395,8 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		AgentRules:        opts.agentRules,
 		AgentRulesFile:    opts.agentRulesFile,
 		OrchestratorRules: opts.orchestratorRules,
-		AgentConfig:       agentConfig{Model: opts.model, Permissions: opts.permission},
+		AgentConfig:       agentConfig{Model: opts.model, Effort: opts.effort, Permissions: opts.permission},
+		HarnessConfigs:    harnessConfigs,
 		Worker:            roleOverride{Agent: opts.workerAgent},
 		Orchestrator:      roleOverride{Agent: opts.orchestratorAgent},
 		TrackerIntake: trackerIntakeConfig{
@@ -430,6 +447,38 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 		env[key] = value
 	}
 	return env, nil
+}
+
+// parseHarnessAgentConfigPairs merges repeated --harness-model and
+// --harness-effort HARNESS=VALUE flags into the per-harness config map. A
+// harness named in both lists gets one entry carrying both fields. The daemon
+// validates the harness vocabulary when the config is saved.
+func parseHarnessAgentConfigPairs(models, efforts []string) (map[string]agentConfig, error) {
+	if len(models) == 0 && len(efforts) == 0 {
+		return nil, nil
+	}
+	configs := make(map[string]agentConfig)
+	for _, pair := range models {
+		harness, model, ok := strings.Cut(pair, "=")
+		harness = strings.TrimSpace(harness)
+		if !ok || harness == "" {
+			return nil, usageError{fmt.Errorf("invalid --harness-model %q: expected HARNESS=MODEL", pair)}
+		}
+		entry := configs[harness]
+		entry.Model = model
+		configs[harness] = entry
+	}
+	for _, pair := range efforts {
+		harness, effort, ok := strings.Cut(pair, "=")
+		harness = strings.TrimSpace(harness)
+		if !ok || harness == "" {
+			return nil, usageError{fmt.Errorf("invalid --harness-effort %q: expected HARNESS=EFFORT", pair)}
+		}
+		entry := configs[harness]
+		entry.Effort = effort
+		configs[harness] = entry
+	}
+	return configs, nil
 }
 
 func newProjectRemoveCommand(ctx *commandContext) *cobra.Command {

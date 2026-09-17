@@ -590,6 +590,137 @@ describe("ProjectSettingsForm", () => {
 		expect(request?.body.config.defaultBranch).toBeUndefined();
 	});
 
+	it("loads existing per-harness overrides and saves them", async () => {
+		mockProject({
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "git@github.com:acme/project-one.git",
+			defaultBranch: "main",
+			config: {
+				worker: { agent: "codex" },
+				orchestrator: { agent: "claude-code" },
+				harnessConfigs: {
+					opencode: { model: "opencode/muse-spark-1.3-contributor-free", effort: "high" },
+				},
+			},
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+
+		expect(await screen.findByRole("button", { name: "Remove override for OpenCode" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Model for OpenCode" })).toHaveTextContent(
+			"opencode/muse-spark-1.3-contributor-free",
+		);
+
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const request = putMock.mock.calls[0]?.[1];
+		expect(request?.body.config.harnessConfigs).toEqual({
+			opencode: { model: "opencode/muse-spark-1.3-contributor-free", effort: "high" },
+		});
+	});
+
+	it("adds a per-harness override with model and effort and saves it", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+			if (path === "/api/v1/agents/{agent}/models") {
+				return {
+					data: {
+						agentId: "opencode",
+						selectionMode: "catalog",
+						models: [
+							{
+								id: "opencode/muse-spark-1.3-contributor-free",
+								label: "Muse Spark 1.3 (free)",
+								efforts: ["low", "high"],
+							},
+						],
+						allowCustom: true,
+						source: "manual",
+						fetchedAt: "2026-07-31T00:00:00Z",
+						stale: false,
+					},
+					error: undefined,
+				};
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						id: "proj-1",
+						name: "Project One",
+						kind: "single_repo",
+						path: "/repo/project-one",
+						repo: "git@github.com:acme/project-one.git",
+						defaultBranch: "main",
+						config: {
+							worker: { agent: "codex" },
+							orchestrator: { agent: "claude-code" },
+						},
+					},
+				},
+				error: undefined,
+			};
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+
+		await userEvent.click(await screen.findByRole("button", { name: "Add harness override" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "OpenCode" }));
+
+		// The picker stops offering harnesses that already have an override.
+		await userEvent.click(screen.getByRole("button", { name: "Add harness override" }));
+		expect(screen.queryByRole("menuitem", { name: "OpenCode" })).not.toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
+
+		await userEvent.click(await screen.findByRole("button", { name: "Model for OpenCode" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Muse Spark 1.3 (free)" }));
+
+		await userEvent.click(screen.getByRole("button", { name: "Model for OpenCode" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(await screen.findByRole("menuitemradio", { name: "High" }));
+
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const request = putMock.mock.calls[0]?.[1];
+		expect(request?.body.config.harnessConfigs).toEqual({
+			opencode: { model: "opencode/muse-spark-1.3-contributor-free", effort: "high" },
+		});
+	});
+
+	it("removes a per-harness override before saving", async () => {
+		mockProject({
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "git@github.com:acme/project-one.git",
+			defaultBranch: "main",
+			config: {
+				worker: { agent: "codex" },
+				orchestrator: { agent: "claude-code" },
+				harnessConfigs: {
+					opencode: { model: "opencode/muse-spark-1.3-contributor-free", effort: "high" },
+				},
+			},
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+
+		await userEvent.click(await screen.findByRole("button", { name: "Remove override for OpenCode" }));
+		expect(screen.queryByRole("button", { name: "Model for OpenCode" })).not.toBeInTheDocument();
+
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const request = putMock.mock.calls[0]?.[1];
+		expect(request?.body.config.harnessConfigs).toBeUndefined();
+	});
+
 	it("shows the full model catalog again after selecting a model", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") return agentCatalogResponse;

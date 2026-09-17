@@ -3695,6 +3695,9 @@ export interface components {
             env?: {
                 [key: string]: string;
             };
+            harnessConfigs?: {
+                [key: string]: components["schemas"]["AgentConfig"];
+            };
             orchestrator?: components["schemas"]["RoleOverride"];
             orchestratorRules?: string;
             postCreate?: string[];

@@ -11,7 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
-import { Info, Pencil } from "lucide-react";
+import { Info, Pencil, Trash2 } from "lucide-react";
 import type { components } from "../../api/schema";
 import {
 	agentModelsQueryKey,
@@ -30,6 +30,7 @@ import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-st
 import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, type IntakeForm } from "./IntakeFields";
+import { AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
@@ -44,6 +45,9 @@ type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 
 const PERMISSION_MODE_VALUES = ["default", "accept-edits", "auto", "bypass-permissions"] as const;
 const DEFAULT_BRANCH_AUTO = "auto";
+
+type HarnessOverrideForm = { model: string; mode: string; effort: string };
+type HarnessOverrideFormMap = Record<string, HarnessOverrideForm>;
 
 const projectQueryKey = (id: string) => ["project", id] as const;
 
@@ -154,6 +158,16 @@ function SettingsBody({
 		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		reviewerEffort: config.reviewers?.[0]?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
 		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
+		harnessConfigs: Object.fromEntries(
+			Object.entries(config.harnessConfigs ?? {}).map(([harness, agentConfig]) => [
+				harness,
+				{
+					model: agentConfig.model ?? "",
+					mode: agentConfig.mode ?? "",
+					effort: agentConfig.effort ?? "",
+				},
+			]),
+		) as HarnessOverrideFormMap,
 		autoReview: config.autoReview ?? false,
 		intakeEnabled: intake.enabled ?? false,
 		intakeRepo: intake.repo ?? "",
@@ -163,14 +177,28 @@ function SettingsBody({
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
 	const [validationError, setValidationError] = useState<string | null>(null);
-	const [tuningValidity, setTuningValidity] = useState({ worker: true, orchestrator: true, reviewer: true });
+	const [tuningValidity, setTuningValidity] = useState<{
+		worker: boolean;
+		orchestrator: boolean;
+		reviewer: boolean;
+		harnesses: Record<string, boolean>;
+	}>({ worker: true, orchestrator: true, reviewer: true, harnesses: {} });
 	const initialOrchestratorAgent = config.orchestrator?.agent ?? "";
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
 	const agentsQuery = useAgentReadinessQuery();
 	useEnsureAgentReadiness();
 	useEnsureAgentReadiness({
-		agentIds: [form.workerAgent, form.orchestratorAgent, form.reviewerHarness],
-		enabled: form.workerAgent !== "" || form.orchestratorAgent !== "" || form.reviewerHarness !== "",
+		agentIds: [
+			form.workerAgent,
+			form.orchestratorAgent,
+			form.reviewerHarness,
+			...Object.keys(form.harnessConfigs),
+		],
+		enabled:
+			form.workerAgent !== "" ||
+			form.orchestratorAgent !== "" ||
+			form.reviewerHarness !== "" ||
+			Object.keys(form.harnessConfigs).length > 0,
 	});
 	const agentCatalog = agentsQuery.data;
 
@@ -188,6 +216,38 @@ function SettingsBody({
 		}));
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
+	const patchHarnessConfig = (harness: string, patch: Partial<HarnessOverrideForm>) =>
+		setForm((f) => ({
+			...f,
+			harnessConfigs: {
+				...f.harnessConfigs,
+				[harness]: { ...f.harnessConfigs[harness], ...patch },
+			},
+		}));
+	const removeHarnessConfig = (harness: string) =>
+		setForm((f) => {
+			const next = { ...f.harnessConfigs };
+			delete next[harness];
+			return { ...f, harnessConfigs: next };
+		});
+	const addHarnessConfig = (harness: string) =>
+		setForm((f) =>
+			f.harnessConfigs[harness]
+				? f
+				: { ...f, harnessConfigs: { ...f.harnessConfigs, [harness]: { model: "", mode: "", effort: "" } } },
+		);
+	// The readiness catalog is the display vocabulary; AGENT_OPTIONS keeps the
+	// picker usable before the daemon answers. The daemon still validates keys.
+	const harnessCatalog =
+		agentCatalog?.agents && agentCatalog.agents.length > 0
+			? agentCatalog.agents
+			: AGENT_OPTIONS.map((id) => ({ id, label: agentLabel(id) }));
+	const addableHarnessOptions = harnessCatalog
+		.filter((agent) => !(agent.id in form.harnessConfigs))
+		.map((agent) => ({ value: agent.id, label: agent.label }));
+	const harnessTuningInvalid = Object.keys(form.harnessConfigs).some(
+		(harness) => tuningValidity.harnesses[harness] === false,
+	);
 	const mutation = useMutation({
 		mutationFn: async () => {
 			void captureRendererEvent("ao.renderer.settings_save_requested", { project_id: projectId });
@@ -202,6 +262,19 @@ function SettingsBody({
 			const existingReviewer = config.reviewers?.[0];
 			const existingReviewerAgentConfig =
 				existingReviewer?.harness === form.reviewerHarness ? existingReviewer.agentConfig : undefined;
+			const nextHarnessConfigs: ProjectConfig["harnessConfigs"] = Object.fromEntries(
+				Object.entries(form.harnessConfigs)
+					.map(([harness, override]) => {
+						const agentConfig: components["schemas"]["AgentConfig"] = {};
+						if (override.model) agentConfig.model = override.model;
+						if (override.mode) agentConfig.mode = override.mode;
+						if (override.effort) agentConfig.effort = override.effort;
+						return Object.keys(agentConfig).length > 0 ? [harness, agentConfig] : null;
+					})
+					.filter((entry): entry is [string, components["schemas"]["AgentConfig"]] => entry !== null),
+			);
+			const harnessConfigsPayload =
+				Object.keys(nextHarnessConfigs).length > 0 ? nextHarnessConfigs : undefined;
 			const next: ProjectConfig = isScratchProject
 				? {
 						...scratchSupportedConfig(config),
@@ -225,6 +298,7 @@ function SettingsBody({
 							...sharedAgentConfig,
 							permissions: undefined,
 						}),
+						harnessConfigs: harnessConfigsPayload,
 					}
 				: {
 						...config,
@@ -253,6 +327,7 @@ function SettingsBody({
 							...sharedAgentConfig,
 							permissions: undefined,
 						}),
+						harnessConfigs: harnessConfigsPayload,
 						reviewers: form.reviewerHarness
 							? [{
 									harness: form.reviewerHarness,
@@ -396,7 +471,12 @@ function SettingsBody({
 					);
 					return;
 				}
-				if (!tuningValidity.worker || !tuningValidity.orchestrator || !tuningValidity.reviewer) {
+				if (
+					!tuningValidity.worker ||
+					!tuningValidity.orchestrator ||
+					!tuningValidity.reviewer ||
+					harnessTuningInvalid
+				) {
 					setValidationError(t("settings.project.tuningInvalid"));
 					return;
 				}
@@ -610,6 +690,58 @@ function SettingsBody({
 						</div>
 					</ProjectSettingsSection>
 				)}
+				<ProjectSettingsSection title={t("settings.project.harnessOverrides")}>
+					<p className="px-1 text-xs leading-row text-settings-muted">
+						{t("settings.project.harnessOverridesDescription")}
+					</p>
+					{Object.entries(form.harnessConfigs).map(([harness, override]) => {
+						const harnessLabel = agentLabel(harness);
+						return (
+							<div key={harness} className="settings-grouped-rows flex flex-col">
+								<SettingsRow label={harnessLabel}>
+									<button
+										type="button"
+										className="inline-flex size-5 items-center justify-center rounded-md text-settings-muted transition-colors hover:bg-settings-menu-selected hover:text-error focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+										aria-label={t("settings.project.removeHarnessOverride", { harness: harnessLabel })}
+										onClick={() => removeHarnessConfig(harness)}
+									>
+										<Trash2 className="size-icon-sm" aria-hidden="true" />
+									</button>
+								</SettingsRow>
+								<AgentModelField
+									role="harness"
+									agentId={harness}
+									projectId={projectId}
+									model={override.model}
+									mode={override.mode}
+									effort={override.effort}
+									label={t("settings.project.harnessModel", { harness: harnessLabel })}
+									roleLabel={harnessLabel}
+									onModelChange={(model) => patchHarnessConfig(harness, { model })}
+									onModeChange={(mode) => patchHarnessConfig(harness, { mode })}
+									onEffortChange={(effort) => patchHarnessConfig(harness, { effort })}
+									onValidityChange={(valid) =>
+										setTuningValidity((value) => ({
+											...value,
+											harnesses: { ...value.harnesses, [harness]: valid },
+										}))
+									}
+								/>
+							</div>
+						);
+					})}
+					<SettingsRow label={t("settings.project.addHarnessOverride")}>
+						<SettingsOptionMenu
+							aria-label={t("settings.project.addHarnessOverride")}
+							value={"" as string}
+							placeholder={t("settings.project.addHarnessOverride")}
+							options={addableHarnessOptions}
+							searchable
+							disabled={agentsQuery.isFetching && agentCatalog === undefined}
+							onChange={addHarnessConfig}
+						/>
+					</SettingsRow>
+				</ProjectSettingsSection>
 				</>
 			)}
 
@@ -673,17 +805,24 @@ function AgentModelField({
 	model,
 	mode,
 	effort,
+	label,
+	roleLabel,
 	onModelChange,
 	onModeChange,
 	onEffortChange,
 	onValidityChange,
 }: {
-	role: "worker" | "orchestrator" | "reviewer";
+	role: "worker" | "orchestrator" | "reviewer" | "harness";
 	agentId: string;
 	projectId: string;
 	model: string;
 	mode: string;
 	effort: string;
+	/** Overrides the derived "{Role} model"/"{Role} mode" label. Required for
+	 *  the per-harness rows, which have no settings.models.{role} keys. */
+	label?: string;
+	/** Overrides the role label used in model-tuning warnings. */
+	roleLabel?: string;
 	onModelChange: (value: string) => void;
 	onModeChange: (value: string) => void;
 	onEffortChange: (value: string) => void;
@@ -706,7 +845,13 @@ function AgentModelField({
 		}
 	}, [agentId, projectId, queryClient, revalidationQuery.data]);
 	const isMode = catalog?.selectionMode === "mode";
-	const label = t(`settings.models.${role}${isMode ? "Mode" : "Model"}`);
+	// Per-harness rows always pass explicit labels; the settings.models.* keys
+	// only exist for the worker/orchestrator/reviewer roles.
+	const derivedLabel =
+		role === "harness" ? "" : t(`settings.models.${role}${isMode ? "Mode" : "Model"}`);
+	const derivedRoleLabel = role === "harness" ? "" : t(`settings.models.${role}Role`);
+	const visibleLabel = label ?? derivedLabel;
+	const visibleRoleLabel = roleLabel ?? derivedRoleLabel;
 	const warning =
 		(revalidationQuery.isError
 			? revalidationQuery.error instanceof Error
@@ -718,7 +863,7 @@ function AgentModelField({
 
 	if (agentId !== "" && query.isFetching && catalog === undefined) {
 		return (
-			<SettingsRow label={label}>
+			<SettingsRow label={visibleLabel}>
 				<span className="text-xs text-settings-muted" role="status" aria-label={t("settings.models.loading")}>
 					{t("settings.models.loading")}
 				</span>
@@ -733,10 +878,10 @@ function AgentModelField({
 		];
 		return (
 			<>
-				<SettingsRow label={label}>
+				<SettingsRow label={visibleLabel}>
 					<div className="flex min-w-0 items-center gap-2">
 						<SettingsOptionMenu
-							aria-label={label}
+							aria-label={visibleLabel}
 							value={mode || "__default__"}
 							options={options}
 							triggerClassName="justify-end"
@@ -767,10 +912,10 @@ function AgentModelField({
 	};
 	return (
 		<>
-			<SettingsRow label={label}>
+			<SettingsRow label={visibleLabel}>
 				<div className="flex min-w-0 items-center gap-2">
 					<AgentModelCombobox
-						aria-label={label}
+						aria-label={visibleLabel}
 						value={model}
 						models={catalog?.models ?? []}
 						allowCustom={catalog?.allowCustom}
@@ -782,11 +927,11 @@ function AgentModelField({
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"
 						compact={agentId === "codex"}
-						tuning={agentId === "codex" ? {
+						tuning={agentId === "codex" || role === "harness" ? {
 							effort,
 							onEffortChange,
 							onValidityChange,
-							roleLabel: t(`settings.models.${role}Role`),
+							roleLabel: visibleRoleLabel,
 						} : undefined}
 					/>
 				</div>
