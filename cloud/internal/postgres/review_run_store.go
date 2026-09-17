@@ -16,7 +16,8 @@ import (
 
 const reviewTerminalRequestTTL = 30 * time.Second
 
-// CreateReviewRun records at most one review pass per pull request commit.
+// CreateReviewRun records at most one active review pass per pull request
+// commit. Terminal runs are retained as history and can be retriggered.
 func (s *Store) CreateReviewRun(
 	ctx context.Context,
 	orgID, pullRequestID, reviewSessionID, targetSHA string,
@@ -26,7 +27,7 @@ func (s *Store) CreateReviewRun(
 			ctx,
 			`INSERT INTO ao_review_runs (org_id, pull_request_id, review_session_id, target_sha)
 			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (pull_request_id, target_sha) DO NOTHING
+			ON CONFLICT (pull_request_id, target_sha) WHERE status = 'running' DO NOTHING
 			RETURNING `+reviewRunColumns,
 			orgID, pullRequestID, reviewSessionID, targetSHA,
 		)
@@ -37,7 +38,8 @@ func (s *Store) CreateReviewRun(
 				ctx,
 				`SELECT `+reviewRunColumns+`
 				FROM ao_review_runs
-				WHERE org_id = $1 AND pull_request_id = $2 AND target_sha = $3`,
+				WHERE org_id = $1 AND pull_request_id = $2 AND target_sha = $3
+				  AND status = 'running'`,
 				orgID, pullRequestID, targetSHA,
 			)
 			run, scanErr = scanReviewRun(row)
@@ -67,7 +69,7 @@ func (s *Store) CreateReviewRun(
 func (s *Store) OpenReviewTerminal(
 	ctx context.Context,
 	orgID, sessionID, reviewRunID, prompt string,
-) error {
+) (string, error) {
 	terminalID := uuid.NewString()
 	// Separate transactions guarantee that open sorts before input by created_at.
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
@@ -98,9 +100,9 @@ func (s *Store) OpenReviewTerminal(
 		return err
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+	if err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		inputPayload, err := json.Marshal(worker.TerminalCommand{
 			TerminalID: terminalID, Data: []byte(prompt + "\r"),
 		})
@@ -111,6 +113,36 @@ func (s *Store) OpenReviewTerminal(
 			ctx, tx, orgID, sessionID, "terminal.input", inputPayload, reviewTerminalRequestTTL, "",
 		)
 		return err
+	}); err != nil {
+		return "", err
+	}
+	return terminalID, nil
+}
+
+// CheckSessionWriteAccess authorizes a request that mutates a session-owned
+// review. Read-only share grants must be able to inspect review state without
+// being able to start or cancel the review.
+func (s *Store) CheckSessionWriteAccess(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+) error {
+	return s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
+		if access.Role == "viewer" {
+			return ErrForbidden
+		}
+		var mode string
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT mode FROM ao_sessions WHERE org_id = $1 AND id = $2`,
+			orgID, sessionID,
+		).Scan(&mode); err != nil {
+			return err
+		}
+		if effectiveMode(mode, access.ModeCap) == "read-only" {
+			return ErrForbidden
+		}
+		return nil
 	})
 }
 
@@ -179,6 +211,58 @@ func (s *Store) CancelRunningReviewRunsBySession(
 				UPDATE ao_pull_requests
 				SET ao_review_state = 'needs_review', updated_at = now()
 				WHERE org_id = $1 AND id = $2 AND head_sha = $3`, orgID, run.PullRequestID, run.TargetSHA); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, normalizeConstraintError(err)
+	}
+	return runs, nil
+}
+
+// CancelReviewRuns records cancellation for only the runs started by one
+// trigger request. This rolls back a multi-PR trigger when a later terminal
+// cannot be opened, without cancelling reviews that predated the request.
+func (s *Store) CancelReviewRuns(
+	ctx context.Context,
+	orgID, sessionID string,
+	runIDs []string,
+) ([]domain.ReviewRun, error) {
+	if len(runIDs) == 0 {
+		return nil, nil
+	}
+	var runs []domain.ReviewRun
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE ao_review_runs run
+			SET status = 'cancelled', completed_at = now(), last_error = 'cancelled after review batch failure'
+			WHERE run.org_id = $1
+				AND run.review_session_id = $2
+				AND run.id = ANY($3::uuid[])
+				AND run.status = 'running'
+			RETURNING `+reviewRunColumns, orgID, sessionID, runIDs)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			run, err := scanReviewRun(rows)
+			if err != nil {
+				return err
+			}
+			runs = append(runs, run)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, run := range runs {
+			if _, err := tx.Exec(ctx, `
+				UPDATE ao_pull_requests
+				SET ao_review_state = 'needs_review', updated_at = now()
+				WHERE org_id = $1 AND id = $2 AND head_sha = $3`,
+				orgID, run.PullRequestID, run.TargetSHA); err != nil {
 				return err
 			}
 		}
