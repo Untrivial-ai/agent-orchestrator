@@ -1,5 +1,9 @@
 # Development Guide
 
+```sh
+(cd backend && go run .) & (cd frontend && npm i; npm run dev)
+```
+
 How to set up, build, run, and test Agent Orchestrator locally.
 
 ## Prerequisites
