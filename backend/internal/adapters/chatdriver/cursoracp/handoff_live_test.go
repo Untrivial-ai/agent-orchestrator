@@ -20,9 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/creack/pty"
 )
 
 const (
@@ -300,12 +301,12 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 	var instruction strings.Builder
 	instruction.WriteString("State all three private codes from this conversation. For each code in order, place it directly between its assigned delimiters with no spaces: ")
 	for index, marker := range h.markers {
-		open, close := randomCursorHandoffDelimiter(h.t), randomCursorHandoffDelimiter(h.t)
-		expected = append(expected, open+marker+close)
+		open, closing := randomCursorHandoffDelimiter(h.t), randomCursorHandoffDelimiter(h.t)
+		expected = append(expected, open+marker+closing)
 		if index > 0 {
 			instruction.WriteString("; ")
 		}
-		fmt.Fprintf(&instruction, "code %d between %s and %s", index+1, open, close)
+		fmt.Fprintf(&instruction, "code %d between %s and %s", index+1, open, closing)
 	}
 	tui.writePrompt(h.t, instruction.String()+".")
 	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
