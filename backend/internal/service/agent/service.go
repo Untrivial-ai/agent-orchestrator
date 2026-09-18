@@ -284,14 +284,31 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	if discoverErr != nil {
 		// A changed fingerprint requires revalidation, but a failed refresh is
 		// not evidence that last-known-good provider models became unusable.
-		if hasCached && len(cached.Catalog.Models) > 0 {
+		staleCurrent := func() ports.AgentModelCatalog {
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
 			cached.Catalog.RefreshRecommended = true
 			if err := s.saveCatalog(ctx, projectID, cached.Catalog); err != nil {
 				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
 			}
-			return cached.Catalog, nil
+			return cached.Catalog
+		}
+		isClaude := agentID == "claude-code"
+		cacheMatchesContext := !isClaude || cached.BinaryVersion == version
+		if hasCached && len(cached.Catalog.Models) > 0 && (!isClaude || cached.Catalog.Source == "provider") {
+			return staleCurrent(), nil
+		}
+		if isClaude {
+			if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID, "provider"); ok {
+				shared = applyCustomModelEntryPolicy(shared, policy)
+				shared.Stale = true
+				shared.Warning = discoverErr.Error()
+				shared.RefreshRecommended = true
+				return shared, nil
+			}
+		}
+		if hasCached && cacheMatchesContext && len(cached.Catalog.Models) > 0 {
+			return staleCurrent(), nil
 		}
 		if len(discovered.Models) > 0 {
 			discovered.Stale = true
@@ -302,16 +319,10 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 			}
 			return discovered, nil
 		}
-		if hasCached {
-			cached.Catalog.Stale = true
-			cached.Catalog.Warning = discoverErr.Error()
-			cached.Catalog.RefreshRecommended = true
-			if err := s.saveCatalog(ctx, projectID, cached.Catalog); err != nil {
-				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
-			}
-			return cached.Catalog, nil
+		if hasCached && cacheMatchesContext {
+			return staleCurrent(), nil
 		}
-		if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID); ok {
+		if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID, ""); ok {
 			shared = applyCustomModelEntryPolicy(shared, policy)
 			shared.Stale = true
 			shared.Warning = discoverErr.Error()
@@ -336,7 +347,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 // latestAgentCatalog returns a last-known-good catalog from another project as
 // a display-only fallback. Discovery remains project-scoped and this result is
 // deliberately not persisted under the requested project key.
-func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID string) (ports.AgentModelCatalog, bool) {
+func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID, requiredSource string) (ports.AgentModelCatalog, bool) {
 	if s.cache == nil {
 		return ports.AgentModelCatalog{}, false
 	}
@@ -352,6 +363,9 @@ func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID str
 		}
 		var candidate ports.AgentModelCatalog
 		if err := json.Unmarshal([]byte(record.CatalogJSON), &candidate); err != nil || len(candidate.Models) == 0 {
+			continue
+		}
+		if requiredSource != "" && candidate.Source != requiredSource {
 			continue
 		}
 		at := record.FetchedAt

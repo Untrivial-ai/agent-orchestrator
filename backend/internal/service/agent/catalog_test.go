@@ -1191,6 +1191,106 @@ func TestClaudeModelsKeepProviderCacheWhenDiscoveryFingerprintChanges(t *testing
 	}
 }
 
+func TestClaudeModelsPreferAgentWideProviderCacheOverNonProviderFallback(t *testing.T) {
+	validatedAt := time.Now().Add(-time.Hour)
+	shared := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{
+			ID: "shared-provider-model", Efforts: []string{"medium", "high"}, DefaultEffort: "medium",
+		}}, Source: "provider", FetchedAt: validatedAt, ValidatedAt: validatedAt,
+	}
+	data, err := json.Marshal(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00project-a": {
+			AgentID: "claude-code", ProjectID: "project-a", BinaryVersion: "old-fingerprint",
+			CatalogJSON: string(data), FetchedAt: validatedAt,
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "new-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "configured-gateway-model"}, {ID: "sonnet"}}, Source: "catalog",
+		},
+		err: errors.New("gateway model listing unavailable"),
+	}
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"project-b": {ID: "project-b", Path: "/work/project-b"},
+	}}
+	svc := newService([]agentregistry.HarnessAgent{
+		harnessAgent("claude-code", "Claude Code", nil),
+	}, cache, projects, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "project-b", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "shared-provider-model" ||
+		!reflect.DeepEqual(got.Models[0].Efforts, []string{"medium", "high"}) || got.Models[0].DefaultEffort != "medium" ||
+		got.Source != "provider" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale agent-wide provider catalog with efforts", got)
+	}
+}
+
+func TestClaudeModelsPreferConfiguredGatewayFallbackOverCrossFingerprintCatalogCache(t *testing.T) {
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00project-a": {
+			AgentID: "claude-code", ProjectID: "project-a", BinaryVersion: "old-fingerprint", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "new-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{
+				{ID: "gateway-primary"}, {ID: "gateway-opus"}, {ID: "sonnet"}, {ID: "opus"},
+			}, Source: "catalog",
+		},
+		err: errors.New("gateway model listing unavailable"),
+	}
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"project-a": {
+			ID: "project-a", Path: "/work/project-a",
+			Config: domain.ProjectConfig{Env: map[string]string{
+				"ANTHROPIC_BASE_URL":           "https://gateway.example",
+				"ANTHROPIC_MODEL":              "gateway-primary",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL": "gateway-opus",
+			}},
+		},
+	}}
+	svc := newService([]agentregistry.HarnessAgent{
+		harnessAgent("claude-code", "Claude Code", nil),
+	}, cache, projects, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "project-a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []string{"gateway-primary", "gateway-opus"}
+	if len(got.Models) < len(wantPrefix) {
+		t.Fatalf("catalog = %#v, want configured gateway fallback", got)
+	}
+	for i, want := range wantPrefix {
+		if got.Models[i].ID != want {
+			t.Fatalf("models[%d] = %q, want %q; catalog = %#v", i, got.Models[i].ID, want, got)
+		}
+	}
+	if got.Source != "catalog" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale non-provider discovery fallback", got)
+	}
+}
+
 func TestModelsUsesNewestAgentWideCacheWhenCurrentProjectDiscoveryFails(t *testing.T) {
 	older := cachedModelRecord(t, "cursor", "project-a", time.Now().Add(-2*time.Hour), false)
 	newer := cachedModelRecord(t, "cursor", "project-b", time.Now().Add(-time.Hour), false)
