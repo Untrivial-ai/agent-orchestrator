@@ -550,6 +550,15 @@ func (s *Store) PauseIfIdle(
 					WHERE ao_turns.session_id = $1
 						AND ao_turns.org_id = $2
 						AND ao_turns.state IN ('queued', 'provisioning', 'running', 'cancel_requested')
+				)
+				-- A manual PR review is work in flight even though it is not
+				-- represented by a normal user turn. Keep its worker alive until
+				-- the review reaches a terminal state.
+				AND NOT EXISTS (
+					SELECT 1 FROM ao_review_runs
+					WHERE ao_review_runs.org_id = $2
+						AND ao_review_runs.review_session_id = $1
+						AND ao_review_runs.status = 'running'
 				)`,
 			sessionID,
 			orgID,
