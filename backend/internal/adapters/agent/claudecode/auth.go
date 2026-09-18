@@ -97,18 +97,23 @@ func (p *Plugin) authVerdict(ctx context.Context) (authVerdict, error) {
 	// It also carries diagnostics no other rung has — apiKeySource names an
 	// env var shadowing a subscription, authMethod separates a claude.ai login
 	// from a setup-token — so it runs for those even when rung 2 answers.
-	report, cliOK := p.claudeCLIAuthReport(ctx, binary, "", nil)
+	opts := (agentcreds.ResolveOptions{AllowKeychain: true}).WithClaudeSettings()
+	report, cliOK := p.claudeCLIAuthReport(ctx, binary, opts.WorkingDir, opts.CommandEnv)
 
 	// Rungs 1 and 2 — the provider gate and the network probe. This is the
 	// only rung that can prove a credential works, so it is the only one
 	// allowed to return Authorized.
-	if verdict, ok := p.probeVerdict(ctx, report, cliOK); ok {
+	if verdict, ok := p.probeVerdict(ctx, report, cliOK, opts); ok {
 		return verdict, nil
 	}
 
 	// Rung 3's own verdict. It cannot prove success, but it is the only local
 	// check that can observe a definite "signed out".
-	if cliOK {
+	// A report about the first-party account cannot reject a configured gateway
+	// or cloud provider when its own probe was inconclusive.
+	provider, _ := agentcreds.ResolveProvider("", opts)
+	reportedProvider, _ := agentcreds.ParseProvider(report.APIProvider)
+	if cliOK && (provider == agentcreds.ProviderFirstParty || provider == reportedProvider) {
 		verdict := report.verdict()
 		if verdict.State != ports.AgentAuthStatusUnknown {
 			return verdict, nil
@@ -117,7 +122,7 @@ func (p *Plugin) authVerdict(ctx context.Context) (authVerdict, error) {
 
 	// Rung 4 — local heuristic. Lowest confidence, and the last word only
 	// because it never blocks anything.
-	return claudeLocalAuthVerdict(ctx)
+	return claudeLocalAuthVerdict(ctx, opts)
 }
 
 // probeVerdict runs the provider gate and the network probe.
@@ -127,18 +132,10 @@ func (p *Plugin) authVerdict(ctx context.Context) (authVerdict, error) {
 // reach a conclusion. Only a definite provider answer stops the ladder here,
 // which is what keeps the whole check additive — it can convert an Unknown
 // into a real verdict, and can never manufacture a worse one.
-func (p *Plugin) probeVerdict(ctx context.Context, report claudeAuthReport, cliOK bool) (authVerdict, bool) {
+func (p *Plugin) probeVerdict(ctx context.Context, report claudeAuthReport, cliOK bool, opts agentcreds.ResolveOptions) (authVerdict, bool) {
 	reported := ""
 	if cliOK {
 		reported = report.APIProvider
-	}
-	opts := agentcreds.ResolveOptions{
-		// Q1 assumption: the Cloud design's keychain prohibition governs
-		// shipping local credentials into Cloud sandboxes, not the local
-		// daemon reading the local keychain to validate a local login. Every
-		// keychain call sits behind this flag, so reversing that reading costs
-		// only source 5.
-		AllowKeychain: true,
 	}
 	provider, ok := agentcreds.ResolveProvider(reported, opts)
 	if !ok {
@@ -255,16 +252,25 @@ func (p *Plugin) claudeCLIAuthReport(ctx context.Context, binary, workingDir str
 	// An unfamiliar non-zero result is not affirmative evidence of missing
 	// credentials, so the exit code is not consulted: only parsable output is.
 	_ = err
-	return claudeAuthReportFromOutput(out)
+	return claudeAuthReportFromOutput(out.Stdout)
 }
 
-var claudeAuthCommand = func(ctx context.Context, binary, workingDir string, env map[string]string) ([]byte, error) {
+type claudeCommandOutput struct {
+	Stdout []byte
+	Stderr []byte
+}
+
+var claudeAuthCommand = func(ctx context.Context, binary, workingDir string, env map[string]string) (claudeCommandOutput, error) {
 	cmd := aoprocess.CommandContext(ctx, binary, "auth", "status")
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir
 	}
 	cmd.Env = processenv.Merge(env)
-	return cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return claudeCommandOutput{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, err
 }
 
 // claudeAuthReportFromOutput extracts the JSON object the CLI prints, which may
@@ -284,12 +290,12 @@ func claudeAuthReportFromOutput(out []byte) (claudeAuthReport, bool) {
 
 // claudeLocalAuthVerdict is rung 4: environment variables, then ~/.claude.json.
 // It reports what is configured. It can never report authorized.
-func claudeLocalAuthVerdict(ctx context.Context) (authVerdict, error) {
+func claudeLocalAuthVerdict(ctx context.Context, opts agentcreds.ResolveOptions) (authVerdict, error) {
 	if err := ctx.Err(); err != nil {
 		return unknownVerdict(authSourceLocal), err
 	}
 	for _, name := range claudeCredentialEnv {
-		value := strings.TrimSpace(os.Getenv(name))
+		value := strings.TrimSpace(opts.Env(name))
 		if value == "" {
 			continue
 		}
@@ -414,17 +420,7 @@ var claudeModelAuthReport = func(ctx context.Context, binary, workingDir string,
 // An error means the provider could not be asked. Callers must fall back to
 // their static list rather than presenting an empty picker.
 func ProviderModels(ctx context.Context, binary, workingDir string, env map[string]string) ([]ports.AgentModelInfo, error) {
-	opts := agentcreds.ResolveOptions{AllowKeychain: true, WorkingDir: workingDir, CommandEnv: env}
-	if len(env) > 0 {
-		// Prefer the session's own environment so a project-scoped provider or
-		// key is reflected, falling back to the daemon's for anything unset.
-		opts.Env = func(name string) string {
-			if value, ok := env[name]; ok {
-				return value
-			}
-			return os.Getenv(name)
-		}
-	}
+	opts := (agentcreds.ResolveOptions{AllowKeychain: true, WorkingDir: workingDir, CommandEnv: env}).WithClaudeSettings()
 
 	probeCtx, cancel := context.WithTimeout(ctx, agentcreds.DefaultTimeout)
 	defer cancel()
@@ -442,7 +438,7 @@ func ProviderModels(ctx context.Context, binary, workingDir string, env map[stri
 		}
 	}
 	if result.State == "" && strings.TrimSpace(binary) != "" {
-		if report, ok := claudeModelAuthReport(ctx, binary, workingDir, env); ok {
+		if report, ok := claudeModelAuthReport(ctx, binary, workingDir, opts.CommandEnv); ok {
 			reported = report.APIProvider
 			provider, providerOK = agentcreds.ResolveProvider(reported, opts)
 			if providerOK {

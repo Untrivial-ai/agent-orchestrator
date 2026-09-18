@@ -3,7 +3,7 @@ package agentcreds
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -50,6 +50,30 @@ type ResolveOptions struct {
 	// gcloud credential-chain commands.
 	WorkingDir string
 	CommandEnv map[string]string
+}
+
+// WithClaudeSettings applies the shared settings resolver to the launch context.
+// Explicit command environment values are also used for credential resolution;
+// unrelated launch variables remain available to commands without loading them
+// from settings files. Neither the caller's options nor its map is mutated.
+func (o ResolveOptions) WithClaudeSettings() ResolveOptions {
+	settings := ResolveClaudeSettings(o.WorkingDir, o.CommandEnv, o)
+	base := o
+	merged := make(map[string]string, len(o.CommandEnv)+len(settings.Env))
+	for key, value := range o.CommandEnv {
+		merged[key] = value
+	}
+	for key, value := range settings.Env {
+		merged[key] = value
+	}
+	o.CommandEnv = merged
+	o.Env = func(key string) string {
+		if value, ok := merged[key]; ok {
+			return value
+		}
+		return base.env(key)
+	}
+	return o
 }
 
 func (o ResolveOptions) commandInvocation() commandInvocation {
@@ -215,18 +239,19 @@ func oauthTokenFromCredentialsJSON(data []byte) (string, bool) {
 // claudeConfigDir resolves Claude Code's config directory, honoring the same
 // overrides the CLI does.
 func claudeConfigDir(opts ResolveOptions) (string, error) {
-	if opts.ConfigDir != "" {
-		return opts.ConfigDir, nil
+	if dir := strings.TrimSpace(opts.ConfigDir); dir != "" {
+		return dir, nil
 	}
 	if dir := opts.env("CLAUDE_CONFIG_DIR"); dir != "" {
 		return dir, nil
 	}
-	if dir := opts.env("XDG_CONFIG_HOME"); dir != "" && opts.goos() != "windows" {
-		return filepath.Join(dir, "claude"), nil
+	homeKey := "HOME"
+	if opts.goos() == "windows" {
+		homeKey = "USERPROFILE"
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("agentcreds: resolve home directory: %w", err)
+	home := opts.env(homeKey)
+	if home == "" {
+		return "", errors.New("agentcreds: home directory is unavailable")
 	}
 	return filepath.Join(home, ".claude"), nil
 }

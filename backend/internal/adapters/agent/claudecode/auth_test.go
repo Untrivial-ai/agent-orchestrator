@@ -2,10 +2,13 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -22,7 +25,7 @@ func TestAuthStatusDoesNotTrustUnvalidatedAPIKey(t *testing.T) {
 			clearClaudeCredentialEnv(t)
 			t.Setenv(name, "sk-ant-revoked-key")
 
-			verdict, err := claudeLocalAuthVerdict(context.Background())
+			verdict, err := claudeLocalAuthVerdict(context.Background(), (agentcreds.ResolveOptions{}).WithClaudeSettings())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,7 +56,7 @@ func TestLocalAuthVerdictPrefersOAuthTokenOverAPIKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
 
-	verdict, err := claudeLocalAuthVerdict(context.Background())
+	verdict, err := claudeLocalAuthVerdict(context.Background(), (agentcreds.ResolveOptions{}).WithClaudeSettings())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +177,11 @@ func TestCLIReportVerdict(t *testing.T) {
 
 func TestClaudeAuthReportUsesProjectContext(t *testing.T) {
 	previous := claudeAuthCommand
-	claudeAuthCommand = func(_ context.Context, binary, workingDir string, env map[string]string) ([]byte, error) {
+	claudeAuthCommand = func(_ context.Context, binary, workingDir string, env map[string]string) (claudeCommandOutput, error) {
 		if binary != "/opt/claude" || workingDir != "/project" || env["CLAUDE_CODE_USE_VERTEX"] != "1" {
 			t.Fatalf("command context = binary %q dir %q env %#v", binary, workingDir, env)
 		}
-		return []byte(`{"loggedIn":true,"apiProvider":"vertex"}`), nil
+		return claudeCommandOutput{Stdout: []byte(`{"loggedIn":true,"apiProvider":"vertex"}`)}, nil
 	}
 	t.Cleanup(func() { claudeAuthCommand = previous })
 
@@ -227,7 +230,7 @@ func TestUnreadableLocalStateDegradesToUnknownNotUnauthorized(t *testing.T) {
 func TestLocalAuthVerdictHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	verdict, err := claudeLocalAuthVerdict(ctx)
+	verdict, err := claudeLocalAuthVerdict(ctx, agentcreds.ResolveOptions{})
 	if err == nil {
 		t.Fatal("want the context error")
 	}
@@ -238,7 +241,11 @@ func TestLocalAuthVerdictHonorsCanceledContext(t *testing.T) {
 
 func clearClaudeCredentialEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range claudeCredentialEnv {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	for _, name := range append(append([]string{}, claudeCredentialEnv...), "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_AUTH_TOKEN") {
 		t.Setenv(name, "")
 	}
 }
@@ -308,10 +315,133 @@ func withStubValidator(t *testing.T, handler http.HandlerFunc) *httptest.Server 
 	t.Cleanup(server.Close)
 	previous := claudeValidator
 	claudeValidator = func() *agentcreds.Validator {
-		return agentcreds.New(server.Client())
+		client := server.Client()
+		transport := client.Transport
+		client.Transport = claudeTestTransport(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Scheme+"://"+req.URL.Host != server.URL {
+				t.Errorf("blocked unexpected provider request to %s", req.URL.Host)
+				return nil, errors.New("unexpected provider host")
+			}
+			return transport.RoundTrip(req)
+		})
+		return agentcreds.New(client)
 	}
 	t.Cleanup(func() { claudeValidator = previous })
 	return server
+}
+
+type claudeTestTransport func(*http.Request) (*http.Response, error)
+
+func (f claudeTestTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func writeClaudeAuthSettings(t *testing.T, path string, env map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"env": env})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeAuthReportIgnoresStderrJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	clearClaudeCredentialEnv(t)
+	project := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"apiProvider\":\"vertex\"}'\nprintf '%s\\n' 'warning: {\"quotaProject\":\"missing\"}' >&2\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report, ok := (&Plugin{}).claudeCLIAuthReport(context.Background(), binary, project, nil)
+	if !ok || !report.LoggedIn || report.APIProvider != "vertex" {
+		t.Fatalf("stdout auth report was lost: %#v, parsed %v", report, ok)
+	}
+}
+
+func TestUserGatewaySettingsOverrideSignedOutFirstPartyAuth(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			clearClaudeCredentialEnv(t)
+			InvalidateAuthCache()
+			t.Cleanup(InvalidateAuthCache)
+			t.Setenv("ANTHROPIC_API_KEY", "daemon-first-party-key")
+			requests := 0
+			server := withStubValidator(t, func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Header.Get("x-api-key") != "settings-gateway-key" {
+					t.Error("gateway did not receive settings credential")
+				}
+				w.WriteHeader(status)
+				if status == http.StatusOK {
+					_, _ = w.Write([]byte(`{"data":[{"id":"kimi-k2"}]}`))
+				}
+			})
+			writeClaudeAuthSettings(t, filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "settings.json"), map[string]string{
+				"ANTHROPIC_BASE_URL": server.URL, "ANTHROPIC_API_KEY": "settings-gateway-key",
+			})
+			previous := claudeAuthCommand
+			claudeAuthCommand = func(_ context.Context, _, _ string, env map[string]string) (claudeCommandOutput, error) {
+				if env["ANTHROPIC_BASE_URL"] != server.URL || env["ANTHROPIC_API_KEY"] != "settings-gateway-key" {
+					t.Error("auth status did not receive the settings environment")
+				}
+				return claudeCommandOutput{Stdout: []byte(`{"loggedIn":false,"apiProvider":"firstParty"}`)}, nil
+			}
+			t.Cleanup(func() { claudeAuthCommand = previous })
+			state, err := (&Plugin{resolvedBinary: "/fixture/claude"}).AuthStatus(context.Background())
+			want := ports.AgentAuthStatusAuthorized
+			if status == http.StatusNotFound {
+				want = ports.AgentAuthStatusConfigured
+			}
+			if err != nil || state != want || requests != 1 {
+				t.Fatalf("state=%q err=%v gateway requests=%d, want %q and one request", state, err, requests, want)
+			}
+		})
+	}
+}
+
+func TestProviderModelsUsesMergedProjectSettings(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+	t.Setenv("ANTHROPIC_API_KEY", "daemon-key")
+	project := t.TempDir()
+	requests := 0
+	server := withStubValidator(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("x-api-key") != "session-key" {
+			t.Error("explicit credential did not win")
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5"}]}`))
+	})
+	writeClaudeAuthSettings(t, filepath.Join(project, ".claude", "settings.local.json"), map[string]string{
+		"ANTHROPIC_BASE_URL": server.URL, "ANTHROPIC_API_KEY": "settings-key", "ANTHROPIC_MODEL": "glm-5", "SECRET": "must-not-load",
+	})
+	previous := claudeModelAuthReport
+	claudeModelAuthReport = func(_ context.Context, binary, dir string, env map[string]string) (claudeAuthReport, bool) {
+		if binary != "/fixture/claude" || dir != project || env["ANTHROPIC_BASE_URL"] != server.URL || env["ANTHROPIC_API_KEY"] != "session-key" || env["ANTHROPIC_MODEL"] != "glm-5" || env["CLOUDSDK_CONFIG"] != "/fixture/gcloud" || env["LAUNCH_ONLY"] != "preserved" {
+			t.Error("auth status did not receive the merged launch context")
+		}
+		if _, ok := env["SECRET"]; ok {
+			t.Error("unapproved settings env escaped")
+		}
+		return claudeAuthReport{LoggedIn: false, APIProvider: "firstParty"}, true
+	}
+	t.Cleanup(func() { claudeModelAuthReport = previous })
+	env := map[string]string{"ANTHROPIC_API_KEY": "session-key", "CLOUDSDK_CONFIG": "/fixture/gcloud", "LAUNCH_ONLY": "preserved"}
+	models, err := ProviderModels(context.Background(), "/fixture/claude", project, env)
+	if err != nil || len(models) != 1 || models[0].ID != "glm-5" || requests != 1 {
+		t.Fatalf("models=%v err=%v requests=%d", models, err, requests)
+	}
+	if _, changed := env["ANTHROPIC_BASE_URL"]; changed {
+		t.Fatal("caller environment was mutated")
+	}
 }
 
 // Rungs 1 and 2 end to end: the provider accepts, so the ladder returns the
@@ -325,7 +455,7 @@ func TestProbeAuthorizesOnlyOnAProviderAcceptance(t *testing.T) {
 	})
 	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
 
-	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "gateway"}, true)
+	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "gateway"}, true, (agentcreds.ResolveOptions{}).WithClaudeSettings())
 	if !ok {
 		t.Fatal("a definite provider answer must stop the ladder")
 	}
@@ -349,7 +479,7 @@ func TestProbeRejectsARevokedCredential(t *testing.T) {
 	})
 	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
 
-	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "gateway"}, true)
+	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "gateway"}, true, (agentcreds.ResolveOptions{}).WithClaudeSettings())
 	if !ok || verdict.State != ports.AgentAuthStatusUnauthorized {
 		t.Fatalf("verdict = %+v, want a verified rejection", verdict)
 	}
@@ -369,7 +499,7 @@ func TestProbeGateStopsBeforeSendingAnythingForAnUnknownProvider(t *testing.T) {
 	})
 
 	if _, ok := (&Plugin{}).probeVerdict(
-		context.Background(), claudeAuthReport{APIProvider: "some-future-provider"}, true,
+		context.Background(), claudeAuthReport{APIProvider: "some-future-provider"}, true, (agentcreds.ResolveOptions{}).WithClaudeSettings(),
 	); ok {
 		t.Fatal("an unrecognized provider must hand down the ladder, not answer it")
 	}
@@ -387,7 +517,7 @@ func TestInconclusiveProbeHandsDownTheLadder(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
 
 	if _, ok := (&Plugin{}).probeVerdict(
-		context.Background(), claudeAuthReport{APIProvider: "gateway"}, true,
+		context.Background(), claudeAuthReport{APIProvider: "gateway"}, true, (agentcreds.ResolveOptions{}).WithClaudeSettings(),
 	); ok {
 		t.Fatal("a provider outage must not stop the ladder with a verdict")
 	}
@@ -411,7 +541,7 @@ func TestProbeAnswersFromCacheWithoutReprobing(t *testing.T) {
 		t.Fatal("a cache hit must not reach the provider")
 	})
 
-	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "firstParty"}, true)
+	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "firstParty"}, true, (agentcreds.ResolveOptions{}).WithClaudeSettings())
 	if !ok || verdict.State != ports.AgentAuthStatusAuthorized {
 		t.Fatalf("verdict = %+v, want the cached acceptance", verdict)
 	}
@@ -434,7 +564,7 @@ func TestProviderModelsReuseTheValidatedAuthResponse(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
 
 	verdict, ok := (&Plugin{}).probeVerdict(
-		context.Background(), claudeAuthReport{APIProvider: "gateway"}, true,
+		context.Background(), claudeAuthReport{APIProvider: "gateway"}, true, (agentcreds.ResolveOptions{}).WithClaudeSettings(),
 	)
 	if !ok || verdict.State != ports.AgentAuthStatusAuthorized {
 		t.Fatalf("verdict = %+v, want the provider acceptance", verdict)
@@ -553,6 +683,8 @@ func TestProviderModelsCachesInconclusiveResultBriefly(t *testing.T) {
 
 func TestProviderModelsUsesCLIReportedProvider(t *testing.T) {
 	clearClaudeCredentialEnv(t)
+	// Keep the preliminary first-party resolution away from the real keychain.
+	t.Setenv("ANTHROPIC_API_KEY", "unused-first-party-fixture")
 	InvalidateAuthCache()
 	t.Cleanup(InvalidateAuthCache)
 	env := map[string]string{

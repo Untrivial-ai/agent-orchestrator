@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -18,6 +19,7 @@ func claudeRequest(t *testing.T) ports.AgentModelDiscoveryRequest {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	t.Setenv("ANTHROPIC_MODEL", "")
 	return ports.AgentModelDiscoveryRequest{
 		AgentID: "claude-code", WorkingDir: t.TempDir(), Env: map[string]string{},

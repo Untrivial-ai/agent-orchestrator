@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 const (
@@ -208,28 +208,28 @@ func discoverClaudeCatalog(
 	base := Base(request.AgentID)
 	base.Source = "catalog"
 	base.FetchedAt = time.Now().UTC()
+	settings := agentcreds.ResolveClaudeSettings(request.WorkingDir, request.Env, agentcreds.ResolveOptions{})
 
 	if list != nil {
 		models, err := list(ctx, request)
 		if err != nil {
-			base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+			base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), settings.Model)
 			return base, fmt.Errorf("claude-code model discovery: %w", err)
 		}
 		normalized := normalize(models)
 		if len(normalized) > 0 {
-			base.Models = applyClaudeConfiguredDefault(normalized, request.WorkingDir, request.Env)
+			base.Models = applyClaudeConfiguredDefault(normalized, settings.Model)
 			base.Source = "provider"
 			return base, nil
 		}
-		base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+		base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), settings.Model)
 		return base, errors.New("claude-code model discovery returned no models")
 	}
 
-	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
+	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), settings.Model)
 	return base, nil
 }
-func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, workingDir string, env map[string]string) []ports.AgentModelInfo {
-	configured := claudeCodeResolvedModel(workingDir, env)
+func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, configured string) []ports.AgentModelInfo {
 	if configured == "" {
 		return models
 	}
@@ -387,64 +387,6 @@ func discoverClineCatalog(
 	return base, nil
 }
 
-// claudeCodeSettingsReadLimit bounds how much of a settings file AO parses. The
-// documented files are small; a pathological one must not stall discovery.
-const claudeCodeSettingsReadLimit = 1 << 20
-
-// claudeCodeResolvedModel returns the configured Claude Code model, or "" when
-// no scope sets one. Order mirrors Claude Code's own precedence, narrowed to the
-// sources AO can read without running the CLI.
-func claudeCodeResolvedModel(workingDir string, env map[string]string) string {
-	if fromEnv := strings.TrimSpace(env["ANTHROPIC_MODEL"]); fromEnv != "" {
-		return fromEnv
-	}
-	if fromEnv := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")); fromEnv != "" {
-		return fromEnv
-	}
-	for _, candidate := range claudeCodeSettingsPaths(workingDir) {
-		if configured := claudeCodeSettingsModel(candidate); configured != "" {
-			return configured
-		}
-	}
-	return ""
-}
-
-func claudeCodeSettingsPaths(workingDir string) []string {
-	var candidates []string
-	if dir := strings.TrimSpace(workingDir); dir != "" {
-		candidates = append(candidates,
-			filepath.Join(dir, ".claude", "settings.local.json"),
-			filepath.Join(dir, ".claude", "settings.json"),
-		)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".claude", "settings.json"))
-	}
-	return candidates
-}
-
-// claudeCodeSettingsModel reads one settings file's "model". An unreadable or
-// malformed file is not an error worth surfacing: the picker degrades to no
-// default, exactly as if the key were absent.
-func claudeCodeSettingsModel(path string) string {
-	file, err := os.Open(path) //nolint:gosec // path is derived from the project dir and the user's home
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = file.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(file, claudeCodeSettingsReadLimit))
-	if err != nil {
-		return ""
-	}
-	var settings struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(settings.Model)
-}
-
 func hasDiscoverySource(agentID string) bool {
 	switch agentID {
 	case "claude-code", "codex":
@@ -557,40 +499,18 @@ func discoveryConfigInputs(agentID, workingDir string, env map[string]string) st
 }
 
 func claudeCodeDiscoveryFingerprint(workingDir string, env map[string]string) string {
+	settings := agentcreds.ResolveClaudeSettings(workingDir, env, agentcreds.ResolveOptions{})
 	hash := sha256.New()
-	_, _ = hash.Write([]byte("model\x00" + claudeCodeResolvedModel(workingDir, env) + "\x00"))
-	keys := []string{
-		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-		"ANTHROPIC_BASE_URL", "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE",
-		"AWS_REGION", "AWS_DEFAULT_REGION",
-		"ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "CLOUD_ML_REGION", "GOOGLE_CLOUD_REGION",
-		"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
-		"AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-		"GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
+	_, _ = hash.Write([]byte("model\x00" + settings.Model + "\x00"))
+	keys := make([]string, 0, len(settings.Env))
+	for key := range settings.Env {
+		keys = append(keys, key)
 	}
+	sort.Strings(keys)
 	for _, key := range keys {
-		value, present := env[key]
-		if !present {
-			value = os.Getenv(key)
-		}
-		_, _ = hash.Write([]byte(key + "\x00" + strings.TrimSpace(value) + "\x00"))
+		_, _ = hash.Write([]byte(key + "\x00" + settings.Env[key] + "\x00"))
 	}
-	for _, path := range claudeCodeSettingsPaths(workingDir) {
-		raw, err := readModelConfig(path)
-		if err != nil {
-			continue
-		}
-		_, _ = hash.Write([]byte(path))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write(raw)
-		_, _ = hash.Write([]byte{0})
-	}
-	credentialPath, present := env["GOOGLE_APPLICATION_CREDENTIALS"]
-	if !present {
-		credentialPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	}
-	if raw, err := readModelConfig(strings.TrimSpace(credentialPath)); err == nil {
+	if raw, err := readModelConfig(settings.Env["GOOGLE_APPLICATION_CREDENTIALS"]); err == nil {
 		_, _ = hash.Write(raw)
 	}
 	return fmt.Sprintf("%x", hash.Sum(nil)[:8])

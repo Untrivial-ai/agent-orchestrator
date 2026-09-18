@@ -142,6 +142,7 @@ func TestMuseReturnsStaticCatalogWithoutStartingAgent(t *testing.T) {
 }
 
 func TestClaudeReturnsStaticCatalogWithConfiguredFallback(t *testing.T) {
+	claudeRequest(t)
 	t.Setenv("ANTHROPIC_MODEL", "")
 	t.Setenv("HOME", t.TempDir())
 	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{
@@ -580,6 +581,7 @@ func writeClaudeSettings(t *testing.T, dir, model string) {
 }
 
 func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
+	claudeRequest(t)
 	t.Setenv("ANTHROPIC_MODEL", "")
 	dir := t.TempDir()
 	writeClaudeSettings(t, dir, "opus")
@@ -596,6 +598,7 @@ func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
 }
 
 func TestCatalogFingerprintTracksClaudeProviderInputs(t *testing.T) {
+	claudeRequest(t)
 	dir := t.TempDir()
 	writeClaudeSettings(t, dir, "opus")
 	base := map[string]string{
@@ -633,18 +636,67 @@ func TestCatalogFingerprintTracksClaudeProviderInputs(t *testing.T) {
 }
 
 func TestCatalogFingerprintTracksClaudeProviderSettings(t *testing.T) {
+	claudeRequest(t)
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, ".claude", "settings.json")
 	writeClaudeSettings(t, dir, "opus")
-	if err := os.WriteFile(settingsPath, []byte(`{"model":"opus","env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}`), 0o600); err != nil {
+	if err := os.WriteFile(settingsPath, []byte(`{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://gateway-a.example"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	first := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil)
-	if err := os.WriteFile(settingsPath, []byte(`{"model":"opus","env":{"CLAUDE_CODE_USE_VERTEX":"1"}}`), 0o600); err != nil {
+	if err := os.WriteFile(settingsPath, []byte(`{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://gateway-b.example"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil); got == first {
 		t.Fatal("fingerprint unchanged after Claude provider settings changed")
+	}
+}
+
+func TestClaudeCatalogDefaultUsesResolvedSettingsEnvironment(t *testing.T) {
+	request := claudeRequest(t)
+	configDir := t.TempDir()
+	request.Env["CLAUDE_CONFIG_DIR"] = configDir
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(`{"model":"top-level-model","env":{"ANTHROPIC_MODEL":"kimi-k2"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_MODEL", "daemon-model")
+	catalog, err := discoverClaudeCatalog(context.Background(), request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range catalog.Models {
+		if item.IsDefault {
+			if item.ID != "kimi-k2" {
+				t.Fatalf("default = %q, want settings env model", item.ID)
+			}
+			return
+		}
+	}
+	t.Fatal("configured gateway model is not the default")
+}
+
+func TestClaudeCatalogFingerprintUsesOnlyResolvedSettings(t *testing.T) {
+	request := claudeRequest(t)
+	configDir := t.TempDir()
+	request.Env["CLAUDE_CONFIG_DIR"] = configDir
+	request.Env["ANTHROPIC_API_KEY"] = "explicit-key"
+	path := filepath.Join(configDir, "settings.json")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fingerprint := func() string { return (Discoverer{}).CatalogFingerprint(context.Background(), request) }
+	write(`{"env":{"ANTHROPIC_API_KEY":"shadowed-key-a","SECRET":"unrelated-a","ANTHROPIC_DEFAULT_OPUS_MODEL":"glm-4"}}`)
+	first := fingerprint()
+	write(`{"env":{"ANTHROPIC_API_KEY":"shadowed-key-b","SECRET":"unrelated-b","ANTHROPIC_DEFAULT_OPUS_MODEL":"glm-4"}}`)
+	if got := fingerprint(); got != first {
+		t.Fatal("shadowed or unapproved settings changed the fingerprint")
+	}
+	write(`{"env":{"ANTHROPIC_API_KEY":"shadowed-key-b","SECRET":"unrelated-b","ANTHROPIC_DEFAULT_OPUS_MODEL":"glm-5"}}`)
+	if got := fingerprint(); got == first {
+		t.Fatal("effective configured alias did not change the fingerprint")
 	}
 }
 
