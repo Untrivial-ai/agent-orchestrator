@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,6 +410,26 @@ type emptyTransitionAgent struct{ transitionAgent }
 
 func (emptyTransitionAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
 	return false, nil
+}
+
+type augmentedProbeTransitionAgent struct {
+	transitionAgent
+	wantDataDir string
+	probeEnv    map[string]string
+}
+
+func (a *augmentedProbeTransitionAgent) AugmentRuntimeEnv(env map[string]string, dataDir string) {
+	env["PROVIDER_DATA_DIR"] = filepath.Join(dataDir, "provider")
+}
+
+func (a *augmentedProbeTransitionAgent) NativeConversationExists(
+	_ context.Context,
+	_ ports.SessionRef,
+	_ string,
+	env map[string]string,
+) (bool, error) {
+	a.probeEnv = maps.Clone(env)
+	return env["PROVIDER_DATA_DIR"] == filepath.Join(a.wantDataDir, "provider"), nil
 }
 
 type untouchedEmptyTransitionAgent struct{ emptyTransitionAgent }
@@ -992,6 +1013,25 @@ func TestInterfaceTransitionStatusBlocksReservedNativeIDWithoutHistoryOrFreshPro
 		domain.SessionInterfaceTransitionHistoryStrict,
 	); !errors.Is(err, ErrNativeConversationMissing) {
 		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
+	}
+}
+
+func TestInterfaceTransitionHistoryProbeReceivesAugmentedAgentEnvironment(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.dataDir = t.TempDir()
+	agent := &augmentedProbeTransitionAgent{wantDataDir: manager.dataDir}
+	manager.agents = singleAgent{agent: agent}
+	rec := store.sessions["session-1"]
+
+	id, err := manager.persistedNativeConversationID(context.Background(), rec, "native-1", agent)
+	if err != nil {
+		t.Fatalf("persistedNativeConversationID: %v", err)
+	}
+	if id != "native-1" {
+		t.Fatalf("native id = %q, want native-1", id)
+	}
+	if got, want := agent.probeEnv["PROVIDER_DATA_DIR"], filepath.Join(manager.dataDir, "provider"); got != want {
+		t.Fatalf("history probe PROVIDER_DATA_DIR = %q, want %q", got, want)
 	}
 }
 

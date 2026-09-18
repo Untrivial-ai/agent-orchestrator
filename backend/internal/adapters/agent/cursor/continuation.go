@@ -122,7 +122,7 @@ func (p *Plugin) NativeConversationExists(
 }
 
 func validCursorConversationID(id string) bool {
-	return id != "" && !strings.ContainsAny(id, `/\\*?[`)
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\\*?[`)
 }
 
 func cursorRealDirectory(path string) (bool, error) {
@@ -133,7 +133,31 @@ func cursorRealDirectory(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return info.IsDir() && info.Mode()&os.ModeSymlink == 0, nil
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	expected := filepath.Clean(path)
+	if tempDir := filepath.Clean(os.TempDir()); cursorPathWithin(tempDir, expected) {
+		resolvedTemp, err := filepath.EvalSymlinks(tempDir)
+		if err != nil {
+			return false, err
+		}
+		rel, err := filepath.Rel(tempDir, expected)
+		if err != nil {
+			return false, err
+		}
+		expected = filepath.Join(resolvedTemp, rel)
+	}
+	return filepath.Clean(resolved) == expected, nil
+}
+
+func cursorPathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func cursorFilesystemError(operation string, err error) error {

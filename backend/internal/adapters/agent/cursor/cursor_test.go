@@ -252,6 +252,29 @@ func TestCursorNativeHistoryRejectsSymlinkedDataRoot(t *testing.T) {
 	}
 }
 
+func TestCursorNativeHistoryRejectsDataRootWithSymlinkedAncestor(t *testing.T) {
+	id := "cursor-native-1"
+	outsideParent := t.TempDir()
+	outsideDataDir := filepath.Join(outsideParent, "cursor")
+	candidate := filepath.Join(outsideDataDir, "projects", "project-a", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(candidate, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "linked-parent")
+	if err := os.Symlink(outsideParent, link); err != nil {
+		t.Fatal(err)
+	}
+
+	exists, err := (&Plugin{}).NativeConversationExists(context.Background(), ports.SessionRef{}, id,
+		map[string]string{cursorDataDirEnv: filepath.Join(link, "cursor")})
+	if err != nil || exists {
+		t.Fatalf("NativeConversationExists = (%v, %v), want (false, nil)", exists, err)
+	}
+}
+
 func TestCursorNativeHistoryUsesOnlyExplicitCursorDataDir(t *testing.T) {
 	id := "cursor-native-1"
 	ambientDataDir := t.TempDir()
@@ -297,6 +320,28 @@ func TestCursorNativeHistoryRejectsInvalidIDAndHonorsCancellation(t *testing.T) 
 	_, err := plugin.NativeConversationExists(ctx, ports.SessionRef{}, "cursor-native-1", env)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("NativeConversationExists error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCursorNativeHistoryRejectsDotPathIDs(t *testing.T) {
+	for _, id := range []string{".", ".."} {
+		t.Run(id, func(t *testing.T) {
+			dataDir := t.TempDir()
+			transcriptsDir := filepath.Join(dataDir, "projects", "project-a", "agent-transcripts")
+			candidate := filepath.Join(transcriptsDir, id, id+".jsonl")
+			if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(candidate, []byte("unsafe"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			exists, err := (&Plugin{}).NativeConversationExists(context.Background(), ports.SessionRef{}, id,
+				map[string]string{cursorDataDirEnv: dataDir})
+			if err != nil || exists {
+				t.Fatalf("NativeConversationExists(%q) = (%v, %v), want (false, nil)", id, exists, err)
+			}
+		})
 	}
 }
 
